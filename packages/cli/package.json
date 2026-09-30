@@ -28,8 +28,7 @@
     "node": ">=22"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "scripts": {
     "build": "bun build src/bin.ts --target node --outfile dist/armada.js",
