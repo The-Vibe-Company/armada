@@ -57,12 +57,12 @@ export interface ArmadaConfig {
   };
 }
 
-/** How routing compares label names: case, spaces and punctuation ignored, letters of any script kept. */
+/** How routing compares label names: case, spaces and punctuation ignored, letters (with their marks) of any script kept. */
 export const routingLabelKey = (name: string) =>
   name
     .normalize("NFKC")
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]/gu, "");
+    .replace(/[^\p{L}\p{M}\p{N}]/gu, "");
 
 /** A ticket carrying any of `labels` goes to `profile`, unless an earlier rule matched. */
 export interface RoutingRule {
@@ -227,7 +227,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       const labels = r.labels;
       const ok =
         Array.isArray(labels) && labels.length && labels.every((l) => typeof l === "string" && routingLabelKey(l));
-      if (!ok) problems.push(`"${path}.labels" must be a non-empty list of Linear label names`);
+      if (!ok)
+        problems.push(`"${path}.labels" must be a non-empty list of Linear label names, each with a letter or digit`);
       const profile = str(r, path, "profile");
       if (profile && !Object.hasOwn(profiles, profile))
         problems.push(`"${path}.profile" is "${profile}", but there is no [conductor.profiles.${profile}]`);

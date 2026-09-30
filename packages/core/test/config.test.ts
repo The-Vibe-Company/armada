@@ -109,9 +109,9 @@ describe("armada.toml", () => {
       '[[conductor.routing]]\nlabels = ["-"]\nprofile = "opus"\n',
     );
     expect(problemsOf(text)).toEqual([
-      '"conductor.routing[1].labels" must be a non-empty list of Linear label names',
+      '"conductor.routing[1].labels" must be a non-empty list of Linear label names, each with a letter or digit',
       'missing required key "conductor.routing[2].profile"',
-      '"conductor.routing[3].labels" must be a non-empty list of Linear label names',
+      '"conductor.routing[3].labels" must be a non-empty list of Linear label names, each with a letter or digit',
       '"conductor.default_profile" is required with [[conductor.routing]], for tickets no rule matches',
       'unknown key "conductor.routing[2].profil"',
     ]);

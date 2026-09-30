@@ -444,11 +444,18 @@ export async function saveRuntimeHandle(
   });
 }
 
+/** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
 export async function releaseRuntimeHandle(db: Db, project: string, ticket: string, at: Date): Promise<void> {
-  await db.execute({
-    sql: "UPDATE runtime_handles SET released_at = ? WHERE project = ? AND ticket = ? AND released_at IS NULL",
-    args: [at.toISOString(), project, ticket],
-  });
+  await db.batch(
+    [
+      {
+        sql: "UPDATE runtime_handles SET released_at = ? WHERE project = ? AND ticket = ? AND released_at IS NULL",
+        args: [at.toISOString(), project, ticket],
+      },
+      { sql: "DELETE FROM worker_profiles WHERE project = ? AND ticket = ?", args: [project, ticket] },
+    ],
+    "write",
+  );
 }
 
 /** Sessions still holding a ticket of the project (not released), by ticket id. */
