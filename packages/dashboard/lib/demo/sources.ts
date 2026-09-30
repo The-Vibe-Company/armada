@@ -14,6 +14,7 @@ export function demoSources(mode: string, real: Sources): Sources {
   };
   return {
     openLive: real.openLive,
+    ...(real.liveKey ? { liveKey: real.liveKey } : {}),
     fallbackProjects: () => {
       const fromEnv = real.fallbackProjects();
       return fromEnv.length ? fromEnv : DEMO_PROJECTS.map((p) => ({ repository: p.repository }));

@@ -30,6 +30,12 @@ export type ProjectRef = Pick<ProjectRecord, "repository"> & Partial<Omit<Projec
 export interface Sources {
   /** The Turso database; null when none is configured. Throws when it is unreachable. */
   openLive(): Promise<Db | null>;
+  /**
+   * Which Turso access `openLive` uses (a fingerprint, never the token). A
+   * client opened with another one is closed and opened again: the key was
+   * replaced, or a short-lived token renewed.
+   */
+  liveKey?: string;
   /** Repositories to show when the registry cannot be read (ARMADA_REPOSITORIES). */
   fallbackProjects(): ProjectRef[];
   readConfig(p: ProjectRef): Promise<ProjectConfigReading>;
@@ -58,11 +64,19 @@ export interface FleetCache {
   /** The last project list read from the registry, used while Turso is unreachable. */
   projects: ProjectRef[] | null;
   db: Db | null;
+  /** The `liveKey` the client was opened with. */
+  dbKey: string | null;
   /** The client being opened, shared by concurrent requests. */
   opening: Promise<Db | null> | null;
 }
 
-export const newCache = (): FleetCache => ({ snapshots: new Map(), projects: null, db: null, opening: null });
+export const newCache = (): FleetCache => ({
+  snapshots: new Map(),
+  projects: null,
+  db: null,
+  dbKey: null,
+  opening: null,
+});
 
 /**
  * Whose fleet a request reads: the viewer's organization, and the deployment's
@@ -176,12 +190,15 @@ async function readLive(db: Db, project: string, now: Date): Promise<LiveProject
 }
 
 function liveClient(opts: LoadOptions): Promise<Db | null> {
-  if (opts.cache.db) return Promise.resolve(opts.cache.db);
+  const key = opts.sources.liveKey ?? null;
+  if (opts.cache.db && opts.cache.dbKey === key) return Promise.resolve(opts.cache.db);
+  if (opts.cache.db) dropClient(opts);
   // One open at a time; a slow open still lands in the cache for the next poll.
   opts.cache.opening ??= opts.sources
     .openLive()
     .then((db) => {
       opts.cache.db = db;
+      opts.cache.dbKey = key;
       return db;
     })
     .finally(() => {

@@ -8,10 +8,10 @@
 // password gate, with the name the viewer gives. No runtime key is read here
 // or anywhere in the dashboard.
 import { cookies } from "next/headers";
-import { type Access, requireFleetAccess, scopeOf } from "@/lib/access";
+import { type Access, requireFleetAccess } from "@/lib/access";
 import { AUTHOR_COOKIE } from "@/lib/i18n";
 import { type RequestResult, submitAnswer, submitLaunch } from "@/lib/requests";
-import { authorOf, loadOptions } from "@/lib/server";
+import { authorOf, fleetOf } from "@/lib/server";
 
 const text = (form: FormData, name: string) => {
   const v = form.get(name);
@@ -36,7 +36,8 @@ export async function answerQuestion(form: FormData): Promise<RequestResult> {
   const question = Number(text(form, "question"));
   if (!Number.isSafeInteger(question) || question <= 0)
     return { ok: false, code: "no-question", message: "no question id" };
-  return submitAnswer(loadOptions(), scopeOf(access), {
+  const { opts, scope } = await fleetOf(access);
+  return submitAnswer(opts, scope, {
     project: text(form, "project"),
     question,
     text: text(form, "text"),
@@ -46,7 +47,8 @@ export async function answerQuestion(form: FormData): Promise<RequestResult> {
 
 export async function launchTicket(form: FormData): Promise<RequestResult> {
   const access = await requireFleetAccess();
-  return submitLaunch(loadOptions(), scopeOf(access), {
+  const { opts, scope } = await fleetOf(access);
+  return submitLaunch(opts, scope, {
     project: text(form, "project"),
     ticket: text(form, "ticket"),
     profile: text(form, "profile") || null,

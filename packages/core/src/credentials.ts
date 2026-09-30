@@ -1,7 +1,8 @@
 // The one place Armada resolves its keys. Each key comes from the environment
-// first, then from the machine store (~/.config/armada/credentials), then,
-// for non-secret settings only, from the personal config. GitHub keeps its
-// own chain and ends with the GitHub CLI login. The Armada API address and
+// first, then from Armada (the organization's keys, handed to a signed-in
+// terminal), then from the machine store (~/.config/armada/credentials),
+// then, for non-secret settings only, from the personal config. GitHub keeps
+// its own chain and ends with the GitHub CLI login. The Armada API address and
 // the terminal's sign-in to it resolve here too. Every command asks this
 // function and nothing else.
 import type { ArmadaSignIn } from "./armada-api.ts";
@@ -12,6 +13,8 @@ export type CredentialName = "linearApiKey" | "tursoUrl" | "tursoToken" | "githu
 export type CredentialSource =
   | { kind: "env"; variable: string }
   | { kind: "store" }
+  /** Handed out by Armada; `detail` says whose key or which token, e.g. "your own key". */
+  | { kind: "armada"; detail: string }
   | { kind: "config"; key: string }
   | { kind: "gh" };
 
@@ -50,6 +53,47 @@ export const API_KEY_VARIABLE = "ARMADA_API_KEY";
 export const API_URL_VARIABLE = "ARMADA_API_URL";
 /** Credentials-file key: the Armada that issued the stored sign-in, which is sent nowhere else. */
 export const SIGNED_IN_TO_VARIABLE = "ARMADA_SIGNED_IN_TO";
+/**
+ * Credentials-file key: the short-lived Turso token Armada made for this
+ * terminal, with its expiry, kept until it is renewed. `armada login`,
+ * `armada logout` and `armada auth logout` remove it.
+ */
+export const TURSO_LEASE_VARIABLE = "ARMADA_TURSO_LEASE";
+
+/** A Turso token made by Armada for this terminal. */
+export interface TursoLease {
+  /** The Armada that made it (`armadaAddress`): it is used only while the CLI talks to that one. */
+  api: string;
+  organization: string;
+  url: string;
+  token: string;
+  expiresAt: string;
+  /** Which Turso keys it was made from; Armada replaces it when they change. */
+  revision: string;
+}
+
+/** The lease as one credentials-file value (base64url JSON, so it fits a KEY=value line). */
+export const formatLease = (lease: TursoLease) => Buffer.from(JSON.stringify(lease), "utf8").toString("base64url");
+
+/** The lease a credentials-file value holds, or null when it is not one. */
+export function parseLease(value: string | null | undefined): TursoLease | null {
+  if (!value?.trim()) return null;
+  try {
+    const l = JSON.parse(Buffer.from(value.trim(), "base64url").toString("utf8")) as Record<string, unknown>;
+    const keys = ["api", "organization", "url", "token", "expiresAt", "revision"] as const;
+    if (!keys.every((k) => typeof l[k] === "string" && l[k])) return null;
+    if (Number.isNaN(Date.parse(String(l.expiresAt)))) return null;
+    return Object.fromEntries(keys.map((k) => [k, String(l[k])])) as unknown as TursoLease;
+  } catch {
+    return null;
+  }
+}
+
+/** What Armada handed out for this command, with where each came from. */
+export interface ArmadaKeys {
+  linearApiKey: { value: string; detail: string } | null;
+  turso: { url: string; token: string; detail: string } | null;
+}
 
 /** An Armada's address as sign-ins are bound to it: origin and path, without a trailing slash. */
 export function armadaAddress(url: string): string {
@@ -107,6 +151,8 @@ export interface CredentialSources {
   personal?: PersonalConfig;
   /** Token from the GitHub CLI (`gh auth token`); called only when the environment has none. */
   ghToken?: () => string | null;
+  /** The organization's keys from Armada, when this terminal is signed in to one that keeps them. */
+  armada?: ArmadaKeys | null;
 }
 
 const clean = (v: string | null | undefined) => v?.trim() || null;
@@ -119,11 +165,13 @@ const fromEnv = (env: CredentialSources["env"], variable: string): Found => {
 };
 
 /**
- * Linear: LINEAR_API_KEY, then the credentials file. Turso: ARMADA_TURSO_URL and
- * ARMADA_TURSO_TOKEN, then the credentials file (the URL also from config.toml
- * `turso.url`). GitHub: GITHUB_TOKEN, then GH_TOKEN, then `gh auth token`.
+ * Linear: LINEAR_API_KEY, then Armada, then the credentials file. Turso:
+ * ARMADA_TURSO_URL and ARMADA_TURSO_TOKEN, then Armada (URL and token as a
+ * pair, only when the environment sets neither), then the credentials file
+ * (the URL also from config.toml `turso.url`). GitHub: GITHUB_TOKEN, then
+ * GH_TOKEN, then `gh auth token`.
  */
-export function resolveCredentials({ env, store = {}, personal, ghToken }: CredentialSources): Credentials {
+export function resolveCredentials({ env, store = {}, personal, ghToken, armada }: CredentialSources): Credentials {
   const fromStore = (variable: string): Found => {
     const value = clean(store[variable]);
     return value ? { value, source: { kind: "store" } } : null;
@@ -157,12 +205,21 @@ export function resolveCredentials({ env, store = {}, personal, ghToken }: Crede
       : storedKey && here
         ? { kind: "api-key", key: storedKey.value, source: storedKey.source }
         : null;
+  const fromArmada = (value: string | undefined, detail: string | undefined): Found =>
+    value && detail ? { value, source: { kind: "armada", detail } } : null;
+  // A URL from one place and a token from another would open no database: Armada gives both, or neither.
+  const tursoPair =
+    armada?.turso && !fromEnv(env, "ARMADA_TURSO_URL") && !fromEnv(env, "ARMADA_TURSO_TOKEN") ? armada.turso : null;
   const found: Record<CredentialName, Found> = {
-    linearApiKey: stored("LINEAR_API_KEY"),
+    linearApiKey:
+      fromEnv(env, "LINEAR_API_KEY") ??
+      fromArmada(armada?.linearApiKey?.value, armada?.linearApiKey?.detail) ??
+      fromStore("LINEAR_API_KEY"),
     tursoUrl:
+      fromArmada(tursoPair?.url, tursoPair?.detail) ??
       stored("ARMADA_TURSO_URL") ??
       (tursoUrlConfig ? { value: tursoUrlConfig, source: { kind: "config", key: "turso.url" } } : null),
-    tursoToken: stored("ARMADA_TURSO_TOKEN"),
+    tursoToken: fromArmada(tursoPair?.token, tursoPair?.detail) ?? stored("ARMADA_TURSO_TOKEN"),
     githubToken: fromEnv(env, "GITHUB_TOKEN") ?? fromEnv(env, "GH_TOKEN") ?? fromGh(),
   };
   return {
@@ -188,5 +245,5 @@ export const missingKeys = (credentials: Credentials): StoredKey[] =>
 
 /** The sentence a command prints when a required key is missing. Names the variable, never a value. */
 export function missingKeyMessage(key: StoredKey): string {
-  return `${key.variable} is not set. Set it in the environment, or run \`armada auth login\` to store it on this machine (${key.hint}).`;
+  return `${key.variable} is not set. Set it in the environment, run \`armada auth login\` to store it on this machine (${key.hint}), or sign in with \`armada login\` to an Armada that keeps your organization's keys.`;
 }

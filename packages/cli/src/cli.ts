@@ -121,7 +121,7 @@ Options:
 ${TICKET_HELP}  -h, --help        Show this help; \`armada <command> --help\` shows one command
   -v, --version     Print the version
 
-Keys (the environment always wins over the file):
+Keys (the environment first, then Armada when signed in, then the file):
   LINEAR_API_KEY       Linear API key (required by status, init, brief, claim, report,
                        release, ask and answer)
   ARMADA_TURSO_URL     Turso database URL (required by init, inbox and status --all;
@@ -135,7 +135,8 @@ Keys (the environment always wins over the file):
 Files:
   $XDG_CONFIG_HOME/armada (default ~/.config/armada)
     credentials        KEY=value lines, mode 0600, written by \`armada auth login\` and
-                       \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
+                       \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY; the
+                       Turso token Armada made for this terminal: ARMADA_TURSO_LEASE)
     config.toml        personal defaults: language, [turso] url, [dashboard] url, [api] url
 `;
 

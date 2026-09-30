@@ -160,7 +160,7 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 **Deploy on Vercel.** Create a project from this repository and set these options:
 
 - Root Directory: `packages/dashboard`, with files outside the root directory included (the default). The framework preset is Next.js, and Bun installs the workspace from `bun.lock`.
-- Environment variables: the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
+- Environment variables: the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. With accounts and the vault (`ARMADA_SECRETS_KEY`, see [Keys kept in Armada](#keys-kept-in-armada)), the last four move to the Keys page and are only a fallback here. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
 - The keys stay on the server; the browser only receives the fleet reading.
 
 **Accounts.** People sign in with GitHub (or email and password where enabled) and belong to organizations, with the roles owner, admin and member. Accounts, sessions, organizations and invitations live in a libSQL database of their own, separate from the fleet's Turso database; its schema is applied on first use. Accounts turn on only when every required variable below is set. With none of them set, the shared password applies, unchanged; with some but not all, the dashboard fails closed (503, naming the missing ones) rather than fall back to a password that shows every organization's projects.
@@ -179,6 +179,19 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 - An owner or admin invites by email from the Organization page (the name in the top bar). No email provider is plugged in yet: messages (invitations, address confirmations) go to the server log, and the Organization page shows each pending invitation's link to copy and send. The invited person signs in with that address and accepts.
 - Sessions are HttpOnly, SameSite=Lax cookies (Secure over https) valid 30 days; a revoked session can last up to five minutes (signed cookie cache). Without its accounts database the dashboard fails closed (503).
 - Terminals sign in too (see [Sign in from a terminal](#sign-in-from-a-terminal)): `armada login` shows a code that the person confirms on the dashboard's `/device` page, and owners create API keys for headless coordinators on the Organization page. A key is shown once, belongs to the organization, and revoking it signs out whatever uses it. The CLI calls only `/api/cli/*`; without accounts those routes refuse with the next step.
+
+**Keys kept in Armada.** With accounts, the organization's keys can live in Armada instead of on every machine: an owner or admin enters them once on the Keys page (Organization > Keys), and every signed-in terminal receives what it needs (see [Keys](#keys)). It turns on with one more variable:
+
+| Variable | What |
+| --- | --- |
+| `ARMADA_SECRETS_KEY` | The vault's master key: 32 random bytes in base64 or hex, `openssl rand -base64 32`. It stays in the deployment's environment, never in a database. Changing it makes every stored key unreadable (the Keys page asks to enter them again) |
+
+- The Keys page holds the Linear API key; the Turso access: a Platform API token (`turso auth api-tokens mint armada`) with the Turso organization and database names, or, without one, the database URL and a database token; and a GitHub token for the dashboard's own reads. Each member may add their own Linear key: their terminals use it, so the comments they post carry their name.
+- Values are write-only: once saved, a secret is never shown again, only who set it and when. Each value is sealed with AES-256-GCM under its own data key, itself sealed by the master key, and bound to its organization, person and name.
+- A signed-in terminal (a session of `armada login` or an organization API key) calls `POST /api/cli/credentials`. It receives the Linear key (the person's own first) and a Turso database token made for it through the Turso Platform API, which expires after 4 hours and is renewed without asking. Without a Platform token, the stored database token is handed out as is, and the audit list says so. Answers are never cached; a terminal asking more than 30 times a minute is refused for a minute.
+- Every change and every key handed out is in the audit list at the bottom of the Keys page (owners and admins): who, which key, when; never a value.
+- The dashboard reads each organization's fleet with that organization's keys from the vault, each missing one from its environment variables; once they are all on the Keys page, its environment shrinks to the accounts variables and `ARMADA_SECRETS_KEY`. A Turso database given on the Keys page is the organization's own: the projects registered in it belong to that organization, and, unless it is the deployment's first organization, it is read with none of the environment's keys (nor `ARMADA_REPOSITORIES`), since its registry could name any repository.
+- Without `ARMADA_SECRETS_KEY` (or under the shared password), nothing changes: the Keys page says how to turn the vault on, the CLI's call answers 503 with that next step, and terminals keep their own keys.
 
 **Switch from the shared password to accounts** (a deployment that runs on `ARMADA_DASHBOARD_PASSWORD` keeps working until the redeploy of step 4; set every variable before it, since a partial set locks the dashboard):
 
@@ -216,7 +229,9 @@ armada logout    # revokes this terminal's session and removes it from the machi
 
 ## Keys
 
-Armada needs a few keys. Set them up once per machine with `armada auth login`, or pass them as environment variables, which always win over the stored ones (the way to go in CI and cloud sandboxes).
+Armada needs a few keys. A terminal signed in to an Armada that keeps its organization's keys ([Keys kept in Armada](#keys-kept-in-armada)) needs none on the machine: `armada login`, then `armada status`. Otherwise set them up once per machine with `armada auth login`, or pass them as environment variables (the way to go in CI and cloud sandboxes).
+
+Each key comes from the environment first, then from Armada when signed in, then from the credentials file. Armada is asked only for what the environment does not set, on each command that needs keys, so a key replaced on the Keys page takes effect on the next command. The Linear key it gives stays in memory; the Turso token it makes for the terminal is kept in the credentials file (`ARMADA_TURSO_LEASE`, with its expiry) and renewed when less than an hour is left. When Armada cannot be reached, the command warns and goes on with the machine's keys (and the Turso token kept earlier, until it expires). `armada logout` and `armada auth logout` remove the kept token.
 
 | Variable | What | Needed by |
 | --- | --- | --- |
@@ -226,7 +241,7 @@ Armada needs a few keys. Set them up once per machine with `armada auth login`, 
 | `GITHUB_TOKEN` or `GH_TOKEN` | GitHub token; otherwise `gh auth token` is used | pull requests and CI |
 
 - `armada auth login` asks only for the keys that are missing, with hidden input for tokens, and stores them in `~/.config/armada/credentials` (or `$XDG_CONFIG_HOME/armada/credentials`), mode 0600 in a 0700 directory. Without a terminal it asks nothing and lists the variables to set instead.
-- `armada auth status [--json]` shows which keys are set and where each comes from. It never prints a value.
+- `armada auth status [--json]` shows which keys are set and where each comes from (for example `Armada: your own key`). It never prints a value.
 - `armada auth logout` removes Armada's keys from the file.
 
 The credentials file is a plain dotenv file (`KEY=value` lines, `#` comments) that a shell can also `source`. You may edit it by hand; Armada keeps your other lines and comments when it updates it. GitHub tokens are not stored there: use the environment or `gh auth login`.

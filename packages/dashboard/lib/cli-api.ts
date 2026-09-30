@@ -1,5 +1,6 @@
 // The Armada API the CLI calls, under /api/cli: signing in from a terminal
-// (Better Auth's device authorization), who is signed in, and signing out.
+// (Better Auth's device authorization), who is signed in, signing out, and
+// the organization's keys from the vault (`POST credentials`, THE-840).
 // A terminal holds either a session token from `armada login` (sent as
 // `Authorization: Bearer`) or an organization API key (`x-api-key`); it never
 // holds the browser's cookie. Both proxy gates let /api/cli through: each
@@ -9,6 +10,8 @@
 import type { Client } from "@libsql/client";
 import { type Auth, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
+import { type Fetch, type HeldTurso, type Holder, releaseCredentials } from "./broker";
+import { SECRETS_KEY_VARIABLE, type VaultMode } from "./vault";
 
 export interface CliAccounts {
   auth: Auth;
@@ -19,6 +22,10 @@ export interface CliAccounts {
 export interface CliApiDeps {
   /** The deployment's accounts; null while it runs on the shared password. Throws when they cannot be opened. */
   accounts: () => Promise<CliAccounts | null>;
+  /** The vault's master key; off, `POST credentials` answers 503 and the CLI keeps its local keys. */
+  vault?: () => VaultMode;
+  /** Reaches the Turso Platform API. */
+  fetch?: Fetch;
   now?: () => Date;
 }
 
@@ -35,7 +42,8 @@ export interface CliIdentity {
   expiresAt: string | null;
 }
 
-const NO_STORE = { "Cache-Control": "no-store" };
+// Keys pass through these answers: no cache, anywhere, may keep one.
+const NO_STORE = { "Cache-Control": "no-store", Pragma: "no-cache" };
 const LOGIN = "armada login";
 
 const refuse = (status: number, error: string, next: string) =>
@@ -118,6 +126,73 @@ async function identify(a: CliAccounts, credential: Credential, now: Date): Prom
   };
 }
 
+/** Who receives the keys, as the audit list names them. */
+function holderOf(identity: CliIdentity): Holder | null {
+  const organization = identity.organization;
+  if (!organization) return null;
+  const org = { id: organization.id, name: organization.name, slug: organization.slug };
+  if (identity.via === "api-key") {
+    const key = identity.apiKey;
+    return {
+      actor: { kind: "api-key", id: key?.id ?? "", label: `API key "${key?.name ?? key?.start ?? "?"}"` },
+      organization: org,
+      user: null,
+    };
+  }
+  const user = identity.user;
+  if (!user) return null;
+  const label = user.name && user.name !== user.email ? `${user.name} <${user.email}>` : user.email;
+  return { actor: { kind: "session", id: user.id, label }, organization: org, user: user.id };
+}
+
+/** The Turso token the terminal holds, as it describes it (never the token itself). */
+function heldOf(body: Record<string, unknown>): HeldTurso | null {
+  const t = body.turso as Record<string, unknown> | null | undefined;
+  if (!t || typeof t !== "object") return null;
+  return typeof t.revision === "string" && typeof t.expiresAt === "string"
+    ? { revision: t.revision.slice(0, 64), expiresAt: t.expiresAt.slice(0, 40) }
+    : null;
+}
+
+async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, now: Date): Promise<Response> {
+  const vault = deps.vault?.() ?? { kind: "off" };
+  if (vault.kind === "invalid") {
+    console.error(`armada dashboard: the vault is off: ${vault.reason}`);
+    return refuse(
+      503,
+      "this Armada's vault is misconfigured, so it hands out no key",
+      "ask its owner to fix ARMADA_SECRETS_KEY; until then, keep the keys in `armada auth login`",
+    );
+  }
+  if (vault.kind === "off")
+    return refuse(
+      503,
+      `this Armada keeps no keys (${SECRETS_KEY_VARIABLE} is not set)`,
+      "keep the keys in `armada auth login`, or ask its owner to set up the vault",
+    );
+  const identity = await identify(a, credentialOf(request), now);
+  if (identity instanceof Response) return identity;
+  const holder = holderOf(identity);
+  if (!holder)
+    return refuse(
+      403,
+      "this account is in no organization yet, so no key is handed out",
+      `accept an invitation, or create an organization, at ${new URL("/welcome", a.settings.baseUrl)}`,
+    );
+  const answer = await releaseCredentials(
+    { client: a.client, vault: vault.key, now: () => now, ...(deps.fetch ? { fetch: deps.fetch } : {}) },
+    holder,
+    heldOf(await jsonBody(request)),
+  );
+  if (!answer.ok) return refuse(429, "too many requests for keys in a minute", "the same command again in a minute");
+  const r = answer.release;
+  // Names what went out, never a value.
+  console.info(
+    `armada dashboard: keys released to ${holder.actor.label} (${holder.organization.slug}): linear ${r.linear?.scope ?? "none"}, turso ${r.turso?.kind ?? "none"}`,
+  );
+  return Response.json(r, { headers: NO_STORE });
+}
+
 /**
  * Hands a device-authorization call to Better Auth's own route, so its checks
  * and rate limit apply, with the CLI's client id. Cookies never go back: the
@@ -188,6 +263,7 @@ export async function handleCli(request: Request, path: string[], deps: CliApiDe
     const identity = await identify(a, credentialOf(request), now);
     return identity instanceof Response ? identity : Response.json(identity, { headers: NO_STORE });
   }
+  if (route === "POST credentials") return credentials(a, request, deps, now);
   if (route === "DELETE session") {
     const credential = credentialOf(request);
     if (credential?.kind === "api-key")

@@ -1,6 +1,10 @@
-// Server wiring: keys from the environment (never sent to the browser), the
-// sources behind the Fleet view and the cache kept between polls.
+// Server wiring: the keys (never sent to the browser), the sources behind the
+// Fleet view and the cache kept between polls. With accounts and a vault
+// (THE-840), each organization's fleet is read with that organization's keys
+// from the vault, each missing one from the environment; otherwise every key
+// comes from the environment, as before.
 import "server-only";
+import { createHash } from "node:crypto";
 import {
   CONFIG_FILE,
   type FleetOverview,
@@ -12,10 +16,21 @@ import {
   resolveCredentials,
 } from "@armada/core/read";
 import { after } from "next/server";
-import { requireFleetAccess, scopeOf } from "./access";
+import { type Access, requireFleetAccess, scopeOf } from "./access";
+import { accounts } from "./accounts-server";
+import { type DashboardTursoCache, type FleetKeys, fleetKeysOf, organizationKeys } from "./broker";
 import { demoSources } from "./demo/sources";
-import { type FleetCache, type LoadOptions, loadOverview, newCache, type ProjectRef, type Sources } from "./fleet-data";
+import {
+  type FleetCache,
+  type LoadOptions,
+  loadOverview,
+  newCache,
+  type ProjectRef,
+  type Scope,
+  type Sources,
+} from "./fleet-data";
 import { isLanguage, type Language } from "./i18n";
+import { vaultModeOf } from "./vault";
 
 /** Comma- or space-separated owner/name list, shown when the registry cannot be read. */
 function repositoriesFromEnv(): ProjectRef[] {
@@ -25,12 +40,30 @@ function repositoriesFromEnv(): ProjectRef[] {
     .map((repository) => ({ repository }));
 }
 
-function realSources(): Sources {
+function envKeys(): FleetKeys {
   const keys = resolveCredentials({ env: process.env });
-  const linearApiKey = keys.linearApiKey;
   return {
-    openLive: async () => (keys.tursoUrl ? openTurso({ url: keys.tursoUrl, token: keys.tursoToken }) : null),
-    fallbackProjects: repositoriesFromEnv,
+    linearApiKey: keys.linearApiKey,
+    githubToken: keys.githubToken,
+    turso: keys.tursoUrl ? { url: keys.tursoUrl, token: keys.tursoToken } : null,
+    envRepositories: true,
+  };
+}
+
+function realSources(keys: FleetKeys): Sources {
+  const { linearApiKey, turso } = keys;
+  return {
+    openLive: async () => (turso ? openTurso(turso) : null),
+    // A fingerprint: a replaced or renewed token reopens the client.
+    ...(turso
+      ? {
+          liveKey: createHash("sha256")
+            .update(`${turso.url}\n${turso.token ?? ""}`)
+            .digest("hex")
+            .slice(0, 16),
+        }
+      : {}),
+    fallbackProjects: keys.envRepositories ? repositoriesFromEnv : () => [],
     readConfig: async (p) => {
       if (p.slug && p.name && p.programRoot)
         return readProjectConfig(
@@ -60,25 +93,58 @@ const seconds = (value: string | undefined, fallback: number) => {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 };
 
-// One cache per server process, kept across requests (and across hot reloads in development).
-const globalCache = globalThis as unknown as { __armadaFleet?: FleetCache };
+// One cache per fleet read with its own keys, per server process, kept across
+// requests (and across hot reloads in development): "env", or one per
+// organization once the vault is on. The Turso tokens made for the dashboard
+// are kept here too, until they near expiry.
+const globalCache = globalThis as unknown as {
+  __armadaFleets?: Map<string, FleetCache>;
+  __armadaDashboardTurso?: DashboardTursoCache;
+};
 
-/** How every read and request of this server process reaches the sources. Callers check the session first. */
-export function loadOptions(): LoadOptions {
-  globalCache.__armadaFleet ??= newCache();
+/** The keys of the viewer's fleet: with a vault, the organization's, then the environment's (`fleetKeysOf`). */
+async function keysOf(access: Access): Promise<{ id: string; keys: FleetKeys; scope: Scope | null }> {
+  const env = envKeys();
+  const scope = scopeOf(access);
+  const vault = vaultModeOf(process.env);
+  if (access.kind !== "account" || vault.kind !== "on") return { id: "env", keys: env, scope };
+  const a = await accounts();
+  if (!a) return { id: "env", keys: env, scope };
+  globalCache.__armadaDashboardTurso ??= new Map();
+  const organization = access.viewer.organization.id;
+  const own = await organizationKeys(
+    { client: a.client, vault: vault.key, cache: globalCache.__armadaDashboardTurso },
+    organization,
+  );
+  return { id: `org:${organization}`, ...fleetKeysOf(own, env, organization, scope) };
+}
+
+/** How the viewer's reads and requests reach the sources, and whose projects they see. Checks access first. */
+export async function fleetOf(access?: Access): Promise<{ opts: LoadOptions; scope: Scope | null }> {
+  const { id, keys, scope } = await keysOf(access ?? (await requireFleetAccess()));
+  globalCache.__armadaFleets ??= new Map();
+  let cache = globalCache.__armadaFleets.get(id);
+  if (!cache) {
+    cache = newCache();
+    globalCache.__armadaFleets.set(id, cache);
+  }
   const demo = process.env.ARMADA_DASHBOARD_DEMO;
   return {
-    sources: demo ? demoSources(demo, realSources()) : realSources(),
-    cache: globalCache.__armadaFleet,
-    now: () => new Date(),
-    snapshotMs: seconds(process.env.ARMADA_DASHBOARD_SNAPSHOT_SECONDS, 60) * 1000,
-    background: (work) => after(() => work),
+    opts: {
+      sources: demo ? demoSources(demo, realSources(keys)) : realSources(keys),
+      cache,
+      now: () => new Date(),
+      snapshotMs: seconds(process.env.ARMADA_DASHBOARD_SNAPSHOT_SECONDS, 60) * 1000,
+      background: (work) => after(() => work),
+    },
+    scope,
   };
 }
 
 /** The Fleet overview the viewer may read: their organization's projects, or every project under the password gate. */
 export async function getOverview(): Promise<FleetOverview> {
-  return loadOverview(loadOptions(), scopeOf(await requireFleetAccess()));
+  const { opts, scope } = await fleetOf();
+  return loadOverview(opts, scope);
 }
 
 /**

@@ -366,6 +366,25 @@ export interface ArmadaCall {
   path: string;
   authorization: string | null;
   apiKey: string | null;
+  body: unknown;
+}
+
+/**
+ * The organization's keys the fake Armada hands out on `POST credentials`.
+ * `turso: "mint"` makes a numbered token for `tursoUrl` that expires after 4
+ * hours of `now`, kept while more than an hour is left and `revision` has not
+ * changed; `"stored"` hands out a stored database token; `null` gives none.
+ * `off` plays an Armada without a vault (503).
+ */
+export interface FakeVault {
+  off?: boolean;
+  linear: { apiKey: string; scope: "own" | "organization" } | null;
+  turso: "mint" | "stored" | null;
+  tursoUrl: string;
+  revision: string;
+  now: () => Date;
+  minted: number;
+  warnings?: string[];
 }
 
 /**
@@ -376,7 +395,7 @@ export interface ArmadaCall {
  * `accounts: false` plays a deployment still on the shared password.
  */
 export function fakeArmada(
-  o: { polls?: string[]; token?: string; keys?: Record<string, string>; accounts?: boolean } = {},
+  o: { polls?: string[]; token?: string; keys?: Record<string, string>; accounts?: boolean; vault?: FakeVault } = {},
 ) {
   const token = o.token ?? "session-token-1";
   const polls = [...(o.polls ?? ["pending", "approve"])];
@@ -391,6 +410,7 @@ export function fakeArmada(
       path: url.slice(`${ARMADA_URL}/api/cli/`.length),
       authorization: headers.get("authorization"),
       apiKey: headers.get("x-api-key"),
+      body: init.body ? JSON.parse(String(init.body)) : null,
     };
     calls.push(call);
     if (o.accounts === false)
@@ -430,6 +450,39 @@ export function fakeArmada(
         ? "this Armada API key is not valid: it was revoked, or never existed"
         : "the Armada sign-in of this terminal has expired or was revoked";
       return Response.json({ error, next: "armada login" }, { status: 401 });
+    }
+    if (route === "POST credentials") {
+      const v = o.vault;
+      if (!v || v.off)
+        return Response.json({ error: "this Armada keeps no keys", next: "armada auth login" }, { status: 503 });
+      if (!(bearer && sessions.has(bearer)) && !(call.apiKey && keys.has(call.apiKey)))
+        return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
+      const held = (call.body as { turso: { revision: string; expiresAt: string } | null }).turso;
+      const now = v.now().getTime();
+      let turso: unknown = null;
+      if (v.turso === "stored")
+        turso = { kind: "stored", url: v.tursoUrl, token: "stored-db-token", expiresAt: null, revision: v.revision };
+      else if (v.turso === "mint") {
+        if (held && held.revision === v.revision && Date.parse(held.expiresAt) - now > 3_600_000)
+          turso = { kind: "kept", expiresAt: held.expiresAt, revision: v.revision };
+        else {
+          v.minted++;
+          turso = {
+            kind: "minted",
+            url: v.tursoUrl,
+            token: `minted-turso-token-${v.minted}`,
+            expiresAt: new Date(now + 4 * 3_600_000).toISOString(),
+            revision: v.revision,
+          };
+        }
+      }
+      return Response.json({
+        schemaVersion: 1,
+        organization: { id: "org-1", name: "Acme", slug: "acme" },
+        linear: v.linear,
+        turso,
+        warnings: v.warnings ?? [],
+      });
     }
     if (route === "DELETE session") {
       if (bearer) sessions.delete(bearer);
