@@ -22,6 +22,8 @@ export interface ArmadaConfig {
       phaseGroup: string;
       /** Single-select label group holding the agent runtime. */
       runtimeGroup: string;
+      /** Values of the runtime group, one per agent runtime the fleet uses. */
+      runtimes: string[];
     };
   };
   github: {
@@ -46,6 +48,7 @@ export const CONFIG_DEFAULTS = {
   readyLabel: "ready-for-agent",
   phaseGroup: "Agent phase",
   runtimeGroup: "Agent runtime",
+  runtimes: ["Claude Code", "Codex", "Conductor"],
   silentAfterMinutes: 15,
 } as const;
 
@@ -131,13 +134,21 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
     ["tracker", tracker, ["program_root", "language", "ready_label", "labels"]],
-    ["tracker.labels", labelsT, ["phase_group", "runtime_group"]],
+    ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["gates", gatesT, ["required_checks"]],
     ["policy", policyT, ["silence_minutes", "silent_after_minutes"]],
   ];
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
+
+  let runtimes: string[] = [...CONFIG_DEFAULTS.runtimes];
+  if (labelsT.runtimes !== undefined) {
+    const v = labelsT.runtimes;
+    if (Array.isArray(v) && v.length && v.every((x) => typeof x === "string" && x.trim()))
+      runtimes = [...new Set(v.map((x: string) => x.trim()))];
+    else problems.push(`"tracker.labels.runtimes" must be a non-empty list of names`);
+  }
 
   // `silent_after_minutes` is the first name of `silence_minutes`, still accepted.
   const silenceKey = policyT.silence_minutes !== undefined ? "silence_minutes" : "silent_after_minutes";
@@ -173,6 +184,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       labels: {
         phaseGroup: str(labelsT, "tracker.labels", "phase_group", { default: CONFIG_DEFAULTS.phaseGroup }),
         runtimeGroup: str(labelsT, "tracker.labels", "runtime_group", { default: CONFIG_DEFAULTS.runtimeGroup }),
+        runtimes,
       },
     },
     github: {
@@ -184,4 +196,44 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   if (problems.length) throw new ConfigError(source, problems);
   config.tracker.programRoot = config.tracker.programRoot.toUpperCase();
   return config;
+}
+
+/** A commented armada.toml for a new project; `parseConfig` accepts it as is. */
+export function configTemplate(p: { name: string; slug: string; programRoot: string; repository: string }): string {
+  const q = JSON.stringify;
+  return `# Armada configuration: one project = one repository + one tracker program root.
+# No secrets here: keys come from the environment or \`armada auth login\`.
+
+[project]
+name = ${q(p.name)}
+slug = ${q(p.slug)}          # stable id: lowercase letters, digits and dashes
+
+[tracker]
+program_root = ${q(p.programRoot)}  # Linear issue at the root of the program
+language = "en"          # language of owner-facing output
+ready_label = "ready-for-agent"
+
+[tracker.labels]
+phase_group = "Agent phase"
+runtime_group = "Agent runtime"
+runtimes = ["Claude Code", "Codex", "Conductor"]
+
+[github]
+repository = ${q(p.repository)}
+
+[policy]
+silent_after_minutes = 15
+`;
+}
+
+/** A project slug from any name: lowercase letters, digits and single dashes. */
+export function slugify(name: string): string {
+  return (
+    name
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "project"
+  );
 }

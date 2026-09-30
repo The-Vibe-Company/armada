@@ -12,7 +12,10 @@ import {
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
+import { doctor } from "./doctor.ts";
+import { init } from "./init.ts";
 import { type Io, UsageError } from "./io.ts";
+import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
 import { claim, release, report, statusEvents } from "./worker.ts";
 
@@ -23,6 +26,12 @@ export const USAGE = `Usage: armada <command> [options]
 
 Commands:
   status            Tickets in flight, tickets ready to start and pull requests waiting
+  status --all      The same for every project registered by \`armada init\`
+  doctor            What this repository lacks to be run by Armada, with the fix for each
+  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>]
+                    Open one pull request that installs or updates it all, create the
+                    missing Linear labels and register the project. The options are for
+                    a repository without armada.toml (Linear issue at the program root)
   claim <ticket> --runtime <name> --handle <id> [--branch <name>]
                     Claim a ticket for this worker: In Progress, phase planning, runtime
                     label and an Agent claim comment; refused if another worker holds it
@@ -45,8 +54,9 @@ Options:
   -v, --version     Print the version
 
 Keys (the environment always wins over the file):
-  LINEAR_API_KEY       Linear API key (required by status, claim, report, release)
-  ARMADA_TURSO_URL     Turso database URL (live activity; optional, a file: URL works locally)
+  LINEAR_API_KEY       Linear API key (required by status, init, claim, report, release)
+  ARMADA_TURSO_URL     Turso database URL (required by init and status --all; optional
+                       elsewhere; a file: URL works locally)
   ARMADA_TURSO_TOKEN   Turso database token
   GITHUB_TOKEN         GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
 
@@ -61,6 +71,7 @@ interface Args {
   /** Positional arguments after the command. */
   rest: string[];
   json: boolean;
+  all: boolean;
   config: string | null;
   help: boolean;
   version: boolean;
@@ -68,12 +79,26 @@ interface Args {
   options: Record<string, string>;
 }
 
-const VALUE_OPTIONS = ["runtime", "handle", "branch", "ticket", "message", "message-file", "pr", "sha", "reason"];
+const VALUE_OPTIONS = [
+  "runtime",
+  "handle",
+  "branch",
+  "ticket",
+  "message",
+  "message-file",
+  "pr",
+  "sha",
+  "reason",
+  "program-root",
+  "name",
+  "slug",
+];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch"],
   report: ["ticket", "message", "message-file", "pr", "sha"],
   release: ["ticket", "reason"],
+  init: ["program-root", "name", "slug"],
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -81,6 +106,7 @@ export function parseArgs(argv: string[]): Args {
     command: null,
     rest: [],
     json: false,
+    all: false,
     config: null,
     help: false,
     version: false,
@@ -91,6 +117,7 @@ export function parseArgs(argv: string[]): Args {
     const named = a?.match(/^--([a-z-]+)(?:=([\s\S]*))?$/);
     const name = named?.[1];
     if (a === "--json") args.json = true;
+    else if (a === "--all") args.all = true;
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
     else if (name && (name === "config" || VALUE_OPTIONS.includes(name))) {
@@ -161,6 +188,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     const allowed = COMMAND_OPTIONS[args.command] ?? [];
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
+    if (args.all && args.command !== "status") throw new UsageError(`--all does not apply to ${args.command}`);
     const worker = { claim, report, release }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config);
@@ -170,7 +198,20 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
     if (args.command === "status") {
       noExtra(args.rest);
-      return await status(io, args);
+      return await (args.all ? statusAll(io, args.json) : status(io, args));
+    }
+    if (args.command === "doctor") {
+      noExtra(args.rest);
+      return await doctor(io, args.json, version);
+    }
+    if (args.command === "init") {
+      noExtra(args.rest);
+      return await init(io, {
+        armadaVersion: version,
+        programRoot: args.options["program-root"] ?? null,
+        name: args.options.name ?? null,
+        slug: args.options.slug ?? null,
+      });
     }
     if (args.command === "auth") {
       const [sub, ...extra] = args.rest;

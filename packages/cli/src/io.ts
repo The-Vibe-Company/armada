@@ -1,5 +1,14 @@
 import type { Fetch, LinearWriter, LinearWriterOptions } from "@armada/core";
 
+export interface ExecResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+/** Runs a program (git, gh) without a shell and returns its exit code and output. */
+export type Exec = (command: string, args: string[], options: { cwd: string }) => Promise<ExecResult>;
+
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
   cwd: string;
@@ -24,6 +33,8 @@ export interface Io {
   readStdin?: () => Promise<string>;
   /** Replaces the Linear write adapter (tests use an in-memory fake). */
   linearWriter?: (options: LinearWriterOptions) => LinearWriter;
+  /** Runs git and gh; required by doctor and init. */
+  exec?: Exec;
 }
 
 /** A mistake in how the command was called or configured: exit code 2. */

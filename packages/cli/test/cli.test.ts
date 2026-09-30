@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { DEMO_TOML, NOW, recordedFetch } from "../../core/test/support.ts";
+import { afterEach, describe, expect, test } from "bun:test";
+import { GITHUB_GRAPHQL, LINEAR_ENDPOINT } from "../../core/src/index.ts";
+import { upsertProject } from "../../core/src/turso.ts";
+import { closeTempTurso, DEMO_TOML, NOW, recordedFetch, tempTurso } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
 
 function fakeIo(
@@ -105,5 +107,55 @@ Pull requests waiting (4)
     const { io, err } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML }, {});
     expect(await run(["status"], io)).toBe(2);
     expect(err()).toContain("LINEAR_API_KEY is not set");
+  });
+});
+
+describe("armada status --all", () => {
+  afterEach(closeTempTurso);
+
+  test("lists every registered project, each read with the armada.toml of its default branch", async () => {
+    const registry = await tempTurso();
+    await upsertProject(registry.db, {
+      slug: "widgets",
+      name: "Widgets",
+      repository: "acme/widgets",
+      programRoot: "DEMO-1",
+    });
+    await upsertProject(registry.db, {
+      slug: "gadgets",
+      name: "Gadgets",
+      repository: "acme/gadgets",
+      programRoot: "GADG-1",
+    });
+    const { io, out } = fakeIo({}, { LINEAR_API_KEY: "k", GITHUB_TOKEN: "t", ARMADA_TURSO_URL: registry.url });
+    const recorded = recordedFetch().fetch;
+    const configs: Record<string, string | null> = { "acme/widgets": DEMO_TOML, "acme/gadgets": null };
+    io.fetch = async (url, init) => {
+      const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
+      if (url === GITHUB_GRAPHQL && body.query.includes("query ArmadaConfig")) {
+        const text = configs[`${body.variables.owner}/${body.variables.name}`] ?? null;
+        return Response.json({ data: { repository: { object: text === null ? null : { text } } } });
+      }
+      // The second project's program root is gone from Linear.
+      if (url === LINEAR_ENDPOINT && body.variables.id === "GADG-1") return Response.json({ data: { issue: null } });
+      return recorded(url, init);
+    };
+    expect(await run(["status", "--all", "--json"], io)).toBe(1);
+    const all = JSON.parse(out());
+    expect(
+      all.projects.map((p: { slug: string; error: string | null; configWarning: string | null }) => [
+        p.slug,
+        p.error,
+        p.configWarning,
+      ]),
+    ).toEqual([
+      [
+        "gadgets",
+        "Linear: program root GADG-1 not found",
+        "armada.toml not read (not on the default branch of acme/gadgets); using the registry record with default labels and policy",
+      ],
+      ["widgets", null, null],
+    ]);
+    expect(all.projects[1].report.inFlight.map((t: { id: string }) => t.id)).toEqual(["DEMO-18", "DEMO-16", "DEMO-11"]);
   });
 });

@@ -56,3 +56,6 @@ jobs:
           echo "armada --version: $actual"
           test "$actual" = "$expected"
           npx --no-install armada status --help | grep -q '^Usage: armada'
+          # The skills are inlined in the bundle: doctor must run and name them.
+          doctor=$(npx --no-install armada doctor --json || true)
+          echo "$doctor" | grep -q '"skill:armada-worker"'

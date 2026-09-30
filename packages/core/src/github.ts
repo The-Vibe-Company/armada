@@ -200,3 +200,41 @@ export function attachPullRequests(program: ProgramData, forge: ForgeData | null
     return { ...issue, prs: prs.sort((a, b) => a.number - b.number) };
   });
 }
+
+const FILE_QUERY = /* GraphQL */ `
+  query ArmadaConfig($owner: String!, $name: String!, $expression: String!) {
+    repository(owner: $owner, name: $name) { object(expression: $expression) { ... on Blob { text } } }
+  }`;
+
+export interface FetchFileOptions {
+  token: string;
+  /** owner/name */
+  repository: string;
+  /** Path from the repository root, e.g. armada.toml. */
+  path: string;
+  fetch?: Fetch;
+  timeoutMs?: number;
+}
+
+/** Text of a file on the repository's default branch, or null when the file does not exist there. */
+export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<string | null> {
+  const [owner, name] = opts.repository.split("/");
+  const doFetch = opts.fetch ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const res = await doFetch(GITHUB_GRAPHQL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
+    body: JSON.stringify({ query: FILE_QUERY, variables: { owner, name, expression: `HEAD:${opts.path}` } }),
+    signal: AbortSignal.timeout(timeoutMs),
+  }).catch((err: unknown) => {
+    throw new GithubError(`GitHub API unreachable: ${networkReason(err, timeoutMs)}`);
+  });
+  if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
+  const json = (await res.json()) as {
+    data?: { repository: { object: { text?: string | null } | null } | null };
+    errors?: { message: string }[];
+  };
+  if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
+  if (!json.data?.repository) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
+  return json.data.repository.object?.text ?? null;
+}
