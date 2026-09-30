@@ -1,0 +1,23 @@
+AGENTS.md
+  s_d658e7251951c2::t_a7696dafe80274 9,19
+README.md
+  s_d658e7251951c2::t_18071121e0b746 132,137,151-158,162,165-189,194
+packages/dashboard/app/globals.css
+  s_d658e7251951c2::t_5d0212311e6ba1 1508-1512
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e35fa1732a55a079c1762118ae709ef893475ebb",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
