@@ -81,15 +81,59 @@ describe("fetchProgram", () => {
     expect(queries.slice(1).some((q) => q.includes("delegate"))).toBe(false);
   });
 
-  test("a read cut short by a cap is reported as a warning instead of passing silently", async () => {
-    const { fetch } = recordedFetch({
+  test("relations longer than one page are read to the end, so a blocker on the last page still counts", async () => {
+    const relation = (n: number, type = "blocks", state = "completed") => ({
+      type,
+      issue: { identifier: `DEMO-${n}`, state: { type: state } },
+    });
+    const page = (nodes: unknown[], endCursor: string | null) => ({
+      data: { issue: { inverseRelations: { pageInfo: { hasNextPage: !!endCursor, endCursor }, nodes } } },
+    });
+    const { fetch, calls } = recordedFetch({
       linear: (r) => {
         const kid = r.Children[2]?.data.issues.nodes.find((n) => n.identifier === "DEMO-13");
-        if (kid) kid.inverseRelations.pageInfo.hasNextPage = true;
+        if (!kid) throw new Error("fixture has no DEMO-13");
+        // First page as the tree query returns it: 50 relations, one of them a blocker.
+        (kid.inverseRelations.nodes as unknown[]).push(
+          ...Array.from({ length: 49 }, (_, k) => relation(200 + k, "related")),
+        );
+        Object.assign(kid.inverseRelations.pageInfo, { hasNextPage: true, endCursor: "r1" });
+        (r as Record<string, unknown[]>).MoreRelations = [
+          page(
+            Array.from({ length: 100 }, (_, k) => relation(300 + k)),
+            "r2",
+          ),
+          page([...Array.from({ length: 19 }, (_, k) => relation(400 + k)), relation(499, "blocks", "started")], null),
+        ];
       },
     });
     const program = await fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch });
-    expect(program.warnings).toEqual(["DEMO-13: more relations than Armada reads; some are ignored"]);
+
+    expect(calls.filter((c) => c.operation === "MoreRelations").map((c) => c.variables)).toEqual([
+      { id: "DEMO-13", after: "r1" },
+      { id: "DEMO-13", after: "r2" },
+    ]);
+    const blockedBy = program.issues.find((i) => i.id === "DEMO-13")?.blockedBy ?? [];
+    expect(blockedBy).toHaveLength(1 + 100 + 20);
+    expect(blockedBy).toContainEqual({ id: "DEMO-499", statusType: "started" });
+    expect(program.warnings).toEqual([]);
+  });
+
+  test("a failed read of a later page is a warning that keeps what was read", async () => {
+    const { fetch } = recordedFetch({
+      linear: (r) => {
+        const kid = r.Children[2]?.data.issues.nodes.find((n) => n.identifier === "DEMO-13");
+        if (kid) Object.assign(kid.inverseRelations.pageInfo, { hasNextPage: true, endCursor: "r1" });
+        (r as Record<string, unknown[]>).MoreRelations = [{ errors: [{ message: "Query too complex" }] }];
+      },
+    });
+    const program = await fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch });
+    expect(program.warnings).toEqual([
+      "DEMO-13: could not read all its relations (Linear API: Query too complex); some may be missing",
+    ]);
+    expect(program.issues.find((i) => i.id === "DEMO-13")?.blockedBy).toEqual([
+      { id: "DEMO-10", statusType: "completed" },
+    ]);
   });
 
   test("a request with no answer before the timeout fails naming Linear", async () => {
