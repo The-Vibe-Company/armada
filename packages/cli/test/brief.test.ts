@@ -272,7 +272,7 @@ describe("armada brief", () => {
     const b = briefIo();
     expect(await run(["brief", "DEMO-13", "--profile", "codex"], b.io)).toBe(2);
     expect(b.err()).toBe(
-      'armada: DEMO-13 is routed to "opus" by rule 1 of [[conductor.routing]] (label "Web"); say why "codex" instead with --reason "<why>"\n',
+      'armada: DEMO-13 is routed to "opus" by rule 1 of [[conductor.routing]] (label "Web"); say why "codex" instead with --reason "<why>"\nNext: armada brief --help\n',
     );
     expect(b.out()).toBe("");
   });
@@ -280,7 +280,7 @@ describe("armada brief", () => {
   test("an unknown profile is a usage error, before any request", async () => {
     const b = briefIo();
     expect(await run(["brief", "DEMO-13", "--profile", "turbo"], b.io)).toBe(2);
-    expect(b.err()).toBe('armada: no Conductor profile "turbo" (available: opus, codex)\n');
+    expect(b.err()).toBe('armada: no Conductor profile "turbo" (available: opus, codex)\nNext: armada brief --help\n');
     expect(b.calls).toEqual([]);
   });
 });

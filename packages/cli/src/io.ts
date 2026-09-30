@@ -1,4 +1,10 @@
-import type { Fetch, LinearWriter, LinearWriterOptions } from "@armada/core";
+import {
+  type Fetch,
+  type LinearWriter,
+  type LinearWriterOptions,
+  missingKeyMessage,
+  type StoredKey,
+} from "@armada/core";
 
 export interface ExecResult {
   code: number;
@@ -39,5 +45,18 @@ export interface Io {
   exec?: Exec;
 }
 
-/** A mistake in how the command was called or configured: exit code 2. */
-export class UsageError extends Error {}
+/**
+ * A mistake in how the command was called or configured: exit code 2. `next`
+ * is the command to run next; without one, the command's own help is named.
+ */
+export class UsageError extends Error {
+  constructor(
+    message: string,
+    readonly next: string | null = null,
+  ) {
+    super(message);
+  }
+}
+
+/** A key the command needs is not set: `armada auth login` stores it. */
+export const missingKey = (key: StoredKey) => new UsageError(missingKeyMessage(key), "armada auth login");

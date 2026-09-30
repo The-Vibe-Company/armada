@@ -45,7 +45,7 @@ const refusal = (p: Promise<unknown>) =>
     },
     (err: unknown) => {
       if (!(err instanceof Refusal)) throw err;
-      return err.message;
+      return `${err.message}\nNext: ${err.next}`;
     },
   );
 
@@ -95,7 +95,7 @@ describe("ask and answer", () => {
       resolution: "SQLite.\nKeep Redis out of the first slice.",
     });
     expect(await refusal(answerItem(ctx, { target: "1", text: "again" }))).toBe(
-      `inbox item #1 was already resolved at ${NOW.toISOString()}`,
+      `inbox item #1 was already resolved at ${NOW.toISOString()}\nNext: armada inbox`,
     );
 
     // The worker resumes where it stood.
@@ -130,7 +130,7 @@ describe("ask and answer", () => {
     expect(await refusal(answerItem(ctx, { target: "3", text: "x", note: true }))).toContain("a note goes to a ticket");
     await putHandBack(db, { project: P, ticket: "DEMO-7", author: null, body: "handed back", at: NOW });
     expect(await refusal(answerItem(ctx, { target: "4", text: "ok" }))).toBe(
-      "inbox item #4 is a hand-back: armada merge resolves it once the pull request is merged",
+      "inbox item #4 is a hand-back: armada merge resolves it once the pull request is merged\nNext: armada merge <pr> --ticket DEMO-7 --dry-run",
     );
   });
 

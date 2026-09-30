@@ -157,6 +157,7 @@ export class FakeLinear implements LinearWriter {
       comments: [],
       prs: [],
       commentsTruncated: false,
+      labelsTruncated: false,
       warnings: [],
       ...over,
     };

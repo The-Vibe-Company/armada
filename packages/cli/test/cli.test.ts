@@ -92,7 +92,12 @@ Pull requests waiting (4)
   test("a missing armada.toml or a missing key is a configuration error naming what is missing", async () => {
     const missing = fakeIo({});
     expect(await run(["status"], missing.io)).toBe(2);
-    expect(missing.err()).toContain("no armada.toml found in /work/widgets/packages/app or any parent directory");
+    expect(missing.err()).toBe(
+      "armada: no armada.toml found in /work/widgets/packages/app or any parent directory, so this is not a repository Armada runs\nNext: armada init to set this repository up, armada status --config <file> to use another armada.toml, or armada status --all to see the registered projects\n",
+    );
+    const claim = fakeIo({});
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], claim.io)).toBe(2);
+    expect(claim.err()).toContain("armada claim --config <file> to use another armada.toml");
 
     const partial = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML.replace('slug = "widgets"', "") });
     expect(await run(["status"], partial.io)).toBe(2);
@@ -103,13 +108,51 @@ Pull requests waiting (4)
     const { io, err } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
     io.fetch = async () => new Response("", { status: 401 });
     expect(await run(["status"], io)).toBe(1);
-    expect(err()).toBe("armada: Linear rejected the API key (HTTP 401); check LINEAR_API_KEY\n");
+    expect(err()).toBe(
+      "armada: Linear rejected the API key (HTTP 401); check LINEAR_API_KEY\nNext: armada auth status\n",
+    );
   });
 
   test("LINEAR_API_KEY is required", async () => {
     const { io, err } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML }, {});
     expect(await run(["status"], io)).toBe(2);
     expect(err()).toContain("LINEAR_API_KEY is not set");
+    expect(err()).toEndWith("\nNext: armada auth login\n");
+  });
+});
+
+describe("armada help", () => {
+  test("<command> --help prints that command only; --help and no command print every command", async () => {
+    const claim = fakeIo({});
+    expect(await run(["claim", "--help"], claim.io)).toBe(0);
+    expect(claim.out()).toStartWith("Usage: armada claim [options]\n\n  claim <ticket> --runtime <name> --handle <id>");
+    expect(claim.out()).not.toContain("report <phase>");
+    expect(claim.out()).not.toContain("--ticket <id>");
+    const report = fakeIo({});
+    expect(await run(["report", "ready-to-merge", "-h"], report.io)).toBe(0);
+    expect(report.out()).toContain("  report <phase>");
+    expect(report.out()).toContain("--ticket <id>");
+    expect(report.out()).not.toContain("  claim <ticket>");
+    const doctor = fakeIo({});
+    expect(await run(["doctor", "--help"], doctor.io)).toBe(0);
+    expect(doctor.out()).not.toContain("--config");
+
+    const all = fakeIo({});
+    expect(await run(["--help"], all.io)).toBe(0);
+    expect(all.out()).toContain("  claim <ticket>");
+    expect(all.out()).toContain("  merge <pr>");
+    const none = fakeIo({});
+    expect(await run([], none.io)).toBe(2);
+    expect(none.err()).toBe(all.out());
+  });
+
+  test("an unknown command or option names the help to read", async () => {
+    const unknown = fakeIo({});
+    expect(await run(["deploy"], unknown.io)).toBe(2);
+    expect(unknown.err()).toBe('armada: unknown command "deploy"\nNext: armada --help, which lists every command\n');
+    const option = fakeIo({});
+    expect(await run(["report", "--force"], option.io)).toBe(2);
+    expect(option.err()).toBe("armada: unknown option --force\nNext: armada report --help\n");
   });
 });
 

@@ -87,6 +87,13 @@ export function renderDoctor(r: DoctorReport): string {
     lines.push(
       `${plural(r.errors, "error")}, ${plural(r.warnings, "warning")}.${r.errors ? " Workers cannot be launched until the errors are fixed." : ""}`,
     );
+  const errors = r.checks.filter((c) => c.level === "error");
+  if (errors.length)
+    lines.push(
+      errors.some((c) => c.fix?.includes("armada init"))
+        ? "Next: armada init, which opens one pull request with the fixes it can make"
+        : `Next: ${errors[0]?.fix}`,
+    );
   return `${lines.join("\n")}\n`;
 }
 

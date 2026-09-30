@@ -18,7 +18,7 @@ describe("phase transitions", () => {
     expect(transitionProblem("implementing", "ready-to-merge")).toBe(
       "cannot go from implementing to ready-to-merge; from implementing a worker may report: shipping, blocked, implementing (status update)",
     );
-    expect(transitionProblem(null, "planning")).toContain("claim it first");
+    expect(transitionProblem(null, "planning")).toContain("no worker has claimed it");
   });
 });
 

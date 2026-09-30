@@ -8,11 +8,10 @@ import {
   checkRequestedProfile,
   LINEAR_KEY,
   loadBrief,
-  missingKeyMessage,
   ProfileError,
   STORED_KEYS,
 } from "@armada/core";
-import { type Io, UsageError } from "./io.ts";
+import { type Io, missingKey, UsageError } from "./io.ts";
 
 export interface BriefArgs {
   rest: string[];
@@ -68,7 +67,7 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
     if (err instanceof ProfileError) throw new UsageError(err.message);
     throw err;
   }
-  if (!credentials.linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
+  if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   let b: Brief;
   try {
     b = await loadBrief(config, {

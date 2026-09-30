@@ -14,7 +14,6 @@ import {
   configTemplate,
   createMissingLabels,
   LINEAR_KEY,
-  missingKeyMessage,
   openTurso,
   parseConfig,
   planIsEmpty,
@@ -26,7 +25,7 @@ import {
   upsertProject,
 } from "@armada/core";
 import { authLogin, loadCredentials } from "./auth.ts";
-import { type Exec, type Io, UsageError } from "./io.ts";
+import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
 import { applyPlan, CommandError, fsRepoView, gitRoot, requireExec, sh } from "./repo.ts";
 
 export interface InitOptions {
@@ -58,7 +57,7 @@ async function resolveConfig(
     try {
       return parseConfig(text, where);
     } catch (err) {
-      if (err instanceof ConfigError) throw new UsageError(`${err.message}\nFix it, then run armada init again.`);
+      if (err instanceof ConfigError) throw new UsageError(err.message, "armada init again once the file is fixed");
       throw err;
     }
   };
@@ -78,7 +77,8 @@ async function resolveConfig(
   }
   if (!opts.programRoot)
     throw new UsageError(
-      `${CONFIG_FILE} is missing. Run armada init --program-root <ISSUE-ID> with the Linear issue at the root of the program, or add ${CONFIG_FILE} (see README).`,
+      `${CONFIG_FILE} is missing, and armada init needs the Linear issue at the root of the program to write one`,
+      "armada init --program-root <ISSUE-ID>",
     );
   const repo = JSON.parse(await sh(exec, root, "gh", ["repo", "view", "--json", "name,nameWithOwner"])) as {
     name: string;
@@ -136,12 +136,16 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
   }
   const { credentials } = await loadCredentials(io);
   const missing = required(credentials).find(Boolean);
-  if (missing) throw new UsageError(missingKeyMessage(missing));
+  if (missing) throw missingKey(missing);
   const linearApiKey = credentials.linearApiKey ?? "";
   const tursoUrl = credentials.tursoUrl ?? "";
 
   const root = await gitRoot(exec, io.cwd);
-  if (!root) throw new UsageError(`${io.cwd} is not inside a git repository`);
+  if (!root)
+    throw new UsageError(
+      `${io.cwd} is not inside a git repository`,
+      "armada init again from the checkout of the repository to set up",
+    );
   const base = await defaultBranch(exec, root);
   await sh(exec, root, "git", ["fetch", "--quiet", "origin", base]);
   const baseSha = await sh(exec, root, "git", ["rev-parse", "FETCH_HEAD"]);

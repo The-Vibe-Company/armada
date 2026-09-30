@@ -49,7 +49,11 @@ export function questionBody(question: string, options: readonly string[] = []):
  * null when Turso did not record it.
  */
 export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promise<Outcome & { item: number | null }> {
-  if (!input.question.trim()) throw new Refusal("the question is empty: say what you need decided");
+  if (!input.question.trim())
+    throw new Refusal(
+      "the question is empty: say what you need decided",
+      'armada ask "<question, the options, your recommendation>"',
+    );
   const body = questionBody(input.question, input.options);
   const out = await reportPhase(ctx, { ticket: input.ticket, phase: "blocked", message: `question: ${body}` });
   const project = ctx.config.project.slug;
@@ -250,10 +254,16 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   const { config, linear } = ctx;
   const project = config.project.slug;
   const text = input.text.trim();
-  if (!text) throw new Refusal(`the ${input.note ? "note" : "answer"} is empty`);
+  if (!text)
+    throw new Refusal(
+      `the ${input.note ? "note" : "answer"} is empty`,
+      input.note
+        ? `armada answer --note ${input.target.trim()} "<message>"`
+        : `armada answer ${input.target.trim()} "<answer>"`,
+    );
   const idMatch = input.target.trim().match(ITEM_ID);
   if (input.note && idMatch)
-    throw new Refusal('a note goes to a ticket, not to an inbox item: armada answer --note <ticket> "<message>"');
+    throw new Refusal("a note goes to a ticket, not to an inbox item", 'armada answer --note <ticket> "<message>"');
   const warnings: string[] = [];
   const lines: string[] = [];
 
@@ -268,16 +278,22 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     if (!item)
       throw new Refusal(
         warnings.length
-          ? `inbox item #${itemId} cannot be read (${warnings.join("; ")}); answer by ticket instead: armada answer <ticket> "<answer>"`
+          ? `inbox item #${itemId} cannot be read (${warnings.join("; ")})`
           : `inbox item #${itemId} does not exist in project ${project}`,
+        warnings.length ? 'armada answer <ticket> "<answer>", to answer by ticket instead' : "armada inbox",
       );
-    if (item.resolvedAt) throw new Refusal(`inbox item #${itemId} was already resolved at ${item.resolvedAt}`);
+    if (item.resolvedAt)
+      throw new Refusal(`inbox item #${itemId} was already resolved at ${item.resolvedAt}`, "armada inbox");
     if (item.kind === "hand-back")
       throw new Refusal(
         `inbox item #${itemId} is a hand-back: armada merge resolves it once the pull request is merged`,
+        `armada merge <pr>${item.ticket ? ` --ticket ${item.ticket}` : ""} --dry-run`,
       );
     if (item.recipient !== "coordinator" || (item.kind !== "question" && item.kind !== "request"))
-      throw new Refusal(`inbox item #${itemId} is a ${item.kind} for the ${item.recipient}, not something to answer`);
+      throw new Refusal(
+        `inbox item #${itemId} is a ${item.kind} for the ${item.recipient}, not something to answer`,
+        "armada inbox",
+      );
     ticketId = item.ticket;
   } else {
     ticketId = input.target.trim().toUpperCase();
@@ -287,7 +303,8 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       );
       if (open && !open.some((i) => i.kind === "question"))
         throw new Refusal(
-          `${ticketId} has no open question in the inbox; for an unsolicited message use armada answer --note ${ticketId} "<message>"`,
+          `${ticketId} has no open question in the inbox`,
+          `armada answer --note ${ticketId} "<message>", for an unsolicited message`,
         );
     }
   }
@@ -295,12 +312,15 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   let url = "";
   if (ticketId) {
     const ticket = await linear.readTicket(ticketId);
-    if (!ticket) throw new Refusal(`ticket ${ticketId} not found in Linear`);
+    if (!ticket) throw new Refusal(`ticket ${ticketId} not found in Linear`, "armada inbox");
     url = ticket.url;
     warnings.push(...ticket.warnings);
     if (!ticket.agentPhase) {
       if (input.note)
-        throw new Refusal(`${ticket.id} has no agent phase: no worker holds it, so there is no one to tell`);
+        throw new Refusal(
+          `${ticket.id} has no agent phase: no worker holds it, so there is no one to tell`,
+          "armada status, to see which tickets are in flight",
+        );
       warnings.push(`${ticket.id} has no agent phase (no worker holds it); the answer was not posted on the ticket`);
     } else {
       const ref = itemId === null ? null : `Answers question #${itemId}.`;

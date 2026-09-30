@@ -3,13 +3,16 @@
 // maps it onto Linear's GraphQL API.
 import {
   agentLabels,
+  type Connection,
   gql,
   type LabelGroups,
   LinearError,
   type LinearRequestOptions,
+  type MoreOf,
   normalizeComment,
   parsePullRequestUrl,
   type RawComment,
+  readRest,
 } from "./linear.ts";
 import type { Comment, LabelPhase, PullRequest, StatusType } from "./types.ts";
 
@@ -49,8 +52,10 @@ export interface Ticket {
   comments: Comment[];
   /** Pull requests linked from attachments or the description. */
   prs: PullRequest[];
-  /** True when the ticket has more comments than were read: an older claim may be missing. */
+  /** True when some comments could not be read: an older claim may be missing. */
   commentsTruncated: boolean;
+  /** True when some labels could not be read: an agent label may be missing. */
+  labelsTruncated: boolean;
   /** Reads cut short by a cap. */
   warnings: string[];
 }
@@ -77,8 +82,13 @@ export interface LinearWriter {
 
 // ------------------------------------------------------------------ GraphQL
 
-const MAX_COMMENTS = 100;
+const LABEL = "id name parent { name }";
+const ATTACHMENT = "title url";
+const COMMENT = "id createdAt body user { name }";
+const PAGE = "pageInfo { hasNextPage endCursor }";
 
+// Labels, attachments and comments are read to the end with `readRest`, whose
+// follow-up pages use Linear's default order: the first page must use it too.
 const TICKET_QUERY = /* GraphQL */ `
   query Ticket($id: String!) {
     issue(id: $id) {
@@ -86,11 +96,19 @@ const TICKET_QUERY = /* GraphQL */ `
       state { id type }
       team { id states(first: 50) { nodes { id name type position } } }
       assignee { id }
-      labels(first: 50) { nodes { id name parent { name } } }
-      attachments(first: 50) { nodes { title url } }
-      comments(first: ${MAX_COMMENTS}, orderBy: createdAt) { pageInfo { hasNextPage } nodes { id createdAt body user { name } } }
+      labels(first: 50) { ${PAGE} nodes { ${LABEL} } }
+      attachments(first: 50) { ${PAGE} nodes { ${ATTACHMENT} } }
+      comments(first: 100) { ${PAGE} nodes { ${COMMENT} } }
     }
   }`;
+const MORE_LABELS: MoreOf = { field: "labels", nodes: LABEL, operation: "MoreTicketLabels", what: "labels" };
+const MORE_ATTACHMENTS: MoreOf = {
+  field: "attachments",
+  nodes: ATTACHMENT,
+  operation: "MoreTicketAttachments",
+  what: "attachments",
+};
+const MORE_COMMENTS: MoreOf = { field: "comments", nodes: COMMENT, operation: "MoreTicketComments", what: "comments" };
 
 const GROUP_LABELS_QUERY = /* GraphQL */ `
   query GroupLabels($group: String!) {
@@ -119,12 +137,13 @@ interface RawTicket {
   state: { id: string; type: string };
   team: { id: string; states: { nodes: { id: string; name: string; type: string; position: number }[] } };
   assignee: { id: string } | null;
-  labels: { nodes: { id: string; name: string; parent: { name: string } | null }[] };
-  attachments: { nodes: { title: string; url: string }[] };
-  comments: { pageInfo?: { hasNextPage: boolean }; nodes: RawComment[] };
+  labels: Connection<{ id: string; name: string; parent: { name: string } | null }>;
+  attachments: Connection<{ title: string; url: string }>;
+  comments: Connection<RawComment>;
 }
 
-export function normalizeTicket(raw: RawTicket, groups: LabelGroups): Ticket {
+/** `warnings` are the reads that stopped part way, from `readRest`. */
+export function normalizeTicket(raw: RawTicket, groups: LabelGroups, warnings: string[] = []): Ticket {
   const labels = raw.labels.nodes.map((l) => ({ id: l.id, name: l.name, group: l.parent?.name ?? null }));
   const prs = new Map<string, PullRequest>();
   for (const a of raw.attachments.nodes) {
@@ -155,9 +174,8 @@ export function normalizeTicket(raw: RawTicket, groups: LabelGroups): Ticket {
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     prs: [...prs.values()].sort((a, b) => a.number - b.number),
     commentsTruncated: !!raw.comments.pageInfo?.hasNextPage,
-    warnings: raw.comments.pageInfo?.hasNextPage
-      ? [`${raw.identifier}: more than ${MAX_COMMENTS} comments; older claims are not read`]
-      : [],
+    labelsTruncated: !!raw.labels.pageInfo?.hasNextPage,
+    warnings,
   };
 }
 
@@ -180,7 +198,13 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
         if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
         throw err;
       });
-      return data.issue ? normalizeTicket(data.issue, opts.labels) : null;
+      const raw = data.issue;
+      if (!raw) return null;
+      const warnings: string[] = [];
+      await readRest(opts, raw.identifier, MORE_LABELS, raw.labels, warnings);
+      await readRest(opts, raw.identifier, MORE_ATTACHMENTS, raw.attachments, warnings);
+      await readRest(opts, raw.identifier, MORE_COMMENTS, raw.comments, warnings);
+      return normalizeTicket(raw, opts.labels, warnings);
     },
     async groupLabels(group, teamId) {
       const data = await gql<{ issueLabels: { nodes: { id: string; name: string; team: { id: string } | null }[] } }>(

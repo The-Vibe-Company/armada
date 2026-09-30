@@ -37,7 +37,7 @@ const refusal = (p: Promise<unknown>) =>
     },
     (err: unknown) => {
       if (!(err instanceof Refusal)) throw err;
-      return err.message;
+      return `${err.message}\nNext: ${err.next}`;
     },
   );
 
@@ -75,8 +75,17 @@ describe("claim", () => {
       "Agent claim — runtime: Codex · session: ws-9 · branch: b · started: x",
       "2026-03-04T09:00:00Z",
     );
-    expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toContain(
-      "DEMO-7 is already claimed by Codex · ws-9 since 2026-03-04T09:00:00Z",
+    expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toBe(
+      "DEMO-7 is already claimed by Codex · ws-9 since 2026-03-04T09:00:00Z\nNext: armada status, to pick another ticket ready to start",
+    );
+    expect(linear.writes).toEqual([]);
+  });
+
+  test("a ticket whose comments could not all be read is refused, since an older claim may be hidden", async () => {
+    const { linear, ctx } = setup();
+    linear.add("DEMO-7", { commentsTruncated: true });
+    expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toBe(
+      'not every comment of DEMO-7 could be read, so an older claim may be hidden; nothing was written\nNext: armada claim DEMO-7 --runtime "conductor" --handle "ws-1" again once Linear answers',
     );
     expect(linear.writes).toEqual([]);
   });
@@ -87,7 +96,7 @@ describe("claim", () => {
     linear.afterComment = () =>
       linear.post("DEMO-7", "Agent claim — runtime: Codex · session: ws-9", "2026-03-04T09:59:59Z");
     expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toBe(
-      "DEMO-7 was claimed first by Codex · ws-9; your claim was withdrawn",
+      "DEMO-7 was claimed first by Codex · ws-9; your claim was withdrawn\nNext: armada status, to pick another ticket ready to start",
     );
     expect(linear.get("DEMO-7").comments.map((c) => c.claim?.session)).toEqual(["ws-9"]);
     expect(labelsOf(linear, "DEMO-7")).toEqual([]);
@@ -117,7 +126,7 @@ describe("claim", () => {
       webTicket(linear);
       const claim = { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1", profile: "codex" };
       expect(await refusal(claimTicket(ctx, claim))).toBe(
-        'DEMO-7 is routed to "opus" by rule 1 of [[conductor.routing]] (label "web"); say why "codex" instead with --reason "<why>"',
+        'DEMO-7 is routed to "opus" by rule 1 of [[conductor.routing]] (label "web"); say why "codex" instead with --reason "<why>"\nNext: armada brief DEMO-7, which shows the profile the ticket routes to',
       );
       expect(linear.writes).toEqual([]);
     });
@@ -147,6 +156,12 @@ describe("claim", () => {
       expect(resumed.warnings).toContain(
         "the claim keeps profile codex, not debug; release and claim again to change it",
       );
+      expect(resumed.state).toEqual({
+        status: "In Progress",
+        phase: "planning",
+        runtime: "Conductor",
+        profile: "codex",
+      });
       expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toMatchObject({ name: "codex" });
 
       // A release forgets it.
@@ -159,7 +174,7 @@ describe("claim", () => {
     const { linear, ctx } = setup();
     linear.add("DEMO-7");
     expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "pi", handle: "x" }))).toBe(
-      'no "pi" label in the "Agent runtime" label group (available: Conductor, Claude Code)',
+      'no "pi" label in the "Agent runtime" label group (available: Conductor, Claude Code)\nNext: armada claim DEMO-7 --runtime "<one of: Conductor, Claude Code>" --handle x',
     );
   });
 });
@@ -222,7 +237,7 @@ describe("report", () => {
     shipping(red.linear);
     const before = red.linear.writes.length;
     expect(await refusal(reportPhase(red.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD }))).toBe(
-      'DEMO-7: hand-back refused:\n  - required check "test" is failure',
+      'DEMO-7: hand-back refused:\n  - required check "test" is failure\nNext: fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done',
     );
     expect(red.linear.writes.length).toBe(before);
 

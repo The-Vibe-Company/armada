@@ -6,7 +6,9 @@ import { rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  AGENTS_SKILLS_DIR,
   type ArmadaConfig,
+  CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
   fetchComparison,
@@ -20,11 +22,10 @@ import {
   type MergeForge,
   type MergeOutcome,
   mergePullRequest,
-  missingKeyMessage,
   parsePullRequestUrl,
   type TestMergeResult,
 } from "@armada/core";
-import { type Exec, type Io, UsageError } from "./io.ts";
+import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
 import { openLive, type WorkerArgs } from "./worker.ts";
 
 /** A GitHub 5xx or a network failure, as gh reports them. */
@@ -149,10 +150,14 @@ function render(o: MergeOutcome): string {
       );
   }
   const a = o.archive;
-  if (a)
+  if (a) {
+    const who = `${o.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"})`;
     out.push(
-      `Archive the worker's workspace of ${o.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"}) with the "Stop and archive" section of ${a.guide ? `the ${a.guide} skill` : "its runtime guide"}.`,
+      a.guide
+        ? `Archive the worker's workspace of ${who} with the "Stop and archive" section of the ${a.guide} skill.`
+        : `No runtime guide is installed for ${a.runtime ?? "the worker's runtime"}, so Armada has nothing to archive for ${who}: a local session or subagent ends with its task; stop it yourself if it still runs.`,
     );
+  }
   return `${out.join("\n")}\n`;
 }
 
@@ -160,9 +165,9 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
   const [arg, ...extra] = a.rest;
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const number = prNumber(arg, config.github.repository);
-  if (!credentials.linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
+  if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   const token = credentials.githubToken;
-  if (!token) throw new UsageError("armada merge reads GitHub: set GITHUB_TOKEN or run `gh auth login`");
+  if (!token) throw new UsageError("armada merge reads GitHub: set GITHUB_TOKEN", "gh auth login");
   const exec = io.exec;
   if (!exec) throw new UsageError("armada merge needs to run git and gh");
   const linearApiKey = credentials.linearApiKey;
@@ -198,6 +203,11 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     now,
     sleep: io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
     progress: (line) => io.stderr(`armada: ${line}\n`),
+    installedSkill: async (name) => {
+      for (const dir of [AGENTS_SKILLS_DIR, CLAUDE_SKILLS_DIR])
+        if ((await io.readFile(join(repoDir, dir, name, "SKILL.md"))) !== null) return true;
+      return false;
+    },
   };
   try {
     const o = await mergePullRequest(ctx, {

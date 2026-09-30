@@ -88,6 +88,8 @@ export interface MergeContext {
   sleep: (ms: number) => Promise<void>;
   /** Progress while the command waits (the lease, GitHub retries). */
   progress?: (line: string) => void;
+  /** True when the repository has the skill `name` installed; only an installed runtime guide is named. */
+  installedSkill: (name: string) => Promise<boolean>;
 }
 
 export interface MergeInput {
@@ -119,7 +121,11 @@ export interface MergeOutcome {
   hints: string[];
   /** In-flight workers to tell what landed; empty for a dry run. */
   workers: WorkerToTell[];
-  /** The merged worker's session to archive with its runtime guide. */
+  /**
+   * The merged worker's session to archive with its runtime guide. `guide` is
+   * the installed guide skill, or null when the repository has none for that
+   * runtime (a local session or subagent then has nothing to archive).
+   */
   archive: { runtime: string | null; handle: string | null; guide: string | null } | null;
   warnings: string[];
 }
@@ -316,7 +322,13 @@ async function timed<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
       p,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new Refusal(`Turso did not answer within ${ms / 1000} s to ${what}; nothing was merged`)),
+          () =>
+            reject(
+              new Refusal(
+                `Turso did not answer within ${ms / 1000} s to ${what}; nothing was merged`,
+                "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
+              ),
+            ),
           ms,
         );
       }),
@@ -352,7 +364,8 @@ export async function withLease<T>(
     if (got.acquired) break;
     if (waited >= maxWait)
       throw new Refusal(
-        `the ${o.name} lock of ${o.project} is still held by ${got.held?.holder ?? "another coordinator"} (until ${got.held?.expiresAt ?? "unknown"}); try again later`,
+        `the ${o.name} lock of ${o.project} is still held by ${got.held?.holder ?? "another coordinator"} (until ${got.held?.expiresAt ?? "unknown"})`,
+        "the same armada merge again once that coordinator is done",
       );
     if (got.held?.holder !== lastHolder) {
       lastHolder = got.held?.holder ?? null;
@@ -382,7 +395,11 @@ async function readSettled(ctx: MergeContext, number: number): Promise<MergePull
     await ctx.sleep(ms);
     pull = await ctx.forge.readPull(number);
   }
-  if (!pull) throw new Refusal(`pull request #${number} was not found in ${ctx.config.github.repository}`);
+  if (!pull)
+    throw new Refusal(
+      `pull request #${number} was not found in ${ctx.config.github.repository}`,
+      "armada status, which lists the pull requests waiting",
+    );
   return pull;
 }
 
@@ -392,10 +409,12 @@ async function readTicketFor(ctx: MergeContext, pull: MergePull, explicit: strin
     (pull.headRef ? ticketFromBranch(pull.headRef, ctx.config.tracker.programRoot) : null);
   if (!id)
     throw new Refusal(
-      `the branch of #${pull.number} (${pull.headRef ?? "unknown"}) names no ticket; pass --ticket <id>`,
+      `the branch of #${pull.number} (${pull.headRef ?? "unknown"}) names no ticket`,
+      `armada merge ${pull.number} --ticket <id>`,
     );
   const ticket = await ctx.linear.readTicket(id);
-  if (!ticket) throw new Refusal(`ticket ${id} not found in Linear`);
+  if (!ticket)
+    throw new Refusal(`ticket ${id} not found in Linear`, `armada merge ${pull.number} --ticket <id>, with its ticket`);
   return ticket;
 }
 
@@ -452,6 +471,13 @@ async function checklist(ctx: MergeContext, input: MergeInput): Promise<Checked>
       `#${pull.number} (${ticket.id}) cannot be merged:\n${problems.map((p) => `  - ${p}`).join("\n")}${
         hints.length ? `\nHints (not blocking):\n${hints.map((h) => `  - ${h}`).join("\n")}` : ""
       }`,
+      pull.state !== "open"
+        ? `gh pr view ${pull.number} --repo ${config.github.repository}`
+        : ticket.agentPhase !== "ready-to-merge"
+          ? ctx.tursoConfigured
+            ? `armada inbox --wait, until ${ticket.id} is handed back`
+            : `armada status, until ${ticket.id} shows ready-to-merge`
+          : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
     );
   lines.unshift(
     `Checklist passed for #${pull.number} (${ticket.id}): handed back at ${pull.headSha}, CLEAN, checks green, no open review thread.`,
@@ -510,7 +536,8 @@ async function recheck(ctx: MergeContext, c: Checked): Promise<void> {
   }
   if (problems.length)
     throw new Refusal(
-      `#${pull.number} changed while it was checked; nothing was merged, run armada merge again:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+      `#${pull.number} changed while it was checked; nothing was merged:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+      `armada merge ${pull.number} again`,
     );
 }
 
@@ -532,19 +559,26 @@ async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, tick
     // Whatever the error, GitHub may have merged anyway: read the state first.
     const fresh = await read();
     if (fresh?.state === "merged") break;
+    const view = `gh pr view ${pull.number} --repo ${ctx.config.github.repository}`;
     if (!fresh)
       throw new Refusal(
-        `GitHub failed (${res.message}) and ${n} could not be read back (${readError || "not found"}); check it on GitHub: if it merged, close ${ticket} by hand`,
+        `GitHub failed (${res.message}) and ${n} could not be read back (${readError || "not found"}); if it merged, close ${ticket} by hand`,
+        view,
       );
-    if (!res.transient) throw new Refusal(`GitHub refused to merge ${n}: ${res.message}`);
+    if (!res.transient)
+      throw new Refusal(`GitHub refused to merge ${n}: ${res.message}`, `armada merge ${pull.number} --dry-run`);
     if (fresh.state !== "open")
-      throw new Refusal(`GitHub failed (${res.message}) and ${n} is now ${fresh.state}; not retrying`);
+      throw new Refusal(`GitHub failed (${res.message}) and ${n} is now ${fresh.state}; not retrying`, view);
     if (fresh.headSha !== sha)
-      throw new Refusal(`GitHub failed (${res.message}) and the head of ${n} moved to ${fresh.headSha}; not retrying`);
+      throw new Refusal(
+        `GitHub failed (${res.message}) and the head of ${n} moved to ${fresh.headSha}; not retrying`,
+        `armada merge ${pull.number} --dry-run, once its worker hands back the new head`,
+      );
     const wait = MERGE_BACKOFF_MS[attempt];
     if (wait === undefined)
       throw new Refusal(
         `GitHub kept failing (${res.message}) after ${attempt + 1} attempts; ${n} is still open and nothing was merged`,
+        `armada merge ${pull.number} again once GitHub answers`,
       );
     say(ctx, `GitHub answered ${res.message}; ${n} is still open at ${sha.slice(0, 7)}, retrying in ${wait / 1000} s…`);
     await ctx.sleep(wait);
@@ -559,16 +593,20 @@ async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, tick
       throw new Refusal(
         seen
           ? `the merge of ${n} was accepted but GitHub shows it as ${seen.state}, not merged (auto-merge or a merge queue?); the ticket was left as is`
-          : `the merge of ${n} was accepted but GitHub could not be read back (${readError || "not found"}); check it on GitHub: if it merged, close ${ticket} by hand`,
+          : `the merge of ${n} was accepted but GitHub could not be read back (${readError || "not found"}); if it merged, close ${ticket} by hand`,
+        `gh pr view ${pull.number} --repo ${ctx.config.github.repository}`,
       );
     await ctx.sleep(wait);
   }
   if (seen.headSha !== sha)
-    throw new Refusal(`${n} was merged at ${seen.headSha}, not at the handed-back ${sha}; check main now`);
+    throw new Refusal(
+      `${n} was merged at ${seen.headSha}, not at the handed-back ${sha}; check ${pull.baseRef} now`,
+      `gh pr view ${pull.number} --repo ${ctx.config.github.repository}`,
+    );
   return seen;
 }
 
-/** Runtime guide skill for a runtime label, e.g. Conductor → armada-runtime-conductor. */
+/** Name the runtime guide skill of a runtime label would have, e.g. Conductor → armada-runtime-conductor. */
 export const runtimeGuide = (runtime: string | null) =>
   runtime
     ? `armada-runtime-${runtime
@@ -616,6 +654,7 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     if (!(await renew()))
       throw new Refusal(
         "the merge lock could not be renewed (it expired and another coordinator took it, or Turso did not answer); nothing was merged",
+        `armada merge ${input.pr} again`,
       );
     say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
     const merged = await mergePinned(ctx, c.pull, c.sha, c.ticket.id);
@@ -639,7 +678,8 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
   const { db, warning } = await ctx.turso();
   if (!db && ctx.tursoConfigured)
     throw new Refusal(
-      `the merge lock needs Turso, which is unavailable (${warning ?? "no answer"}); nothing was merged. Fix Turso, or pass --no-lock if you are sure no other coordinator merges in ${slug} now`,
+      `the merge lock needs Turso, which is unavailable (${warning ?? "no answer"}); nothing was merged`,
+      `armada merge ${input.pr} again once Turso answers, or armada merge ${input.pr} --no-lock if you are sure no other coordinator merges in ${slug} now`,
     );
   if (!db) {
     early.push(
@@ -718,7 +758,14 @@ async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: st
 
   const claim = activeClaimComments(c.ticket.comments)[0]?.claim;
   const runtime = live$?.handle?.runtime ?? c.ticket.agentRuntime ?? claim?.runtime ?? null;
-  const archive = { runtime, handle: live$?.handle?.handle ?? claim?.session ?? null, guide: runtimeGuide(runtime) };
+  const expected = runtimeGuide(runtime);
+  let guide: string | null = null;
+  try {
+    guide = expected && (await ctx.installedSkill(expected)) ? expected : null;
+  } catch (err) {
+    c.warnings.push(`could not look for the ${expected} skill (${err instanceof Error ? err.message : String(err)})`);
+  }
+  const archive = { runtime, handle: live$?.handle?.handle ?? claim?.session ?? null, guide };
   return outcome(c, true, merged, lines, workers, archive);
 }
 

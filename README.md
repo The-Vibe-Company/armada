@@ -15,7 +15,7 @@ npx @the-vibe-company/armada status     # or: bunx @the-vibe-company/armada stat
 npm install -g @the-vibe-company/armada  # then: armada status
 ```
 
-`armada --version` prints the installed version. Each release is listed on [GitHub releases](https://github.com/The-Vibe-Company/armada/releases) with its changelog.
+`armada --version` prints the installed version, `armada --help` every command and `armada <command> --help` one. When a command cannot continue, it prints the reason and a `Next:` line with the command to run, for example `armada init` in a repository without `armada.toml`. Each release is listed on [GitHub releases](https://github.com/The-Vibe-Company/armada/releases) with its changelog.
 
 ## Try it
 
@@ -88,8 +88,9 @@ armada report ready-to-merge --pr 34 --sha <full 40-character head SHA>
 armada release --reason "wrong ticket"
 ```
 
-- `claim` re-reads the ticket and refuses it when another worker holds it; if two claims race, the older comment wins and the other withdraws. It assigns the ticket to the Linear key's user, moves it to the team's first started state, sets the `planning` phase label and the runtime label (matched by name, so `conductor` finds `Conductor`), and posts an `Agent claim — runtime · session · branch · started` line. The handle is kept in that comment and in Turso, so a coordinator finds the session either way. Claiming again with the same handle repairs labels and state.
+- `claim` re-reads the ticket and refuses it when another worker holds it; if two claims race, the older comment wins and the other withdraws. It assigns the ticket to the Linear key's user, moves it to the team's first started state, sets the `planning` phase label and the runtime label (matched by name, so `conductor` finds `Conductor`), and posts an `Agent claim — runtime · session · branch · started` line. The handle is kept in that comment and in Turso, so a coordinator finds the session either way. Claiming again with the same handle repairs labels and state. It reads every comment and label of the ticket, however many.
 - `report <phase>` accepts: planning → awaiting-approval or implementing; awaiting-approval → planning or implementing; implementing → shipping; shipping → implementing or ready-to-merge; ready-to-merge → shipping; blocked from anywhere and back to any phase; the current phase again as a status update. Anything else exits 1 with the reason. The output lists what waits in the worker's inbox.
+- `claim` and `report` read the ticket back and print where it stands, for example `Now: In Progress · phase implementing · runtime Conductor · profile none`, so a worker can check it without opening Linear. `--json` carries the same as `state`.
 - `ready-to-merge` is refused unless the pull request is open in the project repository, `--sha` is the full 40-character SHA of its head, and every check in `[gates] required_checks` is green on that head (with none declared: at least one check, all green). It needs a GitHub token.
 - `release` removes the phase and runtime labels, moves the ticket back to the team's first unstarted state and posts `Agent status: released — <reason>`.
 - `report` and `release` find the ticket from `--ticket`, then `ARMADA_TICKET`, then the current git branch (`feature/abc-12-…`).
@@ -121,7 +122,7 @@ armada merge 34             # or the pull request URL; --ticket ABC-12 when the 
 - Hints, never blocking: top-level functions, classes, types and constants the pull request removes or renames that the base branch still uses in files the pull request does not touch.
 - One merge at a time per project: a `merge` lease in Turso (20 minutes, renewed before the merge) makes a second coordinator wait. When Turso is configured but unreachable the merge is refused; `--no-lock` forces it, with a warning and "merged without lock" in the ticket's merged comment. Without Turso configured at all (one coordinator) the merge runs unlocked with a warning.
 - The merge is `gh pr merge <n> --squash --match-head-commit <sha>`, never `--delete-branch` (it removes local worktrees that have the branch checked out). A GitHub 5xx is retried with backoff, each time after checking that the pull request is still open at the same head. Success is reported only once GitHub shows the pull request as merged at that head.
-- Then the ticket moves to Done with its agent labels removed, the pull request is linked, `Agent status: merged — …` is posted, the Turso hand-back is resolved and the runtime handle released. The output lists the workers in flight to tell and the worker session to archive with its runtime guide.
+- Then the ticket moves to Done with its agent labels removed, the pull request is linked, `Agent status: merged — …` is posted, the Turso hand-back is resolved and the runtime handle released. The output lists the workers in flight to tell and the worker session to archive with its runtime guide, when one is installed for that runtime in `.agents/skills` or `.claude/skills`; otherwise it says there is none, since a local session or subagent has nothing to archive.
 - It runs `gh` and `git` in the repository checkout and needs `LINEAR_API_KEY` and a GitHub token.
 
 ## Watch the fleet (dashboard)

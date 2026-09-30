@@ -21,9 +21,18 @@ import {
 } from "./turso.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
 
-/** The command was understood but the tracker state forbids it (exit code 1). */
+/**
+ * The command was understood but the tracker state forbids it (exit code 1).
+ * `next` is the one command to run next, printed after the reason.
+ */
 export class Refusal extends Error {
   override name = "Refusal";
+  constructor(
+    message: string,
+    readonly next: string,
+  ) {
+    super(message);
+  }
 }
 
 export interface WorkerContext {
@@ -39,6 +48,16 @@ export interface WorkerContext {
   now: () => Date;
 }
 
+/** Where a ticket stands, as read back from Linear after a command wrote it. */
+export interface TicketState {
+  /** Workflow state name, e.g. In Progress. */
+  status: string;
+  phase: LabelPhase | null;
+  runtime: string | null;
+  /** Profile of the active claim, or null when it names none. */
+  profile: string | null;
+}
+
 export interface Outcome {
   ticket: string;
   url: string;
@@ -47,6 +66,8 @@ export interface Outcome {
   warnings: string[];
   /** Unresolved inbox items addressed to this ticket's worker, when Turso was read. */
   inbox: InboxItem[] | null;
+  /** The ticket read back after the write (claim and report); null when it was not read. */
+  state?: TicketState | null;
 }
 
 const TURSO_TIMEOUT_MS = 10_000;
@@ -88,9 +109,13 @@ export const projectOf = (config: ArmadaConfig) => ({
 
 async function readOpenTicket(ctx: WorkerContext, id: string): Promise<Ticket> {
   const ticket = await ctx.linear.readTicket(id);
-  if (!ticket) throw new Refusal(`ticket ${id} not found in Linear`);
+  if (!ticket)
+    throw new Refusal(`ticket ${id} not found in Linear`, "armada status, to see the tickets of the program");
   if (ticket.statusType === "completed" || ticket.statusType === "canceled")
-    throw new Refusal(`${ticket.id} is ${ticket.statusType}; there is nothing to work on`);
+    throw new Refusal(
+      `${ticket.id} is ${ticket.statusType}; there is nothing to work on`,
+      "armada status, to pick a ticket ready to start",
+    );
   return ticket;
 }
 
@@ -101,6 +126,30 @@ export function ticketFromBranch(branch: string, programRoot: string): string | 
   const ids = [...branch.matchAll(ID)].map((m) => (m[1] ?? "").toUpperCase());
   const team = programRoot.split("-")[0]?.toUpperCase();
   return ids.find((id) => id.split("-")[0] === team) ?? ids[0] ?? null;
+}
+
+/** The state a worker sees on its ticket: workflow state, agent labels and the claim's profile. */
+export function ticketState(ticket: Ticket): TicketState {
+  return {
+    status: ticket.states.find((s) => s.id === ticket.stateId)?.name ?? ticket.statusType,
+    phase: ticket.agentPhase,
+    runtime: ticket.agentRuntime,
+    profile: activeClaimComments(ticket.comments)[0]?.claim?.profile ?? null,
+  };
+}
+
+/** Reads the ticket back after a write; a failed read only warns, the write is done. */
+async function readBack(ctx: WorkerContext, id: string, warnings: string[]): Promise<TicketState | null> {
+  try {
+    const t = await ctx.linear.readTicket(id);
+    if (t) return ticketState(t);
+    warnings.push(`${id} could not be read back from Linear; the change was written`);
+  } catch (err) {
+    warnings.push(
+      `${id} could not be read back from Linear (${err instanceof Error ? err.message : String(err)}); the change was written`,
+    );
+  }
+  return null;
 }
 
 /** Comments that carry a claim since the last release, oldest first. */
@@ -114,12 +163,14 @@ export function activeClaimComments(comments: Comment[]): Comment[] {
   return active;
 }
 
+const DOCTOR_LABELS = "armada doctor, which lists the missing labels (armada init creates them)";
+
 /** The label of `group` whose name matches `name`, ignoring case, spaces and dashes. */
-function findLabel(labels: TicketLabel[], name: string, group: string): TicketLabel {
+function findLabel(labels: TicketLabel[], name: string, group: string, next = DOCTOR_LABELS): TicketLabel {
   const found = labels.find((l) => sameName(l.name, name));
   if (found) return found;
   const names = labels.map((l) => l.name).join(", ") || "none";
-  throw new Refusal(`no "${name}" label in the "${group}" label group (available: ${names})`);
+  throw new Refusal(`no "${name}" label in the "${group}" label group (available: ${names})`, next);
 }
 
 /** Labels of `group` on the ticket other than `keep`. */
@@ -178,15 +229,23 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
     linear.groupLabels(groups.runtimeGroup, ticket.teamId),
   ]);
   const planning = findLabel(phaseLabels, "planning", groups.phaseGroup);
-  const runtime = findLabel(runtimeLabels, input.runtime, groups.runtimeGroup);
+  const runtime = findLabel(
+    runtimeLabels,
+    input.runtime,
+    groups.runtimeGroup,
+    runtimeLabels.length
+      ? `armada claim ${ticket.id} --runtime "<one of: ${runtimeLabels.map((l) => l.name).join(", ")}>" --handle ${input.handle}`
+      : DOCTOR_LABELS,
+  );
   const branch = input.branch ?? ticket.branchName;
   const warnings = [...ticket.warnings];
   const lines: string[] = [];
   let profile: ProfileChoice | null = null;
 
-  if (ticket.commentsTruncated)
+  if (ticket.commentsTruncated || ticket.labelsTruncated)
     throw new Refusal(
-      `${ticket.id} has more comments than Armada reads, so an older claim may be hidden; claim it by hand`,
+      `not every ${ticket.commentsTruncated ? "comment" : "label"} of ${ticket.id} could be read, so ${ticket.commentsTruncated ? "an older claim" : "an agent label"} may be hidden; nothing was written`,
+      `armada claim ${ticket.id} --runtime "${input.runtime}" --handle "${input.handle}" again once Linear answers`,
     );
   const viewer = await linear.viewer();
   const inProgress = ticket.statusType === "started" ? null : firstState(ticket.states, "started");
@@ -195,14 +254,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const holder = held[0]?.claim;
   const resuming = !!holder && holder.session === input.handle;
   if (!resuming) {
+    // Only the coordinator releases another worker's ticket: this worker picks another one.
+    const another = "armada status, to pick another ticket ready to start";
     if (holder)
       throw new Refusal(
-        `${ticket.id} is already claimed by ${holder.runtime ?? "an unknown runtime"} · ${holder.session ?? "unknown session"} since ${holder.at}; release it first with \`armada release\``,
+        `${ticket.id} is already claimed by ${holder.runtime ?? "an unknown runtime"} · ${holder.session ?? "unknown session"} since ${holder.at}`,
+        another,
       );
     if (ticket.agentPhase)
-      throw new Refusal(
-        `${ticket.id} already carries the agent phase "${ticket.agentPhase}"; release it first with \`armada release\``,
-      );
+      throw new Refusal(`${ticket.id} already carries the agent phase "${ticket.agentPhase}"`, another);
     if (input.profile)
       try {
         profile = chooseProfile(config, {
@@ -212,7 +272,8 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
           reason: input.reason ?? null,
         });
       } catch (err) {
-        if (err instanceof ProfileError) throw new Refusal(err.message);
+        if (err instanceof ProfileError)
+          throw new Refusal(err.message, `armada brief ${ticket.id}, which shows the profile the ticket routes to`);
         throw err;
       }
     const started = ctx.now().toISOString();
@@ -225,6 +286,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       await linear.deleteComment(mine.id);
       throw new Refusal(
         `${ticket.id} was claimed first by ${winner.claim?.runtime ?? "another worker"} · ${winner.claim?.session ?? "unknown session"}; your claim was withdrawn`,
+        "armada status, to pick another ticket ready to start",
       );
     }
     lines.push(
@@ -289,7 +351,8 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       at,
     });
   });
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null };
+  const state = await readBack(ctx, ticket.id, warnings);
+  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null, state };
 }
 
 // ------------------------------------------------------------------ report
@@ -314,7 +377,11 @@ export function resolvePr(ticket: Ticket, repository: string, pr: string | null 
       return parsePullRequestUrl(url);
     }
     const parsed = parsePullRequestUrl(trimmed);
-    if (!parsed) throw new Refusal(`--pr must be a pull request number or URL, got "${pr}"`);
+    if (!parsed)
+      throw new Refusal(
+        `--pr must be a pull request number or URL, got "${pr}"`,
+        `armada report <phase> --ticket ${ticket.id} --pr <number>`,
+      );
     return parsed;
   }
   const inRepo = ticket.prs.filter((p) => p.repo.toLowerCase() === repository.toLowerCase());
@@ -331,7 +398,13 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
   const groups = config.tracker.labels;
   const ticket = await readOpenTicket(ctx, input.ticket);
   const problem = transitionProblem(ticket.agentPhase, input.phase);
-  if (problem) throw new Refusal(`${ticket.id}: ${problem}`);
+  if (problem)
+    throw new Refusal(
+      `${ticket.id}: ${problem}`,
+      ticket.agentPhase
+        ? `armada report <one of the phases above> --ticket ${ticket.id} --message "<what you did>"`
+        : `armada claim ${ticket.id} --runtime <name> --handle <id>`,
+    );
   const warnings = [...ticket.warnings];
   const message = input.message?.trim() ?? "";
   let pr = resolvePr(ticket, config.github.repository, input.pr);
@@ -343,11 +416,16 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     const inRepo = !!pr && pr.repo.toLowerCase() === config.github.repository.toLowerCase();
     if (inRepo && !ctx.readPull)
       throw new Refusal(
-        "a hand-back needs GitHub to check the pull request head and CI; set GITHUB_TOKEN or run `gh auth login`",
+        "a hand-back needs GitHub to check the pull request head and CI; set GITHUB_TOKEN",
+        "gh auth login, then report again",
       );
     if (pr && inRepo && ctx.readPull) {
       const fresh = await ctx.readPull(pr.number);
-      if (!fresh) throw new Refusal(`pull request #${pr.number} was not found in ${config.github.repository}`);
+      if (!fresh)
+        throw new Refusal(
+          `pull request #${pr.number} was not found in ${config.github.repository}`,
+          `armada report ready-to-merge --ticket ${ticket.id} --pr <number> --sha <head sha>, with the pull request of this ticket`,
+        );
       pr = fresh;
     }
     const problems = handBackProblems({
@@ -357,11 +435,18 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       requiredChecks: config.gates.requiredChecks,
     });
     if (problems.length)
-      throw new Refusal(`${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+      throw new Refusal(
+        `${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+        `fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
+      );
     summary = `PR #${pr?.number}, head ${sha}, CI green`;
     body = message;
   } else {
-    if (!message) throw new Refusal("--message is required: say what you did or what you are doing");
+    if (!message)
+      throw new Refusal(
+        "--message is required: say what you did or what you are doing",
+        `armada report ${input.phase} --ticket ${ticket.id} --message "<what you did>"`,
+      );
     const [first = "", ...rest] = message.split("\n");
     summary = first.trim();
     body = rest.join("\n").trim();
@@ -412,7 +497,8 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       });
     return openInboxItems(db, { project: config.project.slug, recipient: "worker", ticket: ticket.id });
   });
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox };
+  const state = await readBack(ctx, ticket.id, warnings);
+  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox, state };
 }
 
 // ------------------------------------------------------------------ release
@@ -423,7 +509,10 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   const groups = config.tracker.labels;
   const ticket = await readOpenTicket(ctx, input.ticket);
   if (!ticket.agentPhase && !ticket.agentRuntime && !activeClaimComments(ticket.comments).length)
-    throw new Refusal(`${ticket.id} is not claimed; there is nothing to release`);
+    throw new Refusal(
+      `${ticket.id} is not claimed; there is nothing to release`,
+      "armada status, to see which tickets are in flight",
+    );
   const warnings = [...ticket.warnings];
   const back = ticket.statusType === "started" ? firstState(ticket.states, "unstarted", "backlog") : null;
   await linear.updateTicket(ticket.uuid, {

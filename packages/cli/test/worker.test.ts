@@ -46,14 +46,14 @@ describe("armada claim, report and release", () => {
     w.linear.add("DEMO-7");
     expect(await run(["claim", "demo-7", "--runtime", "conductor", "--handle", "ws-1/s-1"], w.io)).toBe(0);
     expect(w.out()).toBe(
-      "Claimed DEMO-7 for Conductor (ws-1/s-1).\nMoved to In Progress, assigned to Owner, labels planning and Conductor.\nhttps://linear.app/acme/issue/DEMO-7\n",
+      "Claimed DEMO-7 for Conductor (ws-1/s-1).\nMoved to In Progress, assigned to Owner, labels planning and Conductor.\nNow: In Progress · phase planning · runtime Conductor · profile none\nhttps://linear.app/acme/issue/DEMO-7\n",
     );
     expect(w.err()).toBe("");
 
     w.reset();
     expect(await run(["report", "implementing", "--message=plan approved"], w.io)).toBe(0);
     expect(w.out()).toBe(
-      "DEMO-7: planning → implementing.\nhttps://linear.app/acme/issue/DEMO-7\nInbox: nothing waiting for you.\n",
+      "DEMO-7: planning → implementing.\nNow: In Progress · phase implementing · runtime Conductor · profile none\nhttps://linear.app/acme/issue/DEMO-7\nInbox: nothing waiting for you.\n",
     );
 
     w.reset();
@@ -73,12 +73,15 @@ describe("armada claim, report and release", () => {
     w.reset();
     expect(await run(["report", "ready-to-merge", "--sha", HEAD, "--pr", "9"], w.io)).toBe(1);
     expect(w.err()).toContain("cannot go from planning to ready-to-merge");
+    expect(w.err()).toEndWith(
+      'Next: armada report <one of the phases above> --ticket DEMO-7 --message "<what you did>"\n',
+    );
 
     w.linear.get("DEMO-7").labels = [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }];
     w.reset();
     expect(await run(["report", "ready-to-merge", "--sha", HEAD.slice(0, 7), "--pr", "9"], w.io)).toBe(1);
     expect(w.err()).toBe(
-      'armada: DEMO-7: hand-back refused:\n  - --sha must be the full 40-character commit SHA, got "0123456" (7 characters)\n  - check "test" is failure\n',
+      'armada: DEMO-7: hand-back refused:\n  - --sha must be the full 40-character commit SHA, got "0123456" (7 characters)\n  - check "test" is failure\nNext: fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done\n',
     );
   });
 
@@ -91,11 +94,11 @@ describe("armada claim, report and release", () => {
     expect(w.err()).toContain("report needs a phase: planning, awaiting-approval");
     w.reset();
     expect(await run(["claim", "DEMO-7", "--sha", HEAD], w.io)).toBe(2);
-    expect(w.err()).toBe("armada: --sha does not apply to claim\n");
+    expect(w.err()).toBe("armada: --sha does not apply to claim\nNext: armada claim --help\n");
     w.reset();
     const claim = ["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"];
     expect(await run([...claim, "--profile", "turbo"], w.io)).toBe(2);
-    expect(w.err()).toBe('armada: no Conductor profile "turbo" (available: none)\n');
+    expect(w.err()).toBe('armada: no Conductor profile "turbo" (available: none)\nNext: armada claim --help\n');
     w.reset();
     expect(await run([...claim, "--reason", "why not"], w.io)).toBe(2);
     expect(w.err()).toContain("--reason goes with --profile");
@@ -136,7 +139,7 @@ describe("armada ask, inbox and answer", () => {
     w.reset();
     expect(await run(["ask", "Which store keeps the sessions?", "--options", "SQLite | Redis"], w.io)).toBe(0);
     expect(w.out()).toBe(
-      "DEMO-7: implementing → blocked.\nQuestion #1 is in the coordinator's inbox.\nStop here and wait for the answer in this session; then report the phase you resume.\nhttps://linear.app/acme/issue/DEMO-7\nInbox: nothing waiting for you.\n",
+      "DEMO-7: implementing → blocked.\nQuestion #1 is in the coordinator's inbox.\nStop here and wait for the answer in this session; then report the phase you resume.\nNow: In Progress · phase blocked · runtime Conductor · profile none\nhttps://linear.app/acme/issue/DEMO-7\nInbox: nothing waiting for you.\n",
     );
 
     w.reset();
@@ -175,10 +178,10 @@ describe("armada ask, inbox and answer", () => {
     expect(w.err()).toContain("ask needs a question");
     w.reset();
     expect(await run(["inbox"], w.io)).toBe(2);
-    expect(w.err()).toBe("armada: the inbox lives in Turso: set ARMADA_TURSO_URL (run `armada auth login`)\n");
+    expect(w.err()).toBe("armada: the inbox lives in Turso: set ARMADA_TURSO_URL\nNext: armada auth login\n");
     w.reset();
     expect(await run(["inbox", "--timeout", "30"], w.io)).toBe(2);
-    expect(w.err()).toBe("armada: --timeout applies to --wait\n");
+    expect(w.err()).toBe("armada: --timeout applies to --wait\nNext: armada inbox --help\n");
     w.reset();
     expect(await run(["answer", "3"], w.io)).toBe(2);
     expect(w.err()).toContain("answer needs the text");
