@@ -74,6 +74,15 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
     ],
   },
+  {
+    // The dashboard reads recent events and the coordinator's last inbox read
+    // on every poll; without these, both scan every event of the project.
+    version: 2,
+    statements: [
+      "CREATE INDEX IF NOT EXISTS events_by_time ON events (project, created_at)",
+      "CREATE INDEX IF NOT EXISTS events_by_kind ON events (project, kind, created_at)",
+    ],
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
@@ -198,7 +207,11 @@ export async function listProjects(db: Db): Promise<ProjectRecord[]> {
 
 // ------------------------------------------------------------------ events
 
-export type EventKind = "claim" | "report" | "release" | "merge";
+/** `inbox`: the coordinator read its inbox; it carries no ticket (see `recordCoordinatorSeen`). */
+export type EventKind = "claim" | "report" | "release" | "merge" | "inbox";
+
+/** Ticket value of events that belong to the project rather than to one ticket. */
+export const NO_TICKET = "";
 
 export interface EventInput {
   project: string;
@@ -235,10 +248,81 @@ export async function recordEvent(db: Db, e: EventInput): Promise<void> {
 /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
 export async function lastEventTimes(db: Db, project: string): Promise<Record<string, string>> {
   const rs = await db.execute({
-    sql: "SELECT ticket, max(created_at) AS at FROM events WHERE project = ? GROUP BY ticket",
+    sql: "SELECT ticket, max(created_at) AS at FROM events WHERE project = ? AND ticket <> '' GROUP BY ticket",
     args: [project],
   });
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), String(r.at)]));
+}
+
+export interface LatestEvent {
+  kind: EventKind;
+  phase: string | null;
+  message: string | null;
+  runtime: string | null;
+  handle: string | null;
+  prUrl: string | null;
+  at: string;
+}
+
+/**
+ * The newest event of every ticket of a project, by ticket id. With `since`,
+ * only tickets with an event at or after it: the read stays bounded as the
+ * table grows.
+ */
+export async function latestEvents(
+  db: Db,
+  project: string,
+  opts: { since?: Date } = {},
+): Promise<Record<string, LatestEvent>> {
+  const rs = await db.execute({
+    sql: `SELECT ticket, kind, phase, message, runtime, handle, pr_url, created_at FROM (
+            SELECT *, row_number() OVER (PARTITION BY ticket ORDER BY created_at DESC, id DESC) AS n
+            FROM events WHERE project = ? AND created_at >= ? AND ticket <> ''
+          ) WHERE n = 1`,
+    args: [project, opts.since?.toISOString() ?? ""],
+  });
+  const text = (v: unknown) => (v === null || v === undefined ? null : String(v));
+  return Object.fromEntries(
+    rs.rows.map((r) => [
+      String(r.ticket),
+      {
+        kind: String(r.kind) as EventKind,
+        phase: text(r.phase),
+        message: text(r.message),
+        runtime: text(r.runtime),
+        handle: text(r.handle),
+        prUrl: text(r.pr_url),
+        at: String(r.created_at),
+      },
+    ]),
+  );
+}
+
+/**
+ * Records that the coordinator of a project is at work (it read its inbox).
+ * The dashboard shows a coordinator as active from the newest of these.
+ */
+export async function recordCoordinatorSeen(
+  db: Db,
+  seen: { project: string; handle?: string | null; at: Date },
+): Promise<void> {
+  await recordEvent(db, {
+    project: seen.project,
+    ticket: NO_TICKET,
+    kind: "inbox",
+    handle: seen.handle ?? null,
+    at: seen.at,
+  });
+}
+
+/** When the coordinator of a project last read its inbox; null if it never did. */
+export async function lastCoordinatorSeen(db: Db, project: string): Promise<string | null> {
+  const rs = await db.execute({
+    sql: "SELECT max(created_at) AS at FROM events WHERE project = ? AND kind = 'inbox'",
+    args: [project],
+  });
+  const at = rs.rows[0]?.at;
+  return at === null || at === undefined ? null : String(at);
 }
 
 // ------------------------------------------------------------------ runtime handles

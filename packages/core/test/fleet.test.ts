@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildLane, frontier } from "../src/fleet.ts";
+import { buildLane, frontier, inFlight } from "../src/fleet.ts";
 import { buildModel } from "../src/model.ts";
 import type { Comment, Issue } from "../src/types.ts";
 import { issue } from "./support.ts";
@@ -134,5 +134,69 @@ describe("lanes", () => {
     const afterRelease = lane(i, [a, released, b]);
     expect(afterRelease.flags).not.toContain("double-claim");
     expect(afterRelease.claim?.session).toBe("two");
+  });
+
+  test("time in phase starts at the first report of the current phase, not at the latest repeat", () => {
+    const report = (at: string, phase: "planning" | "implementing") =>
+      comment("P-2", at, { status: { phase, summary: "" } });
+    const i = issue("P-2", { statusType: "started", agentPhase: "implementing" });
+    const l = lane(i, [
+      report("2026-03-04T09:45:00Z", "implementing"),
+      report("2026-03-04T09:30:00Z", "implementing"),
+      report("2026-03-04T09:10:00Z", "planning"),
+      report("2026-03-04T08:50:00Z", "implementing"),
+    ]);
+    expect(l.since).toBe("2026-03-04T09:30:00Z");
+  });
+
+  test("a Turso report newer than the tracker read wins the phase, the time in phase and the status", () => {
+    const i = issue("P-2", { statusType: "started", agentPhase: "implementing", assignee: "Worker" });
+    const announced = comment("P-2", "2026-03-04T09:00:00Z", { status: { phase: "implementing", summary: "coding" } });
+    const report = { kind: "report", phase: "shipping", message: "PR open", at: "2026-03-04T09:58:00Z" };
+    const withLive = (after: string) =>
+      buildLane(program(i), [announced], i, { ...opts, live: { after, events: { "P-2": report } } });
+
+    expect(withLive("2026-03-04T09:57:00Z")).toMatchObject({
+      phase: "shipping",
+      phaseSource: "live",
+      since: "2026-03-04T09:58:00Z",
+      lastReport: "2026-03-04T09:58:00Z",
+      statusLine: { summary: "PR open", at: "2026-03-04T09:58:00Z" },
+    });
+    // The tracker was read after the report: its label already says what the report said.
+    expect(withLive("2026-03-04T09:59:00Z")).toMatchObject({ phase: "implementing", phaseSource: "label" });
+  });
+});
+
+describe("tickets in flight", () => {
+  const opts = { now: Date.parse("2026-03-04T10:00:00Z"), silentAfterMinutes: 15 };
+  const after = "2026-03-04T09:50:00Z";
+  const event = (kind: string, phase: string | null, at: string) => ({ kind, phase, message: null, at });
+
+  test("a claim after the tracker read puts a ticket in flight; a release or a merge takes one out", () => {
+    const m = program(
+      issue("P-2", { labels: ["ready-for-agent"] }),
+      issue("P-3", { statusType: "started", agentPhase: "implementing" }),
+      issue("P-4", { statusType: "started", agentPhase: "implementing" }),
+      issue("P-5", { statusType: "started", agentPhase: "ready-to-merge" }),
+    );
+    const lanes = inFlight(m, [], {
+      ...opts,
+      live: {
+        after,
+        events: {
+          "P-2": event("claim", "planning", "2026-03-04T09:55:00Z"),
+          "P-3": event("release", null, "2026-03-04T09:56:00Z"),
+          "P-4": event("release", null, "2026-03-04T09:40:00Z"),
+          "P-5": event("merge", "merged", "2026-03-04T09:57:00Z"),
+        },
+        handles: { "P-2": { runtime: "Conductor", handle: "ws-1/s-1" } },
+      },
+    });
+    expect(lanes.map((l) => [l.issue.id, l.phase, l.runtime, l.handle, l.flags])).toEqual([
+      ["P-4", "implementing", null, null, ["silent", "no-assignee"]],
+      ["P-2", "planning", "Conductor", "ws-1/s-1", []],
+    ]);
+    expect(lanes.find((l) => l.issue.id === "P-2")?.since).toBe("2026-03-04T09:55:00Z");
   });
 });

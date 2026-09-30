@@ -109,6 +109,34 @@ armada merge 34             # or the pull request URL; --ticket ABC-12 when the 
 - Then the ticket moves to Done with its agent labels removed, the pull request is linked, `Agent status: merged — …` is posted, the Turso hand-back is resolved and the runtime handle released. The output lists the workers in flight to tell and the worker session to archive with its runtime guide.
 - It runs `gh` and `git` in the repository checkout and needs `LINEAR_API_KEY` and a GitHub token.
 
+## Watch the fleet (dashboard)
+
+`packages/dashboard` is a Next.js app with one page: the Fleet of every project registered in Turso.
+
+- **Waiting for you** comes first, across projects. It lists questions, blocked workers, plans to approve, hand-backs and silent workers, the most urgent first.
+- **At work** has one row per ticket in flight. A row shows the project, the runtime and session, the six-step phase pipeline, time in phase, the last report, the pull request with its CI, and the flags (red CI, conflict, double claim).
+- A filter shows one project. Each project shows whether its coordinator is active, from its last inbox read.
+- It stays live without a reload. Linear and GitHub are read at most once a minute per project. Turso is read on every 5-second poll, so a worker's `armada report` shows within seconds.
+- When Turso is unreachable, a banner says so and the view falls back to Linear and GitHub.
+- The interface is in English or French (`ARMADA_DASHBOARD_LANGUAGE`, or the EN/FR switch).
+
+Try it locally with synthetic data and no key:
+
+```sh
+cd packages/dashboard
+bun run demo:seed                     # a local file: database with two invented projects
+ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:.demo/armada.db bun run dev   # http://localhost:4822
+bun run demo:report WID-12 shipping "Opened the pull request"                # watch the row change
+```
+
+**Deploy on Vercel.** Create a project from this repository and set these options:
+
+- Root Directory: `packages/dashboard`, with files outside the root directory included (the default). The framework preset is Next.js, and Bun installs the workspace from `bun.lock`.
+- Environment variables: `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`) and `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60).
+- Keep it private. Turn on Vercel Authentication (Settings > Deployment Protection). The keys stay on the server; the browser only receives the fleet reading.
+
+One deployment covers one Linear workspace and one GitHub organization: its keys must read every registered project.
+
 ## Keys
 
 Armada needs a few keys. Set them up once per machine with `armada auth login`, or pass them as environment variables, which always win over the stored ones (the way to go in CI and cloud sandboxes).
@@ -205,7 +233,7 @@ See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) 
 - **Linear** holds the plan: specs, tickets, dependencies and agent phases.
 - **Turso** (libSQL) holds live telemetry: events, heartbeats, pending questions and locks. Losing it loses live detail, never progress.
 - **Conductor Cloud** runs the workers in the first version. Other runtimes come later without changing the worker contract.
-- **Dashboard**: the live fleet view and the program view.
+- **Dashboard** (Next.js, `packages/dashboard`): the live Fleet view of every project. The program view comes later.
 
 ## License
 

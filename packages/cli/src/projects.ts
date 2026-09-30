@@ -1,17 +1,13 @@
 // `armada status --all`: the status of every project in the registry, each
 // read with the armada.toml on its repository's default branch.
 import {
-  type ArmadaConfig,
-  CONFIG_FILE,
-  configTemplate,
-  fetchDefaultBranchFile,
   LINEAR_KEY,
   listProjects,
   loadStatus,
   missingKeyMessage,
   openTurso,
   type ProjectRecord,
-  parseConfig,
+  readProjectConfig,
   STORED_KEYS,
   type StatusReport,
 } from "@armada/core";
@@ -37,30 +33,6 @@ export interface AllStatus {
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
-async function projectConfig(
-  p: ProjectRecord,
-  githubToken: string | null,
-  io: Io,
-): Promise<{ config: ArmadaConfig; warning: string | null }> {
-  const fallback = (why: string) => ({
-    config: parseConfig(configTemplate(p), `registry record ${p.slug}`),
-    warning: `${CONFIG_FILE} not read (${why}); using the registry record with default labels and policy`,
-  });
-  if (!githubToken) return fallback("no GitHub token");
-  try {
-    const text = await fetchDefaultBranchFile({
-      token: githubToken,
-      repository: p.repository,
-      path: CONFIG_FILE,
-      ...(io.fetch ? { fetch: io.fetch } : {}),
-    });
-    if (text === null) return fallback(`not on the default branch of ${p.repository}`);
-    return { config: parseConfig(text, `${p.repository}:${CONFIG_FILE}`), warning: null };
-  } catch (err) {
-    return fallback(message(err));
-  }
-}
-
 export async function statusAll(io: Io, json: boolean): Promise<number> {
   const { credentials } = await loadCredentials(io);
   const linearApiKey = credentials.linearApiKey;
@@ -81,7 +53,10 @@ export async function statusAll(io: Io, json: boolean): Promise<number> {
       const base = { slug: p.slug, name: p.name, repository: p.repository };
       let warning: string | null = null;
       try {
-        const read = await projectConfig(p, credentials.githubToken, io);
+        const read = await readProjectConfig(p, {
+          githubToken: credentials.githubToken,
+          ...(io.fetch ? { fetch: io.fetch } : {}),
+        });
         warning = read.warning;
         const config = read.config;
         const report = await loadStatus(config, {

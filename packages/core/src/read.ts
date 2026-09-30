@@ -1,21 +1,13 @@
-export * from "./brief.ts";
+// The read side of core, for hosts that cannot load the bundled skills (their
+// files are imported as text, which only Bun understands): the dashboard.
 export * from "./config.ts";
 export * from "./credentials.ts";
-export * from "./dotenv.ts";
 export * from "./fleet.ts";
 export * from "./github.ts";
-export * from "./labels.ts";
 export * from "./linear.ts";
-export * from "./linear-write.ts";
-export * from "./machine.ts";
-export * from "./merge.ts";
 export * from "./model.ts";
 export * from "./overview.ts";
-export * from "./phases.ts";
 export * from "./projects.ts";
-export * from "./setup.ts";
-export * from "./skills.ts";
 export * from "./status.ts";
 export * from "./turso.ts";
 export * from "./types.ts";
-export * from "./worker.ts";
