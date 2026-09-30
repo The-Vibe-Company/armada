@@ -80,6 +80,21 @@ armada release --reason "wrong ticket"
 - `report` and `release` find the ticket from `--ticket`, then `ARMADA_TICKET`, then the current git branch (`feature/abc-12-…`).
 - Turso is optional. When it is not configured or not reachable, the commands still write Linear and print a warning.
 
+## Merge a finished pull request (coordinator)
+
+```sh
+armada merge 34 --dry-run   # the checklist only
+armada merge 34             # or the pull request URL; --ticket ABC-12 when the branch names no ticket
+```
+
+- The checklist names every failure and exits 1: the ticket carries `ready-to-merge` and its newest `Agent status: ready-to-merge — PR #34, head <sha>` comment names this pull request with the full 40-character SHA of its current head; the pull request is open, not a draft, titled in Commitizen format and `CLEAN` for GitHub; every `[gates] required_checks` check is green on the head; no review thread is unresolved.
+- A head that lacks commits of its base branch is refused, unless `[gates] local_commands` is set: then the head is merged into the base in a throwaway `git worktree`, the commands run there, and the worktree is removed.
+- Hints, never blocking: top-level functions, classes, types and constants the pull request removes or renames that the base branch still uses in files the pull request does not touch.
+- One merge at a time per project: a `merge` lease in Turso (20 minutes, renewed before the merge) makes a second coordinator wait. Without Turso the merge runs with a warning.
+- The merge is `gh pr merge <n> --squash --match-head-commit <sha>`, never `--delete-branch` (it removes local worktrees that have the branch checked out). A GitHub 5xx is retried with backoff, each time after checking that the pull request is still open at the same head. Success is reported only once GitHub shows the pull request as merged at that head.
+- Then the ticket moves to Done with its agent labels removed, the pull request is linked, `Agent status: merged — …` is posted, the Turso hand-back is resolved and the runtime handle released. The output lists the workers in flight to tell and the worker session to archive with its runtime guide.
+- It runs `gh` and `git` in the repository checkout and needs `LINEAR_API_KEY` and a GitHub token.
+
 ## Keys
 
 Armada needs a few keys. Set them up once per machine with `armada auth login`, or pass them as environment variables, which always win over the stored ones (the way to go in CI and cloud sandboxes).
@@ -132,7 +147,8 @@ runtimes = ["Claude Code", "Codex", "Conductor"]  # values of the runtime group 
 repository = "acme/widgets"      # owner/name (required)
 
 [gates]
-required_checks = ["test"]       # CI checks that must be green before a hand-back (default: every check)
+required_checks = ["test"]       # CI checks that must be green before a hand-back or a merge (default: every check)
+local_commands = ["npm ci", "npm test"]  # run by `armada merge` on a test merge of a head behind its base (default: none, rebase instead)
 
 [policy]
 silence_minutes = 15             # a worker with no report for longer is flagged silent (default 15)

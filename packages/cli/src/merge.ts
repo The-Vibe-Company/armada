@@ -138,7 +138,7 @@ function render(o: MergeOutcome): string {
   const a = o.archive;
   if (a)
     out.push(
-      `Archive the worker's workspace of ${o.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"}) with the stop/archive section of ${a.guide ? `the ${a.guide} skill` : "its runtime guide"}.`,
+      `Archive the worker's workspace of ${o.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"}) with the "Stop and archive" section of ${a.guide ? `the ${a.guide} skill` : "its runtime guide"}.`,
     );
   return `${out.join("\n")}\n`;
 }
