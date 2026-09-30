@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.9](https://github.com/The-Vibe-Company/armada/compare/v0.1.8...v0.1.9) (2026-09-30)
+
+
+### Features
+
+* **dashboard:** require a password before showing the fleet ([#23](https://github.com/The-Vibe-Company/armada/issues/23)) ([1447bd8](https://github.com/The-Vibe-Company/armada/commit/1447bd8b9bbb4a9adeabf0f95c532fe4b83e2019))
+
+
+### Bug Fixes
+
+* **cli:** name the next step whenever armada cannot continue ([#21](https://github.com/The-Vibe-Company/armada/issues/21)) ([e69633c](https://github.com/The-Vibe-Company/armada/commit/e69633c9bf7b85d1313f8e6584ac8a9e165822ac))
+
 ## [0.1.8](https://github.com/The-Vibe-Company/armada/compare/v0.1.7...v0.1.8) (2026-09-30)
 
 
