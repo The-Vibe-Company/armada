@@ -43,12 +43,13 @@ Commands:
                     Prints what waits in this worker's inbox.
   release --reason <text>
                     Give the ticket back: agent labels removed, ticket moved back
-  merge <pr> [--ticket <id>] [--dry-run]
+  merge <pr> [--ticket <id>] [--dry-run] [--no-lock]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
                     lock, close the ticket and list the workers to tell. Never deletes
-                    the branch. --dry-run only runs the checklist.
+                    the branch. --dry-run only runs the checklist. Refused when Turso is
+                    configured but down; --no-lock then merges without the lock.
   auth login        Ask for the missing keys (hidden input) and store them on this machine
   auth status       Show which keys are set and where each comes from, never their values
   auth logout       Remove Armada's keys from this machine
@@ -103,14 +104,14 @@ const VALUE_OPTIONS = [
   "slug",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run"];
+const FLAG_OPTIONS = ["dry-run", "no-lock"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch"],
   report: ["ticket", "message", "message-file", "pr", "sha"],
   release: ["ticket", "reason"],
   init: ["program-root", "name", "slug"],
-  merge: ["ticket", "dry-run"],
+  merge: ["ticket", "dry-run", "no-lock"],
 };
 
 export function parseArgs(argv: string[]): Args {

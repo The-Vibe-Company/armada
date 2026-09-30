@@ -182,6 +182,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       merge: ghMerge(exec, repoDir, config.github.repository),
     },
     repo: gitRepo(exec, repoDir),
+    tursoConfigured: !!credentials.tursoUrl,
     turso: () => {
       turso.live ??= openLive(credentials);
       return turso.live;
@@ -203,6 +204,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       pr: number,
       ticket: a.options.ticket ?? null,
       dryRun: !!a.options["dry-run"],
+      noLock: !!a.options["no-lock"],
     });
     io.stdout(a.json ? `${JSON.stringify(o, null, 2)}\n` : render(o));
     for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);

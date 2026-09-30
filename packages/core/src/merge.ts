@@ -78,6 +78,8 @@ export interface MergeContext {
   /** Null when git cannot be run: a head behind its base is then refused and hints are skipped. */
   repo: LocalRepo | null;
   turso: () => Promise<{ db: Db | null; warning: string | null }>;
+  /** True when a Turso URL is set: the merge lock is then required, and Turso being down refuses the merge. */
+  tursoConfigured: boolean;
   /** Tickets in flight in the project (the merged one may be among them). */
   inFlight: () => Promise<TicketInFlight[]>;
   /** Identifies this coordinator in the merge lease. */
@@ -94,6 +96,8 @@ export interface MergeInput {
   ticket?: string | null;
   /** Run the checklist only. */
   dryRun?: boolean;
+  /** Merge without the merge lock (Turso down); recorded on the ticket. */
+  noLock?: boolean;
 }
 
 export interface WorkerToTell {
@@ -298,6 +302,28 @@ export interface LeaseOptions {
   /** Give up after waiting this long; defaults to the TTL, after which a crashed holder's lease has expired. */
   maxWaitMs?: number;
   onWait?: (held: Lease | null) => void;
+  /** Longest wait for one Turso call on the lease; a hung database refuses instead of hanging. */
+  timeoutMs?: number;
+}
+
+const LOCK_CALL_TIMEOUT_MS = 10_000;
+
+/** `p`, or a Refusal once `ms` pass without an answer. */
+async function timed<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Refusal(`Turso did not answer within ${ms / 1000} s to ${what}; nothing was merged`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -312,10 +338,11 @@ export async function withLease<T>(
   const key = { project: o.project, name: o.name, holder: o.holder, ttlMs: o.ttlMs };
   const poll = o.pollMs ?? LEASE_POLL_MS;
   const maxWait = o.maxWaitMs ?? o.ttlMs;
+  const lockTimeout = o.timeoutMs ?? LOCK_CALL_TIMEOUT_MS;
   let waited = 0;
   let lastHolder: string | null | undefined;
   for (;;) {
-    const got = await acquireLease(db, { ...key, at: o.now() });
+    const got = await timed(acquireLease(db, { ...key, at: o.now() }), lockTimeout, `take the ${o.name} lock`);
     if (got.acquired) break;
     if (waited >= maxWait)
       throw new Refusal(
@@ -329,9 +356,11 @@ export async function withLease<T>(
     waited += poll;
   }
   try {
-    return await body(() => renewLease(db, { ...key, at: o.now() }));
+    return await body(() =>
+      timed(renewLease(db, { ...key, at: o.now() }), lockTimeout, `renew the ${o.name} lock`).catch(() => false),
+    );
   } finally {
-    await releaseLease(db, key).catch(() => {});
+    await timed(releaseLease(db, key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
   }
 }
 
@@ -543,7 +572,7 @@ export const runtimeGuide = (runtime: string | null) =>
     : null;
 
 /** Closes the ticket in Linear: Done, agent labels removed, PR linked, merged status posted. */
-async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull): Promise<string[]> {
+async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull, unlocked: boolean): Promise<string[]> {
   const groups = ctx.config.tracker.labels;
   const done = ticket.statusType === "completed" ? null : firstState(ticket.states, "completed");
   await ctx.linear.updateTicket(ticket.uuid, {
@@ -554,7 +583,7 @@ async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull)
     await ctx.linear.linkUrl(ticket.uuid, merged.url, merged.title || `Pull request #${merged.number}`);
   await ctx.linear.comment(
     ticket.uuid,
-    `Agent status: merged — PR #${merged.number} squash-merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}, head ${merged.headSha}`,
+    `Agent status: merged — PR #${merged.number} squash-merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}, head ${merged.headSha}${unlocked ? ", merged without lock (--no-lock)" : ""}`,
   );
   return [
     `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent labels removed, merged status posted.`,
@@ -574,7 +603,6 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
   const { config } = ctx;
   const slug = config.project.slug;
   const early: string[] = [];
-  const { db, warning } = await ctx.turso();
   const run = async (renew: () => Promise<boolean>) => {
     const c = await checklist(ctx, input);
     c.warnings.unshift(...early);
@@ -588,7 +616,7 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
       `Merged #${merged.number} into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"} (head ${merged.headSha}).`,
     ];
     try {
-      lines.push(...(await closeTicket(ctx, c.ticket, merged)));
+      lines.push(...(await closeTicket(ctx, c.ticket, merged, !!input.noLock)));
     } catch (err) {
       throw new Error(
         `#${merged.number} is merged, but Linear could not be updated (${err instanceof Error ? err.message : String(err)}); close ${c.ticket.id} by hand: Done, agent labels removed, pull request linked`,
@@ -596,9 +624,18 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     }
     return after(ctx, c, merged, lines);
   };
+  if (input.noLock) {
+    early.push(`merged without the merge lock (--no-lock): make sure no other coordinator merges in ${slug} now`);
+    return run(async () => true);
+  }
+  const { db, warning } = await ctx.turso();
+  if (!db && ctx.tursoConfigured)
+    throw new Refusal(
+      `the merge lock needs Turso, which is unavailable (${warning ?? "no answer"}); nothing was merged. Fix Turso, or pass --no-lock if you are sure no other coordinator merges in ${slug} now`,
+    );
   if (!db) {
     early.push(
-      `${warning ?? "Turso unavailable"}; the merge lock was not taken, so make sure no other coordinator merges in ${slug} now`,
+      `${warning ?? "Turso is not configured"}; the merge lock was not taken, so make sure no other coordinator merges in ${slug} now`,
     );
     return run(async () => true);
   }

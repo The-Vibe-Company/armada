@@ -104,7 +104,7 @@ const label = (id: string) => {
   return l;
 };
 
-function setup(o: { turso?: Db | null; toml?: string; holder?: string } = {}) {
+function setup(o: { turso?: Db | null; toml?: string; holder?: string; tursoDown?: boolean } = {}) {
   const config = parseConfig(`${DEMO_TOML}${o.toml ?? GATES}`);
   const linear = new FakeLinear();
   const forge = new FakeForge();
@@ -127,7 +127,11 @@ function setup(o: { turso?: Db | null; toml?: string; holder?: string } = {}) {
     linear,
     forge,
     repo,
-    turso: async () => (o.turso ? { db: o.turso, warning: null } : { db: null, warning: "Turso is not configured" }),
+    turso: async () =>
+      o.turso
+        ? { db: o.turso, warning: null }
+        : { db: null, warning: o.tursoDown ? "Turso unavailable (connection refused)" : "Turso is not configured" },
+    tursoConfigured: !!o.turso || !!o.tursoDown,
     inFlight: async () => [
       { id: "DEMO-7", title: "Share a list", phase: "ready-to-merge", runtime: "Conductor" },
       { id: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code" },
@@ -399,6 +403,30 @@ describe("armada merge", () => {
       "the merge of #9 was accepted but GitHub could not be read back (GitHub API HTTP 502); check it on GitHub: if it merged, close DEMO-7 by hand",
     );
     expect(s.linear.writes).toEqual([]);
+  });
+
+  test("Turso configured but down refuses the merge; --no-lock merges and says so on the ticket", async () => {
+    const s = setup({ tursoDown: true });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
+      "the merge lock needs Turso, which is unavailable (Turso unavailable (connection refused)); nothing was merged. Fix Turso, or pass --no-lock if you are sure no other coordinator merges in widgets now",
+    );
+    expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
+
+    const out = await mergePullRequest(s.ctx, { pr: 9, noLock: true });
+    expect(out.merged).toBe(true);
+    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(", merged without lock (--no-lock)");
+    expect(out.warnings[0]).toBe(
+      "merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now",
+    );
+  });
+
+  test("without Turso configured, the merge runs unlocked with a warning", async () => {
+    const s = setup();
+    const out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.warnings[0]).toBe(
+      "Turso is not configured; the merge lock was not taken, so make sure no other coordinator merges in widgets now",
+    );
   });
 
   test("two coordinators merging at once merge one after the other", async () => {
