@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.12](https://github.com/The-Vibe-Company/armada/compare/v0.1.11...v0.1.12) (2026-09-30)
+
+
+### Features
+
+* **dashboard:** sign in with an account and an organization ([#29](https://github.com/The-Vibe-Company/armada/issues/29)) ([7ce90a1](https://github.com/The-Vibe-Company/armada/commit/7ce90a12916354031e0d55dc2cc4b194c5e55f34))
+
 ## [0.1.11](https://github.com/The-Vibe-Company/armada/compare/v0.1.10...v0.1.11) (2026-09-30)
 
 
