@@ -15,6 +15,7 @@ import {
   recordEvent,
   redact,
   releaseRuntimeHandle,
+  resolveInboxItem,
   resolveInboxItems,
   saveRuntimeHandle,
   saveWorkerProfile,
@@ -321,7 +322,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   );
 
   const at = ctx.now();
-  await live(ctx, warnings, "record the claim", async (db) => {
+  const launched = await live(ctx, warnings, "record the claim", async (db) => {
     await ensureProject(db, projectOf(config), at);
     await saveRuntimeHandle(db, {
       project: config.project.slug,
@@ -350,7 +351,29 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       handle: input.handle,
       at,
     });
+    // The launch the owner asked for from the dashboard is done.
+    if (resuming) return [];
+    const asked = (
+      await openInboxItems(db, { project: config.project.slug, recipient: "coordinator", ticket: ticket.id })
+    ).filter((i) => i.kind === "launch-request");
+    for (const r of asked)
+      await resolveInboxItem(db, {
+        project: config.project.slug,
+        id: r.id,
+        resolution: `claimed by ${runtime.name} (${input.handle})`,
+        at,
+      });
+    return asked;
   });
+  if (launched?.length) {
+    const who = [...new Set(launched.map((r) => r.author ?? "the owner"))].join(", ");
+    const ids = launched.map((r) => `#${r.id}`).join(", ");
+    await linear.comment(
+      ticket.uuid,
+      `Agent status: planning — launched as ${who} asked from the dashboard (request ${ids})`,
+    );
+    lines.push(`Launch request ${ids} from ${who} resolved.`);
+  }
   const state = await readBack(ctx, ticket.id, warnings);
   return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null, state };
 }
@@ -530,6 +553,13 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
       project: config.project.slug,
       ticket: ticket.id,
       kind: "question",
+      resolution: `ticket released: ${input.reason.trim()}`,
+      at,
+    });
+    await resolveInboxItems(db, {
+      project: config.project.slug,
+      ticket: ticket.id,
+      kind: "answer-request",
       resolution: `ticket released: ${input.reason.trim()}`,
       at,
     });

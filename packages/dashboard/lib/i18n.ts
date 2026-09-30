@@ -1,11 +1,16 @@
 // Interface strings in English and French. The language is the dashboard's
 // own setting: the viewer's choice (a cookie), else ARMADA_DASHBOARD_LANGUAGE,
 // else English. Tracker content (titles, statuses, questions) is shown as is.
-import type { AgentPhase, CoordinatorState, LaneFlag, WaitingKind } from "@armada/core/read";
+import type { AgentPhase, CoordinatorState, LaneFlag, RequestRefusalCode, WaitingKind } from "@armada/core/read";
 
 export const LANGUAGES = ["en", "fr"] as const;
 export type Language = (typeof LANGUAGES)[number];
 export const LANGUAGE_COOKIE = "armada-lang";
+/** The name that signs the viewer's requests. */
+export const AUTHOR_COOKIE = "armada-author";
+
+/** Why a request was not recorded: core's refusals, plus what the dashboard itself can hit. */
+export type RequestError = RequestRefusalCode | "unknown-project" | "live-down" | "failed";
 
 export const isLanguage = (v: unknown): v is Language => LANGUAGES.includes(v as Language);
 
@@ -133,6 +138,56 @@ const en = {
     offInProduction: (variable: string) =>
       `${variable}=off only works in local development. Set a real password in the deployment's environment variables, then redeploy.`,
   },
+  answer: "Answer",
+  answerSent: "answer sent",
+  answerLabel: (ticket: string) => `Your answer to the question on ${ticket}`,
+  answerPlaceholder: "Your decision, and why. The coordinator delivers it to the worker and records it on the ticket.",
+  quickAnswer: "Answer with this option",
+  send: "Send to the coordinator",
+  sending: "Sending…",
+  cancel: "Cancel",
+  signedAs: "Signed",
+  change: "change",
+  yourName: "Your name",
+  nameHint: "Requests are signed with it on the ticket",
+  answerPending: (author: string | null, ago: string) => `Answer from ${author ?? "you"} · sent ${ago} ago`,
+  waitingForCoordinator: "waiting for the coordinator to deliver it",
+  coordinatorAway: "the coordinator is not reading its inbox right now; it will see this at its next read",
+  readyTitle: "Ready to launch",
+  readyEmpty: "No ticket is ready to start.",
+  readyHint: "A launch is a request: the coordinator starts the worker, and its claim closes the request.",
+  launch: "Launch",
+  launchLabel: (ticket: string) => `Launch ${ticket}`,
+  profile: "Profile",
+  routed: "routed",
+  routedHint: (why: string) => `Routing picks it: ${why}`,
+  noProfiles: "armada.toml declares no profile: the coordinator launches with its default.",
+  overrideHint: (routed: string) =>
+    `Routing picks ${routed}. The coordinator launches with your choice and records on the ticket that you asked for it.`,
+  requestLaunch: "Request launch",
+  launchPending: (author: string | null, ago: string) => `Launch asked by ${author ?? "you"} · ${ago} ago`,
+  notMarkedReady: "not marked ready",
+  criticalPath: "critical path",
+  unlocks: (n: number) => `unlocks ${n}`,
+  moreUnblocked: (n: number) =>
+    n === 1 ? "1 more unblocked, not marked ready" : `${n} more unblocked, not marked ready`,
+  fewerUnblocked: "Hide the tickets not marked ready",
+  needsLive: "Answers and launches go through Turso, which cannot be read right now.",
+  requestErrors: {
+    "no-author": "Say who you are: the request is signed with your name.",
+    "empty-answer": "The answer is empty.",
+    "answer-too-long": "The answer is too long (4,000 characters at most).",
+    "no-question": "This question no longer exists.",
+    "question-closed": "This question was already answered.",
+    "answer-waiting": "An answer to this question already waits for the coordinator.",
+    "not-ready": "This ticket can no longer start: it left the frontier.",
+    "in-flight": "A worker already holds this ticket.",
+    "unknown-profile": "This profile is not in the project's armada.toml.",
+    "launch-waiting": "A launch of this ticket already waits for the coordinator.",
+    "unknown-project": "This project is no longer on the dashboard.",
+    "live-down": "Turso cannot be reached: nothing was recorded. Try again in a moment.",
+    failed: "The request could not be recorded. Try again in a moment.",
+  } satisfies Record<RequestError, string>,
 };
 
 export type Strings = typeof en;
@@ -244,6 +299,55 @@ const fr: Strings = {
       `Aucun mot de passe n'est configuré : ce tableau de bord n'affiche rien. Définis ${variable} dans les variables d'environnement du déploiement, puis redéploie.`,
     offInProduction: (variable) =>
       `${variable}=off ne marche qu'en développement local. Définis un vrai mot de passe dans les variables d'environnement du déploiement, puis redéploie.`,
+  },
+  answer: "Répondre",
+  answerSent: "réponse envoyée",
+  answerLabel: (ticket) => `Ta réponse à la question de ${ticket}`,
+  answerPlaceholder: "Ta décision, et pourquoi. Le coordinateur la transmet au worker et la note sur le ticket.",
+  quickAnswer: "Répondre avec cette option",
+  send: "Envoyer au coordinateur",
+  sending: "Envoi…",
+  cancel: "Annuler",
+  signedAs: "Signé",
+  change: "changer",
+  yourName: "Ton nom",
+  nameHint: "Les demandes sont signées de ce nom sur le ticket",
+  answerPending: (author, ago) => `Réponse de ${author ?? "toi"} · envoyée il y a ${ago}`,
+  waitingForCoordinator: "en attente de transmission par le coordinateur",
+  coordinatorAway: "le coordinateur ne lit pas sa boîte en ce moment ; il la verra à sa prochaine lecture",
+  readyTitle: "Prêts à lancer",
+  readyEmpty: "Aucun ticket n'est prêt à démarrer.",
+  readyHint: "Un lancement est une demande : le coordinateur démarre le worker, et son claim clôt la demande.",
+  launch: "Lancer",
+  launchLabel: (ticket) => `Lancer ${ticket}`,
+  profile: "Profil",
+  routed: "routé",
+  routedHint: (why) => `Choisi par le routage : ${why}`,
+  noProfiles: "armada.toml ne déclare aucun profil : le coordinateur lance avec son défaut.",
+  overrideHint: (routed) =>
+    `Le routage choisit ${routed}. Le coordinateur lance avec ton choix et note sur le ticket que tu l'as demandé.`,
+  requestLaunch: "Demander le lancement",
+  launchPending: (author, ago) => `Lancement demandé par ${author ?? "toi"} · il y a ${ago}`,
+  notMarkedReady: "pas marqué prêt",
+  criticalPath: "chemin critique",
+  unlocks: (n) => `débloque ${n}`,
+  moreUnblocked: (n) => (n === 1 ? "1 autre débloqué, pas marqué prêt" : `${n} autres débloqués, pas marqués prêts`),
+  fewerUnblocked: "Masquer les tickets pas marqués prêts",
+  needsLive: "Réponses et lancements passent par Turso, illisible pour le moment.",
+  requestErrors: {
+    "no-author": "Dis qui tu es : la demande est signée de ton nom.",
+    "empty-answer": "La réponse est vide.",
+    "answer-too-long": "La réponse est trop longue (4 000 caractères au plus).",
+    "no-question": "Cette question n'existe plus.",
+    "question-closed": "Cette question a déjà reçu une réponse.",
+    "answer-waiting": "Une réponse à cette question attend déjà le coordinateur.",
+    "not-ready": "Ce ticket ne peut plus démarrer : il a quitté la frontière.",
+    "in-flight": "Un worker tient déjà ce ticket.",
+    "unknown-profile": "Ce profil n'est pas dans l'armada.toml du projet.",
+    "launch-waiting": "Un lancement de ce ticket attend déjà le coordinateur.",
+    "unknown-project": "Ce projet n'est plus sur le tableau de bord.",
+    "live-down": "Turso est injoignable : rien n'a été enregistré. Réessaie dans un instant.",
+    failed: "La demande n'a pas pu être enregistrée. Réessaie dans un instant.",
   },
 };
 

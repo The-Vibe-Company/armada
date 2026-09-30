@@ -2,11 +2,12 @@
 // dashboard's Fleet view (one per ticket in flight, across projects) and the
 // list of what waits for the owner. Pure: the dashboard reads the sources,
 // calls `buildOverview` and renders the result as is.
-import type { InFlightTicket, StatusReport } from "./status.ts";
+import type { ConductorProfile } from "./config.ts";
+import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
 import type { InboxItem } from "./turso.ts";
 import type { AgentPhase } from "./types.ts";
 
-export const OVERVIEW_SCHEMA_VERSION = 1;
+export const OVERVIEW_SCHEMA_VERSION = 2;
 
 /** The six steps of the phase pipeline, in order. */
 export const PIPELINE_STEPS = ["plan", "approval", "implement", "pr", "ci", "merge"] as const;
@@ -50,12 +51,38 @@ export interface WaitingItem {
   author: string | null;
   /** Since when it waits. */
   since: string;
+  /** For a question: its inbox item id, which the dashboard answers. */
+  item: number | null;
+  /** For a question: the owner's answer waiting for the coordinator to deliver it. */
+  answer: PendingAnswer | null;
+}
+
+/** An answer sent from the dashboard that the coordinator has not delivered yet. */
+export interface PendingAnswer {
+  id: number;
+  body: string;
+  author: string | null;
+  at: string;
+}
+
+/** A ticket ready to start, with what a launch from the dashboard needs. */
+export interface ReadyTicket extends FrontierTicket {
+  project: string;
+  /** A launch asked from the dashboard that no worker has claimed yet. */
+  launch: { id: number; author: string | null; at: string; profile: string | null } | null;
+}
+
+export interface ProfileSummary {
+  name: string;
+  agent: string;
+  model: string;
+  effort: string;
 }
 
 export interface FleetRow extends InFlightTicket {
   project: string;
   /** The oldest open question of this ticket in the coordinator's inbox. */
-  question: { body: string; at: string; author: string | null } | null;
+  question: { id: number; body: string; at: string; author: string | null; answer: PendingAnswer | null } | null;
   pipeline: Pipeline;
   /** Set when the row is in the waiting list. */
   waiting: WaitingKind | null;
@@ -73,6 +100,8 @@ export interface ProjectOverview {
   inFlight: number;
   waiting: number;
   sources: StatusReport["sources"] | null;
+  /** The Conductor profiles a launch can use, from armada.toml. */
+  profiles: ProfileSummary[];
   /** Set when the project could not be read at all. */
   error: string | null;
   warnings: string[];
@@ -88,6 +117,8 @@ export interface ProjectReading {
   warnings?: string[];
   /** Null when Turso was not read. */
   live: { inbox: InboxItem[]; coordinatorSeenAt: string | null } | null;
+  /** `[conductor.profiles]` of its armada.toml. */
+  profiles?: Record<string, ConductorProfile>;
 }
 
 export interface FleetOverview {
@@ -98,6 +129,8 @@ export interface FleetOverview {
   projects: ProjectOverview[];
   waiting: WaitingItem[];
   rows: FleetRow[];
+  /** Tickets ready to start, per project in frontier order (best first). */
+  ready: ReadyTicket[];
 }
 
 const MIN = 60_000;
@@ -120,6 +153,7 @@ export function buildOverview(input: {
   const rows: FleetRow[] = [];
   const waiting: WaitingItem[] = [];
   const projects: ProjectOverview[] = [];
+  const ready: ReadyTicket[] = [];
 
   for (const p of input.projects) {
     const tickets = p.report?.inFlight ?? [];
@@ -128,6 +162,15 @@ export function buildOverview(input: {
     const questions = new Map<string, InboxItem>();
     for (const q of inbox)
       if (q.kind === "question" && q.ticket && !questions.has(q.ticket)) questions.set(q.ticket, q);
+    // Requests the owner made from the dashboard, until the coordinator resolves them.
+    const answers = new Map<number, PendingAnswer>();
+    const launches = new Map<string, ReadyTicket["launch"]>();
+    for (const r of inbox) {
+      if (r.kind === "answer-request" && r.request?.question != null && !answers.has(r.request.question))
+        answers.set(r.request.question, { id: r.id, body: r.body, author: r.author, at: r.createdAt });
+      if (r.kind === "launch-request" && r.ticket && !launches.has(r.ticket))
+        launches.set(r.ticket, { id: r.id, author: r.author, at: r.createdAt, profile: r.request?.profile ?? null });
+    }
 
     // One waiting item per ticket: its most urgent reason. Project-wide items stay separate.
     const perTicket = new Map<string, WaitingItem>();
@@ -155,6 +198,8 @@ export function buildOverview(input: {
         detail: item.body,
         author: item.author,
         since: item.createdAt,
+        item: item.kind === "question" ? item.id : null,
+        answer: item.kind === "question" ? (answers.get(item.id) ?? null) : null,
       });
     }
     for (const t of tickets) {
@@ -169,6 +214,8 @@ export function buildOverview(input: {
         detail: t.statusLine?.summary ?? null,
         author: t.agent,
         since: kind === "silent" ? (t.lastReport ?? t.lastUpdate) : t.since,
+        item: null,
+        answer: null,
       });
     }
     waiting.push(...perTicket.values());
@@ -178,11 +225,15 @@ export function buildOverview(input: {
       rows.push({
         ...t,
         project: p.slug,
-        question: q ? { body: q.body, at: q.createdAt, author: q.author } : null,
+        question: q
+          ? { id: q.id, body: q.body, at: q.createdAt, author: q.author, answer: answers.get(q.id) ?? null }
+          : null,
         pipeline: pipeline(t),
         waiting: perTicket.get(t.id)?.kind ?? null,
       });
     }
+
+    for (const f of p.report?.frontier ?? []) ready.push({ ...f, project: p.slug, launch: launches.get(f.id) ?? null });
 
     const seenAt = p.live?.coordinatorSeenAt ?? null;
     const threshold = (p.report?.silentAfterMinutes ?? 15) * MIN;
@@ -198,6 +249,12 @@ export function buildOverview(input: {
       inFlight: tickets.length,
       waiting: perTicket.size + projectWide,
       sources: p.report?.sources ?? null,
+      profiles: Object.entries(p.profiles ?? {}).map(([name, c]) => ({
+        name,
+        agent: c.agent,
+        model: c.model,
+        effort: c.effort,
+      })),
       error: p.error,
       warnings: [...(p.warnings ?? []), ...(p.report?.warnings ?? [])],
     });
@@ -218,5 +275,6 @@ export function buildOverview(input: {
     projects,
     waiting,
     rows,
+    ready,
   };
 }

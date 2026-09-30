@@ -15,6 +15,7 @@ const ticket = (id: string, over: Partial<InFlightTicket> = {}): InFlightTicket 
   phaseSource: "label",
   runtime: "Conductor",
   handle: null,
+  profile: null,
   agent: "Worker",
   since: at("09:00"),
   lastUpdate: at("09:55"),
@@ -105,6 +106,54 @@ describe("fleet overview", () => {
       ["widgets", "active", 4, 3],
       ["gadgets", "idle", 1, 1],
     ]);
+  });
+
+  test("the owner's requests show as pending on their question and their ready ticket, never as waiting for the owner", () => {
+    const frontier = (id: string) => ({
+      id,
+      title: id,
+      url: `u/${id}`,
+      spec: null,
+      readyForAgent: true,
+      onCriticalPath: false,
+      unlocks: [],
+      route: { profile: "opus", why: "conductor.default_profile" },
+    });
+    const question = item({ ticket: "W-1", body: "Which table?" });
+    const widgets: ProjectReading = {
+      ...reading("widgets", [ticket("W-1", { phase: "blocked" })], {
+        inbox: [
+          question,
+          item({
+            ticket: "W-1",
+            kind: "answer-request",
+            author: "Ada",
+            body: "users",
+            request: { question: question.id, profile: null },
+          }),
+          item({
+            ticket: "W-8",
+            kind: "launch-request",
+            author: "Ada",
+            body: "Launch W-8",
+            request: { question: null, profile: "codex" },
+          }),
+        ],
+        coordinatorSeenAt: null,
+      }),
+      profiles: { opus: { agent: "claude", model: "opus-5-5", effort: "high", fastMode: false } },
+    };
+    widgets.report?.frontier.push(frontier("W-8"), frontier("W-9"));
+    const o = buildOverview({ projects: [widgets], live: { state: "ok", error: null }, now: NOW });
+
+    const pending = { id: question.id + 1, body: "users", author: "Ada", at: at("09:00") };
+    expect(o.waiting.map((w) => [w.kind, w.item, w.answer])).toEqual([["question", question.id, pending]]);
+    expect(o.rows[0]?.question?.answer).toEqual(pending);
+    expect(o.ready.map((r) => [r.project, r.id, r.route?.profile, r.launch])).toEqual([
+      ["widgets", "W-8", "opus", { id: question.id + 2, author: "Ada", at: at("09:00"), profile: "codex" }],
+      ["widgets", "W-9", "opus", null],
+    ]);
+    expect(o.projects[0]?.profiles).toEqual([{ name: "opus", agent: "claude", model: "opus-5-5", effort: "high" }]);
   });
 
   test("without Turso the waiting list comes from the tracker and the coordinator is unknown", () => {

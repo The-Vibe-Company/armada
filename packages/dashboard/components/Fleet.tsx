@@ -3,9 +3,17 @@
 // The Fleet view: what waits for the owner across every project, then one row
 // per ticket in flight. It renders the overview core builds and polls the
 // server for a new one every few seconds while the tab is visible.
-import type { FleetOverview, FleetRow, LaneFlag, ProjectOverview, WaitingItem } from "@armada/core/read";
+import type {
+  CoordinatorState,
+  FleetOverview,
+  FleetRow,
+  LaneFlag,
+  ProjectOverview,
+  WaitingItem,
+} from "@armada/core/read";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGE_COOKIE, LANGUAGES, type Language, STRINGS, type Strings } from "@/lib/i18n";
+import { type ActionContext, QuestionBlock, ReadyBlock, splitQuestion } from "./Actions";
 
 const POLL_MS = 5_000;
 const FRESH_MS = 20_000;
@@ -27,6 +35,7 @@ function useLiveOverview(initial: FleetOverview) {
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
   const [pending, setPending] = useState(false);
+  const [version, setVersion] = useState(0);
   const inFlight = useRef(false);
 
   const poll = useCallback(async () => {
@@ -43,6 +52,7 @@ function useLiveOverview(initial: FleetOverview) {
       }
       if (!res.ok) throw new Error(String(res.status));
       setOverview((await res.json()) as FleetOverview);
+      setVersion((v) => v + 1);
       setFailed(false);
       setCheckedAt(Date.now());
     } catch {
@@ -73,7 +83,7 @@ function useLiveOverview(initial: FleetOverview) {
     };
   }, [poll]);
 
-  return { overview, checkedAt, failed, pending, poll };
+  return { overview, checkedAt, failed, pending, poll, version };
 }
 
 function useNow(initial: string) {
@@ -92,13 +102,17 @@ export function Fleet({
   initialLanguage,
   initialProject,
   canLogOut = false,
+  initialAuthor,
 }: {
   initial: FleetOverview;
   initialLanguage: Language;
   initialProject: string | null;
   canLogOut?: boolean;
+  /** The name that signs the viewer's requests; empty until they give one. */
+  initialAuthor: string;
 }) {
-  const { overview, checkedAt, failed, pending, poll } = useLiveOverview(initial);
+  const { overview, checkedAt, failed, pending, poll, version } = useLiveOverview(initial);
+  const [author, setAuthor] = useState(initialAuthor);
   const now = useNow(initial.generatedAt);
   const [lang, setLang] = useState(initialLanguage);
   const [project, setProject] = useState(initialProject);
@@ -125,6 +139,17 @@ export function Fleet({
   const waiting = useMemo(() => overview.waiting.filter((w) => !active || w.project === active), [overview, active]);
   const projects = overview.projects.filter((p) => !active || p.slug === active);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
+  const ready = useMemo(() => overview.ready.filter((r) => !active || r.project === active), [overview, active]);
+  const coordinators = new Map<string, CoordinatorState>(overview.projects.map((p) => [p.slug, p.coordinator.state]));
+  const profiles = new Map(overview.projects.map((p) => [p.slug, p.profiles]));
+  const ctx: ActionContext = {
+    t,
+    signer: { name: author, set: setAuthor },
+    live: overview.live.state === "ok" && !failed,
+    now,
+    version,
+    refresh: () => void poll(),
+  };
   const silent = rows.filter((r) => r.silent).length;
   const redCi = rows.filter((r) => r.flags.includes("ci-failing")).length;
 
@@ -195,7 +220,14 @@ export function Fleet({
           ) : (
             <ol className="waiting">
               {waiting.map((w, k) => (
-                <WaitingRow key={`${w.project}-${w.ticket ?? k}-${w.kind}`} t={t} w={w} now={now} names={names} i={k} />
+                <WaitingRow
+                  key={`${w.project}-${w.ticket ?? k}-${w.kind}`}
+                  ctx={ctx}
+                  w={w}
+                  names={names}
+                  coordinator={coordinators.get(w.project) ?? "unknown"}
+                  i={k}
+                />
               ))}
             </ol>
           )}
@@ -228,6 +260,10 @@ export function Fleet({
             </ol>
           )}
         </section>
+
+        {overview.projects.length > 0 && (
+          <ReadyBlock ctx={ctx} ready={ready} profiles={profiles} names={names} coordinators={coordinators} />
+        )}
 
         <Footer t={t} projects={projects} now={now} />
       </main>
@@ -370,18 +406,19 @@ function ProjectBar({
 }
 
 function WaitingRow({
-  t,
+  ctx,
   w,
-  now,
   names,
+  coordinator,
   i,
 }: {
-  t: Strings;
+  ctx: ActionContext;
   w: WaitingItem;
-  now: number;
   names: Map<string, string>;
+  coordinator: CoordinatorState;
   i: number;
 }) {
+  const { t, now } = ctx;
   return (
     <li className={`wait-row k-${w.kind}`} style={{ ["--i" as string]: i }}>
       <span className="wait-kind">{t.kinds[w.kind]}</span>
@@ -400,7 +437,19 @@ function WaitingRow({
           {w.ticket && <span className="mono">{w.ticket}</span>}
           {w.author && <span>{w.author}</span>}
         </div>
-        {w.detail && <p className={`wait-detail ${w.kind === "question" ? "is-quote" : ""}`}>{w.detail}</p>}
+        {w.kind === "question" && w.detail ? (
+          <QuestionBlock
+            ctx={ctx}
+            project={w.project}
+            ticket={w.ticket}
+            item={w.item}
+            body={w.detail}
+            answer={w.answer}
+            coordinator={coordinator}
+          />
+        ) : (
+          w.detail && <p className="wait-detail">{w.detail}</p>
+        )}
       </div>
       <span className="wait-age tnum" title={w.since}>
         {t.duration(since(now, w.since))}
@@ -466,6 +515,11 @@ function CrewRow({
               {r.handle}
             </span>
           )}
+          {r.profile && (
+            <span className="mono faint" title={t.profile}>
+              {r.profile}
+            </span>
+          )}
           {r.pr ? (
             <a className="pr" href={r.pr.url} target="_blank" rel="noreferrer">
               <span className="mono">#{r.pr.number}</span>
@@ -485,7 +539,12 @@ function CrewRow({
               ?
             </span>
             <span className="sr-only">{t.question}: </span>
-            {r.question.body}
+            {r.question.answer && (
+              <span className="q-answered" title={r.question.answer.body}>
+                {t.answerSent}
+              </span>
+            )}
+            {splitQuestion(r.question.body).text.replace(/\s+/g, " ")}
           </p>
         ) : (
           r.statusLine && (

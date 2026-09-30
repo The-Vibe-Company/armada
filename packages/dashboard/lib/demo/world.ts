@@ -144,6 +144,32 @@ const TICKETS: DemoTicket[] = [
   },
 ];
 
+/** Tickets ready to start: on the frontier, their labels routed by the armada.toml template (web, api, Bug). */
+const READY: { id: string; project: string; title: string; labels: string[]; blockedBy?: string }[] = [
+  {
+    id: "WID-20",
+    project: "widgets",
+    title: "Let users change their email address",
+    labels: ["ready-for-agent", "web"],
+  },
+  { id: "WID-21", project: "widgets", title: "Rate-limit the public API", labels: ["ready-for-agent", "api"] },
+  {
+    id: "WID-22",
+    project: "widgets",
+    title: "Fix: refunds round the total the wrong way",
+    labels: ["ready-for-agent", "Bug"],
+  },
+  { id: "WID-23", project: "widgets", title: "Archive invoices older than a year", labels: [] },
+  {
+    id: "WID-24",
+    project: "widgets",
+    title: "Email the invoice as a PDF",
+    labels: ["ready-for-agent"],
+    blockedBy: "WID-14",
+  },
+  { id: "GAD-8", project: "gadgets", title: "Filter the catalogue by size", labels: ["ready-for-agent", "web"] },
+];
+
 export interface DemoInbox {
   project: string;
   ticket: string;
@@ -160,7 +186,7 @@ export const DEMO_INBOX: DemoInbox[] = [
     ticket: "WID-15",
     kind: "question",
     author: "Worker A",
-    body: "Should a sign-in link stay valid for 15 or 30 minutes?",
+    body: "How long should a sign-in link stay valid?\nShorter is safer; longer survives a slow mail server.\n\nOptions:\n1. 15 minutes (recommended)\n2. 30 minutes",
     ago: 12,
   },
   {
@@ -254,6 +280,16 @@ export function demoSnapshot(
       completedAt: ago(now, 600),
     }),
   ];
+  if (scenario === "fleet")
+    for (const r of READY.filter((t) => t.project === project.slug))
+      issues.push(
+        issue(r.id, {
+          title: r.title,
+          parentId: specId,
+          labels: r.labels,
+          blockedBy: r.blockedBy ? [{ id: r.blockedBy, statusType: "started" }] : [],
+        }),
+      );
   const comments: Comment[] = [];
   const prs: PullRequest[] = [];
   for (const t of tickets) {

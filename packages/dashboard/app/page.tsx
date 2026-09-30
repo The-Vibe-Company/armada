@@ -1,8 +1,8 @@
 import { cookies } from "next/headers";
 import { Fleet } from "@/components/Fleet";
 import { passwordRequired } from "@/lib/auth-server";
-import { LANGUAGE_COOKIE } from "@/lib/i18n";
-import { getOverview, languageOf } from "@/lib/server";
+import { AUTHOR_COOKIE, LANGUAGE_COOKIE } from "@/lib/i18n";
+import { authorOf, getOverview, languageOf } from "@/lib/server";
 
 // Every request reads the fleet: the page is live, never prerendered.
 export const dynamic = "force-dynamic";
@@ -16,6 +16,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
       initialLanguage={languageOf(jar.get(LANGUAGE_COOKIE)?.value)}
       initialProject={project}
       canLogOut={passwordRequired()}
+      initialAuthor={authorOf(jar.get(AUTHOR_COOKIE)?.value)}
     />
   );
 }

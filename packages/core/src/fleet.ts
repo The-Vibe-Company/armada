@@ -119,7 +119,7 @@ export interface LaneOptions {
     /** Newest event per ticket id. */
     events: Record<string, LiveEvent>;
     /** Open runtime handle per ticket id. */
-    handles?: Record<string, { runtime: string; handle: string }>;
+    handles?: Record<string, { runtime: string; handle: string; profile?: string | null }>;
   };
 }
 

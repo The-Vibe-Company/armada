@@ -733,6 +733,13 @@ async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: st
     });
     // No worker is left to take an answer.
     await resolveInboxItems(db, { project: slug, ticket: c.ticket.id, kind: "question", resolution: "merged", at });
+    await resolveInboxItems(db, {
+      project: slug,
+      ticket: c.ticket.id,
+      kind: "answer-request",
+      resolution: "merged",
+      at,
+    });
     await releaseRuntimeHandle(db, slug, c.ticket.id, at);
     return { handle, resolved, open: await openRuntimeHandles(db, slug) };
   });

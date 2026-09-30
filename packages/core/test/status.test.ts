@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { parseConfig } from "../src/config.ts";
 import { loadStatus } from "../src/status.ts";
-import { demoConfig, NOW, recordedFetch } from "./support.ts";
+import { DEMO_TOML, demoConfig, NOW, recordedFetch } from "./support.ts";
 
 describe("loadStatus", () => {
   test("reports tickets in flight, the frontier and waiting pull requests from Linear and GitHub", async () => {
@@ -64,5 +65,29 @@ describe("loadStatus", () => {
     expect(r.sources.github.error).toMatch(/no GitHub token/);
     expect(r.inFlight.map((t) => t.id)).toEqual(["DEMO-18", "DEMO-16", "DEMO-11"]);
     expect(r.inFlight.find((t) => t.id === "DEMO-11")?.pr).toMatchObject({ number: 7, ci: null });
+  });
+
+  test("each ready ticket carries the profile its labels route it to, for the dashboard's launch picker", async () => {
+    const config = parseConfig(`${DEMO_TOML}
+[conductor]
+default_profile = "opus"
+[conductor.profiles.opus]
+agent = "claude"
+model = "opus-5-5"
+effort = "high"
+[conductor.profiles.codex]
+agent = "codex"
+model = "gpt-6"
+effort = "high"
+[[conductor.routing]]
+labels = ["Ready for agent"]
+profile = "codex"
+`);
+    const { fetch } = recordedFetch();
+    const r = await loadStatus(config, { linearApiKey: "k", githubToken: null, fetch, now: () => NOW });
+    expect(r.frontier.map((t) => [t.id, t.route])).toEqual([
+      ["DEMO-13", { profile: "codex", why: 'rule 1 of [[conductor.routing]] (label "ready-for-agent")' }],
+      ["DEMO-15", { profile: "opus", why: "conductor.default_profile (no routing rule matched)" }],
+    ]);
   });
 });

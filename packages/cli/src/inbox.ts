@@ -64,6 +64,8 @@ export function renderInbox(r: InboxReport): string {
         e.id === null ? e.kind : `#${e.id} ${e.kind}`,
         e.ticket,
         e.author && `from ${e.author}`,
+        e.request?.question && `answers #${e.request.question}`,
+        e.request?.profile && `profile ${e.request.profile}`,
         e.createdAt,
       ]
         .filter(Boolean)
@@ -73,6 +75,10 @@ export function renderInbox(r: InboxReport): string {
     if (r.items.some((e) => e.kind === "question"))
       out.push(
         'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+      );
+    if (r.items.some((e) => e.kind === "answer-request" || e.kind === "launch-request"))
+      out.push(
+        'Dashboard requests: deliver an answer-request, then armada answer <id> "<answer>"; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>".',
       );
   }
   if (r.wait?.timedOut) out.push(`No new item within ${r.wait.timeoutSeconds} s.`);

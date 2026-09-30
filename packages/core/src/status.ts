@@ -5,6 +5,7 @@ import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequest
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { type Fetch, fetchProgram } from "./linear.ts";
 import { buildModel } from "./model.ts";
+import { describeRoute, routeProfile } from "./routing.ts";
 import type { AgentPhase, CiState, ForgeData, ProgramData } from "./types.ts";
 
 export const STATUS_SCHEMA_VERSION = 1;
@@ -32,6 +33,8 @@ export interface InFlightTicket extends TicketRef {
   runtime: string | null;
   /** The worker's runtime session (workspace/session id), when known. */
   handle: string | null;
+  /** The Conductor profile its claim named (live runtime handle, else the claim comment); null when none. */
+  profile: string | null;
   agent: string | null;
   since: string;
   lastUpdate: string;
@@ -48,6 +51,8 @@ export interface FrontierTicket extends TicketRef {
   readyForAgent: boolean;
   onCriticalPath: boolean;
   unlocks: string[];
+  /** The profile `[[conductor.routing]]` gives it from its labels, and why; null when armada.toml declares none. */
+  route: { profile: string; why: string } | null;
 }
 
 export interface WaitingPullRequest extends PrRef {
@@ -88,6 +93,11 @@ export interface BuildStatusInput {
   /** Problems met on optional sources (Turso), added to the report warnings. */
   extraWarnings?: string[];
   now: Date;
+}
+
+function routeOf(config: ArmadaConfig, labels: string[]): FrontierTicket["route"] {
+  const route = routeProfile(config, labels);
+  return route ? { profile: route.name, why: describeRoute(route, config) } : null;
 }
 
 export function buildStatus({
@@ -144,6 +154,7 @@ export function buildStatus({
       phaseSource: l.phaseSource,
       runtime: l.runtime,
       handle: l.handle,
+      profile: live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null,
       agent: l.agent,
       since: l.since,
       lastUpdate: l.lastUpdate,
@@ -164,6 +175,7 @@ export function buildStatus({
         readyForAgent: c.readyForAgent,
         onCriticalPath: c.onCriticalPath,
         unlocks: c.unlocksAll,
+        route: routeOf(config, c.issue.labels),
       })),
     pullRequests: forge
       ? waitingPullRequests(m, forge.prs).map(({ pr, ticket }) => ({
