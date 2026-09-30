@@ -1,0 +1,30 @@
+packages/cli/test/brief.test.ts
+  s_d658e7251951c2::t_bdb041dafc90c7 118-119,124-125
+  s_d658e7251951c2::t_8286be45cff97e 3,126-127
+skills/armada-runtime-conductor/SKILL.md
+  s_d658e7251951c2::t_d473f2953a231e 3,6-10,14-17,19,22-44,49-50,53,58-77,80,85-86,89-91
+README.md
+  s_d658e7251951c2::t_b6d044b2374fba 72
+packages/core/src/brief.ts
+  s_d658e7251951c2::t_b666520c752093 63-66,265-267,269,282-283,313,316,320-321
+skills/armada-coordinator/SKILL.md
+  s_d658e7251951c2::t_28796b08211d69 17-22
+skills/armada-worker/SKILL.md
+  s_d658e7251951c2::t_3909b24575c4fc 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "8f6dabd32cf1942538e3f7ffd90e5aa68db0c14b",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
