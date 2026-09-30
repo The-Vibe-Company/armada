@@ -1,8 +1,10 @@
 // `armada login`, `armada whoami` and `armada logout`: who this terminal is on
 // Armada. A person signs in with a code confirmed in the browser; a headless
 // coordinator with an organization API key (ARMADA_API_KEY, or stored by
-// `armada login --api-key`). The session token or key lives in the
-// credentials file (0600) and is never printed.
+// `armada login --api-key`); a worker with the one-time launch token of its
+// launch message (`armada login --launch-token`), for a worker session on its
+// ticket only. The session token or key lives in the credentials file (0600)
+// and is never printed.
 import {
   API_KEY_VARIABLE,
   type ArmadaIdentity,
@@ -14,13 +16,16 @@ import {
   type Credentials,
   DEFAULT_ARMADA_API_URL,
   displayCode,
+  formatWorkerSession,
   LOGIN_NEXT,
   machinePaths,
   SESSION_TOKEN_VARIABLE,
   SIGNED_IN_TO_VARIABLE,
   TURSO_LEASE_VARIABLE,
   updateCredentialStore,
+  WORKER_SESSION_PREFIX,
   waitForApproval,
+  workerSessionVariable,
 } from "@armada/core";
 import { loadCredentials, type Machine } from "./auth.ts";
 import { type Io, UsageError } from "./io.ts";
@@ -64,6 +69,12 @@ export function describeIdentity(identity: ArmadaIdentity): string {
   if (identity.via === "api-key") {
     const key = identity.apiKey?.name ?? identity.apiKey?.start ?? "an API key";
     return `the API key "${key}" of ${org}`;
+  }
+  if (identity.via === "worker") {
+    const w = identity.worker;
+    return w
+      ? `the worker of ${w.ticket} (${w.project}), launched by ${w.launchedBy}, in ${org}`
+      : `a worker of ${org}`;
   }
   const who = identity.user
     ? identity.user.name
@@ -117,12 +128,65 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
   return 0;
 }
 
-export async function login(io: Io, apiKey: boolean): Promise<number> {
+/**
+ * Exchanges the launch message's token for a worker session and keeps it under
+ * its ticket's key, beside any other sign-in: a person's session on the same
+ * machine stays, and several workers can share it.
+ */
+async function loginWithLaunchToken(
+  io: Io,
+  credentials: Credentials,
+  token: string,
+  apiUrl: string | null,
+): Promise<number> {
+  const p = paths(io);
+  let url = credentials.armadaApi.url;
+  if (apiUrl) {
+    apiBaseUrl(apiUrl);
+    if (credentials.armadaApi.source.kind !== "default" && armadaAddress(apiUrl) !== armadaAddress(url))
+      throw new UsageError(
+        `the launch message names ${hostOf(apiUrl)}, but ARMADA_API_URL or [api] url names ${hostOf(url)}`,
+        "unset ARMADA_API_URL, or ask the coordinator for a launch from that Armada",
+      );
+    url = apiUrl;
+  }
+  const session = await apiOf(io, url).exchangeLaunchToken(token.trim());
+  const w = session.worker;
+  await updateCredentialStore(p, {
+    [workerSessionVariable(w.ticket)]: formatWorkerSession({
+      api: armadaAddress(url),
+      token: session.token,
+      ticket: w.ticket,
+      project: w.project,
+      organization: session.organization.id,
+      id: w.id,
+    }),
+  });
+  io.stdout(
+    `Signed in to ${hostOf(url)} as the worker of ${w.ticket} (${w.project}) in ${session.organization.name}, launched by ${w.launchedBy}.\nThis terminal claims, reports, asks and releases ${w.ticket} only; Armada gives each of those commands its keys.\n`,
+  );
+  return 0;
+}
+
+export interface LoginOptions {
+  apiKey: boolean;
+  launchToken: string | null;
+  apiUrl: string | null;
+}
+
+export async function login(io: Io, o: LoginOptions): Promise<number> {
+  if (o.apiUrl !== null && o.launchToken === null)
+    throw new UsageError("--api-url goes with --launch-token: it names the Armada of the launch message");
+  if (o.launchToken !== null && o.apiKey) throw new UsageError("pass --api-key or --launch-token, not both");
   const { machine, credentials } = await loadCredentials(io, { armada: false });
+  if (o.launchToken !== null) {
+    if (!o.launchToken.trim()) throw new UsageError("--launch-token needs the token of the launch message");
+    return loginWithLaunchToken(io, credentials, o.launchToken, o.apiUrl);
+  }
   const host = hostOf(credentials.armadaApi.url);
   if (credentials.armadaSignIn?.source.kind === "env")
     io.stderr(`! ${API_KEY_VARIABLE} is set in the environment: it wins over what \`armada login\` stores.\n`);
-  if (apiKey) return loginWithApiKey(io, credentials);
+  if (o.apiKey) return loginWithApiKey(io, credentials);
 
   const p = paths(io);
   const url = credentials.armadaApi.url;
@@ -158,7 +222,14 @@ export async function login(io: Io, apiKey: boolean): Promise<number> {
 }
 
 export async function whoami(io: Io, json: boolean): Promise<number> {
-  const { credentials } = await loadCredentials(io, { armada: false });
+  let { credentials } = await loadCredentials(io, { armada: false });
+  // A worker's machine holds only its worker session: that is who it is.
+  const [only] = credentials.workerTickets;
+  if (!credentials.armadaSignIn && only && credentials.workerTickets.length === 1)
+    ({ credentials } = await loadCredentials(io, {
+      armada: false,
+      worker: { command: "whoami", project: "", ticket: () => only },
+    }));
   const signIn = requireSignIn(credentials);
   const identity = await apiOf(io, credentials.armadaApi.url).whoami(signIn);
   if (json) {
@@ -174,7 +245,8 @@ export async function logout(io: Io): Promise<number> {
   const { machine } = await loadCredentials(io, { armada: false });
   const p = paths(io);
   const at = storedAt(machine);
-  const stored = [SESSION_TOKEN_VARIABLE, API_KEY_VARIABLE, TURSO_LEASE_VARIABLE].filter((k) =>
+  const workers = (machine.store?.assigned ?? []).filter((k) => k.startsWith(WORKER_SESSION_PREFIX));
+  const stored = [SESSION_TOKEN_VARIABLE, API_KEY_VARIABLE, TURSO_LEASE_VARIABLE, ...workers].filter((k) =>
     machine.store?.assigned.includes(k),
   );
   const session = machine.store?.values[SESSION_TOKEN_VARIABLE]?.trim();
@@ -194,6 +266,8 @@ export async function logout(io: Io): Promise<number> {
       [API_KEY_VARIABLE]: null,
       [SIGNED_IN_TO_VARIABLE]: null,
       [TURSO_LEASE_VARIABLE]: null,
+      // Worker sessions are forgotten, not ended: `armada release` ends one.
+      ...Object.fromEntries(workers.map((k) => [k, null])),
     });
     io.stdout(`Signed out of ${hostOf(at)}: removed the sign-in from ${p.credentials}.\n`);
   } else io.stdout(`This terminal was not signed in to Armada (nothing in ${p.credentials}).\n`);

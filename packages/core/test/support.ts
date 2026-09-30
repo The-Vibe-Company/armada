@@ -392,7 +392,10 @@ export interface FakeVault {
  * device code answers: "approve", or an RFC 8628 error ("slow_down",
  * "access_denied", "expired_token"; "pending" stands for
  * "authorization_pending"). An approval issues `token`. `keys` are the valid API keys;
- * `accounts: false` plays a deployment still on the shared password.
+ * `accounts: false` plays a deployment still on the shared password. Launch
+ * tokens and worker sessions are numbered canaries (`armada_launch_CANARY_1`,
+ * `armada_worker_CANARY_1`); `end(ticket, why)` plays a revocation from the
+ * dashboard.
  */
 export function fakeArmada(
   o: { polls?: string[]; token?: string; keys?: Record<string, string>; accounts?: boolean; vault?: FakeVault } = {},
@@ -402,6 +405,11 @@ export function fakeArmada(
   const sessions = new Set<string>();
   const keys = new Map(Object.entries(o.keys ?? {}));
   const calls: ArmadaCall[] = [];
+  const launches = new Map<string, { project: string; ticket: string; used: boolean }>();
+  const workers = new Map<string, { project: string; ticket: string; ended: string | null }>();
+  const end = (ticket: string, why: string) => {
+    for (const w of workers.values()) if (w.ticket === ticket && !w.ended) w.ended = why;
+  };
   const fetch: Fetch = async (url, init) => {
     if (!url.startsWith(`${ARMADA_URL}/api/cli/`)) throw new Error(`unexpected URL ${url}`);
     const headers = new Headers(init.headers);
@@ -436,6 +444,75 @@ export function fakeArmada(
       return Response.json({ access_token: token, token_type: "Bearer", expires_in: 2592000, scope: "" });
     }
     const bearer = call.authorization?.replace(/^Bearer /, "") ?? null;
+    const body = (call.body ?? {}) as Record<string, unknown>;
+    const worker = bearer ? workers.get(bearer) : undefined;
+    if (worker?.ended)
+      return Response.json({ error: worker.ended, next: "report it to the coordinator" }, { status: 401 });
+    const person = (bearer && sessions.has(bearer)) || (call.apiKey && keys.has(call.apiKey));
+    if (route === "POST launch-tokens") {
+      if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
+      if (o.vault?.off || !o.vault)
+        return Response.json({ error: "this Armada keeps no keys", next: "armada auth login" }, { status: 503 });
+      const t = `armada_launch_CANARY_${launches.size + 1}`;
+      launches.set(t, { project: String(body.project), ticket: String(body.ticket), used: false });
+      return Response.json({
+        schemaVersion: 1,
+        token: t,
+        expiresAt: new Date(o.vault.now().getTime() + 3_600_000).toISOString(),
+        worker: { id: `wk-${launches.size}`, project: body.project, ticket: body.ticket },
+        organization: { id: "org-1", name: "Acme", slug: "acme" },
+      });
+    }
+    if (route === "POST launch-tokens/exchange") {
+      const launch = launches.get(String(body.token));
+      if (!launch || launch.used)
+        return Response.json(
+          {
+            error: launch ? "this launch token was already used" : "this launch token is not valid",
+            next: "a new launch",
+          },
+          { status: 401 },
+        );
+      launch.used = true;
+      const t = `armada_worker_CANARY_${workers.size + 1}`;
+      workers.set(t, { project: launch.project, ticket: launch.ticket, ended: null });
+      return Response.json({
+        schemaVersion: 1,
+        token: t,
+        worker: { id: `wk-${workers.size}`, project: launch.project, ticket: launch.ticket, launchedBy: "Ada Example" },
+        organization: { id: "org-1", name: "Acme", slug: "acme" },
+        expiresAt: "2026-03-07T10:00:00.000Z",
+      });
+    }
+    if (route === "POST workers/end") {
+      if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
+      const before = [...workers.values()].filter((w) => w.ticket === body.ticket && !w.ended).length;
+      end(String(body.ticket), `the ticket was ${String(body.reason)}`);
+      return Response.json({ ended: before });
+    }
+    if (worker && route === "GET session")
+      return Response.json({
+        ...PERSON,
+        via: "worker",
+        user: null,
+        organization: { ...PERSON.organization, role: null },
+        worker: { id: "wk-1", project: worker.project, ticket: worker.ticket, launchedBy: "Ada Example" },
+      });
+    if (worker && route === "DELETE session") {
+      worker.ended = "the ticket was released";
+      return Response.json({ signedOut: true });
+    }
+    if (worker && route === "POST credentials") {
+      const p = body.purpose as { command?: string; project?: string; ticket?: string } | undefined;
+      if (p?.ticket !== worker.ticket || p?.project !== worker.project)
+        return Response.json(
+          {
+            error: `this worker session acts on ${worker.ticket} only, not ${p?.ticket}`,
+            next: "the coordinator does it",
+          },
+          { status: 403 },
+        );
+    }
     if (route === "GET session") {
       if (call.apiKey && keys.has(call.apiKey))
         return Response.json({
@@ -455,7 +532,7 @@ export function fakeArmada(
       const v = o.vault;
       if (!v || v.off)
         return Response.json({ error: "this Armada keeps no keys", next: "armada auth login" }, { status: 503 });
-      if (!(bearer && sessions.has(bearer)) && !(call.apiKey && keys.has(call.apiKey)))
+      if (!person && !worker)
         return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
       const held = (call.body as { turso: { revision: string; expiresAt: string } | null }).turso;
       const now = v.now().getTime();
@@ -490,5 +567,5 @@ export function fakeArmada(
     }
     return Response.json({ error: "not found" }, { status: 404 });
   };
-  return { fetch, calls, sessions, keys };
+  return { fetch, calls, sessions, keys, launches, workers, end };
 }

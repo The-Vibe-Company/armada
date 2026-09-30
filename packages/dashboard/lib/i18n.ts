@@ -42,6 +42,13 @@ export type KeysError = (typeof KEYS_ERRORS)[number];
 export const KEYS_NOTICES = ["saved", "deleted"] as const;
 export type KeysNotice = (typeof KEYS_NOTICES)[number];
 
+/** Why a worker could not be revoked (a `?error=` of the Workers page). */
+export const WORKERS_ERRORS = ["forbidden", "gone", "failed"] as const;
+export type WorkersError = (typeof WORKERS_ERRORS)[number];
+
+/** Where a launch stands, as the Workers page shows it (`workerState` in lib/workers.ts). */
+type WorkerStateLabel = "waiting" | "unused" | "active" | "idle" | "released" | "merged" | "revoked";
+
 /** The keys the Keys page names: the vault's, plus a person's own Linear key. */
 export type KeyLabel =
   | "linear-api-key"
@@ -294,6 +301,7 @@ const en = {
     revoke: "Revoke",
     onlyOwners: "Only owners create and revoke API keys.",
     keysLink: "Keys: Linear, Turso and GitHub",
+    workersLink: "Workers: who launched them, and their sessions",
   },
   keys: {
     nav: "Keys",
@@ -342,10 +350,14 @@ const en = {
     audit: "Audit",
     auditHint: "Every change and every key handed out: who, which key, when. Never a value.",
     noEvents: "Nothing yet.",
-    actions: { set: "set", delete: "deleted", release: "handed out" } satisfies Record<
-      "set" | "delete" | "release",
-      string
-    >,
+    actions: {
+      set: "set",
+      delete: "deleted",
+      release: "handed out",
+      launch: "launch token made",
+      exchange: "launch token used",
+      end: "worker ended",
+    } satisfies Record<"set" | "delete" | "release" | "launch" | "exchange" | "end", string>,
     nothing: "no key",
     errors: {
       forbidden: "Your role does not allow this.",
@@ -357,6 +369,36 @@ const en = {
       saved: "Saved. It takes effect on the next command.",
       deleted: "Deleted. It takes effect on the next command.",
     } satisfies Record<KeysNotice, string>,
+  },
+  workers: {
+    nav: "Workers",
+    lead: "Each worker a coordinator launched with a one-time launch token: who launched it, when its token was used, and whether its session is still open. A worker session only claims, reports, asks and releases its own ticket.",
+    launchedBy: (who: string, when: string) => `launched by ${who}, ${when}`,
+    states: {
+      waiting: "token not used yet",
+      unused: "token expired unused",
+      active: "session active",
+      idle: "session expired",
+      released: "ended: ticket released",
+      merged: "ended: pull request merged",
+      revoked: "revoked",
+    } satisfies Record<WorkerStateLabel, string>,
+    tokenValid: (until: string) => `token valid until ${until}`,
+    tokenUsed: (when: string) => `token used ${when}`,
+    tokenExpired: (when: string) => `token expired ${when}`,
+    lastSeen: (when: string) => `last command ${when}`,
+    endedBy: (who: string, when: string) => `by ${who}, ${when}`,
+    revoke: "Revoke",
+    revokeHint:
+      "Revoking ends a worker's session at once: its next command fails, and it gets no more keys. A Turso token it already holds lasts until it expires (4 hours at most).",
+    onlyAdmins: "Only owners and admins revoke a worker.",
+    none: "No worker launched with a token yet. A signed-in coordinator makes one with armada brief <ticket>.",
+    errors: {
+      forbidden: "Your role does not allow this.",
+      gone: "This worker had already ended.",
+      failed: "That did not work. Try again in a moment.",
+    } satisfies Record<WorkersError, string>,
+    revoked: "Revoked. The worker's next command fails.",
   },
   device: {
     title: "Sign in from a terminal",
@@ -655,6 +697,7 @@ const fr: Strings = {
     revoke: "Révoquer",
     onlyOwners: "Seuls les propriétaires créent et révoquent les clés d'API.",
     keysLink: "Clés : Linear, Turso et GitHub",
+    workersLink: "Workers : qui les a lancés, et leurs sessions",
   },
   keys: {
     nav: "Clés",
@@ -703,7 +746,14 @@ const fr: Strings = {
     audit: "Journal",
     auditHint: "Chaque changement et chaque clé remise : qui, quelle clé, quand. Jamais une valeur.",
     noEvents: "Rien pour l'instant.",
-    actions: { set: "définie", delete: "supprimée", release: "remise" },
+    actions: {
+      set: "définie",
+      delete: "supprimée",
+      release: "remise",
+      launch: "jeton de lancement créé",
+      exchange: "jeton de lancement utilisé",
+      end: "worker arrêté",
+    },
     nothing: "aucune clé",
     errors: {
       forbidden: "Ton rôle ne le permet pas.",
@@ -715,6 +765,36 @@ const fr: Strings = {
       saved: "Enregistrée. Elle vaut dès la prochaine commande.",
       deleted: "Supprimée. Cela vaut dès la prochaine commande.",
     },
+  },
+  workers: {
+    nav: "Workers",
+    lead: "Chaque worker lancé par un coordinateur avec un jeton de lancement à usage unique : qui l'a lancé, quand son jeton a servi, et si sa session est encore ouverte. Une session de worker ne fait que réclamer, rapporter, demander et rendre son propre ticket.",
+    launchedBy: (who, when) => `lancé par ${who}, ${when}`,
+    states: {
+      waiting: "jeton pas encore utilisé",
+      unused: "jeton expiré sans servir",
+      active: "session active",
+      idle: "session expirée",
+      released: "terminée : ticket rendu",
+      merged: "terminée : pull request fusionnée",
+      revoked: "révoqué",
+    },
+    tokenValid: (until) => `jeton valable jusqu'à ${until}`,
+    tokenUsed: (when) => `jeton utilisé ${when}`,
+    tokenExpired: (when) => `jeton expiré ${when}`,
+    lastSeen: (when) => `dernière commande ${when}`,
+    endedBy: (who, when) => `par ${who}, ${when}`,
+    revoke: "Révoquer",
+    revokeHint:
+      "Révoquer met fin tout de suite à la session d'un worker : sa prochaine commande échoue, et il ne reçoit plus de clés. Un jeton Turso qu'il détient déjà dure jusqu'à son expiration (4 heures au plus).",
+    onlyAdmins: "Seuls les propriétaires et les admins révoquent un worker.",
+    none: "Aucun worker lancé avec un jeton pour l'instant. Un coordinateur connecté en crée un avec armada brief <ticket>.",
+    errors: {
+      forbidden: "Ton rôle ne le permet pas.",
+      gone: "Ce worker était déjà arrêté.",
+      failed: "Ça n'a pas marché. Réessaie dans un instant.",
+    },
+    revoked: "Révoqué. La prochaine commande du worker échoue.",
   },
   device: {
     title: "Connexion depuis un terminal",

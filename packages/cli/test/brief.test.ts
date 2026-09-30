@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEMO_TOML, NOW, recordedFetch } from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 
@@ -282,5 +282,67 @@ describe("armada brief", () => {
     expect(await run(["brief", "DEMO-13", "--profile", "turbo"], b.io)).toBe(2);
     expect(b.err()).toBe('armada: no Conductor profile "turbo" (available: opus, codex)\nNext: armada brief --help\n');
     expect(b.calls).toEqual([]);
+  });
+});
+
+describe("armada brief with a launch token", () => {
+  /** A coordinator signed in to a fake Armada that keeps the organization's keys. */
+  async function signedIn(vault: Partial<FakeVault> = {}) {
+    const home = await mkdtemp(join(tmpdir(), "armada-brief-launch-"));
+    homes.push(home);
+    await mkdir(join(home, "armada"), { recursive: true });
+    await writeFile(
+      join(home, "armada", "credentials"),
+      `ARMADA_SESSION_TOKEN=CANARY_coordinator_session\nARMADA_SIGNED_IN_TO=${ARMADA_URL}\n`,
+    );
+    const armada = fakeArmada({
+      token: "CANARY_coordinator_session",
+      vault: { linear: null, turso: null, tursoUrl: "", revision: "r", now: () => NOW, minted: 0, ...vault },
+    });
+    armada.sessions.add("CANARY_coordinator_session");
+    const b = briefIo({ ...SECRETS, XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL });
+    const linear = b.io.fetch;
+    b.io.fetch = (url, init) =>
+      url.startsWith(ARMADA_URL) ? armada.fetch(url, init) : (linear?.(url, init) ?? fetch(url));
+    return { ...b, armada };
+  }
+
+  test("signed in, the prompt signs the worker in first, and says it needs no key", async () => {
+    const b = await signedIn();
+    expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
+    const text = b.out();
+    expect(b.armada.calls.find((c) => c.path === "launch-tokens")?.body).toEqual({
+      project: "widgets",
+      ticket: "DEMO-13",
+    });
+    expect(text).toContain(
+      "Launch:      one-time token in the prompt, valid until 2026-03-04 11:00 UTC: the worker needs no key\n",
+    );
+    expect(text).toMatch(/ {2}LINEAR_API_KEY +optional /);
+    const prompt = text.slice(text.indexOf("# DEMO-13"));
+    expect(prompt).toContain(
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada login --launch-token armada_launch_CANARY_1 --api-url ${ARMADA_URL}\narmada claim DEMO-13 --runtime conductor`,
+    );
+    expect(prompt).toContain("No key is needed in this workspace");
+    expect(prompt).not.toContain("The coordinator set `LINEAR_API_KEY`");
+    for (const secret of Object.values(SECRETS)) expect(text).not.toContain(secret);
+    expect(text).not.toContain("CANARY_coordinator_session");
+  });
+
+  test("an Armada that refuses (no vault) leaves the prompt as before, with a warning; not signed in, the launch line says why", async () => {
+    const b = await signedIn({ off: true });
+    expect(await run(["brief", "DEMO-13", "--prompt"], b.io)).toBe(0);
+    expect(b.out()).not.toContain("--launch-token");
+    expect(b.out()).toContain("The coordinator set `LINEAR_API_KEY`");
+    expect(b.err()).toContain(
+      "armada: warning: no launch token: Armada made no launch token: this Armada keeps no keys",
+    );
+
+    const plain = briefIo();
+    expect(await run(["brief", "DEMO-13"], plain.io)).toBe(0);
+    expect(plain.out()).toContain(
+      "Launch:      no launch token (launch tokens need this terminal signed in to an Armada with accounts: armada login): pass the keys below in the worker's environment\n",
+    );
+    expect(plain.out()).not.toContain("--launch-token");
   });
 });

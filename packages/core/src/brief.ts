@@ -1,7 +1,11 @@
 // `armada brief`: the launch prompt a coordinator hands to a new worker, and
 // the settings the runtime must receive. Armada never launches the worker; the
 // runtime guide skill does, with what this returns. No secret value is ever
-// part of a brief: environment variables are named, never read into it.
+// part of a brief: environment variables are named, never read into it. The
+// one exception is a one-time launch token (THE-841), made by Armada for a
+// signed-in coordinator: the worker's first command exchanges it for a
+// session limited to its ticket, so its runtime needs no key at all. It works
+// once, within the hour, which makes a copy left in a transcript useless.
 import type { ArmadaConfig, ConductorProfile } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import {
@@ -67,6 +71,14 @@ export interface BriefVariable {
   purpose: string;
 }
 
+/** A worker's one-time launch token, made by Armada when the coordinator is signed in. */
+export interface BriefLaunch {
+  token: string;
+  expiresAt: string;
+  /** The Armada the worker signs in to, when it is not the built-in address. */
+  apiUrl: string | null;
+}
+
 export interface Brief {
   ticket: { id: string; title: string; url: string; branch: string | null; status: string; description: string };
   parent: { id: string; title: string; url: string } | null;
@@ -80,6 +92,10 @@ export interface Brief {
   /** Runs that version where a global install is refused. */
   fallback: string;
   claimCommand: string;
+  /** `armada login --launch-token <token>`, the worker's first command, and when the token expires; null without one. */
+  launch: { command: string; expiresAt: string } | null;
+  /** Why there is no launch token, when there is none. */
+  noLaunch: string | null;
   environment: BriefVariable[];
   blockers: BriefBlocker[];
   notes: BriefNote[];
@@ -245,6 +261,10 @@ export interface BuildBriefInput {
   env: Record<string, string | undefined>;
   /** Variables whose value comes from the machine credentials file. */
   stored?: string[];
+  /** The launch token Armada made for this worker, if any. */
+  launch?: BriefLaunch | null;
+  /** Why there is none: the terminal is not signed in, or Armada refused. */
+  noLaunch?: string | null;
   now: Date;
 }
 
@@ -311,9 +331,12 @@ export function buildBrief(input: BuildBriefInput): Brief {
     choice?.reason ? ` --reason ${shellWord(choice.reason)}` : "",
   ].join("");
   const has = (name: string) => !!input.env[name]?.trim();
+  const launch = input.launch ?? null;
   const environment: BriefVariable[] = [
     ...VARIABLES.map((v) => ({
       ...v,
+      // With a launch token the worker gets its keys from Armada.
+      ...(launch ? { required: false, purpose: `${v.purpose}; not needed: the launch token signs the worker in` } : {}),
       value: null,
       inShell: has(v.name),
       inStore: !has(v.name) && !!input.stored?.includes(v.name),
@@ -347,6 +370,13 @@ export function buildBrief(input: BuildBriefInput): Brief {
     install: `npm install -g ${pkg}`,
     fallback: `npm exec --yes --package=${pkg} -- armada`,
     claimCommand,
+    launch: launch
+      ? {
+          command: `armada login --launch-token ${shellWord(launch.token)}${launch.apiUrl ? ` --api-url ${shellWord(launch.apiUrl)}` : ""}`,
+          expiresAt: launch.expiresAt,
+        }
+      : null,
+    noLaunch: launch ? null : (input.noLaunch ?? null),
     environment,
     blockers: ticket.blockers.map(({ notes, ...b }) => ({ ...b, handBack: handBackNote(notes) })),
     notes: ticket.notes.slice(0, MAX_NOTES),
@@ -382,10 +412,17 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     "```sh",
     b.install,
+    ...(b.launch ? [b.launch.command] : []),
     b.claimCommand,
     "```",
     "",
     `This installs the coordinator's Armada version. If the global install is refused, use \`${b.fallback}\` wherever this brief or the skill says \`armada\`.`,
+    ...(b.launch
+      ? [
+          "",
+          `\`armada login --launch-token\` signs this workspace in to Armada as the worker of ${t.id}, with a one-time token valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC. Run it first, once.`,
+        ]
+      : []),
     "",
     "If the claim is refused, stop and quote the refusal in your reply (usually another worker holds the ticket).",
     "",
@@ -427,7 +464,9 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     "## Environment",
     "",
-    `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
+    b.launch
+      ? `No key is needed in this workspace: once signed in, Armada hands each command the keys it needs, for ${t.id} only. If a command says this worker was cut off from Armada, stop and say so in your reply. Never print, commit or log a token or a key.`
+      : `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
   );
   return `${out.join("\n")}\n`;
 }
@@ -442,6 +481,12 @@ export interface LoadBriefOptions {
   version: string;
   env: Record<string, string | undefined>;
   stored?: string[];
+  /**
+   * Asks Armada for the worker's launch token, once the ticket is found open.
+   * Else `reason` says why there is none, and is also a warning when `warn`;
+   * the prompt then names the keys to pass.
+   */
+  launch?: (ticket: string) => Promise<BriefLaunch | { reason: string; warn: boolean }>;
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -463,6 +508,11 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
   ]);
   if (!ticket)
     throw new Refusal(`ticket ${opts.ticket} not found in Linear`, "armada status, to see the tickets of the program");
+  const open = ticket.statusType !== "completed" && ticket.statusType !== "canceled";
+  const launch = open && opts.launch ? await opts.launch(ticket.id) : null;
+  const made = launch && "token" in launch ? launch : null;
+  const missed = launch && "reason" in launch ? launch : null;
+  if (missed?.warn) ticket.warnings.push(`no launch token: ${missed.reason}`);
   return buildBrief({
     config,
     ticket,
@@ -472,6 +522,8 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     version: opts.version,
     env: opts.env,
     ...(opts.stored ? { stored: opts.stored } : {}),
+    launch: made,
+    noLaunch: missed?.reason ?? null,
     now: now(),
   });
 }

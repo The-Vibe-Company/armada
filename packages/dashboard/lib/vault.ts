@@ -6,7 +6,8 @@
 // value copied onto another row does not open. Values are write-only: nothing
 // here returns a secret's value to a page, only to the broker (`broker.ts`)
 // and the dashboard's own reads. Every change and every release is recorded in
-// `armada_secret_event`, never with a value.
+// `armada_secret_event`, never with a value; so is every worker launched with a
+// launch token (`workers.ts`).
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { Client } from "@libsql/client";
 import type { Env } from "./accounts-settings";
@@ -198,16 +199,17 @@ export interface SecretInfo {
   readable: boolean;
 }
 
-/** Who acts: a person in the app, a terminal (session or API key), or the dashboard's own reads. */
+/** Who acts: a person in the app, a terminal (session, API key or worker session), or the dashboard's own reads. */
 export interface Actor {
-  kind: "person" | "session" | "api-key" | "dashboard";
-  /** A user id or an API key id; "" for the dashboard. */
+  kind: "person" | "session" | "api-key" | "worker" | "dashboard";
+  /** A user id, an API key id or a worker id; "" for the dashboard. */
   id: string;
   /** Shown in the audit list: a name and address, or the key's name. */
   label: string;
 }
 
-export type SecretAction = "set" | "delete" | "release";
+/** `launch`, `exchange` and `end` are the workers' (THE-841): a launch token made, used, and a worker ended. */
+export type SecretAction = "set" | "delete" | "release" | "launch" | "exchange" | "end";
 
 export interface SecretEvent {
   id: number;

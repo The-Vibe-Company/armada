@@ -26,7 +26,7 @@ import {
   type TestMergeResult,
 } from "@armada/core";
 import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
-import { openLive, type WorkerArgs } from "./worker.ts";
+import { endWorkerSessions, openLive, type WorkerArgs } from "./worker.ts";
 
 /** A GitHub 5xx or a network failure, as gh reports them. */
 const TRANSIENT =
@@ -218,6 +218,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     });
     io.stdout(a.json ? `${JSON.stringify(o, null, 2)}\n` : render(o));
     for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
+    if (o.merged) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
     return 0;
   } finally {
     (await turso.live)?.db?.close();

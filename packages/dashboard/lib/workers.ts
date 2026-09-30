@@ -1,0 +1,337 @@
+// Workers launched with a one-time launch token (THE-841). A signed-in
+// coordinator asks for a token when it prepares a worker (`armada brief`); the
+// token is bound to the organization, the project, the ticket and whoever
+// launched it, is used once and expires after an hour. The worker's first
+// command exchanges it for a worker session, limited to its ticket, which each
+// of its commands renews, and which ends on release, merge or revocation.
+// Only hashes of both tokens are stored. Every launch, exchange and end is in
+// the organization's audit list (`vault.ts`), never with a token. Everything is
+// injected so tests run it on a local database.
+import { createHash, randomBytes } from "node:crypto";
+import type { Client, Row } from "@libsql/client";
+import { type Actor, recordEvent } from "./vault";
+
+/** Every launch token starts with it, so a leaked one is recognisable. */
+export const LAUNCH_TOKEN_PREFIX = "armada_launch_";
+/** Every worker session token starts with it: the CLI API tells it from a person's session by it. */
+export const WORKER_TOKEN_PREFIX = "armada_worker_";
+/** How long a launch token waits to be used. */
+export const LAUNCH_TOKEN_MS = 60 * 60 * 1000;
+/** A worker session unused this long ends on its own; each of its commands starts the count again. */
+export const WORKER_IDLE_MS = 72 * 60 * 60 * 1000;
+/** Exchange attempts per address per minute. */
+export const EXCHANGES_PER_MINUTE = 10;
+/** What a worker session may do, on its own ticket only. */
+export const WORKER_COMMANDS = ["claim", "report", "ask", "release"] as const;
+export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
+export const isWorkerCommand = (v: unknown): v is WorkerCommand => WORKER_COMMANDS.includes(v as WorkerCommand);
+
+export const isTicketId = (v: unknown): v is string =>
+  typeof v === "string" && /^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(v);
+export const isProjectSlug = (v: unknown): v is string => typeof v === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(v);
+
+export type EndReason = "released" | "merged" | "revoked";
+
+/** Who launched a worker: a person's terminal, or an organization API key. */
+export interface Launcher {
+  kind: "session" | "api-key";
+  id: string;
+  label: string;
+}
+
+/** One launch, as the dashboard lists it. Carries no token. */
+export interface Worker {
+  id: string;
+  organization: string;
+  project: string;
+  ticket: string;
+  launchedBy: Launcher;
+  createdAt: string;
+  tokenExpiresAt: string;
+  tokenUsedAt: string | null;
+  sessionExpiresAt: string | null;
+  sessionSeenAt: string | null;
+  endedAt: string | null;
+  endReason: EndReason | null;
+  endedBy: string | null;
+}
+
+/**
+ * Where a launch stands: its token `waiting` to be used or `unused` past its
+ * hour; its session `active`, or `idle` past its idle time; or ended.
+ */
+export type WorkerState = "waiting" | "unused" | "active" | "idle" | EndReason;
+
+export function workerState(w: Worker, now: Date): WorkerState {
+  if (w.endReason) return w.endReason;
+  const t = now.toISOString();
+  if (!w.tokenUsedAt) return w.tokenExpiresAt > t ? "waiting" : "unused";
+  return w.sessionExpiresAt && w.sessionExpiresAt > t ? "active" : "idle";
+}
+
+/** The person whose own keys a worker receives; null when an API key launched it. */
+export const launchingUser = (w: Worker) => (w.launchedBy.kind === "session" ? w.launchedBy.id : null);
+
+/** How the audit list names a worker. */
+export const workerActor = (w: Worker): Actor => ({
+  kind: "worker",
+  id: w.id,
+  label: `worker on ${w.ticket} (launched by ${w.launchedBy.label})`,
+});
+
+const hashOf = (token: string) => createHash("sha256").update(token).digest("hex");
+const newToken = (prefix: string) => `${prefix}${randomBytes(32).toString("base64url")}`;
+const hhmm = (iso: string) => `${iso.slice(0, 16)}Z`;
+const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
+
+const COLUMNS = `"id", "organizationId", "project", "ticket", "launchedByKind", "launchedById", "launchedByLabel",
+  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel"`;
+
+function workerOf(r: Row): Worker {
+  const reason = str(r.endReason);
+  return {
+    id: String(r.id),
+    organization: String(r.organizationId),
+    project: String(r.project),
+    ticket: String(r.ticket),
+    launchedBy: {
+      kind: String(r.launchedByKind) === "api-key" ? "api-key" : "session",
+      id: String(r.launchedById),
+      label: String(r.launchedByLabel),
+    },
+    createdAt: String(r.createdAt),
+    tokenExpiresAt: String(r.tokenExpiresAt),
+    tokenUsedAt: str(r.tokenUsedAt),
+    sessionExpiresAt: str(r.sessionExpiresAt),
+    sessionSeenAt: str(r.sessionSeenAt),
+    endedAt: str(r.endedAt),
+    endReason: reason === "released" || reason === "merged" || reason === "revoked" ? reason : null,
+    endedBy: str(r.endedByLabel),
+  };
+}
+
+// ------------------------------------------------------------ launch
+
+/** Makes a launch token for one ticket. The token is returned once and only its hash is kept. */
+export async function createLaunch(
+  client: Client,
+  input: { organization: string; project: string; ticket: string; launcher: Launcher; now: Date },
+): Promise<{ worker: Worker; token: string }> {
+  const token = newToken(LAUNCH_TOKEN_PREFIX);
+  const at = input.now.toISOString();
+  const expires = new Date(input.now.getTime() + LAUNCH_TOKEN_MS).toISOString();
+  const id = `wk_${randomBytes(9).toString("base64url")}`;
+  const ticket = input.ticket.toUpperCase();
+  await client.execute({
+    sql: `INSERT INTO "armada_worker" ("id", "organizationId", "project", "ticket", "launchedByKind", "launchedById",
+            "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt")
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      id,
+      input.organization,
+      input.project,
+      ticket,
+      input.launcher.kind,
+      input.launcher.id,
+      input.launcher.label,
+      at,
+      hashOf(token),
+      expires,
+    ],
+  });
+  await recordEvent(client, input.organization, {
+    at,
+    action: "launch",
+    keys: [],
+    actor: { kind: input.launcher.kind, id: input.launcher.id, label: input.launcher.label },
+    detail: `launch token for ${input.project} ${ticket}, to use before ${hhmm(expires)}`,
+  });
+  const worker: Worker = {
+    id,
+    organization: input.organization,
+    project: input.project,
+    ticket,
+    launchedBy: input.launcher,
+    createdAt: at,
+    tokenExpiresAt: expires,
+    tokenUsedAt: null,
+    sessionExpiresAt: null,
+    sessionSeenAt: null,
+    endedAt: null,
+    endReason: null,
+    endedBy: null,
+  };
+  return { worker, token };
+}
+
+// ------------------------------------------------------------ exchange
+
+export type ExchangeRefusal = "limited" | "unknown" | "used" | "expired" | "ended";
+
+export type Exchange =
+  | { ok: true; worker: Worker; token: string }
+  | { ok: false; reason: ExchangeRefusal; worker: Worker | null };
+
+/** Counts this attempt and says whether the address made too many in the last minute. */
+async function tooManyAttempts(client: Client, address: string, now: Date): Promise<boolean> {
+  const at = now.toISOString();
+  await client.batch(
+    [
+      // Old attempts count for nothing: they go.
+      {
+        sql: `DELETE FROM "armada_launch_attempt" WHERE "at" < ?`,
+        args: [new Date(now.getTime() - 3_600_000).toISOString()],
+      },
+      { sql: `INSERT INTO "armada_launch_attempt" ("address", "at") VALUES (?, ?)`, args: [address.slice(0, 64), at] },
+    ],
+    "write",
+  );
+  const rs = await client.execute({
+    sql: `SELECT count(*) AS n FROM "armada_launch_attempt" WHERE "address" = ? AND "at" > ?`,
+    args: [address.slice(0, 64), new Date(now.getTime() - 60_000).toISOString()],
+  });
+  return Number(rs.rows[0]?.n ?? 0) > EXCHANGES_PER_MINUTE;
+}
+
+/**
+ * Exchanges a launch token for a worker session, once: a second use, a use
+ * after its hour, or after the launch was revoked, is refused. Every outcome
+ * with a known token is in the audit list.
+ */
+export async function exchangeLaunch(
+  client: Client,
+  input: { token: string; address: string; now: Date },
+): Promise<Exchange> {
+  const { now } = input;
+  if (await tooManyAttempts(client, input.address, now)) return { ok: false, reason: "limited", worker: null };
+  if (!input.token.startsWith(LAUNCH_TOKEN_PREFIX) || input.token.length > 200)
+    return { ok: false, reason: "unknown", worker: null };
+  const rs = await client.execute({
+    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "tokenHash" = ?`,
+    args: [hashOf(input.token)],
+  });
+  const row = rs.rows[0];
+  if (!row) return { ok: false, reason: "unknown", worker: null };
+  const found = workerOf(row);
+  const at = now.toISOString();
+  const refuse = async (reason: Exclude<ExchangeRefusal, "limited" | "unknown">, why: string): Promise<Exchange> => {
+    await recordEvent(client, found.organization, {
+      at,
+      action: "exchange",
+      keys: [],
+      actor: workerActor(found),
+      detail: `launch token for ${found.project} ${found.ticket} refused: ${why}`,
+    });
+    return { ok: false, reason, worker: found };
+  };
+  if (found.endReason) return refuse("ended", `the launch was ${found.endReason}`);
+  if (found.tokenUsedAt) return refuse("used", `already used at ${hhmm(found.tokenUsedAt)}`);
+  if (found.tokenExpiresAt <= at) return refuse("expired", `expired at ${hhmm(found.tokenExpiresAt)}`);
+
+  const token = newToken(WORKER_TOKEN_PREFIX);
+  const expires = new Date(now.getTime() + WORKER_IDLE_MS).toISOString();
+  // One conditional write: of two exchanges racing, one wins.
+  const won = await client.execute({
+    sql: `UPDATE "armada_worker" SET "tokenUsedAt" = ?, "sessionHash" = ?, "sessionExpiresAt" = ?, "sessionSeenAt" = ?
+          WHERE "id" = ? AND "tokenUsedAt" IS NULL AND "endedAt" IS NULL AND "tokenExpiresAt" > ?`,
+    args: [at, hashOf(token), expires, at, found.id, at],
+  });
+  if (won.rowsAffected !== 1) return refuse("used", "used by another exchange at the same time");
+  const worker: Worker = { ...found, tokenUsedAt: at, sessionExpiresAt: expires, sessionSeenAt: at };
+  await recordEvent(client, found.organization, {
+    at,
+    action: "exchange",
+    keys: [],
+    actor: workerActor(worker),
+    detail: `launch token for ${found.project} ${found.ticket} used; worker session started`,
+  });
+  return { ok: true, worker, token };
+}
+
+// ------------------------------------------------------------ session
+
+export type WorkerLookup = { ok: true; worker: Worker } | { ok: false; worker: Worker | null };
+
+/** Whether a bearer token is a worker session's, by its prefix. */
+export const isWorkerToken = (token: string) => token.startsWith(WORKER_TOKEN_PREFIX);
+
+/**
+ * The worker behind a session token, renewed for another idle period. Not ok
+ * when unknown, ended or idle past its time; `worker` then says which, when known.
+ */
+export async function workerSession(client: Client, token: string, now: Date): Promise<WorkerLookup> {
+  const rs = await client.execute({
+    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "sessionHash" = ?`,
+    args: [hashOf(token)],
+  });
+  const row = rs.rows[0];
+  if (!row) return { ok: false, worker: null };
+  const worker = workerOf(row);
+  if (workerState(worker, now) !== "active") return { ok: false, worker };
+  const at = now.toISOString();
+  const expires = new Date(now.getTime() + WORKER_IDLE_MS).toISOString();
+  await client.execute({
+    sql: `UPDATE "armada_worker" SET "sessionExpiresAt" = ?, "sessionSeenAt" = ? WHERE "id" = ? AND "endedAt" IS NULL`,
+    args: [expires, at, worker.id],
+  });
+  return { ok: true, worker: { ...worker, sessionExpiresAt: expires, sessionSeenAt: at } };
+}
+
+async function end(
+  client: Client,
+  where: { sql: string; args: (string | null)[] },
+  input: { organization: string; reason: EndReason; by: Actor; now: Date },
+): Promise<Worker[]> {
+  const rs = await client.execute({
+    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = ? AND "endedAt" IS NULL AND ${where.sql}`,
+    args: [input.organization, ...where.args],
+  });
+  const at = input.now.toISOString();
+  const ended: Worker[] = [];
+  for (const row of rs.rows) {
+    const w = workerOf(row);
+    const done = await client.execute({
+      sql: `UPDATE "armada_worker" SET "endedAt" = ?, "endReason" = ?, "endedByLabel" = ? WHERE "id" = ? AND "endedAt" IS NULL`,
+      args: [at, input.reason, input.by.label, w.id],
+    });
+    if (done.rowsAffected !== 1) continue;
+    ended.push({ ...w, endedAt: at, endReason: input.reason, endedBy: input.by.label });
+    await recordEvent(client, input.organization, {
+      at,
+      action: "end",
+      keys: [],
+      actor: input.by,
+      detail: `${w.tokenUsedAt ? "worker session" : "unused launch token"} of ${w.project} ${w.ticket} ${input.reason}`,
+    });
+  }
+  return ended;
+}
+
+/** Ends one launch of the organization: its session, or its token if still unused. Null when there was none to end. */
+export async function endWorker(
+  client: Client,
+  input: { organization: string; id: string; reason: EndReason; by: Actor; now: Date },
+): Promise<Worker | null> {
+  return (await end(client, { sql: `"id" = ?`, args: [input.id] }, input))[0] ?? null;
+}
+
+/** Ends every launch of a ticket: its pull request merged, or the ticket released. */
+export async function endTicketWorkers(
+  client: Client,
+  input: { organization: string; project: string; ticket: string; reason: EndReason; by: Actor; now: Date },
+): Promise<Worker[]> {
+  return end(
+    client,
+    { sql: `"project" = ? AND "ticket" = ?`, args: [input.project, input.ticket.toUpperCase()] },
+    input,
+  );
+}
+
+/** The organization's launches, newest first. */
+export async function listWorkers(client: Client, organization: string, limit = 100): Promise<Worker[]> {
+  const rs = await client.execute({
+    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = ? ORDER BY "createdAt" DESC, "id" LIMIT ?`,
+    args: [organization, limit],
+  });
+  return rs.rows.map(workerOf);
+}

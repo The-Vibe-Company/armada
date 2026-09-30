@@ -1,23 +1,56 @@
 // The Armada API, as the CLI sees it: signing in from a terminal (a device
-// code confirmed in the browser), who is signed in, signing out, and the
-// organization's keys handed to a signed-in terminal (THE-840). It is the
+// code confirmed in the browser), who is signed in, signing out, the
+// organization's keys handed to a signed-in terminal (THE-840), and the
+// workers' one-time launch tokens and sessions (THE-841). It is the
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
 import type { Fetch } from "./linear.ts";
 import { networkReason } from "./linear.ts";
 
-/** How a terminal proves who it is: the session of `armada login`, or an organization API key. */
-export type ArmadaSignIn = { kind: "session"; token: string } | { kind: "api-key"; key: string };
+/**
+ * How a terminal proves who it is: the session of `armada login`, an
+ * organization API key, or the worker session of `armada login --launch-token`,
+ * which only acts on its own ticket of its own project.
+ */
+export type ArmadaSignIn =
+  | { kind: "session"; token: string }
+  | { kind: "api-key"; key: string }
+  | { kind: "worker"; token: string; ticket: string; project: string };
+
+/** What a worker command asks keys for; Armada refuses a worker session anything else. */
+export interface KeysPurpose {
+  command: string;
+  project: string;
+  ticket: string;
+}
+
+/** A one-time launch token for one ticket, from `POST /api/cli/launch-tokens`. */
+export interface LaunchToken {
+  token: string;
+  expiresAt: string;
+  worker: { id: string; project: string; ticket: string };
+  organization: { id: string; name: string; slug: string };
+}
+
+/** The worker session a launch token was exchanged for. */
+export interface WorkerSession {
+  token: string;
+  worker: { id: string; project: string; ticket: string; launchedBy: string };
+  organization: { id: string; name: string; slug: string };
+  expiresAt: string;
+}
 
 /** Who the terminal is signed in as, from `GET /api/cli/session`. Carries no secret. */
 export interface ArmadaIdentity {
   schemaVersion: 1;
-  via: "session" | "api-key";
+  via: "session" | "api-key" | "worker";
   /** The person, for a session; null for an API key, which acts for its organization. */
   user: { id: string; name: string; email: string } | null;
   /** The organization the terminal acts for; null when the person belongs to none yet. */
   organization: { id: string; name: string; slug: string; role: string | null } | null;
   apiKey: { id: string; name: string | null; start: string | null } | null;
+  /** The ticket a worker session acts on, and who launched it; absent from older servers. */
+  worker?: { id: string; project: string; ticket: string; launchedBy: string } | null;
   expiresAt: string | null;
 }
 
@@ -131,7 +164,8 @@ export function armadaApi(opts: ArmadaApiOptions) {
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const headers: Record<string, string> = { Accept: "application/json" };
     if (init.body) headers["Content-Type"] = "application/json";
-    if (init.signIn?.kind === "session") headers.Authorization = `Bearer ${init.signIn.token}`;
+    if (init.signIn?.kind === "session" || init.signIn?.kind === "worker")
+      headers.Authorization = `Bearer ${init.signIn.token}`;
     if (init.signIn?.kind === "api-key") headers["x-api-key"] = init.signIn.key;
     const res = await doFetch(new URL(`api/cli/${path}`, base).toString(), {
       method,
@@ -210,8 +244,15 @@ export function armadaApi(opts: ArmadaApiOptions) {
      * terminal already holds, so Armada can say "keep it" instead of making
      * another. Answers 503 when that Armada keeps no keys.
      */
-    async credentials(signIn: ArmadaSignIn, held: HeldTursoToken | null): Promise<ArmadaKeysAnswer> {
-      const { status, body } = await call("POST", "credentials", { signIn, body: { turso: held } });
+    async credentials(
+      signIn: ArmadaSignIn,
+      held: HeldTursoToken | null,
+      purpose: KeysPurpose | null = null,
+    ): Promise<ArmadaKeysAnswer> {
+      const { status, body } = await call("POST", "credentials", {
+        signIn,
+        body: purpose ? { turso: held, purpose } : { turso: held },
+      });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada gave no keys");
       const str = (v: unknown) => typeof v === "string" && v.length > 0;
       const org = body.organization as ArmadaKeysAnswer["organization"] | undefined;
@@ -231,7 +272,38 @@ export function armadaApi(opts: ArmadaApiOptions) {
       return { ...(body as unknown as ArmadaKeysAnswer), warnings };
     },
 
-    /** Revokes the session of `armada login` on the server. */
+    /** A one-time launch token for a worker on `ticket`, valid one hour; the launch message carries it. */
+    async launchToken(signIn: ArmadaSignIn, target: { project: string; ticket: string }): Promise<LaunchToken> {
+      const { status, body } = await call("POST", "launch-tokens", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada made no launch token");
+      const w = body.worker as LaunchToken["worker"] | undefined;
+      if (typeof body.token !== "string" || typeof body.expiresAt !== "string" || !w?.ticket)
+        throw new ArmadaApiError(`Armada (${host}) answered the launch token in a shape this CLI does not know`);
+      return body as unknown as LaunchToken;
+    },
+
+    /** Exchanges a launch token for a worker session; refused when used, expired or revoked. */
+    async exchangeLaunchToken(token: string): Promise<WorkerSession> {
+      const { status, body } = await call("POST", "launch-tokens/exchange", { body: { token } });
+      if (status !== 200) throw refusal(status, body, null);
+      const w = body.worker as WorkerSession["worker"] | undefined;
+      const org = body.organization as WorkerSession["organization"] | undefined;
+      if (typeof body.token !== "string" || !w?.ticket || !w.project || !org?.id)
+        throw new ArmadaApiError(`Armada (${host}) answered the launch token in a shape this CLI does not know`);
+      return body as unknown as WorkerSession;
+    },
+
+    /** Ends the worker sessions of a ticket, once its pull request is merged or it is released; how many ended. */
+    async endWorkers(
+      signIn: ArmadaSignIn,
+      target: { project: string; ticket: string; reason: "merged" | "released" },
+    ): Promise<number> {
+      const { status, body } = await call("POST", "workers/end", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, "Armada did not end the ticket's workers");
+      return typeof body.ended === "number" ? body.ended : 0;
+    },
+
+    /** Revokes the session of `armada login` on the server; a worker session ends as released. */
     async signOut(signIn: ArmadaSignIn): Promise<void> {
       const { status, body } = await call("DELETE", "session", { signIn });
       if (status !== 200) throw refusal(status, body, "Armada refused the sign-out");
