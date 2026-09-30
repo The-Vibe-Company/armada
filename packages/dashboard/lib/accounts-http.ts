@@ -62,8 +62,22 @@ function languageOf(request: NextRequest, env: Env): Language {
 /** Fails closed: nothing from Linear, GitHub or Turso while sessions cannot be checked. */
 function unavailable(data: boolean, lang: Language): NextResponse {
   const t = STRINGS[lang].auth;
-  if (data) return NextResponse.json({ error: t.unavailable }, { status: 503, headers: NO_STORE });
-  return new NextResponse(lockedPage(lang, t.unavailableTitle, t.unavailable), {
+  return locked(data, lang, t.unavailableTitle, t.unavailable);
+}
+
+/**
+ * Some accounts variables are set, not all: every route answers 503 and names
+ * the missing ones. Neither accounts nor the shared password serve anything.
+ */
+export function incompleteAccounts(request: NextRequest, { env, missing }: { env: Env; missing: string[] }) {
+  const lang = languageOf(request, env);
+  const t = STRINGS[lang].auth;
+  return locked(wantsData(request), lang, t.incompleteTitle, t.incomplete(missing.join(", ")), missing);
+}
+
+function locked(data: boolean, lang: Language, title: string, message: string, variables: string[] = []) {
+  if (data) return NextResponse.json({ error: message, variables }, { status: 503, headers: NO_STORE });
+  return new NextResponse(lockedPage(lang, title, message), {
     status: 503,
     headers: { "Content-Type": "text/html; charset=utf-8", ...NO_STORE },
   });

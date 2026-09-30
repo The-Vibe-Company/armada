@@ -148,7 +148,7 @@ ARMADA_DASHBOARD_PASSWORD=off ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:
 bun run demo:report WID-12 shipping "Opened the pull request"                # watch the row change
 ```
 
-The same with accounts (email and password are on outside production; confirmation links are printed in the server log):
+The same with accounts (email and password work in development only; confirmation links are printed in the server log):
 
 ```sh
 ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:.demo/armada.db \
@@ -162,7 +162,7 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 - Environment variables: the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
 - The keys stay on the server; the browser only receives the fleet reading.
 
-**Accounts.** People sign in with GitHub (or email and password where enabled) and belong to organizations, with the roles owner, admin and member. Accounts, sessions, organizations and invitations live in a libSQL database of their own, separate from the fleet's Turso database; its schema is applied on first use. Accounts turn on only when every required variable below is set; until then the shared password applies, unchanged.
+**Accounts.** People sign in with GitHub (or email and password where enabled) and belong to organizations, with the roles owner, admin and member. Accounts, sessions, organizations and invitations live in a libSQL database of their own, separate from the fleet's Turso database; its schema is applied on first use. Accounts turn on only when every required variable below is set. With none of them set, the shared password applies, unchanged; with some but not all, the dashboard fails closed (503, naming the missing ones) rather than fall back to a password that shows every organization's projects.
 
 | Variable | What |
 | --- | --- |
@@ -172,13 +172,13 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 | `ARMADA_AUTH_URL` | The dashboard's public address, for example `https://armada.example.com`: GitHub's callback and the links in emails |
 | `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET` | A GitHub OAuth app (GitHub > Settings > Developer settings > OAuth Apps) whose callback URL is `<ARMADA_AUTH_URL>/api/auth/callback/github` |
 | `ARMADA_AUTH_OWNER_EMAILS` | Comma-separated addresses that may create an account without an invitation and create organizations |
-| `ARMADA_AUTH_EMAIL_PASSWORD` | Optional, `on` or `off`: email and password sign-in, with address confirmation. Default: on in development, off in production |
+| `ARMADA_AUTH_EMAIL_PASSWORD` | Optional, `on` or `off`: email and password sign-in, with address confirmation. Development only for now (default on): production ignores it until an email provider is plugged in, since confirmation links would sit in the server log |
 
 - Accounts are by invitation: an account is created only for an owner address or an address with a pending invitation. The first owner to sign in creates the organization; the projects already registered, and those the CLI registers until it signs in, join the deployment's first organization. Organizations cannot be deleted.
 - An owner or admin invites by email from the Organization page (the name in the top bar). No email provider is plugged in yet: messages (invitations, address confirmations) go to the server log, and the Organization page shows each pending invitation's link to copy and send. The invited person signs in with that address and accepts.
 - Sessions are HttpOnly, SameSite=Lax cookies (Secure over https) valid 30 days; a revoked session can last up to five minutes (signed cookie cache). Without its accounts database the dashboard fails closed (503).
 
-**Switch from the shared password to accounts** (a deployment that runs on `ARMADA_DASHBOARD_PASSWORD` keeps working until the last step):
+**Switch from the shared password to accounts** (a deployment that runs on `ARMADA_DASHBOARD_PASSWORD` keeps working until the redeploy of step 4; set every variable before it, since a partial set locks the dashboard):
 
 1. Create the accounts database (`turso db create armada-accounts`, then `turso db show armada-accounts --url` and `turso db tokens create armada-accounts`) and set `ARMADA_AUTH_DATABASE_URL` and `ARMADA_AUTH_DATABASE_TOKEN`.
 2. Create a GitHub OAuth app with the callback URL `https://<your dashboard>/api/auth/callback/github`, and set `ARMADA_AUTH_GITHUB_CLIENT_ID` and `ARMADA_AUTH_GITHUB_CLIENT_SECRET`.

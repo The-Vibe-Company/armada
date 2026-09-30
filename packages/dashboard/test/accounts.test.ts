@@ -6,7 +6,7 @@ import type { Client } from "@libsql/client";
 import { getMigrations } from "better-auth/db/migration";
 import { NextRequest } from "next/server";
 import { type Auth, createAuth, type EmailMessage, firstOrganization } from "../lib/accounts.ts";
-import { accountsGuard, type SessionState } from "../lib/accounts-http.ts";
+import { accountsGuard, incompleteAccounts, type SessionState } from "../lib/accounts-http.ts";
 import { type AuthSettings, accountsModeOf, signatureOf } from "../lib/accounts-settings.ts";
 import { AUTH_SCHEMA_VERSION, migrateAuth, openAuthDatabase } from "../lib/auth-db.ts";
 
@@ -26,36 +26,34 @@ const ENV = {
 };
 
 describe("which deployment runs on accounts", () => {
-  test("every required variable turns accounts on; anything missing leaves the password gate, named", () => {
+  test("every required variable turns accounts on; none keeps the password gate; some fail closed, named", () => {
     const on = accountsModeOf({ ...ENV, NODE_ENV: "production" });
     expect(on.kind).toBe("accounts");
     if (on.kind === "accounts") {
       expect(on.settings.owners).toEqual([OWNER, "second-owner@example.test"]);
-      // Email and password stay off in production unless asked for.
+      // No email provider yet: production never offers email and password, even when asked.
       expect(on.settings.emailPassword).toBe(false);
     }
-    const off = (env: Record<string, string>) => {
+    expect(accountsModeOf({ NODE_ENV: "production", ARMADA_DASHBOARD_PASSWORD: "x" })).toEqual({ kind: "off" });
+    const missing = (env: Record<string, string>) => {
       const mode = accountsModeOf({ NODE_ENV: "production", ...env });
-      return mode.kind === "off" ? mode.missing : [];
+      return mode.kind === "incomplete" ? mode.missing : mode.kind;
     };
-    expect(off({})).toEqual([
+    expect(missing({ ARMADA_AUTH_URL: BASE })).toEqual([
       "ARMADA_AUTH_DATABASE_URL",
       "ARMADA_AUTH_SECRET",
-      "ARMADA_AUTH_URL",
       "ARMADA_AUTH_GITHUB_CLIENT_ID",
     ]);
     // A remote database needs its token, a secret its length, GitHub both halves.
-    expect(off({ ...ENV, ARMADA_AUTH_DATABASE_URL: "libsql://accounts.example.test" })).toEqual([
+    expect(missing({ ...ENV, ARMADA_AUTH_DATABASE_URL: "libsql://accounts.example.test" })).toEqual([
       "ARMADA_AUTH_DATABASE_TOKEN",
     ]);
-    expect(off({ ...ENV, ARMADA_AUTH_SECRET: "short" })).toEqual(["ARMADA_AUTH_SECRET"]);
-    expect(off({ ...ENV, ARMADA_AUTH_GITHUB_CLIENT_SECRET: "" })).toEqual(["ARMADA_AUTH_GITHUB_CLIENT_SECRET"]);
-    // Without GitHub, email and password must be turned on for anyone to sign in.
+    expect(missing({ ...ENV, ARMADA_AUTH_SECRET: "short" })).toEqual(["ARMADA_AUTH_SECRET"]);
+    expect(missing({ ...ENV, ARMADA_AUTH_GITHUB_CLIENT_SECRET: "" })).toEqual(["ARMADA_AUTH_GITHUB_CLIENT_SECRET"]);
+    // Without GitHub, only development can sign in (with email and password).
     const noGithub = { ...ENV, ARMADA_AUTH_GITHUB_CLIENT_ID: "", ARMADA_AUTH_GITHUB_CLIENT_SECRET: "" };
-    expect(off(noGithub)).toEqual(["ARMADA_AUTH_GITHUB_CLIENT_ID"]);
-    expect(accountsModeOf({ NODE_ENV: "production", ...noGithub, ARMADA_AUTH_EMAIL_PASSWORD: "on" }).kind).toBe(
-      "accounts",
-    );
+    expect(missing({ ...noGithub, ARMADA_AUTH_EMAIL_PASSWORD: "on" })).toEqual(["ARMADA_AUTH_GITHUB_CLIENT_ID"]);
+    expect(accountsModeOf({ NODE_ENV: "development", ...noGithub }).kind).toBe("accounts");
   });
 
   test("a request is signed with the person's name and address, within core's 80 characters", () => {
@@ -297,6 +295,16 @@ describe("the proxy with accounts", () => {
     }
     expect(passed(await accountsGuard(request("/login"), deps("none")))).toBe(true);
     expect(passed(await accountsGuard(request("/api/auth/callback/github?code=x"), deps("none")))).toBe(true);
+  });
+
+  test("half-configured accounts serve nothing, not even the password gate, and name what is missing", async () => {
+    const missing = ["ARMADA_AUTH_SECRET"];
+    const data = incompleteAccounts(request("/api/fleet"), { env: {}, missing });
+    expect(data.status).toBe(503);
+    expect(await data.json()).toMatchObject({ variables: missing });
+    const page = incompleteAccounts(request("/login"), { env: {}, missing });
+    expect(page.status).toBe(503);
+    expect(await page.text()).toContain("ARMADA_AUTH_SECRET");
   });
 
   test("with a session everything passes but the sign-in page; an unreadable accounts database fails closed", async () => {

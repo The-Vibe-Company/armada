@@ -26,7 +26,9 @@ const holder = globalThis as unknown as { __armadaAccounts?: { key: string; open
 /** The accounts of this deployment; null while they are not configured (the password gate applies then). */
 export async function accounts(): Promise<Accounts | null> {
   const mode = accountsModeOf(process.env);
-  if (mode.kind !== "accounts") return null;
+  if (mode.kind === "off") return null;
+  // Fails closed: never the password gate while accounts are half set up.
+  if (mode.kind === "incomplete") throw new Error(`accounts are not fully configured: set ${mode.missing.join(", ")}`);
   const key = JSON.stringify(mode.settings);
   if (holder.__armadaAccounts?.key !== key) {
     const opening = openAuthDatabase(mode.settings.database).then((client) => ({

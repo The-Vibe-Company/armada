@@ -3,10 +3,11 @@
 // build's static files and the icon do not, since they carry no fleet data.
 // Once the accounts variables are set, it checks the Better Auth session in
 // full (signed cookie cache, then the accounts database), not just the
-// cookie's presence. Until then the shared-password gate (THE-834) applies,
-// unchanged, and with neither the dashboard fails closed.
+// cookie's presence. With none of them set, the shared-password gate (THE-834)
+// applies, unchanged; with some but not all, or with neither gate, the
+// dashboard fails closed.
 import type { NextRequest } from "next/server";
-import { accountsGuard, type SessionState } from "@/lib/accounts-http";
+import { accountsGuard, incompleteAccounts, type SessionState } from "@/lib/accounts-http";
 import { accounts } from "@/lib/accounts-server";
 import { accountsModeOf } from "@/lib/accounts-settings";
 import { guard } from "@/lib/auth-http";
@@ -26,7 +27,9 @@ async function session(request: NextRequest): Promise<SessionState> {
 }
 
 export function proxy(request: NextRequest) {
-  if (accountsModeOf(process.env).kind === "accounts") return accountsGuard(request, { env: process.env, session });
+  const mode = accountsModeOf(process.env);
+  if (mode.kind === "accounts") return accountsGuard(request, { env: process.env, session });
+  if (mode.kind === "incomplete") return incompleteAccounts(request, { env: process.env, missing: mode.missing });
   return guard(request, { env: process.env, now: Date.now() });
 }
 

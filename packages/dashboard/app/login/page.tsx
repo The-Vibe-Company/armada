@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import { notFound } from "next/navigation";
 import { signInWithEmail, signInWithGitHub, signUpWithEmail } from "@/app/auth-actions";
 import { AuthCard } from "@/components/AuthCard";
 import { accountsModeOf } from "@/lib/accounts-settings";
@@ -36,7 +37,9 @@ export default async function Login({ searchParams }: { searchParams: Params }) 
   const [jar, params] = await Promise.all([cookies(), searchParams]);
   const t = STRINGS[languageOf(jar.get(LANGUAGE_COOKIE)?.value)];
   const mode = accountsModeOf(process.env);
-  if (mode.kind !== "accounts") return <PasswordLogin t={t} error={one(params.error)} next={one(params.next)} />;
+  // Half-configured accounts: proxy.ts already answers 503.
+  if (mode.kind === "incomplete") notFound();
+  if (mode.kind === "off") return <PasswordLogin t={t} error={one(params.error)} next={one(params.next)} />;
   const github = mode.settings.github !== null;
   const emailPassword = mode.settings.emailPassword;
   const error = errorOf(one(params.error));

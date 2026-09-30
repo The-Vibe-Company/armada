@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   type ArmadaConfig,
   addInboxItem,
+  assignUnownedProjects,
   configTemplate,
   type Db,
   type Issue,
@@ -188,6 +189,31 @@ describe("organizations", () => {
     const cold = world(null);
     expect((await loadOverview(cold.opts)).projects.map((p) => p.slug)).toEqual(["widgets"]);
     expect((await loadOverview(cold.opts, other)).projects).toEqual([]);
+  });
+});
+
+describe("organizations: a repository naming another project", () => {
+  test("shows none of that project's live data to the other organization", async () => {
+    const { db } = await tempTurso();
+    await upsertProject(db, WIDGETS);
+    await assignUnownedProjects(db, "org-home");
+    // Registered by another organization, but its armada.toml says "widgets" (every config in this world does).
+    await upsertProject(db, { slug: "impostor", name: "Impostor", repository: "acme/impostor", programRoot: "IMP-1" });
+    await assignUnownedProjects(db, "org-other");
+    await addInboxItem(db, {
+      project: "widgets",
+      ticket: "WID-2",
+      kind: "question",
+      recipient: "coordinator",
+      author: "ws/2",
+      body: "Which table?",
+      at: new Date(T0),
+    });
+    const w = world(db);
+    expect((await loadOverview(w.opts)).waiting.map((i) => i.kind)).toEqual(["question"]);
+    const other = await loadOverview(w.opts, { organization: "org-other", home: "org-home" });
+    expect(other.projects).toHaveLength(1);
+    expect(other.waiting).toEqual([]);
   });
 });
 

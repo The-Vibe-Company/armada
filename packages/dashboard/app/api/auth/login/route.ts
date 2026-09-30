@@ -10,7 +10,7 @@ const holder = globalThis as unknown as { __armadaLoginLimiter?: FailureLimiter 
 /** The login form's target: sets the session cookie on the right password. */
 export async function POST(request: Request) {
   // Accounts replace the shared password once configured: its routes are gone then.
-  if (accountsModeOf(process.env).kind === "accounts") return Response.json({ error: "not found" }, { status: 404 });
+  if (accountsModeOf(process.env).kind !== "off") return Response.json({ error: "not found" }, { status: 404 });
   holder.__armadaLoginLimiter ??= new FailureLimiter();
   return login(request, { env: process.env, now: Date.now(), limiter: holder.__armadaLoginLimiter });
 }

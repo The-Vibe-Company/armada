@@ -184,7 +184,7 @@ const en = {
     errors: {
       "not-invited": "This address has no invitation. Ask an owner of your organization to invite it, then try again.",
       invalid: "Wrong email or password.",
-      unverified: "Confirm your address first: we sent the link again.",
+      unverified: "Confirm your address first, with the link sent when the account was created.",
       "github-unverified": "GitHub has not verified this address. Verify it in your GitHub settings, then try again.",
       limited: "Too many attempts. Wait a minute, then try again.",
       exists: "An account already uses this address. Sign in instead.",
@@ -192,6 +192,9 @@ const en = {
       github: "Signing in with GitHub did not complete. Try again.",
       failed: "Signing in did not work. Try again in a moment.",
     } satisfies Record<AuthError, string>,
+    incompleteTitle: "The dashboard is locked",
+    incomplete: (variables: string) =>
+      `Accounts are only partly configured, so this dashboard shows nothing. Set ${variables} in the deployment's environment variables, then redeploy.`,
     unavailableTitle: "Sign-in is unavailable",
     unavailable: "The accounts database cannot be reached, so nobody can sign in right now. Try again in a moment.",
   },
@@ -438,7 +441,7 @@ const fr: Strings = {
       "not-invited":
         "Cette adresse n'a pas d'invitation. Demande à un propriétaire de ton organisation de l'inviter, puis réessaie.",
       invalid: "Email ou mot de passe incorrect.",
-      unverified: "Confirme d'abord ton adresse : le lien vient d'être renvoyé.",
+      unverified: "Confirme d'abord ton adresse, avec le lien envoyé à la création du compte.",
       "github-unverified": "GitHub n'a pas vérifié cette adresse. Vérifie-la dans tes réglages GitHub, puis réessaie.",
       limited: "Trop de tentatives. Attends une minute, puis réessaie.",
       exists: "Un compte utilise déjà cette adresse. Connecte-toi plutôt.",
@@ -446,6 +449,9 @@ const fr: Strings = {
       github: "La connexion avec GitHub n'a pas abouti. Réessaie.",
       failed: "La connexion n'a pas marché. Réessaie dans un instant.",
     },
+    incompleteTitle: "Le tableau de bord est verrouillé",
+    incomplete: (variables) =>
+      `Les comptes ne sont configurés qu'en partie : ce tableau de bord n'affiche rien. Définis ${variables} dans les variables d'environnement du déploiement, puis redéploie.`,
     unavailableTitle: "Connexion indisponible",
     unavailable:
       "La base des comptes est injoignable : personne ne peut se connecter pour l'instant. Réessaie dans un instant.",

@@ -296,13 +296,18 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
       return { p, key, entry: await snapshotOf(p, key, opts) };
     }),
   );
+  // Live data is read by the slug armada.toml gives, but only when the
+  // registry agrees: a repository naming another project's slug must not show
+  // that project's inbox and events, which may belong to another organization.
+  const liveSlug = (p: ProjectRef, snap: Snapshot | null) =>
+    snap && (!p.slug || p.slug === snap.config.project.slug) ? snap.config.project.slug : null;
 
   // Live data for every project, or for none: Turso failing midway must not
   // show some rows live under the "unreachable" banner.
   let liveData = new Map<string, LiveProject>();
   if (db) {
     try {
-      const slugs = entries.flatMap((e) => (e.entry.snapshot ? [e.entry.snapshot.config.project.slug] : []));
+      const slugs = entries.flatMap((e) => liveSlug(e.p, e.entry.snapshot) ?? []);
       const read = await withTimeout(
         Promise.all(slugs.map(async (slug) => [slug, await readLive(db, slug, opts.now())] as const)),
         opts.liveTimeoutMs ?? 4000,
@@ -319,7 +324,8 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
     const snap = entry.snapshot;
     const base = { slug: snap?.config.project.slug ?? key, name: snap?.config.project.name ?? p.name ?? key };
     if (!snap) return { ...base, repository: p.repository, report: null, error: entry.error ?? "not read", live: null };
-    const l = liveData.get(snap.config.project.slug) ?? null;
+    const slug = liveSlug(p, snap);
+    const l = slug ? (liveData.get(slug) ?? null) : null;
     const warnings = [
       ...(snap.configWarning ? [snap.configWarning] : []),
       ...(entry.error ? [`Linear or GitHub could not be read again (${entry.error}); showing the last reading`] : []),

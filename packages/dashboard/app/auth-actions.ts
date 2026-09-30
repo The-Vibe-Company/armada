@@ -12,7 +12,7 @@ import { redirect } from "next/navigation";
 import { isRole } from "@/lib/accounts";
 import { requireAccounts, requireMember, requireSession } from "@/lib/accounts-server";
 import { INVITATION_PATH, ORGANIZATION_PATH, WELCOME_PATH } from "@/lib/accounts-settings";
-import { LOGIN_PATH, safeNext } from "@/lib/auth";
+import { clientAddress, FailureLimiter, LOGIN_PATH, safeNext } from "@/lib/auth";
 import type { AuthError, OrgError, OrgNotice } from "@/lib/i18n";
 
 const text = (form: FormData, name: string) => {
@@ -65,6 +65,15 @@ function loginUrl(params: Record<string, string>): string {
 
 // ------------------------------------------------------------ sign in
 
+// Server actions call Better Auth's API directly, past its HTTP rate limit, so
+// email and password attempts are counted here: per address, per server
+// instance, as the shared-password gate does.
+const holder = globalThis as unknown as { __armadaAccountLimiter?: FailureLimiter };
+const limiter = () => {
+  holder.__armadaAccountLimiter ??= new FailureLimiter(10);
+  return holder.__armadaAccountLimiter;
+};
+
 export async function signInWithGitHub(form: FormData): Promise<void> {
   const { auth, settings } = await requireAccounts();
   const next = nextOf(form);
@@ -86,14 +95,20 @@ export async function signInWithEmail(form: FormData): Promise<void> {
   const { auth, settings } = await requireAccounts();
   const next = nextOf(form);
   if (!settings.emailPassword) redirect(loginUrl({ error: "failed", next }));
+  const h = await headers();
+  const address = clientAddress(h);
+  if (limiter().blocked(address, Date.now())) redirect(loginUrl({ error: "limited", next }));
   try {
     await auth.api.signInEmail({
       body: { email: text(form, "email"), password: String(form.get("password") ?? ""), callbackURL: next },
-      headers: await headers(),
+      headers: h,
     });
   } catch (err) {
-    redirect(loginUrl({ error: authError(err), next }));
+    const error = authError(err);
+    if (error === "invalid") limiter().fail(address, Date.now());
+    redirect(loginUrl({ error, next }));
   }
+  limiter().reset(address);
   redirect(next);
 }
 
@@ -101,6 +116,9 @@ export async function signUpWithEmail(form: FormData): Promise<void> {
   const { auth, settings } = await requireAccounts();
   const next = nextOf(form);
   if (!settings.emailPassword) redirect(loginUrl({ error: "failed", next }));
+  const address = clientAddress(await headers());
+  // Every sign-up counts: each one may send an email.
+  if (limiter().fail(address, Date.now())) redirect(loginUrl({ error: "limited", next, mode: "signup" }));
   try {
     await auth.api.signUpEmail({
       body: {

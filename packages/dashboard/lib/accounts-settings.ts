@@ -38,16 +38,26 @@ export interface AuthSettings {
   github: { clientId: string; clientSecret: string } | null;
   /** Lower-cased addresses that may create an account without an invitation, and create organizations. */
   owners: string[];
-  /** Email and password sign-in (with email verification). Off in production unless turned on. */
+  /**
+   * Email and password sign-in (with address confirmation). Development only for
+   * now: with no email provider the confirmation links go to the server log, and
+   * whoever reads it could confirm an address someone else registered first.
+   */
   emailPassword: boolean;
   production: boolean;
 }
 
 /**
- * Whether the deployment runs on accounts. `off` lists what is missing: the
- * shared-password gate applies instead (and fails closed without its password).
+ * Whether the deployment runs on accounts. `off`: no accounts variable is set,
+ * so the shared-password gate applies (and fails closed without its password).
+ * `incomplete`: some are set but not all; the dashboard fails closed and names
+ * the missing ones, rather than fall back to a password that shows every
+ * organization's projects.
  */
-export type AccountsMode = { kind: "accounts"; settings: AuthSettings } | { kind: "off"; missing: string[] };
+export type AccountsMode =
+  | { kind: "accounts"; settings: AuthSettings }
+  | { kind: "off" }
+  | { kind: "incomplete"; missing: string[] };
 
 // Trimmed: a newline pasted into the deployment's settings must not lock the owner out.
 const read = (env: Env, name: string) => env[name]?.trim() || null;
@@ -87,7 +97,11 @@ export function accountsModeOf(env: Env): AccountsMode {
   const baseUrl = baseUrlOf(read(env, V.url));
   const githubId = read(env, V.githubId);
   const githubSecret = read(env, V.githubSecret);
-  const emailPassword = flag(read(env, V.emailPassword), !production);
+  const emailPassword = !production && flag(read(env, V.emailPassword), true);
+  const started = [V.databaseUrl, V.databaseToken, V.secret, V.url, V.githubId, V.githubSecret, V.owners].some((v) =>
+    read(env, v),
+  );
+  if (!started) return { kind: "off" };
 
   const missing: string[] = [];
   if (!url) missing.push(V.databaseUrl);
@@ -98,7 +112,7 @@ export function accountsModeOf(env: Env): AccountsMode {
   if (Boolean(githubId) !== Boolean(githubSecret)) missing.push(githubId ? V.githubSecret : V.githubId);
   // No way to sign in at all is the same as no accounts.
   if (!githubId && !emailPassword) missing.push(V.githubId);
-  if (missing.length || !url || !secret || !baseUrl) return { kind: "off", missing };
+  if (missing.length || !url || !secret || !baseUrl) return { kind: "incomplete", missing };
 
   return {
     kind: "accounts",

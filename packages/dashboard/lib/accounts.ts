@@ -121,7 +121,8 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
     },
     emailVerification: {
       sendOnSignUp: true,
-      sendOnSignIn: true,
+      // Not on sign-in: a stranger signing in with someone's address must not produce fresh links.
+      sendOnSignIn: false,
       autoSignInAfterVerification: true,
       sendVerificationEmail: async ({ user, url }) =>
         sender.send({
@@ -140,9 +141,9 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
         create: {
           before: async (user, ctx) => {
             // An address is proven by GitHub (verified) or, for email and password, by its
-            // confirmation link before any session. An unverified GitHub address proves
+            // confirmation link before any session. Any other unverified address proves
             // nothing: letting it in would squat the account of whoever owns that address.
-            if (ctx?.path.startsWith("/callback") && !user.emailVerified)
+            if (!user.emailVerified && ctx?.path !== "/sign-up/email")
               throw new APIError("FORBIDDEN", {
                 code: "GITHUB_EMAIL_NOT_VERIFIED",
                 message: "Verify this address on GitHub first: Armada only trusts verified addresses.",
