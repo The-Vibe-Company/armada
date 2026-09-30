@@ -221,8 +221,11 @@ runtimes = ["Claude Code", "Codex", "Conductor"]
 [github]
 repository = ${q(p.repository)}
 
+[gates]
+# required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
+
 [policy]
-silent_after_minutes = 15
+silence_minutes = 15     # a worker with no report for longer than this shows as silent
 `;
 }
 
