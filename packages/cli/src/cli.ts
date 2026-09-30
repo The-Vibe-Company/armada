@@ -5,51 +5,54 @@ import {
   type ArmadaConfig,
   CONFIG_FILE,
   ConfigError,
-  type Fetch,
+  LINEAR_KEY,
   loadStatus,
+  missingKeyMessage,
   parseConfig,
-  resolveCredentials,
 } from "@armada/core";
+import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
+import { type Io, UsageError } from "./io.ts";
 import { renderStatus } from "./render.ts";
 
-export interface Io {
-  cwd: string;
-  env: Record<string, string | undefined>;
-  readFile: (path: string) => Promise<string | null>;
-  stdout: (text: string) => void;
-  stderr: (text: string) => void;
-  /** Token from the GitHub CLI (`gh auth token`), or null. */
-  ghToken: () => string | null;
-  fetch?: Fetch;
-  now?: () => Date;
-}
+export { authLogin } from "./auth.ts";
+export type { Io } from "./io.ts";
 
 export const USAGE = `Usage: armada <command> [options]
 
 Commands:
   status            Tickets in flight, tickets ready to start and pull requests waiting
+  auth login        Ask for the missing keys (hidden input) and store them on this machine
+  auth status       Show which keys are set and where each comes from, never their values
+  auth logout       Remove Armada's keys from this machine
 
 Options:
   --json            Print the status as JSON
   --config <path>   Use this armada.toml instead of searching from the current directory
   -h, --help        Show this help
 
-Environment:
-  LINEAR_API_KEY    Linear API key (required)
-  GITHUB_TOKEN      GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
-`;
+Keys (the environment always wins over the file):
+  LINEAR_API_KEY       Linear API key (required by status)
+  ARMADA_TURSO_URL     Turso database URL
+  ARMADA_TURSO_TOKEN   Turso database token
+  GITHUB_TOKEN         GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
 
-class UsageError extends Error {}
+Files:
+  $XDG_CONFIG_HOME/armada (default ~/.config/armada)
+    credentials        KEY=value lines, mode 0600, written by \`armada auth login\`
+    config.toml        personal defaults: language, [turso] url, [dashboard] url
+`;
 
 interface Args {
   command: string | null;
+  /** Positional arguments after the command. */
+  rest: string[];
   json: boolean;
   config: string | null;
   help: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { command: null, json: false, config: null, help: false };
+  const args: Args = { command: null, rest: [], json: false, config: null, help: false };
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k];
     if (a === "--json") args.json = true;
@@ -61,7 +64,7 @@ export function parseArgs(argv: string[]): Args {
     } else if (a?.startsWith("--config=")) args.config = a.slice("--config=".length);
     else if (a?.startsWith("-")) throw new UsageError(`unknown option ${a}`);
     else if (!args.command && a) args.command = a;
-    else throw new UsageError(`unexpected argument ${a}`);
+    else if (a) args.rest.push(a);
   }
   return args;
 }
@@ -88,8 +91,8 @@ export async function findConfig(io: Io, explicit: string | null): Promise<{ pat
 async function status(io: Io, args: Args): Promise<number> {
   const { path, text } = await findConfig(io, args.config);
   const config: ArmadaConfig = parseConfig(text, path);
-  const { linearApiKey, githubToken } = resolveCredentials({ env: io.env, ghToken: io.ghToken });
-  if (!linearApiKey) throw new UsageError("LINEAR_API_KEY is not set. Create a personal API key in Linear settings.");
+  const { linearApiKey, githubToken } = (await loadCredentials(io)).credentials;
+  if (!linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
   const report = await loadStatus(config, {
     linearApiKey,
     githubToken,
@@ -100,6 +103,10 @@ async function status(io: Io, args: Args): Promise<number> {
   return 0;
 }
 
+function noExtra(rest: string[]) {
+  if (rest.length) throw new UsageError(`unexpected argument ${rest[0]}`);
+}
+
 /** Runs one command; returns the process exit code (0 ok, 1 failure, 2 usage or configuration). */
 export async function run(argv: string[], io: Io): Promise<number> {
   try {
@@ -108,7 +115,18 @@ export async function run(argv: string[], io: Io): Promise<number> {
       (args.help ? io.stdout : io.stderr)(USAGE);
       return args.help ? 0 : 2;
     }
-    if (args.command === "status") return await status(io, args);
+    if (args.command === "status") {
+      noExtra(args.rest);
+      return await status(io, args);
+    }
+    if (args.command === "auth") {
+      const [sub, ...extra] = args.rest;
+      noExtra(extra);
+      if (sub === "login") return await authLogin(io);
+      if (sub === "status") return await authStatus(io, args.json);
+      if (sub === "logout") return await authLogout(io);
+      throw new UsageError(sub ? `unknown auth command "${sub}"` : "auth needs a command: login, status or logout");
+    }
     throw new UsageError(`unknown command "${args.command}"`);
   } catch (err) {
     if (err instanceof UsageError || err instanceof ConfigError) {

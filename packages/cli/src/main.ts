@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { run } from "./cli.ts";
+import { echo, emptyLine, feedLine } from "./line.ts";
 
 function ghToken(): string | null {
   try {
@@ -10,6 +11,35 @@ function ghToken(): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Reads one line from the terminal in raw mode, so Ctrl-C and Ctrl-D cancel
+ * (null) the same way in every prompt. With `hidden`, nothing typed is echoed.
+ */
+function prompt(question: string, { hidden }: { hidden: boolean }): Promise<string | null> {
+  const stdin = process.stdin;
+  return new Promise((done) => {
+    let line = emptyLine();
+    const onData = (chunk: string) => {
+      const before = line.answer;
+      line = feedLine(line, chunk);
+      // Echo before finishing, so a pasted answer ending with Enter is shown too.
+      if (!hidden && line.result !== null) process.stderr.write(echo(before, line.answer));
+      if (line.result === undefined) return;
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      process.stderr.write("\n");
+      done(line.result);
+    };
+    // Raw mode first, then the question: nothing typed after the prompt appears can echo.
+    stdin.setRawMode(true);
+    process.stderr.write(question);
+    stdin.setEncoding("utf8");
+    stdin.on("data", onData);
+    stdin.resume();
+  });
 }
 
 const code = await run(process.argv.slice(2), {
@@ -24,5 +54,7 @@ const code = await run(process.argv.slice(2), {
   stdout: (t) => process.stdout.write(t),
   stderr: (t) => process.stderr.write(t),
   ghToken,
+  interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+  prompt,
 });
 process.exit(code);
