@@ -16,7 +16,6 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
     "@types/bun": "1.3.14",
-    "armada": "workspace:*",
     "typescript": "5.9.3"
   }
 }

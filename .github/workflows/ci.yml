@@ -26,3 +26,33 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
       - run: bun test
+
+  package:
+    name: Packed CLI runs under Node
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      # The oldest Node the package supports (engines.node).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Pack the CLI as npm would publish it
+        working-directory: packages/cli
+        run: npm pack --pack-destination "$RUNNER_TEMP"
+      - name: Install the tarball in an empty project and run the binary
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          mkdir smoke && cd smoke
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund ../the-vibe-company-armada-*.tgz
+          expected=$(node -p 'require("./node_modules/@the-vibe-company/armada/package.json").version')
+          actual=$(npx --no-install armada --version)
+          echo "armada --version: $actual"
+          test "$actual" = "$expected"
+          npx --no-install armada status --help | grep -q '^Usage: armada'
