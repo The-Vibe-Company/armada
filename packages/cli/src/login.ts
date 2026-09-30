@@ -30,7 +30,7 @@ import {
 import { loadCredentials, type Machine } from "./auth.ts";
 import { type Io, UsageError } from "./io.ts";
 
-const hostOf = (url: string) => {
+export const hostOf = (url: string) => {
   try {
     return new URL(url).host;
   } catch {

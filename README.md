@@ -17,12 +17,20 @@ npm install -g @the-vibe-company/armada  # then: armada status
 
 `armada --version` prints the installed version, `armada --help` every command and `armada <command> --help` one. When a command cannot continue, it prints the reason and a `Next:` line with the command to run, for example `armada init` in a repository without `armada.toml`. Each release is listed on [GitHub releases](https://github.com/The-Vibe-Company/armada/releases) with its changelog.
 
-## Try it
+## Set up
+
+1. **Create the organization.** Sign in to Armada ([armada.thevibecompany.co](https://armada.thevibecompany.co), or [your own deployment](#watch-the-fleet-dashboard)) with GitHub, create your organization and invite the others.
+2. **Enter the keys** once, on Organization > Keys: the Linear API key and the Turso access. They stay sealed in Armada: no laptop or runtime needs them ([Keys](#keys)).
+3. **Sign in from the terminal**: `armada login`, then approve the code in the browser. A headless coordinator sets `ARMADA_API_KEY` to an organization API key instead ([Sign in from a terminal](#sign-in-from-a-terminal)).
+4. **Set up the repository**: `armada doctor` lists what it lacks, `armada init --program-root ABC-1` opens one pull request that adds it all ([Set up a repository](#set-up-a-repository)); merge it.
 
 ```sh
-armada auth login   # once per machine: asks for the missing keys, input hidden
+armada login
+armada init --program-root ABC-1
 armada status       # or: armada status --json
 ```
+
+Workers then need no key either: each one's launch message carries a one-time token, and Armada gives it its keys ([Launch a worker](#launch-a-worker-coordinators)). Without an Armada that keeps keys (a self-hosted one without accounts, CI), set the keys in the environment or run `armada auth login` ([Keys](#keys)).
 
 `armada status` reads the `armada.toml` of the current repository (or the nearest parent directory) and prints:
 
@@ -45,9 +53,11 @@ armada init --program-root ABC-1       # one pull request that adds it all
 - the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;
-- the Linear label groups `Agent phase` and `Agent runtime` exist with every value (needs `LINEAR_API_KEY`).
+- this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
+- no key is left in the credentials file that Armada now gives this terminal (`armada auth logout` removes them, the sign-in stays);
+- the Linear label groups `Agent phase` and `Agent runtime` exist with every value (needs a Linear key, from Armada or `LINEAR_API_KEY`).
 
-Each problem is an error or a warning, with its fix. A missing skill is an error: workers cannot run without it. A skill that differs from this Armada version, or a missing ignore line, is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
+Each problem is an error or a warning, with its fix. A missing skill is an error: workers cannot run without it. A skill that differs from this Armada version, a missing ignore line, a missing sign-in or a leftover key is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
 
 `armada init` fixes everything doctor reports in one go:
 
@@ -55,7 +65,7 @@ Each problem is an error or a warning, with its fix. A missing skill is an error
 2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the branch `armada/init-<version>` and opens a pull request with `gh`. Your own checkout is not touched. Running it again rebuilds that branch and updates the same pull request. When the default branch already has everything, no pull request is opened.
 3. It registers the project (slug, name, repository, program root) in the Turso database, so `armada status --all` and the dashboard list it.
 
-On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the name comes from the GitHub repository unless you pass `--name`, and the slug from the name unless you pass `--slug`. An existing `armada.toml` is never replaced. `init` needs `git`, the GitHub CLI logged in (`gh auth login`), `LINEAR_API_KEY` and `ARMADA_TURSO_URL`; on a terminal it asks for missing keys first.
+On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the name comes from the GitHub repository unless you pass `--name`, and the slug from the name unless you pass `--slug`. An existing `armada.toml` is never replaced. `init` needs `git`, the GitHub CLI logged in (`gh auth login`), and the Linear key and Turso database URL, from Armada when signed in or from `LINEAR_API_KEY` and `ARMADA_TURSO_URL`; on a terminal it asks for missing keys first.
 
 `armada status --all` prints the status of every registered project, each read with the `armada.toml` on its repository's default branch. A project that cannot be read shows its error without hiding the others.
 
@@ -69,8 +79,9 @@ armada brief ABC-12 --prompt           # only the prompt, to pipe into the runti
 armada brief ABC-12 --profile codex --reason "a back-end bug behind a web label" --json
 ```
 
-- The prompt names the ticket and its Linear branch, starts by installing the coordinator's Armada version (`npm install -g`, with an `npm exec` fallback) and running `armada claim` with the handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
-- The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables to pass: `LINEAR_API_KEY` (required), `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN` (optional), `ARMADA_TICKET=<ticket>`. Each shows whether this shell has it. No value is ever printed.
+- The prompt names the ticket and its Linear branch, starts by installing the coordinator's Armada version (`npm install -g`, with an `npm exec` fallback), signing in with `armada login --launch-token <token>` and running `armada claim` with the handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
+- **Workers need no key.** When the coordinator is signed in to an Armada that keeps the organization's keys, the brief asks it for a launch token: one ticket, used once, valid one hour. The worker exchanges it for a session limited to its ticket's `claim`, `report`, `ask` and `release`, and Armada gives each of those commands its keys. The `Launch:` line says whether the prompt carries one, and when there is none, why (not signed in, or an Armada without accounts or keys). Make the brief right before the launch; the token is the only secret a prompt ever holds, useless once used. Merging or releasing the ticket ends the worker's session, and Organization > Workers on the dashboard revokes one.
+- The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables: `ARMADA_TICKET=<ticket>`, and, only without a launch token, `LINEAR_API_KEY` (required), `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN` (optional). Each shows whether this shell has it. No value is ever printed.
 - The profile follows the ticket's Linear labels: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored), else `conductor.default_profile`, else the only profile. The settings say which rule chose it.
 - `--profile` overrides that choice. When `armada.toml` has routing rules and the profile differs from the routed one, `--reason` is required. The reason travels into the claim command, so the claim comment records the profile and why. An unknown profile exits 2.
 
@@ -79,6 +90,7 @@ armada brief ABC-12 --profile codex --reason "a back-end bug behind a web label"
 A worker writes to the tracker only through three commands. They set the labels and write the comments in the protocol format, and record each event in Turso.
 
 ```sh
+armada login --launch-token <token>        # the first line of the launch message: no key needed after it
 armada claim ABC-12 --runtime conductor --handle <workspace>/<session>
 armada report awaiting-approval --message-file plan.md     # first line = summary
 armada report implementing --message "plan approved, writing the parser"
@@ -225,13 +237,14 @@ armada logout    # revokes this terminal's session and removes it from the machi
 
 - A coordinator without a browser (a cloud workspace, CI) uses an organization API key instead: an owner creates it on the Organization page (it is shown once), and the coordinator sets `ARMADA_API_KEY`, or stores it with `armada login --api-key` (hidden prompt, or standard input: `printf %s "$KEY" | armada login --api-key`; never on the command line). `ARMADA_API_KEY` in the environment wins over what `armada login` stored. Revoking the key signs the coordinator out.
 - The session token or key is kept in the credentials file below (mode 0600) and never printed; `armada auth status` says how the terminal is signed in, without it. A session lasts 30 days and is renewed while in use.
+- A worker signs in with the launch token of its launch message, as its first command: `armada login --launch-token <token>` (plus `--api-url <url>` for a self-hosted Armada, which the brief adds). The worker session it gets is kept per ticket in the credentials file and signs in that ticket's `claim`, `report`, `ask` and `release` only; each of them asks Armada for its keys, and stops with Armada's reason once the session is revoked (Organization > Workers) or ended (`armada release`, or the coordinator's `armada merge`). It lasts while the worker keeps reporting, up to three days idle.
 - Commands that need a sign-in say so and name `armada login` as the next step; so does an expired session or a revoked key.
 - The CLI talks to `https://armada.thevibecompany.co`. A self-hosted Armada is named by `ARMADA_API_URL`, or `[api] url` in `config.toml` (https; plain http only for `localhost`). A stored sign-in is sent only to the Armada that issued it: pointing the CLI at another one asks for `armada login` there.
 - Until an Armada has accounts (it runs on the shared dashboard password), it refuses terminal sign-ins and says so; the keys below keep working as they do today.
 
 ## Keys
 
-Armada needs a few keys. A terminal signed in to an Armada that keeps its organization's keys ([Keys kept in Armada](#keys-kept-in-armada)) needs none on the machine: `armada login`, then `armada status`. Otherwise set them up once per machine with `armada auth login`, or pass them as environment variables (the way to go in CI and cloud sandboxes).
+Armada needs a few keys. A terminal signed in to an Armada that keeps its organization's keys ([Keys kept in Armada](#keys-kept-in-armada)) needs none on the machine: `armada login`, then `armada status`. Otherwise set them up once per machine with `armada auth login`, or pass them as environment variables (the way to go in CI and with an Armada without accounts): a key in the environment wins over Armada's.
 
 Each key comes from the environment first, then from Armada when signed in, then from the credentials file. Armada is asked only for what the environment does not set, on each command that needs keys, so a key replaced on the Keys page takes effect on the next command. The Linear key it gives stays in memory; the Turso token it makes for the terminal is kept in the credentials file (`ARMADA_TURSO_LEASE`, with its expiry) and renewed when less than an hour is left. When Armada cannot be reached, the command warns and goes on with the machine's keys (and the Turso token kept earlier, until it expires). `armada logout` and `armada auth logout` remove the kept token.
 

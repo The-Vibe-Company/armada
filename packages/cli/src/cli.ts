@@ -34,7 +34,8 @@ const COMMAND_HELP: Record<string, string> = {
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
   status --all      The same for every project registered by \`armada init\`
 `,
-  doctor: `  doctor            What this repository lacks to be run by Armada, with the fix for each
+  doctor: `  doctor            What this repository lacks to be run by Armada, with the fix for each,
+                    and whether this terminal is signed in to Armada
 `,
   init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>]
                     Open one pull request that installs or updates it all, create the

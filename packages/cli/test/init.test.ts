@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { listProjects } from "../../core/src/turso.ts";
-import { closeTempTurso, fakeLinearLabels, tempTurso } from "../../core/test/support.ts";
+import { ARMADA_URL, closeTempTurso, fakeArmada, fakeLinearLabels, tempTurso } from "../../core/test/support.ts";
 import { version as VERSION } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
 import type { Exec, Io } from "../src/io.ts";
@@ -68,7 +68,7 @@ function fakeGh() {
   return { prs, calls, run };
 }
 
-/** A repository with one commit, pushed to a local bare `origin`, and a machine with every key set. */
+/** A repository with one commit, pushed to a local bare `origin`, and a machine signed in to Armada with every key set. */
 async function fixture() {
   const home = await realpath(await mkdtemp(join(tmpdir(), "armada-init-test-")));
   dirs.push(home);
@@ -104,6 +104,7 @@ async function fixture() {
 
   const gh = fakeGh();
   const linear = fakeLinearLabels();
+  const api = fakeArmada({ keys: { armada_coordinator_key: "coordinator" } });
   const registry = await tempTurso();
   const exec: Exec = async (command, args, { cwd }) => {
     if (command === "gh") return gh.run(args);
@@ -118,12 +119,14 @@ async function fixture() {
       XDG_CONFIG_HOME: join(home, "config"),
       LINEAR_API_KEY: "lin_test",
       ARMADA_TURSO_URL: registry.url,
+      ARMADA_API_URL: ARMADA_URL,
+      ARMADA_API_KEY: "armada_coordinator_key",
     },
     readFile: (path) => readFile(path, "utf8").catch(() => null),
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
-    fetch: linear.fetch,
+    fetch: (url, init) => (url.startsWith(ARMADA_URL) ? api.fetch(url, init) : linear.fetch(url, init)),
     exec,
   };
   /** Runs one command and returns its exit code with everything it printed. */
@@ -189,6 +192,7 @@ describe("armada doctor and armada init", () => {
 
     f.merge(pr);
     const after = await f.armada("doctor");
+    expect(after.out).toContain('  ok       signed in to armada.example.test as the API key "coordinator" of Acme\n');
     expect(after.out).toEndWith("Everything Armada needs is in place.\n");
     expect(after.code).toBe(0);
 

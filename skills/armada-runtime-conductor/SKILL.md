@@ -8,19 +8,37 @@ Armada never calls a runtime. This guide tells the coordinator how to launch, me
 - Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication, 4 server error.
 - On exit code 3, `conductor auth whoami` checks the token the CLI uses (it exits 0 when the token works). Do not rely on `conductor auth status`: it only looks for a macOS Keychain entry and fails on Linux ("Keychain storage is only supported on macOS"). In a Conductor Cloud workspace the CLI reads `CONDUCTOR_API_KEY` from the environment and needs no login; on a Mac, `conductor auth login` stores a token in the Keychain.
 - A worker is one workspace with one session. Its Armada handle is `<workspaceId>/<sessionId>`; the worker's claim comment carries it, so `armada status` and the ticket always lead back to the session.
+- A worker needs no key in its workspace: the prompt of `armada brief` carries a one-time launch token, and the worker's first command exchanges it for a session limited to its ticket, through which Armada gives each command its keys. The token works once, within the hour, so a copy left in a transcript is useless once used.
 - Never type a secret value into a command, a file or a message: name the variable and let your shell expand it. The expanded value is still in the `conductor` process's arguments while it runs, so launch from a machine only you use.
 
 ## Launch
 
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
-2. Run `armada brief ABC-12` (with `--profile <name> --reason "<why>"` when you override the routed profile). Read the profile (agent, model, effort, fast mode), the environment table and the warnings. Resolve every warning first: an open blocker, a ticket already in flight. Export each required variable the table marks `NOT set in this shell`. One marked `in credentials file` is in Armada's machine store: keep the `set -a` line of the launch command below, which loads that file without printing it.
-3. Write the prompt to a file, and add what only you know (the boundary with a parallel worker, a decision not yet on the ticket):
+2. Run `armada brief ABC-12` (with `--profile <name> --reason "<why>"` when you override the routed profile), right before the launch. Read the profile (agent, model, effort, fast mode), the `Launch:` line and the warnings. Resolve every warning first: an open blocker, a ticket already in flight.
+   - `Launch: one-time token in the prompt` is the normal case: the worker signs in to Armada with it and fetches its own keys. Its workspace receives no key at all.
+   - `Launch: no launch token (…)` says why. Not signed in: `armada login` (a headless coordinator sets `ARMADA_API_KEY`), then brief again; `armada doctor` checks the sign-in. Launch with keys (step 4, second block) only on an Armada that keeps no keys yet (no accounts or no vault: a self-hosted one, CI, or before the owner's switch to the Keys page).
+3. Write the prompt to a file only you can read, and add what only you know (the boundary with a parallel worker, a decision not yet on the ticket). The token in it works once, within the hour: brief again when that hour has passed before the launch.
 
 ```sh
-armada brief ABC-12 --prompt > /tmp/abc-12-brief.md
+(umask 077; armada brief ABC-12 --prompt > /tmp/abc-12-brief.md)
 ```
 
-4. Create the workspace with every value from the profile. Never leave the agent, model or effort to Conductor's defaults. Add `--fast-mode` when the profile says fast mode; drop an optional `--env` line whose variable you do not have. Run the whole block as one command: shell state does not carry over between separate calls, and the subshell keeps the keys out of the rest of your session. Drop the `set -a` line when every variable is set in your shell.
+4. Create the workspace with every value from the profile. Never leave the agent, model or effort to Conductor's defaults. Add `--fast-mode` when the profile says fast mode. Run the whole block as one command: shell state does not carry over between separate calls.
+
+```sh
+conductor --json workspace create \
+  --repo-url https://github.com/<owner>/<name> \
+  --branch main \
+  --name "ABC-12 <short title>" \
+  --agent claude --model opus-5-5-1m --effort high \
+  --message-file - \
+  --env ARMADA_TICKET=ABC-12 \
+  < /tmp/abc-12-brief.md > /tmp/abc-12-launch.json
+rm -f /tmp/abc-12-brief.md
+jq -r '"\(.workspaceId)/\(.sessionId)"' /tmp/abc-12-launch.json
+```
+
+Without a launch token (an Armada that keeps no keys), pass the keys the brief's environment table marks `required` or `optional`, from your shell or from Armada's credentials file (`in credentials file`: the `set -a` line loads it without printing it; drop it when every variable is set in your shell). The subshell keeps the keys out of the rest of your session; drop an optional `--env` line whose variable you do not have. When Conductor's organization environment still holds the keys, every workspace already has them: use the first block.
 
 ```sh
 (
@@ -38,15 +56,16 @@ armada brief ABC-12 --prompt > /tmp/abc-12-brief.md
     --env ARMADA_TURSO_TOKEN="$ARMADA_TURSO_TOKEN" \
     < /tmp/abc-12-brief.md > /tmp/abc-12-launch.json
 )
-jq -r '"\(.workspaceId)/\(.sessionId)"' /tmp/abc-12-launch.json
+rm -f /tmp/abc-12-brief.md
 ```
 
 - `--branch` is the base branch (the default branch). Conductor creates a branch named `conductor/<slug of --name>`; the brief tells the worker to rename it to the ticket's branch.
 - The output has `workspaceId`, `sessionId`, `deepLink` and `initialMessage` (`messageId`, `state: "queued"`). Keep the handle the `jq` line prints, and give the owner the `deepLink` when they want to watch.
-- Conductor sets `CONDUCTOR_WORKSPACE_ID` and `CONDUCTOR_SESSION_ID` inside the workspace. The brief's first commands install your Armada version (`npm install -g`) and claim the ticket with them. `--env` values are not shown back by `workspace get`.
+- Conductor sets `CONDUCTOR_WORKSPACE_ID` and `CONDUCTOR_SESSION_ID` inside the workspace, and signs `gh` in for the worker's pushes. The brief's first commands install your Armada version (`npm install -g`), sign in with the launch token (`armada login --launch-token`) and claim the ticket. `--env` values are not shown back by `workspace get`.
+- Keys in Conductor's organization environment reach every workspace, workers included: once Armada keeps the organization's keys, they belong on Armada's Keys page, not there.
 - An unknown agent, model or effort fails the command. Check the ids with `conductor model` (each agent's models, efforts and defaults) and fix the profile in `armada.toml`.
 
-5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Conductor`, and the ticket's claim comment reads `session: <workspaceId>/<sessionId>` and `profile: <name>`. No claim after ten minutes: read the transcript (Status section). If the worker cannot claim (for example a missing key), fix the cause and message it; as a last resort record the handle yourself with `armada claim ABC-12 --runtime conductor --handle <workspaceId>/<sessionId> --profile <name>`, adding the brief's `--reason` for an override.
+5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Conductor`, and the ticket's claim comment reads `session: <workspaceId>/<sessionId>` and `profile: <name>`. No claim after ten minutes: read the transcript (Status section). A worker whose launch token was refused (already used, or more than an hour old) needs a new one: `armada brief ABC-12 --prompt` again, and message it only the `armada login --launch-token …` line of the new prompt (Message section). A worker cut off from Armada was revoked on the dashboard (Organization > Workers says by whom) or left idle for three days: ask the owner before you give a revoked worker a new token. If the worker cannot claim for another reason, fix the cause and message it; as a last resort record the handle yourself with `armada claim ABC-12 --runtime conductor --handle <workspaceId>/<sessionId> --profile <name>`, adding the brief's `--reason` for an override.
 
 ## Message
 
