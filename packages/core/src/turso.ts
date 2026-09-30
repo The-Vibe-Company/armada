@@ -198,7 +198,7 @@ export async function listProjects(db: Db): Promise<ProjectRecord[]> {
 
 // ------------------------------------------------------------------ events
 
-export type EventKind = "claim" | "report" | "release";
+export type EventKind = "claim" | "report" | "release" | "merge";
 
 export interface EventInput {
   project: string;
@@ -276,6 +276,24 @@ export async function releaseRuntimeHandle(db: Db, project: string, ticket: stri
     sql: "UPDATE runtime_handles SET released_at = ? WHERE project = ? AND ticket = ? AND released_at IS NULL",
     args: [at.toISOString(), project, ticket],
   });
+}
+
+/** Sessions still holding a ticket of the project (not released), by ticket id. */
+export async function openRuntimeHandles(db: Db, project: string): Promise<RuntimeHandle[]> {
+  const rs = await db.execute({
+    sql: `SELECT project, ticket, runtime, handle, branch, claimed_at, released_at
+          FROM runtime_handles WHERE project = ? AND released_at IS NULL ORDER BY ticket`,
+    args: [project],
+  });
+  return rs.rows.map((r) => ({
+    project: String(r.project),
+    ticket: String(r.ticket),
+    runtime: String(r.runtime),
+    handle: String(r.handle),
+    branch: r.branch === null ? null : String(r.branch),
+    claimedAt: String(r.claimed_at),
+    releasedAt: null,
+  }));
 }
 
 export async function getRuntimeHandle(db: Db, project: string, ticket: string): Promise<RuntimeHandle | null> {
@@ -357,4 +375,87 @@ export async function openInboxItems(
     body: String(r.body),
     createdAt: String(r.created_at),
   }));
+}
+
+/** Resolves the open items of one kind for a ticket (e.g. its hand-back once merged); returns how many. */
+export async function resolveInboxItems(
+  db: Db,
+  q: { project: string; ticket: string; kind: InboxKind; resolution: string; at: Date },
+): Promise<number> {
+  const rs = await db.execute({
+    sql: `UPDATE inbox_items SET resolved_at = ?, resolution = ?
+          WHERE project = ? AND ticket = ? AND kind = ? AND resolved_at IS NULL`,
+    args: [q.at.toISOString(), q.resolution, q.project, q.ticket, q.kind],
+  });
+  return rs.rowsAffected;
+}
+
+// ------------------------------------------------------------------ leases
+
+export interface Lease {
+  project: string;
+  name: string;
+  holder: string;
+  acquiredAt: string;
+  expiresAt: string;
+}
+
+/**
+ * Takes the lease `name` of a project for `ttlMs`, in one statement: the row
+ * is written only when the lease is free, expired, or already ours (which
+ * renews it). When refused, `held` is the lease that keeps it.
+ */
+export async function acquireLease(
+  db: Db,
+  l: { project: string; name: string; holder: string; ttlMs: number; at: Date },
+): Promise<{ acquired: true } | { acquired: false; held: Lease | null }> {
+  const at = l.at.toISOString();
+  const expires = new Date(l.at.getTime() + l.ttlMs).toISOString();
+  const rs = await db.execute({
+    sql: `INSERT INTO leases (project, name, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (project, name) DO UPDATE SET
+            acquired_at = CASE WHEN leases.holder = excluded.holder THEN leases.acquired_at ELSE excluded.acquired_at END,
+            holder = excluded.holder, expires_at = excluded.expires_at
+          WHERE leases.holder = excluded.holder OR leases.expires_at <= ?`,
+    args: [l.project, l.name, l.holder, at, expires, at],
+  });
+  if (rs.rowsAffected) return { acquired: true };
+  return { acquired: false, held: await getLease(db, l.project, l.name) };
+}
+
+export async function getLease(db: Db, project: string, name: string): Promise<Lease | null> {
+  const rs = await db.execute({
+    sql: "SELECT project, name, holder, acquired_at, expires_at FROM leases WHERE project = ? AND name = ?",
+    args: [project, name],
+  });
+  const r = rs.rows[0];
+  return r
+    ? {
+        project: String(r.project),
+        name: String(r.name),
+        holder: String(r.holder),
+        acquiredAt: String(r.acquired_at),
+        expiresAt: String(r.expires_at),
+      }
+    : null;
+}
+
+/** Extends a lease we hold; false when it expired and someone else took it. */
+export async function renewLease(
+  db: Db,
+  l: { project: string; name: string; holder: string; ttlMs: number; at: Date },
+): Promise<boolean> {
+  const rs = await db.execute({
+    sql: "UPDATE leases SET expires_at = ? WHERE project = ? AND name = ? AND holder = ?",
+    args: [new Date(l.at.getTime() + l.ttlMs).toISOString(), l.project, l.name, l.holder],
+  });
+  return rs.rowsAffected > 0;
+}
+
+/** Gives a lease back; a lease someone else took after ours expired is left alone. */
+export async function releaseLease(db: Db, l: { project: string; name: string; holder: string }): Promise<void> {
+  await db.execute({
+    sql: "DELETE FROM leases WHERE project = ? AND name = ? AND holder = ?",
+    args: [l.project, l.name, l.holder],
+  });
 }

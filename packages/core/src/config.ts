@@ -36,6 +36,12 @@ export interface ArmadaConfig {
      * worker may hand it back. Empty: at least one check, and every check green.
      */
     requiredChecks: string[];
+    /**
+     * Shell commands `armada merge` runs on a test merge of a head that lacks
+     * commits of its base branch (e.g. install, then lint and test). Empty:
+     * such a head is refused until the worker rebases.
+     */
+    localCommands: string[];
   };
   policy: {
     /** A working agent with no report for longer than this shows as silent. */
@@ -136,7 +142,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker", tracker, ["program_root", "language", "ready_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
-    ["gates", gatesT, ["required_checks"]],
+    ["gates", gatesT, ["required_checks", "local_commands"]],
     ["policy", policyT, ["silence_minutes", "silent_after_minutes"]],
   ];
   for (const [path, t, keys] of known)
@@ -169,6 +175,14 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"gates.required_checks" must be a list of check names`);
   }
 
+  let localCommands: string[] = [];
+  if (gatesT.local_commands !== undefined) {
+    const v = gatesT.local_commands;
+    if (Array.isArray(v) && v.every((c) => typeof c === "string" && c.trim()))
+      localCommands = v.map((c: string) => c.trim());
+    else problems.push(`"gates.local_commands" must be a list of shell commands`);
+  }
+
   const config: ArmadaConfig = {
     project: {
       name: str(project, "project", "name"),
@@ -190,7 +204,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
-    gates: { requiredChecks },
+    gates: { requiredChecks, localCommands },
     policy: { silentAfterMinutes },
   };
   if (problems.length) throw new ConfigError(source, problems);

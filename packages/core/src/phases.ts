@@ -1,6 +1,6 @@
 // The worker phase machine and the hand-back gate. Pure: the commands read
 // the ticket and the pull request, these rules decide.
-import type { LabelPhase, PullRequest } from "./types.ts";
+import type { CiState, LabelPhase, PullRequest } from "./types.ts";
 import { LABEL_PHASES } from "./types.ts";
 
 /**
@@ -65,7 +65,17 @@ export function handBackProblems({ pr, repository, sha, requiredChecks }: HandBa
   if (!pr.headSha) problems.push(`the head of pull request #${pr.number} could not be read from GitHub`);
   else if (sha && FULL_SHA.test(sha) && pr.headSha !== sha)
     problems.push(`${sha} is not the head of pull request #${pr.number} (head is ${pr.headSha}); push, then report`);
-  const checks = pr.checks ?? [];
+  problems.push(...checkProblems(pr.checks ?? [], requiredChecks));
+  return problems;
+}
+
+/**
+ * Why the checks on a head are not green enough to hand back or merge: every
+ * required check reported and green on every run, or, with none declared, at
+ * least one check and all of them green.
+ */
+export function checkProblems(checks: readonly { name: string; state: CiState }[], requiredChecks: readonly string[]) {
+  const problems: string[] = [];
   if (requiredChecks.length) {
     for (const name of requiredChecks) {
       // A check can report more than once on a head (push and pull_request): every run must be green.
