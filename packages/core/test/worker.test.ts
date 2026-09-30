@@ -85,7 +85,7 @@ describe("claim", () => {
     const { linear, ctx } = setup();
     linear.add("DEMO-7", { commentsTruncated: true });
     expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toBe(
-      "not every comment of DEMO-7 could be read, so an older claim may be hidden; nothing was written\nNext: armada claim DEMO-7 --runtime conductor --handle ws-1 again once Linear answers",
+      'not every comment of DEMO-7 could be read, so an older claim may be hidden; nothing was written\nNext: armada claim DEMO-7 --runtime "conductor" --handle "ws-1" again once Linear answers',
     );
     expect(linear.writes).toEqual([]);
   });

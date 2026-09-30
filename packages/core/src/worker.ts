@@ -245,7 +245,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   if (ticket.commentsTruncated || ticket.labelsTruncated)
     throw new Refusal(
       `not every ${ticket.commentsTruncated ? "comment" : "label"} of ${ticket.id} could be read, so ${ticket.commentsTruncated ? "an older claim" : "an agent label"} may be hidden; nothing was written`,
-      `armada claim ${ticket.id} --runtime ${input.runtime} --handle ${input.handle} again once Linear answers`,
+      `armada claim ${ticket.id} --runtime "${input.runtime}" --handle "${input.handle}" again once Linear answers`,
     );
   const viewer = await linear.viewer();
   const inProgress = ticket.statusType === "started" ? null : firstState(ticket.states, "started");

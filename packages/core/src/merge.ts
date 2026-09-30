@@ -474,7 +474,9 @@ async function checklist(ctx: MergeContext, input: MergeInput): Promise<Checked>
       pull.state !== "open"
         ? `gh pr view ${pull.number} --repo ${config.github.repository}`
         : ticket.agentPhase !== "ready-to-merge"
-          ? `armada inbox --wait, until ${ticket.id} is handed back`
+          ? ctx.tursoConfigured
+            ? `armada inbox --wait, until ${ticket.id} is handed back`
+            : `armada status, until ${ticket.id} shows ready-to-merge`
           : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
     );
   lines.unshift(
