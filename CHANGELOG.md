@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.14](https://github.com/The-Vibe-Company/armada/compare/v0.1.13...v0.1.14) (2026-09-30)
+
+
+### Features
+
+* **cli:** sign in to Armada from the terminal with armada login ([#33](https://github.com/The-Vibe-Company/armada/issues/33)) ([6951ace](https://github.com/The-Vibe-Company/armada/commit/6951ace5cd7f30ee51e41303dc1ac6c389adcfe6))
+* **skills:** teach a cold coordinator how to take over a run ([#31](https://github.com/The-Vibe-Company/armada/issues/31)) ([563656a](https://github.com/The-Vibe-Company/armada/commit/563656ad794201654d19b39d6b943da2dca6d803))
+
 ## [0.1.13](https://github.com/The-Vibe-Company/armada/compare/v0.1.12...v0.1.13) (2026-09-30)
 
 
