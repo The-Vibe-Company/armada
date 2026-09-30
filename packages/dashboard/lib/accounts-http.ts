@@ -3,7 +3,7 @@
 // `auth-http.ts` applies before). It takes the environment and the session
 // lookup as arguments so tests drive it without a server or a database.
 import { type NextRequest, NextResponse } from "next/server";
-import { AUTH_API_PREFIX } from "./accounts-settings";
+import { AUTH_API_PREFIX, isCliApi } from "./accounts-settings";
 import { type Env, LOGIN_PATH } from "./auth";
 import { isLanguage, LANGUAGE_COOKIE, type Language, STRINGS } from "./i18n";
 
@@ -34,6 +34,8 @@ const isAuthApi = (pathname: string) => pathname === AUTH_API_PREFIX || pathname
  */
 export async function accountsGuard(request: NextRequest, { env, session }: AccountsGateDeps): Promise<NextResponse> {
   const { pathname, search } = request.nextUrl;
+  // The CLI's routes carry a token or an API key, never a cookie, and check it themselves.
+  if (isCliApi(pathname)) return NextResponse.next();
   const state = await session(request);
   if (state === "unavailable") return unavailable(wantsData(request), languageOf(request, env));
   // Better Auth's own routes (sign-in, OAuth callback, email verification) check what they need themselves.

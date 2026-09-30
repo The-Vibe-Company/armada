@@ -2,6 +2,7 @@
 // without a network, a real clock or the user's environment.
 import { dirname, join, resolve } from "node:path";
 import {
+  ArmadaApiError,
   type ArmadaConfig,
   CONFIG_FILE,
   ConfigError,
@@ -18,6 +19,7 @@ import { doctor } from "./doctor.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
+import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
 import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
@@ -87,6 +89,14 @@ const COMMAND_HELP: Record<string, string> = {
                     default_profile; --profile overrides it, with --reason when it differs.
                     --prompt prints only the prompt, for \`--message-file -\`
 `,
+  login: `  login             Sign this terminal in to Armada: confirm the code it shows in the browser
+  login --api-key   Sign a headless coordinator in with an organization API key, read from a
+                    hidden prompt or standard input (ARMADA_API_KEY in the environment also works)
+`,
+  whoami: `  whoami            The person or API key this terminal is signed in as, and its organization
+`,
+  logout: `  logout            Sign this terminal out of Armada: revoke its session, remove it from the machine
+`,
   auth: `  auth login        Ask for the missing keys (hidden input) and store them on this machine
   auth status       Show which keys are set and where each comes from, never their values
   auth logout       Remove Armada's keys from this machine
@@ -96,7 +106,7 @@ const COMMAND_HELP: Record<string, string> = {
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "merge"]);
 const CONFIG_OPTION = new Set(["status", "claim", "report", "release", "ask", "inbox", "answer", "merge", "brief"]);
-const JSON_OPTION = new Set([...CONFIG_OPTION, "doctor", "auth"]);
+const JSON_OPTION = new Set([...CONFIG_OPTION, "doctor", "auth", "whoami"]);
 const TICKET_HELP = `  --ticket <id>     Ticket for report, release and ask (default ARMADA_TICKET, then the git
                     branch) and for merge (default: the ticket the PR branch names)
 `;
@@ -119,11 +129,14 @@ Keys (the environment always wins over the file):
   ARMADA_TURSO_TOKEN   Turso database token
   GITHUB_TOKEN         GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
                        (merge also runs gh and git, with gh's own login)
+  ARMADA_API_KEY       Organization API key: signs a headless coordinator in to Armada
+  ARMADA_API_URL       The Armada to sign in to (default https://armada.thevibecompany.co)
 
 Files:
   $XDG_CONFIG_HOME/armada (default ~/.config/armada)
-    credentials        KEY=value lines, mode 0600, written by \`armada auth login\`
-    config.toml        personal defaults: language, [turso] url, [dashboard] url
+    credentials        KEY=value lines, mode 0600, written by \`armada auth login\` and
+                       \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
+    config.toml        personal defaults: language, [turso] url, [dashboard] url, [api] url
 `;
 
 /** The help of one command, or null for a command Armada does not know. */
@@ -174,7 +187,7 @@ const VALUE_OPTIONS = [
   "timeout",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note"];
+const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note", "api-key"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch", "profile", "reason"],
@@ -186,6 +199,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug"],
   merge: ["ticket", "dry-run", "no-lock"],
   brief: ["profile", "reason", "prompt"],
+  login: ["api-key"],
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -213,7 +227,9 @@ export function parseArgs(argv: string[]): Args {
       if (v === undefined) throw new UsageError(`--${name} needs a value`);
       if (name === "config") args.config = v;
       else args.options[name] = v;
-    } else if (a?.startsWith("-")) throw new UsageError(`unknown option ${a}`);
+    } else if (a?.startsWith("-"))
+      // Never the value: `--api-key=<key>` must not print the key.
+      throw new UsageError(`unknown option ${name ? `--${name}${named?.[2] !== undefined ? "=…" : ""}` : a}`);
     else if (!args.command && a) args.command = a;
     else if (a) args.rest.push(a);
   }
@@ -284,6 +300,7 @@ function commandOf(argv: string[]): string | null {
 /** What to run after an error: the error's own next step, else the command's help. */
 function nextStep(err: unknown, command: string | null): string | null {
   if (err instanceof Refusal) return err.next;
+  if (err instanceof ArmadaApiError) return err.next;
   if (err instanceof UsageError)
     return err.next ?? (command ? `armada ${command} --help` : "armada --help, which lists every command");
   if (err instanceof ConfigError) return "armada doctor, once the file is fixed (it checks the whole setup)";
@@ -347,6 +364,16 @@ export async function run(argv: string[], io: Io): Promise<number> {
         name: args.options.name ?? null,
         slug: args.options.slug ?? null,
       });
+    }
+    if (args.command === "login" || args.command === "logout" || args.command === "whoami") {
+      // An extra argument may be a pasted key: it is refused without being quoted.
+      if (args.rest.length)
+        throw new UsageError(
+          `${args.command} takes no argument${args.command === "login" ? ": an API key is read from a hidden prompt or standard input, never from the command line" : ""}`,
+        );
+      if (args.command === "login") return await login(io, args.options["api-key"] === "true");
+      if (args.command === "logout") return await logout(io);
+      return await whoami(io, args.json);
     }
     if (args.command === "auth") {
       const [sub, ...extra] = args.rest;

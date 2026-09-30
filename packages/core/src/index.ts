@@ -1,3 +1,4 @@
+export * from "./armada-api.ts";
 export * from "./brief.ts";
 export * from "./config.ts";
 export * from "./credentials.ts";

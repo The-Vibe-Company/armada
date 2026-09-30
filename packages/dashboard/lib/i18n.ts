@@ -31,8 +31,12 @@ export const ORG_ERRORS = ["forbidden", "member", "invalid", "gone", "failed"] a
 export type OrgError = (typeof ORG_ERRORS)[number];
 
 /** What an organization change did (a `?done=` of the organization page). */
-export const ORG_NOTICES = ["invited", "cancelled", "updated", "removed"] as const;
+export const ORG_NOTICES = ["invited", "cancelled", "updated", "removed", "revoked"] as const;
 export type OrgNotice = (typeof ORG_NOTICES)[number];
+
+/** Why a code of `armada login` could not be approved or denied, shown on the /device page. */
+export const DEVICE_ERRORS = ["unknown", "used", "forbidden", "failed"] as const;
+export type DeviceError = (typeof DEVICE_ERRORS)[number];
 
 type Role = "owner" | "admin" | "member";
 
@@ -255,7 +259,43 @@ const en = {
       cancelled: "Invitation cancelled.",
       updated: "Role changed.",
       removed: "Member removed.",
+      revoked: "Key revoked: whatever used it is signed out.",
     } satisfies Record<OrgNotice, string>,
+    apiKeys: "API keys",
+    apiKeysHint:
+      "A key signs a headless coordinator in for this organization, with ARMADA_API_KEY or armada login --api-key. Revoking it signs that coordinator out.",
+    noApiKeys: "No API key.",
+    apiKeyName: "Key name, e.g. cloud coordinator",
+    createApiKey: "Create a key",
+    apiKeyCreated: (name: string) => `Key “${name}” created. Copy it now: it is shown only once.`,
+    copyKey: "Copy the key",
+    keyCreated: (date: string) => `created ${date}`,
+    keyUsed: (date: string) => `last used ${date}`,
+    keyUnused: "never used",
+    revoke: "Revoke",
+    onlyOwners: "Only owners create and revoke API keys.",
+  },
+  device: {
+    title: "Sign in from a terminal",
+    enterLead: "Type the code your terminal shows after armada login.",
+    code: "Code",
+    next: "Continue",
+    confirmHeading: "Is this your terminal?",
+    confirmLead: (email: string, org: string | null) =>
+      `A terminal asks to act as ${email}${org ? ` in ${org}` : ""}. Approve only if you just ran armada login and it shows this code.`,
+    approve: "Approve",
+    deny: "Deny",
+    signedInAs: (email: string) => `Signed in as ${email}. Not you? Sign out, and sign in with your account.`,
+    approvedHeading: "Terminal signed in",
+    approved: "Your terminal is signed in. You can close this page.",
+    deniedHeading: "Sign-in denied",
+    denied: "That terminal is not signed in.",
+    errors: {
+      unknown: "This code is unknown or has expired. Run armada login again for a new one.",
+      used: "This code was already approved or denied.",
+      forbidden: "Another account opened this code first: only it can approve it.",
+      failed: "That did not work. Try again in a moment.",
+    } satisfies Record<DeviceError, string>,
   },
   answer: "Answer",
   answerSent: "answer sent",
@@ -514,6 +554,42 @@ const fr: Strings = {
       cancelled: "Invitation annulée.",
       updated: "Rôle changé.",
       removed: "Membre retiré.",
+      revoked: "Clé révoquée : ce qui l'utilisait est déconnecté.",
+    },
+    apiKeys: "Clés d'API",
+    apiKeysHint:
+      "Une clé connecte un coordinateur sans navigateur pour cette organisation, avec ARMADA_API_KEY ou armada login --api-key. La révoquer le déconnecte.",
+    noApiKeys: "Aucune clé d'API.",
+    apiKeyName: "Nom de la clé, par ex. coordinateur cloud",
+    createApiKey: "Créer une clé",
+    apiKeyCreated: (name) => `Clé « ${name} » créée. Copie-la maintenant : elle n'est montrée qu'une fois.`,
+    copyKey: "Copier la clé",
+    keyCreated: (date) => `créée le ${date}`,
+    keyUsed: (date) => `utilisée le ${date}`,
+    keyUnused: "jamais utilisée",
+    revoke: "Révoquer",
+    onlyOwners: "Seuls les propriétaires créent et révoquent les clés d'API.",
+  },
+  device: {
+    title: "Connexion depuis un terminal",
+    enterLead: "Tape le code que ton terminal affiche après armada login.",
+    code: "Code",
+    next: "Continuer",
+    confirmHeading: "Est-ce ton terminal ?",
+    confirmLead: (email, org) =>
+      `Un terminal demande à agir comme ${email}${org ? ` dans ${org}` : ""}. N'approuve que si tu viens de lancer armada login et qu'il affiche ce code.`,
+    approve: "Approuver",
+    deny: "Refuser",
+    signedInAs: (email) => `Connecté comme ${email}. Pas toi ? Déconnecte-toi, et connecte-toi avec ton compte.`,
+    approvedHeading: "Terminal connecté",
+    approved: "Ton terminal est connecté. Tu peux fermer cette page.",
+    deniedHeading: "Connexion refusée",
+    denied: "Ce terminal n'est pas connecté.",
+    errors: {
+      unknown: "Ce code est inconnu ou a expiré. Relance armada login pour en avoir un nouveau.",
+      used: "Ce code a déjà été approuvé ou refusé.",
+      forbidden: "Un autre compte a ouvert ce code en premier : lui seul peut l'approuver.",
+      failed: "Ça n'a pas marché. Réessaie dans un instant.",
     },
   },
   answer: "Répondre",

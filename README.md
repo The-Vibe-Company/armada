@@ -177,6 +177,7 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 - Accounts are by invitation: an account is created only for an owner address or an address with a pending invitation. The first owner to sign in creates the organization; the projects already registered, and those the CLI registers until it signs in, join the deployment's first organization. Organizations cannot be deleted.
 - An owner or admin invites by email from the Organization page (the name in the top bar). No email provider is plugged in yet: messages (invitations, address confirmations) go to the server log, and the Organization page shows each pending invitation's link to copy and send. The invited person signs in with that address and accepts.
 - Sessions are HttpOnly, SameSite=Lax cookies (Secure over https) valid 30 days; a revoked session can last up to five minutes (signed cookie cache). Without its accounts database the dashboard fails closed (503).
+- Terminals sign in too (see [Sign in from a terminal](#sign-in-from-a-terminal)): `armada login` shows a code that the person confirms on the dashboard's `/device` page, and owners create API keys for headless coordinators on the Organization page. A key is shown once, belongs to the organization, and revoking it signs out whatever uses it. The CLI calls only `/api/cli/*`; without accounts those routes refuse with the next step.
 
 **Switch from the shared password to accounts** (a deployment that runs on `ARMADA_DASHBOARD_PASSWORD` keeps working until the redeploy of step 4; set every variable before it, since a partial set locks the dashboard):
 
@@ -195,6 +196,22 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 - Vercel Authentication (Settings > Deployment Protection) is a useful second layer, but its standard protection leaves the production custom domain open (covering it takes a paid option), so it cannot replace the password.
 
 One deployment covers one Linear workspace and one GitHub organization: its keys must read every registered project.
+
+## Sign in from a terminal
+
+The CLI knows who is acting, and for which organization, by signing in to Armada, the way `gh auth login` does:
+
+```sh
+armada login     # shows a one-time code, opens the confirmation page; you approve it in the browser
+armada whoami    # the person (or API key) and the organization; --json for scripts
+armada logout    # revokes this terminal's session and removes it from the machine
+```
+
+- A coordinator without a browser (a cloud workspace, CI) uses an organization API key instead: an owner creates it on the Organization page (it is shown once), and the coordinator sets `ARMADA_API_KEY`, or stores it with `armada login --api-key` (hidden prompt, or standard input: `printf %s "$KEY" | armada login --api-key`; never on the command line). `ARMADA_API_KEY` in the environment wins over what `armada login` stored. Revoking the key signs the coordinator out.
+- The session token or key is kept in the credentials file below (mode 0600) and never printed; `armada auth status` says how the terminal is signed in, without it. A session lasts 30 days and is renewed while in use.
+- Commands that need a sign-in say so and name `armada login` as the next step; so does an expired session or a revoked key.
+- The CLI talks to `https://armada.thevibecompany.co`. A self-hosted Armada is named by `ARMADA_API_URL`, or `[api] url` in `config.toml` (https; plain http only for `localhost`). A stored sign-in is sent only to the Armada that issued it: pointing the CLI at another one asks for `armada login` there.
+- Until an Armada has accounts (it runs on the shared dashboard password), it refuses terminal sign-ins and says so; the keys below keep working as they do today.
 
 ## Keys
 
@@ -223,6 +240,9 @@ url = "libsql://<database>-<organization>.turso.io"   # used when ARMADA_TURSO_U
 
 [dashboard]
 url = "https://<your-armada-dashboard>"
+
+[api]
+url = "https://armada.example.com"   # a self-hosted Armada for `armada login`; used when ARMADA_API_URL is not set
 ```
 
 ## Configure a project

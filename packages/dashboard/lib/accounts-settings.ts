@@ -23,6 +23,16 @@ export const AUTH_API_PREFIX = "/api/auth";
 export const WELCOME_PATH = "/welcome";
 export const INVITATION_PATH = "/invitations";
 export const ORGANIZATION_PATH = "/organization";
+/** Where a person confirms the code `armada login` shows. */
+export const DEVICE_PATH = "/device";
+/** The routes the Armada CLI calls: sign-in from the terminal, whoami, sign-out. */
+export const CLI_API_PREFIX = "/api/cli";
+/** Whether a path is one of the CLI's routes, which check their own credential behind either gate. */
+export const isCliApi = (pathname: string) => pathname === CLI_API_PREFIX || pathname.startsWith(`${CLI_API_PREFIX}/`);
+/** The client id `armada login` sends; device codes for any other are refused. */
+export const CLI_CLIENT_ID = "armada-cli";
+/** Every organization API key starts with it, so a leaked one is recognisable. */
+export const API_KEY_PREFIX = "armada_";
 /** Cookie names start with it: `armada.session_token`, and so on. */
 export const COOKIE_PREFIX = "armada";
 /** A secret shorter than this is refused: it signs every session cookie. */

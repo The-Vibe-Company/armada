@@ -144,6 +144,10 @@ describe("armada auth status", () => {
 Credentials file  ${m.credentials} (mode 0644)
 Personal config   ${m.config}
 ! ${m.credentials} can be read by other users (mode 0644); run: chmod 600 ${m.credentials}
+
+Armada sign-in
+  API        https://armada.thevibecompany.co (built in)
+  Signed in  no: run \`armada login\`, or set ARMADA_API_KEY on a headless coordinator
 `);
 
     m.reset();

@@ -1,8 +1,10 @@
 // The one place Armada resolves its keys. Each key comes from the environment
 // first, then from the machine store (~/.config/armada/credentials), then,
 // for non-secret settings only, from the personal config. GitHub keeps its
-// own chain and ends with the GitHub CLI login. Every command asks this
+// own chain and ends with the GitHub CLI login. The Armada API address and
+// the terminal's sign-in to it resolve here too. Every command asks this
 // function and nothing else.
+import type { ArmadaSignIn } from "./armada-api.ts";
 import type { PersonalConfig } from "./machine.ts";
 
 export type CredentialName = "linearApiKey" | "tursoUrl" | "tursoToken" | "githubToken";
@@ -24,6 +26,39 @@ export interface Credentials {
   githubToken: string | null;
   /** Where each value came from; null when it is missing. Safe to print. */
   sources: Record<CredentialName, CredentialSource | null>;
+  /** The Armada API: ARMADA_API_URL, then `[api] url` in config.toml, then the built-in address. */
+  armadaApi: { url: string; source: CredentialSource | { kind: "default" } };
+  /**
+   * How this terminal signs in to Armada: ARMADA_API_KEY from the environment,
+   * then what `armada login` stored (a session token or an API key); null when
+   * signed out. `source` is safe to print; the secret never is.
+   */
+  armadaSignIn: (ArmadaSignIn & { source: CredentialSource }) | null;
+  /**
+   * The Armada a stored sign-in belongs to when it is not `armadaApi`: the
+   * sign-in is then not used, so its token never reaches another server.
+   */
+  armadaSignInElsewhere: string | null;
+}
+
+/** The Armada the CLI talks to unless ARMADA_API_URL or `[api] url` names another (self-hosting). */
+export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
+
+/** Credentials-file keys of the sign-in; `armada login` writes one, `armada logout` removes both. */
+export const SESSION_TOKEN_VARIABLE = "ARMADA_SESSION_TOKEN";
+export const API_KEY_VARIABLE = "ARMADA_API_KEY";
+export const API_URL_VARIABLE = "ARMADA_API_URL";
+/** Credentials-file key: the Armada that issued the stored sign-in, which is sent nowhere else. */
+export const SIGNED_IN_TO_VARIABLE = "ARMADA_SIGNED_IN_TO";
+
+/** An Armada's address as sign-ins are bound to it: origin and path, without a trailing slash. */
+export function armadaAddress(url: string): string {
+  try {
+    const u = new URL(url.trim());
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url.trim();
+  }
 }
 
 export interface StoredKey {
@@ -100,6 +135,28 @@ export function resolveCredentials({ env, store = {}, personal, ghToken }: Crede
   };
 
   const tursoUrlConfig = clean(personal?.turso.url);
+  const apiUrlConfig = clean(personal?.api.url);
+  const apiUrl = fromEnv(env, API_URL_VARIABLE);
+  const armadaApi: Credentials["armadaApi"] = apiUrl
+    ? { url: apiUrl.value, source: apiUrl.source }
+    : apiUrlConfig
+      ? { url: apiUrlConfig, source: { kind: "config", key: "api.url" } }
+      : { url: DEFAULT_ARMADA_API_URL, source: { kind: "default" } };
+  // The environment's key wins: a headless coordinator is configured by its environment.
+  const envKey = fromEnv(env, API_KEY_VARIABLE);
+  // A stored sign-in is only sent to the Armada that issued it.
+  const signedInTo = armadaAddress(clean(store[SIGNED_IN_TO_VARIABLE]) ?? DEFAULT_ARMADA_API_URL);
+  const here = signedInTo === armadaAddress(armadaApi.url);
+  const session = fromStore(SESSION_TOKEN_VARIABLE);
+  const storedKey = fromStore(API_KEY_VARIABLE);
+  const armadaSignInElsewhere = !here && (session || storedKey) ? signedInTo : null;
+  const armadaSignIn: Credentials["armadaSignIn"] = envKey
+    ? { kind: "api-key", key: envKey.value, source: envKey.source }
+    : session && here
+      ? { kind: "session", token: session.value, source: session.source }
+      : storedKey && here
+        ? { kind: "api-key", key: storedKey.value, source: storedKey.source }
+        : null;
   const found: Record<CredentialName, Found> = {
     linearApiKey: stored("LINEAR_API_KEY"),
     tursoUrl:
@@ -119,6 +176,9 @@ export function resolveCredentials({ env, store = {}, personal, ghToken }: Crede
       tursoToken: found.tursoToken?.source ?? null,
       githubToken: found.githubToken?.source ?? null,
     },
+    armadaApi,
+    armadaSignIn,
+    armadaSignInElsewhere: envKey ? null : armadaSignInElsewhere,
   };
 }
 

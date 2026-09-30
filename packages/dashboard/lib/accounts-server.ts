@@ -7,10 +7,19 @@ import type { Client } from "@libsql/client";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
-import { type Auth, consoleSender, createAuth, firstOrganization, isRole, type Role } from "./accounts";
+import {
+  type Auth,
+  consoleSender,
+  createAuth,
+  firstOrganization,
+  organizationOf,
+  type ViewerOrganization,
+} from "./accounts";
 import { type AuthSettings, accountsModeOf, signatureOf, WELCOME_PATH } from "./accounts-settings";
 import { LOGIN_PATH } from "./auth";
 import { openAuthDatabase } from "./auth-db";
+
+export type { ViewerOrganization } from "./accounts";
 
 export interface Accounts {
   auth: Auth;
@@ -51,40 +60,12 @@ export async function requireAccounts(): Promise<Accounts> {
   return a;
 }
 
-export interface ViewerOrganization {
-  id: string;
-  name: string;
-  slug: string;
-  role: Role;
-}
-
 export interface Viewer {
   user: { id: string; name: string; email: string; emailVerified: boolean };
   /** The organization the viewer works in: the session's active one, else their oldest membership. */
   organization: ViewerOrganization | null;
   /** How requests from this viewer are signed on the ticket. */
   signature: string;
-}
-
-async function organizationOf(
-  client: Client,
-  userId: string,
-  active: string | null,
-): Promise<ViewerOrganization | null> {
-  const rs = await client.execute({
-    sql: `SELECT o."id", o."name", o."slug", m."role" FROM "member" m JOIN "organization" o ON o."id" = m."organizationId"
-          WHERE m."userId" = ? ORDER BY (o."id" = ?) DESC, m."createdAt", m."id" LIMIT 1`,
-    args: [userId, active],
-  });
-  const row = rs.rows[0];
-  if (!row) return null;
-  const role = String(row.role);
-  return {
-    id: String(row.id),
-    name: String(row.name),
-    slug: String(row.slug),
-    role: isRole(role) ? role : "member",
-  };
 }
 
 /** The signed-in viewer of this request, or null. Read once per request. */

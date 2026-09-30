@@ -46,3 +46,43 @@ test("a missing key is reported by the variable to set, never by a value", () =>
   expect(message).toStartWith("LINEAR_API_KEY is not set.");
   expect(message).toContain("armada auth login");
 });
+
+test("the Armada API is built in unless ARMADA_API_URL or [api] url names another; ARMADA_API_KEY beats the stored sign-in", () => {
+  const personal = { ...EMPTY_PERSONAL_CONFIG, api: { url: "https://armada.self-hosted.test" } };
+  expect(resolveCredentials({ env: {} }).armadaApi).toEqual({
+    url: "https://armada.thevibecompany.co",
+    source: { kind: "default" },
+  });
+  expect(resolveCredentials({ env: {}, personal }).armadaApi.source).toEqual({ kind: "config", key: "api.url" });
+  expect(resolveCredentials({ env: { ARMADA_API_URL: "http://localhost:4822" }, personal }).armadaApi).toEqual({
+    url: "http://localhost:4822",
+    source: { kind: "env", variable: "ARMADA_API_URL" },
+  });
+
+  expect(resolveCredentials({ env: {} }).armadaSignIn).toBeNull();
+  const store = { ARMADA_SESSION_TOKEN: "stored-session", ARMADA_API_KEY: "armada_stored" };
+  expect(resolveCredentials({ env: {}, store }).armadaSignIn).toEqual({
+    kind: "session",
+    token: "stored-session",
+    source: { kind: "store" },
+  });
+  expect(resolveCredentials({ env: {}, store: { ARMADA_API_KEY: "armada_stored" } }).armadaSignIn).toMatchObject({
+    kind: "api-key",
+    key: "armada_stored",
+  });
+  expect(resolveCredentials({ env: { ARMADA_API_KEY: "armada_env" }, store }).armadaSignIn).toEqual({
+    kind: "api-key",
+    key: "armada_env",
+    source: { kind: "env", variable: "ARMADA_API_KEY" },
+  });
+});
+
+test("a stored sign-in is used only for the Armada that issued it; the environment's key goes anywhere", () => {
+  const store = { ARMADA_SESSION_TOKEN: "stored-session", ARMADA_SIGNED_IN_TO: "https://armada.example.test/" };
+  const there = resolveCredentials({ env: { ARMADA_API_URL: "https://armada.example.test" }, store });
+  expect(there.armadaSignIn?.kind).toBe("session");
+  const elsewhere = resolveCredentials({ env: {}, store });
+  expect([elsewhere.armadaSignIn, elsewhere.armadaSignInElsewhere]).toEqual([null, "https://armada.example.test"]);
+  const env = resolveCredentials({ env: { ARMADA_API_KEY: "armada_env" }, store });
+  expect([env.armadaSignIn?.kind, env.armadaSignInElsewhere]).toEqual(["api-key", null]);
+});

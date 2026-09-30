@@ -1698,3 +1698,37 @@ button.chip:hover {
     transition: none !important;
   }
 }
+
+/* ------------------------------------------------------------ terminal sign-in and API keys */
+.device-code {
+  margin: 0 0 18px;
+  padding: 14px;
+  text-align: center;
+  font-size: 30px;
+  letter-spacing: 0.18em;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: var(--panel-2);
+}
+.secret-once {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.secret-once code {
+  display: block;
+  padding: 10px 12px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  background: var(--panel-2);
+  font-size: 12.5px;
+}
+.login-hint.is-top {
+  margin: 0 0 10px;
+}
+.org-section .plain-list + .invite-form,
+.org-section .faint + .invite-form {
+  margin-top: 10px;
+}

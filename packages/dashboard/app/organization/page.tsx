@@ -5,10 +5,12 @@ import {
   cancelInvitation,
   inviteMember,
   removeMember,
+  revokeApiKey,
   signOut,
   switchOrganization,
   updateMemberRole,
 } from "@/app/auth-actions";
+import { ApiKeyForm } from "@/components/ApiKeyForm";
 import { AuthCard } from "@/components/AuthCard";
 import { CopyLink } from "@/components/CopyLink";
 import { invitationUrl, isRole, ROLES, type Role } from "@/lib/accounts";
@@ -17,8 +19,9 @@ import { accountsModeOf } from "@/lib/accounts-settings";
 import { LANGUAGE_COOKIE, ORG_ERRORS, ORG_NOTICES, type OrgError, type OrgNotice, STRINGS } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 
-// The viewer's organization: its members and pending invitations. Owners and
-// admins invite, change roles and remove; Better Auth enforces who may do what.
+// The viewer's organization: its members, pending invitations and API keys.
+// Owners and admins invite, change roles and remove; owners create and revoke
+// the API keys of headless coordinators. Better Auth enforces who may do what.
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -47,6 +50,15 @@ export default async function Organization({ searchParams }: { searchParams: Par
     auth.api.listOrganizations({ headers: h }),
   ]);
   const manager = viewer.organization.role === "owner" || viewer.organization.role === "admin";
+  const owner = viewer.organization.role === "owner";
+  // Only owners may read the organization's keys; Better Auth refuses the others.
+  const apiKeys = owner
+    ? ((
+        await auth.api
+          .listApiKeys({ query: { organizationId: viewer.organization.id }, headers: h })
+          .catch(() => ({ apiKeys: [] }))
+      ).apiKeys ?? [])
+    : [];
   // Only an owner hands out the owner role.
   const grantable: readonly Role[] = viewer.organization.role === "owner" ? ROLES : ROLES.filter((r) => r !== "owner");
   const error = pick<OrgError>(ORG_ERRORS, params.error);
@@ -180,6 +192,44 @@ export default async function Organization({ searchParams }: { searchParams: Par
       ) : (
         <p className="login-hint">{t.org.onlyAdmins}</p>
       )}
+
+      <section className="org-section" aria-labelledby="api-keys-title">
+        <h2 id="api-keys-title" className="section-label">
+          {t.org.apiKeys} {owner && <span className="tnum faint">{apiKeys.length}</span>}
+        </h2>
+        <p className="login-hint is-top">{t.org.apiKeysHint}</p>
+        {owner ? (
+          <>
+            {apiKeys.length === 0 ? (
+              <p className="faint">{t.org.noApiKeys}</p>
+            ) : (
+              <ul className="plain-list">
+                {apiKeys.map((k) => (
+                  <li key={k.id} className="member-row">
+                    <span className="member-who">
+                      <b>{k.name ?? k.start ?? k.id}</b>
+                      <span className="member-mail mono">{k.start ? `${k.start}…` : ""}</span>
+                      <span className="member-mail">
+                        {t.org.keyCreated(date.format(new Date(k.createdAt)))} ·{" "}
+                        {k.lastRequest ? t.org.keyUsed(date.format(new Date(k.lastRequest))) : t.org.keyUnused}
+                      </span>
+                    </span>
+                    <form action={revokeApiKey}>
+                      <input type="hidden" name="key" value={k.id} />
+                      <button type="submit" className="btn is-danger">
+                        {t.org.revoke}
+                      </button>
+                    </form>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <ApiKeyForm lang={lang} />
+          </>
+        ) : (
+          <p className="login-hint">{t.org.onlyOwners}</p>
+        )}
+      </section>
 
       {organizations.length > 1 && (
         <section className="org-section" aria-labelledby="orgs-title">

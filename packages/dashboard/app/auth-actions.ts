@@ -7,13 +7,14 @@
 // ownership itself (an admin cannot remove an owner, an invitation is only for
 // its address); these actions add the session check and safe redirects.
 import { APIError } from "better-auth/api";
+import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { isRole } from "@/lib/accounts";
 import { requireAccounts, requireMember, requireSession } from "@/lib/accounts-server";
-import { INVITATION_PATH, ORGANIZATION_PATH, WELCOME_PATH } from "@/lib/accounts-settings";
+import { DEVICE_PATH, INVITATION_PATH, ORGANIZATION_PATH, WELCOME_PATH } from "@/lib/accounts-settings";
 import { clientAddress, FailureLimiter, LOGIN_PATH, safeNext } from "@/lib/auth";
-import type { AuthError, OrgError, OrgNotice } from "@/lib/i18n";
+import type { AuthError, DeviceError, OrgError, OrgNotice } from "@/lib/i18n";
 
 const text = (form: FormData, name: string) => {
   const v = form.get(name);
@@ -264,4 +265,78 @@ export async function rejectInvitation(form: FormData): Promise<void> {
     redirect(`${INVITATION_PATH}/${encodeURIComponent(id)}?error=${orgError(err)}`);
   }
   redirect(WELCOME_PATH);
+}
+
+// ------------------------------------------------------------ API keys
+
+/** What the key form shows after a submit: the new key, once, or why there is none. */
+export type ApiKeyState = { key: string; name: string } | { error: OrgError } | null;
+
+/**
+ * Creates an API key for the viewer's organization and returns it to the form,
+ * the only time it is ever shown: Armada keeps its hash. Better Auth lets only
+ * the organization's owners do it.
+ */
+export async function createApiKey(_: ApiKeyState, form: FormData): Promise<ApiKeyState> {
+  const viewer = await requireMember();
+  const { auth } = await requireAccounts();
+  const name = text(form, "name").replace(/\s+/g, " ").slice(0, 32);
+  if (!name) return { error: "invalid" };
+  try {
+    const created = await auth.api.createApiKey({
+      body: { name, organizationId: viewer.organization.id },
+      headers: await headers(),
+    });
+    revalidatePath(ORGANIZATION_PATH);
+    return { key: created.key, name };
+  } catch (err) {
+    return { error: orgError(err) };
+  }
+}
+
+export async function revokeApiKey(form: FormData): Promise<void> {
+  const { auth } = await requireAccounts();
+  await change("revoked", (_, h) => auth.api.deleteApiKey({ body: { keyId: text(form, "key") }, headers: h }));
+}
+
+// ------------------------------------------------------------ armada login
+
+function deviceError(err: unknown): DeviceError {
+  if (!(err instanceof APIError)) {
+    console.error(`armada dashboard: device sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
+    return "failed";
+  }
+  const body = (err.body ?? {}) as { error?: unknown; error_description?: unknown };
+  if (err.statusCode === 403 || body.error === "access_denied") return "forbidden";
+  if (
+    String(body.error_description ?? "")
+      .toLowerCase()
+      .includes("already")
+  )
+    return "used";
+  if (err.statusCode === 400) return "unknown";
+  return "failed";
+}
+
+/** Approves or denies the code `armada login` shows; only the person the code was opened by can. */
+async function decideDevice(form: FormData, approve: boolean): Promise<void> {
+  await requireSession();
+  const { auth } = await requireAccounts();
+  const userCode = text(form, "code");
+  try {
+    const h = await headers();
+    if (approve) await auth.api.deviceApprove({ body: { userCode }, headers: h });
+    else await auth.api.deviceDeny({ body: { userCode }, headers: h });
+  } catch (err) {
+    redirect(`${DEVICE_PATH}?${new URLSearchParams({ user_code: userCode, error: deviceError(err) })}`);
+  }
+  redirect(`${DEVICE_PATH}?done=${approve ? "approved" : "denied"}`);
+}
+
+export async function approveDevice(form: FormData): Promise<void> {
+  await decideDevice(form, true);
+}
+
+export async function denyDevice(form: FormData): Promise<void> {
+  await decideDevice(form, false);
 }
