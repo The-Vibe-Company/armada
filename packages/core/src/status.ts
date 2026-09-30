@@ -1,7 +1,7 @@
 // `armada status`: one JSON-serializable reading of the fleet, shared by the
 // CLI and, later, the dashboard.
 import type { ArmadaConfig } from "./config.ts";
-import { frontier, inFlight, type LaneFlag, waitingPullRequests } from "./fleet.ts";
+import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { type Fetch, fetchProgram } from "./linear.ts";
 import { buildModel } from "./model.ts";
@@ -28,8 +28,10 @@ export interface PrRef {
 
 export interface InFlightTicket extends TicketRef {
   phase: AgentPhase;
-  phaseSource: "label" | "status-line" | "inferred";
+  phaseSource: "label" | "status-line" | "inferred" | "live";
   runtime: string | null;
+  /** The worker's runtime session (workspace/session id), when known. */
+  handle: string | null;
   agent: string | null;
   since: string;
   lastUpdate: string;
@@ -81,6 +83,8 @@ export interface BuildStatusInput {
   forgeError?: string | null;
   /** Newest Turso event per ticket id; absent when Turso was not read. */
   lastEvents?: Record<string, string>;
+  /** Turso events newer than the tracker read, and open runtime handles (the dashboard's live layer). */
+  live?: LaneOptions["live"];
   /** Problems met on optional sources (Turso), added to the report warnings. */
   extraWarnings?: string[];
   now: Date;
@@ -92,6 +96,7 @@ export function buildStatus({
   forge,
   forgeError = null,
   lastEvents,
+  live,
   extraWarnings = [],
   now,
 }: BuildStatusInput): StatusReport {
@@ -101,6 +106,7 @@ export function buildStatus({
     now: now.getTime(),
     silentAfterMinutes: config.policy.silentAfterMinutes,
     ...(lastEvents ? { lastEvents } : {}),
+    ...(live ? { live } : {}),
   });
   const phaseOf = new Map(lanes.map((l) => [l.issue.id, l.phase]));
   const prRef = (p: {
@@ -137,6 +143,7 @@ export function buildStatus({
       phase: l.phase,
       phaseSource: l.phaseSource,
       runtime: l.runtime,
+      handle: l.handle,
       agent: l.agent,
       since: l.since,
       lastUpdate: l.lastUpdate,
@@ -147,15 +154,17 @@ export function buildStatus({
       openBlockers: l.openBlockers,
       flags: l.flags,
     })),
-    frontier: frontier(m, config.tracker.readyLabel).map((c) => ({
-      id: c.issue.id,
-      title: c.issue.title,
-      url: c.issue.url,
-      spec: c.spec,
-      readyForAgent: c.readyForAgent,
-      onCriticalPath: c.onCriticalPath,
-      unlocks: c.unlocksAll,
-    })),
+    frontier: frontier(m, config.tracker.readyLabel)
+      .filter((c) => !phaseOf.has(c.issue.id))
+      .map((c) => ({
+        id: c.issue.id,
+        title: c.issue.title,
+        url: c.issue.url,
+        spec: c.spec,
+        readyForAgent: c.readyForAgent,
+        onCriticalPath: c.onCriticalPath,
+        unlocks: c.unlocksAll,
+      })),
     pullRequests: forge
       ? waitingPullRequests(m, forge.prs).map(({ pr, ticket }) => ({
           ...prRef(pr),
@@ -179,8 +188,18 @@ export interface LoadStatusOptions {
   now?: () => Date;
 }
 
-/** Reads Linear and GitHub for the project in `config` and builds the report. */
-export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions): Promise<StatusReport> {
+export interface StatusSources {
+  program: ProgramData;
+  forge: ForgeData | null;
+  /** Why GitHub was not read, when `forge` is null. */
+  forgeError: string | null;
+}
+
+/** Reads the project's program from Linear and its pull requests from GitHub. A GitHub failure is kept, not thrown. */
+export async function readStatusSources(
+  config: ArmadaConfig,
+  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now">,
+): Promise<StatusSources> {
   const now = opts.now ?? (() => new Date());
   const programP = fetchProgram({
     apiKey: opts.linearApiKey,
@@ -189,17 +208,24 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     now,
   });
-  const forgeP: Promise<{ forge: ForgeData | null; error: string | null }> = opts.githubToken
+  const forgeP: Promise<{ forge: ForgeData | null; forgeError: string | null }> = opts.githubToken
     ? fetchForge({
         token: opts.githubToken,
         repository: config.github.repository,
         ...(opts.fetch ? { fetch: opts.fetch } : {}),
         now,
       }).then(
-        (forge) => ({ forge, error: null }),
-        (err: unknown) => ({ forge: null, error: err instanceof Error ? err.message : String(err) }),
+        (forge) => ({ forge, forgeError: null }),
+        (err: unknown) => ({ forge: null, forgeError: err instanceof Error ? err.message : String(err) }),
       )
-    : Promise.resolve({ forge: null, error: "no GitHub token (set GITHUB_TOKEN or run gh auth login)" });
+    : Promise.resolve({ forge: null, forgeError: "no GitHub token (set GITHUB_TOKEN or run gh auth login)" });
+  const [program, forge] = await Promise.all([programP, forgeP]);
+  return { program, ...forge };
+}
+
+/** Reads Linear and GitHub for the project in `config` and builds the report. */
+export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions): Promise<StatusReport> {
+  const now = opts.now ?? (() => new Date());
   const eventsP: Promise<{ events?: Record<string, string>; warning?: string }> = opts.lastEvents
     ? opts.lastEvents().then(
         (events) => ({ events }),
@@ -208,12 +234,12 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [program, { forge, error }, events] = await Promise.all([programP, forgeP, eventsP]);
+  const [{ program, forge, forgeError }, events] = await Promise.all([readStatusSources(config, opts), eventsP]);
   return buildStatus({
     config,
     program,
     forge,
-    forgeError: error,
+    forgeError,
     ...(events.events ? { lastEvents: events.events } : {}),
     extraWarnings: events.warning ? [events.warning] : [],
     now: now(),

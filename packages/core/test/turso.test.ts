@@ -1,5 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { listProjects, migrate, openTurso, SCHEMA_VERSION, upsertProject } from "../src/turso.ts";
+import {
+  lastCoordinatorSeen,
+  lastEventTimes,
+  latestEvents,
+  listProjects,
+  migrate,
+  openRuntimeHandles,
+  openTurso,
+  recordCoordinatorSeen,
+  recordEvent,
+  releaseRuntimeHandle,
+  SCHEMA_VERSION,
+  saveRuntimeHandle,
+  upsertProject,
+} from "../src/turso.ts";
 import { closeTempTurso, tempTurso, trackDb } from "./support.ts";
 
 afterEach(closeTempTurso);
@@ -31,5 +45,37 @@ describe("Turso schema", () => {
       createdAt: "2026-03-01T00:00:00.000Z",
       updatedAt: "2026-03-02T00:00:00.000Z",
     });
+  });
+});
+
+describe("live reading", () => {
+  const at = (t: string) => new Date(`2026-03-04T${t}:00Z`);
+
+  test("the newest event of each ticket, the coordinator's last inbox read and the open handles", async () => {
+    const { db } = await tempTurso();
+    const report = (ticket: string, phase: string, t: string, project = "widgets") =>
+      recordEvent(db, { project, ticket, kind: "report", phase, message: `${phase} note`, at: at(t) });
+    await report("W-1", "planning", "09:00");
+    await report("W-1", "implementing", "09:10");
+    await report("W-2", "shipping", "09:05");
+    await report("W-1", "shipping", "09:20", "gadgets");
+    expect(await lastCoordinatorSeen(db, "widgets")).toBeNull();
+    await recordCoordinatorSeen(db, { project: "widgets", at: at("09:30") });
+    await recordCoordinatorSeen(db, { project: "widgets", at: at("09:40") });
+
+    const latest = await latestEvents(db, "widgets");
+    expect(Object.keys(latest).sort()).toEqual(["W-1", "W-2"]);
+    expect(latest["W-1"]).toMatchObject({ kind: "report", phase: "implementing", message: "implementing note" });
+    // Coordinator reads belong to no ticket.
+    expect(Object.keys(await lastEventTimes(db, "widgets")).sort()).toEqual(["W-1", "W-2"]);
+    expect(await lastCoordinatorSeen(db, "widgets")).toBe("2026-03-04T09:40:00.000Z");
+    expect(await lastCoordinatorSeen(db, "gadgets")).toBeNull();
+
+    const handle = { project: "widgets", runtime: "Conductor", branch: null, at: at("09:00") };
+    await saveRuntimeHandle(db, { ...handle, ticket: "W-1", handle: "ws-1" });
+    await saveRuntimeHandle(db, { ...handle, ticket: "W-2", handle: "ws-2" });
+    await releaseRuntimeHandle(db, "widgets", "W-2", at("09:50"));
+    const handles = await openRuntimeHandles(db, "widgets");
+    expect(handles.map((h) => [h.ticket, h.handle])).toEqual([["W-1", "ws-1"]]);
   });
 });

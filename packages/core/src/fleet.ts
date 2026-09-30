@@ -2,7 +2,7 @@
 // frontier of tickets ready to start, and pull requests waiting. Pure functions
 // over the model; tolerant of missing forge data and missing status lines.
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
-import type { AgentClaim, AgentPhase, Comment, Issue, PullRequest } from "./types.ts";
+import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASES, type PullRequest } from "./types.ts";
 
 const MIN = 60_000;
 
@@ -36,9 +36,14 @@ export interface Lane {
   issue: Issue;
   spec: string | null;
   phase: AgentPhase;
-  /** label = the phase label (source of truth); status-line and inferred are fallbacks. */
-  phaseSource: "label" | "status-line" | "inferred";
+  /**
+   * label = the phase label (source of truth); status-line and inferred are
+   * fallbacks; live = a Turso report newer than the tracker read.
+   */
+  phaseSource: "label" | "status-line" | "inferred" | "live";
   runtime: string | null;
+  /** The worker's runtime session: the live runtime handle, else the claim's session. */
+  handle: string | null;
   claim: AgentClaim | null;
   agent: string | null;
   /** When the current phase was announced (or the best available proxy). */
@@ -89,11 +94,45 @@ function inferPhase(pr: PullRequest | null, comments: Comment[]): AgentPhase {
   return "planning";
 }
 
+/** A worker event read from Turso (claim, report or release). */
+export interface LiveEvent {
+  kind: string;
+  phase: string | null;
+  message: string | null;
+  runtime?: string | null;
+  handle?: string | null;
+  at: string;
+}
+
 export interface LaneOptions {
   now: number;
   silentAfterMinutes: number;
   /** Newest Turso event per ticket id, when Turso was read. */
   lastEvents?: Record<string, string>;
+  /**
+   * Live news from Turso. The tracker is read less often than Turso, so an
+   * event newer than `after` (when the tracker read started) says more than
+   * the tracker does: its phase wins, and a claim puts the ticket in flight.
+   */
+  live?: {
+    after: string;
+    /** Newest event per ticket id. */
+    events: Record<string, LiveEvent>;
+    /** Open runtime handle per ticket id. */
+    handles?: Record<string, { runtime: string; handle: string }>;
+  };
+}
+
+/** Event kinds after which no worker holds the ticket. */
+const ENDS_WORK = ["release", "merge"];
+
+const livePhase = (e: LiveEvent): AgentPhase | null =>
+  e.kind === "release" ? "released" : (LABEL_PHASES.find((p) => p === e.phase) ?? null);
+
+/** The Turso event of a ticket that happened after the tracker read, if any. */
+export function freshEvent(issueId: string, opts: Pick<LaneOptions, "live">): LiveEvent | null {
+  const e = opts.live?.events[issueId];
+  return e && opts.live && e.at > opts.live.after ? e : null;
 }
 
 export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: LaneOptions): Lane {
@@ -114,22 +153,46 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     phase = inferPhase(pr, comments);
     phaseSource = "inferred";
   }
+  const fresh = freshEvent(issue.id, opts);
+  const freshPhase = fresh ? livePhase(fresh) : null;
+  const trackerPhase = phase;
+  if (freshPhase && freshPhase !== "released") {
+    phase = freshPhase;
+    phaseSource = "live";
+  }
   // A merged PR ends the work only if the agent was shipping it; a label that
   // says the agent went back to planning or implementing still wins.
   const shippingPhase = phase === "shipping" || phase === "ready-to-merge";
-  if (pr?.state === "merged" && !isDone(issue) && (shippingPhase || phaseSource !== "label")) phase = "merged";
+  if (
+    pr?.state === "merged" &&
+    !isDone(issue) &&
+    (shippingPhase || phaseSource === "status-line" || phaseSource === "inferred")
+  )
+    phase = "merged";
 
-  const announcing = comments.find((c) => c.status?.phase === phase);
+  // The phase started with the oldest status line of the latest run announcing
+  // it: workers repeat the same phase every 15 minutes to show they are alive.
+  let announcing: Comment | undefined;
+  for (const c of comments) {
+    if (!c.status || c.status.phase === "released") continue;
+    if (c.status.phase !== phase) break;
+    announcing = c;
+  }
   const since =
+    (fresh && phaseSource === "live" && phase !== trackerPhase ? fresh.at : undefined) ??
     announcing?.createdAt ??
     (phase === "shipping" || phase === "ready-to-merge" ? pr?.createdAt : undefined) ??
     claims[0]?.at ??
     issue.startedAt ??
     issue.updatedAt;
-  const lastUpdate = latest(issue.updatedAt, comments[0]?.createdAt, pr?.updatedAt, issue.startedAt);
+  const lastUpdate = latest(issue.updatedAt, comments[0]?.createdAt, pr?.updatedAt, issue.startedAt, fresh?.at);
   const lastReport =
-    latest(comments.find((c) => c.status || c.claim)?.createdAt, claims.at(-1)?.at, opts.lastEvents?.[issue.id]) ||
-    null;
+    latest(
+      comments.find((c) => c.status || c.claim)?.createdAt,
+      claims.at(-1)?.at,
+      opts.lastEvents?.[issue.id],
+      fresh?.at,
+    ) || null;
   const openBlockers = m.openBlockersOf(issue);
   const agent = issue.delegate ?? issue.assignee;
 
@@ -150,8 +213,9 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
   )
     flags.push("double-claim");
   if (openBlockers.length) flags.push("started-before-blockers");
-  if (!agent) flags.push("no-assignee");
-  if (!issue.agentPhase) flags.push("no-phase-label");
+  // A claim newer than the tracker read has not reached the snapshot yet.
+  if (!agent && phaseSource !== "live") flags.push("no-assignee");
+  if (!issue.agentPhase && phaseSource !== "live") flags.push("no-phase-label");
 
   const spec = m.specOf(issue.id);
   return {
@@ -159,20 +223,24 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     spec: spec ? `Spec ${spec.ordinal}` : null,
     phase,
     phaseSource,
-    runtime: issue.agentRuntime ?? claimRuntime ?? null,
+    runtime: issue.agentRuntime ?? claimRuntime ?? fresh?.runtime ?? opts.live?.handles?.[issue.id]?.runtime ?? null,
+    handle: opts.live?.handles?.[issue.id]?.handle ?? claims[0]?.session ?? fresh?.handle ?? null,
     claim: claims[0] ?? null,
     agent,
     since,
     lastUpdate,
     lastReport,
-    statusLine: withStatus?.status
-      ? {
-          summary: withStatus.status.summary,
-          at: withStatus.createdAt,
-          author: withStatus.author,
-          url: commentUrl(issue, withStatus),
-        }
-      : null,
+    statusLine:
+      fresh?.message && phaseSource === "live"
+        ? { summary: fresh.message, at: fresh.at, author: null, url: issue.url }
+        : withStatus?.status
+          ? {
+              summary: withStatus.status.summary,
+              at: withStatus.createdAt,
+              author: withStatus.author,
+              url: commentUrl(issue, withStatus),
+            }
+          : null,
     pr,
     openBlockers,
     flags,
@@ -181,11 +249,17 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
 
 /**
  * Tickets in flight: open leaves that carry an agent phase label, plus started
- * leaves without one (shown with an inferred phase and flagged).
+ * leaves without one (shown with an inferred phase and flagged). A live event
+ * newer than the tracker read decides on its own: a release or a merge takes
+ * the ticket out, any other event puts it in.
  */
 export function inFlight(m: Model, comments: Comment[], opts: LaneOptions): Lane[] {
+  const held = (i: Issue) => {
+    const fresh = freshEvent(i.id, opts);
+    return fresh ? !ENDS_WORK.includes(fresh.kind) : !!i.agentPhase || isStarted(i);
+  };
   return m.program
-    .filter((i) => m.isLeaf(i) && !isClosed(i) && (i.agentPhase || isStarted(i)))
+    .filter((i) => m.isLeaf(i) && !isClosed(i) && held(i))
     .map((i) => buildLane(m, comments, i, opts))
     .sort(
       (a, b) =>

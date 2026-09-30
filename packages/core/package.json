@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Armada core: armada.toml, Linear and GitHub read adapters and the fleet derivations.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./read": "./src/read.ts"
   },
   "dependencies": {
     "@libsql/client": "0.18.0",
