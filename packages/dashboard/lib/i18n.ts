@@ -177,7 +177,7 @@ const en = {
     signUp: "Create the account",
     toSignUp: "Invited, and no account yet? Create one",
     toSignIn: "Already have an account? Sign in",
-    sent: "Check your inbox: we sent a link to confirm your address. Open it to finish signing in.",
+    sent: "If this address is invited, a link to confirm it is on its way. Open it to finish signing in.",
     hint: "Accounts are by invitation: ask an owner of your organization to invite your address.",
     logout: "Sign out",
     errors: {
@@ -212,9 +212,10 @@ const en = {
     invitationHeading: (org: string) => `Join ${org}`,
     invitationLead: (inviter: string, role: string) =>
       `${inviter} invites you to see and act on this organization's fleet, as ${role}.`,
-    invitationGone: "This invitation is no longer valid: it was accepted, declined, cancelled or it expired.",
-    wrongAccount: (email: string) =>
-      `This invitation is for another address. You are signed in as ${email}: sign out, then sign in with the invited address.`,
+    invitationGone:
+      "This invitation cannot be opened: it was accepted, declined, cancelled or it expired, or it was sent to another address.",
+    signedInAs: (email: string) =>
+      `You are signed in as ${email}. An invitation opens only for the address it was sent to: if it was another one, sign out and sign in with it.`,
     members: "Members",
     you: "you",
     roles: { owner: "owner", admin: "admin", member: "member" } satisfies Record<Role, string>,
@@ -428,7 +429,7 @@ const fr: Strings = {
     signUp: "Créer le compte",
     toSignUp: "Invité, et pas encore de compte ? Crée-le",
     toSignIn: "Déjà un compte ? Connecte-toi",
-    sent: "Regarde ta boîte mail : un lien confirme ton adresse. Ouvre-le pour finir la connexion.",
+    sent: "Si cette adresse est invitée, un lien pour la confirmer arrive. Ouvre-le pour finir la connexion.",
     hint: "Les comptes sont sur invitation : demande à un propriétaire de ton organisation d'inviter ton adresse.",
     logout: "Se déconnecter",
     errors: {
@@ -465,9 +466,10 @@ const fr: Strings = {
     invitationHeading: (org) => `Rejoindre ${org}`,
     invitationLead: (inviter, role) =>
       `${inviter} t'invite à voir la flotte de cette organisation et à y agir, comme ${role}.`,
-    invitationGone: "Cette invitation n'est plus valable : acceptée, refusée, annulée ou expirée.",
-    wrongAccount: (email) =>
-      `Cette invitation est pour une autre adresse. Tu es connecté comme ${email} : déconnecte-toi, puis connecte-toi avec l'adresse invitée.`,
+    invitationGone:
+      "Cette invitation ne peut pas s'ouvrir : acceptée, refusée, annulée, expirée, ou envoyée à une autre adresse.",
+    signedInAs: (email) =>
+      `Tu es connecté comme ${email}. Une invitation ne s'ouvre que pour l'adresse à laquelle elle a été envoyée : si c'en était une autre, déconnecte-toi et connecte-toi avec elle.`,
     members: "Membres",
     you: "toi",
     roles: { owner: "propriétaire", admin: "admin", member: "membre" },
