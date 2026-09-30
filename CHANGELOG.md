@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.17](https://github.com/The-Vibe-Company/armada/compare/v0.1.16...v0.1.17) (2026-09-30)
+
+
+### Bug Fixes
+
+* **core:** deliver waiting plans to the coordinator inbox ([#41](https://github.com/The-Vibe-Company/armada/issues/41)) ([59f73c0](https://github.com/The-Vibe-Company/armada/commit/59f73c03557829fd49d2a3c4749356843d8629ab))
+
 ## [0.1.16](https://github.com/The-Vibe-Company/armada/compare/v0.1.15...v0.1.16) (2026-09-30)
 
 
