@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.7](https://github.com/The-Vibe-Company/armada/compare/v0.1.6...v0.1.7) (2026-09-30)
+
+
+### Features
+
+* **cli:** let workers ask the coordinator through armada ([#15](https://github.com/The-Vibe-Company/armada/issues/15)) ([4637926](https://github.com/The-Vibe-Company/armada/commit/46379261ceb8acb8a993903b26005dbd0994de08))
+
 ## [0.1.6](https://github.com/The-Vibe-Company/armada/compare/v0.1.5...v0.1.6) (2026-09-30)
 
 
