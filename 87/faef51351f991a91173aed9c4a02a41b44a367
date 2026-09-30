@@ -1,0 +1,67 @@
+packages/dashboard/components/Fleet.tsx
+  s_d658e7251951c2::t_a426279c38d35a 1-553
+  s_d658e7251951c2::t_a91cebcc4dda9c 554-557
+packages/dashboard/app/globals.css
+  s_d658e7251951c2::t_6eaec37a16c129 1-988
+  s_d658e7251951c2::t_3d0ff6ee79c864 989-990
+packages/dashboard/lib/demo/sources.ts
+  s_d658e7251951c2::t_60e1dca4008677 1-27
+packages/dashboard/lib/server.ts
+  s_d658e7251951c2::t_4d91377b1e03c0 1-74,77
+  s_d658e7251951c2::t_120bedcbe65cab 75-76,78-84
+packages/dashboard/scripts/demo.ts
+  s_d658e7251951c2::t_391ad69ab78a62 1-88
+  s_d658e7251951c2::t_00c0efdc14cf90 89-95
+packages/dashboard/lib/i18n.ts
+  s_d658e7251951c2::t_240a8285111370 1-209
+  s_d658e7251951c2::t_4255df496a8c98 210-216
+packages/dashboard/lib/fleet-data.ts
+  s_d658e7251951c2::t_080a3ef6a1164c 1-215
+packages/dashboard/lib/demo/world.ts
+  s_d658e7251951c2::t_9532a312410960 1-332
+  s_d658e7251951c2::t_1263b3c89baacc 333-336
+.gitignore
+  s_d658e7251951c2::t_b35622600c3816 15-19
+bun.lock
+  s_d658e7251951c2::t_26c3d6c6ccb782 15,37-52,78-135,164-183,190-193,196-197,200-205,208-209,214-221,224-235,238-243,249-250
+package.json
+  s_d658e7251951c2::t_6ea4a3b0b6b4f5 13
+packages/core/src/fleet.ts
+  s_d658e7251951c2::t_07e8976bedc284 170-177
+packages/core/src/status.ts
+  s_d658e7251951c2::t_ff1c0ddafd252f 191-202,211,218-219,221-228,237,242
+packages/core/test/fleet.test.ts
+  s_d658e7251951c2::t_c9232e28d5227b 139-151
+packages/dashboard/app/api/fleet/route.ts
+  s_d658e7251951c2::t_37002cc8954435 1-8
+packages/dashboard/app/icon.svg
+  s_d658e7251951c2::t_c007cd0dc61543 1
+packages/dashboard/app/layout.tsx
+  s_d658e7251951c2::t_c670875b2aee17 1-27
+packages/dashboard/app/page.tsx
+  s_d658e7251951c2::t_4b906ca3a17c8c 1-15
+packages/dashboard/next.config.ts
+  s_d658e7251951c2::t_e96fdbfff337aa 1-21
+packages/dashboard/package.json
+  s_d658e7251951c2::t_a0fc859d358171 6-30
+packages/dashboard/tsconfig.json
+  s_d658e7251951c2::t_f6ab2323b471b9 1-18
+tsconfig.json
+  s_d658e7251951c2::t_3009dfc6376893 20-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "87faef51351f991a91173aed9c4a02a41b44a367",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
