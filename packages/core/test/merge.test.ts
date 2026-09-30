@@ -335,6 +335,29 @@ describe("armada merge", () => {
     expect(s.sleeps).toEqual([2000]);
   });
 
+  test.each(["ready-for-agent", "dispatchable"])(
+    "merge removes the configured ready label %s only",
+    async (readyLabel) => {
+      const state = setup();
+      state.ctx.config.tracker.readyLabel = readyLabel;
+      const ready = { id: "configured-ready", name: readyLabel, group: null };
+      const unrelated = { id: "category", name: "Feature", group: null };
+      const otherReady = {
+        id: "other-ready",
+        name: readyLabel === "dispatchable" ? "ready-for-agent" : "dispatchable",
+        group: null,
+      };
+      state.linear.get("DEMO-7").labels.push(ready, unrelated, otherReady);
+
+      await mergePullRequest(state.ctx, { pr: 9, dryRun: true });
+      expect(state.linear.get("DEMO-7").labels).toContainEqual(ready);
+      expect(state.linear.writes).toEqual([]);
+
+      await mergePullRequest(state.ctx, { pr: 9 });
+      expect(state.linear.get("DEMO-7").labels).toEqual([unrelated, otherReady]);
+    },
+  );
+
   test("a 5xx after which the head moved stops without retrying or touching the ticket", async () => {
     const s = setup();
     s.forge.answers = [{ ok: false, message: "HTTP 503", transient: true }];
