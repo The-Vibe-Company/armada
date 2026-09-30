@@ -1,0 +1,74 @@
+packages/dashboard/lib/auth-db.ts
+  s_d658e7251951c2::t_0b553b62ae09a1 1-212
+  s_d658e7251951c2::t_17ce1c1af2d418 213-220
+packages/dashboard/lib/accounts.ts
+  s_d658e7251951c2::t_ace06bd83d69a5 1-184
+  s_d658e7251951c2::t_5e6631a03ddf67 185
+packages/dashboard/app/auth-actions.ts
+  s_d658e7251951c2::t_5f35090c09e0a5 1-248
+  s_d658e7251951c2::t_1eb067d23ec667 249
+bun.lock
+  s_d658e7251951c2::t_5d3c1a19e5bcd4 15,41,43,62-79,202-209,226-229,238-239,244-245,248-249,254-255,268-269,276-277,294-297
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_a7e505aa2c963a 121-134,213-214,244,247-248,255,261-276
+packages/core/test/turso.test.ts
+  s_d658e7251951c2::t_ad93e985f6c3ac 3,48,53-69
+packages/dashboard/app/actions.ts
+  s_d658e7251951c2::t_e97525963774d5 3-9,11,21-24,35,39,43,48-49,53
+packages/dashboard/app/api/auth/[...all]/route.ts
+  s_d658e7251951c2::t_bd4a67afaf47bc 1-15
+packages/dashboard/app/api/auth/login/route.ts
+  s_d658e7251951c2::t_76be5cef1ee233 1,12-13
+packages/dashboard/app/api/auth/logout/route.ts
+  s_d658e7251951c2::t_a43d2466fe688f 1,8
+packages/dashboard/app/login/page.tsx
+  s_d658e7251951c2::t_3fd406f0e0020d 3-5,7,10-12,15,22-33,37-129,131,139-141,144,158,161,163
+packages/dashboard/app/page.tsx
+  s_d658e7251951c2::t_f1e01a8feef210 3,12,15-22,28-30
+packages/dashboard/components/Actions.tsx
+  s_d658e7251951c2::t_e6ad60fc0cd939 17-18,79-86,88,90-95,187,368
+packages/dashboard/components/AuthCard.tsx
+  s_d658e7251951c2::t_4fede5f958a25e 1-34
+packages/dashboard/components/Fleet.tsx
+  s_d658e7251951c2::t_9bba9b249b4ed0 15,19-25,112,119-121,123,159,181,307,319,366-376,379
+packages/dashboard/lib/access.ts
+  s_d658e7251951c2::t_bc93eec879170f 1-25
+packages/dashboard/lib/accounts-http.ts
+  s_d658e7251951c2::t_d9f9b79f2907ca 1-89
+packages/dashboard/lib/accounts-server.ts
+  s_d658e7251951c2::t_b9c8929b288f1c 1-122
+packages/dashboard/lib/accounts-settings.ts
+  s_d658e7251951c2::t_1f0caafaf3f690 1-125
+packages/dashboard/lib/auth-http.ts
+  s_d658e7251951c2::t_0c11f490865a58 132
+packages/dashboard/lib/fleet-data.ts
+  s_d658e7251951c2::t_7fd0f63eb352a4 8,67-87,193-208,213,255-258,261-263,265-267,287-290
+packages/dashboard/lib/i18n.ts
+  s_d658e7251951c2::t_b4cf8efd28dc86 9,15-37,147-148,161,165-253,399,412,416-507
+packages/dashboard/lib/requests.ts
+  s_d658e7251951c2::t_ec5e786c1ffd33 3-4,6,15,29,34,47-48,59-60
+packages/dashboard/lib/server.ts
+  s_d658e7251951c2::t_c7db8e10f96f3a 15,79,81,85-88
+packages/dashboard/package.json
+  s_d658e7251951c2::t_ea9b0df6fe9a02 19,21
+packages/dashboard/proxy.ts
+  s_d658e7251951c2::t_4b2c41e57d864d 1,4-7,9-11,14-27,29
+packages/dashboard/test/fleet-data.test.ts
+  s_d658e7251951c2::t_3bf803b21b2722 16-17,21-28,168-193
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2c7687eac32fb726c0be1e5e1a12a24d2bf2b562",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
