@@ -1,0 +1,49 @@
+packages/dashboard/lib/auth-http.ts
+  s_d658e7251951c2::t_40731fcf9c78eb 1-161
+packages/dashboard/test/auth.test.ts
+  s_d658e7251951c2::t_28230f97fdf472 1-160
+packages/dashboard/lib/auth.ts
+  s_d658e7251951c2::t_1421c26be877f1 1-155
+AGENTS.md
+  s_d658e7251951c2::t_6a8bd9034ce342 9,19
+README.md
+  s_d658e7251951c2::t_ba8fc3290a9e38 143,150-159
+packages/dashboard/app/api/auth/login/route.ts
+  s_d658e7251951c2::t_f83c0ba301566e 1-13
+packages/dashboard/app/api/auth/logout/route.ts
+  s_d658e7251951c2::t_c4ec0ad95f414f 1-8
+packages/dashboard/app/globals.css
+  s_d658e7251951c2::t_41b80448f62d7e 901-1005
+packages/dashboard/app/login/page.tsx
+  s_d658e7251951c2::t_ae18b55b3127a9 1-58
+packages/dashboard/app/page.tsx
+  s_d658e7251951c2::t_fd3165cc0d5964 3,14-19
+packages/dashboard/components/Fleet.tsx
+  s_d658e7251951c2::t_ba6954e07afeeb 38-43,94,99,143,257,268,315-319
+packages/dashboard/lib/auth-server.ts
+  s_d658e7251951c2::t_7d42d7be0384bd 1-21
+packages/dashboard/lib/i18n.ts
+  s_d658e7251951c2::t_d27d186661e982 119-135,231-247
+packages/dashboard/lib/server.ts
+  s_d658e7251951c2::t_869fe1c07b2504 15,67
+packages/dashboard/proxy.ts
+  s_d658e7251951c2::t_9db25acf4229c3 1-14
+packages/dashboard/tsconfig.json
+  s_d658e7251951c2::t_8d8c84541b25fc 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "29bc58fcc7d80f69f32c00cf2eeec33d02edc52c",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
