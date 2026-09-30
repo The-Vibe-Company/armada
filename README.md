@@ -61,7 +61,7 @@ On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the nam
 
 ## Launch a worker (coordinators)
 
-Armada prepares a launch; it never starts a runtime itself. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands.
+Armada prepares a launch; it never starts a runtime itself. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands. [`docs/runbook.md`](docs/runbook.md) says how to start a coordinator on a laptop or in Conductor Cloud, what the owner sets up once, and how one coordinator hands over to the next.
 
 ```sh
 armada brief ABC-12                    # launch settings, then the worker's prompt
