@@ -27,7 +27,7 @@ local_commands = ["bun install --frozen-lockfile", "bun run verify"]
 
 # How `armada brief` launches workers on Conductor; `conductor model` lists the ids.
 [conductor]
-default_profile = "opus"
+default_profile = "opus"  # for tickets no routing rule matches
 
 [conductor.profiles.opus]
 agent = "claude"
@@ -38,3 +38,21 @@ effort = "high"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
+
+[conductor.profiles.debug]
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "xhigh"
+
+# The first rule with a label the ticket carries picks its profile, in file order.
+[[conductor.routing]]
+labels = ["web"]
+profile = "opus"
+
+[[conductor.routing]]
+labels = ["api"]
+profile = "codex"
+
+[[conductor.routing]]
+labels = ["Bug"]
+profile = "debug"

@@ -26,6 +26,7 @@ describe("comment conventions", () => {
       session: "ws-1",
       branch: "feature/x-1",
       startedAt: "2026-03-01T09:00:00Z",
+      profile: null,
       at: "2026-03-01T09:01:00Z",
       author: "Grace",
     });

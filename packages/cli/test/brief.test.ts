@@ -20,6 +20,14 @@ agent = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
 fast_mode = true
+
+[[conductor.routing]]
+labels = ["web"]
+profile = "opus"
+
+[[conductor.routing]]
+labels = ["api"]
+profile = "codex"
 `;
 
 const note = (id: string, createdAt: string, body: string, name = "Ada Worker") => ({
@@ -39,6 +47,7 @@ const BRIEF_RESPONSE = {
       branchName: "feature/demo-13-show-a-sign-in-page",
       description: "## In short\n\nA page with an email field.",
       state: { name: "Todo", type: "unstarted" },
+      labels: { pageInfo: { hasNextPage: false }, nodes: [{ name: "Feature" }, { name: "Web" }] },
       parent: {
         identifier: "DEMO-2",
         title: "Spec 1/2 — Sign in with email",
@@ -120,7 +129,9 @@ describe("armada brief", () => {
     const b = briefIo({ LINEAR_API_KEY: SECRETS.LINEAR_API_KEY });
     expect(await run(["brief", "demo-13"], b.io)).toBe(0);
     const text = b.out();
-    expect(text).toContain("Profile:     opus: agent claude, model opus-5-5-1m, effort high\n");
+    expect(text).toContain(
+      'Profile:     opus: agent claude, model opus-5-5-1m, effort high\nChosen by:   rule 1 of [[conductor.routing]] (label "Web")\n',
+    );
     expect(text).toContain("Branch:      feature/demo-13-show-a-sign-in-page");
     expect(text).toMatch(/ {2}LINEAR_API_KEY +required {2}set in this shell /);
     expect(text).toMatch(/ {2}ARMADA_TURSO_URL +optional {2}NOT set in this shell /);
@@ -136,7 +147,7 @@ describe("armada brief", () => {
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     expect(prompt).toContain(
-      `\nnpm install -g @the-vibe-company/armada@${version}\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page\n`,
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page --profile opus\n`,
     );
     expect(prompt).toContain("git branch -m feature/demo-13-show-a-sign-in-page");
     expect(prompt).toContain("## Ticket\n\n> ## In short\n>\n> A page with an email field.\n");
@@ -150,12 +161,13 @@ describe("armada brief", () => {
   });
 
   test("--prompt prints only the prompt and --json the whole brief with the chosen profile", async () => {
+    const override = ["--profile", "codex", "--reason", "it's a session bug"];
     const p = briefIo();
-    expect(await run(["brief", "DEMO-13", "--prompt"], p.io)).toBe(0);
+    expect(await run(["brief", "DEMO-13", "--prompt", ...override], p.io)).toBe(0);
     expect(p.out().startsWith("# DEMO-13 — Show a sign-in page\n")).toBe(true);
 
     const j = briefIo();
-    expect(await run(["brief", "DEMO-13", "--json", "--profile", "codex"], j.io)).toBe(0);
+    expect(await run(["brief", "DEMO-13", "--json", ...override], j.io)).toBe(0);
     const brief = JSON.parse(j.out());
     expect(brief.profile).toEqual({
       name: "codex",
@@ -164,6 +176,15 @@ describe("armada brief", () => {
       effort: "high",
       fastMode: true,
     });
+    expect(brief.routing).toEqual({
+      source: "requested",
+      rule: null,
+      routed: "opus",
+      reason: "it's a session bug",
+      why: `--profile, instead of "opus" from rule 1 of [[conductor.routing]] (label "Web"): it's a session bug`,
+    });
+    // The worker's claim records the override and its reason.
+    expect(brief.claimCommand).toEndWith(` --profile codex --reason 'it'\\''s a session bug'`);
     expect(brief.prompt).toBe(p.out());
     expect(brief.environment.map((v: { name: string }) => v.name)).toEqual([
       "LINEAR_API_KEY",
@@ -245,6 +266,15 @@ describe("armada brief", () => {
     expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
     expect(b.out()).toMatch(/ {2}LINEAR_API_KEY +required {2}in credentials file /);
     expect(b.out() + b.err()).not.toContain(SECRETS.LINEAR_API_KEY);
+  });
+
+  test("overriding the routed profile without a reason is a usage error", async () => {
+    const b = briefIo();
+    expect(await run(["brief", "DEMO-13", "--profile", "codex"], b.io)).toBe(2);
+    expect(b.err()).toBe(
+      'armada: DEMO-13 is routed to "opus" by rule 1 of [[conductor.routing]] (label "Web"); say why "codex" instead with --reason "<why>"\n',
+    );
+    expect(b.out()).toBe("");
   });
 
   test("an unknown profile is a usage error, before any request", async () => {

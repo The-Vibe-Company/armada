@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError, configTemplate, parseConfig, resolveProfile } from "../src/config.ts";
+import { ConfigError, configTemplate, parseConfig } from "../src/config.ts";
 import { DEMO_TOML } from "./support.ts";
 
 const problemsOf = (text: string) => {
@@ -29,7 +29,7 @@ describe("armada.toml", () => {
       github: { repository: "acme/widgets" },
       gates: { requiredChecks: [], localCommands: [] },
       policy: { silentAfterMinutes: 15 },
-      conductor: { defaultProfile: null, profiles: {} },
+      conductor: { defaultProfile: null, profiles: {}, routing: [] },
     });
   });
 
@@ -79,7 +79,13 @@ describe("armada.toml", () => {
       profiles: {
         opus: { agent: "claude", model: "opus-5-5-1m", effort: "high", fastMode: false },
         codex: { agent: "codex", model: "gpt-6.1-sol", effort: "high", fastMode: false },
+        debug: { agent: "codex", model: "gpt-6.1-sol", effort: "xhigh", fastMode: false },
       },
+      routing: [
+        { labels: ["web"], profile: "opus" },
+        { labels: ["api"], profile: "codex" },
+        { labels: ["Bug"], profile: "debug" },
+      ],
     });
   });
 
@@ -95,22 +101,20 @@ describe("armada.toml", () => {
     ]);
   });
 
-  test("brief picks --profile, then default_profile, then the only profile", () => {
-    const profile = (name: string) =>
-      `\n[conductor.profiles.${name}]\nagent = "claude"\nmodel = "m-${name}"\neffort = "high"\n`;
-    const two = parseConfig(DEMO_TOML + profile("a") + profile("b"));
-    expect(resolveProfile(two, "b")).toMatchObject({ name: "b", profile: { model: "m-b" } });
-    expect(resolveProfile(two, null)).toMatchObject({ problem: expect.stringContaining("pass --profile (a, b)") });
-    expect(resolveProfile(two, "c")).toMatchObject({ problem: 'no Conductor profile "c" (available: a, b)' });
-    expect(resolveProfile(two, "toString")).toMatchObject({ profile: null });
-    expect(resolveProfile(parseConfig(DEMO_TOML + profile("a")), null)).toMatchObject({ name: "a" });
-    expect(
-      resolveProfile(
-        parseConfig(`${DEMO_TOML}[conductor]\ndefault_profile = "b"\n${profile("a")}${profile("b")}`),
-        null,
-      ),
-    ).toMatchObject({ name: "b" });
-    expect(resolveProfile(parseConfig(DEMO_TOML), null)).toEqual({ name: null, profile: null, problem: null });
+  test("routing rules need labels and a profile, and a default_profile for the tickets they miss", () => {
+    const text = DEMO_TOML.concat(
+      '\n[conductor.profiles.opus]\nagent = "claude"\nmodel = "opus-5-5-1m"\neffort = "high"\n',
+      '[[conductor.routing]]\nlabels = []\nprofile = "opus"\n',
+      '[[conductor.routing]]\nlabels = ["web"]\nprofil = "opus"\n',
+      '[[conductor.routing]]\nlabels = ["-"]\nprofile = "opus"\n',
+    );
+    expect(problemsOf(text)).toEqual([
+      '"conductor.routing[1].labels" must be a non-empty list of Linear label names, each with a letter or digit',
+      'missing required key "conductor.routing[2].profile"',
+      '"conductor.routing[3].labels" must be a non-empty list of Linear label names, each with a letter or digit',
+      '"conductor.default_profile" is required with [[conductor.routing]], for tickets no rule matches',
+      'unknown key "conductor.routing[2].profil"',
+    ]);
   });
 
   test("broken TOML reports where it broke", () => {

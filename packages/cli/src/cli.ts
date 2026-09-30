@@ -36,8 +36,11 @@ Commands:
                     missing Linear labels and register the project. The options are for
                     a repository without armada.toml (Linear issue at the program root)
   claim <ticket> --runtime <name> --handle <id> [--branch <name>]
+        [--profile <name> [--reason <why>]]
                     Claim a ticket for this worker: In Progress, phase planning, runtime
-                    label and an Agent claim comment; refused if another worker holds it
+                    label and an Agent claim comment; refused if another worker holds it.
+                    --profile records the Conductor profile; one other than the ticket's
+                    routed profile needs --reason
   report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge); the same phase again is a status update.
@@ -66,9 +69,11 @@ Commands:
                     lock, close the ticket and list the workers to tell. Never deletes
                     the branch. --dry-run only runs the checklist. Refused when Turso is
                     configured but down; --no-lock then merges without the lock.
-  brief <ticket> [--profile <name>] [--prompt]
+  brief <ticket> [--profile <name> [--reason <why>]] [--prompt]
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
+                    The profile follows [[conductor.routing]] on the ticket's labels, then
+                    default_profile; --profile overrides it, with --reason when it differs.
                     --prompt prints only the prompt, for \`--message-file -\`
   auth login        Ask for the missing keys (hidden input) and store them on this machine
   auth status       Show which keys are set and where each comes from, never their values
@@ -131,7 +136,7 @@ const VALUE_OPTIONS = [
 const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
-  claim: ["runtime", "handle", "branch"],
+  claim: ["runtime", "handle", "branch", "profile", "reason"],
   report: ["ticket", "message", "message-file", "pr", "sha"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
@@ -139,7 +144,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug"],
   merge: ["ticket", "dry-run", "no-lock"],
-  brief: ["profile", "prompt"],
+  brief: ["profile", "reason", "prompt"],
 };
 
 export function parseArgs(argv: string[]): Args {

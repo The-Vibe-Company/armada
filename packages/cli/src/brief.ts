@@ -5,10 +5,11 @@ import {
   type Brief,
   BriefError,
   type Credentials,
+  checkRequestedProfile,
   LINEAR_KEY,
   loadBrief,
   missingKeyMessage,
-  resolveProfile,
+  ProfileError,
   STORED_KEYS,
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
@@ -28,6 +29,7 @@ export function renderBrief(b: Brief): string {
     "",
     `Runtime:     conductor (follow the armada-runtime-conductor skill to launch)`,
     `Profile:     ${p ? `${p.name}: agent ${p.agent}, model ${p.model}, effort ${p.effort}${p.fastMode ? ", fast mode" : ""}` : "none declared in armada.toml"}`,
+    ...(b.routing ? [`Chosen by:   ${b.routing.why}`] : []),
     `Repository:  ${b.repository.url}`,
     `Branch:      ${b.ticket.branch ?? "none suggested by Linear"} (the worker renames its workspace branch to it)`,
     "",
@@ -51,13 +53,21 @@ export function renderBrief(b: Brief): string {
 
 export async function brief(io: Io, config: ArmadaConfig, credentials: Credentials, a: BriefArgs, version: string) {
   const [ticket, ...extra] = a.rest;
-  if (!ticket) throw new UsageError("brief needs a ticket: armada brief <ticket> [--profile <name>]");
+  if (!ticket)
+    throw new UsageError('brief needs a ticket: armada brief <ticket> [--profile <name> [--reason "<why>"]]');
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const promptOnly = a.options.prompt === "true";
   if (a.json && promptOnly) throw new UsageError("pass --json or --prompt, not both");
   const profile = a.options.profile?.trim() || null;
-  const choice = resolveProfile(config, profile);
-  if (!choice.profile && choice.problem) throw new UsageError(choice.problem);
+  const reason = a.options.reason?.trim() || null;
+  if (reason && !profile)
+    throw new UsageError("--reason goes with --profile: it says why the routed profile is not used");
+  try {
+    checkRequestedProfile(config, profile);
+  } catch (err) {
+    if (err instanceof ProfileError) throw new UsageError(err.message);
+    throw err;
+  }
   if (!credentials.linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
   let b: Brief;
   try {
@@ -65,6 +75,7 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
       linearApiKey: credentials.linearApiKey,
       ticket: ticket.toUpperCase(),
       profile,
+      reason,
       version,
       env: io.env,
       stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),

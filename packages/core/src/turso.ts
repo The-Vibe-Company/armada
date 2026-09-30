@@ -83,6 +83,26 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX IF NOT EXISTS events_by_kind ON events (project, kind, created_at)",
     ],
   },
+  {
+    version: 3,
+    statements: [
+      // The Conductor profile a claim named (`armada claim --profile`), and how it was chosen.
+      `CREATE TABLE IF NOT EXISTS worker_profiles (
+        project TEXT NOT NULL,
+        ticket TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        model TEXT NOT NULL,
+        effort TEXT NOT NULL,
+        fast_mode INTEGER NOT NULL,
+        routed TEXT,
+        reason TEXT,
+        why TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        PRIMARY KEY (project, ticket)
+      )`,
+    ],
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
@@ -336,6 +356,75 @@ export interface RuntimeHandle {
   branch: string | null;
   claimedAt: string;
   releasedAt: string | null;
+  /** Conductor profile the claim named, null when it named none. */
+  profile: string | null;
+}
+
+export interface WorkerProfile {
+  name: string;
+  agent: string;
+  model: string;
+  effort: string;
+  fastMode: boolean;
+  /** The profile routing recommended; differs from `name` for an override. */
+  routed: string | null;
+  reason: string | null;
+  why: string;
+}
+
+/** Records the profile of the claim now holding a ticket; null forgets the one of an earlier claim. */
+export async function saveWorkerProfile(
+  db: Db,
+  w: { project: string; ticket: string; profile: WorkerProfile | null; at: Date },
+): Promise<void> {
+  const p = w.profile;
+  if (!p) {
+    await db.execute({
+      sql: "DELETE FROM worker_profiles WHERE project = ? AND ticket = ?",
+      args: [w.project, w.ticket],
+    });
+    return;
+  }
+  await db.execute({
+    sql: `INSERT OR REPLACE INTO worker_profiles
+            (project, ticket, profile, agent, model, effort, fast_mode, routed, reason, why, recorded_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      w.project,
+      w.ticket,
+      p.name,
+      p.agent,
+      p.model,
+      p.effort,
+      p.fastMode ? 1 : 0,
+      p.routed,
+      p.reason,
+      p.why,
+      w.at.toISOString(),
+    ],
+  });
+}
+
+/** The profile recorded for a ticket's claim, or null. */
+export async function getWorkerProfile(db: Db, project: string, ticket: string): Promise<WorkerProfile | null> {
+  const rs = await db.execute({
+    sql: `SELECT profile, agent, model, effort, fast_mode, routed, reason, why
+          FROM worker_profiles WHERE project = ? AND ticket = ?`,
+    args: [project, ticket],
+  });
+  const r = rs.rows[0];
+  return r
+    ? {
+        name: String(r.profile),
+        agent: String(r.agent),
+        model: String(r.model),
+        effort: String(r.effort),
+        fastMode: Number(r.fast_mode) === 1,
+        routed: r.routed === null ? null : String(r.routed),
+        reason: r.reason === null ? null : String(r.reason),
+        why: String(r.why),
+      }
+    : null;
 }
 
 /** Records the session now holding a ticket; a new claim replaces a released one. */
@@ -355,18 +444,27 @@ export async function saveRuntimeHandle(
   });
 }
 
+/** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
 export async function releaseRuntimeHandle(db: Db, project: string, ticket: string, at: Date): Promise<void> {
-  await db.execute({
-    sql: "UPDATE runtime_handles SET released_at = ? WHERE project = ? AND ticket = ? AND released_at IS NULL",
-    args: [at.toISOString(), project, ticket],
-  });
+  await db.batch(
+    [
+      {
+        sql: "UPDATE runtime_handles SET released_at = ? WHERE project = ? AND ticket = ? AND released_at IS NULL",
+        args: [at.toISOString(), project, ticket],
+      },
+      { sql: "DELETE FROM worker_profiles WHERE project = ? AND ticket = ?", args: [project, ticket] },
+    ],
+    "write",
+  );
 }
 
 /** Sessions still holding a ticket of the project (not released), by ticket id. */
 export async function openRuntimeHandles(db: Db, project: string): Promise<RuntimeHandle[]> {
   const rs = await db.execute({
-    sql: `SELECT project, ticket, runtime, handle, branch, claimed_at, released_at
-          FROM runtime_handles WHERE project = ? AND released_at IS NULL ORDER BY ticket`,
+    sql: `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, p.profile
+          FROM runtime_handles h
+          LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket
+          WHERE h.project = ? AND h.released_at IS NULL ORDER BY h.ticket`,
     args: [project],
   });
   return rs.rows.map((r) => ({
@@ -377,13 +475,16 @@ export async function openRuntimeHandles(db: Db, project: string): Promise<Runti
     branch: r.branch === null ? null : String(r.branch),
     claimedAt: String(r.claimed_at),
     releasedAt: null,
+    profile: r.profile === null ? null : String(r.profile),
   }));
 }
 
 export async function getRuntimeHandle(db: Db, project: string, ticket: string): Promise<RuntimeHandle | null> {
   const rs = await db.execute({
-    sql: `SELECT project, ticket, runtime, handle, branch, claimed_at, released_at
-          FROM runtime_handles WHERE project = ? AND ticket = ?`,
+    sql: `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, p.profile
+          FROM runtime_handles h
+          LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket
+          WHERE h.project = ? AND h.ticket = ?`,
     args: [project, ticket],
   });
   const r = rs.rows[0];
@@ -396,6 +497,7 @@ export async function getRuntimeHandle(db: Db, project: string, ticket: string):
         branch: r.branch === null ? null : String(r.branch),
         claimedAt: String(r.claimed_at),
         releasedAt: r.released_at === null ? null : String(r.released_at),
+        profile: r.profile === null ? null : String(r.profile),
       }
     : null;
 }

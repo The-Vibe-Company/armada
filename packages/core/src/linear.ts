@@ -77,7 +77,8 @@ const trimMarks = (v: string) => {
 };
 
 /**
- * The line "Agent claim — runtime: X · session: Y · branch: Z · started: D".
+ * The line "Agent claim — runtime: X · session: Y · branch: Z · started: D",
+ * optionally followed by "· profile: P".
  * It may follow the comment's `Agent status:` line. Values keep their
  * underscores and asterisks; only emphasis around them is removed.
  */
@@ -96,6 +97,7 @@ export function parseClaim(body: string, at: string, author: string | null): Age
     session: field("session"),
     branch: field("branch|branche"),
     startedAt: field("started|démarré|demarre"),
+    profile: field("profile"),
     at,
     author,
   };

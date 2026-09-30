@@ -16,7 +16,7 @@ The coordinator turns the owner's intent into merged pull requests. Each worker 
 3. **Check silent workers** with the runtime guide's *status* section. A worker that is still working gets a nudge to report; a worker that died is relaunched or its ticket released.
 4. **Launch ready tickets** that do not collide with work in flight, one at a time:
    - pick the ticket from the frontier in `armada status`;
-   - run `armada brief <ticket>` and resolve its warnings; the profile (agent, model, effort) comes from `[conductor]` in `armada.toml`, `--profile <name>` picks another one;
+   - run `armada brief <ticket>` and resolve its warnings. The profile (agent, model, effort) is routed from the ticket's labels by `[[conductor.routing]]` in `armada.toml`, else `default_profile`, and the brief says which rule chose it. Follow it. Override it only when the ticket's labels mislead (for example a `web` ticket that is really a tricky back-end bug): `armada brief <ticket> --profile <name> --reason "<why>"`. The reason lands in the worker's claim comment;
    - write the prompt with `armada brief <ticket> --prompt > <file>` and add what only you know: which parallel workers touch neighbouring code and where the boundary is, and decisions not yet on the ticket;
    - launch it with the runtime guide's *launch* section, passing the profile's values and the environment variables the brief names;
    - check the claim: `armada status` shows the ticket in flight, phase `planning`, with the handle the runtime returned. Done when every launched ticket is In Progress with a claim.

@@ -76,6 +76,8 @@ export interface AgentClaim {
   session: string | null;
   branch: string | null;
   startedAt: string | null;
+  /** Conductor profile the worker runs on, when the claim names one (`armada claim --profile`). */
+  profile?: string | null;
   at: string;
   author: string | null;
 }

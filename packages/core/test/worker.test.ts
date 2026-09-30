@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { parseConfig } from "../src/config.ts";
-import { addInboxItem, type Db, getRuntimeHandle, lastEventTimes, listProjects } from "../src/turso.ts";
+import { configTemplate, parseConfig } from "../src/config.ts";
+import {
+  addInboxItem,
+  type Db,
+  getRuntimeHandle,
+  getWorkerProfile,
+  lastEventTimes,
+  listProjects,
+} from "../src/turso.ts";
 import type { CiState, PullRequest } from "../src/types.ts";
 import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
 import { closeTempTurso, DEMO_TOML, FakeLinear, NOW, tempTurso } from "./support.ts";
@@ -10,10 +17,10 @@ afterEach(closeTempTurso);
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const config = parseConfig(`${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]\n`);
 
-function setup(o: { turso?: Db | null; pull?: PullRequest | null } = {}) {
+function setup(o: { turso?: Db | null; pull?: PullRequest | null; config?: typeof config } = {}) {
   const linear = new FakeLinear();
   const ctx: WorkerContext = {
-    config,
+    config: o.config ?? config,
     linear,
     turso: async () => (o.turso ? { db: o.turso, warning: null } : { db: null, warning: "Turso is not configured" }),
     readPull: async () => (o.pull === undefined ? null : o.pull),
@@ -95,6 +102,57 @@ describe("claim", () => {
     await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws_1/s_1" });
     expect(labelsOf(linear, "DEMO-7")).toEqual(["planning", "Conductor"]);
     expect(linear.get("DEMO-7").comments).toHaveLength(1);
+  });
+
+  describe("with a profile", () => {
+    // The template's routing: web → opus, api → codex, Bug → debug.
+    const routed = parseConfig(
+      configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+    );
+    const webTicket = (linear: FakeLinear) =>
+      linear.add("DEMO-7", { labels: [{ id: "l-web", name: "web", group: null }] });
+
+    test("overriding the routed profile without a reason is refused before any write", async () => {
+      const { linear, ctx } = setup({ config: routed });
+      webTicket(linear);
+      const claim = { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1", profile: "codex" };
+      expect(await refusal(claimTicket(ctx, claim))).toBe(
+        'DEMO-7 is routed to "opus" by rule 1 of [[conductor.routing]] (label "web"); say why "codex" instead with --reason "<why>"',
+      );
+      expect(linear.writes).toEqual([]);
+    });
+
+    test("the claim comment and Turso record the profile, and an override's reason", async () => {
+      const { db } = await tempTurso();
+      const { linear, ctx } = setup({ config: routed, turso: db });
+      webTicket(linear);
+      const reason = "the page is fine; the session API is broken";
+      await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1", profile: "codex", reason });
+
+      const [comment] = linear.get("DEMO-7").comments;
+      expect(comment?.claim).toMatchObject({ session: "ws-1", startedAt: NOW.toISOString(), profile: "codex" });
+      expect(linear.bodies[0]).toBe(
+        `Agent status: planning — claimed by Conductor (ws-1)\n\nAgent claim — runtime: Conductor · session: ws-1 · branch: feature/demo-7-do-the-thing · started: ${NOW.toISOString()} · profile: codex\nProfile: codex (agent codex, model gpt-6.1-sol, effort high), chosen by --profile, instead of "opus" from rule 1 of [[conductor.routing]] (label "web"): ${reason}`,
+      );
+      expect(await getRuntimeHandle(db, "widgets", "DEMO-7")).toMatchObject({ handle: "ws-1", profile: "codex" });
+      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toMatchObject({ name: "codex", routed: "opus", reason });
+
+      // A resume keeps the claim's profile, whatever it asks for.
+      const resumed = await claimTicket(ctx, {
+        ticket: "DEMO-7",
+        runtime: "conductor",
+        handle: "ws-1",
+        profile: "debug",
+      });
+      expect(resumed.warnings).toContain(
+        "the claim keeps profile codex, not debug; release and claim again to change it",
+      );
+      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toMatchObject({ name: "codex" });
+
+      // A release forgets it.
+      await releaseTicket(ctx, { ticket: "DEMO-7", reason: "relaunch" });
+      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toBeNull();
+    });
   });
 
   test("an unknown runtime names the labels that exist", async () => {

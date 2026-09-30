@@ -4,6 +4,7 @@
 import {
   type ArmadaConfig,
   type Credentials,
+  checkRequestedProfile,
   claimTicket,
   createLinearWriter,
   type Db,
@@ -15,6 +16,7 @@ import {
   missingKeyMessage,
   type Outcome,
   openTurso,
+  ProfileError,
   releaseTicket,
   reportPhase,
   ticketFromBranch,
@@ -186,6 +188,16 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
   const runtime = a.options.runtime?.trim();
   const handle = a.options.handle?.trim();
   if (!runtime) throw new UsageError("--runtime is required, e.g. --runtime conductor");
+  const profile = a.options.profile?.trim() || null;
+  const reason = a.options.reason?.trim() || null;
+  if (reason && !profile)
+    throw new UsageError("--reason goes with --profile: it says why the routed profile is not used");
+  try {
+    checkRequestedProfile(config, profile);
+  } catch (err) {
+    if (err instanceof ProfileError) throw new UsageError(err.message);
+    throw err;
+  }
   if (!handle)
     throw new UsageError("--handle is required: the runtime's id for this session, e.g. <workspace>/<session>");
   return withContext(io, config, credentials, a.json, (ctx) =>
@@ -194,6 +206,8 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
       runtime,
       handle,
       ...(a.options.branch ? { branch: a.options.branch } : {}),
+      profile,
+      reason,
     }),
   );
 }
