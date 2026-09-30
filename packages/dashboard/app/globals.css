@@ -898,6 +898,111 @@ button {
 }
 
 /* ------------------------------------------------------------ narrow screens */
+/* ------------------------------------------------------------ login */
+.logout {
+  margin: 0;
+}
+.logout button {
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color 0.2s,
+    border-color 0.2s;
+}
+.logout button:hover {
+  color: var(--text);
+  border-color: var(--faint);
+}
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 20px;
+}
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 30px 32px 26px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  animation: rise 0.7s var(--ease) both;
+}
+.login-card .brand {
+  margin-bottom: 34px;
+}
+.login-card h1 {
+  font-size: 42px;
+  line-height: 1;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.login-lead {
+  margin: 12px 0 26px;
+  color: var(--muted);
+}
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.login-form label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.login-form input {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line-2);
+  border-radius: 10px;
+  padding: 10px 12px;
+  transition:
+    border-color 0.2s,
+    box-shadow 0.2s;
+}
+.login-form input:focus {
+  outline: none;
+  border-color: var(--frontier);
+  box-shadow: 0 0 0 3px var(--frontier-dim);
+}
+.login-form input[aria-invalid="true"] {
+  border-color: var(--critical);
+}
+.login-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--critical);
+}
+.login-form button {
+  margin-top: 10px;
+  border: 0;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 600;
+  background: var(--done);
+  color: var(--bg);
+  cursor: pointer;
+  transition: filter 0.2s;
+}
+.login-form button:hover {
+  filter: brightness(1.08);
+}
+.login-hint {
+  margin: 18px 0 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
 @media (max-width: 1000px) {
   .hero {
     grid-template-columns: minmax(0, 1fr);

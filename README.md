@@ -140,15 +140,23 @@ Try it locally with synthetic data and no key:
 ```sh
 cd packages/dashboard
 bun run demo:seed                     # a local file: database with two invented projects
-ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:.demo/armada.db bun run dev   # http://localhost:4822
+ARMADA_DASHBOARD_PASSWORD=off ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:.demo/armada.db bun run dev   # http://localhost:4822
 bun run demo:report WID-12 shipping "Opened the pull request"                # watch the row change
 ```
 
 **Deploy on Vercel.** Create a project from this repository and set these options:
 
 - Root Directory: `packages/dashboard`, with files outside the root directory included (the default). The framework preset is Next.js, and Bun installs the workspace from `bun.lock`.
-- Environment variables: `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`) and `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60).
-- Keep it private. Turn on Vercel Authentication (Settings > Deployment Protection). The keys stay on the server; the browser only receives the fleet reading.
+- Environment variables: `ARMADA_DASHBOARD_PASSWORD`, `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`) and `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60).
+- The keys stay on the server; the browser only receives the fleet reading.
+
+**Password.** The dashboard asks for `ARMADA_DASHBOARD_PASSWORD` before it shows anything, on every host, a custom domain included. Every page, the polling route and every server action answer 401 or send the viewer to the login page until then; only the build's static files are public.
+
+- Use a long random value, for example `openssl rand -base64 24`, and set it for the Production and Preview environments. It stays on the server: never prefix it with `NEXT_PUBLIC_`.
+- A correct password sets a signed session cookie (HttpOnly, Secure, SameSite=Lax) for 30 days. The signature is derived from the password, so changing it and redeploying logs every browser out. "Log out" in the top bar ends one session.
+- Five wrong passwords from one address block it for 15 minutes, counted per server instance.
+- Without the variable, the dashboard fails closed: every route answers 503 and names the variable. `ARMADA_DASHBOARD_PASSWORD=off` turns the password off for local development only; a production server refuses it the same way.
+- Vercel Authentication (Settings > Deployment Protection) is a useful second layer, but its standard protection leaves the production custom domain open (covering it takes a paid option), so it cannot replace the password.
 
 One deployment covers one Linear workspace and one GitHub organization: its keys must read every registered project.
 
