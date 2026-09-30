@@ -4,7 +4,6 @@ import {
   LINEAR_KEY,
   listProjects,
   loadStatus,
-  missingKeyMessage,
   openTurso,
   type ProjectRecord,
   readProjectConfig,
@@ -12,7 +11,7 @@ import {
   type StatusReport,
 } from "@armada/core";
 import { loadCredentials } from "./auth.ts";
-import { type Io, UsageError } from "./io.ts";
+import { type Io, missingKey } from "./io.ts";
 import { renderStatus } from "./render.ts";
 
 export interface ProjectStatus {
@@ -36,9 +35,9 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 export async function statusAll(io: Io, json: boolean): Promise<number> {
   const { credentials } = await loadCredentials(io);
   const linearApiKey = credentials.linearApiKey;
-  if (!linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
+  if (!linearApiKey) throw missingKey(LINEAR_KEY);
   const tursoKey = STORED_KEYS.find((k) => k.name === "tursoUrl");
-  if (!credentials.tursoUrl && tursoKey) throw new UsageError(missingKeyMessage(tursoKey));
+  if (!credentials.tursoUrl && tursoKey) throw missingKey(tursoKey);
 
   const db = await openTurso({ url: credentials.tursoUrl ?? "", token: credentials.tursoToken });
   let records: ProjectRecord[];

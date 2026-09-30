@@ -13,7 +13,6 @@ import {
   LABEL_PHASES,
   LINEAR_KEY,
   lastEventTimes,
-  missingKeyMessage,
   type Outcome,
   openTurso,
   ProfileError,
@@ -22,7 +21,7 @@ import {
   ticketFromBranch,
   type WorkerContext,
 } from "@armada/core";
-import { type Io, UsageError } from "./io.ts";
+import { type Io, missingKey, UsageError } from "./io.ts";
 
 const TURSO_OPEN_TIMEOUT_MS = 10_000;
 
@@ -92,7 +91,7 @@ async function context(
   config: ArmadaConfig,
   credentials: Credentials,
 ): Promise<{ ctx: WorkerContext; close: () => Promise<void> }> {
-  if (!credentials.linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
+  if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   const linearOpts = {
     apiKey: credentials.linearApiKey,
     labels: config.tracker.labels,
@@ -132,7 +131,13 @@ function print(io: Io, outcome: Outcome, json: boolean) {
     io.stdout(`${JSON.stringify(outcome, null, 2)}\n`);
     return;
   }
-  const out = [...outcome.lines, outcome.url];
+  const out = [...outcome.lines];
+  const s = outcome.state;
+  if (s)
+    out.push(
+      `Now: ${s.status} · phase ${s.phase ?? "none"} · runtime ${s.runtime ?? "none"} · profile ${s.profile ?? "none"}`,
+    );
+  out.push(outcome.url);
   if (outcome.inbox) {
     if (!outcome.inbox.length) out.push("Inbox: nothing waiting for you.");
     else {

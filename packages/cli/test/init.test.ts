@@ -149,6 +149,7 @@ describe("armada doctor and armada init", () => {
 
     const before = await f.armada("doctor");
     expect(before.code).toBe(1);
+    expect(before.out).toEndWith("Next: armada init, which opens one pull request with the fixes it can make\n");
     expect(before.out).toContain("  error    armada.toml is missing\n");
     expect(before.out).toContain(
       "  error    skill armada-worker is missing from .agents/skills\n           fix: run `armada init`\n",
@@ -157,7 +158,7 @@ describe("armada doctor and armada init", () => {
 
     const noRoot = await f.armada("init");
     expect(noRoot.code).toBe(2);
-    expect(noRoot.err).toContain("armada.toml is missing. Run armada init --program-root <ISSUE-ID>");
+    expect(noRoot.err).toEndWith("Next: armada init --program-root <ISSUE-ID>\n");
     expect(f.gh.prs).toEqual([]);
 
     const first = await f.armada("init", "--program-root", "DEMO-1");

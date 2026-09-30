@@ -18,6 +18,7 @@ import {
 import { buildModel } from "./model.ts";
 import { checkRequestedProfile, chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { AgentPhase, ProgramData, StatusType } from "./types.ts";
+import { Refusal } from "./worker.ts";
 
 /** The npm package the worker runs Armada from. */
 export const ARMADA_PACKAGE = "@the-vibe-company/armada";
@@ -460,7 +461,8 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     fetchBriefTicket(linear, opts.ticket),
     fetchProgram({ ...linear, rootId: config.tracker.programRoot, labels: config.tracker.labels, now }),
   ]);
-  if (!ticket) throw new Error(`ticket ${opts.ticket} not found in Linear`);
+  if (!ticket)
+    throw new Refusal(`ticket ${opts.ticket} not found in Linear`, "armada status, to see the tickets of the program");
   return buildBrief({
     config,
     ticket,

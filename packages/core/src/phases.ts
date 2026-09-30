@@ -24,7 +24,7 @@ export const isLabelPhase = (v: string): v is LabelPhase => (LABEL_PHASES as rea
 
 /** Null when the move is allowed, else the reason it is refused. */
 export function transitionProblem(from: LabelPhase | null, to: LabelPhase): string | null {
-  if (from === null) return "the ticket has no agent phase; claim it first with `armada claim`";
+  if (from === null) return "the ticket has no agent phase: no worker has claimed it";
   if (from === to || to === "blocked" || TRANSITIONS[from].includes(to)) return null;
   const allowed = [...TRANSITIONS[from], "blocked", `${from} (status update)`].join(", ");
   return `cannot go from ${from} to ${to}; from ${from} a worker may report: ${allowed}`;

@@ -137,6 +137,7 @@ function setup(o: { turso?: Db | null; toml?: string; holder?: string; tursoDown
       { id: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code" },
     ],
     holder: o.holder ?? "coordinator-a",
+    installedSkill: async (name) => name === "armada-runtime-conductor",
     now: () => NOW,
     sleep: async (ms) => {
       sleeps.push(ms);
@@ -153,7 +154,7 @@ const refusal = (p: Promise<unknown>) =>
     },
     (err: unknown) => {
       if (!(err instanceof Refusal)) throw err;
-      return err.message;
+      return `${err.message}\nNext: ${err.next}`;
     },
   );
 
@@ -341,7 +342,7 @@ describe("armada merge", () => {
       s.forge.pr.headSha = BASE;
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      `GitHub failed (HTTP 503) and the head of #9 moved to ${BASE}; not retrying`,
+      `GitHub failed (HTTP 503) and the head of #9 moved to ${BASE}; not retrying\nNext: armada merge 9 --dry-run, once its worker hands back the new head`,
     );
     expect([s.forge.merges.length, s.linear.writes]).toEqual([1, []]);
   });
@@ -351,7 +352,7 @@ describe("armada merge", () => {
     // gh exits 0 but nothing merges (e.g. auto-merge was enabled instead).
     s.forge.answers = [{ ok: true, message: "will be automatically merged", transient: false, effect: false }];
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      "the merge of #9 was accepted but GitHub shows it as open, not merged (auto-merge or a merge queue?); the ticket was left as is",
+      "the merge of #9 was accepted but GitHub shows it as open, not merged (auto-merge or a merge queue?); the ticket was left as is\nNext: gh pr view 9 --repo acme/widgets",
     );
     expect(s.linear.writes).toEqual([]);
   });
@@ -364,7 +365,7 @@ describe("armada merge", () => {
       };
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      `#9 changed while it was checked; nothing was merged, run armada merge again:\n  - main moved to ${SQUASH} while #9 was checked`,
+      `#9 changed while it was checked; nothing was merged:\n  - main moved to ${SQUASH} while #9 was checked\nNext: armada merge 9 again`,
     );
     expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
   });
@@ -376,7 +377,7 @@ describe("armada merge", () => {
       await db.execute("UPDATE leases SET holder = 'coordinator-b'");
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      "the merge lock could not be renewed (it expired and another coordinator took it, or Turso did not answer); nothing was merged",
+      "the merge lock could not be renewed (it expired and another coordinator took it, or Turso did not answer); nothing was merged\nNext: armada merge 9 again",
     );
     expect(s.forge.merges).toEqual([]);
   });
@@ -387,7 +388,7 @@ describe("armada merge", () => {
       s.forge.pr.headSha = BASE;
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      `#9 was merged at ${BASE}, not at the handed-back ${HEAD}; check main now`,
+      `#9 was merged at ${BASE}, not at the handed-back ${HEAD}; check main now\nNext: git log origin/main`,
     );
     expect(s.linear.writes).toEqual([]);
   });
@@ -400,7 +401,7 @@ describe("armada merge", () => {
       };
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      "the merge of #9 was accepted but GitHub could not be read back (GitHub API HTTP 502); check it on GitHub: if it merged, close DEMO-7 by hand",
+      "the merge of #9 was accepted but GitHub could not be read back (GitHub API HTTP 502); if it merged, close DEMO-7 by hand\nNext: gh pr view 9 --repo acme/widgets",
     );
     expect(s.linear.writes).toEqual([]);
   });
@@ -408,7 +409,7 @@ describe("armada merge", () => {
   test("Turso configured but down refuses the merge; --no-lock merges and says so on the ticket", async () => {
     const s = setup({ tursoDown: true });
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      "the merge lock needs Turso, which is unavailable (Turso unavailable (connection refused)); nothing was merged. Fix Turso, or pass --no-lock if you are sure no other coordinator merges in widgets now",
+      "the merge lock needs Turso, which is unavailable (Turso unavailable (connection refused)); nothing was merged\nNext: armada merge 9 again once Turso answers, or armada merge 9 --no-lock if you are sure no other coordinator merges in widgets now",
     );
     expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
 
@@ -489,7 +490,7 @@ describe("merge lease", () => {
       withLease(db, { ...o, sleep: async () => {}, pollMs: 10, maxWaitMs: 30 }, async () => "ran"),
     );
     expect(message).toBe(
-      "the merge lock of widgets is still held by a (until 2026-03-04T10:01:00.000Z); try again later",
+      "the merge lock of widgets is still held by a (until 2026-03-04T10:01:00.000Z)\nNext: the same armada merge again once that coordinator is done",
     );
   });
 
@@ -503,7 +504,7 @@ describe("merge lease", () => {
       }),
     );
     expect([message, ran]).toEqual([
-      "Turso did not answer within 0 s to take the merge lock; nothing was merged",
+      "Turso did not answer within 0 s to take the merge lock; nothing was merged\nNext: the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
       false,
     ]);
   });

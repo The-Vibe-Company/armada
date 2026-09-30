@@ -80,6 +80,64 @@ describe("Linear write adapter", () => {
     expect(t?.comments[0]?.status?.phase).toBe("planning");
   });
 
+  test("reads every label and comment past the first page, so a claim routes on all labels and sees every claim", async () => {
+    const page = (hasNextPage: boolean, endCursor: string | null) => ({ hasNextPage, endCursor });
+    const claim = (id: string, createdAt: string, session: string) => ({
+      id,
+      createdAt,
+      body: `Agent claim — runtime: Codex · session: ${session} · branch: b · started: t`,
+      user: { name: "Ada" },
+    });
+    const { writer, sent } = graphql({
+      Ticket: {
+        data: {
+          issue: {
+            id: "uuid-7",
+            identifier: "DEMO-7",
+            title: "Send a sign-in link",
+            url: "https://linear.app/acme/issue/DEMO-7",
+            branchName: null,
+            description: null,
+            state: { id: "st-2", type: "started" },
+            team: {
+              id: "team-1",
+              states: { nodes: [{ id: "st-2", name: "In Progress", type: "started", position: 2 }] },
+            },
+            assignee: null,
+            labels: { pageInfo: page(true, "l-50"), nodes: [{ id: "l-1", name: "Web", parent: null }] },
+            attachments: { pageInfo: page(false, null), nodes: [] },
+            comments: { pageInfo: page(true, "c-100"), nodes: [claim("c-2", "2026-03-04T09:00:00.000Z", "ws-2")] },
+          },
+        },
+      },
+      MoreTicketLabels: {
+        data: {
+          issue: {
+            labels: {
+              pageInfo: page(false, null),
+              nodes: [{ id: "l-51", name: "Implementing", parent: { name: "Agent phase" } }],
+            },
+          },
+        },
+      },
+      MoreTicketComments: {
+        data: {
+          issue: {
+            comments: { pageInfo: page(false, null), nodes: [claim("c-1", "2026-03-04T08:00:00.000Z", "ws-1")] },
+          },
+        },
+      },
+    });
+    const t = await writer.readTicket("DEMO-7");
+    expect(sent.map((s) => [s.operation, s.variables.after ?? null])).toEqual([
+      ["Ticket", null],
+      ["MoreTicketLabels", "l-50"],
+      ["MoreTicketComments", "c-100"],
+    ]);
+    expect([t?.agentPhase, t?.commentsTruncated, t?.warnings]).toEqual(["implementing", false, []]);
+    expect(t?.comments.map((c) => c.claim?.session)).toEqual(["ws-2", "ws-1"]);
+  });
+
   test("writes state, assignee and label changes in one issueUpdate; team labels shadow workspace ones", async () => {
     const { writer, sent } = graphql({
       Update: { data: { issueUpdate: { success: true } } },

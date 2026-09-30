@@ -8,6 +8,7 @@ import {
   type Credentials,
   checkInbox,
   type InboxReport,
+  Refusal,
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 import { currentTicket, openLive, readMessage, type WorkerArgs, withContext } from "./worker.ts";
@@ -86,9 +87,13 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   if (!wait && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
   const timeoutMs = waitSeconds(a.options.timeout) * 1000;
   if (!credentials.tursoUrl)
-    throw new UsageError("the inbox lives in Turso: set ARMADA_TURSO_URL (run `armada auth login`)");
+    throw new UsageError("the inbox lives in Turso: set ARMADA_TURSO_URL", "armada auth login");
   const { db, warning } = await openLive(credentials);
-  if (!db) throw new Error(warning ?? "Turso unavailable");
+  if (!db)
+    throw new Refusal(
+      `the inbox lives in Turso, which is unavailable: ${warning ?? "no answer"}`,
+      "armada inbox again once Turso answers (armada auth status shows the URL in use)",
+    );
   try {
     const report = await checkInbox(db, {
       project: config.project.slug,

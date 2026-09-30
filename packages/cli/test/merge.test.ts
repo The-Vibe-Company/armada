@@ -212,7 +212,7 @@ Hints for you to judge (not blocking):
 Tell these workers in flight what landed on main (rebase, shared files, new checks):
   DEMO-16  shipping  runtime unknown  Reset a forgotten password
   DEMO-11  implementing  Claude Code · ws-11  Send a sign-in link by email
-Archive the worker's workspace of DEMO-18 (Claude Code · ws-18) with the "Stop and archive" section of the armada-runtime-claude-code skill.
+No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.
 `);
   expect(f.err()).not.toContain("warning");
   expect(f.linear.get("DEMO-18").statusType).toBe("completed");
@@ -226,6 +226,9 @@ test("a refused checklist exits 1 and names each failure", async () => {
   expect(await run(["merge", "https://github.com/acme/widgets/pull/9", "--dry-run"], f.io)).toBe(1);
   expect(f.err()).toContain(
     "armada: #9 (DEMO-18) cannot be merged:\n  - DEMO-18 has not been handed back: its agent phase is not set, not ready-to-merge\n",
+  );
+  expect(f.err()).toEndWith(
+    'Next: armada answer --note DEMO-18 "<what to fix>" once you told its worker, then armada merge 9 after the next hand-back\n',
   );
   expect(f.ghCalls).toEqual([]);
 });
