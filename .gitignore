@@ -1,0 +1,8 @@
+node_modules/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+
+# Local agent run artifacts (ship-pr-dev)
+plans/ship-pr-dev/

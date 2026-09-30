@@ -1,0 +1,21 @@
+# Armada configuration for the Armada repository itself.
+# No secrets here: LINEAR_API_KEY and GITHUB_TOKEN (or `gh auth login`) come from the environment.
+
+[project]
+name = "Armada"
+slug = "armada"          # stable id: one project = one repository + one program root
+
+[tracker]
+program_root = "THE-812" # Linear issue at the root of the program
+language = "en"          # language of owner-facing output
+ready_label = "ready-for-agent"
+
+[tracker.labels]
+phase_group = "Agent phase"
+runtime_group = "Agent runtime"
+
+[github]
+repository = "The-Vibe-Company/armada"
+
+[policy]
+silent_after_minutes = 15

@@ -1,0 +1,13 @@
+{
+  "name": "@armada/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Armada core: armada.toml, Linear and GitHub read adapters and the fleet derivations.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "smol-toml": "1.9.0"
+  }
+}
