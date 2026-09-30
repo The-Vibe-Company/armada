@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { recordEvent } from "@armada/core";
+import { recordEvent, saveRuntimeHandle } from "@armada/core";
 import {
   closeTempTurso,
   DEMO_TOML,
@@ -151,6 +151,45 @@ describe("armada claim, report and release", () => {
 });
 
 describe("armada ask, inbox and answer", () => {
+  test.each<[string, Record<string, string>, string | null]>([
+    [
+      "explicit handle wins",
+      { ARMADA_COORDINATOR_HANDLE: " ws-1/s-2 ", CONDUCTOR_WORKSPACE_ID: "ws-1", CONDUCTOR_SESSION_ID: "s-1" },
+      "ws-1/s-2",
+    ],
+    ["complete runtime ids", { CONDUCTOR_WORKSPACE_ID: " ws-1 ", CONDUCTOR_SESSION_ID: " s-1 " }, "ws-1/s-1"],
+    [
+      "blank explicit handle falls back",
+      { ARMADA_COORDINATOR_HANDLE: " ", CONDUCTOR_WORKSPACE_ID: "ws-1", CONDUCTOR_SESSION_ID: "s-1" },
+      "ws-1/s-1",
+    ],
+    ["no identity", {}, null],
+    ["workspace only", { CONDUCTOR_WORKSPACE_ID: "ws-1" }, null],
+    ["session only", { CONDUCTOR_SESSION_ID: "s-1" }, null],
+    ["blank session", { CONDUCTOR_WORKSPACE_ID: "ws-1", CONDUCTOR_SESSION_ID: " " }, null],
+  ])("inbox identity: %s", async (_name, env, coordinator) => {
+    const { url, db } = await tempTurso();
+    const cli = worker({ ARMADA_TURSO_URL: url, ...env });
+    const handles = ["ws-1/s-1", "ws-1/s-2"];
+    for (const [index, handle] of handles.entries())
+      await saveRuntimeHandle(db, {
+        project: "widgets",
+        ticket: `DEMO-${index + 1}`,
+        runtime: "Conductor",
+        handle,
+        branch: null,
+        at: new Date(NOW.getTime() - 30 * 60_000),
+      });
+
+    expect(await run(["inbox", "--json"], cli.io)).toBe(0);
+    expect(JSON.parse(cli.out()).items.map((entry: { author: string }) => entry.author)).toEqual(
+      handles.filter((handle) => handle !== coordinator),
+    );
+    expect(cli.err()).toBe("");
+    const seen = await db.execute("SELECT handle FROM events WHERE kind = 'inbox'");
+    expect(seen.rows.map((row) => row.handle)).toEqual([coordinator]);
+  });
+
   test("a worker asks, the coordinator reads its inbox and records the answer, the worker resumes", async () => {
     const { url } = await tempTurso();
     const w = worker({ ARMADA_TURSO_URL: url });

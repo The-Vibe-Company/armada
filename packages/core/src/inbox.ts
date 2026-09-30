@@ -114,6 +114,7 @@ export interface InboxReport {
 
 export interface InboxOptions {
   project: string;
+  coordinator?: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
   now: () => Date;
@@ -150,6 +151,7 @@ export async function readInbox(db: Db, o: InboxOptions): Promise<InboxEntry[]> 
   }));
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   for (const h of handles) {
+    if (o.coordinator && h.handle === o.coordinator) continue;
     const e = events[h.ticket];
     if (e && (e.kind === "release" || e.kind === "merge")) continue;
     if (asking.has(h.ticket)) continue;
@@ -189,10 +191,7 @@ export const INBOX_POLL_MS = 5_000;
  * With `wait`, it returns as soon as an item that was not there at the
  * previous read appears (marked `new`), or at the timeout.
  */
-export async function checkInbox(
-  db: Db,
-  o: InboxOptions & { coordinator?: string | null; wait?: WaitOptions },
-): Promise<InboxReport> {
+export async function checkInbox(db: Db, o: InboxOptions & { wait?: WaitOptions }): Promise<InboxReport> {
   const started = o.now();
   const warnings: string[] = [];
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.

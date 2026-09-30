@@ -273,18 +273,19 @@ describe("release", () => {
   test("removes the agent labels, moves the ticket back and closes the handle", async () => {
     const { db } = await tempTurso();
     const { linear, ctx } = setup({ turso: db });
-    linear.add("DEMO-7");
+    const ready = { id: "ready", name: ctx.config.tracker.readyLabel, group: null };
+    linear.add("DEMO-7", { labels: [ready] });
     await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" });
     await releaseTicket(ctx, { ticket: "DEMO-7", reason: "wrong ticket" });
     const t = linear.get("DEMO-7");
     expect([t.statusType, t.labels, t.comments[0]?.status]).toEqual([
       "unstarted",
-      [],
+      [ready],
       { phase: "released", summary: "wrong ticket" },
     ]);
     expect((await getRuntimeHandle(db, "widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
     // Released: a new worker may claim it.
     await claimTicket(ctx, { ticket: "DEMO-7", runtime: "claude-code", handle: "ws-2" });
-    expect(labelsOf(linear, "DEMO-7")).toEqual(["planning", "Claude Code"]);
+    expect(labelsOf(linear, "DEMO-7")).toEqual([ready.name, "planning", "Claude Code"]);
   });
 });

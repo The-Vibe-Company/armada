@@ -101,8 +101,13 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
       "armada inbox again once Turso answers (armada auth status shows the URL in use)",
     );
   try {
+    const workspace = io.env.CONDUCTOR_WORKSPACE_ID?.trim();
+    const session = io.env.CONDUCTOR_SESSION_ID?.trim();
+    const coordinator =
+      io.env.ARMADA_COORDINATOR_HANDLE?.trim() || (workspace && session ? `${workspace}/${session}` : null);
     const report = await checkInbox(db, {
       project: config.project.slug,
+      coordinator,
       silentAfterMinutes: config.policy.silentAfterMinutes,
       now: io.now ?? (() => new Date()),
       ...(wait
