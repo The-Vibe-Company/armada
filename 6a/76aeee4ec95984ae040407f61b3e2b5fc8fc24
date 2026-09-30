@@ -1,0 +1,52 @@
+packages/core/src/phases.ts
+  s_d658e7251951c2::t_34e4592ab8094b 63-64
+  s_d658e7251951c2::t_978cab61346ab7 1-62,65-79
+packages/core/src/linear-write.ts
+  s_d658e7251951c2::t_b0cefb6c5c618f 1-219
+  s_d658e7251951c2::t_90c6863fce7285 220-227
+packages/core/src/worker.ts
+  s_d658e7251951c2::t_f8538842ccccf0 1-372
+  s_d658e7251951c2::t_a8f0a36466b52d 373-385
+armada.toml
+  s_d658e7251951c2::t_e842579ed90635 21-24
+packages/cli/src/render.ts
+  s_d658e7251951c2::t_d93d1853e8c200 61
+packages/cli/test/cli.test.ts
+  s_d658e7251951c2::t_d6fb42be14c8f7 41,45,49-50,54
+packages/core/src/config.ts
+  s_d658e7251951c2::t_131d0018abcd90 31-37,39,125-127,136-137,142-145,147-148,150-158,181
+packages/core/src/fleet.ts
+  s_d658e7251951c2::t_387ebc070858f3 48-49,95-96,130-132,138-141,167
+packages/core/src/github.ts
+  s_d658e7251951c2::t_87939fc4b1fbe8 92,100-102,122-126,132,138,140-167
+packages/core/src/index.ts
+  s_d658e7251951c2::t_7cbd03f56f4e89 7,10,14
+packages/core/src/linear.ts
+  s_d658e7251951c2::t_af238dd93f150a 54-57,59-63,226-233
+packages/core/src/status.ts
+  s_d658e7251951c2::t_94ed765fb18d73 36-37,82-85,89-97,103,143,168,176-177,203-220
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_451da369883010 184-331
+packages/core/test/config.test.ts
+  s_d658e7251951c2::t_8e96f21f340665 26,43,45-46
+packages/core/test/fleet.test.ts
+  s_d658e7251951c2::t_8482d0c9fae8db 104-123
+packages/core/test/status.test.ts
+  s_d658e7251951c2::t_ce99b892d66e54 17-27,34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6a76aeee4ec95984ae040407f61b3e2b5fc8fc24",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
