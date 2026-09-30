@@ -429,7 +429,7 @@ function CrewRow({
   const step = t.steps[r.pipeline.step] ?? "";
   return (
     <li
-      className={`crew-row ${r.waiting ? "is-waiting" : ""} ${fresh ? "is-fresh" : ""}`}
+      className={`crew-row ${r.waiting && r.waiting !== "silent" ? "is-waiting" : ""} ${fresh ? "is-fresh" : ""}`}
       style={{ ["--i" as string]: i, ["--rt" as string]: rt }}
     >
       <span className="crew-rt" aria-hidden />

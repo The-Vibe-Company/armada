@@ -137,9 +137,9 @@ const TICKETS: DemoTicket[] = [
     runtime: "Codex",
     agent: "Worker H",
     handle: "ws-2c47/ses-55",
-    claimed: 5,
-    phaseSince: 5,
-    lastReport: 5,
+    claimed: 6,
+    phaseSince: 6,
+    lastReport: 4,
     summary: "Reading the spec and the mailer code",
   },
 ];
@@ -279,7 +279,7 @@ export function demoSnapshot(
       ...base,
       id: `${t.id}-claim`,
       createdAt: ago(now, t.claimed),
-      status: { phase: "planning", summary: "claimed" },
+      status: { phase: "planning", summary: "claimed, reading the ticket" },
       claim: {
         runtime: t.runtime,
         session: t.handle,

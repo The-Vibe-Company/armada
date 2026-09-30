@@ -735,7 +735,7 @@ button {
   background: var(--panel-2);
 }
 .crew-row.is-waiting {
-  background: linear-gradient(90deg, var(--accent-dim), transparent 50%);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent-dim) 70%, transparent), transparent 40%);
 }
 .crew-row.is-fresh {
   animation:
@@ -936,11 +936,20 @@ button {
     display: none;
   }
   .stats {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    gap: 6px;
+  }
+  .stat {
+    padding: 8px 10px 7px;
+    border-radius: 10px;
+  }
+  .stat dt {
+    font-size: 11px;
+    white-space: normal;
+    line-height: 1.2;
+    min-height: 2.4em;
   }
   .stat dd {
-    font-size: 30px;
+    font-size: 26px;
   }
   .coord {
     display: none;
@@ -963,16 +972,14 @@ button {
   .wait-open {
     display: none;
   }
-  .crew-row {
-    grid-template-columns: 4px minmax(0, 1fr);
+  .crew-main {
+    grid-column: 2 / 4;
   }
   .crew-seen {
-    grid-column: 2;
-    grid-row: 3;
-    flex-direction: row;
-    gap: 6px;
-    align-items: baseline;
-    justify-self: start;
+    grid-column: 3;
+    grid-row: 2;
+    align-self: end;
+    padding-top: 0;
   }
   .handle {
     display: none;

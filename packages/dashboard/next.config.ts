@@ -16,6 +16,7 @@ const config: NextConfig = {
   poweredByHeader: false,
   // The repository's own AGENTS.md is the agents' guide; do not generate one here.
   agentRules: false,
+  devIndicators: false,
 };
 
 export default config;

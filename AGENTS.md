@@ -6,7 +6,7 @@ Armada runs a fleet of coding agents on one project: Linear holds the plan and p
 
 - `packages/core`: `armada.toml` parsing, read adapters for Linear and GitHub, the one Linear write adapter (`linear-write.ts`, behind `LinearWriter`; tests use `FakeLinear` in `test/support.ts`), the Turso adapter (`turso.ts`: schema, migrations, project registry, events, runtime handles, inbox), the machine store (`machine.ts`: keys and personal defaults under `~/.config/armada`), the pure fleet derivations (tickets in flight, frontier, pull requests waiting) and phase rules (`phases.ts`), the worker commands (`worker.ts`: claim, report, release), the launch brief (`brief.ts`), the coordinator's merge (`merge.ts`: checklist, merge lease, pinned merge behind the `MergeForge` and `LocalRepo` adapters), and the repository setup rules shared by `doctor` and `init` (`setup.ts` over a read-only `RepoView`, `labels.ts` for the Linear label groups, `skills.ts` for the bundled skills). No I/O outside the adapters; network adapters take an injected `fetch`.
 - `packages/cli`: the `armada` command. Side effects are injected through `Io` in `src/io.ts`; `src/main.ts` wires the real process; `src/bin.ts` is the entry of the published Node bundle.
-- `packages/dashboard`: placeholder for the live Fleet view.
+- `packages/dashboard`: the live Fleet view (Next.js App Router), not published to npm. `lib/fleet-data.ts` orchestrates reads (Linear and GitHub cached per project, Turso on every poll) behind an injected `Sources`; `lib/server.ts` wires the environment; every fleet rule stays in core (`buildStatus`, `buildOverview` in `overview.ts`), imported through `@armada/core/read`, which leaves out the Bun-only skill imports. `lib/demo/` is the synthetic demo world (`ARMADA_DASHBOARD_DEMO`, `bun run demo:seed`); strings live in `lib/i18n.ts` (English and French).
 - `skills/`: the skills `armada init` vendors into every managed repository (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`). `packages/core/src/skills.ts` imports each file as text so the published bundle carries them; a new file must be listed there too (a test compares the list with the folder).
 - `armada.toml`: this repository's own Armada configuration.
 
@@ -16,6 +16,7 @@ Armada runs a fleet of coding agents on one project: Linear holds the plan and p
 - `bun run verify`: lint (Biome), typecheck (`tsc`) and tests (`bun test`). CI runs the same on every pull request.
 - `bun run format`: apply Biome formatting and safe fixes.
 - `cd packages/cli && npm pack`: build `dist/armada.js` (Bun bundles `core` for Node) and pack the npm tarball. CI installs that tarball and runs it on every pull request.
+- `cd packages/dashboard && bun run dev`: the dashboard on port 4822; `bun run build` is the Vercel build and runs in CI. See the README for the demo mode.
 - `bun run armada status [--json]`: runs the CLI from source; needs `LINEAR_API_KEY`; GitHub uses `GITHUB_TOKEN`, `GH_TOKEN` or `gh auth token`.
 - `bun run armada auth login|status|logout`: keys stored once per machine in `~/.config/armada/credentials`.
 - `bun run armada claim|report|release`: the worker commands; Turso (`ARMADA_TURSO_URL`, `file:` works locally) is optional.

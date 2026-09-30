@@ -50,7 +50,7 @@ const en = {
       ? "No inbox read recorded for this project's coordinator"
       : `The coordinator last read its inbox ${ago} ago`,
   waitingTitle: "Waiting for you",
-  waitingEmpty: "Nothing waits for you. The fleet is working.",
+  waitingEmpty: "Nothing waits for you.",
   atWorkTitle: "At work",
   emptyFleet: "No one in flight.",
   emptyFleetHint: "A ticket claimed with armada claim shows here within seconds.",
@@ -145,7 +145,7 @@ const fr: Strings = {
       ? "Aucune lecture de boîte enregistrée pour le coordinateur de ce projet"
       : `Le coordinateur a lu sa boîte il y a ${ago}`,
   waitingTitle: "À toi de jouer",
-  waitingEmpty: "Rien n'attend ta décision. La flotte travaille.",
+  waitingEmpty: "Rien n'attend ta décision.",
   atWorkTitle: "Au travail",
   emptyFleet: "Personne en vol.",
   emptyFleetHint: "Un ticket réclamé avec armada claim apparaît ici en quelques secondes.",
