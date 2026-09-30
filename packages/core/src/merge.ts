@@ -368,6 +368,8 @@ interface Checked {
   pull: MergePull;
   ticket: Ticket;
   sha: string;
+  /** Tip of the base branch the checklist compared the head with. */
+  baseSha: string | null;
   lines: string[];
   hints: string[];
   warnings: string[];
@@ -419,7 +421,7 @@ async function checklist(ctx: MergeContext, input: MergeInput): Promise<Checked>
   lines.unshift(
     `Checklist passed for #${pull.number} (${ticket.id}): handed back at ${pull.headSha}, CLEAN, checks green, no open review thread.`,
   );
-  return { pull, ticket, sha: pull.headSha, lines, hints, warnings };
+  return { pull, ticket, sha: pull.headSha, baseSha: cmp?.baseSha ?? null, lines, hints, warnings };
 }
 
 const indent = (text: string) =>
@@ -434,7 +436,9 @@ async function hintsFor(ctx: MergeContext, pull: MergePull, cmp: Comparison | nu
     const symbols = removedSymbols(await ctx.forge.diff(pull.number));
     if (!symbols.removed.size) return [];
     if (!ctx.repo || !cmp) {
-      warnings.push("semantic hint skipped: git is not available to search the base branch");
+      warnings.push(
+        `semantic hint skipped: ${ctx.repo ? `GitHub could not compare the head with ${pull.baseRef}` : "git is not available to search the base branch"}`,
+      );
       return [];
     }
     const uses = await ctx.repo.grepWords({
@@ -449,18 +453,54 @@ async function hintsFor(ctx: MergeContext, pull: MergePull, cmp: Comparison | nu
   }
 }
 
+/**
+ * The last look before merging, since the checklist may have taken minutes
+ * (a test merge): the same rules on a fresh read, and the same base tip.
+ */
+async function recheck(ctx: MergeContext, c: Checked): Promise<void> {
+  const pull = await readSettled(ctx, c.pull.number);
+  const problems = mergeProblems({
+    pull,
+    ticket: c.ticket,
+    handBack: findHandBack(c.ticket),
+    requiredChecks: ctx.config.gates.requiredChecks,
+  });
+  if (pull.headSha === c.sha) {
+    const cmp = await ctx.forge.compare(pull.baseRef, pull.headSha);
+    if (cmp?.baseSha !== c.baseSha)
+      problems.push(
+        `${pull.baseRef} moved to ${cmp?.baseSha ?? "an unknown commit"} while #${pull.number} was checked`,
+      );
+  }
+  if (problems.length)
+    throw new Refusal(
+      `#${pull.number} changed while it was checked; nothing was merged, run armada merge again:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+    );
+}
+
 /** Merges pinned to `sha`, retrying GitHub 5xx after re-reading the state; then reads MERGED back. */
-async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string): Promise<MergePull> {
+async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, ticket: string): Promise<MergePull> {
   const n = `#${pull.number}`;
+  let readError = "";
+  // A failed read is not an answer: the merge may have landed, so it is said, never hidden.
+  const read = () =>
+    ctx.forge.readPull(pull.number).catch((err: unknown) => {
+      readError = err instanceof Error ? err.message : String(err);
+      return null;
+    });
   for (let attempt = 0; ; attempt++) {
     const res = await ctx.forge.merge(pull.number, sha);
     if (res.ok) break;
     // Whatever the error, GitHub may have merged anyway: read the state first.
-    const fresh = await ctx.forge.readPull(pull.number);
+    const fresh = await read();
     if (fresh?.state === "merged") break;
+    if (!fresh)
+      throw new Refusal(
+        `GitHub failed (${res.message}) and ${n} could not be read back (${readError || "not found"}); check it on GitHub: if it merged, close ${ticket} by hand`,
+      );
     if (!res.transient) throw new Refusal(`GitHub refused to merge ${n}: ${res.message}`);
-    if (fresh?.state !== "open")
-      throw new Refusal(`GitHub failed (${res.message}) and ${n} is now ${fresh?.state ?? "unreadable"}; not retrying`);
+    if (fresh.state !== "open")
+      throw new Refusal(`GitHub failed (${res.message}) and ${n} is now ${fresh.state}; not retrying`);
     if (fresh.headSha !== sha)
       throw new Refusal(`GitHub failed (${res.message}) and the head of ${n} moved to ${fresh.headSha}; not retrying`);
     const wait = MERGE_BACKOFF_MS[attempt];
@@ -474,12 +514,14 @@ async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string): Pro
   // Success is what GitHub shows, not what the merge call said.
   let seen: MergePull | null = null;
   for (let i = 0; ; i++) {
-    seen = await ctx.forge.readPull(pull.number);
+    seen = await read();
     if (seen?.state === "merged") break;
     const wait = CONFIRM_BACKOFF_MS[i];
     if (wait === undefined)
       throw new Refusal(
-        `the merge of ${n} was accepted but GitHub shows it as ${seen?.state ?? "unreadable"}, not merged (auto-merge or a merge queue?); the ticket was left as is`,
+        seen
+          ? `the merge of ${n} was accepted but GitHub shows it as ${seen.state}, not merged (auto-merge or a merge queue?); the ticket was left as is`
+          : `the merge of ${n} was accepted but GitHub could not be read back (${readError || "not found"}); check it on GitHub: if it merged, close ${ticket} by hand`,
       );
     await ctx.sleep(wait);
   }
@@ -533,10 +575,11 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
   const run = async (renew: () => Promise<boolean>) => {
     const c = await checklist(ctx, input);
     c.warnings.unshift(...early);
+    await recheck(ctx, c);
     if (!(await renew()))
       throw new Refusal("the merge lock expired and another coordinator took it; nothing was merged");
     say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
-    const merged = await mergePinned(ctx, c.pull, c.sha);
+    const merged = await mergePinned(ctx, c.pull, c.sha, c.ticket.id);
     const lines = [
       ...c.lines,
       `Merged #${merged.number} into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"} (head ${merged.headSha}).`,

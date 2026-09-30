@@ -2,6 +2,7 @@
 // GitHub is read through the GraphQL API; the merge itself and the local
 // checks go through `gh` and `git`, run without a shell by `io.exec`.
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -86,11 +87,23 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
     async testMerge({ branch, base, head, number, commands }): Promise<TestMergeResult> {
       await must(["fetch", "--quiet", "origin", branch, `refs/pull/${number}/head`]);
       const dir = join(tmpdir(), `armada-merge-${number}-${randomUUID().slice(0, 8)}`);
+      const remove = async () => {
+        await git(["worktree", "remove", "--force", dir]);
+        await git(["worktree", "prune"]);
+        await rm(dir, { recursive: true, force: true });
+      };
       const added = await git(["worktree", "add", "--detach", dir, base]);
-      if (added.code !== 0) return { ok: false, step: "git worktree add", output: tail(added.stderr) };
+      if (added.code !== 0) {
+        await remove();
+        return { ok: false, step: "git worktree add", output: tail(added.stderr) };
+      }
       try {
+        // The machine's signing and hooks have no say in a throwaway merge.
         const merged = await git(
-          ["-c", "user.name=Armada", "-c", "user.email=armada@localhost", "merge", "--no-ff", "--no-edit", head],
+          [
+            ...["-c", "user.name=Armada", "-c", "user.email=armada@localhost", "-c", "commit.gpgsign=false"],
+            ...["merge", "--no-ff", "--no-edit", "--no-verify", head],
+          ],
           dir,
         );
         if (merged.code !== 0)
@@ -105,7 +118,7 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
         }
         return { ok: true };
       } finally {
-        await git(["worktree", "remove", "--force", dir]);
+        await remove();
       }
     },
   };

@@ -67,8 +67,11 @@ class FakeForge implements MergeForge {
     this.reads++;
     return number === this.pr.number ? structuredClone(this.pr) : null;
   }
+  /** Called on every comparison (to change GitHub while the checklist runs). */
+  onCompare: (() => Promise<void>) | null = null;
   async compare() {
-    return this.comparison;
+    await this.onCompare?.();
+    return structuredClone(this.comparison);
   }
   async diff() {
     return this.diffText;
@@ -345,6 +348,42 @@ describe("armada merge", () => {
     s.forge.answers = [{ ok: true, message: "will be automatically merged", transient: false, effect: false }];
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
       "the merge of #9 was accepted but GitHub shows it as open, not merged (auto-merge or a merge queue?); the ticket was left as is",
+    );
+    expect(s.linear.writes).toEqual([]);
+  });
+
+  test("a pull request whose base moves while it is checked is not merged", async () => {
+    const s = setup();
+    s.forge.onCompare = async () => {
+      s.forge.onCompare = async () => {
+        s.forge.comparison = { baseSha: SQUASH, status: "AHEAD", behindBy: 0, aheadBy: 2 };
+      };
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
+      `#9 changed while it was checked; nothing was merged, run armada merge again:\n  - main moved to ${SQUASH} while #9 was checked`,
+    );
+    expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
+  });
+
+  test("a merge lock lost during the checklist stops before merging", async () => {
+    const { db } = await tempTurso();
+    const s = setup({ turso: db });
+    s.forge.onCompare = async () => {
+      await db.execute("UPDATE leases SET holder = 'coordinator-b'");
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
+      "the merge lock expired and another coordinator took it; nothing was merged",
+    );
+    expect(s.forge.merges).toEqual([]);
+  });
+
+  test("a pull request merged at another head is reported, and the ticket left open", async () => {
+    const s = setup();
+    s.forge.during = async () => {
+      s.forge.pr.headSha = BASE;
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
+      `#9 was merged at ${BASE}, not at the handed-back ${HEAD}; check main now`,
     );
     expect(s.linear.writes).toEqual([]);
   });
