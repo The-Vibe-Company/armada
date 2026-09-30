@@ -1,0 +1,35 @@
+.agents/skills/armada-coordinator/MERGE.md
+  s_d658e7251951c2::t_e4eaad7bceaee8 1-28
+.agents/skills/armada-coordinator/SKILL.md
+  s_d658e7251951c2::t_9f9078cd675d58 1-38
+.agents/skills/armada-runtime-conductor/SKILL.md
+  s_d658e7251951c2::t_ea2a60263edab1 1-95
+.agents/skills/armada-worker/SKILL.md
+  s_d658e7251951c2::t_63c6416e859e77 1-31
+.claude/skills/armada-coordinator
+  s_d658e7251951c2::t_1f8f8d94b73242 1
+.claude/skills/armada-runtime-conductor
+  s_d658e7251951c2::t_2a5e2281e5b6a8 1
+.claude/skills/armada-worker
+  s_d658e7251951c2::t_521838813c0cd6 1
+.conductor/settings.toml
+  s_d658e7251951c2::t_0d4e40087267cb 1-5
+skills-lock.json
+  s_d658e7251951c2::t_7115da5a0c18e3 1-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "7958df5aef90ae3ba7c1598910057689ee2646ab",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
