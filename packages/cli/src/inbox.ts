@@ -99,6 +99,7 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
         : {}),
     });
     io.stdout(a.json ? `${JSON.stringify(report, null, 2)}\n` : renderInbox(report));
+    for (const w of report.warnings) io.stderr(`armada: warning: ${w}\n`);
     return 0;
   } finally {
     db.close();

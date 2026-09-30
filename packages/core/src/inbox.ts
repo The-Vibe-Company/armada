@@ -11,10 +11,12 @@ import {
   getInboxItem,
   getRuntimeHandle,
   type InboxKind,
+  lastAnsweredAt,
   latestEvents,
   openInboxItems,
   openRuntimeHandles,
   recordCoordinatorSeen,
+  redact,
   resolveInboxItem,
   resolveInboxItems,
 } from "./turso.ts";
@@ -98,6 +100,8 @@ export interface InboxReport {
   items: InboxEntry[];
   /** Set by --wait: how long it waited at most, and whether it stopped on the timeout. */
   wait: { timeoutSeconds: number; timedOut: boolean } | null;
+  /** Problems that did not stop the read, such as a presence that could not be recorded. */
+  warnings: string[];
 }
 
 export interface InboxOptions {
@@ -114,14 +118,17 @@ const entryKey = (e: InboxEntry) => (e.id === null ? `silent:${e.ticket}` : `#${
  * hand-backs, and silent workers. A worker is silent when it holds a ticket
  * (open runtime handle), its newest event is older than the silence threshold,
  * and its phase does not wait on someone else (awaiting-approval, blocked,
- * ready-to-merge). Read from Turso only, so it is cheap enough to poll.
+ * ready-to-merge). An answer given after its newest event means it owes a
+ * report: silence then counts from the answer, whatever the phase. Read from
+ * Turso only, so it is cheap enough to poll.
  */
 export async function readInbox(db: Db, o: InboxOptions): Promise<InboxEntry[]> {
   const now = o.now().getTime();
-  const [items, handles, events] = await Promise.all([
+  const [items, handles, events, answered] = await Promise.all([
     openInboxItems(db, { project: o.project, recipient: "coordinator" }),
     openRuntimeHandles(db, o.project),
     latestEvents(db, o.project),
+    lastAnsweredAt(db, o.project),
   ]);
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
@@ -136,8 +143,12 @@ export async function readInbox(db: Db, o: InboxOptions): Promise<InboxEntry[]> 
   for (const h of handles) {
     const e = events[h.ticket];
     if (e && (e.kind === "release" || e.kind === "merge")) continue;
-    if (asking.has(h.ticket) || NEEDS_HUMAN.includes(e?.phase as AgentPhase)) continue;
-    const last = e?.at ?? h.claimedAt;
+    if (asking.has(h.ticket)) continue;
+    const reported = e?.at ?? h.claimedAt;
+    const answer = answered[h.ticket];
+    const owesReport = !!answer && answer > reported;
+    if (!owesReport && NEEDS_HUMAN.includes(e?.phase as AgentPhase)) continue;
+    const last = owesReport ? answer : reported;
     const quiet = now - Date.parse(last);
     if (quiet <= o.silentAfterMinutes * MIN) continue;
     entries.push({
@@ -145,7 +156,7 @@ export async function readInbox(db: Db, o: InboxOptions): Promise<InboxEntry[]> 
       kind: "silent",
       ticket: h.ticket,
       author: h.handle,
-      body: `no report for ${Math.floor(quiet / MIN)} min (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`,
+      body: `no report for ${Math.floor(quiet / MIN)} min${owesReport ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`,
       createdAt: last,
       new: false,
     });
@@ -174,7 +185,13 @@ export async function checkInbox(
   o: InboxOptions & { coordinator?: string | null; wait?: WaitOptions },
 ): Promise<InboxReport> {
   const started = o.now();
-  const seen = (at: Date) => recordCoordinatorSeen(db, { project: o.project, handle: o.coordinator ?? null, at });
+  const warnings: string[] = [];
+  // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
+  const seen = (at: Date) =>
+    recordCoordinatorSeen(db, { project: o.project, handle: o.coordinator ?? null, at }).catch((err: unknown) => {
+      const w = `could not record the coordinator's presence (${redact(err)})`;
+      if (!warnings.includes(w)) warnings.push(w);
+    });
   await seen(started);
   let items = await readInbox(db, o);
   const report = (timedOut: boolean | null): InboxReport => ({
@@ -182,6 +199,7 @@ export async function checkInbox(
     generatedAt: o.now().toISOString(),
     items,
     wait: o.wait && timedOut !== null ? { timeoutSeconds: Math.round(o.wait.timeoutMs / 1000), timedOut } : null,
+    warnings,
   });
   if (!o.wait) return report(null);
   const { sleep, timeoutMs, pollMs = INBOX_POLL_MS } = o.wait;
@@ -254,6 +272,12 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
           : `inbox item #${itemId} does not exist in project ${project}`,
       );
     if (item.resolvedAt) throw new Refusal(`inbox item #${itemId} was already resolved at ${item.resolvedAt}`);
+    if (item.kind === "hand-back")
+      throw new Refusal(
+        `inbox item #${itemId} is a hand-back: armada merge resolves it once the pull request is merged`,
+      );
+    if (item.recipient !== "coordinator" || (item.kind !== "question" && item.kind !== "request"))
+      throw new Refusal(`inbox item #${itemId} is a ${item.kind} for the ${item.recipient}, not something to answer`);
     ticketId = item.ticket;
   } else {
     ticketId = input.target.trim().toUpperCase();
@@ -275,9 +299,9 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     url = ticket.url;
     warnings.push(...ticket.warnings);
     if (!ticket.agentPhase) {
-      if (input.note || itemId === null)
+      if (input.note)
         throw new Refusal(`${ticket.id} has no agent phase: no worker holds it, so there is no one to tell`);
-      warnings.push(`${ticket.id} has no agent phase; the answer was not posted on the ticket`);
+      warnings.push(`${ticket.id} has no agent phase (no worker holds it); the answer was not posted on the ticket`);
     } else {
       const ref = itemId === null ? null : `Answers question #${itemId}.`;
       await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));

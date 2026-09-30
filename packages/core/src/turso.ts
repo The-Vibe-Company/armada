@@ -505,6 +505,17 @@ export async function resolveInboxItem(
   return rs.rowsAffected > 0;
 }
 
+/** When the newest question of each ticket was resolved, by ticket id (answered, released or merged). */
+export async function lastAnsweredAt(db: Db, project: string): Promise<Record<string, string>> {
+  const rs = await db.execute({
+    sql: `SELECT ticket, max(resolved_at) AS at FROM inbox_items
+          WHERE project = ? AND kind = 'question' AND ticket IS NOT NULL AND resolved_at IS NOT NULL
+          GROUP BY ticket`,
+    args: [project],
+  });
+  return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), String(r.at)]));
+}
+
 /** Resolves the open items of one kind for a ticket (e.g. its hand-back once merged); returns how many. */
 export async function resolveInboxItems(
   db: Db,

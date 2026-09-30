@@ -8,6 +8,7 @@ import {
   lastCoordinatorSeen,
   putHandBack,
   recordEvent,
+  resolveInboxItem,
   saveRuntimeHandle,
 } from "../src/turso.ts";
 import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
@@ -81,7 +82,12 @@ describe("ask and answer", () => {
 
     const answered = await answerItem(ctx, { target: "#1", text: "SQLite.\nKeep Redis out of the first slice." });
     expect(t.labels.map((l) => l.name)).toEqual(["Conductor", "blocked"]);
-    expect(linear.get("DEMO-7").comments[0]?.status).toEqual({ phase: "blocked", summary: "answer: SQLite." });
+    // The answer is on the ticket, but it is the coordinator's record, not the worker's status.
+    const posted = linear.get("DEMO-7").comments[0];
+    expect([posted?.status, posted?.excerpt]).toEqual([
+      null,
+      "Agent status: blocked — answer: SQLite. Keep Redis out of the first slice. Answers question 1.",
+    ]);
     expect(answered.lines).toContain("Inbox item #1 resolved.");
     expect(await inbox(db)).toEqual([]);
     expect(await getInboxItem(db, P, 1)).toMatchObject({
@@ -112,17 +118,20 @@ describe("ask and answer", () => {
     );
 
     await answerItem(ctx, { target: "DEMO-7", text: "main moved: rebase before you ship", note: true });
-    expect(linear.get("DEMO-7").comments[0]?.status).toEqual({
-      phase: "blocked",
-      summary: "note: main moved: rebase before you ship",
-    });
+    expect(linear.get("DEMO-7").comments[0]?.excerpt).toStartWith(
+      "Agent status: blocked — note: main moved: rebase before you ship",
+    );
     expect(await getInboxItem(db, P, 3)).toMatchObject({
       kind: "note",
       recipient: "worker",
-      resolution: expect.any(String),
+      resolution: "delivered through the runtime",
     });
     expect(await inbox(db)).toEqual([]);
     expect(await refusal(answerItem(ctx, { target: "3", text: "x", note: true }))).toContain("a note goes to a ticket");
+    await putHandBack(db, { project: P, ticket: "DEMO-7", author: null, body: "handed back", at: NOW });
+    expect(await refusal(answerItem(ctx, { target: "4", text: "ok" }))).toBe(
+      "inbox item #4 is a hand-back: armada merge resolves it once the pull request is merged",
+    );
   });
 
   test("without Turso a question still blocks the ticket; an item id cannot be answered, a ticket can", async () => {
@@ -198,13 +207,27 @@ describe("the coordinator's inbox", () => {
       body: "other project",
       at: at(80),
     });
+    // Blocked, but its question was answered 30 min ago and it never reported since.
+    await hold("DEMO-8", "blocked", 60);
+    const q = await addInboxItem(db, {
+      project: P,
+      ticket: "DEMO-8",
+      kind: "question",
+      recipient: "coordinator",
+      author: null,
+      body: "Which?",
+      at: at(60),
+    });
+    await resolveInboxItem(db, { project: P, id: q, resolution: "SQLite", at: at(30) });
 
     const items = await inbox(db);
     expect(items.map((e) => [e.id, e.kind, e.ticket, e.createdAt])).toEqual([
       [2, "hand-back", "DEMO-6", at(55).toISOString()],
       [null, "silent", "DEMO-1", at(40).toISOString()],
+      [null, "silent", "DEMO-8", at(30).toISOString()],
       [1, "question", "DEMO-5", at(20).toISOString()],
     ]);
+    expect(items[2]?.body).toStartWith("no report for 30 min since its question was answered (phase blocked");
     expect(items[1]?.body).toStartWith("no report for 40 min (phase implementing, Conductor ws/DEMO-1)");
   });
 
