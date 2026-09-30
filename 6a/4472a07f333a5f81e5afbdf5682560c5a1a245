@@ -1,0 +1,33 @@
+README.md
+  s_d658e7251951c2::t_f52cbf9edc1781 74-75,227-231,233,237,239-242
+packages/core/src/brief.ts
+  s_d658e7251951c2::t_670a324311118f 361,389
+packages/core/src/config.ts
+  s_d658e7251951c2::t_a01c20dbea7d4b 60-66,228-229
+packages/core/src/routing.ts
+  s_d658e7251951c2::t_823365df9b5fac 5,32,47-48,116-117,121
+packages/core/src/worker.ts
+  s_d658e7251951c2::t_a98580f47d6e3c 206-217,235-236,238,272-273
+packages/core/test/config.test.ts
+  s_d658e7251951c2::t_95365b92834ab7 109,114
+packages/core/test/routing.test.ts
+  s_d658e7251951c2::t_7a4a45a9d24288 23-34,75-82
+packages/core/test/worker.test.ts
+  s_d658e7251951c2::t_48669571fec645 140-152,154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6a4472a07f333a5f81e5afbdf5682560c5a1a245",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
