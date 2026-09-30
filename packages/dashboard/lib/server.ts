@@ -14,7 +14,7 @@ import {
 import { after } from "next/server";
 import { requireSession } from "./auth-server";
 import { demoSources } from "./demo/sources";
-import { type FleetCache, loadOverview, newCache, type ProjectRef, type Sources } from "./fleet-data";
+import { type FleetCache, type LoadOptions, loadOverview, newCache, type ProjectRef, type Sources } from "./fleet-data";
 import { isLanguage, type Language } from "./i18n";
 
 /** Comma- or space-separated owner/name list, shown when the registry cannot be read. */
@@ -63,17 +63,31 @@ const seconds = (value: string | undefined, fallback: number) => {
 // One cache per server process, kept across requests (and across hot reloads in development).
 const globalCache = globalThis as unknown as { __armadaFleet?: FleetCache };
 
-export async function getOverview(): Promise<FleetOverview> {
-  await requireSession();
+/** How every read and request of this server process reaches the sources. Callers check the session first. */
+export function loadOptions(): LoadOptions {
   globalCache.__armadaFleet ??= newCache();
   const demo = process.env.ARMADA_DASHBOARD_DEMO;
-  return loadOverview({
+  return {
     sources: demo ? demoSources(demo, realSources()) : realSources(),
     cache: globalCache.__armadaFleet,
     now: () => new Date(),
     snapshotMs: seconds(process.env.ARMADA_DASHBOARD_SNAPSHOT_SECONDS, 60) * 1000,
     background: (work) => after(() => work),
-  });
+  };
+}
+
+export async function getOverview(): Promise<FleetOverview> {
+  await requireSession();
+  return loadOverview(loadOptions());
+}
+
+/**
+ * Who signs the requests: the name the viewer gave (cookie), else
+ * ARMADA_DASHBOARD_AUTHOR. The dashboard password is shared and carries no
+ * identity, so the name is declared, not proven.
+ */
+export function authorOf(cookie: string | undefined): string {
+  return (cookie ?? process.env.ARMADA_DASHBOARD_AUTHOR ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
 }
 
 /** The dashboard's language: the viewer's choice (cookie), then ARMADA_DASHBOARD_LANGUAGE, then English. */

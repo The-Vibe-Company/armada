@@ -19,6 +19,7 @@ import {
   type ProjectReading,
   type ProjectRecord,
   redact,
+  type StatusReport,
   type StatusSources,
 } from "@armada/core/read";
 
@@ -187,6 +188,60 @@ function dropClient(opts: LoadOptions) {
   opts.cache.db = null;
 }
 
+/** The project's status: the Linear and GitHub snapshot with the Turso events newer than it on top. */
+function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusReport {
+  return buildStatus({
+    config: snap.config,
+    ...snap.sources,
+    ...(l
+      ? {
+          lastEvents: Object.fromEntries(Object.entries(l.events).map(([t, e]) => [t, e.at])),
+          live: {
+            after: snap.startedAt.toISOString(),
+            events: l.events,
+            handles: Object.fromEntries(l.handles.map((h) => [h.ticket, h])),
+          },
+        }
+      : {}),
+    now,
+  });
+}
+
+/** One project as the Fleet view shows it, for a request to act on. */
+export interface ProjectState {
+  /** Null when Turso is not configured or unreachable: requests cannot be written then. */
+  db: Db | null;
+  config: ArmadaConfig;
+  report: StatusReport;
+}
+
+/**
+ * Reads one project the way `loadOverview` does (the cached Linear and GitHub
+ * snapshot, Turso read now), so a request is checked against what the owner
+ * sees, plus every claim recorded since. Null when no such project is shown.
+ */
+export async function loadProject(opts: LoadOptions, slug: string): Promise<ProjectState | null> {
+  const { db } = await openLive(opts);
+  const projects = opts.cache.projects ?? opts.sources.fallbackProjects();
+  // Registry projects are keyed by slug; a repository-only project by the slug its armada.toml gives.
+  const candidates = [
+    ...projects.filter((p) => p.slug === slug),
+    ...projects.filter(
+      (p) => !p.slug && opts.cache.snapshots.get(p.repository)?.snapshot?.config.project.slug === slug,
+    ),
+  ];
+  for (const p of candidates) {
+    const entry = await snapshotOf(p, p.slug ?? p.repository, opts);
+    const snap = entry.snapshot;
+    if (!snap || snap.config.project.slug !== slug) continue;
+    const l = db
+      ? await withTimeout(readLive(db, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading Turso").catch(() => null)
+      : null;
+    return { db: l ? db : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
+  }
+  return null;
+}
+
 /** Reads every project and builds the overview the Fleet view renders. */
 export async function loadOverview(opts: LoadOptions): Promise<FleetOverview> {
   const { db, state } = await openLive(opts);
@@ -227,28 +282,14 @@ export async function loadOverview(opts: LoadOptions): Promise<FleetOverview> {
       ...(snap.configWarning ? [snap.configWarning] : []),
       ...(entry.error ? [`Linear or GitHub could not be read again (${entry.error}); showing the last reading`] : []),
     ];
-    const report = buildStatus({
-      config: snap.config,
-      ...snap.sources,
-      ...(l
-        ? {
-            lastEvents: Object.fromEntries(Object.entries(l.events).map(([t, e]) => [t, e.at])),
-            live: {
-              after: snap.startedAt.toISOString(),
-              events: l.events,
-              handles: Object.fromEntries(l.handles.map((h) => [h.ticket, h])),
-            },
-          }
-        : {}),
-      now: opts.now(),
-    });
     return {
       ...base,
       repository: snap.config.github.repository,
-      report,
+      report: statusOf(snap, l, opts.now()),
       error: null,
       warnings,
       live: l ? { inbox: l.inbox, coordinatorSeenAt: l.coordinatorSeenAt } : null,
+      profiles: snap.config.conductor.profiles,
     };
   });
 

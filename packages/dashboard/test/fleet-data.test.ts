@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   type ArmadaConfig,
+  addInboxItem,
   configTemplate,
   type Db,
   type Issue,
@@ -8,10 +9,12 @@ import {
   parseConfig,
   recordEvent,
   type StatusSources,
+  saveRuntimeHandle,
   upsertProject,
 } from "@armada/core/read";
 import { closeTempTurso, issue, tempTurso } from "../../core/test/support.ts";
 import { type LoadOptions, loadOverview, newCache, type Sources } from "../lib/fleet-data.ts";
+import { submitAnswer, submitLaunch } from "../lib/requests.ts";
 
 afterEach(closeTempTurso);
 
@@ -33,7 +36,7 @@ function snapshot(config: ArmadaConfig, at: number, tickets: Issue[]): StatusSou
   };
 }
 
-/** One project with one worker implementing WID-2; `reads` counts the Linear and GitHub reads. */
+/** One project with one worker implementing WID-2 and two tickets ready to start (WID-3, an api one, and WID-4); `reads` counts the Linear and GitHub reads. */
 function world(db: Db | null, over: Partial<Sources> = {}) {
   let clock = T0;
   const reads = { snapshots: 0 };
@@ -50,7 +53,10 @@ function world(db: Db | null, over: Partial<Sources> = {}) {
         assignee: "Worker",
         updatedAt: new Date(clock).toISOString(),
       });
-      return snapshot(config, clock, [worker]);
+      const ready = ["WID-3", "WID-4"].map((id) =>
+        issue(id, { title: `Ready ${id}`, labels: id === "WID-3" ? ["ready-for-agent", "api"] : ["ready-for-agent"] }),
+      );
+      return snapshot(config, clock, [worker, ...ready]);
     },
     ...over,
   };
@@ -148,5 +154,66 @@ describe("live Fleet reading", () => {
     w.advance(5_000);
     await loadOverview(w.opts);
     expect(attempts).toBe(2);
+  });
+});
+
+describe("requests from the dashboard", () => {
+  test("a launch is checked against the frontier shown and the claims recorded since; an answer against the open question", async () => {
+    const { db } = await tempTurso();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    const shown = await loadOverview(w.opts);
+    expect(shown.ready.map((r) => [r.id, r.route?.profile, r.launch])).toEqual([
+      ["WID-3", "codex", null],
+      ["WID-4", "opus", null],
+    ]);
+    const launch = { project: "widgets", profile: null, author: "Ada" };
+
+    expect(await submitLaunch(w.opts, { ...launch, ticket: "WID-2" })).toMatchObject({ ok: false, code: "in-flight" });
+    expect(await submitLaunch(w.opts, { ...launch, project: "gadgets", ticket: "WID-3" })).toMatchObject({
+      ok: false,
+      code: "unknown-project",
+    });
+    expect(await submitLaunch(w.opts, { ...launch, ticket: "WID-3" })).toMatchObject({ ok: true });
+    // Claimed after the Linear read: the next reading already has it in flight.
+    await saveRuntimeHandle(db, {
+      project: "widgets",
+      ticket: "WID-4",
+      runtime: "Conductor",
+      handle: "ws/4",
+      branch: null,
+      at: w.at(1_000),
+    });
+    await recordEvent(db, { project: "widgets", ticket: "WID-4", kind: "claim", phase: "planning", at: w.at(1_000) });
+    w.advance(2_000);
+    expect(await submitLaunch(w.opts, { ...launch, ticket: "WID-4" })).toMatchObject({ ok: false, code: "in-flight" });
+
+    const question = await addInboxItem(db, {
+      project: "widgets",
+      ticket: "WID-2",
+      kind: "question",
+      recipient: "coordinator",
+      author: "ws/2",
+      body: "Which table?",
+      at: w.at(2_000),
+    });
+    expect(await submitAnswer(w.opts, { project: "widgets", question, text: "users", author: "Ada" })).toMatchObject({
+      ok: true,
+    });
+    const view = await loadOverview(w.opts);
+    expect(view.ready.map((r) => [r.id, r.launch?.author, r.launch?.profile])).toEqual([["WID-3", "Ada", "codex"]]);
+    expect(view.waiting.map((i) => [i.kind, i.answer?.body, i.answer?.author])).toEqual([["question", "users", "Ada"]]);
+    expect(w.reads.snapshots).toBe(1);
+  });
+
+  test("without Turso nothing is recorded, and the reason is given", async () => {
+    const w = world(null);
+    await loadOverview(w.opts);
+    expect(
+      await submitLaunch(w.opts, { project: "widgets", ticket: "WID-3", profile: null, author: "Ada" }),
+    ).toMatchObject({
+      ok: false,
+      code: "live-down",
+    });
   });
 });
