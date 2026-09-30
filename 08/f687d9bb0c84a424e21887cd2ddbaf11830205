@@ -1,0 +1,33 @@
+AGENTS.md
+  s_d658e7251951c2::t_df8cf3e67f26ad 8
+packages/cli/src/auth.ts
+  s_d658e7251951c2::t_5a837237927edd 199-200
+packages/cli/src/line.ts
+  s_d658e7251951c2::t_1c3005bba4847e 1-2,4,6,12,15,29-35
+packages/cli/src/main.ts
+  s_d658e7251951c2::t_d6acc1ac137e78 5,16-20,23,25-30
+packages/cli/test/auth.test.ts
+  s_d658e7251951c2::t_b7b7512a6954a6 8,166-170,176,202-204,206-210
+packages/core/src/dotenv.ts
+  s_d658e7251951c2::t_d2c04ef2d279b9 10-11,16-21,59,67-68,77,79-80,85,88-89,103-104,122-123
+packages/core/src/machine.ts
+  s_d658e7251951c2::t_2e91db7a5ca276 39-40,54
+packages/core/test/dotenv.test.ts
+  s_d658e7251951c2::t_ccc4a88de76ff8 26,31-32,34,39,43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "08f687d9bb0c84a424e21887cd2ddbaf11830205",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
