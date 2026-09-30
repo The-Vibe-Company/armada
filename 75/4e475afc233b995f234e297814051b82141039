@@ -1,0 +1,23 @@
+packages/core/src/merge.ts
+  s_d658e7251951c2::t_42606f967cbc0e 477-479
+packages/core/src/worker.ts
+  s_d658e7251951c2::t_99f919c4039dc0 248
+packages/core/test/worker.test.ts
+  s_d658e7251951c2::t_c435b6cfcd8eda 88
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "754e475afc233b995f234e297814051b82141039",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "unknown"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
