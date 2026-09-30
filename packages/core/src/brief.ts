@@ -3,7 +3,6 @@
 // runtime guide skill does, with what this returns. No secret value is ever
 // part of a brief: environment variables are named, never read into it.
 import type { ArmadaConfig, ConductorProfile } from "./config.ts";
-import { resolveProfile } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import {
   type Connection,
@@ -17,6 +16,7 @@ import {
   readRest,
 } from "./linear.ts";
 import { buildModel } from "./model.ts";
+import { checkRequestedProfile, chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { AgentPhase, ProgramData, StatusType } from "./types.ts";
 
 /** The npm package the worker runs Armada from. */
@@ -71,6 +71,8 @@ export interface Brief {
   parent: { id: string; title: string; url: string } | null;
   runtime: "conductor";
   profile: ({ name: string } & ConductorProfile) | null;
+  /** How the profile was chosen: routing rule, default, or the coordinator's override and its reason. */
+  routing: Omit<ProfileChoice, "name" | "profile"> | null;
   repository: { name: string; url: string };
   /** Installs the coordinator's exact Armada version as `armada` in the worker's workspace. */
   install: string;
@@ -104,6 +106,7 @@ interface RawBriefIssue {
   branchName: string | null;
   description: string | null;
   state: { name: string; type: string };
+  labels: Connection<{ name: string }>;
   parent: { identifier: string; title: string; url: string } | null;
   comments: RawNotes;
   inverseRelations: Connection<{
@@ -126,12 +129,14 @@ const BRIEF_QUERY = /* GraphQL */ `
     issue(id: $id) {
       identifier title url branchName description
       state { name type }
+      labels(first: 50) { pageInfo { hasNextPage endCursor } nodes { name } }
       parent { identifier title url }
       comments(first: 50) { ${NOTES} }
       inverseRelations(first: 25) { pageInfo { hasNextPage endCursor } nodes { ${RELATION} } }
     }
   }`;
-/** Comments and relations longer than the first page are read to the end. */
+/** Labels, comments and relations longer than the first page are read to the end. */
+const MORE_LABELS: MoreOf = { field: "labels", nodes: "name", operation: "MoreBriefLabels", what: "labels" };
 const MORE_NOTES: MoreOf = { field: "comments", nodes: NOTE, operation: "MoreBriefComments", what: "comments" };
 const MORE_RELATIONS: MoreOf = {
   field: "inverseRelations",
@@ -150,6 +155,8 @@ export interface BriefTicket {
   description: string;
   status: string;
   statusType: StatusType;
+  /** Linear label names, which route the ticket to a profile. */
+  labels: string[];
   parent: { id: string; title: string; url: string } | null;
   /** Newest first. */
   notes: BriefNote[];
@@ -184,6 +191,7 @@ export function normalizeBriefTicket(raw: RawBriefIssue, warnings: string[] = []
     description: raw.description?.trim() ?? "",
     status: raw.state.name,
     statusType: raw.state.type as StatusType,
+    labels: raw.labels.nodes.map((l) => l.name),
     parent: raw.parent ? { id: raw.parent.identifier, title: raw.parent.title, url: raw.parent.url } : null,
     notes: toNotes(raw.url, raw.comments),
     blockers,
@@ -199,6 +207,7 @@ export async function fetchBriefTicket(opts: LinearRequestOptions, id: string): 
   const raw = data.issue;
   if (!raw) return null;
   const warnings: string[] = [];
+  await readRest(opts, raw.identifier, MORE_LABELS, raw.labels, warnings);
   await readRest(opts, raw.identifier, MORE_NOTES, raw.comments, warnings);
   await readRest(opts, raw.identifier, MORE_RELATIONS, raw.inverseRelations, warnings);
   for (const r of raw.inverseRelations.nodes)
@@ -225,8 +234,10 @@ export interface BuildBriefInput {
   ticket: BriefTicket;
   /** The program as `armada status` reads it, for the workers in flight. */
   program: ProgramData;
-  /** `--profile`, or null for the default. */
+  /** `--profile`, or null to follow the routing rules. */
   profile: string | null;
+  /** Why `--profile` overrides the routed profile; required then. */
+  reason?: string | null;
   /** Version of the coordinator's Armada CLI; the worker runs the same one. */
   version: string;
   /** The coordinator's environment: only whether each variable is set is read. */
@@ -246,9 +257,19 @@ export function buildBrief(input: BuildBriefInput): Brief {
   // Both reads may warn about the same failed page; say it once.
   const warnings = [...new Set([...ticket.warnings, ...program.warnings])];
 
-  const choice = resolveProfile(config, input.profile);
-  if (!choice.profile && choice.problem) throw new BriefError(choice.problem);
-  if (!choice.profile)
+  let choice: ProfileChoice | null;
+  try {
+    choice = chooseProfile(config, {
+      ticket: ticket.id,
+      labels: ticket.labels,
+      requested: input.profile,
+      reason: input.reason ?? null,
+    });
+  } catch (err) {
+    if (err instanceof ProfileError) throw new BriefError(err.message);
+    throw err;
+  }
+  if (!choice)
     warnings.push(
       "armada.toml declares no [conductor.profiles.<name>]; add one so the launch passes an explicit agent, model and effort",
     );
@@ -282,7 +303,12 @@ export function buildBrief(input: BuildBriefInput): Brief {
   // workspace package of the same name, which has no built command.
   const pkg = `${ARMADA_PACKAGE}@${input.version}`;
   const branch = ticket.branchName;
-  const claimCommand = `armada claim ${ticket.id} --runtime conductor --handle ${CONDUCTOR_HANDLE}${branch ? ` --branch ${branch}` : ""}`;
+  const claimCommand = [
+    `armada claim ${ticket.id} --runtime conductor --handle ${CONDUCTOR_HANDLE}`,
+    branch ? ` --branch ${branch}` : "",
+    choice ? ` --profile ${shellWord(choice.name)}` : "",
+    choice?.reason ? ` --reason ${shellWord(choice.reason)}` : "",
+  ].join("");
   const has = (name: string) => !!input.env[name]?.trim();
   const environment: BriefVariable[] = [
     ...VARIABLES.map((v) => ({
@@ -312,7 +338,10 @@ export function buildBrief(input: BuildBriefInput): Brief {
     },
     parent: ticket.parent,
     runtime: "conductor",
-    profile: choice.profile ? { name: choice.name, ...choice.profile } : null,
+    profile: choice ? { name: choice.name, ...choice.profile } : null,
+    routing: choice
+      ? { source: choice.source, rule: choice.rule, routed: choice.routed, reason: choice.reason, why: choice.why }
+      : null,
     repository: { name: config.github.repository, url: `https://github.com/${config.github.repository}` },
     install: `npm install -g ${pkg}`,
     fallback: `npm exec --yes --package=${pkg} -- armada`,
@@ -327,6 +356,9 @@ export function buildBrief(input: BuildBriefInput): Brief {
     warnings.push(`${ticket.id} has ${ticket.notes.length} comments; the brief carries the newest ${MAX_NOTES}`);
   return { ...brief, prompt: renderPrompt(brief) };
 }
+
+/** A shell word: as is when it is plain, else single-quoted. */
+export const shellWord = (s: string) => (/^[\w./:@=+-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
 
 /** Quotes a comment body as a Markdown block quote, so its headings stay inside it. */
 const quote = (body: string) =>
@@ -405,6 +437,7 @@ export interface LoadBriefOptions {
   linearApiKey: string;
   ticket: string;
   profile: string | null;
+  reason?: string | null;
   version: string;
   env: Record<string, string | undefined>;
   stored?: string[];
@@ -417,8 +450,12 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
   const now = opts.now ?? (() => new Date());
   const linear = { apiKey: opts.linearApiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) };
   // Fail on a bad profile before any network call.
-  const choice = resolveProfile(config, opts.profile);
-  if (!choice.profile && choice.problem) throw new BriefError(choice.problem);
+  try {
+    checkRequestedProfile(config, opts.profile);
+  } catch (err) {
+    if (err instanceof ProfileError) throw new BriefError(err.message);
+    throw err;
+  }
   const [ticket, program] = await Promise.all([
     fetchBriefTicket(linear, opts.ticket),
     fetchProgram({ ...linear, rootId: config.tracker.programRoot, labels: config.tracker.labels, now }),
@@ -429,6 +466,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     ticket,
     program,
     profile: opts.profile,
+    reason: opts.reason ?? null,
     version: opts.version,
     env: opts.env,
     ...(opts.stored ? { stored: opts.stored } : {}),

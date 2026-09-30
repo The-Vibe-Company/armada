@@ -52,7 +52,15 @@ export interface ArmadaConfig {
     defaultProfile: string | null;
     /** Launch settings by profile name, from `[conductor.profiles.<name>]`. */
     profiles: Record<string, ConductorProfile>;
+    /** `[[conductor.routing]]` in file order: the first rule matching a ticket's labels picks its profile. */
+    routing: RoutingRule[];
   };
+}
+
+/** A ticket carrying any of `labels` goes to `profile`, unless an earlier rule matched. */
+export interface RoutingRule {
+  labels: string[];
+  profile: string;
 }
 
 /** How a worker is launched on Conductor: every value is passed explicitly, never left to Conductor's defaults. */
@@ -167,7 +175,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["github", github, ["repository"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     ["policy", policyT, ["silence_minutes", "silent_after_minutes"]],
-    ["conductor", conductorT, ["default_profile", "profiles"]],
+    ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
   for (const [name, p] of Object.entries(profilesT)) {
@@ -198,6 +206,27 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         `"conductor.default_profile" is "${defaultProfile}", but there is no [conductor.profiles.${defaultProfile}]`,
       );
   }
+  const routing: RoutingRule[] = [];
+  const routingRaw = conductorT.routing ?? [];
+  if (!Array.isArray(routingRaw)) problems.push(`"conductor.routing" must be a list of [[conductor.routing]] rules`);
+  else
+    for (const [i, r] of routingRaw.entries()) {
+      const path = `conductor.routing[${i + 1}]`;
+      if (!isTable(r)) {
+        problems.push(`"${path}" must be a table`);
+        continue;
+      }
+      known.push([path, r, ["labels", "profile"]]);
+      const labels = r.labels;
+      const ok = Array.isArray(labels) && labels.length && labels.every((l) => typeof l === "string" && l.trim());
+      if (!ok) problems.push(`"${path}.labels" must be a non-empty list of Linear label names`);
+      const profile = str(r, path, "profile");
+      if (profile && !Object.hasOwn(profiles, profile))
+        problems.push(`"${path}.profile" is "${profile}", but there is no [conductor.profiles.${profile}]`);
+      if (ok && profile) routing.push({ labels: labels.map((l: string) => l.trim()), profile });
+    }
+  if (Array.isArray(routingRaw) && routingRaw.length && conductorT.default_profile === undefined)
+    problems.push(`"conductor.default_profile" is required with [[conductor.routing]], for tickets no rule matches`);
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
 
@@ -259,7 +288,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     },
     gates: { requiredChecks, localCommands },
     policy: { silentAfterMinutes },
-    conductor: { defaultProfile, profiles },
+    conductor: { defaultProfile, profiles, routing },
   };
   if (problems.length) throw new ConfigError(source, problems);
   config.tracker.programRoot = config.tracker.programRoot.toUpperCase();
@@ -298,7 +327,7 @@ silence_minutes = 15     # a worker with no report for longer than this shows as
 # How \`armada brief\` launches workers on Conductor. Every value is passed explicitly;
 # \`conductor model\` lists each agent's model ids and effort levels.
 [conductor]
-default_profile = "opus"
+default_profile = "opus"  # for tickets no routing rule matches
 
 [conductor.profiles.opus]
 agent = "claude"
@@ -309,6 +338,25 @@ effort = "high"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
+
+[conductor.profiles.debug]
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "xhigh"
+
+# Which profile a ticket gets from its Linear labels: the first rule with a label
+# the ticket carries wins, in file order. \`armada brief --profile\` overrides it.
+[[conductor.routing]]
+labels = ["web"]
+profile = "opus"
+
+[[conductor.routing]]
+labels = ["api"]
+profile = "codex"
+
+[[conductor.routing]]
+labels = ["Bug"]
+profile = "debug"
 `;
 }
 
@@ -322,30 +370,4 @@ export function slugify(name: string): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "project"
   );
-}
-
-export type ProfileChoice =
-  | { name: string; profile: ConductorProfile }
-  | { name: null; profile: null; problem: string | null };
-
-/**
- * The Conductor profile to launch with: `requested`, else `default_profile`,
- * else the only profile. With no profile declared, `problem` is null and the
- * caller warns; an unknown or ambiguous name is a problem.
- */
-export function resolveProfile(config: ArmadaConfig, requested: string | null): ProfileChoice {
-  const { profiles, defaultProfile } = config.conductor;
-  const names = Object.keys(profiles);
-  const name = requested ?? defaultProfile ?? (names.length === 1 ? (names[0] ?? null) : null);
-  const profile = name && Object.hasOwn(profiles, name) ? profiles[name] : undefined;
-  if (name && profile) return { name, profile };
-  const available = names.length ? names.join(", ") : "none";
-  if (name) return { name: null, profile: null, problem: `no Conductor profile "${name}" (available: ${available})` };
-  if (names.length)
-    return {
-      name: null,
-      profile: null,
-      problem: `several Conductor profiles and no conductor.default_profile; pass --profile (${available})`,
-    };
-  return { name: null, profile: null, problem: null };
 }

@@ -127,6 +127,23 @@ describe("repository checks", () => {
     expect(problems(await checkRepository(repo.view, VERSION))).toEqual([]);
   });
 
+  test("a routing rule naming an unknown profile is a doctor error", async () => {
+    const toml = DEMO_TOML.concat(
+      '\n[conductor]\ndefault_profile = "opus"\n[conductor.profiles.opus]\nagent = "claude"\nmodel = "opus-5-5-1m"\neffort = "high"\n',
+      '[[conductor.routing]]\nlabels = ["api"]\nprofile = "codex"\n',
+    );
+    const repo = await setUpRepo({ "armada.toml": toml });
+    expect(problems(await checkRepository(repo.view, VERSION))).toEqual([
+      {
+        id: "config",
+        level: "error",
+        message:
+          'armada.toml is invalid:\n  - "conductor.routing[1].profile" is "codex", but there is no [conductor.profiles.codex]',
+        fix: "fix the keys listed above in armada.toml",
+      },
+    ]);
+  });
+
   test("a .claude/skills that links to .agents/skills as a whole counts as linked", async () => {
     const repo = await setUpRepo();
     for (const s of BUNDLED_SKILLS) repo.links.delete(`.claude/skills/${s.name}`);

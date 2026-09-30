@@ -14,6 +14,7 @@ export * from "./model.ts";
 export * from "./overview.ts";
 export * from "./phases.ts";
 export * from "./projects.ts";
+export * from "./routing.ts";
 export * from "./setup.ts";
 export * from "./skills.ts";
 export * from "./status.ts";

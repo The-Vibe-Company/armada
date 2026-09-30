@@ -5,6 +5,7 @@ import type { ArmadaConfig } from "./config.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import { handBackProblems, transitionProblem } from "./phases.ts";
+import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import {
   type Db,
   ensureProject,
@@ -16,6 +17,7 @@ import {
   releaseRuntimeHandle,
   resolveInboxItems,
   saveRuntimeHandle,
+  saveWorkerProfile,
 } from "./turso.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
 
@@ -132,8 +134,18 @@ export const firstState = (states: WorkflowState[], ...types: WorkflowState["typ
   return null;
 };
 
-function claimLine(o: { runtime: string; handle: string; branch: string | null; started: string }) {
-  return `Agent claim — runtime: ${o.runtime} · session: ${o.handle} · branch: ${o.branch ?? "unknown"} · started: ${o.started}`;
+function claimLine(o: {
+  runtime: string;
+  handle: string;
+  branch: string | null;
+  started: string;
+  profile: ProfileChoice | null;
+}) {
+  const line = `Agent claim — runtime: ${o.runtime} · session: ${o.handle} · branch: ${o.branch ?? "unknown"} · started: ${o.started}`;
+  const p = o.profile;
+  if (!p) return line;
+  const settings = `agent ${p.profile.agent}, model ${p.profile.model}, effort ${p.profile.effort}${p.profile.fastMode ? ", fast mode" : ""}`;
+  return `${line} · profile: ${p.name}\nProfile: ${p.name} (${settings}), chosen by ${p.why}`;
 }
 
 // ------------------------------------------------------------------ claim
@@ -146,6 +158,10 @@ export interface ClaimInput {
   handle: string;
   /** Defaults to the branch name Linear suggests for the ticket. */
   branch?: string | null;
+  /** Conductor profile the worker runs on; recorded in the claim. */
+  profile?: string | null;
+  /** Why `profile` differs from the ticket's routed profile; required then. */
+  reason?: string | null;
 }
 
 /**
@@ -166,6 +182,19 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const branch = input.branch ?? ticket.branchName;
   const warnings = [...ticket.warnings];
   const lines: string[] = [];
+  let profile: ProfileChoice | null = null;
+  if (input.profile)
+    try {
+      profile = chooseProfile(config, {
+        ticket: ticket.id,
+        labels: ticket.labels.map((l) => l.name),
+        requested: input.profile,
+        reason: input.reason ?? null,
+      });
+    } catch (err) {
+      if (err instanceof ProfileError) throw new Refusal(err.message);
+      throw err;
+    }
 
   if (ticket.commentsTruncated)
     throw new Refusal(
@@ -187,7 +216,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
         `${ticket.id} already carries the agent phase "${ticket.agentPhase}"; release it first with \`armada release\``,
       );
     const started = ctx.now().toISOString();
-    const body = `Agent status: planning — claimed by ${runtime.name} (${input.handle})\n\n${claimLine({ runtime: runtime.name, handle: input.handle, branch, started })}`;
+    const body = `Agent status: planning — claimed by ${runtime.name} (${input.handle})\n\n${claimLine({ runtime: runtime.name, handle: input.handle, branch, started, profile })}`;
     const mine = await linear.comment(ticket.uuid, body);
     // Linear has no compare-and-swap: read back and let the oldest claim win.
     const after = await linear.readTicket(ticket.id);
@@ -198,9 +227,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
         `${ticket.id} was claimed first by ${winner.claim?.runtime ?? "another worker"} · ${winner.claim?.session ?? "unknown session"}; your claim was withdrawn`,
       );
     }
-    lines.push(`Claimed ${ticket.id} for ${runtime.name} (${input.handle}).`);
+    lines.push(
+      `Claimed ${ticket.id} for ${runtime.name} (${input.handle})${profile ? ` on profile ${profile.name}` : ""}.`,
+    );
   } else {
     lines.push(`${ticket.id} is already claimed by this session (${input.handle}); labels and state repaired.`);
+    if (profile && (holder?.profile ?? null) !== profile.name)
+      warnings.push(
+        `the claim comment names ${holder?.profile ? `profile ${holder.profile}` : "no profile"}; only Turso records ${profile.name}. Release and claim again to change it on Linear`,
+      );
   }
 
   if (ticket.statusType !== "started" && !inProgress)
@@ -233,6 +268,16 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       branch,
       at,
     });
+    // A new claim replaces the profile of an earlier one; a resume without --profile keeps it.
+    if (profile || !resuming)
+      await saveWorkerProfile(db, {
+        project: config.project.slug,
+        ticket: ticket.id,
+        profile: profile
+          ? { name: profile.name, ...profile.profile, routed: profile.routed, reason: profile.reason, why: profile.why }
+          : null,
+        at,
+      });
     await recordEvent(db, {
       project: config.project.slug,
       ticket: ticket.id,

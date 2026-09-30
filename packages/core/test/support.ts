@@ -131,6 +131,8 @@ export const STATES: WorkflowState[] = [
 export class FakeLinear implements LinearWriter {
   readonly tickets = new Map<string, Ticket>();
   readonly writes: string[] = [];
+  /** Full body of every comment posted through the writer, in order. */
+  readonly bodies: string[] = [];
   private seq = 0;
   /** Called after a comment is posted, before it is returned (to simulate a race). */
   afterComment: ((ticket: Ticket) => void) | null = null;
@@ -218,6 +220,7 @@ export class FakeLinear implements LinearWriter {
   async comment(uuid: string, body: string) {
     const t = this.get(uuid);
     this.writes.push(`comment ${t.id} ${body.split("\n")[0]}`);
+    this.bodies.push(body);
     const c = this.post(t.id, body, this.clock().toISOString(), "Owner");
     this.afterComment?.(t);
     return { id: c.id };

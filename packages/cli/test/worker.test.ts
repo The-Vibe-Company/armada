@@ -92,6 +92,13 @@ describe("armada claim, report and release", () => {
     w.reset();
     expect(await run(["claim", "DEMO-7", "--sha", HEAD], w.io)).toBe(2);
     expect(w.err()).toBe("armada: --sha does not apply to claim\n");
+    w.reset();
+    const claim = ["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"];
+    expect(await run([...claim, "--profile", "turbo"], w.io)).toBe(2);
+    expect(w.err()).toBe('armada: no Conductor profile "turbo" (available: none)\n');
+    w.reset();
+    expect(await run([...claim, "--reason", "why not"], w.io)).toBe(2);
+    expect(w.err()).toContain("--reason goes with --profile");
   });
 
   test("an unreachable Turso only warns; Linear is still written", async () => {
