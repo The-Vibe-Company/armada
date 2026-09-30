@@ -8,6 +8,7 @@ import {
   LINEAR_KEY,
   loadBrief,
   missingKeyMessage,
+  resolveProfile,
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 
@@ -47,13 +48,16 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
   if (!ticket) throw new UsageError("brief needs a ticket: armada brief <ticket> [--profile <name>]");
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   if (a.json && a.prompt) throw new UsageError("pass --json or --prompt, not both");
+  const profile = a.options.profile?.trim() || null;
+  const choice = resolveProfile(config, profile);
+  if (!choice.profile && choice.problem) throw new UsageError(choice.problem);
   if (!credentials.linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
   let b: Brief;
   try {
     b = await loadBrief(config, {
       linearApiKey: credentials.linearApiKey,
       ticket: ticket.toUpperCase(),
-      profile: a.options.profile?.trim() || null,
+      profile,
       version,
       env: io.env,
       ...(io.fetch ? { fetch: io.fetch } : {}),
