@@ -1,0 +1,39 @@
+packages/core/src/fleet.ts
+  s_d658e7251951c2::t_5834836ea8ba75 184-185
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_b3b51ae7e78c5e 77-85,267-276,280,282
+packages/core/test/fleet.test.ts
+  s_d658e7251951c2::t_bd732d2a042d5e 200
+packages/core/test/turso.test.ts
+  s_d658e7251951c2::t_32e9235a95eeea 27-29,71-72
+packages/dashboard/components/Fleet.tsx
+  s_ee0eec6a0c0b7e::t_497837b0a759d1 270-272
+packages/dashboard/lib/fleet-data.ts
+  s_ee0eec6a0c0b7e::t_e729885cefe55e 21,48-49,59-60,63-66,80-81,99-101,107,111,113-128,131-134,145,147,155-169,173,179,184-189,196-197,199,203-255
+packages/dashboard/test/fleet-data.test.ts
+  s_ee0eec6a0c0b7e::t_5612bea6fb8f8b 123,125,129,147-150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e8d450e35ff44f8aa1255f626e38e2ebbae88431",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    },
+    "s_ee0eec6a0c0b7e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a7e957faf83c0e7cb",
+        "model": "unknown"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
