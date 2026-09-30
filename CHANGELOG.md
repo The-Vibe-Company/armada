@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.11](https://github.com/The-Vibe-Company/armada/compare/v0.1.10...v0.1.11) (2026-09-30)
+
+
+### Bug Fixes
+
+* **cli:** read piped report messages reliably ([#27](https://github.com/The-Vibe-Company/armada/issues/27)) ([24606ab](https://github.com/The-Vibe-Company/armada/commit/24606abee973769d22b870d3c1b21ffb11a95272))
+
 ## [0.1.10](https://github.com/The-Vibe-Company/armada/compare/v0.1.9...v0.1.10) (2026-09-30)
 
 
