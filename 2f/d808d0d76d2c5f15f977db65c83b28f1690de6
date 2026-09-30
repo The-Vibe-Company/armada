@@ -1,0 +1,19 @@
+AGENTS.md
+  s_d658e7251951c2::t_62e2d8b6144318 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "2fd808d0d76d2c5f15f977db65c83b28f1690de6",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
