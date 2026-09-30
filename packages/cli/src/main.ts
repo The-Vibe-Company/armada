@@ -4,6 +4,23 @@ import { readFile } from "node:fs/promises";
 import { run } from "./cli.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
 
+function gitBranch(): string | null {
+  try {
+    const r = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 5000 });
+    const branch = r.status === 0 ? r.stdout.trim() : "";
+    return branch && branch !== "HEAD" ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readStdin(): Promise<string> {
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  for await (const chunk of process.stdin) text += chunk;
+  return text;
+}
+
 function ghToken(): string | null {
   try {
     const r = spawnSync("gh", ["auth", "token"], { encoding: "utf8", timeout: 5000 });
@@ -56,6 +73,8 @@ const code = await run(process.argv.slice(2), {
   ghToken,
   interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
   prompt,
+  gitBranch,
+  readStdin,
 });
 // Exit once stdout is flushed: Node writes to pipes asynchronously on macOS, and
 // exiting at once would cut `armada status --json | jq` at 64 KB.

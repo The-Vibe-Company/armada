@@ -14,6 +14,7 @@ import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { type Io, UsageError } from "./io.ts";
 import { renderStatus } from "./render.ts";
+import { claim, release, report, statusEvents } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
 export type { Io } from "./io.ts";
@@ -22,19 +23,30 @@ export const USAGE = `Usage: armada <command> [options]
 
 Commands:
   status            Tickets in flight, tickets ready to start and pull requests waiting
+  claim <ticket> --runtime <name> --handle <id> [--branch <name>]
+                    Claim a ticket for this worker: In Progress, phase planning, runtime
+                    label and an Agent claim comment; refused if another worker holds it
+  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
+                    Report a phase (planning, awaiting-approval, implementing, shipping,
+                    blocked, ready-to-merge); the same phase again is a status update.
+                    ready-to-merge needs --sha (full 40 characters, the PR head) and green CI.
+                    Prints what waits in this worker's inbox.
+  release --reason <text>
+                    Give the ticket back: agent labels removed, ticket moved back
   auth login        Ask for the missing keys (hidden input) and store them on this machine
   auth status       Show which keys are set and where each comes from, never their values
   auth logout       Remove Armada's keys from this machine
 
 Options:
-  --json            Print the status as JSON
+  --json            Print the result as JSON
   --config <path>   Use this armada.toml instead of searching from the current directory
+  --ticket <id>     Ticket for report and release; default ARMADA_TICKET, then the git branch
   -h, --help        Show this help
   -v, --version     Print the version
 
 Keys (the environment always wins over the file):
-  LINEAR_API_KEY       Linear API key (required by status)
-  ARMADA_TURSO_URL     Turso database URL
+  LINEAR_API_KEY       Linear API key (required by status, claim, report, release)
+  ARMADA_TURSO_URL     Turso database URL (live activity; optional, a file: URL works locally)
   ARMADA_TURSO_TOKEN   Turso database token
   GITHUB_TOKEN         GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
 
@@ -52,21 +64,41 @@ interface Args {
   config: string | null;
   help: boolean;
   version: boolean;
+  /** Options that take a value, other than --config. */
+  options: Record<string, string>;
 }
 
+const VALUE_OPTIONS = ["runtime", "handle", "branch", "ticket", "message", "message-file", "pr", "sha", "reason"];
+/** Value options each command accepts. */
+const COMMAND_OPTIONS: Record<string, string[]> = {
+  claim: ["runtime", "handle", "branch"],
+  report: ["ticket", "message", "message-file", "pr", "sha"],
+  release: ["ticket", "reason"],
+};
+
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { command: null, rest: [], json: false, config: null, help: false, version: false };
+  const args: Args = {
+    command: null,
+    rest: [],
+    json: false,
+    config: null,
+    help: false,
+    version: false,
+    options: {},
+  };
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k];
+    const named = a?.match(/^--([a-z-]+)(?:=([\s\S]*))?$/);
+    const name = named?.[1];
     if (a === "--json") args.json = true;
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
-    else if (a === "--config") {
-      const v = argv[++k];
-      if (!v) throw new UsageError("--config needs a path");
-      args.config = v;
-    } else if (a?.startsWith("--config=")) args.config = a.slice("--config=".length);
-    else if (a?.startsWith("-")) throw new UsageError(`unknown option ${a}`);
+    else if (name && (name === "config" || VALUE_OPTIONS.includes(name))) {
+      const v = named?.[2] ?? argv[++k];
+      if (v === undefined) throw new UsageError(`--${name} needs a value`);
+      if (name === "config") args.config = v;
+      else args.options[name] = v;
+    } else if (a?.startsWith("-")) throw new UsageError(`unknown option ${a}`);
     else if (!args.command && a) args.command = a;
     else if (a) args.rest.push(a);
   }
@@ -95,11 +127,14 @@ export async function findConfig(io: Io, explicit: string | null): Promise<{ pat
 async function status(io: Io, args: Args): Promise<number> {
   const { path, text } = await findConfig(io, args.config);
   const config: ArmadaConfig = parseConfig(text, path);
-  const { linearApiKey, githubToken } = (await loadCredentials(io)).credentials;
+  const { credentials } = await loadCredentials(io);
+  const { linearApiKey, githubToken } = credentials;
   if (!linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
+  const events = statusEvents(config, credentials);
   const report = await loadStatus(config, {
     linearApiKey,
     githubToken,
+    ...(events ? { lastEvents: events } : {}),
     ...(io.fetch ? { fetch: io.fetch } : {}),
     ...(io.now ? { now: io.now } : {}),
   });
@@ -122,6 +157,16 @@ export async function run(argv: string[], io: Io): Promise<number> {
     if (args.help || !args.command) {
       (args.help ? io.stdout : io.stderr)(USAGE);
       return args.help ? 0 : 2;
+    }
+    const allowed = COMMAND_OPTIONS[args.command] ?? [];
+    for (const name of Object.keys(args.options))
+      if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
+    const worker = { claim, report, release }[args.command];
+    if (worker) {
+      const { path, text } = await findConfig(io, args.config);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io);
+      return await worker(io, config, credentials, args);
     }
     if (args.command === "status") {
       noExtra(args.rest);
