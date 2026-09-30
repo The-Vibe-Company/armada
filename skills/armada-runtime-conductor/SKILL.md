@@ -12,7 +12,7 @@ Armada never calls a runtime. This guide tells the coordinator how to launch, me
 ## Launch
 
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
-2. Run `armada brief ABC-12`. Read the profile (agent, model, effort, fast mode), the environment table and the warnings. Resolve every warning first: an open blocker, a ticket already in flight. Export each required variable the table marks `NOT set in this shell`. One marked `in credentials file` is in Armada's machine store: keep the `set -a` line of the launch command below, which loads that file without printing it.
+2. Run `armada brief ABC-12` (with `--profile <name> --reason "<why>"` when you override the routed profile). Read the profile (agent, model, effort, fast mode), the environment table and the warnings. Resolve every warning first: an open blocker, a ticket already in flight. Export each required variable the table marks `NOT set in this shell`. One marked `in credentials file` is in Armada's machine store: keep the `set -a` line of the launch command below, which loads that file without printing it.
 3. Write the prompt to a file, and add what only you know (the boundary with a parallel worker, a decision not yet on the ticket):
 
 ```sh
@@ -45,7 +45,7 @@ jq -r '"\(.workspaceId)/\(.sessionId)"' /tmp/abc-12-launch.json
 - Conductor sets `CONDUCTOR_WORKSPACE_ID` and `CONDUCTOR_SESSION_ID` inside the workspace. The brief's first commands install your Armada version (`npm install -g`) and claim the ticket with them. `--env` values are not shown back by `workspace get`.
 - An unknown agent, model or effort fails the command. Check the ids with `conductor model` (each agent's models, efforts and defaults) and fix the profile in `armada.toml`.
 
-5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Conductor`, and the ticket's claim comment reads `session: <workspaceId>/<sessionId>`. No claim after ten minutes: read the transcript (Status section). If the worker cannot claim (for example a missing key), fix the cause and message it; as a last resort record the handle yourself with `armada claim ABC-12 --runtime conductor --handle <workspaceId>/<sessionId>`.
+5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Conductor`, and the ticket's claim comment reads `session: <workspaceId>/<sessionId>` and `profile: <name>`. No claim after ten minutes: read the transcript (Status section). If the worker cannot claim (for example a missing key), fix the cause and message it; as a last resort record the handle yourself with `armada claim ABC-12 --runtime conductor --handle <workspaceId>/<sessionId> --profile <name>`, adding the brief's `--reason` for an override.
 
 ## Message
 
