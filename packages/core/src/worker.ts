@@ -234,7 +234,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
     input.runtime,
     groups.runtimeGroup,
     runtimeLabels.length
-      ? `armada claim ${ticket.id} --runtime "${runtimeLabels[0]?.name}" --handle ${input.handle}, with the runtime this worker runs on`
+      ? `armada claim ${ticket.id} --runtime "<one of: ${runtimeLabels.map((l) => l.name).join(", ")}>" --handle ${input.handle}`
       : DOCTOR_LABELS,
   );
   const branch = input.branch ?? ticket.branchName;
@@ -242,10 +242,10 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const lines: string[] = [];
   let profile: ProfileChoice | null = null;
 
-  if (ticket.commentsTruncated)
+  if (ticket.commentsTruncated || ticket.labelsTruncated)
     throw new Refusal(
-      `not every comment of ${ticket.id} could be read, so an older claim may be hidden; nothing was written`,
-      `armada claim ${ticket.id} again once Linear answers`,
+      `not every ${ticket.commentsTruncated ? "comment" : "label"} of ${ticket.id} could be read, so ${ticket.commentsTruncated ? "an older claim" : "an agent label"} may be hidden; nothing was written`,
+      `armada claim ${ticket.id} --runtime ${input.runtime} --handle ${input.handle} again once Linear answers`,
     );
   const viewer = await linear.viewer();
   const inProgress = ticket.statusType === "started" ? null : firstState(ticket.states, "started");
@@ -254,14 +254,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const holder = held[0]?.claim;
   const resuming = !!holder && holder.session === input.handle;
   if (!resuming) {
-    const release = `armada release --ticket ${ticket.id} --reason "<why>", once no worker runs on it`;
+    // Only the coordinator releases another worker's ticket: this worker picks another one.
+    const another = "armada status, to pick another ticket ready to start";
     if (holder)
       throw new Refusal(
         `${ticket.id} is already claimed by ${holder.runtime ?? "an unknown runtime"} · ${holder.session ?? "unknown session"} since ${holder.at}`,
-        release,
+        another,
       );
     if (ticket.agentPhase)
-      throw new Refusal(`${ticket.id} already carries the agent phase "${ticket.agentPhase}"`, release);
+      throw new Refusal(`${ticket.id} already carries the agent phase "${ticket.agentPhase}"`, another);
     if (input.profile)
       try {
         profile = chooseProfile(config, {

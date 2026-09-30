@@ -227,8 +227,6 @@ test("a refused checklist exits 1 and names each failure", async () => {
   expect(f.err()).toContain(
     "armada: #9 (DEMO-18) cannot be merged:\n  - DEMO-18 has not been handed back: its agent phase is not set, not ready-to-merge\n",
   );
-  expect(f.err()).toEndWith(
-    'Next: armada answer --note DEMO-18 "<what to fix>" once you told its worker, then armada merge 9 after the next hand-back\n',
-  );
+  expect(f.err()).toEndWith("Next: armada inbox --wait, until DEMO-18 is handed back\n");
   expect(f.ghCalls).toEqual([]);
 });

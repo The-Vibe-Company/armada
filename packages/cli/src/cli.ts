@@ -21,6 +21,7 @@ import { type Io, missingKey, UsageError } from "./io.ts";
 import { merge } from "./merge.ts";
 import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
+import { CommandError } from "./repo.ts";
 import { claim, release, report, statusEvents } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
@@ -92,8 +93,10 @@ const COMMAND_HELP: Record<string, string> = {
 `,
 };
 
-/** Commands that take --ticket. */
+/** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "merge"]);
+const CONFIG_OPTION = new Set(["status", "claim", "report", "release", "ask", "inbox", "answer", "merge", "brief"]);
+const JSON_OPTION = new Set([...CONFIG_OPTION, "doctor", "auth"]);
 const TICKET_HELP = `  --ticket <id>     Ticket for report, release and ask (default ARMADA_TICKET, then the git
                     branch) and for merge (default: the ticket the PR branch names)
 `;
@@ -127,14 +130,17 @@ Files:
 export function commandHelp(command: string): string | null {
   const block = Object.hasOwn(COMMAND_HELP, command) ? COMMAND_HELP[command] : undefined;
   if (!block) return null;
-  return `Usage: armada ${command} [options]
-
-${block}
-Options:
-  --json            Print the result as JSON
-  --config <path>   Use this armada.toml instead of searching from the current directory
-${TICKET_OPTION.has(command) ? TICKET_HELP : ""}  -h, --help        Show this help (\`armada --help\` lists every command)
-`;
+  const options = [
+    JSON_OPTION.has(command)
+      ? `  --json            Print the result as JSON${command === "auth" ? " (auth status)" : ""}\n`
+      : "",
+    CONFIG_OPTION.has(command)
+      ? "  --config <path>   Use this armada.toml instead of searching from the current directory\n"
+      : "",
+    TICKET_OPTION.has(command) ? TICKET_HELP : "",
+    "  -h, --help        Show this help (`armada --help` lists every command)\n",
+  ];
+  return `Usage: armada ${command} [options]\n\n${block}\nOptions:\n${options.join("")}`;
 }
 
 interface Args {
@@ -264,8 +270,16 @@ function noExtra(rest: string[]) {
   if (rest.length) throw new UsageError(`unexpected argument ${rest[0]}`);
 }
 
-/** The command `argv` names, for the next step of an error raised before parsing ends. */
-const commandOf = (argv: string[]) => argv.find((a) => Object.hasOwn(COMMAND_HELP, a)) ?? null;
+/** The command `argv` names (its first positional argument), even when parsing it failed. */
+function commandOf(argv: string[]): string | null {
+  for (let k = 0; k < argv.length; k++) {
+    const a = argv[k] ?? "";
+    const name = a.match(/^--([a-z-]+)$/)?.[1];
+    if (name && (name === "config" || VALUE_OPTIONS.includes(name))) k++;
+    else if (!a.startsWith("-")) return a;
+  }
+  return null;
+}
 
 /** What to run after an error: the error's own next step, else the command's help. */
 function nextStep(err: unknown, command: string | null): string | null {
@@ -274,8 +288,9 @@ function nextStep(err: unknown, command: string | null): string | null {
     return err.next ?? (command ? `armada ${command} --help` : "armada --help, which lists every command");
   if (err instanceof ConfigError) return "armada doctor, once the file is fixed (it checks the whole setup)";
   if (err instanceof LinearError && /HTTP 401/.test(err.message)) return "armada auth status";
-  if (err instanceof LinearError && err.transport)
-    return `${command ? `armada ${command}` : "the same command"} again once Linear answers`;
+  if (err instanceof LinearError && /unreachable|HTTP 5\d\d/.test(err.message))
+    return "the same command again once Linear answers";
+  if (err instanceof CommandError) return "armada doctor, which checks this repository's setup";
   return null;
 }
 
@@ -343,7 +358,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
     throw new UsageError(`unknown command "${args.command}"`);
   } catch (err) {
-    const next = nextStep(err, commandOf(argv));
+    const command = commandOf(argv);
+    const next = nextStep(err, command && Object.hasOwn(COMMAND_HELP, command) ? command : null);
     io.stderr(`armada: ${err instanceof Error ? err.message : String(err)}\n${next ? `Next: ${next}\n` : ""}`);
     return err instanceof UsageError || err instanceof ConfigError ? 2 : 1;
   }

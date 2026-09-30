@@ -471,7 +471,11 @@ async function checklist(ctx: MergeContext, input: MergeInput): Promise<Checked>
       `#${pull.number} (${ticket.id}) cannot be merged:\n${problems.map((p) => `  - ${p}`).join("\n")}${
         hints.length ? `\nHints (not blocking):\n${hints.map((h) => `  - ${h}`).join("\n")}` : ""
       }`,
-      `armada answer --note ${ticket.id} "<what to fix>" once you told its worker, then armada merge ${pull.number} after the next hand-back`,
+      pull.state !== "open"
+        ? `gh pr view ${pull.number} --repo ${config.github.repository}`
+        : ticket.agentPhase !== "ready-to-merge"
+          ? `armada inbox --wait, until ${ticket.id} is handed back`
+          : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
     );
   lines.unshift(
     `Checklist passed for #${pull.number} (${ticket.id}): handed back at ${pull.headSha}, CLEAN, checks green, no open review thread.`,
@@ -595,7 +599,7 @@ async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, tick
   if (seen.headSha !== sha)
     throw new Refusal(
       `${n} was merged at ${seen.headSha}, not at the handed-back ${sha}; check ${pull.baseRef} now`,
-      `git log origin/${pull.baseRef}`,
+      `gh pr view ${pull.number} --repo ${ctx.config.github.repository}`,
     );
   return seen;
 }

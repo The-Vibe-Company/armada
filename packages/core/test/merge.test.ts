@@ -388,7 +388,7 @@ describe("armada merge", () => {
       s.forge.pr.headSha = BASE;
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      `#9 was merged at ${BASE}, not at the handed-back ${HEAD}; check main now\nNext: git log origin/main`,
+      `#9 was merged at ${BASE}, not at the handed-back ${HEAD}; check main now\nNext: gh pr view 9 --repo acme/widgets`,
     );
     expect(s.linear.writes).toEqual([]);
   });

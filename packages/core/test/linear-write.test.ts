@@ -88,7 +88,7 @@ describe("Linear write adapter", () => {
       body: `Agent claim — runtime: Codex · session: ${session} · branch: b · started: t`,
       user: { name: "Ada" },
     });
-    const { writer, sent } = graphql({
+    const answers = {
       Ticket: {
         data: {
           issue: {
@@ -127,7 +127,8 @@ describe("Linear write adapter", () => {
           },
         },
       },
-    });
+    };
+    const { writer, sent } = graphql(answers);
     const t = await writer.readTicket("DEMO-7");
     expect(sent.map((s) => [s.operation, s.variables.after ?? null])).toEqual([
       ["Ticket", null],
@@ -136,6 +137,12 @@ describe("Linear write adapter", () => {
     ]);
     expect([t?.agentPhase, t?.commentsTruncated, t?.warnings]).toEqual(["implementing", false, []]);
     expect(t?.comments.map((c) => c.claim?.session)).toEqual(["ws-2", "ws-1"]);
+
+    // A page Linear refuses leaves the ticket marked incomplete, so claim refuses it.
+    const refused = { errors: [{ message: "Query too complex" }] };
+    const partial = graphql({ ...answers, MoreTicketLabels: refused, MoreTicketComments: refused });
+    const cut = await partial.writer.readTicket("DEMO-7");
+    expect([cut?.labelsTruncated, cut?.commentsTruncated, cut?.warnings.length]).toEqual([true, true, 2]);
   });
 
   test("writes state, assignee and label changes in one issueUpdate; team labels shadow workspace ones", async () => {

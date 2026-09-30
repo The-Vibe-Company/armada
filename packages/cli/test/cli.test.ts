@@ -133,6 +133,9 @@ describe("armada help", () => {
     expect(report.out()).toContain("  report <phase>");
     expect(report.out()).toContain("--ticket <id>");
     expect(report.out()).not.toContain("  claim <ticket>");
+    const doctor = fakeIo({});
+    expect(await run(["doctor", "--help"], doctor.io)).toBe(0);
+    expect(doctor.out()).not.toContain("--config");
 
     const all = fakeIo({});
     expect(await run(["--help"], all.io)).toBe(0);

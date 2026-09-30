@@ -54,6 +54,8 @@ export interface Ticket {
   prs: PullRequest[];
   /** True when some comments could not be read: an older claim may be missing. */
   commentsTruncated: boolean;
+  /** True when some labels could not be read: an agent label may be missing. */
+  labelsTruncated: boolean;
   /** Reads cut short by a cap. */
   warnings: string[];
 }
@@ -172,6 +174,7 @@ export function normalizeTicket(raw: RawTicket, groups: LabelGroups, warnings: s
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     prs: [...prs.values()].sort((a, b) => a.number - b.number),
     commentsTruncated: !!raw.comments.pageInfo?.hasNextPage,
+    labelsTruncated: !!raw.labels.pageInfo?.hasNextPage,
     warnings,
   };
 }

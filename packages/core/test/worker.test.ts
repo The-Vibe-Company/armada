@@ -76,7 +76,7 @@ describe("claim", () => {
       "2026-03-04T09:00:00Z",
     );
     expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toBe(
-      'DEMO-7 is already claimed by Codex · ws-9 since 2026-03-04T09:00:00Z\nNext: armada release --ticket DEMO-7 --reason "<why>", once no worker runs on it',
+      "DEMO-7 is already claimed by Codex · ws-9 since 2026-03-04T09:00:00Z\nNext: armada status, to pick another ticket ready to start",
     );
     expect(linear.writes).toEqual([]);
   });
@@ -85,7 +85,7 @@ describe("claim", () => {
     const { linear, ctx } = setup();
     linear.add("DEMO-7", { commentsTruncated: true });
     expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toBe(
-      "not every comment of DEMO-7 could be read, so an older claim may be hidden; nothing was written\nNext: armada claim DEMO-7 again once Linear answers",
+      "not every comment of DEMO-7 could be read, so an older claim may be hidden; nothing was written\nNext: armada claim DEMO-7 --runtime conductor --handle ws-1 again once Linear answers",
     );
     expect(linear.writes).toEqual([]);
   });
@@ -174,7 +174,7 @@ describe("claim", () => {
     const { linear, ctx } = setup();
     linear.add("DEMO-7");
     expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "pi", handle: "x" }))).toBe(
-      'no "pi" label in the "Agent runtime" label group (available: Conductor, Claude Code)\nNext: armada claim DEMO-7 --runtime "Conductor" --handle x, with the runtime this worker runs on',
+      'no "pi" label in the "Agent runtime" label group (available: Conductor, Claude Code)\nNext: armada claim DEMO-7 --runtime "<one of: Conductor, Claude Code>" --handle x',
     );
   });
 });
