@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/The-Vibe-Company/armada/compare/v0.1.3...v0.1.4) (2026-09-30)
+
+
+### Features
+
+* **cli:** prepare worker briefs and the Conductor Cloud runtime guide ([#11](https://github.com/The-Vibe-Company/armada/issues/11)) ([aba1e6f](https://github.com/The-Vibe-Company/armada/commit/aba1e6f3b846847c2182d478a6af3f78204e5abb))
+
 ## [0.1.3](https://github.com/The-Vibe-Company/armada/compare/v0.1.2...v0.1.3) (2026-09-30)
 
 
