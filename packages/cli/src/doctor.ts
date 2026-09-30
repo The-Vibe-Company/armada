@@ -1,17 +1,25 @@
 // `armada doctor`: what this repository lacks to be run by Armada, each
-// problem with its fix. Exit 1 when anything is an error.
+// problem with its fix, and whether this terminal is signed in to Armada, so
+// that the briefs it makes give workers a launch token instead of keys. Exit 1
+// when anything is an error.
 import {
+  API_KEY_VARIABLE,
+  ArmadaApiError,
+  armadaApi,
   type Check,
   CONFIG_FILE,
   ConfigError,
+  type Credentials,
   checkLabels,
   checkRepository,
   LINEAR_KEY,
   parseConfig,
   readLabels,
+  STORED_KEYS,
 } from "@armada/core";
-import { loadCredentials } from "./auth.ts";
+import { loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
+import { describeIdentity, hostOf } from "./login.ts";
 import { fsRepoView, gitRoot } from "./repo.ts";
 
 export interface DoctorReport {
@@ -23,7 +31,77 @@ export interface DoctorReport {
   warnings: number;
 }
 
-async function labelChecks(io: Io, root: string): Promise<Check[]> {
+const SIGN_IN_FIX = `\`armada login\`; a headless coordinator sets ${API_KEY_VARIABLE} to an organization API key`;
+
+/**
+ * Whether this terminal is signed in to Armada, asked to Armada itself. Not
+ * an error: without a sign-in Armada still works on the keys of the
+ * environment (CI, self-hosting), but the briefs carry no launch token.
+ */
+async function signInChecks(io: Io, credentials: Credentials): Promise<Check[]> {
+  const host = hostOf(credentials.armadaApi.url);
+  const signIn = credentials.armadaSignIn;
+  const warning = (message: string, fix: string): Check[] => [{ id: "sign-in", level: "warning", message, fix }];
+  if (!signIn) {
+    const elsewhere = credentials.armadaSignInElsewhere;
+    if (elsewhere)
+      return warning(
+        `this terminal is signed in to ${hostOf(elsewhere)}, not to ${host} (named by ARMADA_API_URL or [api] url)`,
+        `\`armada login\` to sign in to ${host}, or point ARMADA_API_URL back to ${elsewhere}`,
+      );
+    const workers = credentials.workerTickets.length
+      ? `\nThe worker session${credentials.workerTickets.length === 1 ? "" : "s"} of ${credentials.workerTickets.join(", ")} sign${credentials.workerTickets.length === 1 ? "s" : ""} in only that ticket's claim, report, ask and release.`
+      : "";
+    return warning(
+      `not signed in to Armada (${host}): \`armada brief\` gives workers no launch token, so each worker needs the fleet's keys in its environment${workers}`,
+      SIGN_IN_FIX,
+    );
+  }
+  try {
+    const identity = await armadaApi({
+      url: credentials.armadaApi.url,
+      ...(io.fetch ? { fetch: io.fetch } : {}),
+    }).whoami(signIn);
+    if (!identity.organization)
+      return warning(
+        `signed in to ${host} as ${describeIdentity(identity)}: launch tokens need an organization`,
+        `create or join an organization on ${credentials.armadaApi.url}`,
+      );
+    return [
+      { id: "sign-in", level: "ok", message: `signed in to ${host} as ${describeIdentity(identity)}`, fix: null },
+    ];
+  } catch (err) {
+    if (!(err instanceof ArmadaApiError)) throw err;
+    if (err.signedOut)
+      return warning(
+        `the Armada sign-in of this terminal no longer works: ${err.message}`,
+        signIn.kind === "api-key" && signIn.source.kind === "env"
+          ? `replace ${API_KEY_VARIABLE} with a valid organization API key`
+          : SIGN_IN_FIX,
+      );
+    return warning(`Armada sign-in not checked: ${err.message}`, err.next ?? "run doctor again once Armada answers");
+  }
+}
+
+/** Keys still in the credentials file while Armada gives this terminal the same ones: no longer needed. */
+function keyFileChecks(machine: Machine, credentials: Credentials): Check[] {
+  const store = machine.store;
+  if (!store?.exists || !credentials.armadaSignIn) return [];
+  const unneeded = STORED_KEYS.filter(
+    (k) => store.values[k.variable]?.trim() && credentials.sources[k.name]?.kind === "armada",
+  ).map((k) => k.variable);
+  if (!unneeded.length) return [];
+  return [
+    {
+      id: "local-keys",
+      level: "warning",
+      message: `${store.path} still holds ${unneeded.join(", ")}, which Armada now gives this terminal: ${unneeded.length === 1 ? "it is" : "they are"} no longer needed`,
+      fix: `\`armada auth logout\` removes ${unneeded.length === 1 ? "it" : "them"} from this machine; the sign-in to Armada stays`,
+    },
+  ];
+}
+
+async function labelChecks(io: Io, root: string, credentials: Credentials): Promise<Check[]> {
   const text = await fsRepoView(root).readFile(CONFIG_FILE);
   if (text === null) return [];
   let config: ReturnType<typeof parseConfig>;
@@ -33,14 +111,14 @@ async function labelChecks(io: Io, root: string): Promise<Check[]> {
     if (err instanceof ConfigError) return []; // already reported by the config check
     throw err;
   }
-  const { linearApiKey } = (await loadCredentials(io)).credentials;
+  const { linearApiKey } = credentials;
   if (!linearApiKey)
     return [
       {
         id: "labels",
         level: "warning",
-        message: `Linear labels not checked: ${LINEAR_KEY.variable} is not set`,
-        fix: `set ${LINEAR_KEY.variable} or run \`armada auth login\`, then run doctor again`,
+        message: `Linear labels not checked: no Linear key (${LINEAR_KEY.variable})`,
+        fix: `\`armada login\` to an Armada that keeps your organization's keys, or set ${LINEAR_KEY.variable}, then run doctor again`,
       },
     ];
   try {
@@ -60,7 +138,13 @@ async function labelChecks(io: Io, root: string): Promise<Check[]> {
 
 export async function buildDoctor(io: Io, armadaVersion: string): Promise<DoctorReport> {
   const root = (io.exec ? await gitRoot(io.exec, io.cwd) : null) ?? io.cwd;
-  const checks = [...(await checkRepository(fsRepoView(root), armadaVersion)), ...(await labelChecks(io, root))];
+  const { machine, credentials } = await loadCredentials(io);
+  const checks = [
+    ...(await checkRepository(fsRepoView(root), armadaVersion)),
+    ...(await signInChecks(io, credentials)),
+    ...keyFileChecks(machine, credentials),
+    ...(await labelChecks(io, root, credentials)),
+  ];
   return {
     schemaVersion: 1,
     root,

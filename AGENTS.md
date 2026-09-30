@@ -25,7 +25,7 @@ Armada runs a fleet of coding agents on one project: Linear holds the plan and p
 - `bun run armada inbox [--wait]` and `bun run armada answer <item|ticket> "<text>" [--note]`: the coordinator's inbox (Turso only) and how it records an answer it already delivered through the runtime guide. `answer` never calls a runtime.
 - `bun run armada merge <pr> --dry-run`: the coordinator's merge checklist without merging. Never run `armada merge` without `--dry-run` from a worker: workers never merge.
 - `bun run armada brief <ticket> [--profile <name>] [--prompt|--json]`: a worker's launch prompt and settings; needs `LINEAR_API_KEY`.
-- `bun run armada doctor [--json]` and `bun run armada init [--program-root <ID>]`: check a repository, and open its setup pull request. Try `init` only on a throwaway repository: it pushes a branch, opens a pull request and creates Linear labels.
+- `bun run armada doctor [--json]` and `bun run armada init [--program-root <ID>]`: check a repository (and whether this terminal is signed in to Armada), and open its setup pull request. Try `init` only on a throwaway repository: it pushes a branch, opens a pull request and creates Linear labels.
 
 ## Rules
 
