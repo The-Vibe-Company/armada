@@ -16,7 +16,6 @@ export interface BriefArgs {
   rest: string[];
   options: Record<string, string>;
   json: boolean;
-  prompt: boolean;
 }
 
 export function renderBrief(b: Brief): string {
@@ -47,7 +46,8 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
   const [ticket, ...extra] = a.rest;
   if (!ticket) throw new UsageError("brief needs a ticket: armada brief <ticket> [--profile <name>]");
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
-  if (a.json && a.prompt) throw new UsageError("pass --json or --prompt, not both");
+  const promptOnly = a.options.prompt === "true";
+  if (a.json && promptOnly) throw new UsageError("pass --json or --prompt, not both");
   const profile = a.options.profile?.trim() || null;
   const choice = resolveProfile(config, profile);
   if (!choice.profile && choice.problem) throw new UsageError(choice.problem);
@@ -68,7 +68,7 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
     throw err;
   }
   if (a.json) io.stdout(`${JSON.stringify(b, null, 2)}\n`);
-  else if (a.prompt) {
+  else if (promptOnly) {
     io.stdout(b.prompt);
     for (const w of b.warnings) io.stderr(`armada: warning: ${w}\n`);
   } else io.stdout(renderBrief(b));

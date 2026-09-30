@@ -88,8 +88,6 @@ interface Args {
   rest: string[];
   json: boolean;
   all: boolean;
-  /** `brief --prompt`: print only the prompt. */
-  prompt: boolean;
   config: string | null;
   help: boolean;
   version: boolean;
@@ -113,7 +111,7 @@ const VALUE_OPTIONS = [
   "profile",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run", "no-lock"];
+const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch"],
@@ -121,7 +119,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   init: ["program-root", "name", "slug"],
   merge: ["ticket", "dry-run", "no-lock"],
-  brief: ["profile"],
+  brief: ["profile", "prompt"],
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -130,7 +128,6 @@ export function parseArgs(argv: string[]): Args {
     rest: [],
     json: false,
     all: false,
-    prompt: false,
     config: null,
     help: false,
     version: false,
@@ -142,7 +139,6 @@ export function parseArgs(argv: string[]): Args {
     const name = named?.[1];
     if (a === "--json") args.json = true;
     else if (a === "--all") args.all = true;
-    else if (a === "--prompt") args.prompt = true;
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
     else if (name && FLAG_OPTIONS.includes(name) && named?.[2] === undefined) args.options[name] = "true";
@@ -215,7 +211,6 @@ export async function run(argv: string[], io: Io): Promise<number> {
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
     if (args.all && args.command !== "status") throw new UsageError(`--all does not apply to ${args.command}`);
-    if (args.prompt && args.command !== "brief") throw new UsageError(`--prompt does not apply to ${args.command}`);
     const worker = { claim, report, release }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config);
