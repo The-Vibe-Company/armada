@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { Fleet } from "@/components/Fleet";
+import { passwordRequired } from "@/lib/auth-server";
 import { LANGUAGE_COOKIE } from "@/lib/i18n";
 import { getOverview, languageOf } from "@/lib/server";
 
@@ -10,6 +11,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
   const [overview, jar, params] = await Promise.all([getOverview(), cookies(), searchParams]);
   const project = typeof params.project === "string" ? params.project : null;
   return (
-    <Fleet initial={overview} initialLanguage={languageOf(jar.get(LANGUAGE_COOKIE)?.value)} initialProject={project} />
+    <Fleet
+      initial={overview}
+      initialLanguage={languageOf(jar.get(LANGUAGE_COOKIE)?.value)}
+      initialProject={project}
+      canLogOut={passwordRequired()}
+    />
   );
 }

@@ -12,6 +12,7 @@ import {
   resolveCredentials,
 } from "@armada/core/read";
 import { after } from "next/server";
+import { requireSession } from "./auth-server";
 import { demoSources } from "./demo/sources";
 import { type FleetCache, loadOverview, newCache, type ProjectRef, type Sources } from "./fleet-data";
 import { isLanguage, type Language } from "./i18n";
@@ -63,6 +64,7 @@ const seconds = (value: string | undefined, fallback: number) => {
 const globalCache = globalThis as unknown as { __armadaFleet?: FleetCache };
 
 export async function getOverview(): Promise<FleetOverview> {
+  await requireSession();
   globalCache.__armadaFleet ??= newCache();
   const demo = process.env.ARMADA_DASHBOARD_DEMO;
   return loadOverview({

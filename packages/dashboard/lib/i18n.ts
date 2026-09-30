@@ -116,6 +116,23 @@ const en = {
   githubMissing: "GitHub not read",
   language: "Language",
   filterLabel: "Show one project",
+  auth: {
+    title: "Sign in",
+    kicker: "Private fleet",
+    heading: "This fleet is private",
+    lead: "Enter the dashboard password to see the tickets, agents and pull requests in flight.",
+    password: "Password",
+    submit: "Open the fleet",
+    wrong: "Wrong password. Try again.",
+    limited: "Too many wrong passwords from this address. Wait 15 minutes, then try again.",
+    hint: "Asked once per browser for 30 days, or until the password changes.",
+    logout: "Log out",
+    unconfiguredTitle: "The dashboard is locked",
+    unconfigured: (variable: string) =>
+      `No password is configured, so this dashboard shows nothing. Set ${variable} in the deployment's environment variables, then redeploy.`,
+    offInProduction: (variable: string) =>
+      `${variable}=off only works in local development. Set a real password in the deployment's environment variables, then redeploy.`,
+  },
 };
 
 export type Strings = typeof en;
@@ -211,6 +228,23 @@ const fr: Strings = {
   githubMissing: "GitHub non lu",
   language: "Langue",
   filterLabel: "Afficher un projet",
+  auth: {
+    title: "Connexion",
+    kicker: "Flotte privée",
+    heading: "Cette flotte est privée",
+    lead: "Saisis le mot de passe du tableau de bord pour voir les tickets, les agents et les pull requests en cours.",
+    password: "Mot de passe",
+    submit: "Ouvrir la flotte",
+    wrong: "Mot de passe incorrect. Réessaie.",
+    limited: "Trop de mots de passe incorrects depuis cette adresse. Attends 15 minutes, puis réessaie.",
+    hint: "Demandé une fois par navigateur pendant 30 jours, ou jusqu'au changement du mot de passe.",
+    logout: "Se déconnecter",
+    unconfiguredTitle: "Le tableau de bord est verrouillé",
+    unconfigured: (variable) =>
+      `Aucun mot de passe n'est configuré : ce tableau de bord n'affiche rien. Définis ${variable} dans les variables d'environnement du déploiement, puis redéploie.`,
+    offInProduction: (variable) =>
+      `${variable}=off ne marche qu'en développement local. Définis un vrai mot de passe dans les variables d'environnement du déploiement, puis redéploie.`,
+  },
 };
 
 export const STRINGS: Record<Language, Strings> = { en, fr };

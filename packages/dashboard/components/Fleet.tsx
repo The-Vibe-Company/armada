@@ -35,6 +35,12 @@ function useLiveOverview(initial: FleetOverview) {
     setPending(true);
     try {
       const res = await fetch("/api/fleet", { cache: "no-store" });
+      if (res.status === 401) {
+        // The session ended (expired, logged out, or the password changed).
+        const here = `${window.location.pathname}${window.location.search}`;
+        window.location.assign(`/login${here === "/" ? "" : `?next=${encodeURIComponent(here)}`}`);
+        return;
+      }
       if (!res.ok) throw new Error(String(res.status));
       setOverview((await res.json()) as FleetOverview);
       setFailed(false);
@@ -85,10 +91,12 @@ export function Fleet({
   initial,
   initialLanguage,
   initialProject,
+  canLogOut = false,
 }: {
   initial: FleetOverview;
   initialLanguage: Language;
   initialProject: string | null;
+  canLogOut?: boolean;
 }) {
   const { overview, checkedAt, failed, pending, poll } = useLiveOverview(initial);
   const now = useNow(initial.generatedAt);
@@ -132,6 +140,7 @@ export function Fleet({
         failed={failed}
         pending={pending}
         onRefresh={() => void poll()}
+        canLogOut={canLogOut}
       />
       <main className="page">
         {overview.live.state === "unreachable" && (
@@ -245,6 +254,7 @@ function TopBar({
   failed,
   pending,
   onRefresh,
+  canLogOut,
 }: {
   t: Strings;
   lang: Language;
@@ -255,6 +265,7 @@ function TopBar({
   failed: boolean;
   pending: boolean;
   onRefresh: () => void;
+  canLogOut: boolean;
 }) {
   const state = failed ? "offline" : overview.live.state;
   const label = failed ? t.offline : t.live[overview.live.state];
@@ -301,6 +312,11 @@ function TopBar({
             </button>
           ))}
         </fieldset>
+        {canLogOut && (
+          <form method="post" action="/api/auth/logout" className="logout">
+            <button type="submit">{t.auth.logout}</button>
+          </form>
+        )}
       </div>
     </header>
   );
