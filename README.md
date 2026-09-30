@@ -4,7 +4,7 @@ Armada runs a fleet of coding agents on one project and keeps every piece of wor
 
 It imposes one method: grill the decisions, write a spec, cut it into tickets, let one worker agent ship each ticket as a green pull request, and let a coordinator agent merge. The tracker is the source of truth for progress; Armada adds live telemetry, contention rules and a fleet dashboard on top.
 
-**Status:** early. `armada status`, `armada auth`, `armada doctor`, `armada init`, `armada brief`, `armada claim`, `armada report` and `armada release` work; the other commands are being built.
+**Status:** early. `armada status`, `armada auth`, `armada doctor`, `armada init`, `armada brief`, `armada claim`, `armada report`, `armada release`, `armada ask`, `armada inbox`, `armada answer` and `armada merge` work; the other commands are being built.
 
 ## Install
 
@@ -94,6 +94,20 @@ armada release --reason "wrong ticket"
 - `report` and `release` find the ticket from `--ticket`, then `ARMADA_TICKET`, then the current git branch (`feature/abc-12-…`).
 - Turso is optional. When it is not configured or not reachable, the commands still write Linear and print a warning.
 
+## Questions and answers
+
+```sh
+armada ask "Which store keeps the sessions? I recommend SQLite." --options "SQLite | Redis"   # worker
+armada inbox                   # coordinator: what waits, oldest first
+armada inbox --wait            # returns when a new item arrives, or after --timeout (default 300 s)
+armada answer 12 "SQLite, for the first slice."                 # after delivering it in the worker's session
+armada answer --note ABC-12 "main moved: rebase before you ship"  # an unsolicited message, same path
+```
+
+- `ask` reports the `blocked` phase with `Agent status: blocked — question: <first line>` (the rest and the numbered options below it) and adds a `question` item to the coordinator's inbox in Turso. The worker then stops and waits for the answer in its session, and reports the phase it resumes. It finds the ticket like `report`.
+- `inbox` lists the coordinator's open items (questions, requests, hand-backs) and silent workers, oldest first. A worker is silent when it holds a ticket, its newest Turso event is older than `policy.silence_minutes`, and its phase does not wait on someone else. It reads Turso only (no Linear key) and records that the coordinator is at work, for the dashboard. `--wait` polls every 5 s and marks the items that were not there before with `*`; loop on it.
+- `answer` never calls a runtime: deliver the answer first with the runtime guide's message section. It posts `Agent status: <current phase> — answer: …` on the ticket and resolves the item. An item id needs Turso; a ticket id answers that ticket's open questions and also works without Turso. `--note` records a message the worker did not ask for as `Agent status: <phase> — note: …`. `release` resolves the ticket's open questions.
+
 ## Merge a finished pull request (coordinator)
 
 ```sh
@@ -144,7 +158,7 @@ Armada needs a few keys. Set them up once per machine with `armada auth login`, 
 | Variable | What | Needed by |
 | --- | --- | --- |
 | `LINEAR_API_KEY` | Linear personal API key (Linear > Settings > Security & access > Personal API keys) | `armada status` |
-| `ARMADA_TURSO_URL` | Turso database URL, `libsql://...` (`file:/path/armada.db` for a local database) | `armada init` and `armada status --all` (project registry); live activity: events, runtime handles, inbox (optional) |
+| `ARMADA_TURSO_URL` | Turso database URL, `libsql://...` (`file:/path/armada.db` for a local database) | `armada init` and `armada status --all` (project registry), `armada inbox`; live activity: events, runtime handles, inbox (optional) |
 | `ARMADA_TURSO_TOKEN` | Turso database token | the same (optional for a `file:` database) |
 | `GITHUB_TOKEN` or `GH_TOKEN` | GitHub token; otherwise `gh auth token` is used | pull requests and CI |
 

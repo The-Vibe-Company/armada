@@ -14,6 +14,7 @@ import {
   recordEvent,
   redact,
   releaseRuntimeHandle,
+  resolveInboxItems,
   saveRuntimeHandle,
 } from "./turso.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
@@ -389,6 +390,14 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   await live(ctx, warnings, "record the release", async (db) => {
     await ensureProject(db, projectOf(config), at);
     await releaseRuntimeHandle(db, config.project.slug, ticket.id, at);
+    // No worker is left to take an answer.
+    await resolveInboxItems(db, {
+      project: config.project.slug,
+      ticket: ticket.id,
+      kind: "question",
+      resolution: `ticket released: ${input.reason.trim()}`,
+      at,
+    });
     await recordEvent(db, {
       project: config.project.slug,
       ticket: ticket.id,

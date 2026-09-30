@@ -152,7 +152,18 @@ export interface WorkerArgs {
   json: boolean;
 }
 
-async function withContext(
+/** --message or --message-file (a path, or - for standard input); null when neither is given. */
+export async function readMessage(io: Io, options: Record<string, string>): Promise<string | null> {
+  if (options.message !== undefined && options["message-file"] !== undefined)
+    throw new UsageError("pass --message or --message-file, not both");
+  const file = options["message-file"];
+  if (file === undefined) return options.message ?? null;
+  const text = file === "-" ? ((await io.readStdin?.()) ?? null) : await io.readFile(file);
+  if (text === null) throw new UsageError(`cannot read the message from ${file}`);
+  return text;
+}
+
+export async function withContext(
   io: Io,
   config: ArmadaConfig,
   credentials: Credentials,
@@ -192,14 +203,7 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
   if (!phase || !isLabelPhase(phase))
     throw new UsageError(`report needs a phase: ${LABEL_PHASES.join(", ")}${phase ? ` (got "${phase}")` : ""}`);
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
-  if (a.options.message !== undefined && a.options["message-file"] !== undefined)
-    throw new UsageError("pass --message or --message-file, not both");
-  let message = a.options.message ?? null;
-  const file = a.options["message-file"];
-  if (file !== undefined) {
-    message = file === "-" ? ((await io.readStdin?.()) ?? null) : await io.readFile(file);
-    if (message === null) throw new UsageError(`cannot read the message from ${file}`);
-  }
+  const message = await readMessage(io, a.options);
   if (!message?.trim() && phase !== "ready-to-merge")
     throw new UsageError("--message is required: what you did or what you are doing (first line = summary)");
   const ticket = currentTicket(io, config, a.options.ticket);
