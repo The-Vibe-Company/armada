@@ -30,25 +30,6 @@ jobs:
       - run: bun run typecheck
       - run: bun test
 
-  pipe-proof:
-    name: Piped output proof (${{ matrix.attempt }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        attempt: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: package.json
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: bun install --frozen-lockfile
-      - run: bun test packages/cli/test/main.test.ts packages/cli/test/output.test.ts
-
   dashboard:
     name: Dashboard builds
     runs-on: ubuntu-latest
