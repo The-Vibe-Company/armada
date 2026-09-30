@@ -45,7 +45,7 @@ export function requestAuthor(raw: string | null | undefined): string {
 
 export interface AnswerRequestInput {
   project: string;
-  /** The question's inbox item id. */
+  /** The question or plan's inbox item id. */
   question: number;
   text: string;
   author: string;
@@ -53,8 +53,8 @@ export interface AnswerRequestInput {
 }
 
 /**
- * Asks the coordinator to deliver an answer to a worker's open question. The
- * question stays open, shown as answered-pending, until the coordinator
+ * Asks the coordinator to deliver an answer to a worker's open question or plan. The
+ * item stays open, shown as answered-pending, until the coordinator
  * delivers it and records it with `armada answer`.
  */
 export async function requestAnswer(db: Db, input: AnswerRequestInput): Promise<number> {
@@ -64,10 +64,18 @@ export async function requestAnswer(db: Db, input: AnswerRequestInput): Promise<
   if (text.length > REQUEST_LIMITS.answer)
     throw new RequestRefusal("answer-too-long", `an answer has at most ${REQUEST_LIMITS.answer} characters`);
   const question = await getInboxItem(db, input.project, input.question);
-  if (question?.kind !== "question" || question.recipient !== "coordinator" || !question.ticket)
-    throw new RequestRefusal("no-question", `question #${input.question} does not exist in project ${input.project}`);
+  if (
+    !question ||
+    !["question", "plan"].includes(question.kind) ||
+    question.recipient !== "coordinator" ||
+    !question.ticket
+  )
+    throw new RequestRefusal(
+      "no-question",
+      `question or plan #${input.question} does not exist in project ${input.project}`,
+    );
   if (question.resolvedAt)
-    throw new RequestRefusal("question-closed", `question #${question.id} was already answered or closed`);
+    throw new RequestRefusal("question-closed", `${question.kind} #${question.id} was already answered or closed`);
   const id = await addRequest(db, {
     project: input.project,
     ticket: question.ticket,
@@ -82,8 +90,11 @@ export async function requestAnswer(db: Db, input: AnswerRequestInput): Promise<
   // Nothing was added: tell which guard stopped it.
   const again = await getInboxItem(db, input.project, question.id);
   if (again?.resolvedAt)
-    throw new RequestRefusal("question-closed", `question #${question.id} was already answered or closed`);
-  throw new RequestRefusal("answer-waiting", `an answer to question #${question.id} already waits for the coordinator`);
+    throw new RequestRefusal("question-closed", `${question.kind} #${question.id} was already answered or closed`);
+  throw new RequestRefusal(
+    "answer-waiting",
+    `an answer to ${question.kind} #${question.id} already waits for the coordinator`,
+  );
 }
 
 export interface LaunchRequestInput {

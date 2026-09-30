@@ -463,7 +463,7 @@ function WaitingRow({
           {w.ticket && <span className="mono">{w.ticket}</span>}
           {w.author && <span>{w.author}</span>}
         </div>
-        {w.kind === "question" && w.detail ? (
+        {(w.kind === "question" || w.kind === "approval") && w.detail ? (
           <QuestionBlock
             ctx={ctx}
             project={w.project}
@@ -472,6 +472,7 @@ function WaitingRow({
             body={w.detail}
             answer={w.answer}
             coordinator={coordinator}
+            approval={w.kind === "approval"}
           />
         ) : (
           w.detail && <p className="wait-detail">{w.detail}</p>

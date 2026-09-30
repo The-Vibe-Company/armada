@@ -63,16 +63,16 @@ const COMMAND_HELP: Record<string, string> = {
                     for the answer in your session, and report the phase you resume
 `,
   inbox: `  inbox [--wait [--timeout <seconds>]]
-                    Coordinator: open questions, requests, hand-backs and silent workers,
+                    Coordinator: open questions, plans, requests, hand-backs and silent workers,
                     oldest first; records that the coordinator is at work. --wait returns
                     when a new item arrives or after --timeout (default 300 s). Needs Turso
 `,
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: record an answer already delivered in the worker's
-                    session (runtime guide): resolves the question and posts it on the
-                    ticket. A ticket id answers its open questions. Never calls a runtime
-  answer --note <ticket> "<message>"
-                    Coordinator: record an unsolicited message delivered to a worker
+                    session (runtime guide): resolves the question or plan and posts it on
+                    the ticket. A ticket id answers its open questions and plans. Never calls a runtime
+  answer --note <ticket|plan item> "<message>"
+                    Coordinator: record a delivered note; an open plan is resolved
 `,
   merge: `  merge <pr> [--ticket <id>] [--dry-run] [--no-lock]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,

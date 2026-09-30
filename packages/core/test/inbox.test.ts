@@ -114,7 +114,7 @@ describe("ask and answer", () => {
       "2 open questions of DEMO-7 resolved.",
     );
     expect(await refusal(answerItem(ctx, { target: "DEMO-7", text: "Yes." }))).toContain(
-      "DEMO-7 has no open question in the inbox",
+      "DEMO-7 has no open question or plan in the inbox",
     );
 
     await answerItem(ctx, { target: "DEMO-7", text: "main moved: rebase before you ship", note: true });

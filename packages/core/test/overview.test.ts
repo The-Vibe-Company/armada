@@ -64,6 +64,35 @@ const reading = (slug: string, inFlight: InFlightTicket[], live: ProjectReading[
 });
 
 describe("fleet overview", () => {
+  test("an approval shows the full plan, its actionable inbox id and any pending answer request", () => {
+    const plan = item({ ticket: "W-1", kind: "plan", body: "Build the parser\n\n1. Validate\n2. Test" });
+    const answer = item({
+      ticket: "W-1",
+      kind: "answer-request",
+      body: "approved",
+      author: "Ada",
+      request: { question: plan.id, profile: null },
+    });
+    const overview = buildOverview({
+      projects: [
+        reading("widgets", [ticket("W-1", { phase: "awaiting-approval" })], {
+          inbox: [plan, answer],
+          coordinatorSeenAt: null,
+        }),
+      ],
+      live: { state: "ok", error: null },
+      now: NOW,
+    });
+    expect(overview.waiting).toEqual([
+      expect.objectContaining({
+        kind: "approval",
+        detail: plan.body,
+        item: plan.id,
+        answer: { id: answer.id, body: "approved", author: "Ada", at: answer.createdAt },
+      }),
+    ]);
+  });
+
   test("one waiting list across projects, one reason per ticket, most urgent kind first", () => {
     const widgets = reading(
       "widgets",

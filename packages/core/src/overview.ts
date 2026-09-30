@@ -46,14 +46,14 @@ export interface WaitingItem {
   ticket: string | null;
   title: string | null;
   url: string | null;
-  /** The question, the hand-back note or the worker's last status. */
+  /** The question, full plan, hand-back note or the worker's last status. */
   detail: string | null;
   author: string | null;
   /** Since when it waits. */
   since: string;
-  /** For a question: its inbox item id, which the dashboard answers. */
+  /** For a question or plan: its inbox item id, which the dashboard answers. */
   item: number | null;
-  /** For a question: the owner's answer waiting for the coordinator to deliver it. */
+  /** For a question or plan: the owner's answer waiting for the coordinator to deliver it. */
   answer: PendingAnswer | null;
 }
 
@@ -189,17 +189,18 @@ export function buildOverview(input: {
       return { title: t?.title ?? null, url: t?.url ?? null };
     };
     for (const item of inbox) {
-      if (item.kind !== "question" && item.kind !== "hand-back") continue;
+      if (item.kind !== "question" && item.kind !== "plan" && item.kind !== "hand-back") continue;
+      const answerable = item.kind === "question" || item.kind === "plan";
       offer({
-        kind: item.kind,
+        kind: item.kind === "plan" ? "approval" : item.kind,
         project: p.slug,
         ticket: item.ticket,
         ...about(item.ticket),
         detail: item.body,
         author: item.author,
         since: item.createdAt,
-        item: item.kind === "question" ? item.id : null,
-        answer: item.kind === "question" ? (answers.get(item.id) ?? null) : null,
+        item: answerable ? item.id : null,
+        answer: answerable ? (answers.get(item.id) ?? null) : null,
       });
     }
     for (const t of tickets) {

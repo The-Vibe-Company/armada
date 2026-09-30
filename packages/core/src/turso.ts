@@ -559,7 +559,7 @@ export async function getRuntimeHandle(db: Db, project: string, ticket: string):
  * coordinator carries out (it delivers the answer, or launches the ticket) and then resolves.
  * `request` is an older generic kind, kept readable.
  */
-export type InboxKind = "question" | "request" | "hand-back" | "note" | "answer-request" | "launch-request";
+export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | "answer-request" | "launch-request";
 export type InboxRecipient = "coordinator" | "worker";
 /** The inbox kinds the dashboard writes. */
 export type RequestKind = "answer-request" | "launch-request";
@@ -573,7 +573,7 @@ export interface InboxItem {
   author: string | null;
   body: string;
   createdAt: string;
-  /** Set on dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
+  /** Set on dashboard requests: the question or plan an answer-request answers, the profile a launch-request asks for. */
   request?: { question: number | null; profile: string | null };
 }
 
@@ -595,7 +595,7 @@ export interface NewRequest {
   kind: RequestKind;
   author: string;
   body: string;
-  /** answer-request: the question item it answers. */
+  /** answer-request: the question or plan item it answers. */
   question: number | null;
   /** launch-request: the profile asked for. */
   profile: string | null;
@@ -616,7 +616,8 @@ export async function addRequest(db: Db, r: NewRequest): Promise<number | null> 
           sql: `NOT EXISTS (SELECT 1 FROM inbox_items i JOIN inbox_requests q ON q.item = i.id
                             WHERE ${open} AND q.question = ?)
                 AND EXISTS (SELECT 1 FROM inbox_items i
-                            WHERE i.project = ? AND i.id = ? AND i.kind = 'question' AND i.resolved_at IS NULL)`,
+                            WHERE i.project = ? AND i.id = ? AND i.kind IN ('question', 'plan')
+                              AND i.recipient = 'coordinator' AND i.resolved_at IS NULL)`,
           args: [r.project, r.kind, r.question, r.project, r.question],
         }
       : {
@@ -640,6 +641,19 @@ export async function addRequest(db: Db, r: NewRequest): Promise<number | null> 
     "write",
   );
   return added?.rowsAffected ? Number(added.lastInsertRowid) : null;
+}
+
+export async function putPlan(
+  db: Db,
+  item: { project: string; ticket: string; author: string | null; body: string; at: Date },
+): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
+          SELECT ?, ?, 'plan', 'coordinator', ?, ?, ?
+          WHERE NOT EXISTS (SELECT 1 FROM inbox_items
+                            WHERE project = ? AND ticket = ? AND kind = 'plan' AND resolved_at IS NULL)`,
+    args: [item.project, item.ticket, item.author, item.body, item.at.toISOString(), item.project, item.ticket],
+  });
 }
 
 /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
@@ -726,11 +740,11 @@ export async function resolveInboxItem(
   return rs.rowsAffected > 0;
 }
 
-/** When the newest question of each ticket was resolved, by ticket id (answered, released or merged). */
+/** When the newest question or plan of each ticket was resolved, by ticket id (answered, released or merged). */
 export async function lastAnsweredAt(db: Db, project: string): Promise<Record<string, string>> {
   const rs = await db.execute({
     sql: `SELECT ticket, max(resolved_at) AS at FROM inbox_items
-          WHERE project = ? AND kind = 'question' AND ticket IS NOT NULL AND resolved_at IS NOT NULL
+          WHERE project = ? AND kind IN ('question', 'plan') AND ticket IS NOT NULL AND resolved_at IS NOT NULL
           GROUP BY ticket`,
     args: [project],
   });
@@ -762,6 +776,31 @@ export async function resolveAnswerRequests(
     args: [q.at.toISOString(), q.resolution, q.project, q.project, q.question],
   });
   return rs.rowsAffected;
+}
+
+export async function resolvePlans(
+  db: Db,
+  input: { project: string; ticket: string; resolution: string; at: Date },
+): Promise<number> {
+  const args = [input.at.toISOString(), input.resolution, input.project, input.ticket];
+  const [, resolved] = await db.batch(
+    [
+      {
+        sql: `UPDATE inbox_items SET resolved_at = ?, resolution = ?
+              WHERE project = ? AND kind = 'answer-request' AND resolved_at IS NULL
+                AND id IN (SELECT q.item FROM inbox_requests q JOIN inbox_items i ON i.id = q.question
+                           WHERE i.project = ? AND i.ticket = ? AND i.kind = 'plan' AND i.resolved_at IS NULL)`,
+        args: [input.at.toISOString(), input.resolution, input.project, input.project, input.ticket],
+      },
+      {
+        sql: `UPDATE inbox_items SET resolved_at = ?, resolution = ?
+              WHERE project = ? AND ticket = ? AND kind = 'plan' AND resolved_at IS NULL`,
+        args,
+      },
+    ],
+    "write",
+  );
+  return resolved?.rowsAffected ?? 0;
 }
 
 // ------------------------------------------------------------------ leases

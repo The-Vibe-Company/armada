@@ -86,6 +86,6 @@ Without a coordination ticket, skip step 1: the next coordinator resumes from `a
 ## When something is missing
 
 - `armada` reports a missing key: set it (laptop: `armada auth login`; cloud: the organization environment and a new workspace).
-- `armada inbox` needs Turso; without it, questions and hand-backs are on the tickets only, and `armada status` still reads the fleet from Linear.
+- `armada inbox` needs Turso; without it, questions, plans and hand-backs are on the tickets only, and `armada status` still reads the fleet from Linear. Approve or amend each `plan` from the inbox, deliver the decision through the runtime guide, then record it with `armada answer <item> "<decision>"`. Pre-approved plans go straight to `implementing`.
 - `conductor` exits 3: check `conductor auth whoami`. A command refused by your `conductor` version: compare with `conductor <command> --help`; the runtime guide names the versions it was checked against.
 - A fact the coordinator could not find in the repository, the tracker or Turso: add it to the skill or to this runbook in a pull request, so the next coordinator finds it.
