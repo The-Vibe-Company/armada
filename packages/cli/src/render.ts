@@ -1,0 +1,88 @@
+// Human-readable rendering of a status report. Plain text, no colors, so the
+// output reads the same in a terminal, a log or an agent transcript.
+import type { InFlightTicket, StatusReport } from "@armada/core";
+
+const MIN = 60_000;
+
+export function relative(iso: string, now: number): string {
+  const diff = now - Date.parse(iso);
+  const m = Math.round(Math.abs(diff) / MIN);
+  const suffix = diff >= 0 ? "ago" : "from now";
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ${suffix}`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} h ${suffix}`;
+  return `${Math.round(h / 24)} d ${suffix}`;
+}
+
+const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
+const pad = (s: string, n: number) => s.padEnd(n);
+
+function prLine(pr: NonNullable<InFlightTicket["pr"]>): string {
+  const parts = [`PR #${pr.number}`];
+  if (pr.draft) parts.push("draft");
+  if (pr.ci) parts.push(`CI ${pr.ci}`);
+  if (pr.mergeable) parts.push(pr.mergeable.toLowerCase());
+  return parts.join(" · ");
+}
+
+export function renderStatus(r: StatusReport): string {
+  const now = Date.parse(r.generatedAt);
+  const out: string[] = [];
+  const idWidth = Math.max(
+    6,
+    ...r.inFlight.map((t) => t.id.length),
+    ...r.frontier.map((t) => t.id.length),
+    ...(r.pullRequests ?? []).map((p) => `#${p.number}`.length),
+  );
+  const indent = " ".repeat(idWidth + 4);
+
+  out.push(`${r.project.name} · ${r.programRoot.id} ${r.programRoot.title}`);
+  const gh = r.sources.github.error ? `GitHub not read: ${r.sources.github.error}` : `GitHub ${r.project.repository}`;
+  out.push(`Read ${r.generatedAt.slice(0, 16).replace("T", " ")} UTC · Linear ${r.programRoot.id} · ${gh}`);
+
+  out.push("", `In flight (${r.inFlight.length})`);
+  if (!r.inFlight.length) out.push("  nobody is working");
+  for (const t of r.inFlight) {
+    const who = [t.runtime, t.agent].filter(Boolean).join(" · ") || "unassigned";
+    const phase = t.phaseSource === "label" ? t.phase : `${t.phase} (${t.phaseSource})`;
+    out.push(`  ${pad(t.id, idWidth)}  ${pad(phase, 18)}  ${who} · updated ${relative(t.lastUpdate, now)}`);
+    out.push(`${indent}${truncate(t.title, 90)}${t.spec ? ` [${t.spec}]` : ""}`);
+    if (t.statusLine?.summary) out.push(`${indent}“${truncate(t.statusLine.summary, 100)}”`);
+    if (t.pr) out.push(`${indent}${prLine(t.pr)}`);
+    if (t.flags.length) out.push(`${indent}! ${t.flags.join(", ")}`);
+  }
+
+  const ready = r.frontier.filter((t) => t.readyForAgent);
+  const untriaged = r.frontier.filter((t) => !t.readyForAgent);
+  out.push("", `Ready to start (${ready.length})`);
+  if (!ready.length) out.push("  no unblocked ticket is marked ready");
+  for (const t of ready) {
+    const meta = [
+      t.spec,
+      t.unlocks.length ? `unlocks ${t.unlocks.length}` : null,
+      t.onCriticalPath ? "critical path" : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    out.push(`  ${pad(t.id, idWidth)}  ${truncate(t.title, 80)}${meta ? `  (${meta})` : ""}`);
+  }
+  if (untriaged.length) {
+    out.push("", `Unblocked but not marked ready (${untriaged.length})`);
+    for (const t of untriaged) out.push(`  ${pad(t.id, idWidth)}  ${truncate(t.title, 80)}`);
+  }
+
+  out.push("", `Pull requests waiting (${r.pullRequests?.length ?? "?"})`);
+  if (!r.pullRequests) out.push("  GitHub was not read");
+  else if (!r.pullRequests.length) out.push("  none open");
+  for (const p of r.pullRequests ?? []) {
+    const ticket = p.ticket ? `${p.ticket.id}${p.ticket.phase ? ` ${p.ticket.phase}` : ""}` : "no ticket";
+    const state = [p.draft ? "draft" : null, p.ci ? `CI ${p.ci}` : null, p.mergeable?.toLowerCase()]
+      .filter(Boolean)
+      .join(" · ");
+    out.push(`  ${pad(`#${p.number}`, idWidth)}  ${ticket} · ${state}`);
+    out.push(`${indent}${truncate(p.title, 90)}`);
+    if (p.failingChecks.length) out.push(`${indent}! failing: ${p.failingChecks.join(", ")}`);
+  }
+  return `${out.join("\n")}\n`;
+}

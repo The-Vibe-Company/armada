@@ -1,0 +1,13 @@
+{
+  "name": "armada",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The armada command line.",
+  "bin": {
+    "armada": "./src/main.ts"
+  },
+  "dependencies": {
+    "@armada/core": "workspace:*"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@armada/dashboard",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Placeholder for the live Fleet dashboard (THE-822). Nothing here yet."
+}

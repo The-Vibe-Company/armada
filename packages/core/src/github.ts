@@ -1,0 +1,161 @@
+// GitHub read adapter: one GraphQL call returns the open pull requests and the
+// recently closed ones with their CI rollup and mergeability. GraphQL avoids the
+// REST checks endpoint, which personal access tokens cannot read.
+import type { Fetch } from "./linear.ts";
+import type { CiState, ForgeData, Issue, ProgramData, PullRequest } from "./types.ts";
+
+export const GITHUB_GRAPHQL = "https://api.github.com/graphql";
+
+export class GithubError extends Error {
+  override name = "GithubError";
+}
+
+/** Maps a check run (status + conclusion) or a commit status (state) onto a CI state. */
+export function checkState(status: string | null | undefined, conclusion: string | null | undefined): CiState {
+  const s = (status ?? "").toUpperCase();
+  const c = (conclusion ?? "").toUpperCase();
+  if (s && s !== "COMPLETED") return "pending";
+  if (["SUCCESS", "NEUTRAL", "SKIPPED"].includes(c)) return "success";
+  if (["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR", "STALE"].includes(c))
+    return "failure";
+  return "pending";
+}
+
+export function rollup(states: CiState[]): CiState {
+  if (!states.length) return "none";
+  if (states.includes("failure")) return "failure";
+  if (states.includes("pending")) return "pending";
+  return "success";
+}
+
+/**
+ * Ticket identifier named by a branch, e.g. `feature/abc-12-add-login` → ABC-12.
+ * Only identifiers present in `known` count, so any team key works and
+ * unrelated tokens such as `utf-8` are ignored.
+ */
+export function ticketIdFromBranch(branch: string, known: ReadonlySet<string>): string | null {
+  for (const m of branch.matchAll(/(?:^|[/_-])([a-z][a-z0-9]*-\d+)(?=[-_/]|$)/gi)) {
+    const id = m[1]?.toUpperCase();
+    if (id && known.has(id)) return id;
+  }
+  return null;
+}
+
+// ------------------------------------------------------------------ raw shapes
+
+type RawContext =
+  | { __typename: "CheckRun"; name: string; status: string; conclusion: string | null }
+  | { __typename: "StatusContext"; context: string; state: string };
+
+export interface RawPull {
+  number: number;
+  title: string;
+  url: string;
+  state: "OPEN" | "MERGED" | "CLOSED";
+  isDraft: boolean;
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+  headRefName: string;
+  headRefOid: string;
+  createdAt: string;
+  updatedAt: string;
+  mergedAt: string | null;
+  commits: {
+    nodes: { commit: { statusCheckRollup: { state: string; contexts: { nodes: RawContext[] } } | null } }[];
+  };
+}
+
+export function normalizePull(raw: RawPull, repo: string): PullRequest {
+  const status = raw.commits.nodes[0]?.commit.statusCheckRollup ?? null;
+  const checks = status?.contexts.nodes.map((c) =>
+    c.__typename === "CheckRun"
+      ? { name: c.name, state: checkState(c.status, c.conclusion) }
+      : { name: c.context, state: checkState("", c.state) },
+  );
+  return {
+    url: raw.url,
+    number: raw.number,
+    repo,
+    title: raw.title,
+    state: raw.state === "OPEN" ? "open" : raw.state === "MERGED" ? "merged" : "closed",
+    draft: raw.isDraft,
+    ci: checks ? rollup(checks.map((c) => c.state)) : "none",
+    checks: checks ?? [],
+    mergeable: raw.mergeable,
+    headRef: raw.headRefName,
+    headSha: raw.headRefOid,
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
+    mergedAt: raw.mergedAt,
+  };
+}
+
+const PULLS_QUERY = /* GraphQL */ `
+  fragment P on PullRequest {
+    number title url state isDraft mergeable headRefName headRefOid createdAt updatedAt mergedAt
+    commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 50) { nodes {
+      __typename
+      ... on CheckRun { name status conclusion }
+      ... on StatusContext { context state }
+    } } } } } }
+  }
+  query Pulls($owner: String!, $name: String!) {
+    repository(owner: $owner, name: $name) {
+      open: pullRequests(states: OPEN, first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { ...P } }
+      closed: pullRequests(states: [MERGED, CLOSED], first: 30, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { ...P } }
+    }
+  }`;
+
+export interface FetchForgeOptions {
+  token: string;
+  /** owner/name */
+  repository: string;
+  fetch?: Fetch;
+  now?: () => Date;
+}
+
+export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
+  const [owner, name] = opts.repository.split("/");
+  const doFetch = opts.fetch ?? fetch;
+  const res = await doFetch(GITHUB_GRAPHQL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
+    body: JSON.stringify({ query: PULLS_QUERY, variables: { owner, name } }),
+  });
+  if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
+  const json = (await res.json()) as {
+    data?: { repository: { open: { nodes: RawPull[] }; closed: { nodes: RawPull[] } } | null };
+    errors?: { message: string }[];
+  };
+  if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
+  const repo = json.data?.repository;
+  if (!repo) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
+  return {
+    repo: opts.repository,
+    fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
+    prs: [...repo.open.nodes, ...repo.closed.nodes].map((p) => normalizePull(p, opts.repository)),
+  };
+}
+
+/**
+ * Joins forge pull requests onto tracker issues: linked PRs are enriched by
+ * URL, and PRs whose head branch names a ticket are added even if not linked.
+ * Returns new issues; the inputs are left untouched.
+ */
+export function attachPullRequests(program: ProgramData, forge: ForgeData | null): Issue[] {
+  if (!forge) return program.issues;
+  const known = new Set(program.issues.map((i) => i.id));
+  const byUrl = new Map(forge.prs.map((p) => [p.url, p]));
+  const byTicket = new Map<string, PullRequest[]>();
+  for (const p of forge.prs) {
+    const id = p.headRef ? ticketIdFromBranch(p.headRef, known) : null;
+    if (id) byTicket.set(id, [...(byTicket.get(id) ?? []), p]);
+  }
+  return program.issues.map((issue) => {
+    const prs = issue.prs.map((p) => {
+      const live = byUrl.get(p.url);
+      return live ? { ...p, ...live, title: live.title || p.title } : p;
+    });
+    for (const p of byTicket.get(issue.id) ?? []) if (!prs.some((x) => x.url === p.url)) prs.push(p);
+    return { ...issue, prs: prs.sort((a, b) => a.number - b.number) };
+  });
+}
