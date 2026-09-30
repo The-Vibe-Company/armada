@@ -72,7 +72,7 @@ export function renderInbox(r: InboxReport): string {
         .join(" · ");
       out.push(`${e.new ? "* " : "  "}${head}`, ...e.body.split("\n").map((l) => (l ? `    ${l}` : "")));
     }
-    if (r.items.some((e) => e.kind === "question"))
+    if (r.items.some((e) => e.kind === "question" || e.kind === "plan"))
       out.push(
         'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
       );

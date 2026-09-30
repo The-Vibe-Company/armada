@@ -243,6 +243,33 @@ describe("organizations: a repository naming another project", () => {
 });
 
 describe("requests from the dashboard", () => {
+  test("approving a waiting plan creates a signed answer request, not a worker or runtime action", async () => {
+    const { db } = await tempTurso();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    const plan = await addInboxItem(db, {
+      project: "widgets",
+      ticket: "WID-2",
+      kind: "plan",
+      recipient: "coordinator",
+      author: "ws/2",
+      body: "Add export validation\n\n1. Validate rows.\n2. Test malformed rows.",
+      at: new Date(T0),
+    });
+    expect((await loadOverview(w.opts)).waiting).toEqual([expect.objectContaining({ kind: "approval", item: plan })]);
+    expect(
+      await submitAnswer(w.opts, { project: "widgets", question: plan, text: "approved", author: "Ada" }),
+    ).toMatchObject({ ok: true });
+    const view = await loadOverview(w.opts);
+    expect(view.waiting).toEqual([
+      expect.objectContaining({
+        kind: "approval",
+        item: plan,
+        answer: expect.objectContaining({ body: "approved", author: "Ada" }),
+      }),
+    ]);
+  });
+
   test("a launch is checked against the frontier shown and the claims recorded since; an answer against the open question", async () => {
     const { db } = await tempTurso();
     await upsertProject(db, WIDGETS);

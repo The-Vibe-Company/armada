@@ -20,6 +20,7 @@ import {
   resolveAnswerRequests,
   resolveInboxItem,
   resolveInboxItems,
+  resolvePlans,
   type StoredInboxItem,
 } from "./turso.ts";
 import type { AgentPhase } from "./types.ts";
@@ -231,7 +232,7 @@ export async function checkInbox(db: Db, o: InboxOptions & { wait?: WaitOptions 
 // ------------------------------------------------------------------ answer
 
 export interface AnswerInput {
-  /** An inbox item id (`12` or `#12`), or a ticket id: its open questions. With `note`, a ticket id. */
+  /** An inbox item id (`12` or `#12`), or a ticket id: its open questions and plans. With `note`, a ticket or plan id. */
   target: string;
   /** The answer, or the note. First line becomes the status summary. */
   text: string;
@@ -248,14 +249,14 @@ function statusComment(phase: AgentPhase, word: "answer" | "note", text: string,
   return detail ? `${line}\n\n${detail}` : line;
 }
 
-const ANSWERABLE: InboxKind[] = ["question", "request", "answer-request", "launch-request"];
+const ANSWERABLE: InboxKind[] = ["question", "plan", "request", "answer-request", "launch-request"];
 
 /**
  * Records a coordinator's answer or note. It never calls a runtime: deliver it
  * in the worker's session with the runtime guide first. An answer resolves the
- * question in Turso and posts `Agent status: <phase> — answer: …` on the ticket;
+ * question or plan in Turso and posts `Agent status: <phase> — answer: …` on the ticket;
  * the worker's phase stays as it is until the worker reports the one it resumes.
- * An answer-request from the dashboard resolves with its question, and the
+ * An answer-request from the dashboard resolves with its question or plan, and the
  * comment names who asked. A launch-request answered here is declined: the
  * worker's claim is what resolves a launch that happened.
  */
@@ -271,8 +272,6 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
         : `armada answer ${input.target.trim()} "<answer>"`,
     );
   const idMatch = input.target.trim().match(ITEM_ID);
-  if (input.note && idMatch)
-    throw new Refusal("a note goes to a ticket, not to an inbox item", 'armada answer --note <ticket> "<message>"');
   const warnings: string[] = [];
   const lines: string[] = [];
 
@@ -283,6 +282,11 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   if (idMatch) {
     itemId = Number(idMatch[1]);
     item = await live(ctx, warnings, `read inbox item #${itemId}`, (db) => getInboxItem(db, project, itemId ?? 0));
+    if (input.note && item?.kind !== "plan")
+      throw new Refusal(
+        "a note goes to a ticket or a plan, not to another inbox item",
+        'armada answer --note <ticket> "<message>"',
+      );
     if (!item)
       throw new Refusal(
         warnings.length
@@ -309,9 +313,9 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       const open = await live(ctx, warnings, `read the open questions of ${ticketId}`, (db) =>
         openInboxItems(db, { project, recipient: "coordinator", ticket: ticketId ?? "" }),
       );
-      if (open && !open.some((i) => i.kind === "question"))
+      if (open && !open.some((i) => i.kind === "question" || i.kind === "plan"))
         throw new Refusal(
-          `${ticketId} has no open question in the inbox`,
+          `${ticketId} has no open question or plan in the inbox`,
           `armada answer --note ${ticketId} "<message>", for an unsolicited message`,
         );
     }
@@ -321,6 +325,13 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
 
   // The question an answer-request answers; the answer-request itself is resolved with it.
   const question = item?.kind === "answer-request" ? (item.request?.question ?? null) : null;
+  const answered =
+    question === null
+      ? item
+      : await live(ctx, warnings, `read the item answered by #${item?.id}`, (db) =>
+          getInboxItem(db, project, question),
+        );
+  const answerKind = answered?.kind === "plan" ? "plan" : "question";
   let url = "";
   if (ticketId) {
     const ticket = await linear.readTicket(ticketId);
@@ -337,10 +348,10 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     } else {
       const ref =
         item?.kind === "answer-request"
-          ? `Answers ${question === null ? "the open question" : `question #${question}`}, as ${item.author ?? "the owner"} asked from the dashboard (request #${item.id}).`
+          ? `Answers ${question === null ? "the open question or plan" : `${answerKind} #${question}`}, as ${item.author ?? "the owner"} asked from the dashboard (request #${item.id}).`
           : itemId === null
             ? null
-            : `Answers question #${itemId}.`;
+            : `Answers ${answerKind} #${itemId}.`;
       await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));
       lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
     }
@@ -350,6 +361,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   const recorded = await live(ctx, warnings, `record the ${input.note ? "note" : "answer"}`, async (db) => {
     await ensureProject(db, projectOf(config), at);
     if (input.note) {
+      if (ticketId) await resolvePlans(db, { project, ticket: ticketId, resolution: text, at });
       const id = await addInboxItem(db, {
         project,
         ticket: ticketId,
@@ -365,18 +377,19 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     if (item?.kind === "answer-request") {
       await resolveInboxItem(db, { project, id: item.id, resolution: text, at });
       const closed = question !== null && (await resolveInboxItem(db, { project, id: question, resolution: text, at }));
-      return `Dashboard request #${item.id} delivered${closed ? `; question #${question} resolved` : ""}.`;
+      return `Dashboard request #${item.id} delivered${closed ? `; ${answerKind} #${question} resolved` : ""}.`;
     }
     if (itemId !== null) {
       const done = await resolveInboxItem(db, { project, id: itemId, resolution: text, at });
       // An answer the owner typed on the dashboard for this question is now moot.
-      if (item?.kind === "question")
+      if (item?.kind === "question" || item?.kind === "plan")
         await resolveAnswerRequests(db, { project, question: itemId, resolution: text, at });
       return done ? `Inbox item #${itemId} resolved.` : `Inbox item #${itemId} was already resolved.`;
     }
     const n = await resolveInboxItems(db, { project, ticket: ticketId ?? "", kind: "question", resolution: text, at });
+    const plans = await resolvePlans(db, { project, ticket: ticketId ?? "", resolution: text, at });
     await resolveInboxItems(db, { project, ticket: ticketId ?? "", kind: "answer-request", resolution: text, at });
-    return `${n} open question${n === 1 ? "" : "s"} of ${ticketId} resolved.`;
+    return `${n} open question${n === 1 ? "" : "s"}${plans ? ` and ${plans} plan${plans === 1 ? "" : "s"}` : ""} of ${ticketId} resolved.`;
   });
   if (recorded) lines.push(recorded);
   if (!input.note) lines.push("The worker resumes once it reports its phase again.");

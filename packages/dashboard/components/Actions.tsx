@@ -167,6 +167,7 @@ export function QuestionBlock({
   body,
   answer,
   coordinator,
+  approval = false,
 }: {
   ctx: ActionContext;
   project: string;
@@ -176,9 +177,10 @@ export function QuestionBlock({
   body: string;
   answer: PendingAnswer | null;
   coordinator: CoordinatorState;
+  approval?: boolean;
 }) {
   const { t } = ctx;
-  const { text, options } = splitQuestion(body);
+  const { text, options } = approval ? { text: body, options: [] } : splitQuestion(body);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [sent, markSent] = useSent<PendingAnswer>(ctx.version);
@@ -212,7 +214,9 @@ export function QuestionBlock({
 
   return (
     <div className="question">
-      <p className="wait-detail is-quote">{text}</p>
+      <p className="wait-detail is-quote" style={approval ? { whiteSpace: "pre-wrap" } : undefined}>
+        {text}
+      </p>
       {options.length > 0 && (
         <ul className="chips">
           {options.map((o, k) => (
@@ -245,7 +249,7 @@ export function QuestionBlock({
           <input type="hidden" name="question" value={item ?? ""} />
           <textarea
             name="text"
-            aria-label={t.answerLabel(ticket ?? "")}
+            aria-label={approval ? t.approvalLabel(ticket ?? "") : t.answerLabel(ticket ?? "")}
             placeholder={t.answerPlaceholder}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -273,8 +277,13 @@ export function QuestionBlock({
         </form>
       ) : (
         canAnswer && (
-          <button ref={opener} type="button" className="btn is-soft answer-btn" onClick={() => start("")}>
-            {t.answer}
+          <button
+            ref={opener}
+            type="button"
+            className="btn is-soft answer-btn"
+            onClick={() => start(approval ? "approved" : "")}
+          >
+            {approval ? t.approve : t.answer}
           </button>
         )
       )}

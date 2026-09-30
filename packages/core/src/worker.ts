@@ -9,14 +9,17 @@ import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import {
   type Db,
   ensureProject,
+  getRuntimeHandle,
   type InboxItem,
   openInboxItems,
   putHandBack,
+  putPlan,
   recordEvent,
   redact,
   releaseRuntimeHandle,
   resolveInboxItem,
   resolveInboxItems,
+  resolvePlans,
   saveRuntimeHandle,
   saveWorkerProfile,
 } from "./turso.ts";
@@ -510,6 +513,23 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       headSha: sha,
       at,
     });
+    if (input.phase === "awaiting-approval" && ticket.agentPhase !== input.phase) {
+      const handle = await getRuntimeHandle(db, config.project.slug, ticket.id);
+      await putPlan(db, {
+        project: config.project.slug,
+        ticket: ticket.id,
+        author: handle && !handle.releasedAt ? handle.handle : null,
+        body: message,
+        at,
+      });
+    } else if (input.phase !== "awaiting-approval") {
+      await resolvePlans(db, {
+        project: config.project.slug,
+        ticket: ticket.id,
+        resolution: `worker reported ${input.phase}`,
+        at,
+      });
+    }
     if (input.phase === "ready-to-merge")
       await putHandBack(db, {
         project: config.project.slug,
@@ -548,6 +568,12 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   await live(ctx, warnings, "record the release", async (db) => {
     await ensureProject(db, projectOf(config), at);
     await releaseRuntimeHandle(db, config.project.slug, ticket.id, at);
+    await resolvePlans(db, {
+      project: config.project.slug,
+      ticket: ticket.id,
+      resolution: `ticket released: ${input.reason.trim()}`,
+      at,
+    });
     // No worker is left to take an answer.
     await resolveInboxItems(db, {
       project: config.project.slug,
