@@ -90,7 +90,7 @@ export interface TursoOptions {
 }
 
 /** An error message without the token, even if the URL carried one (`?authToken=`). */
-function redact(err: unknown, token: string | null | undefined): string {
+export function redact(err: unknown, token?: string | null): string {
   let message = err instanceof Error ? err.message : String(err);
   if (token) message = message.split(token).join("***");
   return message.replace(/(authToken=)[^&\s"']+/gi, "$1***");

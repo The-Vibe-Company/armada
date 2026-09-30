@@ -12,6 +12,7 @@ import {
   openInboxItems,
   putHandBack,
   recordEvent,
+  redact,
   releaseRuntimeHandle,
   saveRuntimeHandle,
 } from "./turso.ts";
@@ -63,9 +64,7 @@ async function live<T>(ctx: WorkerContext, warnings: string[], what: string, ste
       }),
     ]);
   } catch (err) {
-    warnings.push(
-      `Turso: could not ${what} (${err instanceof Error ? err.message : String(err)}); Linear is up to date`,
-    );
+    warnings.push(`Turso: could not ${what} (${redact(err)}); Linear is up to date`);
     return null;
   } finally {
     clearTimeout(timer);
@@ -223,7 +222,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       project: config.project.slug,
       ticket: ticket.id,
       kind: "claim",
-      phase: phaseLabel?.name ?? ticket.agentPhase,
+      phase: phaseLabel ? "planning" : ticket.agentPhase,
       runtime: runtime.name,
       handle: input.handle,
       at,

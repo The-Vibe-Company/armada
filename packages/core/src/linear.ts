@@ -52,9 +52,12 @@ export function parseStatusLine(body: string): Comment["status"] {
 }
 
 /** Removes markdown backslash escapes (Linear stores `a_b` as `a\_b`). */
-const unescapeMarkdown = (line: string) => line.replace(/\\([\\`*_{}[\]()#+\-.!|])/g, "$1");
-/** Markdown emphasis around a word or a value, never inside it. */
-const trimMarks = (v: string) => v.replace(/^[*_`\s]+|[*_`\s]+$/g, "");
+const unescapeMarkdown = (line: string) => line.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+/** Emphasis wrapped around a whole value (`x`, **x**, _x_), never marks that belong to it. */
+const trimMarks = (v: string) => {
+  const t = v.trim();
+  return t.match(/^([*_`]+)(.+)\1$/)?.[2]?.trim() ?? t;
+};
 
 /**
  * The line "Agent claim — runtime: X · session: Y · branch: Z · started: D".

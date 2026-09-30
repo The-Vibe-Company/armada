@@ -27,8 +27,9 @@ describe("comment conventions", () => {
     });
     // Underscores stay in values, even when Linear escaped them; emphasis around them goes.
     const escaped =
-      "Agent status: planning — x\n\n**Agent claim** — runtime: Codex · session: `my\\_ws/s_1` · branch: b";
-    expect(parseClaim(escaped, "t", null)).toMatchObject({ runtime: "Codex", session: "my_ws/s_1", branch: "b" });
+      "Agent status: planning — x\n\n**Agent claim** — runtime: Codex · session: `my\\_ws/s_1\\~` · branch: _b_";
+    expect(parseClaim(escaped, "t", null)).toMatchObject({ runtime: "Codex", session: "my_ws/s_1~", branch: "b" });
+    expect(parseClaim("Agent claim — session: ws_1__", "t", null)?.session).toBe("ws_1__");
   });
 });
 
