@@ -68,7 +68,8 @@ Options:
   -v, --version     Print the version
 
 Keys (the environment always wins over the file):
-  LINEAR_API_KEY       Linear API key (required by status, init, claim, report, release)
+  LINEAR_API_KEY       Linear API key (required by status, init, brief, claim, report,
+                       release)
   ARMADA_TURSO_URL     Turso database URL (required by init and status --all; optional
                        elsewhere; a file: URL works locally)
   ARMADA_TURSO_TOKEN   Turso database token

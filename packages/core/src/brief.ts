@@ -55,7 +55,7 @@ export interface BriefVariable {
 }
 
 export interface Brief {
-  ticket: { id: string; title: string; url: string; branch: string | null; status: string };
+  ticket: { id: string; title: string; url: string; branch: string | null; status: string; description: string };
   parent: { id: string; title: string; url: string } | null;
   runtime: "conductor";
   profile: ({ name: string } & ConductorProfile) | null;
@@ -239,7 +239,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
 
   if (ticket.statusType === "completed" || ticket.statusType === "canceled")
     warnings.push(`${ticket.id} is ${ticket.status}; there is nothing to launch`);
-  const open = ticket.blockers.filter((b) => b.statusType !== "completed");
+  const open = ticket.blockers.filter((b) => b.statusType !== "completed" && b.statusType !== "canceled");
   if (open.length) warnings.push(`${ticket.id} is blocked by ${open.map((b) => `${b.id} (${b.status})`).join(", ")}`);
 
   const m = buildModel(program.issues, program.rootId);
@@ -274,7 +274,14 @@ export function buildBrief(input: BuildBriefInput): Brief {
   ];
 
   const brief: Omit<Brief, "prompt"> = {
-    ticket: { id: ticket.id, title: ticket.title, url: ticket.url, branch, status: ticket.status },
+    ticket: {
+      id: ticket.id,
+      title: ticket.title,
+      url: ticket.url,
+      branch,
+      status: ticket.status,
+      description: ticket.description,
+    },
     parent: ticket.parent,
     runtime: "conductor",
     profile: choice.profile ? { name: choice.name, ...choice.profile } : null,
@@ -328,6 +335,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       : "Linear suggests no branch name for this ticket; name yours after the ticket id.",
     "",
   ];
+  if (t.description) out.push("## Ticket", "", quote(t.description), "");
   if (b.parent)
     out.push("## Parent", "", `${b.parent.id} — ${b.parent.title} (${b.parent.url}). Read it before planning.`, "");
   if (b.blockers.length) {

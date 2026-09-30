@@ -176,6 +176,10 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       problems.push(`"${path}" must be a table`);
       continue;
     }
+    if (name === "__proto__") {
+      problems.push(`"${path}" is not a usable profile name`);
+      continue;
+    }
     known.push([path, p, ["agent", "model", "effort", "fast_mode"]]);
     if (p.fast_mode !== undefined && typeof p.fast_mode !== "boolean")
       problems.push(`"${path}.fast_mode" must be true or false`);
@@ -189,7 +193,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   let defaultProfile: string | null = null;
   if (conductorT.default_profile !== undefined) {
     defaultProfile = str(conductorT, "conductor", "default_profile") || null;
-    if (defaultProfile && !profiles[defaultProfile])
+    if (defaultProfile && !Object.hasOwn(profiles, defaultProfile))
       problems.push(
         `"conductor.default_profile" is "${defaultProfile}", but there is no [conductor.profiles.${defaultProfile}]`,
       );
@@ -333,7 +337,7 @@ export function resolveProfile(config: ArmadaConfig, requested: string | null): 
   const { profiles, defaultProfile } = config.conductor;
   const names = Object.keys(profiles);
   const name = requested ?? defaultProfile ?? (names.length === 1 ? (names[0] ?? null) : null);
-  const profile = name ? profiles[name] : undefined;
+  const profile = name && Object.hasOwn(profiles, name) ? profiles[name] : undefined;
   if (name && profile) return { name, profile };
   const available = names.length ? names.join(", ") : "none";
   if (name) return { name: null, profile: null, problem: `no Conductor profile "${name}" (available: ${available})` };

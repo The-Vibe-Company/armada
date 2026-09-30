@@ -82,12 +82,12 @@ const SECRETS = {
   ARMADA_TURSO_URL: "libsql://SECRET-db-3.turso.io",
 };
 
-function briefIo(env: Record<string, string> = SECRETS) {
+function briefIo(env: Record<string, string> = SECRETS, response: object = BRIEF_RESPONSE) {
   const out: string[] = [];
   const err: string[] = [];
   const { fetch, calls } = recordedFetch({
     linear: (r) => {
-      (r as Record<string, unknown[]>).Brief = [BRIEF_RESPONSE];
+      (r as Record<string, unknown[]>).Brief = [response];
     },
   });
   const io: Io = {
@@ -127,6 +127,8 @@ describe("armada brief", () => {
       `\nnpm install -g @the-vibe-company/armada@${version}\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page\n`,
     );
     expect(prompt).toContain("git branch -m feature/demo-13-show-a-sign-in-page");
+    expect(prompt).toContain("## Ticket\n\n> ## In short\n>\n> A page with an email field.\n");
+    expect(text).not.toContain("Warnings:");
     // The hand-back is the ready-to-merge comment, not the newer "Merged, thanks."
     expect(prompt).not.toContain("Merged, thanks.");
     expect(prompt).toContain(
@@ -168,6 +170,21 @@ describe("armada brief", () => {
       // The key still reaches Linear, only in the request header.
       expect(b.calls.every((c) => c.authorization === SECRETS.LINEAR_API_KEY)).toBe(true);
     }
+  });
+
+  test("warns about a blocker still open, not about a canceled one", async () => {
+    const response = structuredClone(BRIEF_RESPONSE);
+    const blocker = response.data.issue.inverseRelations.nodes[0]?.issue;
+    if (!blocker) throw new Error("fixture has no blocker");
+    blocker.state = { name: "Canceled", type: "canceled" };
+    const canceled = briefIo(SECRETS, response);
+    expect(await run(["brief", "DEMO-13"], canceled.io)).toBe(0);
+    expect(canceled.out()).not.toContain("Warnings:");
+
+    blocker.state = { name: "In Progress", type: "started" };
+    const open = briefIo(SECRETS, response);
+    expect(await run(["brief", "DEMO-13"], open.io)).toBe(0);
+    expect(open.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-10 (In Progress)\n");
   });
 
   test("an unknown profile is a usage error, before any request", async () => {

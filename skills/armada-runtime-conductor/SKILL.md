@@ -7,7 +7,7 @@ Armada never calls a runtime. This guide tells the coordinator how to launch, me
 
 - Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication (`conductor auth status`), 4 server error.
 - A worker is one workspace with one session. Its Armada handle is `<workspaceId>/<sessionId>`; the worker's claim comment carries it, so `armada status` and the ticket always lead back to the session.
-- Never write a secret value into a command, a file or a message. Variables are expanded by your shell.
+- Never type a secret value into a command, a file or a message: name the variable and let your shell expand it. The expanded value is still in the `conductor` process's arguments while it runs, so launch from a machine only you use.
 
 ## Launch
 

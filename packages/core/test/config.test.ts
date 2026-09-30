@@ -102,6 +102,7 @@ describe("armada.toml", () => {
     expect(resolveProfile(two, "b")).toMatchObject({ name: "b", profile: { model: "m-b" } });
     expect(resolveProfile(two, null)).toMatchObject({ problem: expect.stringContaining("pass --profile (a, b)") });
     expect(resolveProfile(two, "c")).toMatchObject({ problem: 'no Conductor profile "c" (available: a, b)' });
+    expect(resolveProfile(two, "toString")).toMatchObject({ profile: null });
     expect(resolveProfile(parseConfig(DEMO_TOML + profile("a")), null)).toMatchObject({ name: "a" });
     expect(
       resolveProfile(
