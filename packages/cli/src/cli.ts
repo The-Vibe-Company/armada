@@ -12,6 +12,7 @@ import {
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
+import { brief } from "./brief.ts";
 import { doctor } from "./doctor.ts";
 import { init } from "./init.ts";
 import { type Io, UsageError } from "./io.ts";
@@ -50,6 +51,10 @@ Commands:
                     lock, close the ticket and list the workers to tell. Never deletes
                     the branch. --dry-run only runs the checklist. Refused when Turso is
                     configured but down; --no-lock then merges without the lock.
+  brief <ticket> [--profile <name>] [--prompt]
+                    A new worker's launch prompt, the Conductor profile (agent, model,
+                    effort) and the environment variables to pass, named, never shown.
+                    --prompt prints only the prompt, for \`--message-file -\`
   auth login        Ask for the missing keys (hidden input) and store them on this machine
   auth status       Show which keys are set and where each comes from, never their values
   auth logout       Remove Armada's keys from this machine
@@ -63,7 +68,8 @@ Options:
   -v, --version     Print the version
 
 Keys (the environment always wins over the file):
-  LINEAR_API_KEY       Linear API key (required by status, init, claim, report, release)
+  LINEAR_API_KEY       Linear API key (required by status, init, brief, claim, report,
+                       release)
   ARMADA_TURSO_URL     Turso database URL (required by init and status --all; optional
                        elsewhere; a file: URL works locally)
   ARMADA_TURSO_TOKEN   Turso database token
@@ -102,9 +108,10 @@ const VALUE_OPTIONS = [
   "program-root",
   "name",
   "slug",
+  "profile",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run", "no-lock"];
+const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch"],
@@ -112,6 +119,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   init: ["program-root", "name", "slug"],
   merge: ["ticket", "dry-run", "no-lock"],
+  brief: ["profile", "prompt"],
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -214,6 +222,11 @@ export async function run(argv: string[], io: Io): Promise<number> {
       const { path, text } = await findConfig(io, args.config);
       const { credentials } = await loadCredentials(io);
       return await merge(io, parseConfig(text, path), credentials, args, path);
+    }
+    if (args.command === "brief") {
+      const { path, text } = await findConfig(io, args.config);
+      const { credentials } = await loadCredentials(io);
+      return await brief(io, parseConfig(text, path), credentials, args, version);
     }
     if (args.command === "status") {
       noExtra(args.rest);

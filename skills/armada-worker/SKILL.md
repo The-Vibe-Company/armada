@@ -16,7 +16,7 @@ You are a worker. You own exactly one ticket, named in your launch brief. You tu
 
 ## Steps
 
-1. **Claim.** `armada claim <ticket> --runtime <runtime> --handle <workspace>/<session>`. It assigns the ticket, moves it to In Progress, sets `Agent phase = planning` and your `Agent runtime`, and posts the `Agent claim` comment. If it refuses because another claim exists, stop: the older claim wins.
+1. **Claim** with the exact command your brief starts with, for example `armada claim <ticket> --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID"`. Install the Armada version the brief names first; if it gives a fallback command, use it wherever this skill says `armada`. It assigns the ticket, moves it to In Progress, sets `Agent phase = planning` and your `Agent runtime`, and posts the `Agent claim` comment. If it refuses because another claim exists, stop: the older claim wins.
 2. **Branch.** Use the branch named after the ticket (the tracker suggests one, for example `feature/abc-12-short-title`), created from the latest default branch.
 3. **Plan.** Write the plan: what changes, how it is tested, and the checks a person could observe when it is done. If your brief says plans are pre-approved, post it with `armada report implementing --message "<plan>"` and go on. Otherwise post it with `armada report awaiting-approval --message "<plan>"`, push your branch, and wait for the coordinator's answer in your session.
 4. **Implement** test-first. A material change to the approved plan needs a new approval.

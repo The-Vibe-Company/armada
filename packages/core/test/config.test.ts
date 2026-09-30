@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigError, configTemplate, parseConfig } from "../src/config.ts";
+import { ConfigError, configTemplate, parseConfig, resolveProfile } from "../src/config.ts";
 import { DEMO_TOML } from "./support.ts";
 
 const problemsOf = (text: string) => {
@@ -29,6 +29,7 @@ describe("armada.toml", () => {
       github: { repository: "acme/widgets" },
       gates: { requiredChecks: [], localCommands: [] },
       policy: { silentAfterMinutes: 15 },
+      conductor: { defaultProfile: null, profiles: {} },
     });
   });
 
@@ -58,7 +59,7 @@ describe("armada.toml", () => {
 
   test("a misspelled key in a known table is reported; unknown tables are left for newer readers", () => {
     const text = DEMO_TOML.replace('program_root = "DEMO-1"', 'program_root = "DEMO-1"\nredy_label = "go"').concat(
-      '\n[conductor]\nprofile = "x"\n',
+      '\n[deploys]\nprofile = "x"\n',
     );
     expect(problemsOf(text)).toEqual(['unknown key "tracker.redy_label"']);
   });
@@ -70,7 +71,46 @@ describe("armada.toml", () => {
       programRoot: "DEMO-1",
       repository: "acme/widgets",
     });
-    expect(parseConfig(text)).toEqual(parseConfig(DEMO_TOML));
+    const { conductor, ...rest } = parseConfig(text);
+    const { conductor: _none, ...demo } = parseConfig(DEMO_TOML);
+    expect(rest).toEqual(demo);
+    expect(conductor).toEqual({
+      defaultProfile: "opus",
+      profiles: {
+        opus: { agent: "claude", model: "opus-5-5-1m", effort: "high", fastMode: false },
+        codex: { agent: "codex", model: "gpt-6.1-sol", effort: "high", fastMode: false },
+      },
+    });
+  });
+
+  test("Conductor profiles need an agent, a model and an effort, and the default must exist", () => {
+    const text = DEMO_TOML.concat(
+      '\n[conductor]\ndefault_profile = "fast"\n[conductor.profiles.opus]\nagent = "claude"\nmodel = "opus-5-5-1m"\nfast_mode = "yes"\nmodle = "x"\n',
+    );
+    expect(problemsOf(text)).toEqual([
+      '"conductor.profiles.opus.fast_mode" must be true or false',
+      'missing required key "conductor.profiles.opus.effort"',
+      '"conductor.default_profile" is "fast", but there is no [conductor.profiles.fast]',
+      'unknown key "conductor.profiles.opus.modle"',
+    ]);
+  });
+
+  test("brief picks --profile, then default_profile, then the only profile", () => {
+    const profile = (name: string) =>
+      `\n[conductor.profiles.${name}]\nagent = "claude"\nmodel = "m-${name}"\neffort = "high"\n`;
+    const two = parseConfig(DEMO_TOML + profile("a") + profile("b"));
+    expect(resolveProfile(two, "b")).toMatchObject({ name: "b", profile: { model: "m-b" } });
+    expect(resolveProfile(two, null)).toMatchObject({ problem: expect.stringContaining("pass --profile (a, b)") });
+    expect(resolveProfile(two, "c")).toMatchObject({ problem: 'no Conductor profile "c" (available: a, b)' });
+    expect(resolveProfile(two, "toString")).toMatchObject({ profile: null });
+    expect(resolveProfile(parseConfig(DEMO_TOML + profile("a")), null)).toMatchObject({ name: "a" });
+    expect(
+      resolveProfile(
+        parseConfig(`${DEMO_TOML}[conductor]\ndefault_profile = "b"\n${profile("a")}${profile("b")}`),
+        null,
+      ),
+    ).toMatchObject({ name: "b" });
+    expect(resolveProfile(parseConfig(DEMO_TOML), null)).toEqual({ name: null, profile: null, problem: null });
   });
 
   test("broken TOML reports where it broke", () => {
