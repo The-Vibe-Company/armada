@@ -12,27 +12,31 @@ Armada never calls a runtime. This guide tells the coordinator how to launch, me
 ## Launch
 
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
-2. Run `armada brief ABC-12`. Read the profile (agent, model, effort, fast mode), the environment table and the warnings. Resolve every warning first: an open blocker, a ticket already in flight. Export each required variable the table marks `NOT set in this shell`. One marked `in credentials file` is in Armada's machine store; load it into your shell without printing it: `set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/armada/credentials"; set +a`.
+2. Run `armada brief ABC-12`. Read the profile (agent, model, effort, fast mode), the environment table and the warnings. Resolve every warning first: an open blocker, a ticket already in flight. Export each required variable the table marks `NOT set in this shell`. One marked `in credentials file` is in Armada's machine store: keep the `set -a` line of the launch command below, which loads that file without printing it.
 3. Write the prompt to a file, and add what only you know (the boundary with a parallel worker, a decision not yet on the ticket):
 
 ```sh
 armada brief ABC-12 --prompt > /tmp/abc-12-brief.md
 ```
 
-4. Create the workspace with every value from the profile. Never leave the agent, model or effort to Conductor's defaults. Add `--fast-mode` when the profile says fast mode; drop an optional `--env` line your shell does not have.
+4. Create the workspace with every value from the profile. Never leave the agent, model or effort to Conductor's defaults. Add `--fast-mode` when the profile says fast mode; drop an optional `--env` line whose variable you do not have. Run the whole block as one command: shell state does not carry over between separate calls, and the subshell keeps the keys out of the rest of your session. Drop the `set -a` line when every variable is set in your shell.
 
 ```sh
-conductor --json workspace create \
-  --repo-url https://github.com/<owner>/<name> \
-  --branch main \
-  --name "ABC-12 <short title>" \
-  --agent claude --model opus-5-5-1m --effort high \
-  --message-file - \
-  --env ARMADA_TICKET=ABC-12 \
-  --env LINEAR_API_KEY="$LINEAR_API_KEY" \
-  --env ARMADA_TURSO_URL="$ARMADA_TURSO_URL" \
-  --env ARMADA_TURSO_TOKEN="$ARMADA_TURSO_TOKEN" \
-  < /tmp/abc-12-brief.md > /tmp/abc-12-launch.json
+(
+  set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/armada/credentials"; set +a
+  [ -n "$LINEAR_API_KEY" ] || { echo "LINEAR_API_KEY is missing" >&2; exit 1; }
+  conductor --json workspace create \
+    --repo-url https://github.com/<owner>/<name> \
+    --branch main \
+    --name "ABC-12 <short title>" \
+    --agent claude --model opus-5-5-1m --effort high \
+    --message-file - \
+    --env ARMADA_TICKET=ABC-12 \
+    --env LINEAR_API_KEY="$LINEAR_API_KEY" \
+    --env ARMADA_TURSO_URL="$ARMADA_TURSO_URL" \
+    --env ARMADA_TURSO_TOKEN="$ARMADA_TURSO_TOKEN" \
+    < /tmp/abc-12-brief.md > /tmp/abc-12-launch.json
+)
 jq -r '"\(.workspaceId)/\(.sessionId)"' /tmp/abc-12-launch.json
 ```
 
