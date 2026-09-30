@@ -15,7 +15,7 @@ import { AuthCard } from "@/components/AuthCard";
 import { CopyLink } from "@/components/CopyLink";
 import { invitationUrl, isRole, ROLES, type Role } from "@/lib/accounts";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
-import { accountsModeOf } from "@/lib/accounts-settings";
+import { accountsModeOf, KEYS_PATH } from "@/lib/accounts-settings";
 import { LANGUAGE_COOKIE, ORG_ERRORS, ORG_NOTICES, type OrgError, type OrgNotice, STRINGS } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 
@@ -229,6 +229,15 @@ export default async function Organization({ searchParams }: { searchParams: Par
         ) : (
           <p className="login-hint">{t.org.onlyOwners}</p>
         )}
+      </section>
+
+      <section className="org-section" aria-labelledby="keys-title">
+        <h2 id="keys-title" className="section-label">
+          {t.keys.nav}
+        </h2>
+        <a className="link" href={KEYS_PATH}>
+          {t.org.keysLink} →
+        </a>
       </section>
 
       {organizations.length > 1 && (

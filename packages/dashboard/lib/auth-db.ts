@@ -1,5 +1,5 @@
 // The accounts database: people, sessions, organizations, members,
-// invitations, device codes and API keys (and, in a later slice, secrets). It is
+// invitations, device codes, API keys and the organizations' sealed keys. It is
 // a libSQL database of its own, separate from the fleet's Turso database.
 // Better Auth reaches it through Kysely; `LibsqlDialect` is the small driver
 // over the @libsql/client the dashboard already ships. Its schema comes from
@@ -88,7 +88,9 @@ export class LibsqlDialect implements Dialect {
  * together are safe. Never edit an applied version: add one. Version 1 is what
  * Better Auth 1.7 needs for email and password, GitHub, the organization plugin
  * and database rate limiting. Version 2 adds the device codes of `armada login`
- * and the organizations' API keys (THE-839).
+ * and the organizations' API keys (THE-839). Version 3 adds the vault
+ * (THE-840): the organizations' sealed keys and their audit list, Armada's own
+ * tables, which Better Auth never reads.
  */
 export const AUTH_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -221,6 +223,35 @@ export const AUTH_MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS "apikey_configId_idx" ON "apikey" ("configId")`,
       `CREATE INDEX IF NOT EXISTS "apikey_referenceId_idx" ON "apikey" ("referenceId")`,
       `CREATE INDEX IF NOT EXISTS "apikey_key_idx" ON "apikey" ("key")`,
+    ],
+  },
+  {
+    version: 3,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS "armada_secret" (
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "userId" text NOT NULL DEFAULT '',
+        "name" text NOT NULL,
+        "sealed" text NOT NULL,
+        "setById" text NOT NULL,
+        "setByLabel" text NOT NULL,
+        "createdAt" date NOT NULL,
+        "updatedAt" date NOT NULL,
+        PRIMARY KEY ("organizationId", "userId", "name")
+      )`,
+      `CREATE TABLE IF NOT EXISTS "armada_secret_event" (
+        "id" integer PRIMARY KEY AUTOINCREMENT,
+        "organizationId" text NOT NULL,
+        "at" date NOT NULL,
+        "action" text NOT NULL,
+        "keys" text NOT NULL,
+        "actorKind" text NOT NULL,
+        "actorId" text NOT NULL,
+        "actorLabel" text NOT NULL,
+        "detail" text NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS "armada_secret_event_org_idx" ON "armada_secret_event" ("organizationId", "id")`,
+      `CREATE INDEX IF NOT EXISTS "armada_secret_event_actor_idx" ON "armada_secret_event" ("actorKind", "actorId", "at")`,
     ],
   },
 ];

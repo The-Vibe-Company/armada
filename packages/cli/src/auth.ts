@@ -1,19 +1,29 @@
 // `armada auth login|status|logout`: Armada's keys on this machine. No value
-// is ever printed; output names keys, sources and file paths only.
+// is ever printed; output names keys, sources and file paths only. Also where
+// every command gets its keys (`loadCredentials`): the environment, then the
+// organization's keys from Armada when signed in, then the credentials file.
 import {
+  ArmadaApiError,
+  type ArmadaKeys,
+  armadaAddress,
+  armadaApi,
   type CredentialSource,
   type CredentialStore,
   type Credentials,
   ensurePersonalConfig,
+  formatLease,
   type MachinePaths,
   machinePaths,
   missingKeys,
   type PersonalConfig,
+  parseLease,
   readCredentialStore,
   readPersonalConfig,
   resolveCredentials,
   STORED_KEYS,
   storeIsExposed,
+  TURSO_LEASE_VARIABLE,
+  type TursoLease,
   updateCredentialStore,
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
@@ -35,16 +45,114 @@ export async function loadMachine(io: Io): Promise<Machine> {
   return { paths, store, personal };
 }
 
-/** Resolves every key from the environment, the machine store and the GitHub CLI. */
-export async function loadCredentials(io: Io): Promise<{ machine: Machine; credentials: Credentials }> {
+const hhmm = (iso: string) => `${iso.slice(0, 16).replace("T", " ")} UTC`;
+
+/** Keys Armada could give that the environment does not set: only then is Armada asked. */
+const wantsArmada = (env: Io["env"]) =>
+  !env.LINEAR_API_KEY?.trim() || (!env.ARMADA_TURSO_URL?.trim() && !env.ARMADA_TURSO_TOKEN?.trim());
+
+const fromLease = (lease: TursoLease): ArmadaKeys["turso"] => ({
+  url: lease.url,
+  token: lease.token,
+  detail: `a token made for this terminal, expires ${hhmm(lease.expiresAt)}`,
+});
+
+/**
+ * The organization's keys from Armada. A Turso token it makes is kept in the
+ * credentials file with its expiry and sent back as "held", so Armada renews
+ * it only near its end or when the Turso keys change; the Linear key and a
+ * stored database token stay in memory. Armada unreachable or refusing: a
+ * warning, and the command goes on with the keys of this machine (and the
+ * Turso token kept earlier, while it lasts). Armada keeping no keys (503) is
+ * not worth a warning: the terminal then works as before.
+ */
+async function fromArmada(io: Io, machine: Machine, credentials: Credentials): Promise<ArmadaKeys | null> {
+  const signIn = credentials.armadaSignIn;
+  if (!signIn) return null;
+  const now = (io.now ?? (() => new Date()))();
+  const address = armadaAddress(credentials.armadaApi.url);
+  const stored = parseLease(machine.store?.values[TURSO_LEASE_VARIABLE]);
+  const lease = stored && stored.api === address && Date.parse(stored.expiresAt) > now.getTime() ? stored : null;
+  const keep = async (next: TursoLease | null) => {
+    if (!machine.paths || (next === null && !machine.store?.assigned.includes(TURSO_LEASE_VARIABLE))) return;
+    await updateCredentialStore(machine.paths, { [TURSO_LEASE_VARIABLE]: next ? formatLease(next) : null }).catch(
+      (err: unknown) =>
+        io.stderr(
+          `! the Turso token from Armada could not be kept in ${machine.paths?.credentials} (${(err as NodeJS.ErrnoException).code ?? "error"}); it is asked again next time\n`,
+        ),
+    );
+  };
+  let answer: Awaited<ReturnType<ReturnType<typeof armadaApi>["credentials"]>>;
+  try {
+    answer = await armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) }).credentials(
+      signIn,
+      lease ? { revision: lease.revision, expiresAt: lease.expiresAt } : null,
+    );
+  } catch (err) {
+    if (!(err instanceof ArmadaApiError)) throw err;
+    if (err.status === 503 && !lease) return null;
+    io.stderr(
+      `! Armada gave no keys (${err.message}); using this machine's${lease ? " and the Turso token it made earlier" : ""}${err.next ? `. Next: ${err.next}` : ""}\n`,
+    );
+    return lease ? { linearApiKey: null, turso: fromLease(lease) } : null;
+  }
+  for (const w of answer.warnings) io.stderr(`! Armada: ${w}\n`);
+  const linearApiKey = answer.linear
+    ? {
+        value: answer.linear.apiKey,
+        detail: answer.linear.scope === "own" ? "your own key" : `the key of ${answer.organization.name}`,
+      }
+    : null;
+  const t = answer.turso;
+  if (t?.kind === "minted") {
+    const next: TursoLease = {
+      api: address,
+      organization: answer.organization.id,
+      url: t.url,
+      token: t.token,
+      expiresAt: t.expiresAt,
+      revision: t.revision,
+    };
+    await keep(next);
+    return { linearApiKey, turso: fromLease(next) };
+  }
+  if (t?.kind === "kept" && lease) return { linearApiKey, turso: fromLease(lease) };
+  await keep(null);
+  return {
+    linearApiKey,
+    turso:
+      t?.kind === "stored"
+        ? { url: t.url, token: t.token, detail: `the stored Turso access of ${answer.organization.name}` }
+        : null,
+  };
+}
+
+/**
+ * Resolves every key from the environment, Armada (when signed in, and only
+ * for the keys the environment does not set), the machine store and the
+ * GitHub CLI. Commands that need no key (login, whoami, logout) pass
+ * `armada: false`.
+ */
+export async function loadCredentials(
+  io: Io,
+  { armada = true }: { armada?: boolean } = {},
+): Promise<{ machine: Machine; credentials: Credentials }> {
   const machine = await loadMachine(io);
-  const credentials = resolveCredentials({
+  let gh: string | null | undefined;
+  const sources = {
     env: io.env,
-    ghToken: io.ghToken,
+    // Asked once, however many times the keys are resolved.
+    ghToken: () => {
+      if (gh === undefined) gh = io.ghToken();
+      return gh;
+    },
     ...(machine.store ? { store: machine.store.values } : {}),
     ...(machine.personal ? { personal: machine.personal.config } : {}),
-  });
-  return { machine, credentials };
+  };
+  const local = resolveCredentials(sources);
+  if (!armada || !local.armadaSignIn || !wantsArmada(io.env)) return { machine, credentials: local };
+  const keys = await fromArmada(io, machine, local);
+  return { machine, credentials: keys ? resolveCredentials({ ...sources, armada: keys }) : local };
 }
 
 const describeSource = (s: CredentialSource): string => {
@@ -53,6 +161,8 @@ const describeSource = (s: CredentialSource): string => {
       return `environment (${s.variable})`;
     case "store":
       return "credentials file";
+    case "armada":
+      return `Armada: ${s.detail}`;
     case "config":
       return `personal config (${s.key})`;
     case "gh":
@@ -216,12 +326,13 @@ export async function authLogout(io: Io): Promise<number> {
   // Only the credentials file: a broken config.toml must not block removing keys.
   const store = await readCredentialStore(paths.credentials);
   // Any KEY= line counts, even a malformed one: logout must not leave a secret behind.
-  const stored = STORED_KEYS.filter((k) => store.assigned.includes(k.variable));
+  const variables = [...STORED_KEYS.map((k) => k.variable), TURSO_LEASE_VARIABLE];
+  const stored = variables.filter((v) => store.assigned.includes(v));
   if (!stored.length) {
     io.stdout(`No Armada key is stored in ${paths.credentials}.\n`);
   } else {
-    await updateCredentialStore(paths, Object.fromEntries(STORED_KEYS.map((k) => [k.variable, null])));
-    io.stdout(`Removed ${stored.map((k) => k.variable).join(", ")} from ${paths.credentials}.\n`);
+    await updateCredentialStore(paths, Object.fromEntries(variables.map((v) => [v, null])));
+    io.stdout(`Removed ${stored.join(", ")} from ${paths.credentials}.\n`);
   }
   const fromEnv = STORED_KEYS.filter((k) => io.env[k.variable]?.trim()).map((k) => k.variable);
   if (fromEnv.length)

@@ -135,6 +135,31 @@ describe("live Fleet reading", () => {
     expect(coldView.projects.map((p) => [p.slug, p.repository, p.inFlight])).toEqual([["widgets", "acme/widgets", 1]]);
   });
 
+  test("a replaced or renewed Turso key closes the open client and opens one with the new key", async () => {
+    let opens = 0;
+    let closed = 0;
+    const w = world(null, {
+      liveKey: "token-1",
+      openLive: async () => {
+        opens++;
+        const { db } = await tempTurso();
+        await upsertProject(db, WIDGETS);
+        const close = db.close.bind(db);
+        db.close = () => {
+          closed++;
+          close();
+        };
+        return db;
+      },
+    });
+    await loadOverview(w.opts);
+    await loadOverview(w.opts);
+    expect([opens, closed]).toEqual([1, 0]);
+    w.opts.sources.liveKey = "token-2";
+    expect((await loadOverview(w.opts)).live.state).toBe("ok");
+    expect([opens, closed]).toEqual([2, 1]);
+  });
+
   test("a stale reading is served while it refreshes; a failed refresh keeps it, warns and waits a period", async () => {
     let fail = false;
     let attempts = 0;

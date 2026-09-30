@@ -34,6 +34,25 @@ export type OrgError = (typeof ORG_ERRORS)[number];
 export const ORG_NOTICES = ["invited", "cancelled", "updated", "removed", "revoked"] as const;
 export type OrgNotice = (typeof ORG_NOTICES)[number];
 
+/** Why a key could not be saved or deleted (a `?error=` of the Keys page). */
+export const KEYS_ERRORS = ["forbidden", "invalid", "vault", "failed"] as const;
+export type KeysError = (typeof KEYS_ERRORS)[number];
+
+/** What a change on the Keys page did (a `?done=`). */
+export const KEYS_NOTICES = ["saved", "deleted"] as const;
+export type KeysNotice = (typeof KEYS_NOTICES)[number];
+
+/** The keys the Keys page names: the vault's, plus a person's own Linear key. */
+export type KeyLabel =
+  | "linear-api-key"
+  | "own-linear-api-key"
+  | "turso-url"
+  | "turso-platform-token"
+  | "turso-organization"
+  | "turso-database"
+  | "turso-database-token"
+  | "github-token";
+
 /** Why a code of `armada login` could not be approved or denied, shown on the /device page. */
 export const DEVICE_ERRORS = ["unknown", "used", "forbidden", "failed"] as const;
 export type DeviceError = (typeof DEVICE_ERRORS)[number];
@@ -274,6 +293,70 @@ const en = {
     keyUnused: "never used",
     revoke: "Revoke",
     onlyOwners: "Only owners create and revoke API keys.",
+    keysLink: "Keys: Linear, Turso and GitHub",
+  },
+  keys: {
+    nav: "Keys",
+    lead: "The fleet's keys, kept encrypted in Armada. A signed-in terminal receives what it needs, so no machine needs a key file. Once saved, a value is never shown again.",
+    vaultOff: (variable: string) =>
+      `This Armada keeps no keys yet. Its owner sets ${variable} (32 random bytes: openssl rand -base64 32) in the deployment's environment, then redeploys.`,
+    vaultInvalid: (variable: string) =>
+      `${variable} is set, but it is not 32 bytes in base64 or hex, so the vault is off. Its owner fixes it and redeploys.`,
+    linear: "Linear",
+    turso: "Turso",
+    tursoHint:
+      "With a Platform API token, each terminal gets a database token made for it that expires after 4 hours. Without one, the database token below is handed out as is.",
+    github: "GitHub",
+    labels: {
+      "linear-api-key": "Organization key",
+      "own-linear-api-key": "Your own key",
+      "turso-url": "Database URL",
+      "turso-platform-token": "Platform API token",
+      "turso-organization": "Turso organization",
+      "turso-database": "Database name",
+      "turso-database-token": "Database token (fallback)",
+      "github-token": "GitHub token",
+    } satisfies Record<KeyLabel, string>,
+    hints: {
+      "linear-api-key":
+        "Linear > Settings > Security & access > Personal API keys. Workers post their comments with it.",
+      "own-linear-api-key":
+        "Optional. Your terminals use it instead of the organization's, so the comments they post carry your name. Only you use it.",
+      "turso-url":
+        "libsql://<database>-<organization>.turso.io. Optional with a Platform API token: Armada asks Turso.",
+      "turso-platform-token": "turso auth api-tokens mint armada",
+      "turso-organization": "Its slug, from turso org list",
+      "turso-database": "From turso db list",
+      "turso-database-token":
+        "Only without a Platform API token. It does not expire: turso db tokens create <database>",
+      "github-token": "For the dashboard's own reads (pull requests, armada.toml). Terminals keep GITHUB_TOKEN or gh.",
+    } satisfies Record<KeyLabel, string>,
+    notSet: "not set",
+    setBy: (who: string, when: string) => `set by ${who}, ${when}`,
+    unreadable: "sealed with another master key: enter it again",
+    save: "Save",
+    replace: "Replace",
+    remove: "Delete",
+    newValue: "New value",
+    onlyAdmins: "Only owners and admins set the organization's keys.",
+    audit: "Audit",
+    auditHint: "Every change and every key handed out: who, which key, when. Never a value.",
+    noEvents: "Nothing yet.",
+    actions: { set: "set", delete: "deleted", release: "handed out" } satisfies Record<
+      "set" | "delete" | "release",
+      string
+    >,
+    nothing: "no key",
+    errors: {
+      forbidden: "Your role does not allow this.",
+      invalid: "This value does not look right for this key.",
+      vault: "The vault is off: nothing was saved.",
+      failed: "That did not work. Try again in a moment.",
+    } satisfies Record<KeysError, string>,
+    notices: {
+      saved: "Saved. It takes effect on the next command.",
+      deleted: "Deleted. It takes effect on the next command.",
+    } satisfies Record<KeysNotice, string>,
   },
   device: {
     title: "Sign in from a terminal",
@@ -569,6 +652,67 @@ const fr: Strings = {
     keyUnused: "jamais utilisée",
     revoke: "Révoquer",
     onlyOwners: "Seuls les propriétaires créent et révoquent les clés d'API.",
+    keysLink: "Clés : Linear, Turso et GitHub",
+  },
+  keys: {
+    nav: "Clés",
+    lead: "Les clés de la flotte, gardées chiffrées dans Armada. Un terminal connecté reçoit ce qu'il lui faut : aucune machine n'a besoin d'un fichier de clés. Une fois enregistrée, une valeur ne s'affiche plus jamais.",
+    vaultOff: (variable) =>
+      `Cet Armada ne garde pas encore de clés. Son propriétaire définit ${variable} (32 octets aléatoires : openssl rand -base64 32) dans l'environnement du déploiement, puis redéploie.`,
+    vaultInvalid: (variable) =>
+      `${variable} est défini, mais ne fait pas 32 octets en base64 ou en hexadécimal : le coffre est coupé. Son propriétaire le corrige et redéploie.`,
+    linear: "Linear",
+    turso: "Turso",
+    tursoHint:
+      "Avec un jeton de l'API Platform, chaque terminal reçoit un jeton de base fait pour lui, qui expire au bout de 4 heures. Sans lui, le jeton de base ci-dessous est remis tel quel.",
+    github: "GitHub",
+    labels: {
+      "linear-api-key": "Clé de l'organisation",
+      "own-linear-api-key": "Ta propre clé",
+      "turso-url": "URL de la base",
+      "turso-platform-token": "Jeton de l'API Platform",
+      "turso-organization": "Organisation Turso",
+      "turso-database": "Nom de la base",
+      "turso-database-token": "Jeton de base (secours)",
+      "github-token": "Jeton GitHub",
+    },
+    hints: {
+      "linear-api-key":
+        "Linear > Settings > Security & access > Personal API keys. Les workers publient leurs commentaires avec.",
+      "own-linear-api-key":
+        "Facultative. Tes terminaux l'utilisent à la place de celle de l'organisation : leurs commentaires portent ton nom. Toi seul t'en sers.",
+      "turso-url":
+        "libsql://<base>-<organisation>.turso.io. Facultative avec un jeton de l'API Platform : Armada la demande à Turso.",
+      "turso-platform-token": "turso auth api-tokens mint armada",
+      "turso-organization": "Son identifiant, d'après turso org list",
+      "turso-database": "D'après turso db list",
+      "turso-database-token": "Seulement sans jeton de l'API Platform. Il n'expire pas : turso db tokens create <base>",
+      "github-token":
+        "Pour les lectures du tableau de bord (pull requests, armada.toml). Les terminaux gardent GITHUB_TOKEN ou gh.",
+    },
+    notSet: "non définie",
+    setBy: (who, when) => `définie par ${who}, ${when}`,
+    unreadable: "scellée avec une autre clé maître : saisis-la à nouveau",
+    save: "Enregistrer",
+    replace: "Remplacer",
+    remove: "Supprimer",
+    newValue: "Nouvelle valeur",
+    onlyAdmins: "Seuls les propriétaires et les admins définissent les clés de l'organisation.",
+    audit: "Journal",
+    auditHint: "Chaque changement et chaque clé remise : qui, quelle clé, quand. Jamais une valeur.",
+    noEvents: "Rien pour l'instant.",
+    actions: { set: "définie", delete: "supprimée", release: "remise" },
+    nothing: "aucune clé",
+    errors: {
+      forbidden: "Ton rôle ne le permet pas.",
+      invalid: "Cette valeur ne semble pas convenir à cette clé.",
+      vault: "Le coffre est coupé : rien n'a été enregistré.",
+      failed: "Ça n'a pas marché. Réessaie dans un instant.",
+    },
+    notices: {
+      saved: "Enregistrée. Elle vaut dès la prochaine commande.",
+      deleted: "Supprimée. Cela vaut dès la prochaine commande.",
+    },
   },
   device: {
     title: "Connexion depuis un terminal",

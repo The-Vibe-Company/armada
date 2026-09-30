@@ -1,5 +1,6 @@
 // The Armada API, as the CLI sees it: signing in from a terminal (a device
-// code confirmed in the browser), who is signed in, and signing out. It is the
+// code confirmed in the browser), who is signed in, signing out, and the
+// organization's keys handed to a signed-in terminal (THE-840). It is the
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
 import type { Fetch } from "./linear.ts";
@@ -31,6 +32,32 @@ export interface DeviceCode {
   intervalSeconds: number;
 }
 
+/**
+ * The organization's keys, from `POST /api/cli/credentials`. The Linear key is
+ * the person's own when they set one. The Turso token is made for this
+ * terminal and expires on its own ("minted"); "kept" means the one the
+ * terminal holds is still good; "stored" is the organization's database token,
+ * handed out as is when Armada has no Turso Platform API token.
+ */
+export interface ArmadaKeysAnswer {
+  schemaVersion: 1;
+  organization: { id: string; name: string; slug: string };
+  linear: { apiKey: string; scope: "own" | "organization" } | null;
+  turso:
+    | { kind: "minted"; url: string; token: string; expiresAt: string; revision: string }
+    | { kind: "kept"; expiresAt: string; revision: string }
+    | { kind: "stored"; url: string; token: string; expiresAt: null; revision: string }
+    | null;
+  /** What the organization set but Armada could not hand out. Never a value. */
+  warnings: string[];
+}
+
+/** Which Turso token the terminal holds: its revision and expiry, never the token. */
+export interface HeldTursoToken {
+  revision: string;
+  expiresAt: string;
+}
+
 /** A code as the person reads it: WDJB-MJHT. */
 export const displayCode = (code: string) => (code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code);
 
@@ -50,6 +77,8 @@ export class ArmadaApiError extends Error {
     message: string,
     readonly next: string | null = null,
     readonly signedOut = false,
+    /** The HTTP status of a refusal; null when Armada did not answer. */
+    readonly status: number | null = null,
   ) {
     super(message);
   }
@@ -128,7 +157,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
   const refusal = (status: number, body: Record<string, unknown>, what: string | null) => {
     const error = typeof body.error === "string" ? body.error : `HTTP ${status}`;
     const next = typeof body.next === "string" ? body.next : status === 401 ? LOGIN_NEXT : null;
-    return new ArmadaApiError(what ? `${what}: ${error}` : error, next, status === 401);
+    return new ArmadaApiError(what ? `${what}: ${error}` : error, next, status === 401, status);
   };
 
   return {
@@ -174,6 +203,32 @@ export function armadaApi(opts: ArmadaApiOptions) {
       const { status, body } = await call("GET", "session", { signIn });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada could not say who is signed in");
       return body as unknown as ArmadaIdentity;
+    },
+
+    /**
+     * The organization's keys for `signIn`. `held` names the Turso token the
+     * terminal already holds, so Armada can say "keep it" instead of making
+     * another. Answers 503 when that Armada keeps no keys.
+     */
+    async credentials(signIn: ArmadaSignIn, held: HeldTursoToken | null): Promise<ArmadaKeysAnswer> {
+      const { status, body } = await call("POST", "credentials", { signIn, body: { turso: held } });
+      if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada gave no keys");
+      const str = (v: unknown) => typeof v === "string" && v.length > 0;
+      const org = body.organization as ArmadaKeysAnswer["organization"] | undefined;
+      const linear = body.linear as ArmadaKeysAnswer["linear"];
+      const turso = body.turso as ArmadaKeysAnswer["turso"];
+      const shaped =
+        body.schemaVersion === 1 &&
+        str(org?.id) &&
+        (linear === null || str(linear?.apiKey)) &&
+        (turso === null ||
+          (turso?.kind === "kept" && str(turso.revision) && str(turso.expiresAt)) ||
+          ((turso?.kind === "minted" || turso?.kind === "stored") && str(turso.url) && str(turso.token)));
+      if (!shaped) throw new ArmadaApiError(`Armada (${host}) answered the keys in a shape this CLI does not know`);
+      const warnings = Array.isArray(body.warnings)
+        ? body.warnings.filter((w): w is string => typeof w === "string")
+        : [];
+      return { ...(body as unknown as ArmadaKeysAnswer), warnings };
     },
 
     /** Revokes the session of `armada login` on the server. */

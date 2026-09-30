@@ -18,6 +18,7 @@ import {
   machinePaths,
   SESSION_TOKEN_VARIABLE,
   SIGNED_IN_TO_VARIABLE,
+  TURSO_LEASE_VARIABLE,
   updateCredentialStore,
   waitForApproval,
 } from "@armada/core";
@@ -107,6 +108,8 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
     [API_KEY_VARIABLE]: key,
     [SESSION_TOKEN_VARIABLE]: null,
     [SIGNED_IN_TO_VARIABLE]: armadaAddress(url),
+    // A Turso token made for the previous sign-in is not this one's.
+    [TURSO_LEASE_VARIABLE]: null,
   });
   io.stdout(
     `Signed in to ${hostOf(credentials.armadaApi.url)} as ${describeIdentity(identity)}.\nThe key is stored in ${p.credentials}.\n`,
@@ -115,7 +118,7 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
 }
 
 export async function login(io: Io, apiKey: boolean): Promise<number> {
-  const { machine, credentials } = await loadCredentials(io);
+  const { machine, credentials } = await loadCredentials(io, { armada: false });
   const host = hostOf(credentials.armadaApi.url);
   if (credentials.armadaSignIn?.source.kind === "env")
     io.stderr(`! ${API_KEY_VARIABLE} is set in the environment: it wins over what \`armada login\` stores.\n`);
@@ -138,6 +141,8 @@ export async function login(io: Io, apiKey: boolean): Promise<number> {
     [SESSION_TOKEN_VARIABLE]: token,
     [API_KEY_VARIABLE]: null,
     [SIGNED_IN_TO_VARIABLE]: armadaAddress(url),
+    // A Turso token made for the previous sign-in is not this one's.
+    [TURSO_LEASE_VARIABLE]: null,
   });
   // The session this one replaces is revoked on the Armada that issued it, not left behind.
   if (previous && previous !== token)
@@ -153,7 +158,7 @@ export async function login(io: Io, apiKey: boolean): Promise<number> {
 }
 
 export async function whoami(io: Io, json: boolean): Promise<number> {
-  const { credentials } = await loadCredentials(io);
+  const { credentials } = await loadCredentials(io, { armada: false });
   const signIn = requireSignIn(credentials);
   const identity = await apiOf(io, credentials.armadaApi.url).whoami(signIn);
   if (json) {
@@ -166,10 +171,12 @@ export async function whoami(io: Io, json: boolean): Promise<number> {
 }
 
 export async function logout(io: Io): Promise<number> {
-  const { machine } = await loadCredentials(io);
+  const { machine } = await loadCredentials(io, { armada: false });
   const p = paths(io);
   const at = storedAt(machine);
-  const stored = [SESSION_TOKEN_VARIABLE, API_KEY_VARIABLE].filter((k) => machine.store?.assigned.includes(k));
+  const stored = [SESSION_TOKEN_VARIABLE, API_KEY_VARIABLE, TURSO_LEASE_VARIABLE].filter((k) =>
+    machine.store?.assigned.includes(k),
+  );
   const session = machine.store?.values[SESSION_TOKEN_VARIABLE]?.trim();
   if (session) {
     // Revoked on the server first, so a copy of the file is useless too; offline, the local copy still goes.
@@ -186,6 +193,7 @@ export async function logout(io: Io): Promise<number> {
       [SESSION_TOKEN_VARIABLE]: null,
       [API_KEY_VARIABLE]: null,
       [SIGNED_IN_TO_VARIABLE]: null,
+      [TURSO_LEASE_VARIABLE]: null,
     });
     io.stdout(`Signed out of ${hostOf(at)}: removed the sign-in from ${p.credentials}.\n`);
   } else io.stdout(`This terminal was not signed in to Armada (nothing in ${p.credentials}).\n`);
