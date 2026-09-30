@@ -1,0 +1,25 @@
+packages/dashboard/app/login/page.tsx
+  s_d658e7251951c2::t_57d210ff23d7c6 30
+packages/dashboard/lib/accounts.ts
+  s_d658e7251951c2::t_9439d8da7d5478 141-149
+packages/dashboard/lib/i18n.ts
+  s_d658e7251951c2::t_2f0046adb79c84 20,188,442
+packages/dashboard/test/accounts.test.ts
+  s_d658e7251951c2::t_0e191be840afaf 233,241,246,253,261-270
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "205af27ebd3ec8df1610db0bff321fa344f76f7e",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
