@@ -181,6 +181,8 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
   const since =
     (fresh && phaseSource === "live" && phase !== trackerPhase ? fresh.at : undefined) ??
     announcing?.createdAt ??
+    // A live phase no status comment of the snapshot announces started with that event.
+    (fresh && phaseSource === "live" ? fresh.at : undefined) ??
     (phase === "shipping" || phase === "ready-to-merge" ? pr?.createdAt : undefined) ??
     claims[0]?.at ??
     issue.startedAt ??

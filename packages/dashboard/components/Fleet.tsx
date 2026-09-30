@@ -267,8 +267,9 @@ function TopBar({
           Armada <small>{t.brandSub}</small>
         </a>
         <span className="spacer" />
-        <div className="refresh" aria-live="polite">
-          <span className={`source is-${state}`}>
+        <div className="refresh">
+          {/* Only the source state is announced; the ticking "checked" text is not. */}
+          <span className={`source is-${state}`} role="status">
             <span className={`dot ${state === "ok" ? "live" : ""}`} />
             {label}
           </span>

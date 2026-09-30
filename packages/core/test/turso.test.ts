@@ -24,7 +24,9 @@ describe("Turso schema", () => {
     expect(await migrate(db)).toBe(SCHEMA_VERSION);
     const again = trackDb(await openTurso({ url }));
     const versions = await again.execute("SELECT version FROM schema_migrations");
-    expect(versions.rows.map((r) => Number(r.version))).toEqual([SCHEMA_VERSION]);
+    expect(versions.rows.map((r) => Number(r.version))).toEqual(
+      Array.from({ length: SCHEMA_VERSION }, (_, k) => k + 1),
+    );
     const tables = await again.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name");
     expect(tables.rows.map((r) => String(r.name))).toEqual(
       expect.arrayContaining(["events", "inbox_items", "leases", "projects", "runtime_handles"]),
@@ -66,6 +68,8 @@ describe("live reading", () => {
     const latest = await latestEvents(db, "widgets");
     expect(Object.keys(latest).sort()).toEqual(["W-1", "W-2"]);
     expect(latest["W-1"]).toMatchObject({ kind: "report", phase: "implementing", message: "implementing note" });
+    // A window keeps the read to tickets with recent events.
+    expect(Object.keys(await latestEvents(db, "widgets", { since: at("09:08") }))).toEqual(["W-1"]);
     // Coordinator reads belong to no ticket.
     expect(Object.keys(await lastEventTimes(db, "widgets")).sort()).toEqual(["W-1", "W-2"]);
     expect(await lastCoordinatorSeen(db, "widgets")).toBe("2026-03-04T09:40:00.000Z");

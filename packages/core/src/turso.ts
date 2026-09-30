@@ -74,6 +74,15 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
     ],
   },
+  {
+    // The dashboard reads recent events and the coordinator's last inbox read
+    // on every poll; without these, both scan every event of the project.
+    version: 2,
+    statements: [
+      "CREATE INDEX IF NOT EXISTS events_by_time ON events (project, created_at)",
+      "CREATE INDEX IF NOT EXISTS events_by_kind ON events (project, kind, created_at)",
+    ],
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
@@ -255,14 +264,22 @@ export interface LatestEvent {
   at: string;
 }
 
-/** The newest event of every ticket of a project, by ticket id. */
-export async function latestEvents(db: Db, project: string): Promise<Record<string, LatestEvent>> {
+/**
+ * The newest event of every ticket of a project, by ticket id. With `since`,
+ * only tickets with an event at or after it: the read stays bounded as the
+ * table grows.
+ */
+export async function latestEvents(
+  db: Db,
+  project: string,
+  opts: { since?: Date } = {},
+): Promise<Record<string, LatestEvent>> {
   const rs = await db.execute({
     sql: `SELECT ticket, kind, phase, message, runtime, handle, pr_url, created_at FROM (
             SELECT *, row_number() OVER (PARTITION BY ticket ORDER BY created_at DESC, id DESC) AS n
-            FROM events WHERE project = ? AND ticket <> ''
+            FROM events WHERE project = ? AND created_at >= ? AND ticket <> ''
           ) WHERE n = 1`,
-    args: [project],
+    args: [project, opts.since?.toISOString() ?? ""],
   });
   const text = (v: unknown) => (v === null || v === undefined ? null : String(v));
   return Object.fromEntries(

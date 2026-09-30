@@ -120,11 +120,13 @@ describe("live Fleet reading", () => {
     expect(coldView.projects.map((p) => [p.slug, p.repository, p.inFlight])).toEqual([["widgets", "acme/widgets", 1]]);
   });
 
-  test("a stale reading is served while it refreshes; a failed refresh keeps it with a warning", async () => {
+  test("a stale reading is served while it refreshes; a failed refresh keeps it, warns and waits a period", async () => {
     let fail = false;
+    let attempts = 0;
     const w = world(null);
     const read = w.opts.sources.readSnapshot;
     w.opts.sources.readSnapshot = async (config) => {
+      attempts++;
       if (fail) throw new Error("Linear: HTTP 503");
       return read(config);
     };
@@ -142,5 +144,9 @@ describe("live Fleet reading", () => {
     expect(after.projects[0]?.warnings).toEqual([
       "Linear or GitHub could not be read again (Linear: HTTP 503); showing the last reading",
     ]);
+    // The next polls within the period do not read Linear again.
+    w.advance(5_000);
+    await loadOverview(w.opts);
+    expect(attempts).toBe(2);
   });
 });

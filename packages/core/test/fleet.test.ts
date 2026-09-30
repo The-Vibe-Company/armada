@@ -197,5 +197,6 @@ describe("tickets in flight", () => {
       ["P-4", "implementing", null, null, ["silent", "no-assignee"]],
       ["P-2", "planning", "Conductor", "ws-1/s-1", []],
     ]);
+    expect(lanes.find((l) => l.issue.id === "P-2")?.since).toBe("2026-03-04T09:55:00Z");
   });
 });
