@@ -118,7 +118,7 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
         }
         return { ok: true };
       } finally {
-        await remove();
+        await remove().catch(() => {});
       }
     },
   };

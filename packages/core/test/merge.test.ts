@@ -388,6 +388,19 @@ describe("armada merge", () => {
     expect(s.linear.writes).toEqual([]);
   });
 
+  test("when GitHub cannot be read back after the merge, the output says it may have landed", async () => {
+    const s = setup();
+    s.forge.during = async () => {
+      s.forge.readPull = async () => {
+        throw new Error("GitHub API HTTP 502");
+      };
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
+      "the merge of #9 was accepted but GitHub could not be read back (GitHub API HTTP 502); check it on GitHub: if it merged, close DEMO-7 by hand",
+    );
+    expect(s.linear.writes).toEqual([]);
+  });
+
   test("two coordinators merging at once merge one after the other", async () => {
     const { db } = await tempTurso();
     const a = setup({ turso: db, holder: "coordinator-a" });

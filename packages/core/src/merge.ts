@@ -459,10 +459,11 @@ async function hintsFor(ctx: MergeContext, pull: MergePull, cmp: Comparison | nu
  */
 async function recheck(ctx: MergeContext, c: Checked): Promise<void> {
   const pull = await readSettled(ctx, c.pull.number);
+  const ticket = (await ctx.linear.readTicket(c.ticket.id)) ?? c.ticket;
   const problems = mergeProblems({
     pull,
-    ticket: c.ticket,
-    handBack: findHandBack(c.ticket),
+    ticket,
+    handBack: findHandBack(ticket),
     requiredChecks: ctx.config.gates.requiredChecks,
   });
   if (pull.headSha === c.sha) {
@@ -483,11 +484,13 @@ async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, tick
   const n = `#${pull.number}`;
   let readError = "";
   // A failed read is not an answer: the merge may have landed, so it is said, never hidden.
-  const read = () =>
-    ctx.forge.readPull(pull.number).catch((err: unknown) => {
+  const read = () => {
+    readError = "";
+    return ctx.forge.readPull(pull.number).catch((err: unknown) => {
       readError = err instanceof Error ? err.message : String(err);
       return null;
     });
+  };
   for (let attempt = 0; ; attempt++) {
     const res = await ctx.forge.merge(pull.number, sha);
     if (res.ok) break;
