@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/The-Vibe-Company/armada/compare/v0.1.1...v0.1.2) (2026-09-30)
+
+
+### Features
+
+* **cli:** check a repository and open its Armada setup pull request ([#6](https://github.com/The-Vibe-Company/armada/issues/6)) ([c179a24](https://github.com/The-Vibe-Company/armada/commit/c179a2462dfe74eb8a23b0f392fbf3b53dd4a8e6))
+
 ## [0.1.1](https://github.com/The-Vibe-Company/armada/compare/v0.1.0...v0.1.1) (2026-09-30)
 
 
