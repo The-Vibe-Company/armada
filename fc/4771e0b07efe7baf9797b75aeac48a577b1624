@@ -1,0 +1,25 @@
+packages/dashboard/components/Fleet.tsx
+  s_d658e7251951c2::t_f0d1819c245eee 38
+packages/dashboard/lib/auth-http.ts
+  s_d658e7251951c2::t_e965238afcf448 96
+packages/dashboard/lib/auth.ts
+  s_d658e7251951c2::t_73208f4583dd50 26-29,98-105
+packages/dashboard/test/auth.test.ts
+  s_d658e7251951c2::t_43ed5a2b26a077 151-159,163-166,169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "fc4771e0b07efe7baf9797b75aeac48a577b1624",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
