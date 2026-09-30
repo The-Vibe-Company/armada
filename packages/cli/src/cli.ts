@@ -12,6 +12,7 @@ import {
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
+import { brief } from "./brief.ts";
 import { doctor } from "./doctor.ts";
 import { init } from "./init.ts";
 import { type Io, UsageError } from "./io.ts";
@@ -50,6 +51,10 @@ Commands:
                     lock, close the ticket and list the workers to tell. Never deletes
                     the branch. --dry-run only runs the checklist. Refused when Turso is
                     configured but down; --no-lock then merges without the lock.
+  brief <ticket> [--profile <name>] [--prompt]
+                    A new worker's launch prompt, the Conductor profile (agent, model,
+                    effort) and the environment variables to pass, named, never shown.
+                    --prompt prints only the prompt, for \`--message-file -\`
   auth login        Ask for the missing keys (hidden input) and store them on this machine
   auth status       Show which keys are set and where each comes from, never their values
   auth logout       Remove Armada's keys from this machine
@@ -82,6 +87,8 @@ interface Args {
   rest: string[];
   json: boolean;
   all: boolean;
+  /** `brief --prompt`: print only the prompt. */
+  prompt: boolean;
   config: string | null;
   help: boolean;
   version: boolean;
@@ -102,6 +109,7 @@ const VALUE_OPTIONS = [
   "program-root",
   "name",
   "slug",
+  "profile",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = ["dry-run", "no-lock"];
@@ -112,6 +120,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   init: ["program-root", "name", "slug"],
   merge: ["ticket", "dry-run", "no-lock"],
+  brief: ["profile"],
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -120,6 +129,7 @@ export function parseArgs(argv: string[]): Args {
     rest: [],
     json: false,
     all: false,
+    prompt: false,
     config: null,
     help: false,
     version: false,
@@ -131,6 +141,7 @@ export function parseArgs(argv: string[]): Args {
     const name = named?.[1];
     if (a === "--json") args.json = true;
     else if (a === "--all") args.all = true;
+    else if (a === "--prompt") args.prompt = true;
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
     else if (name && FLAG_OPTIONS.includes(name) && named?.[2] === undefined) args.options[name] = "true";
@@ -203,6 +214,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
     if (args.all && args.command !== "status") throw new UsageError(`--all does not apply to ${args.command}`);
+    if (args.prompt && args.command !== "brief") throw new UsageError(`--prompt does not apply to ${args.command}`);
     const worker = { claim, report, release }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config);
@@ -214,6 +226,11 @@ export async function run(argv: string[], io: Io): Promise<number> {
       const { path, text } = await findConfig(io, args.config);
       const { credentials } = await loadCredentials(io);
       return await merge(io, parseConfig(text, path), credentials, args, path);
+    }
+    if (args.command === "brief") {
+      const { path, text } = await findConfig(io, args.config);
+      const { credentials } = await loadCredentials(io);
+      return await brief(io, parseConfig(text, path), credentials, args, version);
     }
     if (args.command === "status") {
       noExtra(args.rest);

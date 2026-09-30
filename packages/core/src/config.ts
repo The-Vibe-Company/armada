@@ -47,6 +47,23 @@ export interface ArmadaConfig {
     /** A working agent with no report for longer than this shows as silent. */
     silentAfterMinutes: number;
   };
+  conductor: {
+    /** Profile `armada brief` uses without `--profile`; null when none is declared. */
+    defaultProfile: string | null;
+    /** Launch settings by profile name, from `[conductor.profiles.<name>]`. */
+    profiles: Record<string, ConductorProfile>;
+  };
+}
+
+/** How a worker is launched on Conductor: every value is passed explicitly, never left to Conductor's defaults. */
+export interface ConductorProfile {
+  /** Conductor agent type, e.g. claude or codex (`conductor model` lists them). */
+  agent: string;
+  /** Model id for that agent, e.g. opus-5-5-1m. */
+  model: string;
+  /** Effort (thinking) level, e.g. high. */
+  effort: string;
+  fastMode: boolean;
 }
 
 export const CONFIG_DEFAULTS = {
@@ -134,6 +151,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const gates = raw.gates === undefined ? {} : raw.gates;
   if (!isTable(gates)) problems.push(`"gates" must be a table`);
   const gatesT = isTable(gates) ? gates : {};
+  const conductor = raw.conductor === undefined ? {} : raw.conductor;
+  if (!isTable(conductor)) problems.push(`"conductor" must be a table`);
+  const conductorT = isTable(conductor) ? conductor : {};
+  const profilesRaw = conductorT.profiles === undefined ? {} : conductorT.profiles;
+  if (!isTable(profilesRaw)) problems.push(`"conductor.profiles" must be a table of profiles`);
+  const profilesT = isTable(profilesRaw) ? profilesRaw : {};
 
   // Unknown keys inside known tables are typos; unknown top-level tables are
   // left alone so newer sections do not break older readers.
@@ -144,7 +167,33 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["github", github, ["repository"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     ["policy", policyT, ["silence_minutes", "silent_after_minutes"]],
+    ["conductor", conductorT, ["default_profile", "profiles"]],
   ];
+  const profiles: Record<string, ConductorProfile> = {};
+  for (const [name, p] of Object.entries(profilesT)) {
+    const path = `conductor.profiles.${name}`;
+    if (!isTable(p)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    known.push([path, p, ["agent", "model", "effort", "fast_mode"]]);
+    if (p.fast_mode !== undefined && typeof p.fast_mode !== "boolean")
+      problems.push(`"${path}.fast_mode" must be true or false`);
+    profiles[name] = {
+      agent: str(p, path, "agent"),
+      model: str(p, path, "model"),
+      effort: str(p, path, "effort"),
+      fastMode: p.fast_mode === true,
+    };
+  }
+  let defaultProfile: string | null = null;
+  if (conductorT.default_profile !== undefined) {
+    defaultProfile = str(conductorT, "conductor", "default_profile") || null;
+    if (defaultProfile && !profiles[defaultProfile])
+      problems.push(
+        `"conductor.default_profile" is "${defaultProfile}", but there is no [conductor.profiles.${defaultProfile}]`,
+      );
+  }
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
 
@@ -206,6 +255,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     },
     gates: { requiredChecks, localCommands },
     policy: { silentAfterMinutes },
+    conductor: { defaultProfile, profiles },
   };
   if (problems.length) throw new ConfigError(source, problems);
   config.tracker.programRoot = config.tracker.programRoot.toUpperCase();
@@ -240,6 +290,21 @@ repository = ${q(p.repository)}
 
 [policy]
 silence_minutes = 15     # a worker with no report for longer than this shows as silent
+
+# How \`armada brief\` launches workers on Conductor. Every value is passed explicitly;
+# \`conductor model\` lists each agent's model ids and effort levels.
+[conductor]
+default_profile = "opus"
+
+[conductor.profiles.opus]
+agent = "claude"
+model = "opus-5-5-1m"
+effort = "high"
+
+[conductor.profiles.codex]
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
 `;
 }
 
@@ -253,4 +318,30 @@ export function slugify(name: string): string {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "") || "project"
   );
+}
+
+export type ProfileChoice =
+  | { name: string; profile: ConductorProfile }
+  | { name: null; profile: null; problem: string | null };
+
+/**
+ * The Conductor profile to launch with: `requested`, else `default_profile`,
+ * else the only profile. With no profile declared, `problem` is null and the
+ * caller warns; an unknown or ambiguous name is a problem.
+ */
+export function resolveProfile(config: ArmadaConfig, requested: string | null): ProfileChoice {
+  const { profiles, defaultProfile } = config.conductor;
+  const names = Object.keys(profiles);
+  const name = requested ?? defaultProfile ?? (names.length === 1 ? (names[0] ?? null) : null);
+  const profile = name ? profiles[name] : undefined;
+  if (name && profile) return { name, profile };
+  const available = names.length ? names.join(", ") : "none";
+  if (name) return { name: null, profile: null, problem: `no Conductor profile "${name}" (available: ${available})` };
+  if (names.length)
+    return {
+      name: null,
+      profile: null,
+      problem: `several Conductor profiles and no conductor.default_profile; pass --profile (${available})`,
+    };
+  return { name: null, profile: null, problem: null };
 }

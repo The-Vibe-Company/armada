@@ -4,7 +4,7 @@ Armada runs a fleet of coding agents on one project and keeps every piece of wor
 
 It imposes one method: grill the decisions, write a spec, cut it into tickets, let one worker agent ship each ticket as a green pull request, and let a coordinator agent merge. The tracker is the source of truth for progress; Armada adds live telemetry, contention rules and a fleet dashboard on top.
 
-**Status:** early. `armada status`, `armada auth`, `armada doctor`, `armada init`, `armada claim`, `armada report` and `armada release` work; the other commands are being built.
+**Status:** early. `armada status`, `armada auth`, `armada doctor`, `armada init`, `armada brief`, `armada claim`, `armada report` and `armada release` work; the other commands are being built.
 
 ## Install
 
@@ -58,6 +58,20 @@ Each problem is an error or a warning, with its fix. A missing skill is an error
 On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the name comes from the GitHub repository unless you pass `--name`, and the slug from the name unless you pass `--slug`. An existing `armada.toml` is never replaced. `init` needs `git`, the GitHub CLI logged in (`gh auth login`), `LINEAR_API_KEY` and `ARMADA_TURSO_URL`; on a terminal it asks for missing keys first.
 
 `armada status --all` prints the status of every registered project, each read with the `armada.toml` on its repository's default branch. A project that cannot be read shows its error without hiding the others.
+
+## Launch a worker (coordinators)
+
+Armada prepares a launch; it never starts a runtime itself. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands.
+
+```sh
+armada brief ABC-12                    # launch settings, then the worker's prompt
+armada brief ABC-12 --prompt           # only the prompt, to pipe into the runtime (--message-file -)
+armada brief ABC-12 --profile codex --json
+```
+
+- The prompt names the ticket and its Linear branch, starts with the worker's `armada claim` (handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, the CLI pinned to the coordinator's version), and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
+- The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables to pass: `LINEAR_API_KEY` (required), `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN` (optional), `ARMADA_TICKET=<ticket>`. Each shows whether this shell has it. No value is ever printed.
+- `--profile` defaults to `conductor.default_profile`, then to the only profile. An unknown profile exits 2.
 
 ## Work on a ticket (workers)
 
@@ -152,6 +166,20 @@ local_commands = ["npm ci", "npm test"]  # run by `armada merge` on a test merge
 
 [policy]
 silence_minutes = 15             # a worker with no report for longer is flagged silent (default 15)
+
+[conductor]
+default_profile = "opus"         # profile `armada brief` uses without --profile
+
+[conductor.profiles.opus]        # one table per profile; `conductor model` lists the ids
+agent = "claude"
+model = "opus-5-5-1m"
+effort = "high"
+# fast_mode = true               # optional, default false
+
+[conductor.profiles.codex]
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
 ```
 
 A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](https://github.com/The-Vibe-Company/armada/blob/main/armada.toml).
