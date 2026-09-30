@@ -1,0 +1,20 @@
+packages/core/test/merge.test.ts
+  s_d658e7251951c2::t_d79955ee2d5f41 1-407
+  s_d658e7251951c2::t_566cbeef707f00 408-415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "934a0d46c5a3bf05c136c9d66e527666a710de2e",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
