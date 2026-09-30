@@ -4,6 +4,7 @@
 // signed by its author. The coordinator carries it out through the runtime
 // guide, then resolves it: `armada answer` for an answer, the worker's claim
 // for a launch. Every check the dashboard makes before writing lives here.
+import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
 import type { StatusReport } from "./status.ts";
 import { addRequest, type Db, getInboxItem, getRuntimeHandle } from "./turso.ts";
@@ -129,7 +130,7 @@ export async function requestLaunch(db: Db, input: LaunchRequestInput): Promise<
     lines.push(`Profile: ${profile}${p ? ` (agent ${p.agent}, model ${p.model}, effort ${p.effort})` : ""}`);
     if (routed && profile !== routed)
       lines.push(
-        `Routing gives ${routed} (${ticket.route?.why}); ${author} chose ${profile}: brief and claim with --profile ${profile} --reason "asked from the dashboard by ${author}".`,
+        `Routing gives ${routed} (${ticket.route?.why}); ${author} chose ${profile}: brief and claim with --profile ${shellWord(profile)} --reason ${shellWord(`asked from the dashboard by ${author}`)}`,
       );
   }
   const item = await addRequest(db, {

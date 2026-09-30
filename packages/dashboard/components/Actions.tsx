@@ -64,11 +64,14 @@ function useRequest(send: (form: FormData) => Promise<RequestResult>, onSent: (f
   return { busy, error, submit, clear: () => setError(null) };
 }
 
-/** A request the server has not shown yet: kept for two overview reads (one may have started before the write). */
+/** A request the server has not shown yet: kept for two overview reads after it was recorded (one may have started before). */
 function useSent<T>(version: number) {
   const [sent, setSent] = useState<(T & { version: number }) | null>(null);
+  // The version when the write returned, not when the form was rendered.
+  const latest = useRef(version);
+  latest.current = version;
   const current = sent && version < sent.version + 2 ? sent : null;
-  return [current, (value: T) => setSent({ ...value, version })] as const;
+  return [current, (value: T) => setSent({ ...value, version: latest.current })] as const;
 }
 
 function SignerField({ t, signer }: { t: Strings; signer: Signer }) {

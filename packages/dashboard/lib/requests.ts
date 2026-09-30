@@ -35,7 +35,9 @@ async function withProject(
     return { ok: true, id: await write({ ...state, db: state.db }) };
   } catch (err) {
     if (err instanceof RequestRefusal) return { ok: false, code: err.code, message: err.message };
-    return { ok: false, code: "failed", message: redact(err) };
+    // The detail stays in the server log: an error may name the database host.
+    console.error(`armada dashboard: request not recorded: ${redact(err)}`);
+    return { ok: false, code: "failed", message: "the request could not be recorded" };
   }
 }
 

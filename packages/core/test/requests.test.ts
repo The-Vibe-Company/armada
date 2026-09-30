@@ -135,21 +135,21 @@ describe("launching from the dashboard", () => {
     });
     expect(await code(requestLaunch(db, { ...launch, ticket: "DEMO-10", profile: null }))).toBe("in-flight");
 
-    const id = await requestLaunch(db, { ...launch, ticket: "demo-9", profile: "codex" });
+    const id = await requestLaunch(db, { ...launch, author: "Ada O'Neil $(id)", ticket: "demo-9", profile: "codex" });
     expect(await code(requestLaunch(db, { ...launch, ticket: "DEMO-9", profile: null }))).toBe("launch-waiting");
     expect(await getInboxItem(db, P, id)).toMatchObject({
       kind: "launch-request",
       ticket: "DEMO-9",
-      author: "Ada",
+      author: "Ada O'Neil $(id)",
       request: { question: null, profile: "codex" },
-      body: 'Launch DEMO-9 — Ticket DEMO-9\nProfile: codex (agent codex, model gpt-6, effort high)\nRouting gives opus (conductor.default_profile); Ada chose codex: brief and claim with --profile codex --reason "asked from the dashboard by Ada".',
+      body: `Launch DEMO-9 — Ticket DEMO-9\nProfile: codex (agent codex, model gpt-6, effort high)\nRouting gives opus (conductor.default_profile); Ada O'Neil $(id) chose codex: brief and claim with --profile codex --reason 'asked from the dashboard by Ada O'\\''Neil $(id)'`,
     });
 
     linear.add("DEMO-9");
     const out = await claimTicket(ctx, { ticket: "DEMO-9", runtime: "conductor", handle: "ws/9" });
-    expect(out.lines).toContain(`Launch request #${id} from Ada resolved.`);
+    expect(out.lines).toContain(`Launch request #${id} from Ada O'Neil $(id) resolved.`);
     expect(linear.bodies.at(-1)).toBe(
-      `Agent status: planning — launched as Ada asked from the dashboard (request #${id})`,
+      `Agent status: planning — launched as Ada O'Neil $(id) asked from the dashboard (request #${id})`,
     );
     expect(await getInboxItem(db, P, id)).toMatchObject({ resolution: "claimed by Conductor (ws/9)" });
   });
