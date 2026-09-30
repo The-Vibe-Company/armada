@@ -1,0 +1,23 @@
+packages/cli/src/merge.ts
+  s_d658e7251951c2::t_dab39127108f63 5,90-94,96-99,101,103-106,121
+packages/core/src/merge.ts
+  s_d658e7251951c2::t_d5de9d3e5f9f4a 371-372,424,439-441,456-480,482,484-490,495,497-500,502-503,517,522-524,578,582
+packages/core/test/merge.test.ts
+  s_d658e7251951c2::t_9689b244976bc6 70-71,73-74,355-390
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "7a78da06f3cee86723843c3b8394b7810b93d2a2",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
