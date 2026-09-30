@@ -22,7 +22,7 @@ function graphql(answers: Record<string, unknown>) {
 }
 
 describe("Linear write adapter", () => {
-  test("reads a ticket with its labels, team workflow, claim and linked pull request", async () => {
+  test("reads a ticket with its labels (phase names in any case), team workflow, claim and linked pull request", async () => {
     const { writer } = graphql({
       Ticket: {
         data: {
@@ -46,7 +46,7 @@ describe("Linear write adapter", () => {
             assignee: { id: "user-1" },
             labels: {
               nodes: [
-                { id: "l-1", name: "implementing", parent: { name: "Agent phase" } },
+                { id: "l-1", name: "Implementing", parent: { name: "Agent phase" } },
                 { id: "l-2", name: "Codex", parent: { name: "Agent runtime" } },
               ],
             },

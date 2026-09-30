@@ -28,9 +28,10 @@ export async function openLive(credentials: Credentials): Promise<{ db: Db | nul
   if (!credentials.tursoUrl)
     return { db: null, warning: "Turso is not configured (ARMADA_TURSO_URL); live activity is not recorded" };
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const opening = openTurso({ url: credentials.tursoUrl, token: credentials.tursoToken });
   try {
     const db = await Promise.race([
-      openTurso({ url: credentials.tursoUrl, token: credentials.tursoToken }),
+      opening,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error(`no answer within ${TURSO_OPEN_TIMEOUT_MS / 1000} s`)),
@@ -40,6 +41,11 @@ export async function openLive(credentials: Credentials): Promise<{ db: Db | nul
     ]);
     return { db, warning: null };
   } catch (err) {
+    // A connection that opens after the timeout is closed, not leaked.
+    opening.then(
+      (db) => db.close(),
+      () => {},
+    );
     const reason = err instanceof Error ? err.message : String(err);
     return { db: null, warning: `Turso unavailable (${reason}); live activity is not recorded, Linear is` };
   } finally {
@@ -91,7 +97,7 @@ async function context(
   io: Io,
   config: ArmadaConfig,
   credentials: Credentials,
-): Promise<{ ctx: WorkerContext; close: () => void }> {
+): Promise<{ ctx: WorkerContext; close: () => Promise<void> }> {
   if (!credentials.linearApiKey) throw new UsageError(missingKeyMessage(LINEAR_KEY));
   const linearOpts = {
     apiKey: credentials.linearApiKey,
@@ -99,13 +105,16 @@ async function context(
     ...(io.fetch ? { fetch: io.fetch } : {}),
   };
   const linear = io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts);
-  const { db, warning } = await openLive(credentials);
+  // Turso is opened only when a command reaches its Turso step, after Linear.
+  let live: ReturnType<typeof openLive> | null = null;
   const token = credentials.githubToken;
   const ctx: WorkerContext = {
     config,
     linear,
-    turso: db,
-    tursoWarning: warning,
+    turso: () => {
+      live ??= openLive(credentials);
+      return live;
+    },
     readPull: token
       ? (number) =>
           fetchPullRequest({
@@ -117,7 +126,11 @@ async function context(
       : null,
     now: io.now ?? (() => new Date()),
   };
-  return { ctx, close: () => db?.close() };
+  const close = async () => {
+    const opened = await live;
+    opened?.db?.close();
+  };
+  return { ctx, close };
 }
 
 function print(io: Io, outcome: Outcome, json: boolean) {
@@ -159,7 +172,7 @@ async function withContext(
     print(io, await act(ctx), json);
     return 0;
   } finally {
-    close();
+    await close();
   }
 }
 

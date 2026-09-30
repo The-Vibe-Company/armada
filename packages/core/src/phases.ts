@@ -60,15 +60,19 @@ export function handBackProblems({ pr, repository, sha, requiredChecks }: HandBa
   if (pr.repo.toLowerCase() !== repository.toLowerCase())
     problems.push(`pull request #${pr.number} is in ${pr.repo}, not in the project repository ${repository}`);
   if (pr.state && pr.state !== "open") problems.push(`pull request #${pr.number} is ${pr.state}, not open`);
+  if (pr.draft) problems.push(`pull request #${pr.number} is a draft; mark it ready for review`);
+  if (pr.mergeable === "CONFLICTING") problems.push(`pull request #${pr.number} conflicts with its base; rebase it`);
   if (!pr.headSha) problems.push(`the head of pull request #${pr.number} could not be read from GitHub`);
   else if (sha && FULL_SHA.test(sha) && pr.headSha !== sha)
     problems.push(`${sha} is not the head of pull request #${pr.number} (head is ${pr.headSha}); push, then report`);
   const checks = pr.checks ?? [];
   if (requiredChecks.length) {
     for (const name of requiredChecks) {
-      const check = checks.find((c) => c.name === name);
-      if (!check) problems.push(`required check "${name}" has not reported on the head yet`);
-      else if (check.state !== "success") problems.push(`required check "${name}" is ${check.state}`);
+      // A check can report more than once on a head (push and pull_request): every run must be green.
+      const runs = checks.filter((c) => c.name === name);
+      const bad = runs.find((c) => c.state !== "success");
+      if (!runs.length) problems.push(`required check "${name}" has not reported on the head yet`);
+      else if (bad) problems.push(`required check "${name}" is ${bad.state}`);
     }
   } else if (!checks.length) {
     problems.push("no CI check has reported on the head yet (or set [gates] required_checks in armada.toml)");

@@ -60,6 +60,10 @@ describe("hand-back gate", () => {
     ]);
     expect(gate({ pr: null })).toEqual(["no pull request is linked to the ticket; pass --pr <number or URL>"]);
     expect(gate({ pr: pr({ state: "merged" }) })).toEqual(["pull request #9 is merged, not open"]);
+    expect(gate({ pr: pr({ draft: true, mergeable: "CONFLICTING" }) })).toEqual([
+      "pull request #9 is a draft; mark it ready for review",
+      "pull request #9 conflicts with its base; rebase it",
+    ]);
     expect(gate({ pr: pr({ repo: "acme/other" }) })).toEqual([
       "pull request #9 is in acme/other, not in the project repository acme/widgets",
     ]);
@@ -77,6 +81,13 @@ describe("hand-back gate", () => {
       'required check "lint" is pending',
       'required check "e2e" has not reported on the head yet',
     ]);
+    const twice = pr({
+      checks: [
+        { name: "test", state: "success" },
+        { name: "test", state: "failure" },
+      ],
+    });
+    expect(gate({ pr: twice, required: ["test"] })).toEqual(['required check "test" is failure']);
     // Only required checks count once they are declared.
     expect(
       gate({ pr: pr({ checks: [...(pr().checks ?? []), { name: "flaky", state: "failure" }] }), required: ["test"] }),

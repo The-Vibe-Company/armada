@@ -25,6 +25,10 @@ describe("comment conventions", () => {
       at: "2026-03-01T09:01:00Z",
       author: "Grace",
     });
+    // Underscores stay in values, even when Linear escaped them; emphasis around them goes.
+    const escaped =
+      "Agent status: planning — x\n\n**Agent claim** — runtime: Codex · session: `my\\_ws/s_1` · branch: b";
+    expect(parseClaim(escaped, "t", null)).toMatchObject({ runtime: "Codex", session: "my_ws/s_1", branch: "b" });
   });
 });
 

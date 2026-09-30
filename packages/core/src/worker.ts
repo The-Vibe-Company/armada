@@ -2,15 +2,15 @@
 // it. Linear is written first and is the record; Turso gets the live detail
 // afterwards, and any Turso failure becomes a warning, never a failure.
 import type { ArmadaConfig } from "./config.ts";
-import { parsePullRequestUrl } from "./linear.ts";
+import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import { handBackProblems, transitionProblem } from "./phases.ts";
 import {
-  addInboxItem,
   type Db,
   ensureProject,
   type InboxItem,
   openInboxItems,
+  putHandBack,
   recordEvent,
   releaseRuntimeHandle,
   saveRuntimeHandle,
@@ -25,9 +25,11 @@ export class Refusal extends Error {
 export interface WorkerContext {
   config: ArmadaConfig;
   linear: LinearWriter;
-  /** Null when Turso is not configured or could not be opened; `tursoWarning` then says why. */
-  turso: Db | null;
-  tursoWarning?: string | null;
+  /**
+   * Opens Turso, called only once Linear has been written. `db` is null when
+   * Turso is not configured or could not be opened; `warning` then says why.
+   */
+  turso: () => Promise<{ db: Db | null; warning: string | null }>;
   /** Reads one pull request of the project repository; null without a GitHub token. */
   readPull: ((number: number) => Promise<PullRequest | null>) | null;
   now: () => Date;
@@ -47,11 +49,15 @@ const TURSO_TIMEOUT_MS = 10_000;
 
 /** Runs a Turso step; a failure or a timeout becomes a warning. */
 async function live<T>(ctx: WorkerContext, warnings: string[], what: string, step: (db: Db) => Promise<T>) {
-  if (!ctx.turso) return null;
+  const { db, warning } = await ctx.turso();
+  if (!db) {
+    if (warning) warnings.push(warning);
+    return null;
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      step(ctx.turso),
+      step(db),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error(`no answer within ${TURSO_TIMEOUT_MS / 1000} s`)), TURSO_TIMEOUT_MS);
       }),
@@ -64,10 +70,6 @@ async function live<T>(ctx: WorkerContext, warnings: string[], what: string, ste
   } finally {
     clearTimeout(timer);
   }
-}
-
-function startWarnings(ctx: WorkerContext): string[] {
-  return ctx.turso ? [] : [ctx.tursoWarning ?? "Turso is not configured; live activity is not recorded"];
 }
 
 const project = (config: ArmadaConfig) => ({
@@ -96,11 +98,9 @@ function activeClaimComments(comments: Comment[]): Comment[] {
   return active;
 }
 
-const simplify = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
-
 /** The label of `group` whose name matches `name`, ignoring case, spaces and dashes. */
 function findLabel(labels: TicketLabel[], name: string, group: string): TicketLabel {
-  const found = labels.find((l) => simplify(l.name) === simplify(name));
+  const found = labels.find((l) => sameName(l.name, name));
   if (found) return found;
   const names = labels.map((l) => l.name).join(", ") || "none";
   throw new Refusal(`no "${name}" label in the "${group}" label group (available: ${names})`);
@@ -150,8 +150,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const planning = findLabel(phaseLabels, "planning", groups.phaseGroup);
   const runtime = findLabel(runtimeLabels, input.runtime, groups.runtimeGroup);
   const branch = input.branch ?? ticket.branchName;
-  const warnings = [...startWarnings(ctx), ...ticket.warnings];
+  const warnings = [...ticket.warnings];
   const lines: string[] = [];
+
+  if (ticket.commentsTruncated)
+    throw new Refusal(
+      `${ticket.id} has more comments than Armada reads, so an older claim may be hidden; claim it by hand`,
+    );
+  const viewer = await linear.viewer();
+  const inProgress = ticket.statusType === "started" ? null : firstState(ticket.states, "started");
 
   const held = activeClaimComments(ticket.comments);
   const holder = held[0]?.claim;
@@ -182,8 +189,6 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
     lines.push(`${ticket.id} is already claimed by this session (${input.handle}); labels and state repaired.`);
   }
 
-  const viewer = await linear.viewer();
-  const inProgress = ticket.statusType === "started" ? null : firstState(ticket.states, "started");
   if (ticket.statusType !== "started" && !inProgress)
     warnings.push(`the team of ${ticket.id} has no started state; the ticket was not moved`);
   // On resume the phase label may already have moved on: keep it.
@@ -218,7 +223,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       project: config.project.slug,
       ticket: ticket.id,
       kind: "claim",
-      phase: "planning",
+      phase: phaseLabel?.name ?? ticket.agentPhase,
       runtime: runtime.name,
       handle: input.handle,
       at,
@@ -267,7 +272,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
   const ticket = await readOpenTicket(ctx, input.ticket);
   const problem = transitionProblem(ticket.agentPhase, input.phase);
   if (problem) throw new Refusal(`${ticket.id}: ${problem}`);
-  const warnings = [...startWarnings(ctx), ...ticket.warnings];
+  const warnings = [...ticket.warnings];
   const message = input.message?.trim() ?? "";
   let pr = resolvePr(ticket, config.github.repository, input.pr);
   const sha = input.sha?.trim().toLowerCase() || null;
@@ -302,15 +307,15 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     body = rest.join("\n").trim();
   }
 
+  // Every lookup that can refuse happens before the first write.
+  const target =
+    ticket.agentPhase === input.phase
+      ? null
+      : findLabel(await linear.groupLabels(groups.phaseGroup, ticket.teamId), input.phase, groups.phaseGroup);
   if (pr && input.pr && !ticket.prs.some((p) => p.url === pr?.url)) {
     await linear.linkUrl(ticket.uuid, pr.url, pr.title || `Pull request #${pr.number}`);
   }
-  if (ticket.agentPhase !== input.phase) {
-    const target = findLabel(
-      await linear.groupLabels(groups.phaseGroup, ticket.teamId),
-      input.phase,
-      groups.phaseGroup,
-    );
+  if (target) {
     await linear.updateTicket(ticket.uuid, {
       addLabelIds: [target.id],
       removeLabelIds: others(ticket, groups.phaseGroup, target.id),
@@ -338,11 +343,9 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       at,
     });
     if (input.phase === "ready-to-merge")
-      await addInboxItem(db, {
+      await putHandBack(db, {
         project: config.project.slug,
         ticket: ticket.id,
-        kind: "hand-back",
-        recipient: "coordinator",
         author: null,
         body: statusLine,
         at,
@@ -361,7 +364,7 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   const ticket = await readOpenTicket(ctx, input.ticket);
   if (!ticket.agentPhase && !ticket.agentRuntime && !activeClaimComments(ticket.comments).length)
     throw new Refusal(`${ticket.id} is not claimed; there is nothing to release`);
-  const warnings = [...startWarnings(ctx), ...ticket.warnings];
+  const warnings = [...ticket.warnings];
   const back = ticket.statusType === "started" ? firstState(ticket.states, "unstarted", "backlog") : null;
   await linear.updateTicket(ticket.uuid, {
     ...(back ? { stateId: back.id } : {}),

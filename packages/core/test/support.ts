@@ -154,6 +154,7 @@ export class FakeLinear implements LinearWriter {
       states: STATES,
       comments: [],
       prs: [],
+      commentsTruncated: false,
       warnings: [],
       ...over,
     };
@@ -164,7 +165,10 @@ export class FakeLinear implements LinearWriter {
   /** Adds a comment as if another agent had posted it at `at`. */
   post(id: string, body: string, at: string, author = "Other Worker"): Comment {
     const t = this.get(id);
-    const c = normalizeComment({ id: `c-${++this.seq}`, createdAt: at, body, user: { name: author } }, id);
+    const c = normalizeComment(
+      { id: `c-${String(++this.seq).padStart(4, "0")}`, createdAt: at, body, user: { name: author } },
+      id,
+    );
     t.comments = [c, ...t.comments].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return c;
   }

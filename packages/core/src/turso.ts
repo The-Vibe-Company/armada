@@ -6,7 +6,12 @@ import type { Client, InStatement } from "@libsql/client";
 
 export type Db = Client;
 
-/** Each migration is applied once, in order, inside one write transaction. */
+/**
+ * Each migration is applied once, in order, inside one write transaction.
+ * Statements must be idempotent (IF NOT EXISTS, OR IGNORE): two processes may
+ * migrate at once, and the second one replays them. Never edit an applied
+ * migration; add a new version.
+ */
 const MIGRATIONS: { version: number; statements: string[] }[] = [
   {
     version: 1,
@@ -84,6 +89,13 @@ export interface TursoOptions {
   token?: string | null;
 }
 
+/** An error message without the token, even if the URL carried one (`?authToken=`). */
+function redact(err: unknown, token: string | null | undefined): string {
+  let message = err instanceof Error ? err.message : String(err);
+  if (token) message = message.split(token).join("***");
+  return message.replace(/(authToken=)[^&\s"']+/gi, "$1***");
+}
+
 /** Opens the database and brings its schema up to date. */
 export async function openTurso({ url, token }: TursoOptions): Promise<Db> {
   let db: Db;
@@ -93,14 +105,13 @@ export async function openTurso({ url, token }: TursoOptions): Promise<Db> {
     const { createClient } = await import("@libsql/client");
     db = createClient(token ? { url, authToken: token } : { url });
   } catch (err) {
-    // The message may quote the URL, never the token.
-    throw new TursoError(`cannot open the Turso database: ${err instanceof Error ? err.message : String(err)}`);
+    throw new TursoError(`cannot open the Turso database: ${redact(err, token)}`);
   }
   try {
     await migrate(db);
   } catch (err) {
     db.close();
-    throw new TursoError(`Turso database unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    throw new TursoError(`Turso database unavailable: ${redact(err, token)}`);
   }
   return db;
 }
@@ -252,8 +263,10 @@ export async function saveRuntimeHandle(
     sql: `INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at)
           VALUES (?, ?, ?, ?, ?, ?, NULL)
           ON CONFLICT (project, ticket) DO UPDATE SET
+            claimed_at = CASE WHEN handle = excluded.handle AND released_at IS NULL
+                              THEN claimed_at ELSE excluded.claimed_at END,
             runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch,
-            claimed_at = excluded.claimed_at, released_at = NULL`,
+            released_at = NULL`,
     args: [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at.toISOString()],
   });
 }
@@ -308,6 +321,19 @@ export async function addInboxItem(db: Db, item: Omit<InboxItem, "id" | "created
     args: [item.project, item.ticket, item.kind, item.recipient, item.author, item.body, item.at.toISOString()],
   });
   return Number(rs.lastInsertRowid);
+}
+
+/** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
+export async function putHandBack(
+  db: Db,
+  item: { project: string; ticket: string; author: string | null; body: string; at: Date },
+): Promise<void> {
+  const updated = await db.execute({
+    sql: `UPDATE inbox_items SET body = ?, author = ?, created_at = ?
+          WHERE project = ? AND ticket = ? AND kind = 'hand-back' AND resolved_at IS NULL`,
+    args: [item.body, item.author, item.at.toISOString(), item.project, item.ticket],
+  });
+  if (!updated.rowsAffected) await addInboxItem(db, { ...item, kind: "hand-back", recipient: "coordinator" });
 }
 
 /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */

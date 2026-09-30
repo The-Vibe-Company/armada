@@ -49,6 +49,8 @@ export interface Ticket {
   comments: Comment[];
   /** Pull requests linked from attachments or the description. */
   prs: PullRequest[];
+  /** True when the ticket has more comments than were read: an older claim may be missing. */
+  commentsTruncated: boolean;
   /** Reads cut short by a cap. */
   warnings: string[];
 }
@@ -86,7 +88,7 @@ const TICKET_QUERY = /* GraphQL */ `
       assignee { id }
       labels(first: 50) { nodes { id name parent { name } } }
       attachments(first: 50) { nodes { title url } }
-      comments(first: ${MAX_COMMENTS}) { pageInfo { hasNextPage } nodes { id createdAt body user { name } } }
+      comments(first: ${MAX_COMMENTS}, orderBy: createdAt) { pageInfo { hasNextPage } nodes { id createdAt body user { name } } }
     }
   }`;
 
@@ -152,6 +154,7 @@ export function normalizeTicket(raw: RawTicket, groups: LabelGroups): Ticket {
       .map((c) => normalizeComment(c, raw.identifier))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     prs: [...prs.values()].sort((a, b) => a.number - b.number),
+    commentsTruncated: !!raw.comments.pageInfo?.hasNextPage,
     warnings: raw.comments.pageInfo?.hasNextPage
       ? [`${raw.identifier}: more than ${MAX_COMMENTS} comments; older claims are not read`]
       : [],

@@ -15,7 +15,7 @@ function setup(o: { turso?: Db | null; pull?: PullRequest | null } = {}) {
   const ctx: WorkerContext = {
     config,
     linear,
-    turso: o.turso ?? null,
+    turso: async () => (o.turso ? { db: o.turso, warning: null } : { db: null, warning: "Turso is not configured" }),
     readPull: async () => (o.pull === undefined ? null : o.pull),
     now: () => NOW,
   };
@@ -89,9 +89,10 @@ describe("claim", () => {
   test("claiming again from the same session repairs labels without a second claim", async () => {
     const { linear, ctx } = setup();
     linear.add("DEMO-7");
-    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" });
+    // An underscore survives the round trip through the comment.
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws_1/s_1" });
     linear.get("DEMO-7").labels = [];
-    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" });
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws_1/s_1" });
     expect(labelsOf(linear, "DEMO-7")).toEqual(["planning", "Conductor"]);
     expect(linear.get("DEMO-7").comments).toHaveLength(1);
   });
@@ -176,6 +177,8 @@ describe("report", () => {
       'update DEMO-7 {"addLabelIds":["phase-ready-to-merge"],"removeLabelIds":["phase-shipping"]}',
       `comment DEMO-7 Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
     ]);
+    // Handing back again refreshes the coordinator's item instead of adding one.
+    await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD });
     const handBack = await db.execute("SELECT kind, recipient FROM inbox_items WHERE ticket = 'DEMO-7'");
     expect(handBack.rows.map((r) => [r.kind, r.recipient])).toEqual([["hand-back", "coordinator"]]);
   });
@@ -184,7 +187,7 @@ describe("report", () => {
     const { linear, ctx } = await claimed();
     const broken = { execute: async () => Promise.reject(new Error("connection reset")) } as unknown as Db;
     const out = await reportPhase(
-      { ...ctx, turso: broken },
+      { ...ctx, turso: async () => ({ db: broken, warning: null }) },
       { ticket: "DEMO-7", phase: "planning", message: "reading" },
     );
     expect(linear.writes.at(-1)).toBe("comment DEMO-7 Agent status: planning — reading");
