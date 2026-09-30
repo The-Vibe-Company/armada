@@ -24,10 +24,9 @@ function prompt(question: string, { hidden }: { hidden: boolean }): Promise<stri
     const onData = (chunk: string) => {
       const before = line.answer;
       line = feedLine(line, chunk);
-      if (line.result === undefined) {
-        if (!hidden) process.stderr.write(echo(before, line.answer));
-        return;
-      }
+      // Echo before finishing, so a pasted answer ending with Enter is shown too.
+      if (!hidden && line.result !== null) process.stderr.write(echo(before, line.answer));
+      if (line.result === undefined) return;
       stdin.off("data", onData);
       stdin.setRawMode(false);
       stdin.pause();
