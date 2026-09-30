@@ -6,11 +6,35 @@ import type { AgentPhase, CoordinatorState, LaneFlag, RequestRefusalCode, Waitin
 export const LANGUAGES = ["en", "fr"] as const;
 export type Language = (typeof LANGUAGES)[number];
 export const LANGUAGE_COOKIE = "armada-lang";
-/** The name that signs the viewer's requests. */
+/** The name that signs the viewer's requests under the shared-password gate. */
 export const AUTHOR_COOKIE = "armada-author";
 
 /** Why a request was not recorded: core's refusals, plus what the dashboard itself can hit. */
 export type RequestError = RequestRefusalCode | "unknown-project" | "live-down" | "failed";
+
+/** Why signing in or creating an account did not work (a `?error=` of the sign-in page). */
+export const AUTH_ERRORS = [
+  "not-invited",
+  "invalid",
+  "unverified",
+  "github-unverified",
+  "limited",
+  "exists",
+  "weak",
+  "github",
+  "failed",
+] as const;
+export type AuthError = (typeof AUTH_ERRORS)[number];
+
+/** Why an organization change did not work (a `?error=` of the organization pages). */
+export const ORG_ERRORS = ["forbidden", "member", "invalid", "gone", "failed"] as const;
+export type OrgError = (typeof ORG_ERRORS)[number];
+
+/** What an organization change did (a `?done=` of the organization page). */
+export const ORG_NOTICES = ["invited", "cancelled", "updated", "removed"] as const;
+export type OrgNotice = (typeof ORG_NOTICES)[number];
+
+type Role = "owner" | "admin" | "member";
 
 export const isLanguage = (v: unknown): v is Language => LANGUAGES.includes(v as Language);
 
@@ -121,7 +145,8 @@ const en = {
   githubMissing: "GitHub not read",
   language: "Language",
   filterLabel: "Show one project",
-  auth: {
+  // The shared-password gate (THE-834), used while accounts are not configured.
+  gate: {
     title: "Sign in",
     kicker: "Private fleet",
     heading: "This fleet is private",
@@ -134,9 +159,103 @@ const en = {
     logout: "Log out",
     unconfiguredTitle: "The dashboard is locked",
     unconfigured: (variable: string) =>
-      `No password is configured, so this dashboard shows nothing. Set ${variable} in the deployment's environment variables, then redeploy.`,
+      `Neither accounts nor a password are configured, so this dashboard shows nothing. Set ${variable}, or the ARMADA_AUTH_ variables for accounts, in the deployment's environment variables, then redeploy.`,
     offInProduction: (variable: string) =>
       `${variable}=off only works in local development. Set a real password in the deployment's environment variables, then redeploy.`,
+  },
+  auth: {
+    title: "Sign in",
+    kicker: "Private fleet",
+    heading: "Sign in to Armada",
+    lead: "Your organization's tickets, agents and pull requests in flight, for its members only.",
+    github: "Continue with GitHub",
+    orEmail: "or with your email",
+    email: "Email",
+    password: "Password",
+    passwordHint: "12 characters at least",
+    name: "Your name",
+    signIn: "Sign in",
+    signUp: "Create the account",
+    toSignUp: "Invited, and no account yet? Create one",
+    toSignIn: "Already have an account? Sign in",
+    sent: "If this address is invited, a link to confirm it is on its way. Open it to finish signing in.",
+    hint: "Accounts are by invitation: ask an owner of your organization to invite your address.",
+    logout: "Sign out",
+    errors: {
+      "not-invited": "This address has no invitation. Ask an owner of your organization to invite it, then try again.",
+      invalid: "Wrong email or password.",
+      unverified: "Confirm your address first, with the link sent when the account was created.",
+      "github-unverified": "GitHub has not verified this address. Verify it in your GitHub settings, then try again.",
+      limited: "Too many attempts. Wait a minute, then try again.",
+      exists: "An account already uses this address. Sign in instead.",
+      weak: "The password needs 12 characters at least.",
+      github: "Signing in with GitHub did not complete. Try again.",
+      failed: "Signing in did not work. Try again in a moment.",
+    } satisfies Record<AuthError, string>,
+    incompleteTitle: "The dashboard is locked",
+    incomplete: (variables: string) =>
+      `Accounts are only partly configured, so this dashboard shows nothing. Set ${variables} in the deployment's environment variables, then redeploy.`,
+    unavailableTitle: "Sign-in is unavailable",
+    unavailable: "The accounts database cannot be reached, so nobody can sign in right now. Try again in a moment.",
+  },
+  org: {
+    nav: "Organization",
+    back: "Back to the fleet",
+    welcomeTitle: "Welcome",
+    welcomeHeading: (name: string) => `Welcome, ${name}`,
+    createLead:
+      "Create your organization, then invite the others. The projects already registered on this Armada join the first organization.",
+    orgName: "Organization name",
+    create: "Create the organization",
+    waitLead:
+      "Your account is not in an organization yet. Ask an owner to invite your address, then open the link of the invitation.",
+    invitationsForYou: "Invitations for you",
+    invitedTo: (org: string, role: string) => `${org}, as ${role}`,
+    accept: "Accept",
+    decline: "Decline",
+    invitationTitle: "Invitation",
+    invitationHeading: (org: string) => `Join ${org}`,
+    invitationLead: (inviter: string, role: string) =>
+      `${inviter} invites you to see and act on this organization's fleet, as ${role}.`,
+    invitationGone:
+      "This invitation cannot be opened: it was accepted, declined, cancelled or it expired, or it was sent to another address.",
+    signedInAs: (email: string) =>
+      `You are signed in as ${email}. An invitation opens only for the address it was sent to: if it was another one, sign out and sign in with it.`,
+    members: "Members",
+    you: "you",
+    roles: { owner: "owner", admin: "admin", member: "member" } satisfies Record<Role, string>,
+    roleHint: "Owners and admins invite and manage members; members see the fleet, answer and ask for launches.",
+    role: "Role",
+    changeRole: "Change",
+    remove: "Remove",
+    invite: "Invite someone",
+    inviteEmail: "Their email",
+    sendInvite: "Invite",
+    invitations: "Pending invitations",
+    noInvitations: "No invitation waits.",
+    copyLink: "Copy link",
+    copied: "Copied",
+    cancel: "Cancel",
+    expires: (date: string) => `expires ${date}`,
+    emailNote:
+      "No email provider is configured yet: invitation emails go to the server log. Copy the link and send it yourself.",
+    onlyAdmins: "Only owners and admins invite and manage members.",
+    yourOrganizations: "Your organizations",
+    switchTo: "Open",
+    current: "current",
+    errors: {
+      forbidden: "Your role does not allow this.",
+      member: "This person is already a member.",
+      invalid: "Check the address and the role.",
+      gone: "This invitation or member no longer exists.",
+      failed: "That did not work. Try again in a moment.",
+    } satisfies Record<OrgError, string>,
+    notices: {
+      invited: "Invitation created. Send its link to the person.",
+      cancelled: "Invitation cancelled.",
+      updated: "Role changed.",
+      removed: "Member removed.",
+    } satisfies Record<OrgNotice, string>,
   },
   answer: "Answer",
   answerSent: "answer sent",
@@ -283,7 +402,7 @@ const fr: Strings = {
   githubMissing: "GitHub non lu",
   language: "Langue",
   filterLabel: "Afficher un projet",
-  auth: {
+  gate: {
     title: "Connexion",
     kicker: "Flotte privée",
     heading: "Cette flotte est privée",
@@ -296,9 +415,106 @@ const fr: Strings = {
     logout: "Se déconnecter",
     unconfiguredTitle: "Le tableau de bord est verrouillé",
     unconfigured: (variable) =>
-      `Aucun mot de passe n'est configuré : ce tableau de bord n'affiche rien. Définis ${variable} dans les variables d'environnement du déploiement, puis redéploie.`,
+      `Ni comptes ni mot de passe ne sont configurés : ce tableau de bord n'affiche rien. Définis ${variable}, ou les variables ARMADA_AUTH_ des comptes, dans les variables d'environnement du déploiement, puis redéploie.`,
     offInProduction: (variable) =>
       `${variable}=off ne marche qu'en développement local. Définis un vrai mot de passe dans les variables d'environnement du déploiement, puis redéploie.`,
+  },
+  auth: {
+    title: "Connexion",
+    kicker: "Flotte privée",
+    heading: "Se connecter à Armada",
+    lead: "Les tickets, agents et pull requests en cours de ton organisation, pour ses membres seulement.",
+    github: "Continuer avec GitHub",
+    orEmail: "ou avec ton email",
+    email: "Email",
+    password: "Mot de passe",
+    passwordHint: "12 caractères au moins",
+    name: "Ton nom",
+    signIn: "Se connecter",
+    signUp: "Créer le compte",
+    toSignUp: "Invité, et pas encore de compte ? Crée-le",
+    toSignIn: "Déjà un compte ? Connecte-toi",
+    sent: "Si cette adresse est invitée, un lien pour la confirmer arrive. Ouvre-le pour finir la connexion.",
+    hint: "Les comptes sont sur invitation : demande à un propriétaire de ton organisation d'inviter ton adresse.",
+    logout: "Se déconnecter",
+    errors: {
+      "not-invited":
+        "Cette adresse n'a pas d'invitation. Demande à un propriétaire de ton organisation de l'inviter, puis réessaie.",
+      invalid: "Email ou mot de passe incorrect.",
+      unverified: "Confirme d'abord ton adresse, avec le lien envoyé à la création du compte.",
+      "github-unverified": "GitHub n'a pas vérifié cette adresse. Vérifie-la dans tes réglages GitHub, puis réessaie.",
+      limited: "Trop de tentatives. Attends une minute, puis réessaie.",
+      exists: "Un compte utilise déjà cette adresse. Connecte-toi plutôt.",
+      weak: "Le mot de passe doit compter 12 caractères au moins.",
+      github: "La connexion avec GitHub n'a pas abouti. Réessaie.",
+      failed: "La connexion n'a pas marché. Réessaie dans un instant.",
+    },
+    incompleteTitle: "Le tableau de bord est verrouillé",
+    incomplete: (variables) =>
+      `Les comptes ne sont configurés qu'en partie : ce tableau de bord n'affiche rien. Définis ${variables} dans les variables d'environnement du déploiement, puis redéploie.`,
+    unavailableTitle: "Connexion indisponible",
+    unavailable:
+      "La base des comptes est injoignable : personne ne peut se connecter pour l'instant. Réessaie dans un instant.",
+  },
+  org: {
+    nav: "Organisation",
+    back: "Retour à la flotte",
+    welcomeTitle: "Bienvenue",
+    welcomeHeading: (name) => `Bienvenue, ${name}`,
+    createLead:
+      "Crée ton organisation, puis invite les autres. Les projets déjà enregistrés sur cet Armada rejoignent la première organisation.",
+    orgName: "Nom de l'organisation",
+    create: "Créer l'organisation",
+    waitLead:
+      "Ton compte n'est dans aucune organisation pour l'instant. Demande à un propriétaire d'inviter ton adresse, puis ouvre le lien de l'invitation.",
+    invitationsForYou: "Invitations pour toi",
+    invitedTo: (org, role) => `${org}, comme ${role}`,
+    accept: "Accepter",
+    decline: "Refuser",
+    invitationTitle: "Invitation",
+    invitationHeading: (org) => `Rejoindre ${org}`,
+    invitationLead: (inviter, role) =>
+      `${inviter} t'invite à voir la flotte de cette organisation et à y agir, comme ${role}.`,
+    invitationGone:
+      "Cette invitation ne peut pas s'ouvrir : acceptée, refusée, annulée, expirée, ou envoyée à une autre adresse.",
+    signedInAs: (email) =>
+      `Tu es connecté comme ${email}. Une invitation ne s'ouvre que pour l'adresse à laquelle elle a été envoyée : si c'en était une autre, déconnecte-toi et connecte-toi avec elle.`,
+    members: "Membres",
+    you: "toi",
+    roles: { owner: "propriétaire", admin: "admin", member: "membre" },
+    roleHint:
+      "Propriétaires et admins invitent et gèrent les membres ; les membres voient la flotte, répondent et demandent des lancements.",
+    role: "Rôle",
+    changeRole: "Changer",
+    remove: "Retirer",
+    invite: "Inviter quelqu'un",
+    inviteEmail: "Son email",
+    sendInvite: "Inviter",
+    invitations: "Invitations en attente",
+    noInvitations: "Aucune invitation en attente.",
+    copyLink: "Copier le lien",
+    copied: "Copié",
+    cancel: "Annuler",
+    expires: (date) => `expire le ${date}`,
+    emailNote:
+      "Aucun fournisseur d'email n'est configuré : les emails d'invitation vont dans le journal du serveur. Copie le lien et envoie-le toi-même.",
+    onlyAdmins: "Seuls les propriétaires et les admins invitent et gèrent les membres.",
+    yourOrganizations: "Tes organisations",
+    switchTo: "Ouvrir",
+    current: "actuelle",
+    errors: {
+      forbidden: "Ton rôle ne le permet pas.",
+      member: "Cette personne est déjà membre.",
+      invalid: "Vérifie l'adresse et le rôle.",
+      gone: "Cette invitation ou ce membre n'existe plus.",
+      failed: "Ça n'a pas marché. Réessaie dans un instant.",
+    },
+    notices: {
+      invited: "Invitation créée. Envoie son lien à la personne.",
+      cancelled: "Invitation annulée.",
+      updated: "Rôle changé.",
+      removed: "Membre retiré.",
+    },
   },
   answer: "Répondre",
   answerSent: "réponse envoyée",

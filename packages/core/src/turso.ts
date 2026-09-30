@@ -118,6 +118,20 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX IF NOT EXISTS inbox_requests_by_question ON inbox_requests (project, question)",
     ],
   },
+  {
+    version: 5,
+    statements: [
+      // The organization a project belongs to, as the dashboard's accounts
+      // database names it. A table of its own, not a projects column, so
+      // replaying the migration stays idempotent. A project without a row has
+      // no organization yet (see `assignUnownedProjects`).
+      `CREATE TABLE IF NOT EXISTS project_organizations (
+        project TEXT PRIMARY KEY,
+        organization TEXT NOT NULL,
+        assigned_at TEXT NOT NULL
+      )`,
+    ],
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
@@ -196,6 +210,8 @@ export interface ProjectInput {
 }
 
 export interface ProjectRecord extends ProjectInput {
+  /** The organization the project belongs to; null until one is assigned. */
+  organization: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -225,19 +241,37 @@ export async function ensureProject(db: Db, p: ProjectInput, now: Date = new Dat
   });
 }
 
-/** Every registered project, by slug. */
+/** Every registered project, by slug, with the organization it belongs to. */
 export async function listProjects(db: Db): Promise<ProjectRecord[]> {
   const rs = await db.execute(
-    "SELECT slug, name, repository, program_root, created_at, updated_at FROM projects ORDER BY slug",
+    `SELECT p.slug, p.name, p.repository, p.program_root, o.organization, p.created_at, p.updated_at
+     FROM projects p LEFT JOIN project_organizations o ON o.project = p.slug ORDER BY p.slug`,
   );
   return rs.rows.map((r) => ({
     slug: String(r.slug),
     name: String(r.name),
     repository: String(r.repository),
     programRoot: String(r.program_root),
+    organization: r.organization === null ? null : String(r.organization),
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
   }));
+}
+
+/**
+ * Gives every project that has no organization to `organization`, and returns
+ * how many it assigned. A project that has one keeps it: running this again,
+ * or at the same time from two servers, changes nothing. The dashboard runs it
+ * with the deployment's first organization: the one-time move of the projects
+ * registered before accounts, and of those the CLI registers until it signs in.
+ */
+export async function assignUnownedProjects(db: Db, organization: string, now: Date = new Date()): Promise<number> {
+  const rs = await db.execute({
+    sql: `INSERT OR IGNORE INTO project_organizations (project, organization, assigned_at)
+          SELECT slug, ?, ? FROM projects WHERE slug NOT IN (SELECT project FROM project_organizations)`,
+    args: [organization, now.toISOString()],
+  });
+  return rs.rowsAffected;
 }
 
 // ------------------------------------------------------------------ events

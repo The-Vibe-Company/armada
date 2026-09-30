@@ -12,8 +12,16 @@ import type {
   WaitingItem,
 } from "@armada/core/read";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { signOut } from "@/app/auth-actions";
 import { LANGUAGE_COOKIE, LANGUAGES, type Language, STRINGS, type Strings } from "@/lib/i18n";
 import { type ActionContext, QuestionBlock, ReadyBlock, splitQuestion } from "./Actions";
+
+/** The signed-in person and their organization, as the top bar shows them. */
+export interface Account {
+  name: string;
+  email: string;
+  organization: string;
+}
 
 const POLL_MS = 5_000;
 const FRESH_MS = 20_000;
@@ -101,14 +109,18 @@ export function Fleet({
   initial,
   initialLanguage,
   initialProject,
+  account = null,
   canLogOut = false,
   initialAuthor,
 }: {
   initial: FleetOverview;
   initialLanguage: Language;
   initialProject: string | null;
+  /** The signed-in person, with accounts; null under the shared-password gate. */
+  account?: Account | null;
+  /** The shared-password gate's log out. */
   canLogOut?: boolean;
-  /** The name that signs the viewer's requests; empty until they give one. */
+  /** The name that signs the viewer's requests; empty until they give one (password gate only). */
   initialAuthor: string;
 }) {
   const { overview, checkedAt, failed, pending, poll, version } = useLiveOverview(initial);
@@ -144,7 +156,7 @@ export function Fleet({
   const profiles = new Map(overview.projects.map((p) => [p.slug, p.profiles]));
   const ctx: ActionContext = {
     t,
-    signer: { name: author, set: setAuthor },
+    signer: { name: author, set: setAuthor, fixed: account !== null },
     live: overview.live.state === "ok" && !failed,
     now,
     version,
@@ -166,6 +178,7 @@ export function Fleet({
         pending={pending}
         onRefresh={() => void poll()}
         canLogOut={canLogOut}
+        account={account}
       />
       <main className="page">
         {overview.live.state === "unreachable" && (
@@ -291,6 +304,7 @@ function TopBar({
   pending,
   onRefresh,
   canLogOut,
+  account,
 }: {
   t: Strings;
   lang: Language;
@@ -302,6 +316,7 @@ function TopBar({
   pending: boolean;
   onRefresh: () => void;
   canLogOut: boolean;
+  account: Account | null;
 }) {
   const state = failed ? "offline" : overview.live.state;
   const label = failed ? t.offline : t.live[overview.live.state];
@@ -348,9 +363,20 @@ function TopBar({
             </button>
           ))}
         </fieldset>
+        {account && (
+          <div className="account">
+            <a href="/organization" className="account-org" title={t.org.nav}>
+              <span className="account-name">{account.organization}</span>
+              <span className="account-user">{account.name}</span>
+            </a>
+            <form action={signOut} className="logout">
+              <button type="submit">{t.auth.logout}</button>
+            </form>
+          </div>
+        )}
         {canLogOut && (
           <form method="post" action="/api/auth/logout" className="logout">
-            <button type="submit">{t.auth.logout}</button>
+            <button type="submit">{t.gate.logout}</button>
           </form>
         )}
       </div>

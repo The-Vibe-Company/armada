@@ -12,7 +12,7 @@ import {
   resolveCredentials,
 } from "@armada/core/read";
 import { after } from "next/server";
-import { requireSession } from "./auth-server";
+import { requireFleetAccess, scopeOf } from "./access";
 import { demoSources } from "./demo/sources";
 import { type FleetCache, type LoadOptions, loadOverview, newCache, type ProjectRef, type Sources } from "./fleet-data";
 import { isLanguage, type Language } from "./i18n";
@@ -76,15 +76,16 @@ export function loadOptions(): LoadOptions {
   };
 }
 
+/** The Fleet overview the viewer may read: their organization's projects, or every project under the password gate. */
 export async function getOverview(): Promise<FleetOverview> {
-  await requireSession();
-  return loadOverview(loadOptions());
+  return loadOverview(loadOptions(), scopeOf(await requireFleetAccess()));
 }
 
 /**
- * Who signs the requests: the name the viewer gave (cookie), else
- * ARMADA_DASHBOARD_AUTHOR. The dashboard password is shared and carries no
- * identity, so the name is declared, not proven.
+ * Under the shared-password gate, who signs the requests: the name the viewer
+ * gave (cookie), else ARMADA_DASHBOARD_AUTHOR. The password is shared and
+ * carries no identity, so the name is declared, not proven. With accounts, the
+ * signed-in person signs instead (`signatureOf`).
  */
 export function authorOf(cookie: string | undefined): string {
   return (cookie ?? process.env.ARMADA_DASHBOARD_AUTHOR ?? "").replace(/\s+/g, " ").trim().slice(0, 80);

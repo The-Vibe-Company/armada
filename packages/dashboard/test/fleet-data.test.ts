@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   type ArmadaConfig,
   addInboxItem,
+  assignUnownedProjects,
   configTemplate,
   type Db,
   type Issue,
@@ -13,10 +14,18 @@ import {
   upsertProject,
 } from "@armada/core/read";
 import { closeTempTurso, issue, tempTurso } from "../../core/test/support.ts";
-import { type LoadOptions, loadOverview, newCache, type Sources } from "../lib/fleet-data.ts";
-import { submitAnswer, submitLaunch } from "../lib/requests.ts";
+import { type LoadOptions, loadOverview as load, newCache, type Scope, type Sources } from "../lib/fleet-data.ts";
+import { submitAnswer as answer, submitLaunch as launchReq } from "../lib/requests.ts";
 
 afterEach(closeTempTurso);
+
+/** A member of the deployment's first organization, the one that owns every project in these tests. */
+const HOME: Scope = { organization: "org-home", home: "org-home" };
+const loadOverview = (opts: LoadOptions, scope: Scope = HOME) => load(opts, scope);
+const submitAnswer = (opts: LoadOptions, form: Parameters<typeof answer>[2], scope: Scope = HOME) =>
+  answer(opts, scope, form);
+const submitLaunch = (opts: LoadOptions, form: Parameters<typeof launchReq>[2], scope: Scope = HOME) =>
+  launchReq(opts, scope, form);
 
 const WIDGETS: ProjectInput = { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "WID-1" };
 const T0 = Date.parse("2026-03-04T10:00:00Z");
@@ -154,6 +163,57 @@ describe("live Fleet reading", () => {
     w.advance(5_000);
     await loadOverview(w.opts);
     expect(attempts).toBe(2);
+  });
+});
+
+describe("organizations", () => {
+  test("each organization sees only its projects; projects registered without one go to the first organization", async () => {
+    const { db } = await tempTurso();
+    await upsertProject(db, WIDGETS);
+    const other: Scope = { organization: "org-other", home: "org-home" };
+    const w = world(db);
+
+    // Before the first organization exists, nobody is shown an unassigned project.
+    expect((await loadOverview(w.opts, { organization: "org-home", home: null })).projects).toEqual([]);
+    expect((await loadOverview(w.opts, other)).projects).toEqual([]);
+    expect((await loadOverview(w.opts)).projects.map((p) => p.slug)).toEqual(["widgets"]);
+    // The move is recorded: it no longer depends on which organization is first.
+    expect((await loadOverview(w.opts, { organization: "org-home", home: "org-other" })).projects).toHaveLength(1);
+
+    // A request names a project the viewer cannot see: refused as unknown, nothing written.
+    const launch = { project: "widgets", ticket: "WID-3", profile: null, author: "Ada <ada@example.test>" };
+    expect(await submitLaunch(w.opts, launch, other)).toMatchObject({ ok: false, code: "unknown-project" });
+    expect(await submitLaunch(w.opts, launch)).toMatchObject({ ok: true });
+
+    // ARMADA_REPOSITORIES, shown while the registry was never read, belongs to the first organization too.
+    const cold = world(null);
+    expect((await loadOverview(cold.opts)).projects.map((p) => p.slug)).toEqual(["widgets"]);
+    expect((await loadOverview(cold.opts, other)).projects).toEqual([]);
+  });
+});
+
+describe("organizations: a repository naming another project", () => {
+  test("shows none of that project's live data to the other organization", async () => {
+    const { db } = await tempTurso();
+    await upsertProject(db, WIDGETS);
+    await assignUnownedProjects(db, "org-home");
+    // Registered by another organization, but its armada.toml says "widgets" (every config in this world does).
+    await upsertProject(db, { slug: "impostor", name: "Impostor", repository: "acme/impostor", programRoot: "IMP-1" });
+    await assignUnownedProjects(db, "org-other");
+    await addInboxItem(db, {
+      project: "widgets",
+      ticket: "WID-2",
+      kind: "question",
+      recipient: "coordinator",
+      author: "ws/2",
+      body: "Which table?",
+      at: new Date(T0),
+    });
+    const w = world(db);
+    expect((await loadOverview(w.opts)).waiting.map((i) => i.kind)).toEqual(["question"]);
+    const other = await loadOverview(w.opts, { organization: "org-other", home: "org-home" });
+    expect(other.projects).toHaveLength(1);
+    expect(other.waiting).toEqual([]);
   });
 });
 

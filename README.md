@@ -129,12 +129,12 @@ armada merge 34             # or the pull request URL; --ticket ABC-12 when the 
 
 ## Watch the fleet (dashboard)
 
-`packages/dashboard` is a Next.js app with one page: the Fleet of every project registered in Turso.
+`packages/dashboard` is a Next.js app whose main page is the Fleet of the projects registered in Turso. With accounts, each person sees the projects of their organization; under the shared password, every project.
 
 - **Waiting for you** comes first, across projects. It lists questions, blocked workers, plans to approve, hand-backs and silent workers, the most urgent first.
 - **At work** has one row per ticket in flight. A row shows the project, the runtime and session, the six-step phase pipeline, time in phase, the last report, the pull request with its CI, and the flags (red CI, conflict, double claim).
 - A filter shows one project. Each project shows whether its coordinator is active, from its last inbox read.
-- **Answer** a question from its line in Waiting for you (an option of the question fills the answer in). **Ready to launch** lists the frontier with a Launch button and a profile picker, the routed profile preselected. Neither reaches a worker: each becomes a request in that project's coordinator inbox, signed with the name the viewer gives (remembered in a cookie; default `ARMADA_DASHBOARD_AUTHOR`), and shows as pending until the coordinator carries it out. The dashboard holds no runtime credential.
+- **Answer** a question from its line in Waiting for you (an option of the question fills the answer in). **Ready to launch** lists the frontier with a Launch button and a profile picker, the routed profile preselected. Neither reaches a worker: each becomes a request in that project's coordinator inbox, signed with the signed-in person's name and address (with accounts) or with the name the viewer gives (under the shared password; remembered in a cookie, default `ARMADA_DASHBOARD_AUTHOR`), and shows as pending until the coordinator carries it out. The dashboard holds no runtime credential.
 - It stays live without a reload. Linear and GitHub are read at most once a minute per project. Turso is read on every 5-second poll, so a worker's `armada report` shows within seconds.
 - When Turso is unreachable, a banner says so and the view falls back to Linear and GitHub.
 - The interface is in English or French (`ARMADA_DASHBOARD_LANGUAGE`, or the EN/FR switch).
@@ -148,18 +148,50 @@ ARMADA_DASHBOARD_PASSWORD=off ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:
 bun run demo:report WID-12 shipping "Opened the pull request"                # watch the row change
 ```
 
+The same with accounts (email and password work in development only; confirmation links are printed in the server log):
+
+```sh
+ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:.demo/armada.db \
+ARMADA_AUTH_DATABASE_URL=file:.demo/auth.db ARMADA_AUTH_SECRET="$(openssl rand -base64 32)" \
+ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com bun run dev
+```
+
 **Deploy on Vercel.** Create a project from this repository and set these options:
 
 - Root Directory: `packages/dashboard`, with files outside the root directory included (the default). The framework preset is Next.js, and Bun installs the workspace from `bun.lock`.
-- Environment variables: `ARMADA_DASHBOARD_PASSWORD`, `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
+- Environment variables: the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
 - The keys stay on the server; the browser only receives the fleet reading.
 
-**Password.** The dashboard asks for `ARMADA_DASHBOARD_PASSWORD` before it shows anything, on every host, a custom domain included. Every page, the polling route and every server action answer 401 or send the viewer to the login page until then; only the build's static files are public.
+**Accounts.** People sign in with GitHub (or email and password where enabled) and belong to organizations, with the roles owner, admin and member. Accounts, sessions, organizations and invitations live in a libSQL database of their own, separate from the fleet's Turso database; its schema is applied on first use. Accounts turn on only when every required variable below is set. With none of them set, the shared password applies, unchanged; with some but not all, the dashboard fails closed (503, naming the missing ones) rather than fall back to a password that shows every organization's projects.
+
+| Variable | What |
+| --- | --- |
+| `ARMADA_AUTH_DATABASE_URL` | The accounts database, `libsql://...` (a new Turso database, not the fleet's), or `file:` locally |
+| `ARMADA_AUTH_DATABASE_TOKEN` | Its token (not needed for `file:`) |
+| `ARMADA_AUTH_SECRET` | Signs sessions: 32 characters at least, for example `openssl rand -base64 32`. Changing it signs everyone out |
+| `ARMADA_AUTH_URL` | The dashboard's public address, for example `https://armada.example.com`: GitHub's callback and the links in emails |
+| `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET` | A GitHub OAuth app (GitHub > Settings > Developer settings > OAuth Apps) whose callback URL is `<ARMADA_AUTH_URL>/api/auth/callback/github` |
+| `ARMADA_AUTH_OWNER_EMAILS` | Comma-separated addresses that may create an account without an invitation and create organizations |
+| `ARMADA_AUTH_EMAIL_PASSWORD` | Optional, `on` or `off`: email and password sign-in, with address confirmation. Development only for now (default on): production ignores it until an email provider is plugged in, since confirmation links would sit in the server log |
+
+- Accounts are by invitation: an account is created only for an owner address or an address with a pending invitation. The first owner to sign in creates the organization; the projects already registered, and those the CLI registers until it signs in, join the deployment's first organization. Organizations cannot be deleted.
+- An owner or admin invites by email from the Organization page (the name in the top bar). No email provider is plugged in yet: messages (invitations, address confirmations) go to the server log, and the Organization page shows each pending invitation's link to copy and send. The invited person signs in with that address and accepts.
+- Sessions are HttpOnly, SameSite=Lax cookies (Secure over https) valid 30 days; a revoked session can last up to five minutes (signed cookie cache). Without its accounts database the dashboard fails closed (503).
+
+**Switch from the shared password to accounts** (a deployment that runs on `ARMADA_DASHBOARD_PASSWORD` keeps working until the redeploy of step 4; set every variable before it, since a partial set locks the dashboard):
+
+1. Create the accounts database (`turso db create armada-accounts`, then `turso db show armada-accounts --url` and `turso db tokens create armada-accounts`) and set `ARMADA_AUTH_DATABASE_URL` and `ARMADA_AUTH_DATABASE_TOKEN`.
+2. Create a GitHub OAuth app with the callback URL `https://<your dashboard>/api/auth/callback/github`, and set `ARMADA_AUTH_GITHUB_CLIENT_ID` and `ARMADA_AUTH_GITHUB_CLIENT_SECRET`.
+3. Set `ARMADA_AUTH_SECRET`, `ARMADA_AUTH_URL` and `ARMADA_AUTH_OWNER_EMAILS` (at least the address of your GitHub account), for Production and Preview.
+4. Redeploy. The dashboard now asks for an account; sign in with GitHub, create the organization (the registered projects join it) and invite the others.
+5. Remove `ARMADA_DASHBOARD_PASSWORD` and `ARMADA_DASHBOARD_AUTHOR`: with accounts they are no longer read.
+
+**Password (until accounts are configured).** The dashboard asks for `ARMADA_DASHBOARD_PASSWORD` before it shows anything, on every host, a custom domain included. Every page, the polling route and every server action answer 401 or send the viewer to the login page until then; only the build's static files are public.
 
 - Use a long random value, for example `openssl rand -base64 24`, and set it for the Production and Preview environments. It stays on the server: never prefix it with `NEXT_PUBLIC_`.
 - A correct password sets a signed session cookie (HttpOnly, Secure, SameSite=Lax) for 30 days. The signature is derived from the password, so changing it and redeploying logs every browser out. "Log out" in the top bar ends one session.
 - Five wrong passwords from one address block it for 15 minutes, counted per server instance.
-- Without the variable, the dashboard fails closed: every route answers 503 and names the variable. `ARMADA_DASHBOARD_PASSWORD=off` turns the password off for local development only; a production server refuses it the same way.
+- Without the variable and without accounts, the dashboard fails closed: every route answers 503 and names the variable. `ARMADA_DASHBOARD_PASSWORD=off` turns the password off for local development only; a production server refuses it the same way.
 - Vercel Authentication (Settings > Deployment Protection) is a useful second layer, but its standard protection leaves the production custom domain open (covering it takes a paid option), so it cannot replace the password.
 
 One deployment covers one Linear workspace and one GitHub organization: its keys must read every registered project.

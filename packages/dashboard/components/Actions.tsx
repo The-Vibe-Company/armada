@@ -14,6 +14,8 @@ import type { RequestResult } from "@/lib/requests";
 export interface Signer {
   name: string;
   set: (name: string) => void;
+  /** The signed-in person signs (accounts): the server ignores any name in the form, so none is asked. */
+  fixed: boolean;
 }
 
 /** What the page tells each action: whether requests can be written, and how to refresh after one. */
@@ -74,9 +76,23 @@ function useSent<T>(version: number) {
   return [current, (value: T) => setSent({ ...value, version: latest.current })] as const;
 }
 
+/** Who the request just sent was signed by; a typed name is remembered for the next one. */
+function signerOf(signer: Signer, form: FormData): string {
+  if (signer.fixed) return signer.name;
+  const typed = String(form.get("author") ?? "");
+  signer.set(typed);
+  return typed;
+}
+
 function SignerField({ t, signer }: { t: Strings; signer: Signer }) {
-  const [editing, setEditing] = useState(!signer.name);
+  const [editing, setEditing] = useState(!signer.name && !signer.fixed);
   const id = useId();
+  if (signer.fixed)
+    return (
+      <span className="signer">
+        {t.signedAs} <b>{signer.name}</b>
+      </span>
+    );
   if (!editing)
     return (
       <span className="signer">
@@ -168,8 +184,7 @@ export function QuestionBlock({
   const [sent, markSent] = useSent<PendingAnswer>(ctx.version);
   const opener = useRef<HTMLButtonElement>(null);
   const req = useRequest(answerQuestion, (form) => {
-    const author = String(form.get("author") ?? "");
-    ctx.signer.set(author);
+    const author = signerOf(ctx.signer, form);
     markSent({ id: 0, body: draft.trim(), author, at: new Date().toISOString() });
     setOpen(false);
     setDraft("");
@@ -350,8 +365,7 @@ function ReadyRow({
   const opener = useRef<HTMLButtonElement>(null);
   const panel = useId();
   const req = useRequest(launchTicket, (form) => {
-    const author = String(form.get("author") ?? "");
-    ctx.signer.set(author);
+    const author = signerOf(ctx.signer, form);
     markSent({ author, at: new Date().toISOString(), profile: profile || null });
     setOpen(false);
     ctx.refresh();

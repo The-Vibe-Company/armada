@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  assignUnownedProjects,
   lastCoordinatorSeen,
   lastEventTimes,
   latestEvents,
@@ -44,9 +45,27 @@ describe("Turso schema", () => {
     expect(widgets).toEqual({
       ...p,
       name: "Widgets 2",
+      organization: null,
       createdAt: "2026-03-01T00:00:00.000Z",
       updatedAt: "2026-03-02T00:00:00.000Z",
     });
+  });
+
+  test("projects without an organization go to the one given, once; a project never changes organization", async () => {
+    const { db } = await tempTurso();
+    const project = (slug: string) => ({ slug, name: slug, repository: `acme/${slug}`, programRoot: "DEMO-1" });
+    await upsertProject(db, project("widgets"));
+    await upsertProject(db, project("gadgets"));
+    expect(await assignUnownedProjects(db, "org-first")).toBe(2);
+    // Registered later, as the CLI does before it signs in.
+    await upsertProject(db, project("sprockets"));
+    expect(await assignUnownedProjects(db, "org-other")).toBe(1);
+    expect(await assignUnownedProjects(db, "org-other")).toBe(0);
+    expect((await listProjects(db)).map((p) => [p.slug, p.organization])).toEqual([
+      ["gadgets", "org-first"],
+      ["sprockets", "org-other"],
+      ["widgets", "org-first"],
+    ]);
   });
 });
 
