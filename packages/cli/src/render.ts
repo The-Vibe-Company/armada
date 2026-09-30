@@ -18,13 +18,24 @@ export function relative(iso: string, now: number): string {
 const truncate = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1).trimEnd()}…` : s);
 const pad = (s: string, n: number) => s.padEnd(n);
 
-function prLine(pr: NonNullable<InFlightTicket["pr"]>): string {
-  const parts = [`PR #${pr.number}`];
-  if (pr.draft) parts.push("draft");
-  if (pr.ci) parts.push(`CI ${pr.ci}`);
-  if (pr.mergeable) parts.push(pr.mergeable.toLowerCase());
-  return parts.join(" · ");
+const MERGEABLE: Record<string, string> = {
+  MERGEABLE: "mergeable",
+  CONFLICTING: "conflicts",
+  UNKNOWN: "mergeability unknown",
+};
+
+/** "draft · CI pending · mergeable", skipping what the forge did not report. */
+function prState(pr: Pick<NonNullable<InFlightTicket["pr"]>, "draft" | "ci" | "mergeable">): string {
+  return [
+    pr.draft ? "draft" : null,
+    pr.ci === "none" ? "no CI" : pr.ci ? `CI ${pr.ci}` : null,
+    pr.mergeable ? (MERGEABLE[pr.mergeable] ?? pr.mergeable.toLowerCase()) : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
+
+const phaseLabel = (t: InFlightTicket) => (t.phaseSource === "label" ? t.phase : `${t.phase} (${t.phaseSource})`);
 
 export function renderStatus(r: StatusReport): string {
   const now = Date.parse(r.generatedAt);
@@ -36,6 +47,7 @@ export function renderStatus(r: StatusReport): string {
     ...(r.pullRequests ?? []).map((p) => `#${p.number}`.length),
   );
   const indent = " ".repeat(idWidth + 4);
+  const phaseWidth = Math.max(0, ...r.inFlight.map((t) => phaseLabel(t).length));
 
   out.push(`${r.project.name} · ${r.programRoot.id} ${r.programRoot.title}`);
   const gh = r.sources.github.error ? `GitHub not read: ${r.sources.github.error}` : `GitHub ${r.project.repository}`;
@@ -45,11 +57,12 @@ export function renderStatus(r: StatusReport): string {
   if (!r.inFlight.length) out.push("  nobody is working");
   for (const t of r.inFlight) {
     const who = [t.runtime, t.agent].filter(Boolean).join(" · ") || "unassigned";
-    const phase = t.phaseSource === "label" ? t.phase : `${t.phase} (${t.phaseSource})`;
-    out.push(`  ${pad(t.id, idWidth)}  ${pad(phase, 18)}  ${who} · updated ${relative(t.lastUpdate, now)}`);
+    out.push(
+      `  ${pad(t.id, idWidth)}  ${pad(phaseLabel(t), phaseWidth)}  ${who} · updated ${relative(t.lastUpdate, now)}`,
+    );
     out.push(`${indent}${truncate(t.title, 90)}${t.spec ? ` [${t.spec}]` : ""}`);
     if (t.statusLine?.summary) out.push(`${indent}“${truncate(t.statusLine.summary, 100)}”`);
-    if (t.pr) out.push(`${indent}${prLine(t.pr)}`);
+    if (t.pr) out.push(`${indent}${[`PR #${t.pr.number}`, prState(t.pr)].filter(Boolean).join(" · ")}`);
     if (t.flags.length) out.push(`${indent}! ${t.flags.join(", ")}`);
   }
 
@@ -77,10 +90,7 @@ export function renderStatus(r: StatusReport): string {
   else if (!r.pullRequests.length) out.push("  none open");
   for (const p of r.pullRequests ?? []) {
     const ticket = p.ticket ? `${p.ticket.id}${p.ticket.phase ? ` ${p.ticket.phase}` : ""}` : "no ticket";
-    const state = [p.draft ? "draft" : null, p.ci ? `CI ${p.ci}` : null, p.mergeable?.toLowerCase()]
-      .filter(Boolean)
-      .join(" · ");
-    out.push(`  ${pad(`#${p.number}`, idWidth)}  ${ticket} · ${state}`);
+    out.push(`  ${pad(`#${p.number}`, idWidth)}  ${[ticket, prState(p)].filter(Boolean).join(" · ")}`);
     out.push(`${indent}${truncate(p.title, 90)}`);
     if (p.failingChecks.length) out.push(`${indent}! failing: ${p.failingChecks.join(", ")}`);
   }

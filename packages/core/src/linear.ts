@@ -248,7 +248,9 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
 
   const issues = all.map((r) => normalizeIssue(r, opts.labels));
   // Comments matter only where an agent may be working: claims and status lines.
-  const candidates = issues.filter((i) => !CLOSED.has(i.statusType) && (i.agentPhase || i.statusType === "started"));
+  const candidates = issues.filter(
+    (i) => i.id !== root.identifier && !CLOSED.has(i.statusType) && (i.agentPhase || i.statusType === "started"),
+  );
   const comments: Comment[] = [];
   for (const batch of chunks(
     candidates.map((i) => i.uuid),

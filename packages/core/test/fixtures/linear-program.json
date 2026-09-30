@@ -1,0 +1,641 @@
+{
+  "Root": [
+    {
+      "data": {
+        "issue": {
+          "id": "uuid-demo-1",
+          "identifier": "DEMO-1",
+          "title": "Widgets: sign in and share lists",
+          "url": "https://linear.app/acme/issue/DEMO-1",
+          "description": null,
+          "createdAt": "2026-03-01T09:00:00.000Z",
+          "updatedAt": "2026-03-02T09:00:00.000Z",
+          "startedAt": "2026-03-01T10:00:00.000Z",
+          "completedAt": null,
+          "canceledAt": null,
+          "state": {
+            "name": "In Progress",
+            "type": "started"
+          },
+          "assignee": null,
+          "delegate": null,
+          "parent": null,
+          "labels": {
+            "nodes": []
+          },
+          "attachments": {
+            "nodes": []
+          },
+          "inverseRelations": {
+            "nodes": []
+          }
+        }
+      }
+    }
+  ],
+  "Children": [
+    {
+      "data": {
+        "issues": {
+          "pageInfo": {
+            "hasNextPage": true,
+            "endCursor": "c1"
+          },
+          "nodes": [
+            {
+              "id": "uuid-demo-2",
+              "identifier": "DEMO-2",
+              "title": "Spec 1/2 — Sign in with email",
+              "url": "https://linear.app/acme/issue/DEMO-2",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": "2026-03-02T10:00:00.000Z",
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "In Progress",
+                "type": "started"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-1"
+              },
+              "labels": {
+                "nodes": []
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": []
+              }
+            },
+            {
+              "id": "uuid-demo-3",
+              "identifier": "DEMO-3",
+              "title": "Spec 2/2 — Share a list",
+              "url": "https://linear.app/acme/issue/DEMO-3",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": null,
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "Backlog",
+                "type": "backlog"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-1"
+              },
+              "labels": {
+                "nodes": []
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": [
+                  {
+                    "type": "blocks",
+                    "issue": {
+                      "identifier": "DEMO-2",
+                      "state": {
+                        "type": "started"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "data": {
+        "issues": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": [
+            {
+              "id": "uuid-demo-4",
+              "identifier": "DEMO-4",
+              "title": "Decide where lists are stored",
+              "url": "https://linear.app/acme/issue/DEMO-4",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": null,
+              "completedAt": null,
+              "canceledAt": "2026-03-03T10:00:00.000Z",
+              "state": {
+                "name": "Canceled",
+                "type": "canceled"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-1"
+              },
+              "labels": {
+                "nodes": []
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": []
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "data": {
+        "issues": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": [
+            {
+              "id": "uuid-demo-10",
+              "identifier": "DEMO-10",
+              "title": "Store user accounts",
+              "url": "https://linear.app/acme/issue/DEMO-10",
+              "description": "Implementation slice 1/6",
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": "2026-03-02T11:00:00.000Z",
+              "completedAt": "2026-03-03T11:00:00.000Z",
+              "canceledAt": null,
+              "state": {
+                "name": "Done",
+                "type": "completed"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": []
+              },
+              "attachments": {
+                "nodes": [
+                  {
+                    "title": "feat: store user accounts",
+                    "url": "https://github.com/acme/widgets/pull/6"
+                  }
+                ]
+              },
+              "inverseRelations": {
+                "nodes": []
+              }
+            },
+            {
+              "id": "uuid-demo-11",
+              "identifier": "DEMO-11",
+              "title": "Send a sign-in link by email",
+              "url": "https://linear.app/acme/issue/DEMO-11",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-04T09:50:00.000Z",
+              "startedAt": "2026-03-04T09:00:00.000Z",
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "In Progress",
+                "type": "started"
+              },
+              "assignee": {
+                "name": "Ada Worker"
+              },
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "implementing",
+                    "parent": {
+                      "name": "Agent phase"
+                    }
+                  },
+                  {
+                    "name": "Claude Code",
+                    "parent": {
+                      "name": "Agent runtime"
+                    }
+                  },
+                  {
+                    "name": "ready-for-agent",
+                    "parent": null
+                  }
+                ]
+              },
+              "attachments": {
+                "nodes": [
+                  {
+                    "title": "feat: send a sign-in link",
+                    "url": "https://github.com/acme/widgets/pull/7"
+                  }
+                ]
+              },
+              "inverseRelations": {
+                "nodes": [
+                  {
+                    "type": "blocks",
+                    "issue": {
+                      "identifier": "DEMO-10",
+                      "state": {
+                        "type": "completed"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "uuid-demo-12",
+              "identifier": "DEMO-12",
+              "title": "Remember the signed-in device",
+              "url": "https://linear.app/acme/issue/DEMO-12",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": null,
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "Backlog",
+                "type": "backlog"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "ready-for-agent",
+                    "parent": null
+                  }
+                ]
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": [
+                  {
+                    "type": "blocks",
+                    "issue": {
+                      "identifier": "DEMO-11",
+                      "state": {
+                        "type": "started"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "uuid-demo-13",
+              "identifier": "DEMO-13",
+              "title": "Show a sign-in page",
+              "url": "https://linear.app/acme/issue/DEMO-13",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": null,
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "Todo",
+                "type": "unstarted"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "ready-for-agent",
+                    "parent": null
+                  }
+                ]
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": [
+                  {
+                    "type": "blocks",
+                    "issue": {
+                      "identifier": "DEMO-10",
+                      "state": {
+                        "type": "completed"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "uuid-demo-14",
+              "identifier": "DEMO-14",
+              "title": "Sign out from every device",
+              "url": "https://linear.app/acme/issue/DEMO-14",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": null,
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "Backlog",
+                "type": "backlog"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": []
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": [
+                  {
+                    "type": "blocks",
+                    "issue": {
+                      "identifier": "DEMO-13",
+                      "state": {
+                        "type": "unstarted"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "uuid-demo-15",
+              "identifier": "DEMO-15",
+              "title": "Rate-limit sign-in attempts",
+              "url": "https://linear.app/acme/issue/DEMO-15",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": null,
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "Backlog",
+                "type": "backlog"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": []
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": []
+              }
+            },
+            {
+              "id": "uuid-demo-16",
+              "identifier": "DEMO-16",
+              "title": "Reset a forgotten password",
+              "url": "https://linear.app/acme/issue/DEMO-16",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-04T08:30:00.000Z",
+              "startedAt": "2026-03-04T08:00:00.000Z",
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "In Progress",
+                "type": "started"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": []
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": []
+              }
+            },
+            {
+              "id": "uuid-demo-17",
+              "identifier": "DEMO-17",
+              "title": "Sign in with a passkey",
+              "url": "https://linear.app/acme/issue/DEMO-17",
+              "description": null,
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-02T09:00:00.000Z",
+              "startedAt": null,
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "Todo",
+                "type": "unstarted"
+              },
+              "assignee": null,
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "ready-for-agent",
+                    "parent": null
+                  }
+                ]
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": [
+                  {
+                    "type": "blocks",
+                    "issue": {
+                      "identifier": "OTHER-5",
+                      "state": {
+                        "type": "started"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "uuid-demo-18",
+              "identifier": "DEMO-18",
+              "title": "Expire idle sessions",
+              "url": "https://linear.app/acme/issue/DEMO-18",
+              "description": "Implementation slice 6/6. PR: https://github.com/acme/widgets/pull/9",
+              "createdAt": "2026-03-01T09:00:00.000Z",
+              "updatedAt": "2026-03-04T09:40:00.000Z",
+              "startedAt": "2026-03-03T15:00:00.000Z",
+              "completedAt": null,
+              "canceledAt": null,
+              "state": {
+                "name": "In Progress",
+                "type": "started"
+              },
+              "assignee": {
+                "name": "Grace Worker"
+              },
+              "delegate": null,
+              "parent": {
+                "identifier": "DEMO-2"
+              },
+              "labels": {
+                "nodes": [
+                  {
+                    "name": "ready-to-merge",
+                    "parent": {
+                      "name": "Agent phase"
+                    }
+                  },
+                  {
+                    "name": "Codex",
+                    "parent": {
+                      "name": "Agent runtime"
+                    }
+                  }
+                ]
+              },
+              "attachments": {
+                "nodes": []
+              },
+              "inverseRelations": {
+                "nodes": []
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "data": {
+        "issues": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  ],
+  "Comments": [
+    {
+      "data": {
+        "issues": {
+          "nodes": [
+            {
+              "identifier": "DEMO-2",
+              "comments": {
+                "nodes": []
+              }
+            },
+            {
+              "identifier": "DEMO-11",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "c11a0000-0000",
+                    "createdAt": "2026-03-04T09:01:00.000Z",
+                    "body": "Agent claim — runtime: Claude Code · session: ws-11 · branch: feature/demo-11-sign-in-link · started: 2026-03-04T09:00:00Z",
+                    "user": {
+                      "name": "Ada Worker"
+                    }
+                  },
+                  {
+                    "id": "c11b0000-0000",
+                    "createdAt": "2026-03-04T09:10:00.000Z",
+                    "body": "Agent status: implementing — plan approved, writing the email sender",
+                    "user": {
+                      "name": "Ada Worker"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "identifier": "DEMO-16",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "c16a0000-0000",
+                    "createdAt": "2026-03-04T08:20:00.000Z",
+                    "body": "Agent status: shipping — PR open, fixing CI",
+                    "user": {
+                      "name": "Linus Worker"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "identifier": "DEMO-18",
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "c18a0000-0000",
+                    "createdAt": "2026-03-03T15:01:00.000Z",
+                    "body": "Agent claim — runtime: Codex · session: ws-18 · branch: feature/demo-18-expire-sessions · started: 2026-03-03T15:00:00Z",
+                    "user": {
+                      "name": "Grace Worker"
+                    }
+                  },
+                  {
+                    "id": "c18b0000-0000",
+                    "createdAt": "2026-03-04T09:40:00.000Z",
+                    "body": "Agent status: ready-to-merge — PR #9, head 9f1c2d3e4b5a69788796a5b4c3d2e1f00a1b2c3d, CI green",
+                    "user": {
+                      "name": "Grace Worker"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
