@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/The-Vibe-Company/armada/compare/v0.1.4...v0.1.5) (2026-09-30)
+
+
+### Bug Fixes
+
+* **core:** read every relation of large programs ([#14](https://github.com/The-Vibe-Company/armada/issues/14)) ([b457cd2](https://github.com/The-Vibe-Company/armada/commit/b457cd209687a0b78b814f4d659de89765860c27))
+
 ## [0.1.4](https://github.com/The-Vibe-Company/armada/compare/v0.1.3...v0.1.4) (2026-09-30)
 
 
