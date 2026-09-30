@@ -1,0 +1,27 @@
+.github/workflows/release.yml
+  s_d658e7251951c2::t_eb98fb364e6193 61-62
+AGENTS.md
+  s_d658e7251951c2::t_f9f1ebfe65c6ee 29
+README.md
+  s_d658e7251951c2::t_7026156ff79922 11,89,103
+packages/cli/src/cli.ts
+  s_d658e7251951c2::t_c38edd46421284 13,119
+packages/cli/src/main.ts
+  s_d658e7251951c2::t_33a073a4e55cfa 60-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5c6b5886992b01462b1156550d707ff4b7291671",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
