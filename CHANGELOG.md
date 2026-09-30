@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.13](https://github.com/The-Vibe-Company/armada/compare/v0.1.12...v0.1.13) (2026-09-30)
+
+
+### Bug Fixes
+
+* **cli:** finish large piped output before exiting ([#34](https://github.com/The-Vibe-Company/armada/issues/34)) ([d4f4187](https://github.com/The-Vibe-Company/armada/commit/d4f4187d87f74d6d32d6402dbae5f3c09b09d0d3))
+
 ## [0.1.12](https://github.com/The-Vibe-Company/armada/compare/v0.1.11...v0.1.12) (2026-09-30)
 
 
