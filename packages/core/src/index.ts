@@ -7,4 +7,5 @@ export * from "./linear.ts";
 export * from "./machine.ts";
 export * from "./model.ts";
 export * from "./status.ts";
+export * from "./turso.ts";
 export * from "./types.ts";

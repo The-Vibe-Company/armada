@@ -1,9 +1,13 @@
 // Test support: a fake `fetch` that replays recorded Linear and GitHub
 // responses (no network), and a builder for normalized issues.
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseConfig } from "../src/config.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
 import { type Fetch, LINEAR_ENDPOINT } from "../src/linear.ts";
+import { type Db, openTurso } from "../src/turso.ts";
 import type { Issue } from "../src/types.ts";
 import githubPulls from "./fixtures/github-pulls.json";
 import linearProgram from "./fixtures/linear-program.json";
@@ -79,4 +83,26 @@ export function issue(id: string, over: Partial<Issue> = {}): Issue {
     prs: [],
     ...over,
   };
+}
+
+const tempDirs: string[] = [];
+const openDbs: Db[] = [];
+
+export function trackDb(db: Db): Db {
+  openDbs.push(db);
+  return db;
+}
+
+/** A fresh local libSQL file: the same client and SQL as a remote Turso database. */
+export async function tempTurso(): Promise<{ url: string; db: Db }> {
+  const dir = await mkdtemp(join(tmpdir(), "armada-turso-"));
+  tempDirs.push(dir);
+  const url = `file:${join(dir, "armada.db")}`;
+  return { url, db: trackDb(await openTurso({ url })) };
+}
+
+/** Closes every database opened by the helpers above and removes their files. */
+export async function closeTempTurso(): Promise<void> {
+  for (const db of openDbs.splice(0)) db.close();
+  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
 }
