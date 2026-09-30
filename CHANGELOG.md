@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.18](https://github.com/The-Vibe-Company/armada/compare/v0.1.17...v0.1.18) (2026-09-30)
+
+
+### Features
+
+* **cli:** let a worker sign in with a one-time launch token ([#43](https://github.com/The-Vibe-Company/armada/issues/43)) ([99a15e2](https://github.com/The-Vibe-Company/armada/commit/99a15e23c9c300a1b8246bbed85d40a4696192a0))
+
 ## [0.1.17](https://github.com/The-Vibe-Company/armada/compare/v0.1.16...v0.1.17) (2026-09-30)
 
 
