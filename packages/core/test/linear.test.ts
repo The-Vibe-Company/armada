@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fetchProgram, parseClaim, parseStatusLine } from "../src/linear.ts";
+import { type Fetch, fetchProgram, parseClaim, parseStatusLine } from "../src/linear.ts";
 import { NOW, recordedFetch } from "./support.ts";
 
 const labels = { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" };
@@ -74,6 +74,38 @@ describe("fetchProgram", () => {
     const program = await fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch });
     expect(program.issues).toHaveLength(13);
     expect(queries.slice(1).some((q) => q.includes("delegate"))).toBe(false);
+  });
+
+  test("a read cut short by a cap is reported as a warning instead of passing silently", async () => {
+    const { fetch } = recordedFetch({
+      linear: (r) => {
+        const kid = r.Children[2]?.data.issues.nodes.find((n) => n.identifier === "DEMO-13");
+        if (kid) kid.inverseRelations.pageInfo.hasNextPage = true;
+      },
+    });
+    const program = await fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch });
+    expect(program.warnings).toEqual(["DEMO-13: more relations than Armada reads; some are ignored"]);
+  });
+
+  test("a request with no answer before the timeout fails naming Linear", async () => {
+    // Simulates the abort AbortSignal.timeout raises, without waiting for it.
+    const timedOut: Fetch = async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    };
+    await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch: timedOut })).rejects.toThrow(
+      "Linear API unreachable: no answer within 30 s",
+    );
+  });
+
+  test("a missing program root is an error naming it", async () => {
+    const { fetch } = recordedFetch({
+      linear: (r) => {
+        r.Root = [{ data: { issue: null } }] as never;
+      },
+    });
+    await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-404", labels, fetch })).rejects.toThrow(
+      "program root DEMO-404 not found",
+    );
   });
 
   test("phase and runtime labels are read only inside the configured groups", async () => {

@@ -1,4 +1,5 @@
 export * from "./config.ts";
+export * from "./credentials.ts";
 export * from "./fleet.ts";
 export * from "./github.ts";
 export * from "./linear.ts";

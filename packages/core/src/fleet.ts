@@ -110,7 +110,10 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     phase = inferPhase(pr, comments);
     phaseSource = "inferred";
   }
-  if (pr?.state === "merged" && !isDone(issue)) phase = "merged";
+  // A merged PR ends the work only if the agent was shipping it; a label that
+  // says the agent went back to planning or implementing still wins.
+  const shippingPhase = phase === "shipping" || phase === "ready-to-merge";
+  if (pr?.state === "merged" && !isDone(issue) && (shippingPhase || phaseSource !== "label")) phase = "merged";
 
   const announcing = comments.find((c) => c.status?.phase === phase);
   const since =

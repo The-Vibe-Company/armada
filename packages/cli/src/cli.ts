@@ -1,7 +1,15 @@
 // Command dispatch with every side effect injected, so commands can be tested
 // without a network, a real clock or the user's environment.
 import { dirname, join, resolve } from "node:path";
-import { type ArmadaConfig, CONFIG_FILE, ConfigError, type Fetch, loadStatus, parseConfig } from "@armada/core";
+import {
+  type ArmadaConfig,
+  CONFIG_FILE,
+  ConfigError,
+  type Fetch,
+  loadStatus,
+  parseConfig,
+  resolveCredentials,
+} from "@armada/core";
 import { renderStatus } from "./render.ts";
 
 export interface Io {
@@ -80,12 +88,11 @@ export async function findConfig(io: Io, explicit: string | null): Promise<{ pat
 async function status(io: Io, args: Args): Promise<number> {
   const { path, text } = await findConfig(io, args.config);
   const config: ArmadaConfig = parseConfig(text, path);
-  const linearApiKey = io.env.LINEAR_API_KEY?.trim();
+  const { linearApiKey, githubToken } = resolveCredentials({ env: io.env, ghToken: io.ghToken });
   if (!linearApiKey) throw new UsageError("LINEAR_API_KEY is not set. Create a personal API key in Linear settings.");
-  const githubToken = io.env.GITHUB_TOKEN?.trim() || io.env.GH_TOKEN?.trim() || io.ghToken();
   const report = await loadStatus(config, {
     linearApiKey,
-    githubToken: githubToken || null,
+    githubToken,
     ...(io.fetch ? { fetch: io.fetch } : {}),
     ...(io.now ? { now: io.now } : {}),
   });

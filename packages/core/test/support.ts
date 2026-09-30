@@ -32,9 +32,13 @@ export interface Call {
 }
 
 /** Replays the recorded responses in order, per GraphQL operation name. */
-export function recordedFetch(overrides: { github?: unknown } = {}): { fetch: Fetch; calls: Call[] } {
+export function recordedFetch(
+  overrides: { github?: unknown; linear?: (recorded: typeof linearProgram) => void } = {},
+): { fetch: Fetch; calls: Call[] } {
+  const recorded = structuredClone(linearProgram);
+  overrides.linear?.(recorded);
   const queues: Record<string, unknown[]> = Object.fromEntries(
-    Object.entries(structuredClone(linearProgram)).map(([op, responses]) => [op, [...responses]]),
+    Object.entries(recorded).map(([op, responses]) => [op, [...responses]]),
   );
   const calls: Call[] = [];
   const fetch: Fetch = async (url, init) => {

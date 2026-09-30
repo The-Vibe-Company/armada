@@ -47,6 +47,13 @@ describe("armada.toml", () => {
     ]);
   });
 
+  test("a misspelled key in a known table is reported; unknown tables are left for newer readers", () => {
+    const text = DEMO_TOML.replace('program_root = "DEMO-1"', 'program_root = "DEMO-1"\nredy_label = "go"').concat(
+      '\n[conductor]\nprofile = "x"\n',
+    );
+    expect(problemsOf(text)).toEqual(['unknown key "tracker.redy_label"']);
+  });
+
   test("broken TOML reports where it broke", () => {
     expect(problemsOf("[project\nname = 1")[0]).toMatch(/^not valid TOML \(line 1, column \d+\)$/);
   });

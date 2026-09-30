@@ -20,7 +20,7 @@ Armada runs a fleet of coding agents on one project: Linear holds the plan and p
 
 - **Generic and open source.** No customer or private project names, data, thresholds or recorded responses. Fixtures are synthetic: invented ticket ids, titles and people.
 - **Everything project-specific comes from `armada.toml`.** Program root, repository, label names and thresholds are configuration, never constants.
-- **Secrets only from the environment.** Never write a token into a file, a fixture or a log.
+- **Secrets only from the environment.** Tokens are read in one place, `resolveCredentials` in `packages/core/src/credentials.ts`; never read them anywhere else, and never write a token into a file, a fixture or a log.
 - **Tests earn their place.** One owner test per behaviour at the cheapest boundary; no network (use the recorded-fetch helper in `packages/core/test/support.ts`), no wall-clock waits (inject `now`).
 - **English** in code, CLI output, docs and tracker comments.
 - Pull request titles follow Commitizen, for example `feat(cli): show the fleet state with armada status`.

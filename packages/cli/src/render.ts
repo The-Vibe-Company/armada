@@ -94,5 +94,9 @@ export function renderStatus(r: StatusReport): string {
     out.push(`${indent}${truncate(p.title, 90)}`);
     if (p.failingChecks.length) out.push(`${indent}! failing: ${p.failingChecks.join(", ")}`);
   }
+  if (r.warnings.length) {
+    out.push("", `Warnings (${r.warnings.length})`);
+    for (const w of r.warnings) out.push(`  ! ${w}`);
+  }
   return `${out.join("\n")}\n`;
 }

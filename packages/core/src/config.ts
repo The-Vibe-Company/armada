@@ -116,6 +116,18 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
 
+  // Unknown keys inside known tables are typos; unknown top-level tables are
+  // left alone so newer sections do not break older readers.
+  const known: [string, Table, string[]][] = [
+    ["project", project, ["name", "slug"]],
+    ["tracker", tracker, ["program_root", "language", "ready_label", "labels"]],
+    ["tracker.labels", labelsT, ["phase_group", "runtime_group"]],
+    ["github", github, ["repository"]],
+    ["policy", policyT, ["silent_after_minutes"]],
+  ];
+  for (const [path, t, keys] of known)
+    for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
+
   let silentAfterMinutes: number = CONFIG_DEFAULTS.silentAfterMinutes;
   if (policyT.silent_after_minutes !== undefined) {
     const v = policyT.silent_after_minutes;

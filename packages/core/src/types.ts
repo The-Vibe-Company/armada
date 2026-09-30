@@ -99,6 +99,8 @@ export interface ProgramData {
   /** Root and every descendant, any depth. */
   issues: Issue[];
   comments: Comment[];
+  /** Reads cut short by a cap: the report may be incomplete where these say. */
+  warnings: string[];
 }
 
 /** Everything read from the forge for one repository. */
@@ -107,4 +109,5 @@ export interface ForgeData {
   fetchedAt: string;
   /** Open pull requests and recently closed ones. */
   prs: PullRequest[];
+  warnings: string[];
 }

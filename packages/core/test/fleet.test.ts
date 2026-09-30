@@ -93,13 +93,12 @@ describe("lanes", () => {
     expect(lane(withGreenPr)).toMatchObject({ phase: "ready-to-merge", phaseSource: "inferred" });
   });
 
-  test("a merged PR on an open ticket shows as merged", () => {
-    const i = issue("P-2", {
-      statusType: "started",
-      agentPhase: "ready-to-merge",
-      prs: [{ url: "u", number: 3, repo: "a/b", title: "", state: "merged" }],
-    });
-    expect(lane(i).phase).toBe("merged");
+  test("a merged PR on an open ticket shows as merged unless the label says work restarted", () => {
+    const merged = [{ url: "u", number: 3, repo: "a/b", title: "", state: "merged" as const }];
+    const shipped = issue("P-2", { statusType: "started", agentPhase: "ready-to-merge", prs: merged });
+    expect(lane(shipped).phase).toBe("merged");
+    const restarted = issue("P-2", { statusType: "started", agentPhase: "implementing", prs: merged });
+    expect(lane(restarted).phase).toBe("implementing");
   });
 
   test("a working agent with no update past the threshold is silent; one waiting on a human is not", () => {

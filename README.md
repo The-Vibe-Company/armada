@@ -16,10 +16,12 @@ export LINEAR_API_KEY=lin_api_...   # Linear > Settings > Security & access > Pe
 bunx armada status                  # or: bunx armada status --json
 ```
 
+The package is not published to npm yet, so `bunx armada` works inside this checkout only. From another repository, run `bun <path-to-armada>/packages/cli/src/main.ts status`.
+
 `armada status` reads the `armada.toml` of the current repository (or the nearest parent directory) and prints:
 
-- **In flight**: tickets an agent holds, with their phase, runtime, last update and pull request. An agent that has not posted anything for longer than `policy.silent_after_minutes` is flagged `silent`.
-- **Ready to start**: tickets not started whose blocked-by tickets are all closed, ranked by what they unlock. Tickets without the ready label are listed separately.
+- **In flight**: tickets an agent holds, with their phase, runtime, last update and pull request. An agent with no sign of life (ticket edit, comment or pull request update) for longer than `policy.silent_after_minutes` is flagged `silent`, unless it is waiting on a human (`awaiting-approval`, `blocked`, `ready-to-merge`).
+- **Ready to start**: tickets without sub-issues that are not started, not held by an agent, have no open pull request, and whose blocked-by tickets are all closed, ranked by what they unlock. Tickets without the ready label, or still in triage, are listed separately.
 - **Pull requests waiting**: open pull requests with their CI state and mergeability.
 
 GitHub is read with `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login (`gh auth token`). Without any of them the tickets are still shown.

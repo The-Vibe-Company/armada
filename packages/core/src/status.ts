@@ -68,6 +68,8 @@ export interface StatusReport {
   frontier: FrontierTicket[];
   /** Open pull requests of the repository; null when GitHub could not be read. */
   pullRequests: WaitingPullRequest[] | null;
+  /** Reads cut short by a cap; the lists above may be incomplete where these say. */
+  warnings: string[];
 }
 
 export interface BuildStatusInput {
@@ -147,6 +149,7 @@ export function buildStatus({ config, program, forge, forgeError = null, now }: 
           ticket: ticket ? { id: ticket.id, phase: phaseOf.get(ticket.id) ?? ticket.agentPhase } : null,
         }))
       : null,
+    warnings: [...program.warnings, ...(forge?.warnings ?? [])],
   };
 }
 

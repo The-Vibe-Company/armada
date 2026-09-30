@@ -71,6 +71,18 @@ Pull requests waiting (4)
 `);
   });
 
+  test("reads cut short by a cap are listed as warnings", async () => {
+    const { io, out } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
+    io.fetch = recordedFetch({
+      linear: (r) => {
+        const kid = r.Children[2]?.data.issues.nodes.find((n) => n.identifier === "DEMO-13");
+        if (kid) kid.inverseRelations.pageInfo.hasNextPage = true;
+      },
+    }).fetch;
+    expect(await run(["status"], io)).toBe(0);
+    expect(out()).toEndWith("\nWarnings (1)\n  ! DEMO-13: more relations than Armada reads; some are ignored\n");
+  });
+
   test("a missing armada.toml or a missing key is a configuration error naming what is missing", async () => {
     const missing = fakeIo({});
     expect(await run(["status"], missing.io)).toBe(2);
@@ -79,6 +91,13 @@ Pull requests waiting (4)
     const partial = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML.replace('slug = "widgets"', "") });
     expect(await run(["status"], partial.io)).toBe(2);
     expect(partial.err()).toContain('missing required key "project.slug"');
+  });
+
+  test("a rejected Linear key fails with exit code 1 and a clear message", async () => {
+    const { io, err } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
+    io.fetch = async () => new Response("", { status: 401 });
+    expect(await run(["status"], io)).toBe(1);
+    expect(err()).toBe("armada: Linear rejected the API key (HTTP 401); check LINEAR_API_KEY\n");
   });
 
   test("LINEAR_API_KEY is required", async () => {

@@ -38,6 +38,14 @@ describe("loadStatus", () => {
     ]);
   });
 
+  test("a GitHub failure keeps the tickets and says why pull requests are missing", async () => {
+    const { fetch } = recordedFetch({ github: { errors: [{ message: "Bad credentials" }] } });
+    const r = await loadStatus(demoConfig(), { linearApiKey: "k", githubToken: "t", fetch, now: () => NOW });
+    expect(r.pullRequests).toBeNull();
+    expect(r.sources.github).toEqual({ fetchedAt: null, error: "GitHub API: Bad credentials" });
+    expect(r.inFlight).toHaveLength(3);
+  });
+
   test("without a GitHub token the tickets are still reported and pull requests are unknown", async () => {
     const { fetch, calls } = recordedFetch();
     const r = await loadStatus(demoConfig(), { linearApiKey: "k", githubToken: null, fetch, now: () => NOW });

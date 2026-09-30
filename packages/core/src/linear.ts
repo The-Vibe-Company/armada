@@ -7,7 +7,12 @@ import { LABEL_PHASES } from "./types.ts";
 export const LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 const MAX_DEPTH = 8;
 const MAX_PAGES = 20;
-const BATCH = 50;
+// Linear rejects queries above a complexity budget (roughly nodes requested,
+// multiplied through nested connections). Caps stay small and every cap that
+// is hit becomes a warning instead of silently truncating.
+const COMMENT_BATCH = 25;
+const MAX_COMMENTS = 100;
+export const REQUEST_TIMEOUT_MS = 30_000;
 
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -22,6 +27,7 @@ export interface FetchProgramOptions {
   labels: LabelGroups;
   fetch?: Fetch;
   now?: () => Date;
+  timeoutMs?: number;
 }
 
 export class LinearError extends Error {
@@ -102,9 +108,26 @@ export interface RawIssue {
   assignee: { name: string } | null;
   delegate?: { name: string } | null;
   parent: { identifier: string } | null;
-  labels: { nodes: { name: string; parent: { name: string } | null }[] };
-  attachments: { nodes: { title: string; url: string }[] };
-  inverseRelations: { nodes: { type: string; issue: { identifier: string; state: { type: string } } }[] };
+  labels: Connection<{ name: string; parent: { name: string } | null }>;
+  attachments: Connection<{ title: string; url: string }>;
+  inverseRelations: Connection<{ type: string; issue: { identifier: string; state: { type: string } } }>;
+}
+
+/** A Linear connection; `pageInfo.hasNextPage` tells when a fixed read cap truncated it. */
+export interface Connection<T> {
+  nodes: T[];
+  pageInfo?: { hasNextPage: boolean };
+}
+
+/** Human-readable notes for every connection of `raw` that was cut by a read cap. */
+export function truncationWarnings(raw: RawIssue): string[] {
+  const cut = (c: Connection<unknown>, what: string) =>
+    c.pageInfo?.hasNextPage ? [`${raw.identifier}: more ${what} than Armada reads; some are ignored`] : [];
+  return [
+    ...cut(raw.inverseRelations, "relations"),
+    ...cut(raw.labels, "labels"),
+    ...cut(raw.attachments, "attachments"),
+  ];
 }
 
 export interface RawComment {
@@ -174,9 +197,9 @@ const FIELDS = (delegate: boolean) => /* GraphQL */ `
     assignee { name }
     ${delegate ? "delegate { name }" : ""}
     parent { identifier }
-    labels(first: 25) { nodes { name parent { name } } }
-    attachments(first: 25) { nodes { title url } }
-    inverseRelations(first: 50) { nodes { type issue { identifier state { type } } } }
+    labels(first: 25) { pageInfo { hasNextPage } nodes { name parent { name } } }
+    attachments(first: 25) { pageInfo { hasNextPage } nodes { title url } }
+    inverseRelations(first: 50) { pageInfo { hasNextPage } nodes { type issue { identifier state { type } } } }
   }
 `;
 const ROOT_QUERY = (d: boolean) => `${FIELDS(d)} query Root($id: String!) { issue(id: $id) { ...F } }`;
@@ -190,16 +213,20 @@ const CHILDREN_QUERY = (d: boolean) => `${FIELDS(d)}
 const COMMENTS_QUERY = /* GraphQL */ `
   query Comments($ids: [ID!]) {
     issues(first: 50, filter: { id: { in: $ids } }) {
-      nodes { identifier comments(first: 50) { nodes { id createdAt body user { name } } } }
+      nodes { identifier comments(first: ${MAX_COMMENTS}) { pageInfo { hasNextPage } nodes { id createdAt body user { name } } } }
     }
   }`;
 
 async function gql<T>(opts: FetchProgramOptions, query: string, variables: object): Promise<T> {
   const doFetch = opts.fetch ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const res = await doFetch(LINEAR_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: opts.apiKey },
     body: JSON.stringify({ query, variables }),
+    signal: AbortSignal.timeout(timeoutMs),
+  }).catch((err: unknown) => {
+    throw new LinearError(`Linear API unreachable: ${networkReason(err, timeoutMs)}`);
   });
   if (res.status === 401) throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY");
   // GraphQL validation errors come back with HTTP 400 and a JSON body worth reporting.
@@ -208,6 +235,13 @@ async function gql<T>(opts: FetchProgramOptions, query: string, variables: objec
   if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`);
   if (!json.data) throw new LinearError("Linear API: empty response");
   return json.data;
+}
+
+/** "no answer within 30 s" for a timeout or abort, else the underlying message. */
+export function networkReason(err: unknown, timeoutMs: number): string {
+  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"))
+    return `no answer within ${timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`}`;
+  return err instanceof Error ? err.message : String(err);
 }
 
 const chunks = <T>(xs: T[], n: number) =>
@@ -230,11 +264,16 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
   if (!root) throw new LinearError(`Linear: program root ${opts.rootId} not found`);
 
   const all: RawIssue[] = [root];
+  const warnings: string[] = [];
   let parents = [root.id];
   for (let depth = 0; depth < MAX_DEPTH && parents.length; depth++) {
     const next: string[] = [];
     let after: string | null = null;
-    for (let page = 0; page < MAX_PAGES; page++) {
+    for (let page = 0; ; page++) {
+      if (page === MAX_PAGES) {
+        warnings.push(`more than ${MAX_PAGES * 50} issues at depth ${depth + 1}; the rest are ignored`);
+        break;
+      }
       const data: { issues: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: RawIssue[] } } = await gql(
         opts,
         CHILDREN_QUERY(delegate),
@@ -247,6 +286,8 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
     }
     parents = next;
   }
+  if (parents.length) warnings.push(`the program is deeper than ${MAX_DEPTH} levels; deeper issues are ignored`);
+  for (const r of all) warnings.push(...truncationWarnings(r));
 
   const issues = all.map((r) => normalizeIssue(r, opts.labels));
   // Comments matter only where an agent may be working: claims and status lines.
@@ -256,15 +297,18 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
   const comments: Comment[] = [];
   for (const batch of chunks(
     candidates.map((i) => i.uuid),
-    BATCH,
+    COMMENT_BATCH,
   )) {
-    const data = await gql<{ issues: { nodes: { identifier: string; comments: { nodes: RawComment[] } }[] } }>(
+    const data = await gql<{ issues: { nodes: { identifier: string; comments: Connection<RawComment> }[] } }>(
       opts,
       COMMENTS_QUERY,
       { ids: batch },
     );
-    for (const n of data.issues.nodes)
+    for (const n of data.issues.nodes) {
       for (const c of n.comments.nodes) comments.push(normalizeComment(c, n.identifier));
+      if (n.comments.pageInfo?.hasNextPage)
+        warnings.push(`${n.identifier}: more than ${MAX_COMMENTS} comments; its phase and claim may be out of date`);
+    }
   }
 
   return {
@@ -272,5 +316,6 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
     fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
     issues: issues.sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true })),
     comments: comments.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    warnings,
   };
 }

@@ -2,6 +2,9 @@
   "data": {
     "repository": {
       "open": {
+        "pageInfo": {
+          "hasNextPage": false
+        },
         "nodes": [
           {
             "number": 10,

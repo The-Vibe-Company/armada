@@ -1,7 +1,7 @@
 // GitHub read adapter: one GraphQL call returns the open pull requests and the
 // recently closed ones with their CI rollup and mergeability. GraphQL avoids the
 // REST checks endpoint, which personal access tokens cannot read.
-import type { Fetch } from "./linear.ts";
+import { type Fetch, networkReason, REQUEST_TIMEOUT_MS } from "./linear.ts";
 import type { CiState, ForgeData, Issue, ProgramData, PullRequest } from "./types.ts";
 
 export const GITHUB_GRAPHQL = "https://api.github.com/graphql";
@@ -100,7 +100,10 @@ const PULLS_QUERY = /* GraphQL */ `
   }
   query Pulls($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
-      open: pullRequests(states: OPEN, first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { ...P } }
+      open: pullRequests(states: OPEN, first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
+        pageInfo { hasNextPage }
+        nodes { ...P }
+      }
       closed: pullRequests(states: [MERGED, CLOSED], first: 30, orderBy: { field: UPDATED_AT, direction: DESC }) { nodes { ...P } }
     }
   }`;
@@ -111,19 +114,29 @@ export interface FetchForgeOptions {
   repository: string;
   fetch?: Fetch;
   now?: () => Date;
+  timeoutMs?: number;
 }
 
 export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
   const [owner, name] = opts.repository.split("/");
   const doFetch = opts.fetch ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const res = await doFetch(GITHUB_GRAPHQL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
     body: JSON.stringify({ query: PULLS_QUERY, variables: { owner, name } }),
+    signal: AbortSignal.timeout(timeoutMs),
+  }).catch((err: unknown) => {
+    throw new GithubError(`GitHub API unreachable: ${networkReason(err, timeoutMs)}`);
   });
   if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
   const json = (await res.json()) as {
-    data?: { repository: { open: { nodes: RawPull[] }; closed: { nodes: RawPull[] } } | null };
+    data?: {
+      repository: {
+        open: { nodes: RawPull[]; pageInfo?: { hasNextPage: boolean } };
+        closed: { nodes: RawPull[] };
+      } | null;
+    };
     errors?: { message: string }[];
   };
   if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
@@ -133,6 +146,9 @@ export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
     repo: opts.repository,
     fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
     prs: [...repo.open.nodes, ...repo.closed.nodes].map((p) => normalizePull(p, opts.repository)),
+    warnings: repo.open.pageInfo?.hasNextPage
+      ? ["more than 100 open pull requests; the least recently updated are ignored"]
+      : [],
   };
 }
 
