@@ -8,7 +8,7 @@ It imposes one method: grill the decisions, write a spec, cut it into tickets, l
 
 ## Install
 
-Requires [Node.js](https://nodejs.org) 22 or later, or [Bun](https://bun.sh).
+Requires [Node.js](https://nodejs.org) 22 or later: `npx` and `bunx` both run the command with Node.
 
 ```sh
 npx @the-vibe-company/armada status     # or: bunx @the-vibe-company/armada status
@@ -86,7 +86,7 @@ repository = "acme/widgets"      # owner/name (required)
 silent_after_minutes = 15        # default 15
 ```
 
-A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](armada.toml).
+A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](https://github.com/The-Vibe-Company/armada/blob/main/armada.toml).
 
 The program follows one convention: specs are direct children of the root titled `Spec N/M — Name`, tickets are their sub-issues, and dependencies are Linear blocked-by relations. Agents declare their phase with a label from the phase group (`planning`, `awaiting-approval`, `implementing`, `shipping`, `blocked`, `ready-to-merge`) and start every comment with `Agent status: <phase> — <summary>`.
 
@@ -100,7 +100,7 @@ bun run armada status   # run the CLI from source
 bun run verify          # lint, typecheck, tests
 ```
 
-See [AGENTS.md](AGENTS.md) for the layout and the rules.
+See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) for the layout and the rules.
 
 ## What it is made of
 

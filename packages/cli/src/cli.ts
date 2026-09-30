@@ -10,7 +10,7 @@ import {
   missingKeyMessage,
   parseConfig,
 } from "@armada/core";
-import pkg from "../package.json" with { type: "json" };
+import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { type Io, UsageError } from "./io.ts";
 import { renderStatus } from "./render.ts";
@@ -116,7 +116,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
   try {
     const args = parseArgs(argv);
     if (args.version) {
-      io.stdout(`${pkg.version}\n`);
+      io.stdout(`${version}\n`);
       return 0;
     }
     if (args.help || !args.command) {
