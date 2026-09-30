@@ -621,7 +621,11 @@ async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull,
   const done = ticket.statusType === "completed" ? null : firstState(ticket.states, "completed");
   await ctx.linear.updateTicket(ticket.uuid, {
     ...(done ? { stateId: done.id } : {}),
-    removeLabelIds: [...others(ticket, groups.phaseGroup, null), ...others(ticket, groups.runtimeGroup, null)],
+    removeLabelIds: [
+      ...others(ticket, groups.phaseGroup, null),
+      ...others(ticket, groups.runtimeGroup, null),
+      ...ticket.labels.filter((label) => label.name === ctx.config.tracker.readyLabel).map((label) => label.id),
+    ],
   });
   if (!ticket.prs.some((p) => p.url === merged.url))
     await ctx.linear.linkUrl(ticket.uuid, merged.url, merged.title || `Pull request #${merged.number}`);
@@ -630,7 +634,7 @@ async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull,
     `Agent status: merged — PR #${merged.number} squash-merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}, head ${merged.headSha}${unlocked ? ", merged without lock (--no-lock)" : ""}`,
   );
   return [
-    `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent labels removed, merged status posted.`,
+    `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent and ready labels removed, merged status posted.`,
   ];
 }
 
@@ -666,7 +670,7 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
       lines.push(...(await closeTicket(ctx, c.ticket, merged, !!input.noLock)));
     } catch (err) {
       throw new Error(
-        `#${merged.number} is merged, but Linear could not be updated (${err instanceof Error ? err.message : String(err)}); close ${c.ticket.id} by hand: Done, agent labels removed, pull request linked`,
+        `#${merged.number} is merged, but Linear could not be updated (${err instanceof Error ? err.message : String(err)}); close ${c.ticket.id} by hand: Done, agent and ready labels removed, pull request linked`,
       );
     }
     return after(ctx, c, merged, lines);

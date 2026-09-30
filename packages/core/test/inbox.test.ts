@@ -155,6 +155,48 @@ describe("ask and answer", () => {
 });
 
 describe("the coordinator's inbox", () => {
+  test("only the reading coordinator's exact nonempty handle is excluded from silence, not open items", async () => {
+    const { db } = await tempTurso();
+    for (const [ticket, handle] of [
+      ["DEMO-1", "ws-1/s-1"],
+      ["DEMO-2", "ws-1/s-2"],
+      ["DEMO-3", "ws-2/s-1"],
+    ] as const) {
+      await saveRuntimeHandle(db, { project: P, ticket, runtime: "Conductor", handle, branch: null, at: at(40) });
+    }
+    await recordEvent(db, { project: P, ticket: "DEMO-1", kind: "report", phase: "implementing", at: at(30) });
+    const options = { project: P, silentAfterMinutes: 15, now: () => NOW };
+    for (const coordinator of [undefined, null, "", "unrelated"])
+      expect((await readInbox(db, { ...options, coordinator })).map((entry) => entry.ticket)).toEqual([
+        "DEMO-2",
+        "DEMO-3",
+        "DEMO-1",
+      ]);
+    expect((await readInbox(db, { ...options, coordinator: "ws-1/s-1" })).map((entry) => entry.ticket)).toEqual([
+      "DEMO-2",
+      "DEMO-3",
+    ]);
+
+    for (const kind of ["question", "answer-request", "launch-request", "hand-back"] as const)
+      await addInboxItem(db, {
+        project: P,
+        ticket: "DEMO-1",
+        kind,
+        recipient: "coordinator",
+        author: "ws-1/s-1",
+        body: kind,
+        at: NOW,
+      });
+    expect((await readInbox(db, { ...options, coordinator: "ws-1/s-1" })).map((entry) => entry.kind)).toEqual([
+      "silent",
+      "silent",
+      "question",
+      "answer-request",
+      "launch-request",
+      "hand-back",
+    ]);
+  });
+
   test("open items and silent workers, oldest first; waiting and released workers are not silent", async () => {
     const { db } = await tempTurso();
     const hold = async (ticket: string, phase: string, minutesAgo: number, kind: "report" | "release" = "report") => {
@@ -235,6 +277,14 @@ describe("the coordinator's inbox", () => {
     const { db } = await tempTurso();
     let clock = NOW.getTime();
     const now = () => new Date(clock);
+    await saveRuntimeHandle(db, {
+      project: P,
+      ticket: "DEMO-3",
+      runtime: "Conductor",
+      handle: "ws-coordinator/session",
+      branch: null,
+      at: at(14),
+    });
     await addInboxItem(db, {
       project: P,
       ticket: "DEMO-1",
@@ -259,7 +309,13 @@ describe("the coordinator's inbox", () => {
         });
     };
 
-    const got = await checkInbox(db, { project: P, silentAfterMinutes: 15, now, wait: { sleep, timeoutMs: 300_000 } });
+    const got = await checkInbox(db, {
+      project: P,
+      coordinator: "ws-coordinator/session",
+      silentAfterMinutes: 15,
+      now,
+      wait: { sleep, timeoutMs: 300_000 },
+    });
     expect(got.items.map((e) => [e.body, e.new])).toEqual([
       ["old", false],
       ["new", true],
@@ -268,6 +324,7 @@ describe("the coordinator's inbox", () => {
 
     const idle = await checkInbox(db, {
       project: P,
+      coordinator: "ws-coordinator/session",
       silentAfterMinutes: 15,
       now,
       wait: {

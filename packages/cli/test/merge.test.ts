@@ -204,7 +204,7 @@ test("armada merge test-merges a head behind main, merges it pinned to its SHA a
   ).toBe(`Checklist passed for #9 (DEMO-18): handed back at ${f.head}, CLEAN, checks green, no open review thread.
 Head lacks 1 commit(s) of main; the test merge passed every local command.
 Merged #9 into main as ${SQUASH} (head ${f.head}).
-DEMO-18: moved to Done, agent labels removed, merged status posted.
+DEMO-18: moved to Done, agent and ready labels removed, merged status posted.
 https://github.com/acme/widgets/pull/9
 https://linear.app/acme/issue/DEMO-18
 Hints for you to judge (not blocking):
