@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.10](https://github.com/The-Vibe-Company/armada/compare/v0.1.9...v0.1.10) (2026-09-30)
+
+
+### Features
+
+* **dashboard:** answer questions and request launches from the fleet view ([#22](https://github.com/The-Vibe-Company/armada/issues/22)) ([508eaea](https://github.com/The-Vibe-Company/armada/commit/508eaea88bb2523f99e4221880c81aac62b6cc2a))
+
 ## [0.1.9](https://github.com/The-Vibe-Company/armada/compare/v0.1.8...v0.1.9) (2026-09-30)
 
 
