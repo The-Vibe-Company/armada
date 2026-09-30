@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/The-Vibe-Company/armada/compare/v0.1.0...v0.1.1) (2026-09-30)
+
+
+### Features
+
+* **cli:** claim tickets and report progress through armada ([#5](https://github.com/The-Vibe-Company/armada/issues/5)) ([cb94081](https://github.com/The-Vibe-Company/armada/commit/cb940818cfca59cd999331df544f56b685e86abe))
+
 ## 0.1.0 (2026-09-30)
 
 
