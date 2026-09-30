@@ -292,7 +292,8 @@ The program follows one convention: specs are direct children of the root titled
 
 ## Develop
 
-Requires [Bun](https://bun.sh) 1.3 or later.
+Use the [Bun](https://bun.sh) version pinned in `package.json`'s `packageManager`
+(currently 1.4.2). CI and release builds read the same pin.
 
 ```sh
 bun install
