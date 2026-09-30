@@ -5,7 +5,17 @@
 import type { ArmadaConfig, ConductorProfile } from "./config.ts";
 import { resolveProfile } from "./config.ts";
 import { inFlight } from "./fleet.ts";
-import { type Fetch, fetchProgram, gql, LinearError, type LinearRequestOptions, parseStatusLine } from "./linear.ts";
+import {
+  type Connection,
+  type Fetch,
+  fetchProgram,
+  gql,
+  LinearError,
+  type LinearRequestOptions,
+  type MoreOf,
+  parseStatusLine,
+  readRest,
+} from "./linear.ts";
 import { buildModel } from "./model.ts";
 import type { AgentPhase, ProgramData, StatusType } from "./types.ts";
 
@@ -85,10 +95,7 @@ interface RawNote {
   user: { name: string } | null;
 }
 
-interface RawNotes {
-  pageInfo?: { hasNextPage: boolean };
-  nodes: RawNote[];
-}
+type RawNotes = Connection<RawNote>;
 
 interface RawBriefIssue {
   identifier: string;
@@ -99,22 +106,21 @@ interface RawBriefIssue {
   state: { name: string; type: string };
   parent: { identifier: string; title: string; url: string } | null;
   comments: RawNotes;
-  inverseRelations: {
-    pageInfo?: { hasNextPage: boolean };
-    nodes: {
-      type: string;
-      issue: {
-        identifier: string;
-        title: string;
-        url: string;
-        state: { name: string; type: string };
-        comments: RawNotes;
-      };
-    }[];
-  };
+  inverseRelations: Connection<{
+    type: string;
+    issue: {
+      identifier: string;
+      title: string;
+      url: string;
+      state: { name: string; type: string };
+      comments: RawNotes;
+    };
+  }>;
 }
 
-const NOTES = "pageInfo { hasNextPage } nodes { id createdAt body user { name } }";
+const NOTE = "id createdAt body user { name }";
+const NOTES = `pageInfo { hasNextPage endCursor } nodes { ${NOTE} }`;
+const RELATION = `type issue { identifier title url state { name type } comments(first: 50) { ${NOTES} } }`;
 const BRIEF_QUERY = /* GraphQL */ `
   query Brief($id: String!) {
     issue(id: $id) {
@@ -122,12 +128,18 @@ const BRIEF_QUERY = /* GraphQL */ `
       state { name type }
       parent { identifier title url }
       comments(first: 50) { ${NOTES} }
-      inverseRelations(first: 25) {
-        pageInfo { hasNextPage }
-        nodes { type issue { identifier title url state { name type } comments(first: 50) { ${NOTES} } } }
-      }
+      inverseRelations(first: 25) { pageInfo { hasNextPage endCursor } nodes { ${RELATION} } }
     }
   }`;
+/** Comments and relations longer than the first page are read to the end. */
+const MORE_NOTES: MoreOf = { field: "comments", nodes: NOTE, operation: "MoreBriefComments", what: "comments" };
+const MORE_RELATIONS: MoreOf = {
+  field: "inverseRelations",
+  nodes: RELATION,
+  operation: "MoreBriefRelations",
+  what: "relations",
+  first: 25,
+};
 
 /** The ticket as a brief needs it: description, parent, comments, and its blockers with their comments. */
 export interface BriefTicket {
@@ -151,26 +163,18 @@ const toNotes = (issueUrl: string, raw: RawNotes): BriefNote[] =>
     .map((c) => ({ url: noteUrl(issueUrl, c.id), author: c.user?.name ?? null, createdAt: c.createdAt, body: c.body }))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
-export function normalizeBriefTicket(raw: RawBriefIssue): BriefTicket {
-  const warnings: string[] = [];
-  const cut = (c: { pageInfo?: { hasNextPage: boolean } }, what: string) => {
-    if (c.pageInfo?.hasNextPage) warnings.push(`${what}; the brief may miss the newest ones`);
-  };
-  cut(raw.comments, `${raw.identifier} has more comments than Armada reads`);
-  cut(raw.inverseRelations, `${raw.identifier} has more relations than Armada reads`);
+/** `warnings` are the reads that failed part way, from `fetchBriefTicket`. */
+export function normalizeBriefTicket(raw: RawBriefIssue, warnings: string[] = []): BriefTicket {
   const blockers = raw.inverseRelations.nodes
     .filter((r) => r.type === "blocks")
-    .map(({ issue: b }) => {
-      cut(b.comments, `blocker ${b.identifier} has more comments than Armada reads`);
-      return {
-        id: b.identifier,
-        title: b.title,
-        url: b.url,
-        status: b.state.name,
-        statusType: b.state.type as StatusType,
-        notes: toNotes(b.url, b.comments),
-      };
-    })
+    .map(({ issue: b }) => ({
+      id: b.identifier,
+      title: b.title,
+      url: b.url,
+      status: b.state.name,
+      statusType: b.state.type as StatusType,
+      notes: toNotes(b.url, b.comments),
+    }))
     .sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
   return {
     id: raw.identifier,
@@ -192,7 +196,14 @@ export async function fetchBriefTicket(opts: LinearRequestOptions, id: string): 
     if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
     throw err;
   });
-  return data.issue ? normalizeBriefTicket(data.issue) : null;
+  const raw = data.issue;
+  if (!raw) return null;
+  const warnings: string[] = [];
+  await readRest(opts, raw.identifier, MORE_NOTES, raw.comments, warnings);
+  await readRest(opts, raw.identifier, MORE_RELATIONS, raw.inverseRelations, warnings);
+  for (const r of raw.inverseRelations.nodes)
+    if (r.type === "blocks") await readRest(opts, r.issue.identifier, MORE_NOTES, r.issue.comments, warnings);
+  return normalizeBriefTicket(raw, warnings);
 }
 
 // ------------------------------------------------------------------ build

@@ -33,6 +33,13 @@ export interface FetchProgramOptions {
 
 export class LinearError extends Error {
   override name = "LinearError";
+  /** True when Linear could not be reached or refused the request as a whole (network, key, HTTP status). */
+  constructor(
+    message: string,
+    readonly transport = false,
+  ) {
+    super(message);
+  }
 }
 
 // ------------------------------------------------------------------ parsers
@@ -206,22 +213,41 @@ export function normalizeComment(raw: RawComment, issueId: string): Comment {
 
 // ------------------------------------------------------------------ queries
 
-/** The connections read to the end: node selection, operation name and the word used in warnings. */
+/** One connection of an issue to read to the end, see `readRest`. */
+export interface MoreOf {
+  /** Connection field on `Issue`, for example `inverseRelations`. */
+  field: string;
+  /** GraphQL selection of each node, the same as in the first page. */
+  nodes: string;
+  /** Operation name of the follow-up query. */
+  operation: string;
+  /** Plural noun used in the warning when a page cannot be read. */
+  what: string;
+  /** Nodes per follow-up request; lower it when `nodes` holds a nested connection. */
+  first?: number;
+}
+
+/** The connections `fetchProgram` reads to the end. */
 const MORE = {
   inverseRelations: {
+    field: "inverseRelations",
     nodes: "type issue { identifier state { type } }",
     operation: "MoreRelations",
     what: "relations",
   },
-  labels: { nodes: "name parent { name }", operation: "MoreLabels", what: "labels" },
-  attachments: { nodes: "title url", operation: "MoreAttachments", what: "attachments" },
-  comments: { nodes: "id createdAt body user { name }", operation: "MoreComments", what: "comments" },
-} as const;
-type MoreField = keyof typeof MORE;
-const MORE_QUERY = (field: MoreField) => /* GraphQL */ `
-  query ${MORE[field].operation}($id: String!, $after: String) {
+  labels: { field: "labels", nodes: "name parent { name }", operation: "MoreLabels", what: "labels" },
+  attachments: { field: "attachments", nodes: "title url", operation: "MoreAttachments", what: "attachments" },
+  comments: {
+    field: "comments",
+    nodes: "id createdAt body user { name }",
+    operation: "MoreComments",
+    what: "comments",
+  },
+} satisfies Record<string, MoreOf>;
+const MORE_QUERY = (m: MoreOf) => /* GraphQL */ `
+  query ${m.operation}($id: String!, $after: String) {
     issue(id: $id) {
-      ${field}(first: ${MORE_PAGE}, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${MORE[field].nodes} } }
+      ${m.field}(first: ${m.first ?? MORE_PAGE}, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${m.nodes} } }
     }
   }`;
 
@@ -268,13 +294,13 @@ export async function gql<T>(opts: LinearRequestOptions, query: string, variable
     body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(timeoutMs),
   }).catch((err: unknown) => {
-    throw new LinearError(`Linear API unreachable: ${networkReason(err, timeoutMs)}`);
+    throw new LinearError(`Linear API unreachable: ${networkReason(err, timeoutMs)}`, true);
   });
-  if (res.status === 401) throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY");
+  if (res.status === 401) throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY", true);
   // GraphQL validation errors come back with HTTP 400 and a JSON body worth reporting.
   const json = (await res.json().catch(() => ({}))) as { data?: T; errors?: { message: string }[] };
   if (json.errors?.length) throw new LinearError(`Linear API: ${json.errors.map((e) => e.message).join("; ")}`);
-  if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`);
+  if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`, true);
   if (!json.data) throw new LinearError("Linear API: empty response");
   return json.data;
 }
@@ -329,7 +355,7 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
   if (parents.length) warnings.push(`the program is deeper than ${MAX_DEPTH} levels; deeper issues are ignored`);
   for (const r of all)
     for (const field of ["inverseRelations", "labels", "attachments"] as const)
-      await readRest(opts, r.identifier, field, r[field] as Connection<unknown>, warnings);
+      await readRest(opts, r.identifier, MORE[field], r[field] as Connection<unknown>, warnings);
 
   const issues = all.map((r) => normalizeIssue(r, opts.labels));
   // Comments matter only where an agent may be working: claims and status lines.
@@ -347,7 +373,7 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
       { ids: batch },
     );
     for (const n of data.issues.nodes) {
-      await readRest(opts, n.identifier, "comments", n.comments, warnings);
+      await readRest(opts, n.identifier, MORE.comments, n.comments, warnings);
       for (const c of n.comments.nodes) comments.push(normalizeComment(c, n.identifier));
     }
   }
@@ -363,33 +389,35 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
 
 /**
  * Appends the remaining pages of one connection of issue `identifier` to `conn`,
- * until Linear reports no next page. A failed read stops there with a warning:
- * what was read is kept, and the report says some nodes may be missing.
+ * until Linear reports no next page; `conn.pageInfo` then describes the last
+ * page read. When Linear answers a page with an error, reading stops there with
+ * a warning and what was read is kept. When Linear cannot be reached at all, the
+ * error is thrown, as for every other request of the read.
  */
-async function readRest<T>(
-  opts: FetchProgramOptions,
+export async function readRest<T>(
+  opts: LinearRequestOptions,
   identifier: string,
-  field: MoreField,
+  more: MoreOf,
   conn: Connection<T>,
   warnings: string[],
 ): Promise<void> {
-  let info = conn.pageInfo;
-  while (info?.hasNextPage) {
-    const after = info.endCursor;
+  while (conn.pageInfo?.hasNextPage) {
+    const after = conn.pageInfo.endCursor;
     try {
       if (!after) throw new LinearError("Linear gave no cursor for the next page");
-      const data = await gql<{ issue: Partial<Record<MoreField, Connection<T>>> | null }>(opts, MORE_QUERY(field), {
+      const data = await gql<{ issue: Record<string, Connection<T> | undefined> | null }>(opts, MORE_QUERY(more), {
         id: identifier,
         after,
       });
-      const page = data.issue?.[field];
+      const page = data.issue?.[more.field];
       if (!page) throw new LinearError(`Linear: issue ${identifier} not found`);
       conn.nodes.push(...page.nodes);
-      info = page.pageInfo;
-      if (info?.hasNextPage && info.endCursor === after) throw new LinearError("Linear did not advance to a next page");
+      conn.pageInfo = page.pageInfo;
+      if (page.pageInfo?.hasNextPage && page.pageInfo.endCursor === after)
+        throw new LinearError("Linear did not advance to a next page");
     } catch (err) {
-      if (!(err instanceof LinearError)) throw err;
-      warnings.push(`${identifier}: could not read all its ${MORE[field].what} (${err.message}); some may be missing`);
+      if (!(err instanceof LinearError) || err.transport) throw err;
+      warnings.push(`${identifier}: could not read all its ${more.what} (${err.message}); some may be missing`);
       return;
     }
   }

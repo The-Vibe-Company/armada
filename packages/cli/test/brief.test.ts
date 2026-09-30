@@ -85,12 +85,16 @@ const SECRETS = {
   ARMADA_TURSO_URL: "libsql://SECRET-db-3.turso.io",
 };
 
-function briefIo(env: Record<string, string> = SECRETS, response: object = BRIEF_RESPONSE) {
+function briefIo(
+  env: Record<string, string> = SECRETS,
+  response: object = BRIEF_RESPONSE,
+  more: Record<string, unknown[]> = {},
+) {
   const out: string[] = [];
   const err: string[] = [];
   const { fetch, calls } = recordedFetch({
     linear: (r) => {
-      (r as Record<string, unknown[]>).Brief = [response];
+      Object.assign(r, { Brief: [response], ...more });
     },
   });
   const io: Io = {
@@ -193,6 +197,42 @@ describe("armada brief", () => {
     const open = briefIo(SECRETS, response);
     expect(await run(["brief", "DEMO-13"], open.io)).toBe(0);
     expect(open.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-10 (In Progress)\n");
+  });
+
+  test("relations and comments longer than one page are read to the end", async () => {
+    const response = structuredClone(BRIEF_RESPONSE);
+    Object.assign(response.data.issue.inverseRelations.pageInfo, { hasNextPage: true, endCursor: "r1" });
+    const later = {
+      type: "blocks",
+      issue: {
+        identifier: "DEMO-12",
+        title: "Remember the last email used",
+        url: "https://linear.app/acme/issue/DEMO-12",
+        state: { name: "In Progress", type: "started" },
+        comments: {
+          pageInfo: { hasNextPage: true, endCursor: "k1" },
+          nodes: [note("c-12-a", "2026-03-03T09:00:00.000Z", "Agent status: planning — claimed")],
+        },
+      },
+    };
+    const handBack = note(
+      "c-12-b",
+      "2026-03-03T13:00:00.000Z",
+      "Agent status: ready-to-merge — PR #5\n\n## For the next tickets\nThe last email lives in `recent.ts`.",
+    );
+    const b = briefIo(SECRETS, response, {
+      MoreBriefRelations: [
+        { data: { issue: { inverseRelations: { pageInfo: { hasNextPage: false }, nodes: [later] } } } },
+      ],
+      MoreBriefComments: [{ data: { issue: { comments: { pageInfo: { hasNextPage: false }, nodes: [handBack] } } } }],
+    });
+    expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
+    expect(b.calls.filter((c) => c.operation.startsWith("MoreBrief")).map((c) => [c.operation, c.variables])).toEqual([
+      ["MoreBriefRelations", { id: "DEMO-13", after: "r1" }],
+      ["MoreBriefComments", { id: "DEMO-12", after: "k1" }],
+    ]);
+    expect(b.out()).toContain("The last email lives in `recent.ts`.");
+    expect(b.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-12 (In Progress)\n");
   });
 
   test("a key only in the credentials file is marked to load into the shell, and never shown", async () => {

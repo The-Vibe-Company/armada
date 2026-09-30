@@ -136,6 +136,23 @@ describe("fetchProgram", () => {
     ]);
   });
 
+  test("Linear unreachable on a later page fails the read instead of warning once per issue", async () => {
+    const recorded = recordedFetch({
+      linear: (r) => {
+        const kid = r.Children[2]?.data.issues.nodes.find((n) => n.identifier === "DEMO-13");
+        if (kid) Object.assign(kid.inverseRelations.pageInfo, { hasNextPage: true, endCursor: "r1" });
+      },
+    });
+    const fetch: Fetch = async (url, init) => {
+      if (String(init.body).includes("query MoreRelations"))
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      return recorded.fetch(url, init);
+    };
+    await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch })).rejects.toThrow(
+      "Linear API unreachable: no answer within 30 s",
+    );
+  });
+
   test("a request with no answer before the timeout fails naming Linear", async () => {
     // Simulates the abort AbortSignal.timeout raises, without waiting for it.
     const timedOut: Fetch = async () => {
