@@ -17,8 +17,10 @@ import {
   openRuntimeHandles,
   recordCoordinatorSeen,
   redact,
+  resolveAnswerRequests,
   resolveInboxItem,
   resolveInboxItems,
+  type StoredInboxItem,
 } from "./turso.ts";
 import type { AgentPhase } from "./types.ts";
 import { live, type Outcome, projectOf, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
@@ -95,6 +97,8 @@ export interface InboxEntry {
   createdAt: string;
   /** Appeared while `armada inbox --wait` was waiting. */
   new: boolean;
+  /** Dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
+  request?: { question: number | null; profile: string | null };
 }
 
 export interface InboxReport {
@@ -142,6 +146,7 @@ export async function readInbox(db: Db, o: InboxOptions): Promise<InboxEntry[]> 
     body: i.body,
     createdAt: i.createdAt,
     new: false,
+    ...(i.request ? { request: i.request } : {}),
   }));
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   for (const h of handles) {
@@ -244,11 +249,16 @@ function statusComment(phase: AgentPhase, word: "answer" | "note", text: string,
   return detail ? `${line}\n\n${detail}` : line;
 }
 
+const ANSWERABLE: InboxKind[] = ["question", "request", "answer-request", "launch-request"];
+
 /**
  * Records a coordinator's answer or note. It never calls a runtime: deliver it
  * in the worker's session with the runtime guide first. An answer resolves the
  * question in Turso and posts `Agent status: <phase> — answer: …` on the ticket;
  * the worker's phase stays as it is until the worker reports the one it resumes.
+ * An answer-request from the dashboard resolves with its question, and the
+ * comment names who asked. A launch-request answered here is declined: the
+ * worker's claim is what resolves a launch that happened.
  */
 export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promise<Outcome> {
   const { config, linear } = ctx;
@@ -268,13 +278,12 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   const lines: string[] = [];
 
   // Every read that can refuse happens before the first write.
+  let item: StoredInboxItem | null = null;
   let itemId: number | null = null;
   let ticketId: string | null = null;
   if (idMatch) {
     itemId = Number(idMatch[1]);
-    const item = await live(ctx, warnings, `read inbox item #${itemId}`, (db) =>
-      getInboxItem(db, project, itemId ?? 0),
-    );
+    item = await live(ctx, warnings, `read inbox item #${itemId}`, (db) => getInboxItem(db, project, itemId ?? 0));
     if (!item)
       throw new Refusal(
         warnings.length
@@ -289,7 +298,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
         `inbox item #${itemId} is a hand-back: armada merge resolves it once the pull request is merged`,
         `armada merge <pr>${item.ticket ? ` --ticket ${item.ticket}` : ""} --dry-run`,
       );
-    if (item.recipient !== "coordinator" || (item.kind !== "question" && item.kind !== "request"))
+    if (item.recipient !== "coordinator" || !ANSWERABLE.includes(item.kind))
       throw new Refusal(
         `inbox item #${itemId} is a ${item.kind} for the ${item.recipient}, not something to answer`,
         "armada inbox",
@@ -309,6 +318,10 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     }
   }
 
+  if (item?.kind === "launch-request") return declineLaunch(ctx, item, text, warnings);
+
+  // The question an answer-request answers; the answer-request itself is resolved with it.
+  const question = item?.kind === "answer-request" ? (item.request?.question ?? null) : null;
   let url = "";
   if (ticketId) {
     const ticket = await linear.readTicket(ticketId);
@@ -323,7 +336,12 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
         );
       warnings.push(`${ticket.id} has no agent phase (no worker holds it); the answer was not posted on the ticket`);
     } else {
-      const ref = itemId === null ? null : `Answers question #${itemId}.`;
+      const ref =
+        item?.kind === "answer-request"
+          ? `Answers ${question === null ? "the open question" : `question #${question}`}, as ${item.author ?? "the owner"} asked from the dashboard (request #${item.id}).`
+          : itemId === null
+            ? null
+            : `Answers question #${itemId}.`;
       await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));
       lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
     }
@@ -345,14 +363,45 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       await resolveInboxItem(db, { project, id, resolution: "delivered through the runtime", at });
       return `Note #${id} recorded.`;
     }
+    if (item?.kind === "answer-request") {
+      await resolveInboxItem(db, { project, id: item.id, resolution: text, at });
+      const closed = question !== null && (await resolveInboxItem(db, { project, id: question, resolution: text, at }));
+      return `Dashboard request #${item.id} delivered${closed ? `; question #${question} resolved` : ""}.`;
+    }
     if (itemId !== null) {
       const done = await resolveInboxItem(db, { project, id: itemId, resolution: text, at });
+      // An answer the owner typed on the dashboard for this question is now moot.
+      if (item?.kind === "question")
+        await resolveAnswerRequests(db, { project, question: itemId, resolution: text, at });
       return done ? `Inbox item #${itemId} resolved.` : `Inbox item #${itemId} was already resolved.`;
     }
     const n = await resolveInboxItems(db, { project, ticket: ticketId ?? "", kind: "question", resolution: text, at });
+    await resolveInboxItems(db, { project, ticket: ticketId ?? "", kind: "answer-request", resolution: text, at });
     return `${n} open question${n === 1 ? "" : "s"} of ${ticketId} resolved.`;
   });
   if (recorded) lines.push(recorded);
   if (!input.note) lines.push("The worker resumes once it reports its phase again.");
   return { ticket: ticketId ?? `#${itemId}`, url, lines, warnings: [...new Set(warnings)], inbox: null };
+}
+
+/** A launch the coordinator will not carry out: closed in Turso with the reason, nothing posted on the ticket. */
+async function declineLaunch(
+  ctx: WorkerContext,
+  item: StoredInboxItem,
+  reason: string,
+  warnings: string[],
+): Promise<Outcome> {
+  const project = ctx.config.project.slug;
+  const done = await live(ctx, warnings, `decline launch request #${item.id}`, (db) =>
+    resolveInboxItem(db, { project, id: item.id, resolution: `declined: ${reason}`, at: ctx.now() }),
+  );
+  const lines =
+    done === null
+      ? []
+      : [
+          done
+            ? `Launch request #${item.id} for ${item.ticket} declined; the dashboard shows it closed.`
+            : `Launch request #${item.id} was already resolved.`,
+        ];
+  return { ticket: item.ticket ?? `#${item.id}`, url: "", lines, warnings: [...new Set(warnings)], inbox: null };
 }

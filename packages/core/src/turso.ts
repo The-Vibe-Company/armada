@@ -103,6 +103,21 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
     ],
   },
+  {
+    version: 4,
+    statements: [
+      // What a dashboard request is about: the question an answer-request
+      // answers, the profile a launch-request asks for. A table of its own, not
+      // new inbox_items columns, so replaying the migration stays idempotent.
+      `CREATE TABLE IF NOT EXISTS inbox_requests (
+        item INTEGER PRIMARY KEY,
+        project TEXT NOT NULL,
+        question INTEGER,
+        profile TEXT
+      )`,
+      "CREATE INDEX IF NOT EXISTS inbox_requests_by_question ON inbox_requests (project, question)",
+    ],
+  },
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
@@ -504,9 +519,16 @@ export async function getRuntimeHandle(db: Db, project: string, ticket: string):
 
 // ------------------------------------------------------------------ inbox
 
-/** `note`: an unsolicited coordinator message to a worker, stored already resolved as a record. */
-export type InboxKind = "question" | "request" | "hand-back" | "note";
+/**
+ * `note`: an unsolicited coordinator message to a worker, stored already resolved as a record.
+ * `answer-request` and `launch-request`: the owner's requests from the dashboard, which the
+ * coordinator carries out (it delivers the answer, or launches the ticket) and then resolves.
+ * `request` is an older generic kind, kept readable.
+ */
+export type InboxKind = "question" | "request" | "hand-back" | "note" | "answer-request" | "launch-request";
 export type InboxRecipient = "coordinator" | "worker";
+/** The inbox kinds the dashboard writes. */
+export type RequestKind = "answer-request" | "launch-request";
 
 export interface InboxItem {
   id: number;
@@ -517,15 +539,73 @@ export interface InboxItem {
   author: string | null;
   body: string;
   createdAt: string;
+  /** Set on dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
+  request?: { question: number | null; profile: string | null };
 }
 
-export async function addInboxItem(db: Db, item: Omit<InboxItem, "id" | "createdAt"> & { at: Date }): Promise<number> {
+export async function addInboxItem(
+  db: Db,
+  item: Omit<InboxItem, "id" | "createdAt" | "request"> & { at: Date },
+): Promise<number> {
   const rs = await db.execute({
     sql: `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)`,
     args: [item.project, item.ticket, item.kind, item.recipient, item.author, item.body, item.at.toISOString()],
   });
   return Number(rs.lastInsertRowid);
+}
+
+export interface NewRequest {
+  project: string;
+  ticket: string;
+  kind: RequestKind;
+  author: string;
+  body: string;
+  /** answer-request: the question item it answers. */
+  question: number | null;
+  /** launch-request: the profile asked for. */
+  profile: string | null;
+  at: Date;
+}
+
+/**
+ * Adds a dashboard request for the coordinator, in one write: nothing is added
+ * when the same request is already open (an answer to that question, a launch
+ * of that ticket) or when the question it answers is no longer open. Returns
+ * the new item id, or null when nothing was added.
+ */
+export async function addRequest(db: Db, r: NewRequest): Promise<number | null> {
+  const open = "i.project = ? AND i.kind = ? AND i.resolved_at IS NULL";
+  const guard =
+    r.kind === "answer-request"
+      ? {
+          sql: `NOT EXISTS (SELECT 1 FROM inbox_items i JOIN inbox_requests q ON q.item = i.id
+                            WHERE ${open} AND q.question = ?)
+                AND EXISTS (SELECT 1 FROM inbox_items i
+                            WHERE i.project = ? AND i.id = ? AND i.kind = 'question' AND i.resolved_at IS NULL)`,
+          args: [r.project, r.kind, r.question, r.project, r.question],
+        }
+      : {
+          sql: `NOT EXISTS (SELECT 1 FROM inbox_items i WHERE ${open} AND i.ticket = ?)`,
+          args: [r.project, r.kind, r.ticket],
+        };
+  const [added] = await db.batch(
+    [
+      {
+        sql: `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
+              SELECT ?, ?, ?, 'coordinator', ?, ?, ? WHERE ${guard.sql}`,
+        args: [r.project, r.ticket, r.kind, r.author, r.body, r.at.toISOString(), ...guard.args],
+      },
+      // changes() is the row count of the insert above: no row, no detail.
+      {
+        sql: `INSERT INTO inbox_requests (item, project, question, profile)
+              SELECT last_insert_rowid(), ?, ?, ? WHERE changes() = 1`,
+        args: [r.project, r.question, r.profile],
+      },
+    ],
+    "write",
+  );
+  return added?.rowsAffected ? Number(added.lastInsertRowid) : null;
 }
 
 /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
@@ -541,38 +621,11 @@ export async function putHandBack(
   if (!updated.rowsAffected) await addInboxItem(db, { ...item, kind: "hand-back", recipient: "coordinator" });
 }
 
-/** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
-export async function openInboxItems(
-  db: Db,
-  q: { project: string; recipient: InboxRecipient; ticket?: string },
-): Promise<InboxItem[]> {
-  const rs = await db.execute({
-    sql: `SELECT id, project, ticket, kind, recipient, author, body, created_at FROM inbox_items
-          WHERE project = ? AND recipient = ? AND resolved_at IS NULL ${q.ticket ? "AND ticket = ?" : ""}
-          ORDER BY created_at, id`,
-    args: q.ticket ? [q.project, q.recipient, q.ticket] : [q.project, q.recipient],
-  });
-  return rs.rows.map((r) => ({
-    id: Number(r.id),
-    project: String(r.project),
-    ticket: r.ticket === null ? null : String(r.ticket),
-    kind: String(r.kind) as InboxKind,
-    recipient: String(r.recipient) as InboxRecipient,
-    author: r.author === null ? null : String(r.author),
-    body: String(r.body),
-    createdAt: String(r.created_at),
-  }));
-}
+const INBOX_COLUMNS = `i.id, i.project, i.ticket, i.kind, i.recipient, i.author, i.body, i.created_at,
+  i.resolved_at, i.resolution, q.item AS request_item, q.question AS request_question, q.profile AS request_profile`;
+const INBOX_FROM = "inbox_items i LEFT JOIN inbox_requests q ON q.item = i.id";
 
-const INBOX_COLUMNS = "id, project, ticket, kind, recipient, author, body, created_at, resolved_at, resolution";
-
-/** An inbox item with its resolution: when it was resolved, and the answer or reason. */
-export interface StoredInboxItem extends InboxItem {
-  resolvedAt: string | null;
-  resolution: string | null;
-}
-
-const inboxRow = (r: Record<string, unknown>): StoredInboxItem => ({
+const inboxItem = (r: Record<string, unknown>): InboxItem => ({
   id: Number(r.id),
   project: String(r.project),
   ticket: r.ticket === null ? null : String(r.ticket),
@@ -581,6 +634,38 @@ const inboxRow = (r: Record<string, unknown>): StoredInboxItem => ({
   author: r.author === null ? null : String(r.author),
   body: String(r.body),
   createdAt: String(r.created_at),
+  ...(r.request_item === null || r.request_item === undefined
+    ? {}
+    : {
+        request: {
+          question: r.request_question === null ? null : Number(r.request_question),
+          profile: r.request_profile === null ? null : String(r.request_profile),
+        },
+      }),
+});
+
+/** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
+export async function openInboxItems(
+  db: Db,
+  q: { project: string; recipient: InboxRecipient; ticket?: string },
+): Promise<InboxItem[]> {
+  const rs = await db.execute({
+    sql: `SELECT ${INBOX_COLUMNS} FROM ${INBOX_FROM}
+          WHERE i.project = ? AND i.recipient = ? AND i.resolved_at IS NULL ${q.ticket ? "AND i.ticket = ?" : ""}
+          ORDER BY i.created_at, i.id`,
+    args: q.ticket ? [q.project, q.recipient, q.ticket] : [q.project, q.recipient],
+  });
+  return rs.rows.map(inboxItem);
+}
+
+/** An inbox item with its resolution: when it was resolved, and the answer or reason. */
+export interface StoredInboxItem extends InboxItem {
+  resolvedAt: string | null;
+  resolution: string | null;
+}
+
+const inboxRow = (r: Record<string, unknown>): StoredInboxItem => ({
+  ...inboxItem(r),
   resolvedAt: r.resolved_at === null ? null : String(r.resolved_at),
   resolution: r.resolution === null ? null : String(r.resolution),
 });
@@ -588,7 +673,7 @@ const inboxRow = (r: Record<string, unknown>): StoredInboxItem => ({
 /** One inbox item of a project, open or resolved; null when the project has no such item. */
 export async function getInboxItem(db: Db, project: string, id: number): Promise<StoredInboxItem | null> {
   const rs = await db.execute({
-    sql: `SELECT ${INBOX_COLUMNS} FROM inbox_items WHERE project = ? AND id = ?`,
+    sql: `SELECT ${INBOX_COLUMNS} FROM ${INBOX_FROM} WHERE i.project = ? AND i.id = ?`,
     args: [project, id],
   });
   const r = rs.rows[0];
@@ -627,6 +712,20 @@ export async function resolveInboxItems(
     sql: `UPDATE inbox_items SET resolved_at = ?, resolution = ?
           WHERE project = ? AND ticket = ? AND kind = ? AND resolved_at IS NULL`,
     args: [q.at.toISOString(), q.resolution, q.project, q.ticket, q.kind],
+  });
+  return rs.rowsAffected;
+}
+
+/** Resolves the open answer-requests for one question (the question was answered or closed); returns how many. */
+export async function resolveAnswerRequests(
+  db: Db,
+  q: { project: string; question: number; resolution: string; at: Date },
+): Promise<number> {
+  const rs = await db.execute({
+    sql: `UPDATE inbox_items SET resolved_at = ?, resolution = ?
+          WHERE project = ? AND kind = 'answer-request' AND resolved_at IS NULL
+            AND id IN (SELECT item FROM inbox_requests WHERE project = ? AND question = ?)`,
+    args: [q.at.toISOString(), q.resolution, q.project, q.project, q.question],
   });
   return rs.rowsAffected;
 }

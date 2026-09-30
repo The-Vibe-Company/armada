@@ -15,6 +15,7 @@ const ticket = (id: string, over: Partial<InFlightTicket> = {}): InFlightTicket 
   phaseSource: "label",
   runtime: "Conductor",
   handle: null,
+  profile: null,
   agent: "Worker",
   since: at("09:00"),
   lastUpdate: at("09:55"),
