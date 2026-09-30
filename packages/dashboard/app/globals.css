@@ -1505,6 +1505,11 @@ button.chip:hover {
   margin-top: 0;
   width: 100%;
 }
+.row-actions.is-spread .btn {
+  height: 100%;
+  padding: 10px 14px;
+  border-radius: 10px;
+}
 .inline-form {
   display: flex;
   align-items: center;
