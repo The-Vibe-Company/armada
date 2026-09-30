@@ -96,7 +96,7 @@ export interface MergeInput {
   ticket?: string | null;
   /** Run the checklist only. */
   dryRun?: boolean;
-  /** Merge without the merge lock (Turso down); recorded on the ticket. */
+  /** Merge without the merge lock, e.g. while Turso is down; recorded on the ticket. */
   noLock?: boolean;
 }
 
@@ -342,7 +342,13 @@ export async function withLease<T>(
   let waited = 0;
   let lastHolder: string | null | undefined;
   for (;;) {
-    const got = await timed(acquireLease(db, { ...key, at: o.now() }), lockTimeout, `take the ${o.name} lock`);
+    const got = await timed(acquireLease(db, { ...key, at: o.now() }), lockTimeout, `take the ${o.name} lock`).catch(
+      async (err: unknown) => {
+        // The write may still land later: give back whatever we might hold.
+        await timed(releaseLease(db, key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
+        throw err;
+      },
+    );
     if (got.acquired) break;
     if (waited >= maxWait)
       throw new Refusal(
@@ -608,7 +614,9 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     c.warnings.unshift(...early);
     await recheck(ctx, c);
     if (!(await renew()))
-      throw new Refusal("the merge lock expired and another coordinator took it; nothing was merged");
+      throw new Refusal(
+        "the merge lock could not be renewed (it expired and another coordinator took it, or Turso did not answer); nothing was merged",
+      );
     say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
     const merged = await mergePinned(ctx, c.pull, c.sha, c.ticket.id);
     const lines = [

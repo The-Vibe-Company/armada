@@ -376,7 +376,7 @@ describe("armada merge", () => {
       await db.execute("UPDATE leases SET holder = 'coordinator-b'");
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      "the merge lock expired and another coordinator took it; nothing was merged",
+      "the merge lock could not be renewed (it expired and another coordinator took it, or Turso did not answer); nothing was merged",
     );
     expect(s.forge.merges).toEqual([]);
   });
@@ -491,5 +491,20 @@ describe("merge lease", () => {
     expect(message).toBe(
       "the merge lock of widgets is still held by a (until 2026-03-04T10:01:00.000Z); try again later",
     );
+  });
+
+  test("a Turso that never answers refuses the lock instead of hanging", async () => {
+    const hung = { execute: () => new Promise(() => {}) } as unknown as Db;
+    const o = { project: "widgets", name: "merge", holder: "a", ttlMs: 60_000, now: () => NOW, timeoutMs: 0 };
+    let ran = false;
+    const message = await refusal(
+      withLease(hung, { ...o, sleep: async () => {} }, async () => {
+        ran = true;
+      }),
+    );
+    expect([message, ran]).toEqual([
+      "Turso did not answer within 0 s to take the merge lock; nothing was merged",
+      false,
+    ]);
   });
 });
