@@ -69,7 +69,7 @@ armada brief ABC-12 --prompt           # only the prompt, to pipe into the runti
 armada brief ABC-12 --profile codex --json
 ```
 
-- The prompt names the ticket and its Linear branch, starts with the worker's `armada claim` (handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, the CLI pinned to the coordinator's version), and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
+- The prompt names the ticket and its Linear branch, starts by installing the coordinator's Armada version (`npm install -g`, with an `npm exec` fallback) and running `armada claim` with the handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
 - The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables to pass: `LINEAR_API_KEY` (required), `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN` (optional), `ARMADA_TICKET=<ticket>`. Each shows whether this shell has it. No value is ever printed.
 - `--profile` defaults to `conductor.default_profile`, then to the only profile. An unknown profile exits 2.
 

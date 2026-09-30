@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEMO_TOML, NOW, recordedFetch } from "../../core/test/support.ts";
+import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 
 const TOML = `${DEMO_TOML}
@@ -114,16 +115,16 @@ describe("armada brief", () => {
     expect(text).toContain("ARMADA_TICKET=DEMO-13");
 
     const prompt = text.slice(text.indexOf("# DEMO-13 — Show a sign-in page"));
-    const [claimAt, handBackAt, decisionAt, workersAt] = [
-      "npx -y @the-vibe-company/armada@",
+    const at = [
+      "npm install -g @the-vibe-company/armada@",
       "> ## For the next tickets",
       "> Decision: reuse the account form.",
       "## Workers in flight",
     ].map((s) => prompt.indexOf(s));
-    expect([claimAt, handBackAt, decisionAt, workersAt].every((i) => i > 0)).toBe(true);
-    expect(claimAt < handBackAt && handBackAt < decisionAt && decisionAt < workersAt).toBe(true);
-    expect(prompt).toMatch(
-      /claim DEMO-13 --runtime conductor --handle "\$CONDUCTOR_WORKSPACE_ID\/\$CONDUCTOR_SESSION_ID" --branch feature\/demo-13-show-a-sign-in-page\n/,
+    expect(at.every((i) => i > 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    expect(prompt).toContain(
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page\n`,
     );
     expect(prompt).toContain("git branch -m feature/demo-13-show-a-sign-in-page");
     // The hand-back is the ready-to-merge comment, not the newer "Merged, thanks."

@@ -60,8 +60,10 @@ export interface Brief {
   runtime: "conductor";
   profile: ({ name: string } & ConductorProfile) | null;
   repository: { name: string; url: string };
-  /** `npx -y @the-vibe-company/armada@<version>`: the worker runs the coordinator's exact version. */
-  armada: string;
+  /** Installs the coordinator's exact Armada version as `armada` in the worker's workspace. */
+  install: string;
+  /** Runs that version where a global install is refused. */
+  fallback: string;
   claimCommand: string;
   environment: BriefVariable[];
   blockers: BriefBlocker[];
@@ -260,9 +262,11 @@ export function buildBrief(input: BuildBriefInput): Brief {
       pr: l.pr?.url ?? null,
     }));
 
-  const armada = `npx -y ${ARMADA_PACKAGE}@${input.version}`;
+  // Not `npx <package>`: inside the Armada repository itself, npx resolves the
+  // workspace package of the same name, which has no built command.
+  const pkg = `${ARMADA_PACKAGE}@${input.version}`;
   const branch = ticket.branchName;
-  const claimCommand = `${armada} claim ${ticket.id} --runtime conductor --handle ${CONDUCTOR_HANDLE}${branch ? ` --branch ${branch}` : ""}`;
+  const claimCommand = `armada claim ${ticket.id} --runtime conductor --handle ${CONDUCTOR_HANDLE}${branch ? ` --branch ${branch}` : ""}`;
   const has = (name: string) => !!input.env[name]?.trim();
   const environment: BriefVariable[] = [
     ...VARIABLES.map((v) => ({ ...v, value: null, inShell: has(v.name) })),
@@ -275,7 +279,8 @@ export function buildBrief(input: BuildBriefInput): Brief {
     runtime: "conductor",
     profile: choice.profile ? { name: choice.name, ...choice.profile } : null,
     repository: { name: config.github.repository, url: `https://github.com/${config.github.repository}` },
-    armada,
+    install: `npm install -g ${pkg}`,
+    fallback: `npm exec --yes --package=${pkg} -- armada`,
     claimCommand,
     environment,
     blockers: ticket.blockers.map(({ notes, ...b }) => ({ ...b, handBack: handBackNote(notes) })),
@@ -305,13 +310,14 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. Follow the \`armada-worker\` skill (\`${WORKER_SKILL_PATH}\`) and the repository's \`AGENTS.md\`. Never merge.`,
     "",
-    `Run Armada as \`${b.armada}\`: that is the coordinator's version. Wherever the skill says \`armada\`, use that command.`,
-    "",
-    "## First: claim the ticket",
+    "## First: install Armada and claim the ticket",
     "",
     "```sh",
+    b.install,
     b.claimCommand,
     "```",
+    "",
+    `This installs the coordinator's Armada version. If the global install is refused, use \`${b.fallback}\` wherever this brief or the skill says \`armada\`.`,
     "",
     "If the claim is refused, stop and say why in your reply: another worker holds the ticket.",
     "",
