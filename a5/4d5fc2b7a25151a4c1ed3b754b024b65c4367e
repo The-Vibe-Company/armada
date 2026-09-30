@@ -1,0 +1,25 @@
+packages/cli/src/brief.ts
+  s_d658e7251951c2::t_c4b53722fe805c 12,37-43,70
+packages/cli/test/brief.test.ts
+  s_d658e7251951c2::t_bc18213c125eae 1-4,109-113,198-209
+packages/core/src/brief.ts
+  s_d658e7251951c2::t_c52b9903752f1d 54-55,223-224,276-289,398,422
+skills/armada-runtime-conductor/SKILL.md
+  s_d658e7251951c2::t_e001648666630c 15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a54d5fc2b7a25151a4c1ed3b754b024b65c4367e",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
