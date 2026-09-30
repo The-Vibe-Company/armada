@@ -1,0 +1,27 @@
+packages/core/src/merge.ts
+  s_d658e7251951c2::t_fd9c552e8075db 696-702
+packages/core/src/requests.ts
+  s_d658e7251951c2::t_57a390af096216 7,133
+packages/core/test/requests.test.ts
+  s_d658e7251951c2::t_d7b25f9e946f1a 138,143,145,150,152
+packages/dashboard/components/Actions.tsx
+  s_d658e7251951c2::t_8d370566fe5d34 67,70-72,74
+packages/dashboard/lib/requests.ts
+  s_d658e7251951c2::t_401b21cdc81c8d 38-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3af7dce3125fbb6c5db3ce22944b0bd52df1e38b",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
