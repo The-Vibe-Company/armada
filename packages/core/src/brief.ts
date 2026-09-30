@@ -243,7 +243,8 @@ export class BriefError extends Error {
 
 export function buildBrief(input: BuildBriefInput): Brief {
   const { config, ticket, program } = input;
-  const warnings = [...ticket.warnings, ...program.warnings];
+  // Both reads may warn about the same failed page; say it once.
+  const warnings = [...new Set([...ticket.warnings, ...program.warnings])];
 
   const choice = resolveProfile(config, input.profile);
   if (!choice.profile && choice.problem) throw new BriefError(choice.problem);
