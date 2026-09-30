@@ -4,7 +4,7 @@ Armada runs a fleet of coding agents on one project and keeps every piece of wor
 
 It imposes one method: grill the decisions, write a spec, cut it into tickets, let one worker agent ship each ticket as a green pull request, and let a coordinator agent merge. The tracker is the source of truth for progress; Armada adds live telemetry, contention rules and a fleet dashboard on top.
 
-**Status:** early. `armada status` works; the other commands are being built.
+**Status:** early. `armada status` and `armada auth` work; the other commands are being built.
 
 ## Try it
 
@@ -12,8 +12,8 @@ Requires [Bun](https://bun.sh) 1.3 or later.
 
 ```sh
 bun install
-export LINEAR_API_KEY=lin_api_...   # Linear > Settings > Security & access > Personal API keys
-bunx armada status                  # or: bunx armada status --json
+bunx armada auth login   # once per machine: asks for the missing keys, input hidden
+bunx armada status       # or: bunx armada status --json
 ```
 
 The package is not published to npm yet, so `bunx armada` works inside this checkout only. From another repository, run `bun <path-to-armada>/packages/cli/src/main.ts status`.
@@ -25,6 +25,35 @@ The package is not published to npm yet, so `bunx armada` works inside this chec
 - **Pull requests waiting**: open pull requests with their CI state and mergeability.
 
 GitHub is read with `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login (`gh auth token`). Without any of them the tickets are still shown.
+
+## Keys
+
+Armada needs a few keys. Set them up once per machine with `armada auth login`, or pass them as environment variables, which always win over the stored ones (the way to go in CI and cloud sandboxes).
+
+| Variable | What | Needed by |
+| --- | --- | --- |
+| `LINEAR_API_KEY` | Linear personal API key (Linear > Settings > Security & access > Personal API keys) | `armada status` |
+| `ARMADA_TURSO_URL` | Turso database URL, `libsql://...` | live activity (coming) |
+| `ARMADA_TURSO_TOKEN` | Turso database token | live activity (coming) |
+| `GITHUB_TOKEN` or `GH_TOKEN` | GitHub token; otherwise `gh auth token` is used | pull requests and CI |
+
+- `armada auth login` asks only for the keys that are missing, with hidden input for tokens, and stores them in `~/.config/armada/credentials` (or `$XDG_CONFIG_HOME/armada/credentials`), mode 0600 in a 0700 directory. Without a terminal it asks nothing and lists the variables to set instead.
+- `armada auth status [--json]` shows which keys are set and where each comes from. It never prints a value.
+- `armada auth logout` removes Armada's keys from the file.
+
+The credentials file is a plain dotenv file (`KEY=value` lines, `#` comments) that a shell can also `source`. You may edit it by hand; Armada keeps your other lines and comments when it updates it. GitHub tokens are not stored there: use the environment or `gh auth login`.
+
+Non-secret personal defaults go in `config.toml` next to it, created by the first `armada auth login`:
+
+```toml
+language = "en"                  # your language (BCP 47 tag)
+
+[turso]
+url = "libsql://<database>-<organization>.turso.io"   # used when ARMADA_TURSO_URL is not set
+
+[dashboard]
+url = "https://<your-armada-dashboard>"
+```
 
 ## Configure a project
 
