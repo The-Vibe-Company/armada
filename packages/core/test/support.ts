@@ -284,3 +284,60 @@ export function pullResponse(o: {
     },
   };
 }
+
+export interface FakeLabel {
+  id: string;
+  name: string;
+  isGroup: boolean;
+  /** null for a workspace label. */
+  teamId: string | null;
+  parentId: string | null;
+}
+
+export const DEMO_TEAM = { id: "team-demo", key: "DEMO" };
+
+/**
+ * A Linear that answers the label query and the label mutation from an
+ * in-memory list, so label tests never touch a real workspace.
+ */
+export function fakeLinearLabels(labels: FakeLabel[] = []) {
+  const created: Record<string, unknown>[] = [];
+  const fetch: Fetch = async (url, init) => {
+    if (url !== LINEAR_ENDPOINT) throw new Error(`unexpected URL ${url}`);
+    const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
+    const vars = body.variables as {
+      root?: string;
+      filter?: { or: { name: { eqIgnoreCase: string } }[] };
+      input?: { name: string; teamId?: string; parentId?: string; isGroup?: boolean };
+    };
+    if (/mutation CreateLabel/.test(body.query) && vars.input) {
+      const input = vars.input;
+      created.push(input);
+      const id = `label-${labels.length + 1}`;
+      labels.push({
+        id,
+        name: input.name,
+        isGroup: Boolean(input.isGroup),
+        teamId: input.teamId ?? null,
+        parentId: input.parentId ?? null,
+      });
+      return Response.json({ data: { issueLabelCreate: { success: true, issueLabel: { id } } } });
+    }
+    if (/query Labels/.test(body.query)) {
+      const names = (vars.filter?.or ?? []).map((o) => o.name.eqIgnoreCase.toLowerCase());
+      const nodes = labels
+        .filter((l) => names.includes(l.name.toLowerCase()))
+        .map((l) => ({
+          id: l.id,
+          name: l.name,
+          isGroup: l.isGroup,
+          team: l.teamId ? { id: l.teamId } : null,
+          children: { nodes: labels.filter((c) => c.parentId === l.id).map((c) => ({ name: c.name })) },
+        }));
+      const issue = vars.root?.startsWith("DEMO-") ? { team: DEMO_TEAM } : null;
+      return Response.json({ data: { issue, issueLabels: { nodes } } });
+    }
+    throw new Error("unexpected Linear request");
+  };
+  return { fetch, labels, created };
+}

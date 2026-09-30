@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { run } from "./cli.ts";
+import type { Exec } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
 
 function gitBranch(): string | null {
@@ -59,6 +60,22 @@ function prompt(question: string, { hidden }: { hidden: boolean }): Promise<stri
   });
 }
 
+/** Runs git or gh without a shell; stdin is closed so nothing waits for input. */
+const exec: Exec = (command, args, { cwd }) =>
+  new Promise((done, fail) => {
+    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8").on("data", (d: string) => {
+      stdout += d;
+    });
+    child.stderr.setEncoding("utf8").on("data", (d: string) => {
+      stderr += d;
+    });
+    child.on("error", fail);
+    child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
+  });
+
 const code = await run(process.argv.slice(2), {
   cwd: process.cwd(),
   env: process.env,
@@ -75,6 +92,7 @@ const code = await run(process.argv.slice(2), {
   prompt,
   gitBranch,
   readStdin,
+  exec,
 });
 // Exit once stdout is flushed: Node writes to pipes asynchronously on macOS, and
 // exiting at once would cut `armada status --json | jq` at 64 KB.
