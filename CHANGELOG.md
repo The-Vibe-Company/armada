@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/The-Vibe-Company/armada/compare/v0.1.7...v0.1.8) (2026-09-30)
+
+
+### Features
+
+* **cli:** route each ticket to a model profile by its labels ([#17](https://github.com/The-Vibe-Company/armada/issues/17)) ([e5ab8c7](https://github.com/The-Vibe-Company/armada/commit/e5ab8c70c251e30662cf79591260db8bc9c5f43b))
+
 ## [0.1.7](https://github.com/The-Vibe-Company/armada/compare/v0.1.6...v0.1.7) (2026-09-30)
 
 
