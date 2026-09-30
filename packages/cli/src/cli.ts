@@ -227,7 +227,9 @@ export function parseArgs(argv: string[]): Args {
       if (v === undefined) throw new UsageError(`--${name} needs a value`);
       if (name === "config") args.config = v;
       else args.options[name] = v;
-    } else if (a?.startsWith("-")) throw new UsageError(`unknown option ${a}`);
+    } else if (a?.startsWith("-"))
+      // Never the value: `--api-key=<key>` must not print the key.
+      throw new UsageError(`unknown option ${name ? `--${name}${named?.[2] !== undefined ? "=…" : ""}` : a}`);
     else if (!args.command && a) args.command = a;
     else if (a) args.rest.push(a);
   }
@@ -364,7 +366,11 @@ export async function run(argv: string[], io: Io): Promise<number> {
       });
     }
     if (args.command === "login" || args.command === "logout" || args.command === "whoami") {
-      noExtra(args.rest);
+      // An extra argument may be a pasted key: it is refused without being quoted.
+      if (args.rest.length)
+        throw new UsageError(
+          `${args.command} takes no argument${args.command === "login" ? ": an API key is read from a hidden prompt or standard input, never from the command line" : ""}`,
+        );
       if (args.command === "login") return await login(io, args.options["api-key"] === "true");
       if (args.command === "logout") return await logout(io);
       return await whoami(io, args.json);

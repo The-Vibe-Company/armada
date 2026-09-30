@@ -68,7 +68,9 @@ describe("armada login in a browser", () => {
     expect(shown).toContain(`Then confirm it at ${ARMADA_URL}/device?user_code=WDJBMJHT`);
     expect(m.opened).toEqual([`${ARMADA_URL}/device?user_code=WDJBMJHT`]);
     expect(shown).toContain("Signed in to armada.example.test as Ada Example <ada@example.test>, Acme (owner).");
-    expect(await readFile(m.credentials, "utf8")).toBe(`ARMADA_SESSION_TOKEN=${TOKEN}\n`);
+    expect(await readFile(m.credentials, "utf8")).toBe(
+      `ARMADA_SESSION_TOKEN=${TOKEN}\nARMADA_SIGNED_IN_TO=${ARMADA_URL}\n`,
+    );
     expect((await stat(m.credentials)).mode & 0o777).toBe(0o600);
 
     expect(await run(["whoami"], m.io)).toBe(0);
@@ -120,7 +122,7 @@ describe("a headless coordinator with an API key", () => {
     m.pipe(`${KEY}\n`);
     expect(await run(["login", "--api-key"], m.io)).toBe(0);
     expect(m.printed()).toContain('Signed in to armada.example.test as the API key "cloud coordinator" of Acme.');
-    expect(await readFile(m.credentials, "utf8")).toBe(`ARMADA_API_KEY=${KEY}\n`);
+    expect(await readFile(m.credentials, "utf8")).toBe(`ARMADA_API_KEY=${KEY}\nARMADA_SIGNED_IN_TO=${ARMADA_URL}\n`);
     expect(armada.calls.at(-1)).toMatchObject({ path: "session", apiKey: KEY, authorization: null });
 
     armada.keys.delete(KEY);
@@ -144,5 +146,34 @@ describe("a headless coordinator with an API key", () => {
     expect(m.printed()).toBe('Signed in to armada.example.test as the API key "ci" of Acme.\n');
     expect(await run(["logout"], m.io)).toBe(0);
     expect(m.printed()).toContain("ARMADA_API_KEY is still set in the environment");
+  });
+});
+
+describe("where a sign-in may go", () => {
+  test("a key typed on the command line is refused without being printed", async () => {
+    const m = await machine(fakeArmada());
+    expect(await run(["login", "--api-key", KEY], m.io)).toBe(2);
+    expect(m.printed()).toStartWith("armada: login takes no argument: an API key is read from a hidden prompt");
+    expect(await run(["login", `--api-key=${KEY}`], m.io)).toBe(2);
+    expect(m.printed()).toStartWith("armada: unknown option --api-key=…\n");
+  });
+
+  test("a sign-in is sent only to the Armada that issued it", async () => {
+    const armada = fakeArmada({ token: TOKEN });
+    const m = await machine(armada);
+    expect(await run(["login"], m.io)).toBe(0);
+    m.printed();
+    const calls = armada.calls.length;
+
+    m.io.env.ARMADA_API_URL = "https://other-armada.example.test";
+    expect(await run(["whoami"], m.io)).toBe(2);
+    expect(m.printed()).toBe(
+      "armada: this terminal is signed in to armada.example.test, not to other-armada.example.test (named by ARMADA_API_URL or [api] url); its sign-in is never sent to another Armada\nNext: armada login to sign in to other-armada.example.test, or point ARMADA_API_URL back to https://armada.example.test\n",
+    );
+    // Signing out still revokes the session where it was issued.
+    expect(await run(["logout"], m.io)).toBe(0);
+    expect(m.printed()).toStartWith("Signed out of armada.example.test");
+    expect(armada.calls.slice(calls)).toMatchObject([{ method: "DELETE", path: "session" }]);
+    expect(armada.sessions.size).toBe(0);
   });
 });

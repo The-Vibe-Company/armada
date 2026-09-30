@@ -80,4 +80,7 @@ test("a revoked credential is signed out with the server's next step; an address
   await under.whoami({ kind: "session", token: "t" }).catch(() => {});
   expect(seen).toEqual(["https://example.test/armada/api/cli/session"]);
   expect(() => armadaApi({ url: "ftp://example.test" })).toThrow("http or https");
+  // Plain http carries tokens in the clear: only to this machine.
+  expect(() => armadaApi({ url: "http://armada.example.test" })).toThrow("must use https");
+  expect(() => armadaApi({ url: "http://localhost:4822" })).not.toThrow();
 });

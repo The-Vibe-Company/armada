@@ -71,6 +71,12 @@ export function apiBaseUrl(value: string): URL {
   }
   if (url.protocol !== "https:" && url.protocol !== "http:")
     throw new ArmadaApiError(`the Armada API address must be http or https, not ${url.protocol}`);
+  // Tokens travel in the clear over http: only to this machine.
+  if (url.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))
+    throw new ArmadaApiError(
+      `the Armada API address must use https (http only reaches localhost): ${url.origin}`,
+      "ARMADA_API_URL or [api] url in config.toml",
+    );
   url.search = "";
   url.hash = "";
   if (!url.pathname.endsWith("/")) url.pathname += "/";

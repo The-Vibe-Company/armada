@@ -34,6 +34,11 @@ export interface Credentials {
    * signed out. `source` is safe to print; the secret never is.
    */
   armadaSignIn: (ArmadaSignIn & { source: CredentialSource }) | null;
+  /**
+   * The Armada a stored sign-in belongs to when it is not `armadaApi`: the
+   * sign-in is then not used, so its token never reaches another server.
+   */
+  armadaSignInElsewhere: string | null;
 }
 
 /** The Armada the CLI talks to unless ARMADA_API_URL or `[api] url` names another (self-hosting). */
@@ -43,6 +48,18 @@ export const DEFAULT_ARMADA_API_URL = "https://armada.thevibecompany.co";
 export const SESSION_TOKEN_VARIABLE = "ARMADA_SESSION_TOKEN";
 export const API_KEY_VARIABLE = "ARMADA_API_KEY";
 export const API_URL_VARIABLE = "ARMADA_API_URL";
+/** Credentials-file key: the Armada that issued the stored sign-in, which is sent nowhere else. */
+export const SIGNED_IN_TO_VARIABLE = "ARMADA_SIGNED_IN_TO";
+
+/** An Armada's address as sign-ins are bound to it: origin and path, without a trailing slash. */
+export function armadaAddress(url: string): string {
+  try {
+    const u = new URL(url.trim());
+    return `${u.origin}${u.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return url.trim();
+  }
+}
 
 export interface StoredKey {
   name: Exclude<CredentialName, "githubToken">;
@@ -127,13 +144,17 @@ export function resolveCredentials({ env, store = {}, personal, ghToken }: Crede
       : { url: DEFAULT_ARMADA_API_URL, source: { kind: "default" } };
   // The environment's key wins: a headless coordinator is configured by its environment.
   const envKey = fromEnv(env, API_KEY_VARIABLE);
+  // A stored sign-in is only sent to the Armada that issued it.
+  const signedInTo = armadaAddress(clean(store[SIGNED_IN_TO_VARIABLE]) ?? DEFAULT_ARMADA_API_URL);
+  const here = signedInTo === armadaAddress(armadaApi.url);
   const session = fromStore(SESSION_TOKEN_VARIABLE);
   const storedKey = fromStore(API_KEY_VARIABLE);
+  const armadaSignInElsewhere = !here && (session || storedKey) ? signedInTo : null;
   const armadaSignIn: Credentials["armadaSignIn"] = envKey
     ? { kind: "api-key", key: envKey.value, source: envKey.source }
-    : session
+    : session && here
       ? { kind: "session", token: session.value, source: session.source }
-      : storedKey
+      : storedKey && here
         ? { kind: "api-key", key: storedKey.value, source: storedKey.source }
         : null;
   const found: Record<CredentialName, Found> = {
@@ -157,6 +178,7 @@ export function resolveCredentials({ env, store = {}, personal, ghToken }: Crede
     },
     armadaApi,
     armadaSignIn,
+    armadaSignInElsewhere: envKey ? null : armadaSignInElsewhere,
   };
 }
 

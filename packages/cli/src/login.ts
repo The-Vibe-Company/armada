@@ -8,17 +8,20 @@ import {
   type ArmadaIdentity,
   type ArmadaSignIn,
   apiBaseUrl,
+  armadaAddress,
   armadaApi,
   type CredentialSource,
   type Credentials,
+  DEFAULT_ARMADA_API_URL,
   displayCode,
   LOGIN_NEXT,
   machinePaths,
   SESSION_TOKEN_VARIABLE,
+  SIGNED_IN_TO_VARIABLE,
   updateCredentialStore,
   waitForApproval,
 } from "@armada/core";
-import { loadCredentials } from "./auth.ts";
+import { loadCredentials, type Machine } from "./auth.ts";
 import { type Io, UsageError } from "./io.ts";
 
 const hostOf = (url: string) => {
@@ -29,14 +32,23 @@ const hostOf = (url: string) => {
   }
 };
 
-const apiOf = (io: Io, credentials: Credentials) =>
-  armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+const apiOf = (io: Io, url: string) => armadaApi({ url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+
+/** The Armada the stored sign-in belongs to; its token is sent to no other. */
+const storedAt = (machine: Machine) =>
+  armadaAddress(machine.store?.values[SIGNED_IN_TO_VARIABLE]?.trim() || DEFAULT_ARMADA_API_URL);
 
 const sleepOf = (io: Io) => io.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
 
 /** The sign-in a command needs; refuses with `armada login` as the next step when there is none. */
 export function requireSignIn(credentials: Credentials): ArmadaSignIn & { source: CredentialSource } {
   if (credentials.armadaSignIn) return credentials.armadaSignIn;
+  const elsewhere = credentials.armadaSignInElsewhere;
+  if (elsewhere)
+    throw new UsageError(
+      `this terminal is signed in to ${hostOf(elsewhere)}, not to ${hostOf(credentials.armadaApi.url)} (named by ARMADA_API_URL or [api] url); its sign-in is never sent to another Armada`,
+      `armada login to sign in to ${hostOf(credentials.armadaApi.url)}, or point ARMADA_API_URL back to ${elsewhere}`,
+    );
   throw new UsageError(
     `not signed in to Armada (${hostOf(credentials.armadaApi.url)}). A person signs in with \`armada login\`; a headless coordinator sets ${API_KEY_VARIABLE} to an organization API key`,
     LOGIN_NEXT,
@@ -89,8 +101,13 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
       "the Organization page of Armada, where an owner creates one",
     );
   // Checked before it is stored: a mistyped or revoked key is refused now, not at the next command.
-  const identity = await apiOf(io, credentials).whoami({ kind: "api-key", key });
-  await updateCredentialStore(p, { [API_KEY_VARIABLE]: key, [SESSION_TOKEN_VARIABLE]: null });
+  const url = credentials.armadaApi.url;
+  const identity = await apiOf(io, url).whoami({ kind: "api-key", key });
+  await updateCredentialStore(p, {
+    [API_KEY_VARIABLE]: key,
+    [SESSION_TOKEN_VARIABLE]: null,
+    [SIGNED_IN_TO_VARIABLE]: armadaAddress(url),
+  });
   io.stdout(
     `Signed in to ${hostOf(credentials.armadaApi.url)} as ${describeIdentity(identity)}.\nThe key is stored in ${p.credentials}.\n`,
   );
@@ -105,7 +122,8 @@ export async function login(io: Io, apiKey: boolean): Promise<number> {
   if (apiKey) return loginWithApiKey(io, credentials);
 
   const p = paths(io);
-  const api = apiOf(io, credentials);
+  const url = credentials.armadaApi.url;
+  const api = apiOf(io, url);
   const code = await api.startDeviceLogin();
   io.stderr(
     `First copy your one-time code: ${displayCode(code.userCode)}\nThen confirm it at ${code.verificationUriComplete}\n`,
@@ -116,9 +134,16 @@ export async function login(io: Io, apiKey: boolean): Promise<number> {
   const identity = await api.whoami({ kind: "session", token });
 
   const previous = machine.store?.values[SESSION_TOKEN_VARIABLE]?.trim();
-  await updateCredentialStore(p, { [SESSION_TOKEN_VARIABLE]: token, [API_KEY_VARIABLE]: null });
-  // The session this one replaces is revoked, not left behind on the server.
-  if (previous && previous !== token) await api.signOut({ kind: "session", token: previous }).catch(() => {});
+  await updateCredentialStore(p, {
+    [SESSION_TOKEN_VARIABLE]: token,
+    [API_KEY_VARIABLE]: null,
+    [SIGNED_IN_TO_VARIABLE]: armadaAddress(url),
+  });
+  // The session this one replaces is revoked on the Armada that issued it, not left behind.
+  if (previous && previous !== token)
+    await apiOf(io, storedAt(machine))
+      .signOut({ kind: "session", token: previous })
+      .catch(() => {});
   io.stdout(`Signed in to ${host} as ${describeIdentity(identity)}.\n`);
   if (!identity.organization)
     io.stdout(
@@ -130,7 +155,7 @@ export async function login(io: Io, apiKey: boolean): Promise<number> {
 export async function whoami(io: Io, json: boolean): Promise<number> {
   const { credentials } = await loadCredentials(io);
   const signIn = requireSignIn(credentials);
-  const identity = await apiOf(io, credentials).whoami(signIn);
+  const identity = await apiOf(io, credentials.armadaApi.url).whoami(signIn);
   if (json) {
     const out = { ...identity, api: credentials.armadaApi.url, source: signIn.source };
     io.stdout(`${JSON.stringify(out, null, 2)}\n`);
@@ -141,13 +166,14 @@ export async function whoami(io: Io, json: boolean): Promise<number> {
 }
 
 export async function logout(io: Io): Promise<number> {
-  const { machine, credentials } = await loadCredentials(io);
+  const { machine } = await loadCredentials(io);
   const p = paths(io);
+  const at = storedAt(machine);
   const stored = [SESSION_TOKEN_VARIABLE, API_KEY_VARIABLE].filter((k) => machine.store?.assigned.includes(k));
   const session = machine.store?.values[SESSION_TOKEN_VARIABLE]?.trim();
   if (session) {
     // Revoked on the server first, so a copy of the file is useless too; offline, the local copy still goes.
-    await apiOf(io, credentials)
+    await apiOf(io, at)
       .signOut({ kind: "session", token: session })
       .catch((err: unknown) =>
         io.stderr(
@@ -156,8 +182,12 @@ export async function logout(io: Io): Promise<number> {
       );
   }
   if (stored.length) {
-    await updateCredentialStore(p, { [SESSION_TOKEN_VARIABLE]: null, [API_KEY_VARIABLE]: null });
-    io.stdout(`Signed out of ${hostOf(credentials.armadaApi.url)}: removed the sign-in from ${p.credentials}.\n`);
+    await updateCredentialStore(p, {
+      [SESSION_TOKEN_VARIABLE]: null,
+      [API_KEY_VARIABLE]: null,
+      [SIGNED_IN_TO_VARIABLE]: null,
+    });
+    io.stdout(`Signed out of ${hostOf(at)}: removed the sign-in from ${p.credentials}.\n`);
   } else io.stdout(`This terminal was not signed in to Armada (nothing in ${p.credentials}).\n`);
   if (io.env[API_KEY_VARIABLE]?.trim())
     io.stdout(

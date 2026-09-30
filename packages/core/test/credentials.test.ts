@@ -76,3 +76,13 @@ test("the Armada API is built in unless ARMADA_API_URL or [api] url names anothe
     source: { kind: "env", variable: "ARMADA_API_KEY" },
   });
 });
+
+test("a stored sign-in is used only for the Armada that issued it; the environment's key goes anywhere", () => {
+  const store = { ARMADA_SESSION_TOKEN: "stored-session", ARMADA_SIGNED_IN_TO: "https://armada.example.test/" };
+  const there = resolveCredentials({ env: { ARMADA_API_URL: "https://armada.example.test" }, store });
+  expect(there.armadaSignIn?.kind).toBe("session");
+  const elsewhere = resolveCredentials({ env: {}, store });
+  expect([elsewhere.armadaSignIn, elsewhere.armadaSignInElsewhere]).toEqual([null, "https://armada.example.test"]);
+  const env = resolveCredentials({ env: { ARMADA_API_KEY: "armada_env" }, store });
+  expect([env.armadaSignIn?.kind, env.armadaSignInElsewhere]).toEqual(["api-key", null]);
+});
