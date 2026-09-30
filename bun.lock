@@ -12,7 +12,7 @@
     },
     "packages/cli": {
       "name": "@the-vibe-company/armada",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "bin": {
         "armada": "dist/armada.js",
       },
@@ -36,6 +36,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@armada/core": "workspace:*",
+        "@better-auth/api-key": "1.7.6",
         "@fontsource/instrument-serif": "5.3.0",
         "@libsql/client": "0.18.0",
         "better-auth": "1.7.6",
@@ -58,6 +59,8 @@
     "@armada/core": ["@armada/core@workspace:packages/core"],
 
     "@armada/dashboard": ["@armada/dashboard@workspace:packages/dashboard"],
+
+    "@better-auth/api-key": ["@better-auth/api-key@1.7.6", "", { "dependencies": { "zod": "^4.5.4" }, "peerDependencies": { "@better-auth/core": "^1.7.6", "@better-auth/utils": "0.4.2", "better-auth": "^1.7.6", "better-call": "1.4.0" } }, "sha512-BDoi3iUZpUioB3bSdzOZ7Nd9850vv5zFu0QxlZma9nwgMcNtUNsO0ky9toeDFY2h5vxNpdaIVBDRKUJ31RSCDg=="],
 
     "@better-auth/core": ["@better-auth/core@1.7.6", "", { "dependencies": { "@opentelemetry/semantic-conventions": "^1.41.1", "@standard-schema/spec": "^1.1.0", "zod": "^4.5.4" }, "peerDependencies": { "@better-auth/utils": "0.4.2", "@better-fetch/fetch": "1.3.2", "@opentelemetry/api": "^1.9.0", "better-call": "1.4.0", "jose": "^6.1.0", "kysely": "^0.28.5 || ^0.29.0", "nanostores": "^1.0.1" }, "optionalPeers": ["@opentelemetry/api"] }, "sha512-yBDDO0J4VCHT1qEZtzj6aMexX4etyLesitoxehcWHzPrzYqrFHwe/hgskye+imlGhQVOysuljMg8M8BA6GrtIg=="],
 

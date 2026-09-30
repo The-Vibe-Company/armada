@@ -102,9 +102,16 @@ export interface PersonalConfig {
   language: string | null;
   turso: { url: string | null };
   dashboard: { url: string | null };
+  /** The Armada API, for a self-hosted Armada; the built-in address otherwise. */
+  api: { url: string | null };
 }
 
-export const EMPTY_PERSONAL_CONFIG: PersonalConfig = { language: null, turso: { url: null }, dashboard: { url: null } };
+export const EMPTY_PERSONAL_CONFIG: PersonalConfig = {
+  language: null,
+  turso: { url: null },
+  dashboard: { url: null },
+  api: { url: null },
+};
 
 type Table = Record<string, unknown>;
 const isTable = (v: unknown): v is Table => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -119,7 +126,7 @@ export function parsePersonalConfig(text: string, source = "config.toml"): Perso
     throw new ConfigError(source, [`not valid TOML${where}`]);
   }
   const problems: string[] = [];
-  const known: Record<string, string[]> = { turso: ["url"], dashboard: ["url"] };
+  const known: Record<string, string[]> = { turso: ["url"], dashboard: ["url"], api: ["url"] };
   for (const [key, v] of Object.entries(raw)) {
     if (key === "language") continue;
     const keys = known[key];
@@ -144,6 +151,7 @@ export function parsePersonalConfig(text: string, source = "config.toml"): Perso
     language: str(raw.language, "language"),
     turso: { url: str(table("turso").url, "turso.url") },
     dashboard: { url: str(table("dashboard").url, "dashboard.url") },
+    api: { url: str(table("api").url, "api.url") },
   };
   if (problems.length) throw new ConfigError(source, problems);
   return config;
@@ -172,6 +180,10 @@ export const PERSONAL_CONFIG_TEMPLATE = `# Armada personal defaults for this mac
 
 # [dashboard]
 # url = "https://<your-armada-dashboard>"
+
+# The Armada the CLI signs in to (armada login), for a self-hosted one.
+# [api]
+# url = "https://armada.example.com"
 `;
 
 /** Creates config.toml from the commented template unless it exists. Returns true when created. */

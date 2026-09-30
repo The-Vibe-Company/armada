@@ -134,6 +134,12 @@ export interface AuthStatus {
   keys: { variable: string; label: string; present: boolean; source: CredentialSource | null }[];
   credentialsFile: { path: string; exists: boolean; mode: string | null } | null;
   personalConfig: { path: string; exists: boolean } | null;
+  /** The sign-in to Armada, without its token: `armada whoami` asks the server who it is. */
+  signIn: {
+    api: { url: string; source: CredentialSource | { kind: "default" } };
+    method: "session" | "api-key" | null;
+    source: CredentialSource | null;
+  };
   warnings: string[];
 }
 
@@ -154,6 +160,11 @@ export function buildAuthStatus(machine: Machine, credentials: Credentials): Aut
       : null,
     personalConfig:
       machine.paths && machine.personal ? { path: machine.paths.config, exists: machine.personal.exists } : null,
+    signIn: {
+      api: credentials.armadaApi,
+      method: credentials.armadaSignIn?.kind ?? null,
+      source: credentials.armadaSignIn?.source ?? null,
+    },
     warnings: storeWarnings(machine),
   };
 }
@@ -181,6 +192,14 @@ export function renderAuthStatus(status: AuthStatus): string {
       `Personal config   ${status.personalConfig.path}${status.personalConfig.exists ? "" : " (not created yet)"}`,
     );
   for (const w of status.warnings) lines.push(`! ${w}`);
+  const { signIn } = status;
+  const api = signIn.api.source.kind === "default" ? "built in" : describeSource(signIn.api.source);
+  lines.push("", "Armada sign-in", `  API        ${signIn.api.url} (${api})`);
+  lines.push(
+    signIn.method && signIn.source
+      ? `  Signed in  with ${signIn.method === "session" ? "the session of `armada login`" : "an organization API key"}, from the ${describeSource(signIn.source)}; \`armada whoami\` shows who`
+      : "  Signed in  no: run `armada login`, or set ARMADA_API_KEY on a headless coordinator",
+  );
   return `${lines.join("\n")}\n`;
 }
 

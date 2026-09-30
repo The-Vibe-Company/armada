@@ -1,5 +1,5 @@
-// The accounts database: people, sessions, organizations, members and
-// invitations (and, in later slices, device codes, API keys and secrets). It is
+// The accounts database: people, sessions, organizations, members,
+// invitations, device codes and API keys (and, in a later slice, secrets). It is
 // a libSQL database of its own, separate from the fleet's Turso database.
 // Better Auth reaches it through Kysely; `LibsqlDialect` is the small driver
 // over the @libsql/client the dashboard already ships. Its schema comes from
@@ -87,8 +87,8 @@ export class LibsqlDialect implements Dialect {
  * order, in one write batch; statements are idempotent so two servers starting
  * together are safe. Never edit an applied version: add one. Version 1 is what
  * Better Auth 1.7 needs for email and password, GitHub, the organization plugin
- * and database rate limiting. THE-839 adds the device-authorization and API-key
- * tables as version 2.
+ * and database rate limiting. Version 2 adds the device codes of `armada login`
+ * and the organizations' API keys (THE-839).
  */
 export const AUTH_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -175,6 +175,52 @@ export const AUTH_MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS "member_userId_idx" ON "member" ("userId")`,
       `CREATE INDEX IF NOT EXISTS "invitation_organizationId_idx" ON "invitation" ("organizationId")`,
       `CREATE INDEX IF NOT EXISTS "invitation_email_idx" ON "invitation" ("email")`,
+    ],
+  },
+  {
+    version: 2,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS "deviceCode" (
+        "id" text NOT NULL PRIMARY KEY,
+        "deviceCode" text NOT NULL,
+        "userCode" text NOT NULL,
+        "userId" text,
+        "expiresAt" date NOT NULL,
+        "status" text NOT NULL,
+        "lastPolledAt" date,
+        "pollingInterval" integer,
+        "clientId" text,
+        "scope" text
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "deviceCode_deviceCode_uidx" ON "deviceCode" ("deviceCode")`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "deviceCode_userCode_uidx" ON "deviceCode" ("userCode")`,
+      `CREATE TABLE IF NOT EXISTS "apikey" (
+        "id" text NOT NULL PRIMARY KEY,
+        "configId" text NOT NULL,
+        "name" text,
+        "start" text,
+        "referenceId" text NOT NULL,
+        "prefix" text,
+        "key" text NOT NULL,
+        "refillInterval" integer,
+        "refillAmount" integer,
+        "lastRefillAt" date,
+        "enabled" integer,
+        "rateLimitEnabled" integer,
+        "rateLimitTimeWindow" integer,
+        "rateLimitMax" integer,
+        "requestCount" integer,
+        "remaining" integer,
+        "lastRequest" date,
+        "expiresAt" date,
+        "createdAt" date NOT NULL,
+        "updatedAt" date NOT NULL,
+        "permissions" text,
+        "metadata" text
+      )`,
+      `CREATE INDEX IF NOT EXISTS "apikey_configId_idx" ON "apikey" ("configId")`,
+      `CREATE INDEX IF NOT EXISTS "apikey_referenceId_idx" ON "apikey" ("referenceId")`,
+      `CREATE INDEX IF NOT EXISTS "apikey_key_idx" ON "apikey" ("key")`,
     ],
   },
 ];

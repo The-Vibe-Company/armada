@@ -37,6 +37,8 @@ export interface Io {
   gitBranch?: () => string | null;
   /** All of standard input, for `--message-file -`. */
   readStdin?: () => Promise<string>;
+  /** Opens a URL in the person's browser; false when it could not. Best effort, never required. */
+  openUrl?: (url: string) => boolean;
   /** Waits; tests make it instant. */
   sleep?: (ms: number) => Promise<void>;
   /** Replaces the Linear write adapter (tests use an in-memory fake). */

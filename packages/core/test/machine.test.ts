@@ -59,15 +59,21 @@ test("config.toml is created once from a commented template and parsed with the 
     language: null,
     turso: { url: null },
     dashboard: { url: null },
+    api: { url: null },
   });
   await writeFile(paths.config, 'language = "fr"\n');
   expect(await ensurePersonalConfig(paths)).toBe(false);
   expect(await readFile(paths.config, "utf8")).toBe('language = "fr"\n');
 
-  expect(parsePersonalConfig('language = "fr"\n[turso]\nurl = "libsql://db"\n[later]\nx = 1\n')).toEqual({
+  expect(
+    parsePersonalConfig(
+      'language = "fr"\n[turso]\nurl = "libsql://db"\n[api]\nurl = "https://armada.example.test"\n[later]\nx = 1\n',
+    ),
+  ).toEqual({
     language: "fr",
     turso: { url: "libsql://db" },
     dashboard: { url: null },
+    api: { url: "https://armada.example.test" },
   });
   const problems = (() => {
     try {

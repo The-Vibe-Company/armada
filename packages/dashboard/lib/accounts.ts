@@ -7,15 +7,26 @@
 // address creates organizations. Otherwise the first stranger to sign in could
 // create the deployment's first organization, which adopts every project.
 //
-// THE-839 plugs in here: the device-authorization plugin (`armada login`) and
-// the API-key plugin (headless coordinators) join `plugins`, their tables join
-// AUTH_MIGRATIONS as version 2, and `requireSession` accepts their credentials.
+// The terminal signs in through two plugins (THE-839): device authorization
+// for `armada login` (a code confirmed on the /device page) and API keys owned
+// by an organization for headless coordinators. The CLI reaches both through
+// `/api/cli` (`cli-api.ts`), never through the browser's cookie.
+import { apiKey } from "@better-auth/api-key";
 import type { Client } from "@libsql/client";
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
 import { organization } from "better-auth/plugins";
-import { AUTH_API_PREFIX, type AuthSettings, COOKIE_PREFIX, INVITATION_PATH } from "./accounts-settings";
+import { deviceAuthorization } from "better-auth/plugins/device-authorization";
+import {
+  API_KEY_PREFIX,
+  AUTH_API_PREFIX,
+  type AuthSettings,
+  CLI_CLIENT_ID,
+  COOKIE_PREFIX,
+  DEVICE_PATH,
+  INVITATION_PATH,
+} from "./accounts-settings";
 import { LOGIN_PATH } from "./auth";
 import { LibsqlDialect } from "./auth-db";
 
@@ -87,6 +98,35 @@ async function firstMembership(client: Client, userId: string): Promise<string |
   return id === undefined || id === null ? null : String(id);
 }
 
+export interface ViewerOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  role: Role;
+}
+
+/** The organization a person works in: `active` when they belong to it, else their oldest membership. */
+export async function organizationOf(
+  client: Client,
+  userId: string,
+  active: string | null,
+): Promise<ViewerOrganization | null> {
+  const rs = await client.execute({
+    sql: `SELECT o."id", o."name", o."slug", m."role" FROM "member" m JOIN "organization" o ON o."id" = m."organizationId"
+          WHERE m."userId" = ? ORDER BY (o."id" = ?) DESC, m."createdAt", m."id" LIMIT 1`,
+    args: [userId, active],
+  });
+  const row = rs.rows[0];
+  if (!row) return null;
+  const role = String(row.role);
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    slug: String(row.slug),
+    role: isRole(role) ? role : "member",
+  };
+}
+
 export function createAuth(settings: AuthSettings, { client, sender, now = () => new Date() }: AccountsDeps) {
   const owner = (email: string) => settings.owners.includes(email.trim().toLowerCase());
   const https = new URL(settings.baseUrl).protocol === "https:";
@@ -110,7 +150,11 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
       // database a read per poll. A revoked session lasts at most this long.
       cookieCache: { enabled: true, maxAge: 5 * 60 },
     },
-    rateLimit: { storage: "database" },
+    rateLimit: {
+      storage: "database",
+      // Anyone may ask for a code of `armada login` (/api/cli/device/code): ten a minute per address is plenty.
+      customRules: { "/device/code": { window: 60, max: 10 } },
+    },
     onAPIError: { errorURL: LOGIN_PATH },
     emailAndPassword: {
       enabled: settings.emailPassword,
@@ -184,6 +228,26 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
             url,
           });
         },
+      }),
+      deviceAuthorization({
+        verificationUri: DEVICE_PATH,
+        // Only the Armada CLI asks for codes: a code from anything else is refused.
+        validateClient: (id) => id === CLI_CLIENT_ID,
+        expiresIn: "15m",
+        interval: "5s",
+      }),
+      apiKey({
+        // A key belongs to an organization, not to the person who created it: a
+        // headless coordinator acts for the organization, and a key survives
+        // its creator leaving. Better Auth lets only the organization's owners
+        // create, list and revoke them.
+        references: "organization",
+        defaultPrefix: API_KEY_PREFIX,
+        // The prefix and four characters more: enough to tell keys apart on the Organization page.
+        startingCharactersConfig: { charactersLength: API_KEY_PREFIX.length + 4 },
+        requireName: true,
+        // A coordinator checks its key on every command; a daily cap would stop the fleet.
+        rateLimit: { enabled: false },
       }),
       // Last: sets the cookies Better Auth returns when a server action calls it.
       nextCookies(),

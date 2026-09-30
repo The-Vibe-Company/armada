@@ -4,6 +4,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ArmadaIdentity } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
 import { agentLabels, type Fetch, LINEAR_ENDPOINT, normalizeComment, parsePullRequestUrl } from "../src/linear.ts";
@@ -344,4 +345,97 @@ export function fakeLinearLabels(labels: FakeLabel[] = []) {
     throw new Error("unexpected Linear request");
   };
   return { fetch, labels, created };
+}
+
+// ------------------------------------------------------------ a fake Armada API
+
+export const ARMADA_URL = "https://armada.example.test";
+
+/** A synthetic person in a synthetic organization, as whoami answers for a session. */
+export const PERSON: ArmadaIdentity = {
+  schemaVersion: 1,
+  via: "session",
+  user: { id: "user-1", name: "Ada Example", email: "ada@example.test" },
+  organization: { id: "org-1", name: "Acme", slug: "acme", role: "owner" },
+  apiKey: null,
+  expiresAt: "2026-04-03T10:00:00.000Z",
+};
+
+export interface ArmadaCall {
+  method: string;
+  path: string;
+  authorization: string | null;
+  apiKey: string | null;
+}
+
+/**
+ * Plays the Armada API of /api/cli: `polls` lists what each poll of the
+ * device code answers: "approve", or an RFC 8628 error ("slow_down",
+ * "access_denied", "expired_token"; "pending" stands for
+ * "authorization_pending"). An approval issues `token`. `keys` are the valid API keys;
+ * `accounts: false` plays a deployment still on the shared password.
+ */
+export function fakeArmada(
+  o: { polls?: string[]; token?: string; keys?: Record<string, string>; accounts?: boolean } = {},
+) {
+  const token = o.token ?? "session-token-1";
+  const polls = [...(o.polls ?? ["pending", "approve"])];
+  const sessions = new Set<string>();
+  const keys = new Map(Object.entries(o.keys ?? {}));
+  const calls: ArmadaCall[] = [];
+  const fetch: Fetch = async (url, init) => {
+    if (!url.startsWith(`${ARMADA_URL}/api/cli/`)) throw new Error(`unexpected URL ${url}`);
+    const headers = new Headers(init.headers);
+    const call: ArmadaCall = {
+      method: init.method ?? "GET",
+      path: url.slice(`${ARMADA_URL}/api/cli/`.length),
+      authorization: headers.get("authorization"),
+      apiKey: headers.get("x-api-key"),
+    };
+    calls.push(call);
+    if (o.accounts === false)
+      return Response.json(
+        { error: "this Armada has no accounts yet", next: "ask its owner to set up accounts" },
+        { status: 503 },
+      );
+    const route = `${call.method} ${call.path}`;
+    if (route === "POST device/code")
+      return Response.json({
+        device_code: "device-code-1",
+        user_code: "WDJBMJHT",
+        verification_uri: `${ARMADA_URL}/device`,
+        verification_uri_complete: `${ARMADA_URL}/device?user_code=WDJBMJHT`,
+        expires_in: 900,
+        interval: 5,
+      });
+    if (route === "POST device/token") {
+      const next = polls.shift() ?? "expired_token";
+      const error = next === "pending" ? "authorization_pending" : next;
+      if (next !== "approve") return Response.json({ error, error_description: error }, { status: 400 });
+      sessions.add(token);
+      return Response.json({ access_token: token, token_type: "Bearer", expires_in: 2592000, scope: "" });
+    }
+    const bearer = call.authorization?.replace(/^Bearer /, "") ?? null;
+    if (route === "GET session") {
+      if (call.apiKey && keys.has(call.apiKey))
+        return Response.json({
+          ...PERSON,
+          via: "api-key",
+          user: null,
+          organization: { ...PERSON.organization, role: null },
+          apiKey: { id: "key-1", name: keys.get(call.apiKey), start: call.apiKey.slice(0, 6) },
+        });
+      if (bearer && sessions.has(bearer)) return Response.json(PERSON);
+      const error = call.apiKey
+        ? "this Armada API key is not valid: it was revoked, or never existed"
+        : "the Armada sign-in of this terminal has expired or was revoked";
+      return Response.json({ error, next: "armada login" }, { status: 401 });
+    }
+    if (route === "DELETE session") {
+      if (bearer) sessions.delete(bearer);
+      return Response.json({ signedOut: true });
+    }
+    return Response.json({ error: "not found" }, { status: 404 });
+  };
+  return { fetch, calls, sessions, keys };
 }

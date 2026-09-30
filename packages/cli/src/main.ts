@@ -62,6 +62,27 @@ function prompt(question: string, { hidden }: { hidden: boolean }): Promise<stri
   });
 }
 
+/** Opens the browser without a shell; a machine with none (a cloud workspace) just shows the URL. */
+function openUrl(url: string): boolean {
+  if (!/^https?:\/\//.test(url)) return false;
+  // Linux without a display (a server, a container, SSH) has no browser to open.
+  if (process.platform === "linux" && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return false;
+  const [command, args] =
+    process.platform === "darwin"
+      ? ["open", [url]]
+      : process.platform === "win32"
+        ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
+        : ["xdg-open", [url]];
+  try {
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    child.on("error", () => {});
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Runs git or gh without a shell; stdin is closed so nothing waits for input. */
 const exec: Exec = (command, args, { cwd }) =>
   new Promise((done, fail) => {
@@ -95,5 +116,6 @@ const code = await run(process.argv.slice(2), {
   gitBranch,
   readStdin,
   exec,
+  openUrl,
 });
 process.exitCode = code;
