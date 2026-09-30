@@ -13,7 +13,7 @@ import type {
 } from "@armada/core/read";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LANGUAGE_COOKIE, LANGUAGES, type Language, STRINGS, type Strings } from "@/lib/i18n";
-import { type ActionContext, QuestionBlock, ReadyBlock } from "./Actions";
+import { type ActionContext, QuestionBlock, ReadyBlock, splitQuestion } from "./Actions";
 
 const POLL_MS = 5_000;
 const FRESH_MS = 20_000;
@@ -539,12 +539,12 @@ function CrewRow({
               ?
             </span>
             <span className="sr-only">{t.question}: </span>
-            {r.question.body}
             {r.question.answer && (
               <span className="q-answered" title={r.question.answer.body}>
                 {t.answerSent}
               </span>
             )}
+            {splitQuestion(r.question.body).text.replace(/\s+/g, " ")}
           </p>
         ) : (
           r.statusLine && (

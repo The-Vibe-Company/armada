@@ -13,6 +13,7 @@ import {
   recordCoordinatorSeen,
   recordEvent,
   saveRuntimeHandle,
+  saveWorkerProfile,
   upsertProject,
 } from "@armada/core/read";
 import { DEMO_COORDINATOR_SEEN, DEMO_INBOX, DEMO_PROJECTS, demoEvents, projectOfTicket } from "../lib/demo/world";
@@ -35,6 +36,21 @@ async function seed(scenario: string) {
   for (const e of demoEvents(s)) {
     const base = { project: e.project, ticket: e.ticket };
     await saveRuntimeHandle(db, { ...base, runtime: e.runtime, handle: e.handle, branch: null, at: ago(e.claimed) });
+    const codex = e.runtime === "Codex";
+    await saveWorkerProfile(db, {
+      ...base,
+      profile: {
+        name: codex ? "codex" : "opus",
+        agent: codex ? "codex" : "claude",
+        model: codex ? "gpt-6.1-sol" : "opus-5-5-1m",
+        effort: "high",
+        fastMode: false,
+        routed: null,
+        reason: null,
+        why: "conductor.default_profile",
+      },
+      at: ago(e.claimed),
+    });
     await recordEvent(db, {
       ...base,
       kind: "claim",

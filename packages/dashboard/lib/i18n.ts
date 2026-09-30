@@ -150,7 +150,7 @@ const en = {
   change: "change",
   yourName: "Your name",
   nameHint: "Requests are signed with it on the ticket",
-  answerPending: (author: string | null, ago: string) => `${author ?? "Your"} answer · sent ${ago}`,
+  answerPending: (author: string | null, ago: string) => `Answer from ${author ?? "you"} · sent ${ago} ago`,
   waitingForCoordinator: "waiting for the coordinator to deliver it",
   coordinatorAway: "the coordinator is not reading its inbox right now; it will see this at its next read",
   readyTitle: "Ready to launch",
@@ -162,8 +162,10 @@ const en = {
   routed: "routed",
   routedHint: (why: string) => `Routing picks it: ${why}`,
   noProfiles: "armada.toml declares no profile: the coordinator launches with its default.",
+  overrideHint: (routed: string) =>
+    `Routing picks ${routed}. The coordinator launches with your choice and records on the ticket that you asked for it.`,
   requestLaunch: "Request launch",
-  launchPending: (author: string | null, ago: string) => `Launch asked by ${author ?? "you"} · ${ago}`,
+  launchPending: (author: string | null, ago: string) => `Launch asked by ${author ?? "you"} · ${ago} ago`,
   notMarkedReady: "not marked ready",
   criticalPath: "critical path",
   unlocks: (n: number) => `unlocks ${n}`,
@@ -297,6 +299,7 @@ const fr: Strings = {
       `Aucun mot de passe n'est configuré : ce tableau de bord n'affiche rien. Définis ${variable} dans les variables d'environnement du déploiement, puis redéploie.`,
     offInProduction: (variable) =>
       `${variable}=off ne marche qu'en développement local. Définis un vrai mot de passe dans les variables d'environnement du déploiement, puis redéploie.`,
+  },
   answer: "Répondre",
   answerSent: "réponse envoyée",
   answerLabel: (ticket) => `Ta réponse à la question de ${ticket}`,
@@ -321,6 +324,8 @@ const fr: Strings = {
   routed: "routé",
   routedHint: (why) => `Choisi par le routage : ${why}`,
   noProfiles: "armada.toml ne déclare aucun profil : le coordinateur lance avec son défaut.",
+  overrideHint: (routed) =>
+    `Le routage choisit ${routed}. Le coordinateur lance avec ton choix et note sur le ticket que tu l'as demandé.`,
   requestLaunch: "Demander le lancement",
   launchPending: (author, ago) => `Lancement demandé par ${author ?? "toi"} · il y a ${ago}`,
   notMarkedReady: "pas marqué prêt",

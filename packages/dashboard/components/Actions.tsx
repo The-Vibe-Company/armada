@@ -200,7 +200,7 @@ export function QuestionBlock({
           {options.map((o, k) => (
             <li key={o}>
               {canAnswer && !open ? (
-                <button type="button" className="chip" title={t.quickAnswer} onClick={() => start(o)}>
+                <button type="button" className="chip" aria-label={`${t.quickAnswer}: ${o}`} onClick={() => start(o)}>
                   <span className="chip-n tnum">{k + 1}</span>
                   {o}
                 </button>
@@ -441,6 +441,7 @@ function ReadyRow({
           ) : (
             <p className="calm">{t.noProfiles}</p>
           )}
+          {routed && profile && profile !== routed && <p className="calm">{t.overrideHint(routed)}</p>}
           <ErrorLine t={t} code={req.error} />
           <div className="composer-foot">
             <SignerField t={t} signer={ctx.signer} />
