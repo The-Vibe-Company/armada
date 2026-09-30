@@ -49,7 +49,12 @@ export interface Outcome {
 const TURSO_TIMEOUT_MS = 10_000;
 
 /** Runs a Turso step; a failure or a timeout becomes a warning. */
-async function live<T>(ctx: WorkerContext, warnings: string[], what: string, step: (db: Db) => Promise<T>) {
+export async function live<T>(
+  ctx: Pick<WorkerContext, "turso">,
+  warnings: string[],
+  what: string,
+  step: (db: Db) => Promise<T>,
+) {
   const { db, warning } = await ctx.turso();
   if (!db) {
     if (warning) warnings.push(warning);
@@ -71,7 +76,7 @@ async function live<T>(ctx: WorkerContext, warnings: string[], what: string, ste
   }
 }
 
-const project = (config: ArmadaConfig) => ({
+export const projectOf = (config: ArmadaConfig) => ({
   slug: config.project.slug,
   name: config.project.name,
   repository: config.github.repository,
@@ -86,8 +91,17 @@ async function readOpenTicket(ctx: WorkerContext, id: string): Promise<Ticket> {
   return ticket;
 }
 
+const ID = /(?:^|[^a-z0-9])([a-z][a-z0-9]*-\d+)(?=$|[^a-z0-9])/gi;
+
+/** The ticket a branch names, e.g. `feature/abc-12-add-login` → ABC-12, preferring the program's team key. */
+export function ticketFromBranch(branch: string, programRoot: string): string | null {
+  const ids = [...branch.matchAll(ID)].map((m) => (m[1] ?? "").toUpperCase());
+  const team = programRoot.split("-")[0]?.toUpperCase();
+  return ids.find((id) => id.split("-")[0] === team) ?? ids[0] ?? null;
+}
+
 /** Comments that carry a claim since the last release, oldest first. */
-function activeClaimComments(comments: Comment[]): Comment[] {
+export function activeClaimComments(comments: Comment[]): Comment[] {
   const asc = [...comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   let active: Comment[] = [];
   for (const c of asc) {
@@ -106,10 +120,10 @@ function findLabel(labels: TicketLabel[], name: string, group: string): TicketLa
 }
 
 /** Labels of `group` on the ticket other than `keep`. */
-const others = (ticket: Ticket, group: string, keep: string | null) =>
+export const others = (ticket: Ticket, group: string, keep: string | null) =>
   ticket.labels.filter((l) => l.group === group && l.id !== keep).map((l) => l.id);
 
-const firstState = (states: WorkflowState[], ...types: WorkflowState["type"][]) => {
+export const firstState = (states: WorkflowState[], ...types: WorkflowState["type"][]) => {
   for (const type of types) {
     const s = states.find((x) => x.type === type);
     if (s) return s;
@@ -209,7 +223,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
 
   const at = ctx.now();
   await live(ctx, warnings, "record the claim", async (db) => {
-    await ensureProject(db, project(config), at);
+    await ensureProject(db, projectOf(config), at);
     await saveRuntimeHandle(db, {
       project: config.project.slug,
       ticket: ticket.id,
@@ -330,7 +344,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
 
   const at = ctx.now();
   const inbox = await live(ctx, warnings, "record the report", async (db) => {
-    await ensureProject(db, project(config), at);
+    await ensureProject(db, projectOf(config), at);
     await recordEvent(db, {
       project: config.project.slug,
       ticket: ticket.id,
@@ -373,7 +387,7 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   const lines = [`Released ${ticket.id}${back ? `, moved back to ${back.name}` : ""}.`];
   const at = ctx.now();
   await live(ctx, warnings, "record the release", async (db) => {
-    await ensureProject(db, project(config), at);
+    await ensureProject(db, projectOf(config), at);
     await releaseRuntimeHandle(db, config.project.slug, ticket.id, at);
     await recordEvent(db, {
       project: config.project.slug,

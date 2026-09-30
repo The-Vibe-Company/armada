@@ -238,3 +238,114 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
   if (!json.data?.repository) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
   return json.data.repository.object?.text ?? null;
 }
+
+// ------------------------------------------------------------------ merge reads
+
+/** A pull request as `armada merge` needs it: the fields of `PullRequest` plus what decides a merge. */
+export interface MergePull extends PullRequest {
+  state: "open" | "merged" | "closed";
+  headSha: string;
+  checks: { name: string; state: CiState }[];
+  /** GitHub's mergeStateStatus: CLEAN, BEHIND, BLOCKED, DIRTY, DRAFT, HAS_HOOKS, UNKNOWN, UNSTABLE. */
+  mergeStateStatus: string;
+  /** Name of the branch the pull request merges into. */
+  baseRef: string;
+  /** Squash or merge commit, once merged. */
+  mergeCommit: string | null;
+  reviewThreads: { total: number; read: number; unresolved: number };
+}
+
+const MERGE_PULL_QUERY = /* GraphQL */ `${PULL_FIELDS}
+  query MergePull($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      pullRequest(number: $number) {
+        ...P
+        mergeStateStatus baseRefName mergeCommit { oid }
+        reviewThreads(first: 100) { totalCount nodes { isResolved } }
+      }
+    }
+  }`;
+
+type RawMergePull = RawPull & {
+  mergeStateStatus: string;
+  baseRefName: string;
+  mergeCommit: { oid: string } | null;
+  reviewThreads: { totalCount: number; nodes: { isResolved: boolean }[] };
+};
+
+/** One pull request with its mergeability, base branch and review threads. */
+export async function fetchMergePull(opts: FetchForgeOptions & { number: number }): Promise<MergePull | null> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{ repository: { pullRequest: RawMergePull | null } | null }>(opts, MERGE_PULL_QUERY, {
+    owner,
+    name,
+    number: opts.number,
+  });
+  const raw = json.data?.repository?.pullRequest;
+  if (!raw) return null;
+  const pr = normalizePull(raw, opts.repository);
+  const threads = raw.reviewThreads.nodes;
+  return {
+    ...pr,
+    state: pr.state ?? "open",
+    headSha: raw.headRefOid,
+    checks: pr.checks ?? [],
+    mergeStateStatus: raw.mergeStateStatus,
+    baseRef: raw.baseRefName,
+    mergeCommit: raw.mergeCommit?.oid ?? null,
+    reviewThreads: {
+      total: raw.reviewThreads.totalCount,
+      read: threads.length,
+      unresolved: threads.filter((t) => !t.isResolved).length,
+    },
+  };
+}
+
+/** Where a head stands against a branch: BEHIND and DIVERGED mean the branch has commits the head lacks. */
+export interface Comparison {
+  /** Commit the branch points at. */
+  baseSha: string;
+  status: "AHEAD" | "BEHIND" | "DIVERGED" | "IDENTICAL";
+  behindBy: number;
+  aheadBy: number;
+}
+
+const COMPARE_QUERY = /* GraphQL */ `
+  query Compare($owner: String!, $name: String!, $base: String!, $head: String!) {
+    repository(owner: $owner, name: $name) {
+      ref(qualifiedName: $base) { target { oid } compare(headRef: $head) { status aheadBy behindBy } }
+    }
+  }`;
+
+/** Compares a head commit (SHA or branch) with a branch of the repository; null when either is unknown. */
+export async function fetchComparison(
+  opts: FetchForgeOptions & { base: string; head: string },
+): Promise<Comparison | null> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{
+    repository: {
+      ref: {
+        target: { oid: string };
+        compare: { status: Comparison["status"]; aheadBy: number; behindBy: number } | null;
+      } | null;
+    } | null;
+  }>(opts, COMPARE_QUERY, { owner, name, base: `refs/heads/${opts.base}`, head: opts.head });
+  const ref = json.data?.repository?.ref;
+  if (!ref?.compare) return null;
+  return { baseSha: ref.target.oid, ...ref.compare };
+}
+
+/** The unified diff of a pull request (REST, diff media type). */
+export async function fetchPullDiff(opts: FetchForgeOptions & { number: number }): Promise<string> {
+  const doFetch = opts.fetch ?? fetch;
+  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const res = await doFetch(`https://api.github.com/repos/${opts.repository}/pulls/${opts.number}`, {
+    method: "GET",
+    headers: { Accept: "application/vnd.github.diff", Authorization: `Bearer ${opts.token}` },
+    signal: AbortSignal.timeout(timeoutMs),
+  }).catch((err: unknown) => {
+    throw new GithubError(`GitHub API unreachable: ${networkReason(err, timeoutMs)}`);
+  });
+  if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading the diff of #${opts.number}`);
+  return res.text();
+}

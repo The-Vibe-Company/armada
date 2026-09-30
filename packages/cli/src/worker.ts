@@ -17,6 +17,7 @@ import {
   openTurso,
   releaseTicket,
   reportPhase,
+  ticketFromBranch,
   type WorkerContext,
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
@@ -68,15 +69,6 @@ export function statusEvents(
       db.close();
     }
   };
-}
-
-const ID = /(?:^|[^a-z0-9])([a-z][a-z0-9]*-\d+)(?=$|[^a-z0-9])/gi;
-
-/** The ticket a branch names, e.g. `feature/abc-12-add-login` → ABC-12, preferring the program's team key. */
-export function ticketFromBranch(branch: string, programRoot: string): string | null {
-  const ids = [...branch.matchAll(ID)].map((m) => (m[1] ?? "").toUpperCase());
-  const team = programRoot.split("-")[0]?.toUpperCase();
-  return ids.find((id) => id.split("-")[0] === team) ?? ids[0] ?? null;
 }
 
 /** --ticket, then ARMADA_TICKET, then the current git branch. */

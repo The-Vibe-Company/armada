@@ -31,9 +31,11 @@ export interface Io {
   gitBranch?: () => string | null;
   /** All of standard input, for `--message-file -`. */
   readStdin?: () => Promise<string>;
+  /** Waits; tests make it instant. */
+  sleep?: (ms: number) => Promise<void>;
   /** Replaces the Linear write adapter (tests use an in-memory fake). */
   linearWriter?: (options: LinearWriterOptions) => LinearWriter;
-  /** Runs git and gh; required by doctor and init. */
+  /** Runs git and gh; required by doctor, init and merge. */
   exec?: Exec;
 }
 

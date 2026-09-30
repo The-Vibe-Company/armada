@@ -22,3 +22,5 @@ silence_minutes = 15    # a worker with no report for longer than this shows as 
 
 [gates]
 required_checks = ["Lint, typecheck and test"]
+# Run by `armada merge` on a test merge when a head lacks commits of main.
+local_commands = ["bun install --frozen-lockfile", "bun run verify"]

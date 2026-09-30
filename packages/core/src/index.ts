@@ -7,6 +7,7 @@ export * from "./labels.ts";
 export * from "./linear.ts";
 export * from "./linear-write.ts";
 export * from "./machine.ts";
+export * from "./merge.ts";
 export * from "./model.ts";
 export * from "./phases.ts";
 export * from "./setup.ts";

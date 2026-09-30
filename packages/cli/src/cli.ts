@@ -15,6 +15,7 @@ import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { doctor } from "./doctor.ts";
 import { init } from "./init.ts";
 import { type Io, UsageError } from "./io.ts";
+import { merge } from "./merge.ts";
 import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
 import { claim, release, report, statusEvents } from "./worker.ts";
@@ -42,6 +43,13 @@ Commands:
                     Prints what waits in this worker's inbox.
   release --reason <text>
                     Give the ticket back: agent labels removed, ticket moved back
+  merge <pr> [--ticket <id>] [--dry-run] [--no-lock]
+                    Coordinator: check a handed-back pull request (hand-back SHA = head,
+                    CLEAN, required checks green, no open review thread, base contained
+                    or test-merged), squash-merge it pinned to that SHA under the merge
+                    lock, close the ticket and list the workers to tell. Never deletes
+                    the branch. --dry-run only runs the checklist. Refused when Turso is
+                    configured but down; --no-lock then merges without the lock.
   auth login        Ask for the missing keys (hidden input) and store them on this machine
   auth status       Show which keys are set and where each comes from, never their values
   auth logout       Remove Armada's keys from this machine
@@ -49,7 +57,8 @@ Commands:
 Options:
   --json            Print the result as JSON
   --config <path>   Use this armada.toml instead of searching from the current directory
-  --ticket <id>     Ticket for report and release; default ARMADA_TICKET, then the git branch
+  --ticket <id>     Ticket for report and release (default ARMADA_TICKET, then the git
+                    branch) and for merge (default: the ticket the PR branch names)
   -h, --help        Show this help
   -v, --version     Print the version
 
@@ -59,6 +68,7 @@ Keys (the environment always wins over the file):
                        elsewhere; a file: URL works locally)
   ARMADA_TURSO_TOKEN   Turso database token
   GITHUB_TOKEN         GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
+                       (merge also runs gh and git, with gh's own login)
 
 Files:
   $XDG_CONFIG_HOME/armada (default ~/.config/armada)
@@ -93,12 +103,15 @@ const VALUE_OPTIONS = [
   "name",
   "slug",
 ];
+/** Options without a value, stored as "true". */
+const FLAG_OPTIONS = ["dry-run", "no-lock"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch"],
   report: ["ticket", "message", "message-file", "pr", "sha"],
   release: ["ticket", "reason"],
   init: ["program-root", "name", "slug"],
+  merge: ["ticket", "dry-run", "no-lock"],
 };
 
 export function parseArgs(argv: string[]): Args {
@@ -120,6 +133,7 @@ export function parseArgs(argv: string[]): Args {
     else if (a === "--all") args.all = true;
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
+    else if (name && FLAG_OPTIONS.includes(name) && named?.[2] === undefined) args.options[name] = "true";
     else if (name && (name === "config" || VALUE_OPTIONS.includes(name))) {
       const v = named?.[2] ?? argv[++k];
       if (v === undefined) throw new UsageError(`--${name} needs a value`);
@@ -195,6 +209,11 @@ export async function run(argv: string[], io: Io): Promise<number> {
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io);
       return await worker(io, config, credentials, args);
+    }
+    if (args.command === "merge") {
+      const { path, text } = await findConfig(io, args.config);
+      const { credentials } = await loadCredentials(io);
+      return await merge(io, parseConfig(text, path), credentials, args, path);
     }
     if (args.command === "status") {
       noExtra(args.rest);
