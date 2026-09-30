@@ -1,8 +1,9 @@
 // The dashboard's two actions. Neither reaches a worker or a runtime: each
 // writes a request into the coordinator's inbox (Turso) of the ticket's
-// project, after core checks it against the project as the owner sees it.
+// project, after core checks it against the project as the viewer sees it. A
+// project outside the viewer's organization is unknown here.
 import { type Db, RequestRefusal, redact, requestAnswer, requestLaunch } from "@armada/core/read";
-import { type LoadOptions, loadProject, type ProjectState } from "./fleet-data";
+import { type LoadOptions, loadProject, type ProjectState, type Scope } from "./fleet-data";
 import type { RequestError } from "./i18n";
 
 export type RequestResult = { ok: true; id: number } | { ok: false; code: RequestError; message: string };
@@ -11,6 +12,7 @@ export interface AnswerForm {
   project: string;
   question: number;
   text: string;
+  /** The signed-in person (`signatureOf`); under the shared-password gate, the name the viewer gave. */
   author: string;
 }
 
@@ -24,11 +26,12 @@ export interface LaunchForm {
 
 async function withProject(
   opts: LoadOptions,
+  scope: Scope | null,
   slug: string,
   write: (state: ProjectState & { db: Db }) => Promise<number>,
 ): Promise<RequestResult> {
   try {
-    const state = await loadProject(opts, slug);
+    const state = await loadProject(opts, slug, scope);
     if (!state) return { ok: false, code: "unknown-project", message: `no project ${slug} on this dashboard` };
     if (!state.db)
       return { ok: false, code: "live-down", message: "Turso is not reachable: requests cannot be recorded now" };
@@ -41,8 +44,8 @@ async function withProject(
   }
 }
 
-export function submitAnswer(opts: LoadOptions, form: AnswerForm): Promise<RequestResult> {
-  return withProject(opts, form.project, ({ db }) =>
+export function submitAnswer(opts: LoadOptions, scope: Scope | null, form: AnswerForm): Promise<RequestResult> {
+  return withProject(opts, scope, form.project, ({ db }) =>
     requestAnswer(db, {
       project: form.project,
       question: form.question,
@@ -53,8 +56,8 @@ export function submitAnswer(opts: LoadOptions, form: AnswerForm): Promise<Reque
   );
 }
 
-export function submitLaunch(opts: LoadOptions, form: LaunchForm): Promise<RequestResult> {
-  return withProject(opts, form.project, ({ db, config, report }) =>
+export function submitLaunch(opts: LoadOptions, scope: Scope | null, form: LaunchForm): Promise<RequestResult> {
+  return withProject(opts, scope, form.project, ({ db, config, report }) =>
     requestLaunch(db, {
       config,
       report,

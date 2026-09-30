@@ -5,6 +5,7 @@
 // Turso. This module only orchestrates I/O; every fleet rule lives in core.
 import {
   type ArmadaConfig,
+  assignUnownedProjects,
   buildOverview,
   buildStatus,
   type Db,
@@ -62,6 +63,27 @@ export interface FleetCache {
 }
 
 export const newCache = (): FleetCache => ({ snapshots: new Map(), projects: null, db: null, opening: null });
+
+/**
+ * Whose fleet a request reads: the viewer's organization, and the deployment's
+ * first organization, which owns every project registered without one. Null
+ * under the shared-password gate (THE-834), which has no organizations: every
+ * project is shown and none is assigned.
+ */
+export interface Scope {
+  organization: string;
+  /** Null until the first organization exists. */
+  home: string | null;
+}
+
+/**
+ * A project is shown to its organization's members only. One without an
+ * organization (the registry could not assign it yet, or it only comes from
+ * ARMADA_REPOSITORIES) belongs to the first organization.
+ */
+export const inScope = (p: ProjectRef, scope: Scope | null): boolean =>
+  !scope ||
+  (p.organization ? p.organization === scope.organization : scope.home !== null && scope.organization === scope.home);
 
 /** Turso events older than this are not read on each poll: they no longer change what a row shows. */
 const LIVE_WINDOW_MS = 7 * 24 * 3_600_000;
@@ -168,12 +190,27 @@ function liveClient(opts: LoadOptions): Promise<Db | null> {
   return opts.cache.opening;
 }
 
-async function openLive(opts: LoadOptions): Promise<{ db: Db | null; state: FleetOverview["live"] }> {
+/**
+ * The registry, with every project that has no organization given to the
+ * first one: the one-time move of the projects registered before accounts,
+ * and of those the CLI registers until it signs in (THE-839).
+ */
+async function readRegistry(db: Db, scope: Scope | null, now: Date): Promise<ProjectRef[]> {
+  const projects = await listProjects(db);
+  if (!scope?.home || projects.every((p) => p.organization)) return projects;
+  await assignUnownedProjects(db, scope.home, now);
+  return listProjects(db);
+}
+
+async function openLive(
+  opts: LoadOptions,
+  scope: Scope | null,
+): Promise<{ db: Db | null; state: FleetOverview["live"] }> {
   const timeout = opts.liveTimeoutMs ?? 4000;
   try {
     const db = await withTimeout(liveClient(opts), timeout, "opening Turso");
     if (!db) return { db: null, state: { state: "off", error: null } };
-    const projects = await withTimeout(listProjects(db), timeout, "reading the project registry");
+    const projects = await withTimeout(readRegistry(db, scope, opts.now()), timeout, "reading the project registry");
     opts.cache.projects = projects;
     return { db, state: { state: "ok", error: null } };
   } catch (err) {
@@ -215,14 +252,19 @@ export interface ProjectState {
   report: StatusReport;
 }
 
+/** The projects the scope may see: the registry, or ARMADA_REPOSITORIES while it was never read. */
+const projectsOf = (opts: LoadOptions, scope: Scope | null) =>
+  (opts.cache.projects ?? opts.sources.fallbackProjects()).filter((p) => inScope(p, scope));
+
 /**
  * Reads one project the way `loadOverview` does (the cached Linear and GitHub
- * snapshot, Turso read now), so a request is checked against what the owner
- * sees, plus every claim recorded since. Null when no such project is shown.
+ * snapshot, Turso read now), so a request is checked against what the viewer
+ * sees, plus every claim recorded since. Null when no such project is shown to
+ * the scope's organization.
  */
-export async function loadProject(opts: LoadOptions, slug: string): Promise<ProjectState | null> {
-  const { db } = await openLive(opts);
-  const projects = opts.cache.projects ?? opts.sources.fallbackProjects();
+export async function loadProject(opts: LoadOptions, slug: string, scope: Scope | null): Promise<ProjectState | null> {
+  const { db } = await openLive(opts, scope);
+  const projects = projectsOf(opts, scope);
   // Registry projects are keyed by slug; a repository-only project by the slug its armada.toml gives.
   const candidates = [
     ...projects.filter((p) => p.slug === slug),
@@ -242,10 +284,10 @@ export async function loadProject(opts: LoadOptions, slug: string): Promise<Proj
   return null;
 }
 
-/** Reads every project and builds the overview the Fleet view renders. */
-export async function loadOverview(opts: LoadOptions): Promise<FleetOverview> {
-  const { db, state } = await openLive(opts);
-  const projects = opts.cache.projects ?? opts.sources.fallbackProjects();
+/** Reads every project of the scope's organization and builds the overview the Fleet view renders. */
+export async function loadOverview(opts: LoadOptions, scope: Scope | null): Promise<FleetOverview> {
+  const { db, state } = await openLive(opts, scope);
+  const projects = projectsOf(opts, scope);
   let live = state;
 
   const entries = await Promise.all(

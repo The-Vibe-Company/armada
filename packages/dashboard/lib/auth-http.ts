@@ -129,7 +129,7 @@ function languageOf(request: NextRequest, env: Env): Language {
 
 /** Fails closed: nothing from Linear, GitHub or Turso, only the variable to set. */
 function unconfigured(gate: Extract<Gate, { kind: "unconfigured" }>, data: boolean, lang: Language): NextResponse {
-  const t = STRINGS[lang].auth;
+  const t = STRINGS[lang].gate;
   const message = gate.reason === "missing" ? t.unconfigured(PASSWORD_VARIABLE) : t.offInProduction(PASSWORD_VARIABLE);
   if (data)
     return NextResponse.json({ error: message, variable: PASSWORD_VARIABLE }, { status: 503, headers: NO_STORE });
