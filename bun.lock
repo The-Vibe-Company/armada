@@ -16,6 +16,9 @@
       "bin": {
         "armada": "dist/armada.js",
       },
+      "dependencies": {
+        "@libsql/client": "0.18.0",
+      },
       "devDependencies": {
         "@armada/core": "workspace:*",
       },

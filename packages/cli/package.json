@@ -31,8 +31,11 @@
     "access": "public"
   },
   "scripts": {
-    "build": "bun build src/bin.ts --target node --outfile dist/armada.js",
+    "build": "bun build src/bin.ts --target node --external @libsql/client --outfile dist/armada.js",
     "prepack": "bun run build && cp ../../README.md ../../LICENSE ."
+  },
+  "dependencies": {
+    "@libsql/client": "0.18.0"
   },
   "devDependencies": {
     "@armada/core": "workspace:*"

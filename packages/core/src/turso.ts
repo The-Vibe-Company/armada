@@ -2,7 +2,7 @@
 // one organization. One database is shared by every project, so every row
 // carries its project slug and leases are scoped per project. Losing this
 // database loses live detail, never progress: Linear stays the record.
-import { type Client, createClient, type InStatement } from "@libsql/client";
+import type { Client, InStatement } from "@libsql/client";
 
 export type Db = Client;
 
@@ -88,6 +88,9 @@ export interface TursoOptions {
 export async function openTurso({ url, token }: TursoOptions): Promise<Db> {
   let db: Db;
   try {
+    // Loaded on first use: the client pulls a native module that commands
+    // without Turso never need.
+    const { createClient } = await import("@libsql/client");
     db = createClient(token ? { url, authToken: token } : { url });
   } catch (err) {
     // The message may quote the URL, never the token.
