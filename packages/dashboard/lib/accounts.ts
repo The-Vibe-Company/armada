@@ -138,7 +138,15 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
     databaseHooks: {
       user: {
         create: {
-          before: async (user) => {
+          before: async (user, ctx) => {
+            // An address is proven by GitHub (verified) or, for email and password, by its
+            // confirmation link before any session. An unverified GitHub address proves
+            // nothing: letting it in would squat the account of whoever owns that address.
+            if (ctx?.path.startsWith("/callback") && !user.emailVerified)
+              throw new APIError("FORBIDDEN", {
+                code: "GITHUB_EMAIL_NOT_VERIFIED",
+                message: "Verify this address on GitHub first: Armada only trusts verified addresses.",
+              });
             if (owner(user.email) || (await hasPendingInvitation(client, user.email, now()))) return { data: user };
             throw new APIError("FORBIDDEN", {
               code: "NOT_INVITED",

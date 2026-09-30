@@ -230,7 +230,7 @@ describe("GitHub sign-in", () => {
   });
 
   /** Plays GitHub for one sign-in: the token exchange, the profile and its emails. */
-  function fakeGitHub(email: string) {
+  function fakeGitHub(email: string, verified = true) {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       if (url.startsWith("https://github.com/login/oauth/access_token"))
@@ -238,19 +238,19 @@ describe("GitHub sign-in", () => {
       if (url === "https://api.github.com/user")
         return Response.json({ id: 4242, login: "octo", name: "Octo Cat", email, avatar_url: null });
       if (url === "https://api.github.com/user/emails")
-        return Response.json([{ email, primary: true, verified: true, visibility: "public" }]);
+        return Response.json([{ email, primary: true, verified, visibility: "public" }]);
       throw new Error(`no network in tests: ${init?.method ?? "GET"} ${url}`);
     }) as typeof fetch;
   }
 
-  async function signInWithGitHub(email: string): Promise<Response> {
+  async function signInWithGitHub(email: string, verified = true): Promise<Response> {
     const start = await auth.api.signInSocial({
       body: { provider: "github", callbackURL: "/", errorCallbackURL: "/login" },
       asResponse: true,
     });
     const { url } = (await start.json()) as { url: string };
     const state = new URL(url).searchParams.get("state") ?? "";
-    fakeGitHub(email);
+    fakeGitHub(email, verified);
     return auth.handler(
       new Request(`${BASE}/api/auth/callback/github?code=synthetic-code&state=${state}`, {
         headers: { cookie: cookiesOf(start) },
@@ -258,12 +258,16 @@ describe("GitHub sign-in", () => {
     );
   }
 
-  test("a stranger is sent back to the sign-in page with no session; an owner address gets in", async () => {
-    const refused = await signInWithGitHub("octo-stranger@example.test");
-    const back = new URL(refused.headers.get("location") ?? "", BASE);
-    expect(back.pathname).toBe("/login");
-    expect(back.searchParams.get("error")?.toUpperCase()).toContain("NOT_INVITED");
-    expect(cookiesOf(refused)).not.toContain("armada.session_token=");
+  test("a stranger, or an owner address GitHub has not verified, is sent back with no session; an owner gets in", async () => {
+    for (const [refused, why] of [
+      [await signInWithGitHub("octo-stranger@example.test"), "NOT_INVITED"],
+      [await signInWithGitHub("second-owner@example.test", false), "GITHUB_EMAIL_NOT_VERIFIED"],
+    ] as const) {
+      const back = new URL(refused.headers.get("location") ?? "", BASE);
+      expect(back.pathname).toBe("/login");
+      expect(back.searchParams.get("error")?.toUpperCase()).toContain(why);
+      expect(cookiesOf(refused)).not.toContain("armada.session_token=");
+    }
 
     const welcomed = await signInWithGitHub("second-owner@example.test");
     expect(new URL(welcomed.headers.get("location") ?? "", BASE).pathname).toBe("/");

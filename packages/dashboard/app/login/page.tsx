@@ -27,6 +27,7 @@ function errorOf(value: string | undefined): AuthError | null {
   if ((AUTH_ERRORS as readonly string[]).includes(value)) return value as AuthError;
   const code = value.toUpperCase();
   if (code.includes("NOT_INVITED")) return "not-invited";
+  if (code.includes("GITHUB_EMAIL_NOT_VERIFIED")) return "github-unverified";
   if (code.includes("RATE") || code.includes("TOO_MANY")) return "limited";
   return "github";
 }
