@@ -23,20 +23,23 @@ test("reads shell-style assignments; the last duplicate wins; broken lines are r
       JOINED: "it's",
     },
     invalidLines: [9, 10],
+    assigned: ["LINEAR_API_KEY", "ARMADA_TURSO_URL", "QUOTED", "DOUBLE", "JOINED", "OPEN"],
   });
 });
 
 test("updates keep comments, unknown keys and export, drop later duplicates, and append new keys", () => {
-  const before = "# mine\nexport LINEAR_API_KEY=old\nOTHER=kept\n\nLINEAR_API_KEY=older\nARMADA_TURSO_TOKEN=gone\n";
+  const before =
+    "# mine\nexport LINEAR_API_KEY=old # from Linear\nOTHER=kept\n\nLINEAR_API_KEY=older\nARMADA_TURSO_TOKEN='broken\n";
   const after = updateDotenv(before, { LINEAR_API_KEY: "new", ARMADA_TURSO_TOKEN: null, ARMADA_TURSO_URL: "u" });
-  expect(after).toBe("# mine\nexport LINEAR_API_KEY=new\nOTHER=kept\n\nARMADA_TURSO_URL=u\n");
+  expect(after).toBe("# mine\nexport LINEAR_API_KEY=new # from Linear\nOTHER=kept\n\nARMADA_TURSO_URL=u\n");
   expect(updateDotenv("", { A: "1" })).toBe("A=1\n");
 });
 
 test("any value round-trips through the parser, and values a shell would expand are single-quoted", () => {
-  for (const value of ["lin_api_AbC123", "a b", "$HOME", "it's", 'q"uote', "back\\slash", "#hash", ""]) {
+  for (const value of ["lin_api_AbC123", "a b", "$HOME", "~/x", "it's", 'q"uote', "back\\slash", "#hash", ""]) {
     expect(parseDotenv(updateDotenv("", { K: value })).values.K).toBe(value);
   }
   expect(formatDotenvValue("K", "$HOME")).toBe("'$HOME'");
+  expect(formatDotenvValue("K", "a:~/b")).toBe("'a:~/b'");
   expect(() => formatDotenvValue("K", "line\nbreak")).toThrow("the value for K contains a line break");
 });

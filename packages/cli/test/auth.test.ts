@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEMO_TOML, NOW, recordedFetch } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
-import { emptyHiddenLine, feedHidden } from "../src/hidden.ts";
 import type { Io } from "../src/io.ts";
+import { echo, emptyLine, feedLine } from "../src/line.ts";
 
 // Canary values: no output may ever contain them.
 const LINEAR = "lin_api_CANARY_linear";
@@ -163,13 +163,17 @@ describe("armada auth logout", () => {
     const m = await machine({ LINEAR_API_KEY: "lin_api_env" });
     Object.assign(m.answers, { ARMADA_TURSO_URL: TURSO_URL, ARMADA_TURSO_TOKEN: TURSO_TOKEN });
     await run(["auth", "login"], m.io);
-    await writeFile(m.credentials, `# mine\nOTHER_TOOL=keep\n${await readFile(m.credentials, "utf8")}`);
+    // A malformed key line still holds a secret: logout removes it too.
+    await writeFile(
+      m.credentials,
+      `# mine\nOTHER_TOOL=keep\n${await readFile(m.credentials, "utf8")}LINEAR_API_KEY='${LINEAR}\n`,
+    );
     m.reset();
 
     expect(await run(["auth", "logout"], m.io)).toBe(0);
     expect(await readFile(m.credentials, "utf8")).toBe("# mine\nOTHER_TOOL=keep\n");
     expect(m.printed()).toBe(
-      `Removed ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN from ${m.credentials}.\nStill set in the environment, and still used: LINEAR_API_KEY. Unset them to stop using them.\n`,
+      `Removed LINEAR_API_KEY, ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN from ${m.credentials}.\nStill set in the environment, and still used: LINEAR_API_KEY. Unset them to stop using them.\n`,
     );
   });
 });
@@ -195,10 +199,13 @@ describe("armada status with the machine store", () => {
   });
 });
 
-test("hidden input keeps typed and pasted characters, honours backspace, skips arrow keys and cancels on Ctrl-C", () => {
-  let line = feedHidden(emptyHiddenLine(), "lin_");
-  line = feedHidden(line, "api\u001b[D_x\u007fK\r ignored");
+test("prompt input keeps typed and pasted characters, honours backspace, skips arrow keys and cancels", () => {
+  let line = feedLine(emptyLine(), "lin_");
+  line = feedLine(line, "api\u001b[D_x\u007fK\r ignored");
   expect(line.result).toBe("lin_api_K");
-  expect(feedHidden(emptyHiddenLine(), "abc\u0003").result).toBeNull();
-  expect(feedHidden(emptyHiddenLine(), "\u0004").result).toBeNull();
+  expect(feedLine(emptyLine(), "abc\u0003").result).toBeNull();
+  expect(feedLine(emptyLine(), "\u0004").result).toBeNull();
+  // A visible prompt echoes the difference: erase what changed, then type the rest.
+  expect(echo("libsql:/", "libsql:")).toBe("\b \b");
+  expect(echo("lib", "libsql")).toBe("sql");
 });

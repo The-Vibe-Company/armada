@@ -5,7 +5,7 @@ Armada runs a fleet of coding agents on one project: Linear holds the plan and p
 ## Layout
 
 - `packages/core`: `armada.toml` parsing, read adapters for Linear and GitHub, the machine store (`machine.ts`: keys and personal defaults under `~/.config/armada`), and the pure fleet derivations (tickets in flight, frontier, pull requests waiting). No I/O outside the adapters; network adapters take an injected `fetch`.
-- `packages/cli`: the `armada` command. Side effects are injected through `Io` in `src/cli.ts`; `src/main.ts` wires the real process.
+- `packages/cli`: the `armada` command. Side effects are injected through `Io` in `src/io.ts`; `src/main.ts` wires the real process.
 - `packages/dashboard`: placeholder for the live Fleet view.
 - `armada.toml`: this repository's own Armada configuration.
 

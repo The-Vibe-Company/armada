@@ -1,9 +1,8 @@
 #!/usr/bin/env bun
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { createInterface } from "node:readline/promises";
 import { run } from "./cli.ts";
-import { emptyHiddenLine, feedHidden } from "./hidden.ts";
+import { echo, emptyLine, feedLine } from "./line.ts";
 
 function ghToken(): string | null {
   try {
@@ -14,29 +13,21 @@ function ghToken(): string | null {
   }
 }
 
-/** Reads one line from the terminal; with `hidden`, nothing typed is echoed. Null on Ctrl-C or Ctrl-D. */
-async function prompt(question: string, { hidden }: { hidden: boolean }): Promise<string | null> {
+/**
+ * Reads one line from the terminal in raw mode, so Ctrl-C and Ctrl-D cancel
+ * (null) the same way in every prompt. With `hidden`, nothing typed is echoed.
+ */
+function prompt(question: string, { hidden }: { hidden: boolean }): Promise<string | null> {
   const stdin = process.stdin;
-  if (!hidden) {
-    const rl = createInterface({ input: stdin, output: process.stderr, terminal: true });
-    let cancelled = false;
-    rl.on("SIGINT", () => {
-      cancelled = true;
-      rl.close();
-    });
-    try {
-      return await rl.question(question);
-    } catch {
-      return null;
-    } finally {
-      if (!cancelled) rl.close();
-    }
-  }
   return new Promise((done) => {
-    let line = emptyHiddenLine();
+    let line = emptyLine();
     const onData = (chunk: string) => {
-      line = feedHidden(line, chunk);
-      if (line.result === undefined) return;
+      const before = line.answer;
+      line = feedLine(line, chunk);
+      if (line.result === undefined) {
+        if (!hidden) process.stderr.write(echo(before, line.answer));
+        return;
+      }
       stdin.off("data", onData);
       stdin.setRawMode(false);
       stdin.pause();

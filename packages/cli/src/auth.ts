@@ -196,7 +196,8 @@ export async function authLogout(io: Io): Promise<number> {
   const paths = requirePaths(machinePaths(io.env));
   // Only the credentials file: a broken config.toml must not block removing keys.
   const store = await readCredentialStore(paths.credentials);
-  const stored = STORED_KEYS.filter((k) => Object.hasOwn(store.values, k.variable));
+  // Any KEY= line counts, even a malformed one: logout must not leave a secret behind.
+  const stored = STORED_KEYS.filter((k) => store.assigned.includes(k.variable));
   if (!stored.length) {
     io.stdout(`No Armada key is stored in ${paths.credentials}.\n`);
   } else {

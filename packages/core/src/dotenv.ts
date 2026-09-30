@@ -7,12 +7,18 @@ export interface DotenvFile {
   values: Record<string, string>;
   /** 1-based numbers of non-blank, non-comment lines that are not `KEY=value`. Never their content. */
   invalidLines: number[];
+  /** Every key on a `KEY=...` line, including lines whose value is malformed. */
+  assigned: string[];
 }
 
 const ASSIGNMENT = /^\s*(export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/;
 
-/** Reads one shell word (quotes, backslash escapes), stopping at unquoted whitespace. Null when malformed. */
-function shellWord(raw: string): string | null {
+/**
+ * Reads one shell word (quotes, backslash escapes), stopping at unquoted
+ * whitespace. Returns the value and the trailing `# comment`, if any; null
+ * when malformed or followed by anything but a comment.
+ */
+function shellWord(raw: string): { value: string; comment: string } | null {
   let out = "";
   let k = 0;
   while (k < raw.length) {
@@ -50,7 +56,7 @@ function shellWord(raw: string): string | null {
   }
   // Only a comment may follow the value.
   const rest = raw.slice(k).trim();
-  return rest === "" || rest.startsWith("#") ? out : null;
+  return rest === "" || rest.startsWith("#") ? { value: out, comment: rest } : null;
 }
 
 function parseLine(line: string): { key: string; value: string } | "blank" | null {
@@ -58,8 +64,8 @@ function parseLine(line: string): { key: string; value: string } | "blank" | nul
   if (!trimmed || trimmed.startsWith("#")) return "blank";
   const m = ASSIGNMENT.exec(line);
   if (!m) return null;
-  const value = shellWord(m[3] ?? "");
-  return value === null ? null : { key: m[2] ?? "", value };
+  const word = shellWord(m[3] ?? "");
+  return word === null ? null : { key: m[2] ?? "", value: word.value };
 }
 
 const splitLines = (text: string) => text.split(/\r?\n/);
@@ -68,15 +74,19 @@ export function parseDotenv(text: string): DotenvFile {
   // A Map, then fromEntries: a key such as __proto__ stays a plain own property.
   const values = new Map<string, string>();
   const invalidLines: number[] = [];
+  const assigned = new Set<string>();
   splitLines(text).forEach((line, index) => {
+    const key = ASSIGNMENT.exec(line)?.[2];
+    if (key !== undefined) assigned.add(key);
     const parsed = parseLine(line);
     if (parsed === null) invalidLines.push(index + 1);
     else if (parsed !== "blank") values.set(parsed.key, parsed.value);
   });
-  return { values: Object.fromEntries(values), invalidLines };
+  return { values: Object.fromEntries(values), invalidLines, assigned: [...assigned] };
 }
 
-const SHELL_SAFE = /^[A-Za-z0-9_\-.:/@+=,%~]+$/;
+// No `~`: a shell expands it at the start of a word or after `:` in an assignment.
+const SHELL_SAFE = /^[A-Za-z0-9_\-.:/@+=,%]+$/;
 
 /** Formats a value so that both this parser and a POSIX shell read it back unchanged. */
 export function formatDotenvValue(key: string, value: string): string {
@@ -90,7 +100,8 @@ export function formatDotenvValue(key: string, value: string): string {
  * Applies `updates` to dotenv text: a string sets the key, null removes it.
  * The first assignment of a key is rewritten in place (keeping `export`), later
  * duplicates are dropped so they cannot override it, and new keys are appended.
- * Every other line, comment and blank line is kept as it was.
+ * Every other line, comment and blank line is kept as it was, and so is a
+ * comment at the end of a rewritten line.
  */
 export function updateDotenv(text: string, updates: Record<string, string | null>): string {
   const lines = text === "" ? [] : splitLines(text);
@@ -108,7 +119,8 @@ export function updateDotenv(text: string, updates: Record<string, string | null
     seen.add(key);
     const value = updates[key];
     if (value === null || value === undefined) continue;
-    out.push(`${m[1] ?? ""}${key}=${formatDotenvValue(key, value)}`);
+    const comment = shellWord(m[3] ?? "")?.comment;
+    out.push(`${m[1] ?? ""}${key}=${formatDotenvValue(key, value)}${comment ? ` ${comment}` : ""}`);
   }
   for (const [key, value] of Object.entries(updates)) {
     if (seen.has(key) || value === null) continue;

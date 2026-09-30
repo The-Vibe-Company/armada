@@ -36,6 +36,8 @@ export interface CredentialStore {
   values: Record<string, string>;
   /** Line numbers that are not `KEY=value`; they are kept but ignored. */
   invalidLines: number[];
+  /** Keys on any `KEY=...` line, even a malformed one. */
+  assigned: string[];
 }
 
 const missing = (err: unknown) => {
@@ -49,7 +51,7 @@ export async function readCredentialStore(path: string): Promise<CredentialStore
   try {
     [text, mode] = await Promise.all([readFile(path, "utf8"), stat(path).then((s) => s.mode & 0o777)]);
   } catch (err) {
-    if (missing(err)) return { path, exists: false, mode: null, values: {}, invalidLines: [] };
+    if (missing(err)) return { path, exists: false, mode: null, values: {}, invalidLines: [], assigned: [] };
     throw new Error(`cannot read ${path}: ${(err as NodeJS.ErrnoException).code ?? "unknown error"}`);
   }
   return { path, exists: true, mode, ...parseDotenv(text) };
