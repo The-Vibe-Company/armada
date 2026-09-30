@@ -1,0 +1,44 @@
+packages/dashboard/lib/requests.ts
+  s_d658e7251951c2::t_d62d6c0d5654bb 1-59
+  s_d658e7251951c2::t_328d4e9e908589 60-65
+packages/dashboard/app/actions.ts
+  s_d658e7251951c2::t_620b726fed3114 1-46
+packages/dashboard/components/Actions.tsx
+  s_d658e7251951c2::t_3b59008f749918 1-459
+packages/core/src/overview.ts
+  s_d658e7251951c2::t_a49ab9d1276052 5-6,10,54-79,85,103-104,120-121,132-133,156,165-173,201-202,217-218,228-230,236-237,252-257,278
+packages/core/test/overview.test.ts
+  s_d658e7251951c2::t_8d62361b730b81 111-158
+packages/dashboard/app/globals.css
+  s_d658e7251951c2::t_b39e8fb53bd5f8 900-1248,1336-1346
+packages/dashboard/app/page.tsx
+  s_d658e7251951c2::t_d761a93b24fd56 3-4,13-18
+packages/dashboard/components/Fleet.tsx
+  s_d658e7251951c2::t_69fe330a502abe 6-13,16,38,49,80,98,103-104,106-107,134-144,214-221,255-258,393,396,399,402,405,424-436,502-506,527-531
+packages/dashboard/lib/demo/world.ts
+  s_d658e7251951c2::t_ebd923dacdd025 147-172,189,283-292
+packages/dashboard/lib/fleet-data.ts
+  s_d658e7251951c2::t_7ad4543871befb 22,191-244,288,292
+packages/dashboard/lib/i18n.ts
+  s_d658e7251951c2::t_62e5065a1255f7 4,9-13,124-171,267-313
+packages/dashboard/lib/server.ts
+  s_d658e7251951c2::t_df5a788fb16637 16,65-66,69,75-88
+packages/dashboard/test/fleet-data.test.ts
+  s_d658e7251951c2::t_fc11c06e86dcd0 4,12,17,39,56-59,159-219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ba2b7572a3848f1d681686ee618c5a4fe43c55e2",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
