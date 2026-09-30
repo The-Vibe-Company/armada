@@ -8,6 +8,7 @@
 // the token): it keeps it until it nears expiry or the Turso keys change.
 // Every call is recorded, never with a value. Everything is injected.
 import type { Client } from "@libsql/client";
+import type { Scope } from "./fleet-data";
 import {
   type Actor,
   readSecrets,
@@ -294,5 +295,41 @@ export async function organizationKeys(
       ? { url: access.url, token: access.token, expiresAt: access.kind === "minted" ? access.expiresAt : null }
       : null,
     warnings: [...problems, ...held.warnings],
+  };
+}
+
+/** The keys one fleet is read with, and whether ARMADA_REPOSITORIES may stand in for its registry. */
+export interface FleetKeys {
+  linearApiKey: string | null;
+  githubToken: string | null;
+  turso: { url: string; token: string | null } | null;
+  envRepositories: boolean;
+}
+
+/**
+ * What an organization's fleet is read with: its own keys, then the
+ * deployment's environment. An organization whose Turso database comes from
+ * its vault controls its own registry, so it could list any repository there:
+ * unless it is the deployment's first organization (which the environment's
+ * keys serve), it then gets none of the environment's keys, nor
+ * ARMADA_REPOSITORIES, or it would read another organization's fleet with
+ * them. Its database's projects are its own (`home` is itself).
+ */
+export function fleetKeysOf(
+  own: OrganizationKeys,
+  env: Omit<FleetKeys, "envRepositories">,
+  organization: string,
+  scope: Scope | null,
+): { keys: FleetKeys; scope: Scope | null } {
+  const ownRegistry = own.turso !== null;
+  const inherit = !ownRegistry || scope?.home === organization;
+  return {
+    keys: {
+      linearApiKey: own.linearApiKey ?? (inherit ? env.linearApiKey : null),
+      githubToken: own.githubToken ?? (inherit ? env.githubToken : null),
+      turso: own.turso ?? env.turso,
+      envRepositories: inherit,
+    },
+    scope: ownRegistry ? { organization, home: organization } : scope,
   };
 }

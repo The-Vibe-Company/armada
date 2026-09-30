@@ -172,6 +172,22 @@ describe("the organization's keys from Armada", () => {
     expect(offline).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
     expect(offline).toMatch(/ARMADA_TURSO_TOKEN\s+set\s+Armada: a token made for this terminal/);
 
+    // Signed out on Armada's side: the kept token is dropped at once.
+    m.armadaDown(false);
+    m.armada.sessions.clear();
+    expect(await run(["auth", "status"], m.io)).toBe(0);
+    const revoked = m.printed();
+    expect(revoked).toContain("Next: armada login");
+    expect(revoked).toMatch(/ARMADA_TURSO_TOKEN\s+missing/);
+    expect(await readFile(m.credentials, "utf8")).not.toContain("ARMADA_TURSO_LEASE");
+  });
+
+  test("an expired kept token is not used, even with Armada unreachable", async () => {
+    const m = await machine();
+    expect(await run(["login"], m.io)).toBe(0);
+    expect(await run(["auth", "status"], m.io)).toBe(0);
+    m.printed();
+    m.armadaDown(true);
     // Expired, the kept token is not used any more.
     m.advance(5 * 60);
     expect(await run(["auth", "status"], m.io)).toBe(0);

@@ -9,7 +9,7 @@ import { accountsGuard } from "../lib/accounts-http.ts";
 import { type AuthSettings, accountsModeOf } from "../lib/accounts-settings.ts";
 import { openAuthDatabase } from "../lib/auth-db.ts";
 import { guard } from "../lib/auth-http.ts";
-import { type DashboardTursoCache, organizationKeys, type Release } from "../lib/broker.ts";
+import { type DashboardTursoCache, fleetKeysOf, organizationKeys, type Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliApiDeps, type CliIdentity, handleCli } from "../lib/cli-api.ts";
 import { deleteSecret, listEvents, type SecretName, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
 
@@ -451,6 +451,31 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     expect(mints()).toBe(2);
     const [latest] = await listEvents(client, orgId, 1);
     expect(latest).toMatchObject({ action: "release", keys: ["turso"], actor: { kind: "dashboard" } });
+  });
+
+  test("an organization with its own Turso reads with none of the deployment's keys, unless it is the first one", () => {
+    const env = {
+      linearApiKey: "env-linear",
+      githubToken: "env-github",
+      turso: { url: "libsql://env.example.test", token: "env-turso" },
+    };
+    const none = { linearApiKey: null, githubToken: null, turso: null, warnings: [] };
+    const ownTurso = { ...none, turso: { url: "libsql://own.example.test", token: "own", expiresAt: null } };
+    const home = { organization: "org-a", home: "org-a" };
+    const second = { organization: "org-b", home: "org-a" };
+    // No Turso of its own: the deployment's registry, scoped as before, read with the deployment's keys.
+    expect(fleetKeysOf(none, env, "org-b", second)).toEqual({ keys: { ...env, envRepositories: true }, scope: second });
+    // Its own registry could list anyone's repository: nothing of the deployment's.
+    expect(fleetKeysOf(ownTurso, env, "org-b", second)).toEqual({
+      keys: { linearApiKey: null, githubToken: null, turso: ownTurso.turso, envRepositories: false },
+      scope: { organization: "org-b", home: "org-b" },
+    });
+    // The first organization owns the deployment's keys.
+    expect(fleetKeysOf(ownTurso, env, "org-a", home).keys).toMatchObject({
+      linearApiKey: "env-linear",
+      githubToken: "env-github",
+      envRepositories: true,
+    });
   });
 
   test("a terminal asking more than 30 times a minute is refused until the minute has passed", async () => {

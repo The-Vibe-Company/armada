@@ -18,7 +18,7 @@ import {
 import { after } from "next/server";
 import { type Access, requireFleetAccess, scopeOf } from "./access";
 import { accounts } from "./accounts-server";
-import { type DashboardTursoCache, organizationKeys } from "./broker";
+import { type DashboardTursoCache, type FleetKeys, fleetKeysOf, organizationKeys } from "./broker";
 import { demoSources } from "./demo/sources";
 import {
   type FleetCache,
@@ -40,19 +40,13 @@ function repositoriesFromEnv(): ProjectRef[] {
     .map((repository) => ({ repository }));
 }
 
-/** The keys one fleet is read with. */
-interface FleetKeys {
-  linearApiKey: string | null;
-  githubToken: string | null;
-  turso: { url: string; token: string | null } | null;
-}
-
 function envKeys(): FleetKeys {
   const keys = resolveCredentials({ env: process.env });
   return {
     linearApiKey: keys.linearApiKey,
     githubToken: keys.githubToken,
     turso: keys.tursoUrl ? { url: keys.tursoUrl, token: keys.tursoToken } : null,
+    envRepositories: true,
   };
 }
 
@@ -69,7 +63,7 @@ function realSources(keys: FleetKeys): Sources {
             .slice(0, 16),
         }
       : {}),
-    fallbackProjects: repositoriesFromEnv,
+    fallbackProjects: keys.envRepositories ? repositoriesFromEnv : () => [],
     readConfig: async (p) => {
       if (p.slug && p.name && p.programRoot)
         return readProjectConfig(
@@ -108,12 +102,7 @@ const globalCache = globalThis as unknown as {
   __armadaDashboardTurso?: DashboardTursoCache;
 };
 
-/**
- * The keys of the viewer's fleet: with a vault, the organization's (each
- * missing one from the environment). Its Turso database, when the vault gives
- * one, is the organization's own: every project registered in it belongs to
- * the organization.
- */
+/** The keys of the viewer's fleet: with a vault, the organization's, then the environment's (`fleetKeysOf`). */
 async function keysOf(access: Access): Promise<{ id: string; keys: FleetKeys; scope: Scope | null }> {
   const env = envKeys();
   const scope = scopeOf(access);
@@ -127,15 +116,7 @@ async function keysOf(access: Access): Promise<{ id: string; keys: FleetKeys; sc
     { client: a.client, vault: vault.key, cache: globalCache.__armadaDashboardTurso },
     organization,
   );
-  return {
-    id: `org:${organization}`,
-    keys: {
-      linearApiKey: own.linearApiKey ?? env.linearApiKey,
-      githubToken: own.githubToken ?? env.githubToken,
-      turso: own.turso ?? env.turso,
-    },
-    scope: own.turso ? { organization, home: organization } : scope,
-  };
+  return { id: `org:${organization}`, ...fleetKeysOf(own, env, organization, scope) };
 }
 
 /** How the viewer's reads and requests reach the sources, and whose projects they see. Checks access first. */

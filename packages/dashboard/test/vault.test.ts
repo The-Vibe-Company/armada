@@ -10,6 +10,7 @@ import {
   listSecrets,
   openSecret,
   readSecrets,
+  SECRET_KINDS,
   SealError,
   sealSecret,
   setSecret,
@@ -75,6 +76,25 @@ describe("sealing a value", () => {
       }
     }
     expect(refusals[0]).toThrow(/another ARMADA_SECRETS_KEY/);
+  });
+});
+
+describe("what a key may be", () => {
+  test("a database URL names a public host: never localhost, an IP address or an internal name", () => {
+    const ok = SECRET_KINDS["turso-url"].check;
+    expect(ok("libsql://fleet-acme.aws-eu-west-1.turso.io")).toBe(true);
+    expect(ok("https://db.example.test:8080/")).toBe(true);
+    for (const bad of [
+      "libsql://localhost",
+      "https://127.0.0.1",
+      "https://169.254.169.254",
+      "https://[::1]",
+      "libsql://metadata.internal",
+      "https://printer.local",
+      "file:/tmp/x.db",
+      "http://fleet.turso.io",
+    ])
+      expect(ok(bad)).toBe(false);
   });
 });
 

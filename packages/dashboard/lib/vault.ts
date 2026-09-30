@@ -70,16 +70,25 @@ export interface SecretKind {
   check: (value: string) => boolean;
 }
 
+/**
+ * A libsql:// or https:// URL to a named host. Not localhost, an IP address
+ * or an internal name: the dashboard's server connects there with the stored
+ * token, and must not be pointed at its own network.
+ */
+function publicDatabaseUrl(v: string): boolean {
+  const m = /^(libsql|https):\/\/([a-z0-9.-]+)(:\d+)?\/?$/i.exec(v);
+  const host = m?.[2]?.toLowerCase().replace(/\.$/, "");
+  if (!host?.includes(".")) return false;
+  if (/^[\d.]+$/.test(host)) return false;
+  return !/(^|\.)(localhost|local|internal|localdomain|home|lan)$/.test(host);
+}
+
 const token = (v: string) => v.length <= 4096 && !/\s/.test(v);
 const name = (v: string) => /^[a-z0-9][a-z0-9-]{0,63}$/i.test(v);
 
 export const SECRET_KINDS: Record<SecretName, SecretKind> = {
   "linear-api-key": { secret: true, personal: true, check: token },
-  "turso-url": {
-    secret: false,
-    personal: false,
-    check: (v) => /^(libsql|https):\/\/[a-z0-9.-]+(:\d+)?\/?$/i.test(v),
-  },
+  "turso-url": { secret: false, personal: false, check: (v) => publicDatabaseUrl(v) },
   "turso-platform-token": { secret: true, personal: false, check: token },
   "turso-organization": { secret: false, personal: false, check: name },
   "turso-database": { secret: false, personal: false, check: name },

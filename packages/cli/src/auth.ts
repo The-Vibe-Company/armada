@@ -90,6 +90,14 @@ async function fromArmada(io: Io, machine: Machine, credentials: Credentials): P
     );
   } catch (err) {
     if (!(err instanceof ArmadaApiError)) throw err;
+    // Signed out, or no longer in the organization: the token it made is not used any more.
+    if (err.signedOut || err.status === 403) {
+      await keep(null);
+      io.stderr(
+        `! Armada gave no keys (${err.message}); using this machine's${err.next ? `. Next: ${err.next}` : ""}\n`,
+      );
+      return null;
+    }
     if (err.status === 503 && !lease) return null;
     io.stderr(
       `! Armada gave no keys (${err.message}); using this machine's${lease ? " and the Turso token it made earlier" : ""}${err.next ? `. Next: ${err.next}` : ""}\n`,
