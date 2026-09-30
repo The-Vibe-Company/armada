@@ -201,9 +201,11 @@ async function gql<T>(opts: FetchProgramOptions, query: string, variables: objec
     headers: { "Content-Type": "application/json", Authorization: opts.apiKey },
     body: JSON.stringify({ query, variables }),
   });
-  if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`);
-  const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
+  if (res.status === 401) throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY");
+  // GraphQL validation errors come back with HTTP 400 and a JSON body worth reporting.
+  const json = (await res.json().catch(() => ({}))) as { data?: T; errors?: { message: string }[] };
   if (json.errors?.length) throw new LinearError(`Linear API: ${json.errors.map((e) => e.message).join("; ")}`);
+  if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`);
   if (!json.data) throw new LinearError("Linear API: empty response");
   return json.data;
 }

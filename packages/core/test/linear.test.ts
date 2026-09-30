@@ -58,6 +58,24 @@ describe("fetchProgram", () => {
     ]);
   });
 
+  test("retries without the delegate field when the schema rejects it", async () => {
+    const recorded = recordedFetch();
+    const queries: string[] = [];
+    const fetch: typeof recorded.fetch = async (url, init) => {
+      const { query } = JSON.parse(String(init.body)) as { query: string };
+      queries.push(query);
+      if (queries.length === 1)
+        return Response.json(
+          { errors: [{ message: 'Cannot query field "delegate" on type "Issue".' }] },
+          { status: 400 },
+        );
+      return recorded.fetch(url, init);
+    };
+    const program = await fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch });
+    expect(program.issues).toHaveLength(13);
+    expect(queries.slice(1).some((q) => q.includes("delegate"))).toBe(false);
+  });
+
   test("phase and runtime labels are read only inside the configured groups", async () => {
     const { fetch } = recordedFetch();
     const program = await fetchProgram({
