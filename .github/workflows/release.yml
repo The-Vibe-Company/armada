@@ -50,7 +50,7 @@ jobs:
           ref: ${{ needs.release-please.outputs.tag_name }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.5
+          bun-version-file: package.json
       # Trusted Publishing needs Node >= 22.14 and npm >= 11.5.1; Node 24 ships npm 11.
       - uses: actions/setup-node@v4
         with:

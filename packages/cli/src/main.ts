@@ -96,6 +96,4 @@ const code = await run(process.argv.slice(2), {
   readStdin,
   exec,
 });
-// Exit once stdout is flushed: Node writes to pipes asynchronously on macOS, and
-// exiting at once would cut `armada status --json | jq` at 64 KB.
-process.stdout.write("", () => process.exit(code));
+process.exitCode = code;
