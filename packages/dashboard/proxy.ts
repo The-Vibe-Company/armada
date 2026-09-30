@@ -10,5 +10,5 @@ export function proxy(request: NextRequest) {
 
 export const config = {
   // _next/webpack-hmr is the development-only hot reload socket.
-  matcher: ["/((?!_next/static/|_next/image|_next/webpack-hmr|icon\\.svg$|favicon\\.ico$).*)"],
+  matcher: ["/((?!_next/static/|_next/webpack-hmr|icon\\.svg$|favicon\\.ico$).*)"],
 };
