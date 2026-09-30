@@ -51,6 +51,8 @@ export interface BriefVariable {
   value: string | null;
   /** Whether the coordinator's shell has it, since the launch command expands it there. */
   inShell: boolean;
+  /** Whether it is only in the machine credentials file, which the shell must load first. */
+  inStore: boolean;
   purpose: string;
 }
 
@@ -218,6 +220,8 @@ export interface BuildBriefInput {
   version: string;
   /** The coordinator's environment: only whether each variable is set is read. */
   env: Record<string, string | undefined>;
+  /** Variables whose value comes from the machine credentials file. */
+  stored?: string[];
   now: Date;
 }
 
@@ -269,8 +273,20 @@ export function buildBrief(input: BuildBriefInput): Brief {
   const claimCommand = `armada claim ${ticket.id} --runtime conductor --handle ${CONDUCTOR_HANDLE}${branch ? ` --branch ${branch}` : ""}`;
   const has = (name: string) => !!input.env[name]?.trim();
   const environment: BriefVariable[] = [
-    ...VARIABLES.map((v) => ({ ...v, value: null, inShell: has(v.name) })),
-    { name: "ARMADA_TICKET", required: true, value: ticket.id, inShell: false, purpose: "the ticket this worker owns" },
+    ...VARIABLES.map((v) => ({
+      ...v,
+      value: null,
+      inShell: has(v.name),
+      inStore: !has(v.name) && !!input.stored?.includes(v.name),
+    })),
+    {
+      name: "ARMADA_TICKET",
+      required: true,
+      value: ticket.id,
+      inShell: false,
+      inStore: false,
+      purpose: "the ticket this worker owns",
+    },
   ];
 
   const brief: Omit<Brief, "prompt"> = {
@@ -379,6 +395,7 @@ export interface LoadBriefOptions {
   profile: string | null;
   version: string;
   env: Record<string, string | undefined>;
+  stored?: string[];
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -402,6 +419,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     profile: opts.profile,
     version: opts.version,
     env: opts.env,
+    ...(opts.stored ? { stored: opts.stored } : {}),
     now: now(),
   });
 }

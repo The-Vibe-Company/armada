@@ -9,6 +9,7 @@ import {
   loadBrief,
   missingKeyMessage,
   resolveProfile,
+  STORED_KEYS,
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 
@@ -33,7 +34,13 @@ export function renderBrief(b: Brief): string {
     "Environment to pass (values are never printed):",
     ...b.environment.map((v) => {
       const label = v.value ? `${v.name}=${v.value}` : v.name;
-      const state = v.value ? "value above" : v.inShell ? "set in this shell" : "NOT set in this shell";
+      const state = v.value
+        ? "value above"
+        : v.inShell
+          ? "set in this shell"
+          : v.inStore
+            ? "in credentials file"
+            : "NOT set in this shell";
       return `  ${label.padEnd(width)}  ${v.required ? "required" : "optional"}  ${state.padEnd(21)}  ${v.purpose}`;
     }),
   ];
@@ -60,6 +67,7 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
       profile,
       version,
       env: io.env,
+      stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),
       ...(io.fetch ? { fetch: io.fetch } : {}),
       ...(io.now ? { now: io.now } : {}),
     });

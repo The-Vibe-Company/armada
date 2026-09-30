@@ -12,7 +12,7 @@ Armada never calls a runtime. This guide tells the coordinator how to launch, me
 ## Launch
 
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
-2. Run `armada brief ABC-12`. Read the profile (agent, model, effort, fast mode), the environment table and the warnings. Resolve every warning first: an open blocker, a ticket already in flight. Export each required variable the table marks `NOT set in this shell`.
+2. Run `armada brief ABC-12`. Read the profile (agent, model, effort, fast mode), the environment table and the warnings. Resolve every warning first: an open blocker, a ticket already in flight. Export each required variable the table marks `NOT set in this shell`. One marked `in credentials file` is in Armada's machine store; load it into your shell without printing it: `set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/armada/credentials"; set +a`.
 3. Write the prompt to a file, and add what only you know (the boundary with a parallel worker, a decision not yet on the ticket):
 
 ```sh

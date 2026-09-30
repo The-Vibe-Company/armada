@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEMO_TOML, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
@@ -103,6 +106,11 @@ function briefIo(env: Record<string, string> = SECRETS, response: object = BRIEF
   return { io, calls, out: () => out.join(""), err: () => err.join("") };
 }
 
+const homes: string[] = [];
+afterEach(async () => {
+  for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true });
+});
+
 describe("armada brief", () => {
   test("prints the launch settings, then the prompt: claim first, blockers' hand-backs, decisions, workers in flight", async () => {
     const b = briefIo({ LINEAR_API_KEY: SECRETS.LINEAR_API_KEY });
@@ -185,6 +193,18 @@ describe("armada brief", () => {
     const open = briefIo(SECRETS, response);
     expect(await run(["brief", "DEMO-13"], open.io)).toBe(0);
     expect(open.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-10 (In Progress)\n");
+  });
+
+  test("a key only in the credentials file is marked to load into the shell, and never shown", async () => {
+    const home = await mkdtemp(join(tmpdir(), "armada-brief-"));
+    homes.push(home);
+    await mkdir(join(home, "armada"), { mode: 0o700 });
+    await writeFile(join(home, "armada", "credentials"), `LINEAR_API_KEY=${SECRETS.LINEAR_API_KEY}\n`);
+    await chmod(join(home, "armada", "credentials"), 0o600);
+    const b = briefIo({ XDG_CONFIG_HOME: home });
+    expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
+    expect(b.out()).toMatch(/ {2}LINEAR_API_KEY +required {2}in credentials file /);
+    expect(b.out() + b.err()).not.toContain(SECRETS.LINEAR_API_KEY);
   });
 
   test("an unknown profile is a usage error, before any request", async () => {
