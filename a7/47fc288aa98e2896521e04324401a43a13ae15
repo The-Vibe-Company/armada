@@ -1,0 +1,21 @@
+packages/core/src/config.ts
+  s_d658e7251951c2::t_cb997ee1333802 224-226,228
+skills/armada-worker/SKILL.md
+  s_d658e7251951c2::t_b4f4da69f193bb 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "a747fc288aa98e2896521e04324401a43a13ae15",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
