@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.15](https://github.com/The-Vibe-Company/armada/compare/v0.1.14...v0.1.15) (2026-09-30)
+
+
+### Bug Fixes
+
+* **core:** exclude coordinator silence and clear merged ready labels ([#32](https://github.com/The-Vibe-Company/armada/issues/32)) ([d946046](https://github.com/The-Vibe-Company/armada/commit/d946046ce2fdf58b6d6c4de8e67f1f6f711961ea))
+
 ## [0.1.14](https://github.com/The-Vibe-Company/armada/compare/v0.1.13...v0.1.14) (2026-09-30)
 
 
