@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/The-Vibe-Company/armada/compare/v0.1.5...v0.1.6) (2026-09-30)
+
+
+### Features
+
+* **dashboard:** watch the fleet of every project live ([#13](https://github.com/The-Vibe-Company/armada/issues/13)) ([c53e732](https://github.com/The-Vibe-Company/armada/commit/c53e73244a611d5eb662c5eca3e6228a0d4cde44))
+
 ## [0.1.5](https://github.com/The-Vibe-Company/armada/compare/v0.1.4...v0.1.5) (2026-09-30)
 
 
