@@ -45,6 +45,8 @@ export interface Lane {
   since: string;
   /** Latest sign of life: ticket edit, comment, PR update or start. */
   lastUpdate: string;
+  /** Latest report by the worker: Turso event, `Agent status:` comment or claim. Null when it never reported. */
+  lastReport: string | null;
   statusLine: { summary: string; at: string; author: string | null; url: string } | null;
   pr: PullRequest | null;
   openBlockers: string[];
@@ -90,6 +92,8 @@ function inferPhase(pr: PullRequest | null, comments: Comment[]): AgentPhase {
 export interface LaneOptions {
   now: number;
   silentAfterMinutes: number;
+  /** Newest Turso event per ticket id, when Turso was read. */
+  lastEvents?: Record<string, string>;
 }
 
 export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: LaneOptions): Lane {
@@ -123,12 +127,18 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     issue.startedAt ??
     issue.updatedAt;
   const lastUpdate = latest(issue.updatedAt, comments[0]?.createdAt, pr?.updatedAt, issue.startedAt);
+  const lastReport =
+    latest(comments.find((c) => c.status || c.claim)?.createdAt, claims.at(-1)?.at, opts.lastEvents?.[issue.id]) ||
+    null;
   const openBlockers = m.openBlockersOf(issue);
   const agent = issue.delegate ?? issue.assignee;
 
   const flags: LaneFlag[] = [];
   const waitingOnHuman = NEEDS_HUMAN.includes(phase) || phase === "merged";
-  if (!waitingOnHuman && opts.now - Date.parse(lastUpdate) > opts.silentAfterMinutes * MIN) flags.push("silent");
+  // Silence counts from the worker's last report; a lane that never reported
+  // (claimed by hand, before Armada) falls back to its last sign of life.
+  const alive = lastReport ?? lastUpdate;
+  if (!waitingOnHuman && opts.now - Date.parse(alive) > opts.silentAfterMinutes * MIN) flags.push("silent");
   if (pr?.state === "open" && pr.ci === "failure") flags.push("ci-failing");
   if (pr?.state === "open" && pr.mergeable === "CONFLICTING") flags.push("conflict");
   const runtimes = new Set(claims.map((c) => c.runtime).filter(Boolean));
@@ -154,6 +164,7 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     agent,
     since,
     lastUpdate,
+    lastReport,
     statusLine: withStatus?.status
       ? {
           summary: withStatus.status.summary,

@@ -28,8 +28,15 @@ export interface ArmadaConfig {
     /** owner/name */
     repository: string;
   };
+  gates: {
+    /**
+     * CI checks that must be green on the head of a pull request before a
+     * worker may hand it back. Empty: at least one check, and every check green.
+     */
+    requiredChecks: string[];
+  };
   policy: {
-    /** A working agent with no update for longer than this shows as silent. */
+    /** A working agent with no report for longer than this shows as silent. */
     silentAfterMinutes: number;
   };
 }
@@ -115,6 +122,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   if (!isTable(policy)) problems.push(`"policy" must be a table`);
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
+  const gates = raw.gates === undefined ? {} : raw.gates;
+  if (!isTable(gates)) problems.push(`"gates" must be a table`);
+  const gatesT = isTable(gates) ? gates : {};
 
   // Unknown keys inside known tables are typos; unknown top-level tables are
   // left alone so newer sections do not break older readers.
@@ -123,16 +133,29 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker", tracker, ["program_root", "language", "ready_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group"]],
     ["github", github, ["repository"]],
-    ["policy", policyT, ["silent_after_minutes"]],
+    ["gates", gatesT, ["required_checks"]],
+    ["policy", policyT, ["silence_minutes", "silent_after_minutes"]],
   ];
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
 
+  // `silent_after_minutes` is the first name of `silence_minutes`, still accepted.
+  const silenceKey = policyT.silence_minutes !== undefined ? "silence_minutes" : "silent_after_minutes";
+  if (policyT.silence_minutes !== undefined && policyT.silent_after_minutes !== undefined)
+    problems.push(`"policy.silent_after_minutes" is the old name of "policy.silence_minutes"; keep only one`);
   let silentAfterMinutes: number = CONFIG_DEFAULTS.silentAfterMinutes;
-  if (policyT.silent_after_minutes !== undefined) {
-    const v = policyT.silent_after_minutes;
+  if (policyT[silenceKey] !== undefined) {
+    const v = policyT[silenceKey];
     if (typeof v === "number" && Number.isFinite(v) && v > 0) silentAfterMinutes = v;
-    else problems.push(`"policy.silent_after_minutes" must be a positive number`);
+    else problems.push(`"policy.${silenceKey}" must be a positive number`);
+  }
+
+  let requiredChecks: string[] = [];
+  if (gatesT.required_checks !== undefined) {
+    const v = gatesT.required_checks;
+    if (Array.isArray(v) && v.every((c) => typeof c === "string" && c.trim()))
+      requiredChecks = [...new Set(v.map((c: string) => c.trim()))];
+    else problems.push(`"gates.required_checks" must be a list of check names`);
   }
 
   const config: ArmadaConfig = {
@@ -155,6 +178,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
+    gates: { requiredChecks },
     policy: { silentAfterMinutes },
   };
   if (problems.length) throw new ConfigError(source, problems);

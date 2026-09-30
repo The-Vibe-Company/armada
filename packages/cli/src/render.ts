@@ -58,7 +58,7 @@ export function renderStatus(r: StatusReport): string {
   for (const t of r.inFlight) {
     const who = [t.runtime, t.agent].filter(Boolean).join(" · ") || "unassigned";
     out.push(
-      `  ${pad(t.id, idWidth)}  ${pad(phaseLabel(t), phaseWidth)}  ${who} · updated ${relative(t.lastUpdate, now)}`,
+      `  ${pad(t.id, idWidth)}  ${pad(phaseLabel(t), phaseWidth)}  ${who} · ${t.lastReport ? `reported ${relative(t.lastReport, now)}` : `updated ${relative(t.lastUpdate, now)}`}`,
     );
     out.push(`${indent}${truncate(t.title, 90)}${t.spec ? ` [${t.spec}]` : ""}`);
     if (t.statusLine?.summary) out.push(`${indent}“${truncate(t.statusLine.summary, 100)}”`);

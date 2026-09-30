@@ -51,10 +51,16 @@ export function parseStatusLine(body: string): Comment["status"] {
   return PHASES.includes(phase) ? { phase, summary: (m[2] ?? "").trim() } : null;
 }
 
-/** First line "Agent claim — runtime: X · session: Y · branch: Z · started: D". */
+/**
+ * The line "Agent claim — runtime: X · session: Y · branch: Z · started: D".
+ * It may follow the comment's `Agent status:` line.
+ */
 export function parseClaim(body: string, at: string, author: string | null): AgentClaim | null {
-  const line = firstLine(body);
-  if (!/^\s*Agent claim\b/i.test(line)) return null;
+  const line = body
+    .split("\n")
+    .map((l) => l.replace(/[*_`]/g, ""))
+    .find((l) => /^\s*Agent claim\b/i.test(l));
+  if (!line) return null;
   const field = (k: string) => line.match(new RegExp(`(?:${k})\\s*:\\s*([^·|]+)`, "i"))?.[1]?.trim() || null;
   return {
     runtime: field("runtime"),
@@ -217,7 +223,14 @@ const COMMENTS_QUERY = /* GraphQL */ `
     }
   }`;
 
-async function gql<T>(opts: FetchProgramOptions, query: string, variables: object): Promise<T> {
+export interface LinearRequestOptions {
+  apiKey: string;
+  fetch?: Fetch;
+  timeoutMs?: number;
+}
+
+/** One GraphQL request to Linear; every failure becomes a LinearError that never quotes the key. */
+export async function gql<T>(opts: LinearRequestOptions, query: string, variables: object): Promise<T> {
   const doFetch = opts.fetch ?? fetch;
   const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const res = await doFetch(LINEAR_ENDPOINT, {

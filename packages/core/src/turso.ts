@@ -181,3 +181,151 @@ export async function listProjects(db: Db): Promise<ProjectRecord[]> {
     updatedAt: String(r.updated_at),
   }));
 }
+
+// ------------------------------------------------------------------ events
+
+export type EventKind = "claim" | "report" | "release";
+
+export interface EventInput {
+  project: string;
+  ticket: string;
+  kind: EventKind;
+  phase?: string | null;
+  message?: string | null;
+  runtime?: string | null;
+  handle?: string | null;
+  prUrl?: string | null;
+  headSha?: string | null;
+  at: Date;
+}
+
+export async function recordEvent(db: Db, e: EventInput): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO events (project, ticket, kind, phase, message, runtime, handle, pr_url, head_sha, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      e.project,
+      e.ticket,
+      e.kind,
+      e.phase ?? null,
+      e.message ?? null,
+      e.runtime ?? null,
+      e.handle ?? null,
+      e.prUrl ?? null,
+      e.headSha ?? null,
+      e.at.toISOString(),
+    ],
+  });
+}
+
+/** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
+export async function lastEventTimes(db: Db, project: string): Promise<Record<string, string>> {
+  const rs = await db.execute({
+    sql: "SELECT ticket, max(created_at) AS at FROM events WHERE project = ? GROUP BY ticket",
+    args: [project],
+  });
+  return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), String(r.at)]));
+}
+
+// ------------------------------------------------------------------ runtime handles
+
+export interface RuntimeHandle {
+  project: string;
+  ticket: string;
+  runtime: string;
+  /** Runtime-specific id of the worker's session, e.g. <workspace>/<session>. */
+  handle: string;
+  branch: string | null;
+  claimedAt: string;
+  releasedAt: string | null;
+}
+
+/** Records the session now holding a ticket; a new claim replaces a released one. */
+export async function saveRuntimeHandle(
+  db: Db,
+  h: { project: string; ticket: string; runtime: string; handle: string; branch: string | null; at: Date },
+): Promise<void> {
+  await db.execute({
+    sql: `INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at)
+          VALUES (?, ?, ?, ?, ?, ?, NULL)
+          ON CONFLICT (project, ticket) DO UPDATE SET
+            runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch,
+            claimed_at = excluded.claimed_at, released_at = NULL`,
+    args: [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at.toISOString()],
+  });
+}
+
+export async function releaseRuntimeHandle(db: Db, project: string, ticket: string, at: Date): Promise<void> {
+  await db.execute({
+    sql: "UPDATE runtime_handles SET released_at = ? WHERE project = ? AND ticket = ? AND released_at IS NULL",
+    args: [at.toISOString(), project, ticket],
+  });
+}
+
+export async function getRuntimeHandle(db: Db, project: string, ticket: string): Promise<RuntimeHandle | null> {
+  const rs = await db.execute({
+    sql: `SELECT project, ticket, runtime, handle, branch, claimed_at, released_at
+          FROM runtime_handles WHERE project = ? AND ticket = ?`,
+    args: [project, ticket],
+  });
+  const r = rs.rows[0];
+  return r
+    ? {
+        project: String(r.project),
+        ticket: String(r.ticket),
+        runtime: String(r.runtime),
+        handle: String(r.handle),
+        branch: r.branch === null ? null : String(r.branch),
+        claimedAt: String(r.claimed_at),
+        releasedAt: r.released_at === null ? null : String(r.released_at),
+      }
+    : null;
+}
+
+// ------------------------------------------------------------------ inbox
+
+export type InboxKind = "question" | "request" | "hand-back";
+export type InboxRecipient = "coordinator" | "worker";
+
+export interface InboxItem {
+  id: number;
+  project: string;
+  ticket: string | null;
+  kind: InboxKind;
+  recipient: InboxRecipient;
+  author: string | null;
+  body: string;
+  createdAt: string;
+}
+
+export async function addInboxItem(db: Db, item: Omit<InboxItem, "id" | "createdAt"> & { at: Date }): Promise<number> {
+  const rs = await db.execute({
+    sql: `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    args: [item.project, item.ticket, item.kind, item.recipient, item.author, item.body, item.at.toISOString()],
+  });
+  return Number(rs.lastInsertRowid);
+}
+
+/** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
+export async function openInboxItems(
+  db: Db,
+  q: { project: string; recipient: InboxRecipient; ticket?: string },
+): Promise<InboxItem[]> {
+  const rs = await db.execute({
+    sql: `SELECT id, project, ticket, kind, recipient, author, body, created_at FROM inbox_items
+          WHERE project = ? AND recipient = ? AND resolved_at IS NULL ${q.ticket ? "AND ticket = ?" : ""}
+          ORDER BY created_at, id`,
+    args: q.ticket ? [q.project, q.recipient, q.ticket] : [q.project, q.recipient],
+  });
+  return rs.rows.map((r) => ({
+    id: Number(r.id),
+    project: String(r.project),
+    ticket: r.ticket === null ? null : String(r.ticket),
+    kind: String(r.kind) as InboxKind,
+    recipient: String(r.recipient) as InboxRecipient,
+    author: r.author === null ? null : String(r.author),
+    body: String(r.body),
+    createdAt: String(r.created_at),
+  }));
+}

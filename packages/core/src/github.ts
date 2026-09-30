@@ -89,7 +89,7 @@ export function normalizePull(raw: RawPull, repo: string): PullRequest {
   };
 }
 
-const PULLS_QUERY = /* GraphQL */ `
+const PULL_FIELDS = /* GraphQL */ `
   fragment P on PullRequest {
     number title url state isDraft mergeable headRefName headRefOid createdAt updatedAt mergedAt
     commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 50) { nodes {
@@ -97,7 +97,9 @@ const PULLS_QUERY = /* GraphQL */ `
       ... on CheckRun { name status conclusion }
       ... on StatusContext { context state }
     } } } } } }
-  }
+  }`;
+
+const PULLS_QUERY = /* GraphQL */ `${PULL_FIELDS}
   query Pulls($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
       open: pullRequests(states: OPEN, first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
@@ -117,29 +119,52 @@ export interface FetchForgeOptions {
   timeoutMs?: number;
 }
 
-export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
-  const [owner, name] = opts.repository.split("/");
+async function githubQuery<T>(
+  opts: Omit<FetchForgeOptions, "repository">,
+  query: string,
+  variables: object,
+): Promise<{ data?: T; errors?: { message: string }[] }> {
   const doFetch = opts.fetch ?? fetch;
   const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const res = await doFetch(GITHUB_GRAPHQL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
-    body: JSON.stringify({ query: PULLS_QUERY, variables: { owner, name } }),
+    body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(timeoutMs),
   }).catch((err: unknown) => {
     throw new GithubError(`GitHub API unreachable: ${networkReason(err, timeoutMs)}`);
   });
   if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
-  const json = (await res.json()) as {
-    data?: {
-      repository: {
-        open: { nodes: RawPull[]; pageInfo?: { hasNextPage: boolean } };
-        closed: { nodes: RawPull[] };
-      } | null;
-    };
-    errors?: { message: string }[];
-  };
+  const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
   if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
+  return json;
+}
+
+const PULL_QUERY = /* GraphQL */ `${PULL_FIELDS}
+  query Pull($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) { pullRequest(number: $number) { ...P } }
+  }`;
+
+/** One pull request with its head SHA and the checks on that head. */
+export async function fetchPullRequest(opts: FetchForgeOptions & { number: number }): Promise<PullRequest | null> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{ repository: { pullRequest: RawPull | null } | null }>(opts, PULL_QUERY, {
+    owner,
+    name,
+    number: opts.number,
+  });
+  const raw = json.data?.repository?.pullRequest;
+  return raw ? normalizePull(raw, opts.repository) : null;
+}
+
+export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{
+    repository: {
+      open: { nodes: RawPull[]; pageInfo?: { hasNextPage: boolean } };
+      closed: { nodes: RawPull[] };
+    } | null;
+  }>(opts, PULLS_QUERY, { owner, name });
   const repo = json.data?.repository;
   if (!repo) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
   return {
