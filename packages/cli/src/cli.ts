@@ -14,6 +14,7 @@ import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { doctor } from "./doctor.ts";
+import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
 import { type Io, UsageError } from "./io.ts";
 import { merge } from "./merge.ts";
@@ -44,6 +45,20 @@ Commands:
                     Prints what waits in this worker's inbox.
   release --reason <text>
                     Give the ticket back: agent labels removed, ticket moved back
+  ask "<question>" [--options "<a> | <b>"] [--ticket <id>]
+                    Worker: ask the coordinator. The phase becomes blocked, the question
+                    goes on the ticket and in the coordinator's inbox. Then stop and wait
+                    for the answer in your session, and report the phase you resume
+  inbox [--wait [--timeout <seconds>]]
+                    Coordinator: open questions, requests, hand-backs and silent workers,
+                    oldest first; records that the coordinator is at work. --wait returns
+                    when a new item arrives or after --timeout (default 300 s). Needs Turso
+  answer <item|ticket> "<answer>"
+                    Coordinator: record an answer already delivered in the worker's
+                    session (runtime guide): resolves the question and posts it on the
+                    ticket. A ticket id answers its open questions. Never calls a runtime
+  answer --note <ticket> "<message>"
+                    Coordinator: record an unsolicited message delivered to a worker
   merge <pr> [--ticket <id>] [--dry-run] [--no-lock]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
@@ -62,16 +77,16 @@ Commands:
 Options:
   --json            Print the result as JSON
   --config <path>   Use this armada.toml instead of searching from the current directory
-  --ticket <id>     Ticket for report and release (default ARMADA_TICKET, then the git
+  --ticket <id>     Ticket for report, release and ask (default ARMADA_TICKET, then the git
                     branch) and for merge (default: the ticket the PR branch names)
   -h, --help        Show this help
   -v, --version     Print the version
 
 Keys (the environment always wins over the file):
   LINEAR_API_KEY       Linear API key (required by status, init, brief, claim, report,
-                       release)
-  ARMADA_TURSO_URL     Turso database URL (required by init and status --all; optional
-                       elsewhere; a file: URL works locally)
+                       release, ask and answer)
+  ARMADA_TURSO_URL     Turso database URL (required by init, inbox and status --all;
+                       optional elsewhere; a file: URL works locally)
   ARMADA_TURSO_TOKEN   Turso database token
   GITHUB_TOKEN         GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
                        (merge also runs gh and git, with gh's own login)
@@ -109,14 +124,19 @@ const VALUE_OPTIONS = [
   "name",
   "slug",
   "profile",
+  "options",
+  "timeout",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt"];
+const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch"],
   report: ["ticket", "message", "message-file", "pr", "sha"],
   release: ["ticket", "reason"],
+  ask: ["ticket", "options", "message", "message-file"],
+  inbox: ["wait", "timeout"],
+  answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug"],
   merge: ["ticket", "dry-run", "no-lock"],
   brief: ["profile", "prompt"],
@@ -211,7 +231,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
     if (args.all && args.command !== "status") throw new UsageError(`--all does not apply to ${args.command}`);
-    const worker = { claim, report, release }[args.command];
+    const worker = { claim, report, release, ask, inbox, answer }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config);
       const config = parseConfig(text, path);

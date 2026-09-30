@@ -117,3 +117,63 @@ describe("armada claim, report and release", () => {
     expect([lane.lastReport, lane.silent]).toEqual(["2026-03-04T09:55:00.000Z", false]);
   });
 });
+
+describe("armada ask, inbox and answer", () => {
+  test("a worker asks, the coordinator reads its inbox and records the answer, the worker resumes", async () => {
+    const { url } = await tempTurso();
+    const w = worker({ ARMADA_TURSO_URL: url });
+    w.linear.add("DEMO-7");
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1/s-1"], w.io)).toBe(0);
+    expect(await run(["report", "implementing", "--message", "plan approved"], w.io)).toBe(0);
+
+    w.reset();
+    expect(await run(["ask", "Which store keeps the sessions?", "--options", "SQLite | Redis"], w.io)).toBe(0);
+    expect(w.out()).toBe(
+      "DEMO-7: implementing → blocked.\nQuestion #1 is in the coordinator's inbox.\nStop here and wait for the answer in this session; then report the phase you resume.\nhttps://linear.app/acme/issue/DEMO-7\nInbox: nothing waiting for you.\n",
+    );
+
+    w.reset();
+    const coordinator = { ...w.io, env: { ARMADA_TURSO_URL: url }, gitBranch: () => "main" };
+    expect(await run(["inbox"], coordinator)).toBe(0);
+    expect(w.out()).toBe(
+      [
+        "Inbox of widgets (1), oldest first:",
+        `  #1 question · DEMO-7 · from ws-1/s-1 · ${NOW.toISOString()}`,
+        "    Which store keeps the sessions?",
+        "",
+        "    Options:",
+        "    1. SQLite",
+        "    2. Redis",
+        'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+        "",
+      ].join("\n"),
+    );
+
+    w.reset();
+    expect(await run(["answer", "1", "SQLite, for the first slice."], { ...coordinator, env: w.io.env })).toBe(0);
+    expect(w.out()).toBe(
+      "Answer posted on DEMO-7 (blocked).\nInbox item #1 resolved.\nThe worker resumes once it reports its phase again.\nhttps://linear.app/acme/issue/DEMO-7\n",
+    );
+
+    w.reset();
+    expect(await run(["inbox", "--json"], coordinator)).toBe(0);
+    expect(JSON.parse(w.out()).items).toEqual([]);
+    expect(await run(["report", "implementing", "--message", "resumed with SQLite"], w.io)).toBe(0);
+    expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["Conductor", "implementing"]);
+  });
+
+  test("usage mistakes exit 2", async () => {
+    const w = worker();
+    expect(await run(["ask"], w.io)).toBe(2);
+    expect(w.err()).toContain("ask needs a question");
+    w.reset();
+    expect(await run(["inbox"], w.io)).toBe(2);
+    expect(w.err()).toBe("armada: the inbox lives in Turso: set ARMADA_TURSO_URL (run `armada auth login`)\n");
+    w.reset();
+    expect(await run(["inbox", "--timeout", "30"], w.io)).toBe(2);
+    expect(w.err()).toBe("armada: --timeout applies to --wait\n");
+    w.reset();
+    expect(await run(["answer", "3"], w.io)).toBe(2);
+    expect(w.err()).toContain("answer needs the text");
+  });
+});

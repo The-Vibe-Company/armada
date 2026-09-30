@@ -4,6 +4,7 @@ export * from "./credentials.ts";
 export * from "./dotenv.ts";
 export * from "./fleet.ts";
 export * from "./github.ts";
+export * from "./inbox.ts";
 export * from "./labels.ts";
 export * from "./linear.ts";
 export * from "./linear-write.ts";

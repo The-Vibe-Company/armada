@@ -50,7 +50,7 @@ const MIGRATIONS: { version: number; statements: string[] }[] = [
         released_at TEXT,
         PRIMARY KEY (project, ticket)
       )`,
-      // kind: question | request | hand-back; recipient: coordinator | worker.
+      // kind: question | request | hand-back | note; recipient: coordinator | worker.
       `CREATE TABLE IF NOT EXISTS inbox_items (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         project TEXT NOT NULL,
@@ -402,7 +402,8 @@ export async function getRuntimeHandle(db: Db, project: string, ticket: string):
 
 // ------------------------------------------------------------------ inbox
 
-export type InboxKind = "question" | "request" | "hand-back";
+/** `note`: an unsolicited coordinator message to a worker, stored already resolved as a record. */
+export type InboxKind = "question" | "request" | "hand-back" | "note";
 export type InboxRecipient = "coordinator" | "worker";
 
 export interface InboxItem {
@@ -459,6 +460,60 @@ export async function openInboxItems(
     body: String(r.body),
     createdAt: String(r.created_at),
   }));
+}
+
+const INBOX_COLUMNS = "id, project, ticket, kind, recipient, author, body, created_at, resolved_at, resolution";
+
+/** An inbox item with its resolution: when it was resolved, and the answer or reason. */
+export interface StoredInboxItem extends InboxItem {
+  resolvedAt: string | null;
+  resolution: string | null;
+}
+
+const inboxRow = (r: Record<string, unknown>): StoredInboxItem => ({
+  id: Number(r.id),
+  project: String(r.project),
+  ticket: r.ticket === null ? null : String(r.ticket),
+  kind: String(r.kind) as InboxKind,
+  recipient: String(r.recipient) as InboxRecipient,
+  author: r.author === null ? null : String(r.author),
+  body: String(r.body),
+  createdAt: String(r.created_at),
+  resolvedAt: r.resolved_at === null ? null : String(r.resolved_at),
+  resolution: r.resolution === null ? null : String(r.resolution),
+});
+
+/** One inbox item of a project, open or resolved; null when the project has no such item. */
+export async function getInboxItem(db: Db, project: string, id: number): Promise<StoredInboxItem | null> {
+  const rs = await db.execute({
+    sql: `SELECT ${INBOX_COLUMNS} FROM inbox_items WHERE project = ? AND id = ?`,
+    args: [project, id],
+  });
+  const r = rs.rows[0];
+  return r ? inboxRow(r) : null;
+}
+
+/** Resolves one open item; false when it was already resolved. */
+export async function resolveInboxItem(
+  db: Db,
+  q: { project: string; id: number; resolution: string; at: Date },
+): Promise<boolean> {
+  const rs = await db.execute({
+    sql: "UPDATE inbox_items SET resolved_at = ?, resolution = ? WHERE project = ? AND id = ? AND resolved_at IS NULL",
+    args: [q.at.toISOString(), q.resolution, q.project, q.id],
+  });
+  return rs.rowsAffected > 0;
+}
+
+/** When the newest question of each ticket was resolved, by ticket id (answered, released or merged). */
+export async function lastAnsweredAt(db: Db, project: string): Promise<Record<string, string>> {
+  const rs = await db.execute({
+    sql: `SELECT ticket, max(resolved_at) AS at FROM inbox_items
+          WHERE project = ? AND kind = 'question' AND ticket IS NOT NULL AND resolved_at IS NOT NULL
+          GROUP BY ticket`,
+    args: [project],
+  });
+  return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), String(r.at)]));
 }
 
 /** Resolves the open items of one kind for a ticket (e.g. its hand-back once merged); returns how many. */

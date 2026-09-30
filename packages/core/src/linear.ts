@@ -50,13 +50,22 @@ const LEGACY: Record<string, AgentPhase> = { "handed-back": "ready-to-merge", "c
 
 const firstLine = (body: string) => (body.split("\n").find((l) => l.trim()) ?? "").replace(/[*_`]/g, "");
 
+/**
+ * Summaries of the coordinator's records (`armada answer`, `armada answer --note`).
+ * They keep the `Agent status:` format but are not the worker's report: they
+ * never count as a phase, a hand-back or a sign that the worker is alive.
+ */
+export const COORDINATOR_RECORD = /^(?:answer|note)\s*:/i;
+
 /** First line "Agent status: <phase> — <summary>" (em dash, en dash or hyphen). */
 export function parseStatusLine(body: string): Comment["status"] {
   const m = firstLine(body).match(/^\s*Agent status\s*:\s*([a-z-]+)\s*(?:[—–-]+\s*(.*))?$/i);
   if (!m?.[1]) return null;
   const raw = m[1].toLowerCase();
   const phase = LEGACY[raw] ?? (raw as AgentPhase);
-  return PHASES.includes(phase) ? { phase, summary: (m[2] ?? "").trim() } : null;
+  const summary = (m[2] ?? "").trim();
+  if (COORDINATOR_RECORD.test(summary)) return null;
+  return PHASES.includes(phase) ? { phase, summary } : null;
 }
 
 /** Removes markdown backslash escapes (Linear stores `a_b` as `a\_b`). */

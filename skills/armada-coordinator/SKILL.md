@@ -12,7 +12,7 @@ The coordinator turns the owner's intent into merged pull requests. Each worker 
 ## Loop
 
 1. **Read the fleet** with `armada status` and `armada inbox`, never from memory. Done when you can name every ticket in flight and its phase, every ready ticket, every pull request waiting, every silent worker and every pending question or request.
-2. **Answer what waits for you first.** For each question: decide, deliver the answer in the worker's session with the runtime guide's *message* section, then `armada answer <item> --message "<decision and reason>"`. Decide reversible choices yourself and prefer the option that keeps behaviour observable. When two workers need the same shared resource (a migration slot, a generated file, a version number), set the rule once and tell both.
+2. **Answer what waits for you first.** For each question in `armada inbox`: decide it, or escalate it to the owner when it is a product decision and wait for theirs. Deliver the answer in the worker's session with the runtime guide's *message* section, then record it with `armada answer <item> "<decision and reason>"`. `armada answer` only records; it never reaches the worker. Decide reversible choices yourself and prefer the option that keeps behaviour observable. When two workers need the same shared resource (a migration slot, a generated file, a version number), set the rule once and tell both. A message the worker did not ask for (main moved, rebase needed) takes the same path: deliver it with the runtime guide, then `armada answer --note <ticket> "<message>"`. Done when the inbox shows no open question.
 3. **Check silent workers** with the runtime guide's *status* section. A worker that is still working gets a nudge to report; a worker that died is relaunched or its ticket released.
 4. **Launch ready tickets** that do not collide with work in flight, one at a time:
    - pick the ticket from the frontier in `armada status`;
@@ -24,7 +24,7 @@ The coordinator turns the owner's intent into merged pull requests. Each worker 
 6. **Turn findings into tickets.** A gap a worker reports or a bug you see becomes a ticket under the right spec, with blocked-by relations, and is launched when ready. No finding lives only in a transcript.
 7. **Report to the owner** in their language (`tracker.language` in `armada.toml`, or the owner's personal setting): what merged, what runs, what you decided for them, and the one thing they must do, with its exact place (a URL, a setting). Outcomes and numbers, no process narration.
 
-Repeat from step 1; `armada inbox --wait` blocks until something needs you.
+Repeat from step 1. Between rounds, `armada inbox --wait` blocks until a new item arrives or its timeout (default 300 s, `--timeout <seconds>`; keep it under your command time limit). Each `armada inbox` call also tells the dashboard you are at work.
 
 ## Rules of thumb
 

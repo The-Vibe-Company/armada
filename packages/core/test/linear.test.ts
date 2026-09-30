@@ -13,6 +13,10 @@ describe("comment conventions", () => {
     expect(parseStatusLine("Agent status: handed-back - done")).toEqual({ phase: "ready-to-merge", summary: "done" });
     expect(parseStatusLine("Agent status: dreaming — zzz")).toBeNull();
     expect(parseStatusLine("Some other comment")).toBeNull();
+    // The coordinator's answers and notes are records, not the worker's status.
+    expect(parseStatusLine("Agent status: ready-to-merge — note: main moved, rebase")).toBeNull();
+    expect(parseStatusLine("Agent status: blocked — answer: SQLite")).toBeNull();
+    expect(parseStatusLine("Agent status: blocked — question: which store?")?.phase).toBe("blocked");
   });
 
   test("claims read runtime, session, branch and start", () => {

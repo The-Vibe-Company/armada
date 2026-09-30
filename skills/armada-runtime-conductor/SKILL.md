@@ -54,7 +54,7 @@ printf '%s\n' "Plan approved. Go on." | conductor --json message create --sessio
 conductor --json message create --session <sessionId> --message-file - < /tmp/abc-12-answer.md
 ```
 
-The output is `{"messageId": …, "state": "sent"}`. Exit code 0 means Conductor accepted the message, not that the worker read it: check that the session turns `working`, then read its reply in the transcript. Use it to deliver an answer, a plan approval, or a heads-up that the default branch moved. After delivering an answer, record it with `armada answer` when your Armada version has it.
+The output is `{"messageId": …, "state": "sent"}`. Exit code 0 means Conductor accepted the message, not that the worker read it: check that the session turns `working`, then read its reply in the transcript. Use it to deliver an answer, a plan approval, or a heads-up that the default branch moved. Then record it in Armada: `armada answer <item> "<answer>"` for a question from `armada inbox`, `armada answer --note ABC-12 "<message>"` for a message the worker did not ask for.
 
 ## Status
 
