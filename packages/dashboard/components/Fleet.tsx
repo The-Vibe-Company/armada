@@ -35,7 +35,7 @@ function useLiveOverview(initial: FleetOverview) {
     setPending(true);
     try {
       const res = await fetch("/api/fleet", { cache: "no-store" });
-      if (res.status === 401) {
+      if (res.status === 401 || new URL(res.url).pathname === "/login") {
         // The session ended (expired, logged out, or the password changed).
         const here = `${window.location.pathname}${window.location.search}`;
         window.location.assign(`/login${here === "/" ? "" : `?next=${encodeURIComponent(here)}`}`);

@@ -23,9 +23,10 @@ export type Gate =
   | { kind: "unconfigured"; reason: "missing" | "off-in-production" };
 
 export function gateOf(env: Env): Gate {
-  const value = env[PASSWORD_VARIABLE];
-  if (!value?.trim()) return { kind: "unconfigured", reason: "missing" };
-  if (value.trim().toLowerCase() === "off")
+  // Trimmed: a newline pasted into the deployment's settings must not lock the owner out.
+  const value = env[PASSWORD_VARIABLE]?.trim();
+  if (!value) return { kind: "unconfigured", reason: "missing" };
+  if (value.toLowerCase() === "off")
     // The opt-out is for local development only: production never runs open.
     return env.NODE_ENV === "production" ? { kind: "unconfigured", reason: "off-in-production" } : { kind: "off" };
   return { kind: "password", password: value };
@@ -94,7 +95,14 @@ export function safeNext(next: unknown, base: URL): string {
   } catch {
     return "/";
   }
-  if (url.origin !== base.origin || url.pathname === LOGIN_PATH || url.pathname.startsWith("/api/")) return "/";
+  // A dot segment can resolve to "//host" after parsing, which a browser reads as another origin.
+  if (
+    url.origin !== base.origin ||
+    url.pathname.startsWith("//") ||
+    url.pathname === LOGIN_PATH ||
+    url.pathname.startsWith("/api/")
+  )
+    return "/";
   return `${url.pathname}${url.search}`;
 }
 

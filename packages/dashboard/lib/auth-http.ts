@@ -93,6 +93,7 @@ export async function login(request: Request, { env, now, limiter }: LoginDeps):
 
 export function logout(request: Request, { env }: { env: Env }): Response {
   const url = new URL(request.url);
+  if (!sameOrigin(request)) return Response.json({ error: "cross-origin logout refused" }, { status: 403 });
   const response = see(url, LOGIN_PATH);
   response.headers.append("Set-Cookie", clearedSessionCookie(secureCookie(url, env)));
   return response;

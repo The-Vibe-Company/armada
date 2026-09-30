@@ -148,13 +148,24 @@ describe("login", () => {
   test("returns only to a local path", () => {
     const base = new URL(BASE);
     expect(safeNext("/?project=a", base)).toBe("/?project=a");
-    for (const next of ["//evil.example", "/\\evil.example", "/\t/evil.example", "https://evil.example", "/login"])
+    for (const next of [
+      "//evil.example",
+      "/\\evil.example",
+      "/\t/evil.example",
+      "/.//evil.example",
+      "/%2e//evil.example",
+      "https://evil.example",
+      "/login",
+    ])
       expect(safeNext(next, base)).toBe("/");
   });
 
-  test("logout clears the cookie", () => {
-    const res = logout(new Request(`${BASE}/api/auth/logout`, { method: "POST" }), { env: PROD });
+  test("logout clears the cookie, from this site only", () => {
+    const post = (origin: string) =>
+      new Request(`${BASE}/api/auth/logout`, { method: "POST", headers: { origin, host: new URL(BASE).host } });
+    const res = logout(post(BASE), { env: PROD });
     expect(res.status).toBe(303);
     expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(logout(post("https://elsewhere.example"), { env: PROD }).status).toBe(403);
   });
 });
