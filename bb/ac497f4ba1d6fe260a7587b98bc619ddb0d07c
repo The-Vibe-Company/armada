@@ -1,0 +1,49 @@
+packages/core/test/support.ts
+  s_d658e7251951c2::t_9f5f8b31693335 1-77
+  s_d658e7251951c2::t_15773d13518c8c 78
+packages/core/test/github.test.ts
+  s_d658e7251951c2::t_96c73dfb86a47b 1-38
+  s_d658e7251951c2::t_12559351f71785 39-40
+README.md
+  s_d658e7251951c2::t_d7195b61af85fb 7-62
+packages/core/test/status.test.ts
+  s_d658e7251951c2::t_aa99702cda3ccc 1-50
+packages/core/test/config.test.ts
+  s_d658e7251951c2::t_6b8ac1a9824462 1-53
+packages/core/test/linear.test.ts
+  s_d658e7251951c2::t_d8e9d1c169cc66 1-71
+packages/core/test/fleet.test.ts
+  s_d658e7251951c2::t_1ecd6b72d26c30 1-119
+  s_d658e7251951c2::t_749891668fa6d9 120-127
+packages/cli/test/cli.test.ts
+  s_d658e7251951c2::t_d092045c33067b 1-86
+  s_d658e7251951c2::t_476b6c7c3861de 87-89
+.github/workflows/ci.yml
+  s_d658e7251951c2::t_c873ace6f6fd91 1-28
+AGENTS.md
+  s_d658e7251951c2::t_8b972b09e20a98 1-27
+packages/cli/src/render.ts
+  s_d658e7251951c2::t_79e10e7b08a22f 21-35,38-39,50,60-62,65,93
+packages/core/src/linear.ts
+  s_d658e7251951c2::t_3a7f622f7e363a 251-253
+packages/core/test/fixtures/github-pulls.json
+  s_d658e7251951c2::t_4d28f2ff470cef 1-183
+packages/core/test/fixtures/linear-program.json
+  s_d658e7251951c2::t_218ebf825a7f87 1-641
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bbac497f4ba1d6fe260a7587b98bc619ddb0d07c",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
