@@ -10,6 +10,7 @@ import {
   missingKeyMessage,
   parseConfig,
 } from "@armada/core";
+import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { type Io, UsageError } from "./io.ts";
 import { renderStatus } from "./render.ts";
@@ -29,6 +30,7 @@ Options:
   --json            Print the status as JSON
   --config <path>   Use this armada.toml instead of searching from the current directory
   -h, --help        Show this help
+  -v, --version     Print the version
 
 Keys (the environment always wins over the file):
   LINEAR_API_KEY       Linear API key (required by status)
@@ -49,14 +51,16 @@ interface Args {
   json: boolean;
   config: string | null;
   help: boolean;
+  version: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
-  const args: Args = { command: null, rest: [], json: false, config: null, help: false };
+  const args: Args = { command: null, rest: [], json: false, config: null, help: false, version: false };
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k];
     if (a === "--json") args.json = true;
     else if (a === "-h" || a === "--help") args.help = true;
+    else if (a === "-v" || a === "--version") args.version = true;
     else if (a === "--config") {
       const v = argv[++k];
       if (!v) throw new UsageError("--config needs a path");
@@ -111,6 +115,10 @@ function noExtra(rest: string[]) {
 export async function run(argv: string[], io: Io): Promise<number> {
   try {
     const args = parseArgs(argv);
+    if (args.version) {
+      io.stdout(`${version}\n`);
+      return 0;
+    }
     if (args.help || !args.command) {
       (args.help ? io.stdout : io.stderr)(USAGE);
       return args.help ? 0 : 2;

@@ -1,0 +1,65 @@
+name: Release
+
+# On every push to main, release-please opens or updates the release pull
+# request. Merging that pull request creates the tag and the GitHub release,
+# and the publish job then puts the CLI on npm through Trusted Publishing
+# (GitHub OIDC): no npm token exists in this repository or its secrets.
+# npmjs.com trusts this workflow by its file name, release.yml: keep it.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Release pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    name: Publish to npm
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write # OIDC token for npm Trusted Publishing and provenance
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      # Trusted Publishing needs Node >= 22.14 and npm >= 11.5.1; Node 24 ships npm 11.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm --version
+      - run: bun install --frozen-lockfile
+      # Release pull requests are opened with GITHUB_TOKEN, so CI never ran on them.
+      - run: bun run verify
+      # prepack builds dist/armada.js with Bun, then npm publishes over OIDC.
+      - run: npm publish --provenance --access public
+        working-directory: packages/cli

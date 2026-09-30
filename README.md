@@ -6,17 +6,23 @@ It imposes one method: grill the decisions, write a spec, cut it into tickets, l
 
 **Status:** early. `armada status` and `armada auth` work; the other commands are being built.
 
-## Try it
+## Install
 
-Requires [Bun](https://bun.sh) 1.3 or later.
+Requires [Node.js](https://nodejs.org) 22 or later: `npx` and `bunx` both run the command with Node.
 
 ```sh
-bun install
-bunx armada auth login   # once per machine: asks for the missing keys, input hidden
-bunx armada status       # or: bunx armada status --json
+npx @the-vibe-company/armada status     # or: bunx @the-vibe-company/armada status
+npm install -g @the-vibe-company/armada  # then: armada status
 ```
 
-The package is not published to npm yet, so `bunx armada` works inside this checkout only. From another repository, run `bun <path-to-armada>/packages/cli/src/main.ts status`.
+`armada --version` prints the installed version. Each release is listed on [GitHub releases](https://github.com/The-Vibe-Company/armada/releases) with its changelog.
+
+## Try it
+
+```sh
+armada auth login   # once per machine: asks for the missing keys, input hidden
+armada status       # or: armada status --json
+```
 
 `armada status` reads the `armada.toml` of the current repository (or the nearest parent directory) and prints:
 
@@ -80,17 +86,21 @@ repository = "acme/widgets"      # owner/name (required)
 silent_after_minutes = 15        # default 15
 ```
 
-A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](armada.toml).
+A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](https://github.com/The-Vibe-Company/armada/blob/main/armada.toml).
 
 The program follows one convention: specs are direct children of the root titled `Spec N/M — Name`, tickets are their sub-issues, and dependencies are Linear blocked-by relations. Agents declare their phase with a label from the phase group (`planning`, `awaiting-approval`, `implementing`, `shipping`, `blocked`, `ready-to-merge`) and start every comment with `Agent status: <phase> — <summary>`.
 
 ## Develop
 
+Requires [Bun](https://bun.sh) 1.3 or later.
+
 ```sh
-bun run verify   # lint, typecheck, tests
+bun install
+bun run armada status   # run the CLI from source
+bun run verify          # lint, typecheck, tests
 ```
 
-See [AGENTS.md](AGENTS.md) for the layout and the rules.
+See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) for the layout and the rules.
 
 ## What it is made of
 

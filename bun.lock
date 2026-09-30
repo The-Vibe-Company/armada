@@ -7,17 +7,16 @@
       "devDependencies": {
         "@biomejs/biome": "2.5.15",
         "@types/bun": "1.3.14",
-        "armada": "workspace:*",
         "typescript": "5.9.3",
       },
     },
     "packages/cli": {
-      "name": "armada",
+      "name": "@the-vibe-company/armada",
       "version": "0.0.0",
       "bin": {
-        "armada": "./src/main.ts",
+        "armada": "dist/armada.js",
       },
-      "dependencies": {
+      "devDependencies": {
         "@armada/core": "workspace:*",
       },
     },
@@ -56,11 +55,11 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.15", "", { "os": "win32", "cpu": "x64" }, "sha512-yAzh4UqEImV6Hcy0zjUqNfJAsUhoD64FBQCdTG8Md/Z2wQeVP/ZmJ3XRYAs1g8J9fjTFyl2fCtc5FB5til47+g=="],
 
+    "@the-vibe-company/armada": ["@the-vibe-company/armada@workspace:packages/cli"],
+
     "@types/bun": ["@types/bun@1.3.14", "", { "dependencies": { "bun-types": "1.3.14" } }, "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw=="],
 
     "@types/node": ["@types/node@26.6.3", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-dsqMQQoeTLqu9wynDD00q573mNzso3IdQOAfHRJqLCcmCFPoGo9A1bDpUcv/9tnKpErQWv9uKeGfl37EIS02Yg=="],
-
-    "armada": ["armada@workspace:packages/cli"],
 
     "bun-types": ["bun-types@1.3.14", "", { "dependencies": { "@types/node": "*" } }, "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ=="],
 

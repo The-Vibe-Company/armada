@@ -1,13 +1,40 @@
 {
-  "name": "armada",
+  "name": "@the-vibe-company/armada",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
-  "description": "The armada command line.",
-  "bin": {
-    "armada": "./src/main.ts"
+  "description": "Run a fleet of coding agents on one project: the armada command line.",
+  "license": "MIT",
+  "homepage": "https://github.com/The-Vibe-Company/armada#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/The-Vibe-Company/armada.git",
+    "directory": "packages/cli"
   },
-  "dependencies": {
+  "bugs": "https://github.com/The-Vibe-Company/armada/issues",
+  "keywords": [
+    "agents",
+    "coding-agents",
+    "linear",
+    "github",
+    "cli"
+  ],
+  "bin": {
+    "armada": "dist/armada.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun build src/bin.ts --target node --outfile dist/armada.js",
+    "prepack": "bun run build && cp ../../README.md ../../LICENSE ."
+  },
+  "devDependencies": {
     "@armada/core": "workspace:*"
   }
 }

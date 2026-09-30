@@ -6,3 +6,9 @@ node_modules/
 
 # Local agent run artifacts (ship-pr-dev)
 plans/ship-pr-dev/
+
+# Built CLI bundle and files copied in at pack time
+packages/cli/dist/
+packages/cli/README.md
+packages/cli/LICENSE
+*.tgz

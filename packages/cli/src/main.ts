@@ -57,4 +57,6 @@ const code = await run(process.argv.slice(2), {
   interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
   prompt,
 });
-process.exit(code);
+// Exit once stdout is flushed: Node writes to pipes asynchronously on macOS, and
+// exiting at once would cut `armada status --json | jq` at 64 KB.
+process.stdout.write("", () => process.exit(code));
