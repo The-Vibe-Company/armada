@@ -1,0 +1,25 @@
+packages/core/src/linear.ts
+  s_d658e7251951c2::t_dcfae5d9a4aed8 55-60
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_3335586b39b37c 93
+packages/core/src/worker.ts
+  s_d658e7251951c2::t_56ed4332a385f2 15,67,225
+packages/core/test/linear.test.ts
+  s_d658e7251951c2::t_44668c0a8c2d40 30-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "cfeb534aede4b0cbf7f06714f7e8a21952e233b3",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
