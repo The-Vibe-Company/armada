@@ -1,0 +1,69 @@
+README.md
+  s_d658e7251951c2::t_a23c2d0360b106 18,91,93,125
+packages/cli/src/brief.ts
+  s_d658e7251951c2::t_c7e8c895da9dec 14,70
+packages/cli/src/cli.ts
+  s_d658e7251951c2::t_9640f400886458 9,12,20,29-31,33-36,40-41,46-48,52-54,56-57,61-62,66-67,73-74,81-82,88-89,92-99,101-104,108,126-139,218-222,226-230,240-241,246,250,267-281,290-296,304,310,315,346-348
+packages/cli/src/doctor.ts
+  s_d658e7251951c2::t_2ca9cce9b02fe4 90
+packages/cli/src/inbox.ts
+  s_d658e7251951c2::t_41b46013af6444 11,90,92-96
+packages/cli/src/init.ts
+  s_d658e7251951c2::t_fde1d0153ee00c 28,60,80-81,139,144-148
+packages/cli/src/io.ts
+  s_d658e7251951c2::t_07ccefcefcb57b 1-7,48-62
+packages/cli/src/merge.ts
+  s_d658e7251951c2::t_038a73a7fd8c61 9,11,28,153-154,156-158,160,168,170,206-210
+packages/cli/src/projects.ts
+  s_d658e7251951c2::t_a0915bb66c2017 14,38,40
+packages/cli/src/worker.ts
+  s_d658e7251951c2::t_f8c394a92e7678 24,94,134-140
+packages/cli/test/brief.test.ts
+  s_d658e7251951c2::t_fc996566e43e28 275,283
+packages/cli/test/cli.test.ts
+  s_d658e7251951c2::t_185e20d8885612 95-100,111-113,120-152
+packages/cli/test/init.test.ts
+  s_d658e7251951c2::t_5d511c12527029 152,161
+packages/cli/test/merge.test.ts
+  s_d658e7251951c2::t_fe7528ae100421 215,230-232
+packages/cli/test/worker.test.ts
+  s_d658e7251951c2::t_097603b82c5292 49,56,76-78,84,97,101,142,181,184
+packages/core/src/brief.ts
+  s_d658e7251951c2::t_66de0699f47ace 21,464-465
+packages/core/src/inbox.ts
+  s_d658e7251951c2::t_3c251855620cf1 52-56,257-263,266,281,283,285-286,290,293-296,306-307,315,320-323
+packages/core/src/linear-write.ts
+  s_d658e7251951c2::t_c99e9760b94877 6,11,15,55,83-86,88-89,97-99,102-109,138-140,143-144,175,198-204
+packages/core/src/merge.ts
+  s_d658e7251951c2::t_5fd39e9435eb2a 91-92,124-128,325-331,367-368,398-402,412-413,416-417,474,533-534,556,559-560,562-563,565,567-570,575,590-591,596-599,603,651,675-676,755-762
+packages/core/src/phases.ts
+  s_d658e7251951c2::t_b768aee38a7733 27
+packages/core/src/worker.ts
+  s_d658e7251951c2::t_26cf3e22ef4a62 24-27,30-35,51-60,69-70,112-113,115-118,131-154,166-167,169,173,232-239,247-248,257,260-261,264,274-275,288,353-354,379-383,400-406,418-419,423-427,437-440,444-448,499-500,511-514
+packages/core/test/inbox.test.ts
+  s_d658e7251951c2::t_8fa573590d7a74 48,98,133
+packages/core/test/linear-write.test.ts
+  s_d658e7251951c2::t_81324c33dbbe0b 83-140
+packages/core/test/merge.test.ts
+  s_d658e7251951c2::t_efeefde0519a7a 140,157,345,355,368,380,391,404,412,493,507
+packages/core/test/phases.test.ts
+  s_d658e7251951c2::t_89d730347e429e 21
+packages/core/test/worker.test.ts
+  s_d658e7251951c2::t_0b364319f87fe3 40,78-88,99,129,159-164,177,240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "f015d9b48869daf8b1507896848c1e13548d1149",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
