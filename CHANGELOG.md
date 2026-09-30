@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.19](https://github.com/The-Vibe-Company/armada/compare/v0.1.18...v0.1.19) (2026-09-30)
+
+
+### Features
+
+* **cli:** launch workers with no keys in their environment ([#45](https://github.com/The-Vibe-Company/armada/issues/45)) ([36e7266](https://github.com/The-Vibe-Company/armada/commit/36e72665c477f11a904b28217730f020d4b87484))
+
 ## [0.1.18](https://github.com/The-Vibe-Company/armada/compare/v0.1.17...v0.1.18) (2026-09-30)
 
 
