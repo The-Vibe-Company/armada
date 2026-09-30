@@ -1,0 +1,43 @@
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_839bff583c0c33 106-120
+  s_d658e7251951c2::t_510f0b450d09fd 522-528,530-531,542-543,546-549,558-610,624-646,653-655,658,668,676,719-732
+packages/core/src/requests.ts
+  s_d658e7251951c2::t_a962e44161c142 1-147
+packages/core/test/requests.test.ts
+  s_d658e7251951c2::t_9f57d894c3e539 1-159
+  s_d658e7251951c2::t_7654f479d94022 160-180
+packages/cli/src/inbox.ts
+  s_d658e7251951c2::t_064a614bfa84d2 66-67,78-81
+packages/core/src/fleet.ts
+  s_d658e7251951c2::t_517354bb22c038 122
+packages/core/src/inbox.ts
+  s_d658e7251951c2::t_0cbbb3f281dac0 20,23,96-97,145,248-249,255-257,271,276,288,304-307,319-324,346-350,353-355,359,366-387
+packages/core/src/index.ts
+  s_d658e7251951c2::t_ad26ef223ce788 17
+packages/core/src/read.ts
+  s_d658e7251951c2::t_8c236f29dc7ff9 1-3,12
+packages/core/src/status.ts
+  s_d658e7251951c2::t_9a643f9402a07a 8,36-37,54-55,98-102,157,178
+packages/core/src/worker.ts
+  s_d658e7251951c2::t_67d68a66e5929d 18,263,292-304,306-314,470-476
+packages/core/test/overview.test.ts
+  s_d658e7251951c2::t_c4486b2027fd56 18
+packages/core/test/status.test.ts
+  s_d658e7251951c2::t_ed56f1b4c8fe53 2,4,69-92
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5e989552a779097269f7225910f90ebacca96b36",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
