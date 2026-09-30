@@ -1,0 +1,29 @@
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_07a0e4547cafab 1-183
+bun.lock
+  s_d658e7251951c2::t_3f1133dbaa6a3e 27,59-86,93-94,97-104,110-111
+packages/core/package.json
+  s_d658e7251951c2::t_54a3ac91a41bd2 11
+packages/core/src/index.ts
+  s_d658e7251951c2::t_b0c62053b899ee 10
+packages/core/test/support.ts
+  s_d658e7251951c2::t_1b4ad02d3ad969 4-6,10,87-108
+packages/core/test/turso.test.ts
+  s_d658e7251951c2::t_09df1ad1dbf364 1-35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "e772f3a6e2aad8d6e34620b9b4ec21a5e7427b4e",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}

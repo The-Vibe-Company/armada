@@ -1,0 +1,40 @@
+packages/cli/src/worker.ts
+  s_d658e7251951c2::t_311177aca664a8 1-217
+  s_d658e7251951c2::t_5913fb2275e667 218
+AGENTS.md
+  s_d658e7251951c2::t_02a2adc8d8dc73 7,20,27-28,30
+README.md
+  s_d658e7251951c2::t_98c5671b775bd5 7,29,35-55,63-64,106-108,110
+packages/cli/src/cli.ts
+  s_d658e7251951c2::t_cf0c6d1540a165 17,26-35,41,43,48-49,67-68,71-78,80-88,91-92,96-101,130-131,133,137,161-170
+packages/cli/src/io.ts
+  s_d658e7251951c2::t_22c78624d7175b 1,21-26
+packages/cli/src/main.ts
+  s_d658e7251951c2::t_080c9063d68989 7-23,76-77
+packages/cli/test/worker.test.ts
+  s_d658e7251951c2::t_075db54d3bb389 1-119
+packages/core/test/linear-write.test.ts
+  s_d658e7251951c2::t_67041c15cf90a4 1-117
+packages/core/test/phases.test.ts
+  s_d658e7251951c2::t_90b35fc09cf800 1-88
+packages/core/test/support.ts
+  s_d658e7251951c2::t_136d1fb3a8c10e 9-10,12,110-282
+packages/core/test/worker.test.ts
+  s_d658e7251951c2::t_8dd5c55bd025cc 1-214
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "73b4708cb5dac1752430a458e6d6f6a51dcd2988",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}

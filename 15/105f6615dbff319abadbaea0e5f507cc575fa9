@@ -1,0 +1,23 @@
+bun.lock
+  s_d658e7251951c2::t_43d7cb881fab01 19-21
+packages/cli/package.json
+  s_d658e7251951c2::t_42916d9cfa7138 34,37-39
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_6d222ff4012c29 5,91-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "15105f6615dbff319abadbaea0e5f507cc575fa9",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
