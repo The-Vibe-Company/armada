@@ -6,12 +6,13 @@ import { LABEL_PHASES } from "./types.ts";
 
 export const LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 const MAX_DEPTH = 8;
-const MAX_PAGES = 20;
 // Linear rejects queries above a complexity budget (roughly nodes requested,
-// multiplied through nested connections). Caps stay small and every cap that
-// is hit becomes a warning instead of silently truncating.
+// multiplied through nested connections), so the tree query reads only a first
+// page of each connection per issue. Any connection Linear reports as longer is
+// then read to the end, one issue at a time, with `MORE_PAGE` nodes per request.
 const COMMENT_BATCH = 25;
 const MAX_COMMENTS = 100;
+const MORE_PAGE = 100;
 export const REQUEST_TIMEOUT_MS = 30_000;
 
 export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
@@ -32,6 +33,13 @@ export interface FetchProgramOptions {
 
 export class LinearError extends Error {
   override name = "LinearError";
+  /** True when Linear could not be reached or refused the request as a whole (network, key, HTTP status). */
+  constructor(
+    message: string,
+    readonly transport = false,
+  ) {
+    super(message);
+  }
 }
 
 // ------------------------------------------------------------------ parsers
@@ -139,21 +147,10 @@ export interface RawIssue {
   inverseRelations: Connection<{ type: string; issue: { identifier: string; state: { type: string } } }>;
 }
 
-/** A Linear connection; `pageInfo.hasNextPage` tells when a fixed read cap truncated it. */
+/** A Linear connection; `pageInfo.hasNextPage` tells that more nodes follow `endCursor`. */
 export interface Connection<T> {
   nodes: T[];
-  pageInfo?: { hasNextPage: boolean };
-}
-
-/** Human-readable notes for every connection of `raw` that was cut by a read cap. */
-export function truncationWarnings(raw: RawIssue): string[] {
-  const cut = (c: Connection<unknown>, what: string) =>
-    c.pageInfo?.hasNextPage ? [`${raw.identifier}: more ${what} than Armada reads; some are ignored`] : [];
-  return [
-    ...cut(raw.inverseRelations, "relations"),
-    ...cut(raw.labels, "labels"),
-    ...cut(raw.attachments, "attachments"),
-  ];
+  pageInfo?: { hasNextPage: boolean; endCursor?: string | null };
 }
 
 export interface RawComment {
@@ -216,6 +213,44 @@ export function normalizeComment(raw: RawComment, issueId: string): Comment {
 
 // ------------------------------------------------------------------ queries
 
+/** One connection of an issue to read to the end, see `readRest`. */
+export interface MoreOf {
+  /** Connection field on `Issue`, for example `inverseRelations`. */
+  field: string;
+  /** GraphQL selection of each node, the same as in the first page. */
+  nodes: string;
+  /** Operation name of the follow-up query. */
+  operation: string;
+  /** Plural noun used in the warning when a page cannot be read. */
+  what: string;
+  /** Nodes per follow-up request; lower it when `nodes` holds a nested connection. */
+  first?: number;
+}
+
+/** The connections `fetchProgram` reads to the end. */
+const MORE = {
+  inverseRelations: {
+    field: "inverseRelations",
+    nodes: "type issue { identifier state { type } }",
+    operation: "MoreRelations",
+    what: "relations",
+  },
+  labels: { field: "labels", nodes: "name parent { name }", operation: "MoreLabels", what: "labels" },
+  attachments: { field: "attachments", nodes: "title url", operation: "MoreAttachments", what: "attachments" },
+  comments: {
+    field: "comments",
+    nodes: "id createdAt body user { name }",
+    operation: "MoreComments",
+    what: "comments",
+  },
+} satisfies Record<string, MoreOf>;
+const MORE_QUERY = (m: MoreOf) => /* GraphQL */ `
+  query ${m.operation}($id: String!, $after: String) {
+    issue(id: $id) {
+      ${m.field}(first: ${m.first ?? MORE_PAGE}, after: $after) { pageInfo { hasNextPage endCursor } nodes { ${m.nodes} } }
+    }
+  }`;
+
 const FIELDS = (delegate: boolean) => /* GraphQL */ `
   fragment F on Issue {
     id identifier title url description createdAt updatedAt startedAt completedAt canceledAt
@@ -223,9 +258,9 @@ const FIELDS = (delegate: boolean) => /* GraphQL */ `
     assignee { name }
     ${delegate ? "delegate { name }" : ""}
     parent { identifier }
-    labels(first: 25) { pageInfo { hasNextPage } nodes { name parent { name } } }
-    attachments(first: 25) { pageInfo { hasNextPage } nodes { title url } }
-    inverseRelations(first: 50) { pageInfo { hasNextPage } nodes { type issue { identifier state { type } } } }
+    labels(first: 25) { pageInfo { hasNextPage endCursor } nodes { ${MORE.labels.nodes} } }
+    attachments(first: 25) { pageInfo { hasNextPage endCursor } nodes { ${MORE.attachments.nodes} } }
+    inverseRelations(first: 50) { pageInfo { hasNextPage endCursor } nodes { ${MORE.inverseRelations.nodes} } }
   }
 `;
 const ROOT_QUERY = (d: boolean) => `${FIELDS(d)} query Root($id: String!) { issue(id: $id) { ...F } }`;
@@ -239,7 +274,7 @@ const CHILDREN_QUERY = (d: boolean) => `${FIELDS(d)}
 const COMMENTS_QUERY = /* GraphQL */ `
   query Comments($ids: [ID!]) {
     issues(first: 50, filter: { id: { in: $ids } }) {
-      nodes { identifier comments(first: ${MAX_COMMENTS}) { pageInfo { hasNextPage } nodes { id createdAt body user { name } } } }
+      nodes { identifier comments(first: ${MAX_COMMENTS}) { pageInfo { hasNextPage endCursor } nodes { ${MORE.comments.nodes} } } }
     }
   }`;
 
@@ -259,13 +294,13 @@ export async function gql<T>(opts: LinearRequestOptions, query: string, variable
     body: JSON.stringify({ query, variables }),
     signal: AbortSignal.timeout(timeoutMs),
   }).catch((err: unknown) => {
-    throw new LinearError(`Linear API unreachable: ${networkReason(err, timeoutMs)}`);
+    throw new LinearError(`Linear API unreachable: ${networkReason(err, timeoutMs)}`, true);
   });
-  if (res.status === 401) throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY");
+  if (res.status === 401) throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY", true);
   // GraphQL validation errors come back with HTTP 400 and a JSON body worth reporting.
   const json = (await res.json().catch(() => ({}))) as { data?: T; errors?: { message: string }[] };
   if (json.errors?.length) throw new LinearError(`Linear API: ${json.errors.map((e) => e.message).join("; ")}`);
-  if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`);
+  if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`, true);
   if (!json.data) throw new LinearError("Linear API: empty response");
   return json.data;
 }
@@ -302,25 +337,25 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
   for (let depth = 0; depth < MAX_DEPTH && parents.length; depth++) {
     const next: string[] = [];
     let after: string | null = null;
-    for (let page = 0; ; page++) {
-      if (page === MAX_PAGES) {
-        warnings.push(`more than ${MAX_PAGES * 50} issues at depth ${depth + 1}; the rest are ignored`);
-        break;
-      }
-      const data: { issues: { pageInfo: { hasNextPage: boolean; endCursor: string }; nodes: RawIssue[] } } = await gql(
-        opts,
-        CHILDREN_QUERY(delegate),
-        { parents, after },
-      );
+    for (;;) {
+      const data: { issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: RawIssue[] } } =
+        await gql(opts, CHILDREN_QUERY(delegate), { parents, after });
       all.push(...data.issues.nodes);
       next.push(...data.issues.nodes.map((n) => n.id));
-      if (!data.issues.pageInfo.hasNextPage) break;
-      after = data.issues.pageInfo.endCursor;
+      const { hasNextPage, endCursor } = data.issues.pageInfo;
+      if (!hasNextPage) break;
+      if (!endCursor || endCursor === after) {
+        warnings.push(`issues at depth ${depth + 1}: Linear did not advance to the next page; the rest are ignored`);
+        break;
+      }
+      after = endCursor;
     }
     parents = next;
   }
   if (parents.length) warnings.push(`the program is deeper than ${MAX_DEPTH} levels; deeper issues are ignored`);
-  for (const r of all) warnings.push(...truncationWarnings(r));
+  for (const r of all)
+    for (const field of ["inverseRelations", "labels", "attachments"] as const)
+      await readRest(opts, r.identifier, MORE[field], r[field] as Connection<unknown>, warnings);
 
   const issues = all.map((r) => normalizeIssue(r, opts.labels));
   // Comments matter only where an agent may be working: claims and status lines.
@@ -338,9 +373,8 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
       { ids: batch },
     );
     for (const n of data.issues.nodes) {
+      await readRest(opts, n.identifier, MORE.comments, n.comments, warnings);
       for (const c of n.comments.nodes) comments.push(normalizeComment(c, n.identifier));
-      if (n.comments.pageInfo?.hasNextPage)
-        warnings.push(`${n.identifier}: more than ${MAX_COMMENTS} comments; its phase and claim may be out of date`);
     }
   }
 
@@ -351,4 +385,40 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
     comments: comments.sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
     warnings,
   };
+}
+
+/**
+ * Appends the remaining pages of one connection of issue `identifier` to `conn`,
+ * until Linear reports no next page; `conn.pageInfo` then describes the last
+ * page read. When Linear answers a page with an error, reading stops there with
+ * a warning and what was read is kept. When Linear cannot be reached at all, the
+ * error is thrown, as for every other request of the read.
+ */
+export async function readRest<T>(
+  opts: LinearRequestOptions,
+  identifier: string,
+  more: MoreOf,
+  conn: Connection<T>,
+  warnings: string[],
+): Promise<void> {
+  while (conn.pageInfo?.hasNextPage) {
+    const after = conn.pageInfo.endCursor;
+    try {
+      if (!after) throw new LinearError("Linear gave no cursor for the next page");
+      const data = await gql<{ issue: Record<string, Connection<T> | undefined> | null }>(opts, MORE_QUERY(more), {
+        id: identifier,
+        after,
+      });
+      const page = data.issue?.[more.field];
+      if (!page) throw new LinearError(`Linear: issue ${identifier} not found`);
+      conn.nodes.push(...page.nodes);
+      conn.pageInfo = page.pageInfo;
+      if (page.pageInfo?.hasNextPage && page.pageInfo.endCursor === after)
+        throw new LinearError("Linear did not advance to a next page");
+    } catch (err) {
+      if (!(err instanceof LinearError) || err.transport) throw err;
+      warnings.push(`${identifier}: could not read all its ${more.what} (${err.message}); some may be missing`);
+      return;
+    }
+  }
 }

@@ -74,16 +74,19 @@ Pull requests waiting (4)
 `);
   });
 
-  test("reads cut short by a cap are listed as warnings", async () => {
+  test("reads that failed part way are listed as warnings", async () => {
     const { io, out } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
     io.fetch = recordedFetch({
       linear: (r) => {
         const kid = r.Children[2]?.data.issues.nodes.find((n) => n.identifier === "DEMO-13");
-        if (kid) kid.inverseRelations.pageInfo.hasNextPage = true;
+        if (kid) Object.assign(kid.inverseRelations.pageInfo, { hasNextPage: true, endCursor: "r1" });
+        (r as Record<string, unknown[]>).MoreRelations = [{ errors: [{ message: "Query too complex" }] }];
       },
     }).fetch;
     expect(await run(["status"], io)).toBe(0);
-    expect(out()).toEndWith("\nWarnings (1)\n  ! DEMO-13: more relations than Armada reads; some are ignored\n");
+    expect(out()).toEndWith(
+      "\nWarnings (1)\n  ! DEMO-13: could not read all its relations (Linear API: Query too complex); some may be missing\n",
+    );
   });
 
   test("a missing armada.toml or a missing key is a configuration error naming what is missing", async () => {
