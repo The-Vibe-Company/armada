@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from "node:child_process";
+import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { isatty } from "node:tty";
 import { run } from "./cli.ts";
 import type { Exec } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
@@ -17,8 +19,8 @@ function gitBranch(): string | null {
 
 async function readStdin(): Promise<string> {
   let text = "";
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) text += chunk;
+  const input = createReadStream("", { fd: 0, autoClose: false, encoding: "utf8" });
+  for await (const chunk of input) text += chunk;
   return text;
 }
 
@@ -88,7 +90,7 @@ const code = await run(process.argv.slice(2), {
   stdout: (t) => process.stdout.write(t),
   stderr: (t) => process.stderr.write(t),
   ghToken,
-  interactive: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+  interactive: isatty(0) && isatty(2),
   prompt,
   gitBranch,
   readStdin,
