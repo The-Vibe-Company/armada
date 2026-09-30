@@ -1,0 +1,27 @@
+AGENTS.md
+  s_d658e7251951c2::t_16d7f78e52da3e 7
+README.md
+  s_d658e7251951c2::t_d85a4555232fa0 69,74-75,200,212-219
+armada.toml
+  s_d658e7251951c2::t_058ac565076650 30,41-58
+skills/armada-coordinator/SKILL.md
+  s_d658e7251951c2::t_79780f03e0f01d 19
+skills/armada-runtime-conductor/SKILL.md
+  s_d658e7251951c2::t_f8eda928357aeb 15,48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "bda07fe82bcfefd1d9421c6177b9480498184790",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
