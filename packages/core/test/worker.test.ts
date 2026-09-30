@@ -1,0 +1,217 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { parseConfig } from "../src/config.ts";
+import { addInboxItem, type Db, getRuntimeHandle, lastEventTimes, listProjects } from "../src/turso.ts";
+import type { CiState, PullRequest } from "../src/types.ts";
+import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
+import { closeTempTurso, DEMO_TOML, FakeLinear, NOW, tempTurso } from "./support.ts";
+
+afterEach(closeTempTurso);
+
+const HEAD = "0123456789abcdef0123456789abcdef01234567";
+const config = parseConfig(`${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]\n`);
+
+function setup(o: { turso?: Db | null; pull?: PullRequest | null } = {}) {
+  const linear = new FakeLinear();
+  const ctx: WorkerContext = {
+    config,
+    linear,
+    turso: async () => (o.turso ? { db: o.turso, warning: null } : { db: null, warning: "Turso is not configured" }),
+    readPull: async () => (o.pull === undefined ? null : o.pull),
+    now: () => NOW,
+  };
+  return { linear, ctx };
+}
+
+const labelsOf = (linear: FakeLinear, id: string) => linear.get(id).labels.map((l) => l.name);
+const refusal = (p: Promise<unknown>) =>
+  p.then(
+    () => {
+      throw new Error("expected a refusal");
+    },
+    (err: unknown) => {
+      if (!(err instanceof Refusal)) throw err;
+      return err.message;
+    },
+  );
+
+describe("claim", () => {
+  test("claims the ticket in Linear and records the handle and the event in Turso", async () => {
+    const { db } = await tempTurso();
+    const { linear, ctx } = setup({ turso: db });
+    linear.add("DEMO-7");
+    const out = await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1/s-1" });
+
+    const t = linear.get("DEMO-7");
+    expect([t.statusType, t.assigneeId, labelsOf(linear, "DEMO-7")]).toEqual([
+      "started",
+      "user-owner",
+      ["planning", "Conductor"],
+    ]);
+    expect(t.comments[0]?.claim).toMatchObject({
+      runtime: "Conductor",
+      session: "ws-1/s-1",
+      branch: "feature/demo-7-do-the-thing",
+      startedAt: NOW.toISOString(),
+    });
+    expect(t.comments[0]?.status).toEqual({ phase: "planning", summary: "claimed by Conductor (ws-1/s-1)" });
+    expect(out.warnings).toEqual([]);
+    expect(await getRuntimeHandle(db, "widgets", "DEMO-7")).toMatchObject({ runtime: "Conductor", handle: "ws-1/s-1" });
+    expect(await lastEventTimes(db, "widgets")).toEqual({ "DEMO-7": NOW.toISOString() });
+    expect((await listProjects(db)).map((p) => p.slug)).toEqual(["widgets"]);
+  });
+
+  test("a ticket another worker holds is refused and left untouched", async () => {
+    const { linear, ctx } = setup();
+    linear.add("DEMO-7", { statusType: "started" });
+    linear.post(
+      "DEMO-7",
+      "Agent claim — runtime: Codex · session: ws-9 · branch: b · started: x",
+      "2026-03-04T09:00:00Z",
+    );
+    expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toContain(
+      "DEMO-7 is already claimed by Codex · ws-9 since 2026-03-04T09:00:00Z",
+    );
+    expect(linear.writes).toEqual([]);
+  });
+
+  test("when two claims race, the older one wins and the loser withdraws its comment", async () => {
+    const { linear, ctx } = setup();
+    linear.add("DEMO-7");
+    linear.afterComment = () =>
+      linear.post("DEMO-7", "Agent claim — runtime: Codex · session: ws-9", "2026-03-04T09:59:59Z");
+    expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" }))).toBe(
+      "DEMO-7 was claimed first by Codex · ws-9; your claim was withdrawn",
+    );
+    expect(linear.get("DEMO-7").comments.map((c) => c.claim?.session)).toEqual(["ws-9"]);
+    expect(labelsOf(linear, "DEMO-7")).toEqual([]);
+  });
+
+  test("claiming again from the same session repairs labels without a second claim", async () => {
+    const { linear, ctx } = setup();
+    linear.add("DEMO-7");
+    // An underscore survives the round trip through the comment.
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws_1/s_1" });
+    linear.get("DEMO-7").labels = [];
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws_1/s_1" });
+    expect(labelsOf(linear, "DEMO-7")).toEqual(["planning", "Conductor"]);
+    expect(linear.get("DEMO-7").comments).toHaveLength(1);
+  });
+
+  test("an unknown runtime names the labels that exist", async () => {
+    const { linear, ctx } = setup();
+    linear.add("DEMO-7");
+    expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "pi", handle: "x" }))).toBe(
+      'no "pi" label in the "Agent runtime" label group (available: Conductor, Claude Code)',
+    );
+  });
+});
+
+describe("report", () => {
+  async function claimed(o: { turso?: Db | null; pull?: PullRequest | null } = {}) {
+    const s = setup(o);
+    s.linear.add("DEMO-7");
+    await claimTicket(s.ctx, { ticket: "DEMO-7", runtime: "claude-code", handle: "ws-1" });
+    return s;
+  }
+
+  test("a valid move swaps the phase label, posts the status line and lists the worker's inbox", async () => {
+    const { db } = await tempTurso();
+    const { linear, ctx } = await claimed({ turso: db });
+    await addInboxItem(db, {
+      project: "widgets",
+      ticket: "DEMO-7",
+      kind: "question",
+      recipient: "worker",
+      author: "coordinator",
+      body: "Use the v2 endpoint.",
+      at: NOW,
+    });
+    const out = await reportPhase(ctx, {
+      ticket: "DEMO-7",
+      phase: "implementing",
+      message: "plan approved\n\n1. build\n2. test",
+    });
+    expect(labelsOf(linear, "DEMO-7")).toEqual(["Claude Code", "implementing"]);
+    expect(linear.writes.at(-1)).toBe("comment DEMO-7 Agent status: implementing — plan approved");
+    expect(out.inbox?.map((i) => i.body)).toEqual(["Use the v2 endpoint."]);
+  });
+
+  test("an invalid move is refused with the reason and writes nothing", async () => {
+    const { linear, ctx } = await claimed();
+    const before = linear.writes.length;
+    expect(await refusal(reportPhase(ctx, { ticket: "DEMO-7", phase: "shipping", message: "x" }))).toContain(
+      "cannot go from planning to shipping",
+    );
+    expect(linear.writes.length).toBe(before);
+  });
+
+  test("ready-to-merge is checked against the pull request head and the required checks", async () => {
+    const pull = (state: CiState): PullRequest => ({
+      url: "https://github.com/acme/widgets/pull/9",
+      number: 9,
+      repo: "acme/widgets",
+      title: "feat: widgets",
+      state: "open",
+      headSha: HEAD,
+      checks: [{ name: "test", state }],
+    });
+    const shipping = (linear: FakeLinear) => {
+      const t = linear.get("DEMO-7");
+      t.labels = t.labels.map((l) => (l.name === "planning" ? { ...l, id: "phase-shipping", name: "shipping" } : l));
+    };
+
+    const red = await claimed({ pull: pull("failure") });
+    shipping(red.linear);
+    const before = red.linear.writes.length;
+    expect(await refusal(reportPhase(red.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD }))).toBe(
+      'DEMO-7: hand-back refused:\n  - required check "test" is failure',
+    );
+    expect(red.linear.writes.length).toBe(before);
+
+    const { db } = await tempTurso();
+    const green = await claimed({ turso: db, pull: pull("success") });
+    shipping(green.linear);
+    await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD.toUpperCase() });
+    expect(green.linear.writes.slice(-3)).toEqual([
+      "link DEMO-7 https://github.com/acme/widgets/pull/9",
+      'update DEMO-7 {"addLabelIds":["phase-ready-to-merge"],"removeLabelIds":["phase-shipping"]}',
+      `comment DEMO-7 Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
+    ]);
+    // Handing back again refreshes the coordinator's item instead of adding one.
+    await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD });
+    const handBack = await db.execute("SELECT kind, recipient FROM inbox_items WHERE ticket = 'DEMO-7'");
+    expect(handBack.rows.map((r) => [r.kind, r.recipient])).toEqual([["hand-back", "coordinator"]]);
+  });
+
+  test("losing Turso still writes Linear and warns", async () => {
+    const { linear, ctx } = await claimed();
+    const broken = { execute: async () => Promise.reject(new Error("connection reset")) } as unknown as Db;
+    const out = await reportPhase(
+      { ...ctx, turso: async () => ({ db: broken, warning: null }) },
+      { ticket: "DEMO-7", phase: "planning", message: "reading" },
+    );
+    expect(linear.writes.at(-1)).toBe("comment DEMO-7 Agent status: planning — reading");
+    expect(out.warnings).toEqual(["Turso: could not record the report (connection reset); Linear is up to date"]);
+    expect(out.inbox).toBeNull();
+  });
+});
+
+describe("release", () => {
+  test("removes the agent labels, moves the ticket back and closes the handle", async () => {
+    const { db } = await tempTurso();
+    const { linear, ctx } = setup({ turso: db });
+    linear.add("DEMO-7");
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" });
+    await releaseTicket(ctx, { ticket: "DEMO-7", reason: "wrong ticket" });
+    const t = linear.get("DEMO-7");
+    expect([t.statusType, t.labels, t.comments[0]?.status]).toEqual([
+      "unstarted",
+      [],
+      { phase: "released", summary: "wrong ticket" },
+    ]);
+    expect((await getRuntimeHandle(db, "widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    // Released: a new worker may claim it.
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "claude-code", handle: "ws-2" });
+    expect(labelsOf(linear, "DEMO-7")).toEqual(["planning", "Claude Code"]);
+  });
+});

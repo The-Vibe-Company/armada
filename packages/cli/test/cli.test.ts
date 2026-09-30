@@ -38,19 +38,20 @@ describe("armada status", () => {
 Read 2026-03-04 10:00 UTC · Linear DEMO-1 · GitHub acme/widgets
 
 In flight (3)
-  DEMO-18  ready-to-merge          Codex · Grace Worker · updated 15 min ago
+  DEMO-18  ready-to-merge          Codex · Grace Worker · reported 20 min ago
            Expire idle sessions [Spec 1]
            “PR #9, head 9f1c2d3e4b5a69788796a5b4c3d2e1f00a1b2c3d, CI green”
            PR #9 · CI success · mergeable
-  DEMO-16  shipping (status-line)  unassigned · updated 15 min ago
+  DEMO-16  shipping (status-line)  unassigned · reported 2 h ago
            Reset a forgotten password [Spec 1]
            “PR open, fixing CI”
            PR #8 · CI failure · mergeable
-           ! ci-failing, no-assignee, no-phase-label
-  DEMO-11  implementing            Claude Code · Ada Worker · updated 10 min ago
+           ! silent, ci-failing, no-assignee, no-phase-label
+  DEMO-11  implementing            Claude Code · Ada Worker · reported 50 min ago
            Send a sign-in link by email [Spec 1]
            “plan approved, writing the email sender”
            PR #7 · CI pending · mergeability unknown
+           ! silent
 
 Ready to start (1)
   DEMO-13  Show a sign-in page  (Spec 1 · unlocks 1 · critical path)

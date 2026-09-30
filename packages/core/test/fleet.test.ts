@@ -101,14 +101,26 @@ describe("lanes", () => {
     expect(lane(restarted).phase).toBe("implementing");
   });
 
-  test("a working agent with no update past the threshold is silent; one waiting on a human is not", () => {
-    const old = "2026-03-04T09:30:00Z";
-    const working = issue("P-2", { statusType: "started", agentPhase: "implementing", updatedAt: old });
-    const waiting = issue("P-2", { statusType: "started", agentPhase: "awaiting-approval", updatedAt: old });
-    const fresh = issue("P-2", { statusType: "started", agentPhase: "implementing", updatedAt: old });
-    expect(lane(working).flags).toContain("silent");
-    expect(lane(waiting).flags).not.toContain("silent");
-    expect(lane(fresh, [comment("P-2", "2026-03-04T09:50:00Z", {})]).flags).not.toContain("silent");
+  test("silence counts from the last report, never while the worker waits on a human", () => {
+    const at = (t: string) => `2026-03-04T${t}:00Z`;
+    const report = (t: string) => comment("P-2", at(t), { status: { phase: "implementing", summary: "" } });
+    // Edits and chatter after the last report are not reports.
+    const working = issue("P-2", { statusType: "started", agentPhase: "implementing", updatedAt: at("09:58") });
+    const chatter = comment("P-2", at("09:55"), {});
+    expect(lane(working, [report("09:30"), chatter]).flags).toContain("silent");
+    expect(lane(working, [report("09:50")]).flags).not.toContain("silent");
+    const withEvent = buildLane(program(working), [report("09:30")], working, {
+      ...opts,
+      lastEvents: { "P-2": at("09:52") },
+    });
+    expect(withEvent.lastReport).toBe(at("09:52"));
+    expect(withEvent.flags).not.toContain("silent");
+    const waiting = issue("P-2", { statusType: "started", agentPhase: "awaiting-approval", updatedAt: at("09:00") });
+    expect(lane(waiting, [report("09:00")]).flags).not.toContain("silent");
+    // A lane that never reported falls back to its last sign of life.
+    expect(lane(working).flags).not.toContain("silent");
+    const stale = issue("P-2", { statusType: "started", agentPhase: "implementing", updatedAt: at("09:30") });
+    expect(lane(stale).flags).toContain("silent");
   });
 
   test("two claims since the last release flag a double claim; a release clears older claims", () => {

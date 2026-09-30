@@ -18,4 +18,7 @@ runtime_group = "Agent runtime"
 repository = "The-Vibe-Company/armada"
 
 [policy]
-silent_after_minutes = 15
+silence_minutes = 15    # a worker with no report for longer than this shows as silent
+
+[gates]
+required_checks = ["Lint, typecheck and test"]

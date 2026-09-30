@@ -14,14 +14,24 @@ describe("loadStatus", () => {
     ).toEqual([
       ["DEMO-18", "ready-to-merge", "label", "Codex", 9, "success", []],
       // No phase label and no assignee: phase comes from the status line; the PR is found by branch name.
-      ["DEMO-16", "shipping", "status-line", null, 8, "failure", ["ci-failing", "no-assignee", "no-phase-label"]],
-      ["DEMO-11", "implementing", "label", "Claude Code", 7, "pending", []],
+      [
+        "DEMO-16",
+        "shipping",
+        "status-line",
+        null,
+        8,
+        "failure",
+        ["silent", "ci-failing", "no-assignee", "no-phase-label"],
+      ],
+      // Last report 50 minutes ago: the pull request moving since then is not a report.
+      ["DEMO-11", "implementing", "label", "Claude Code", 7, "pending", ["silent"]],
     ]);
     expect(r.inFlight.find((t) => t.id === "DEMO-11")).toMatchObject({
       spec: "Spec 1",
       agent: "Ada Worker",
       since: "2026-03-04T09:10:00.000Z",
       lastUpdate: "2026-03-04T09:50:00.000Z",
+      lastReport: "2026-03-04T09:10:00.000Z",
       statusLine: { summary: "plan approved, writing the email sender" },
     });
     expect(r.frontier.map((t) => [t.id, t.readyForAgent, t.unlocks])).toEqual([

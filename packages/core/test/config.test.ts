@@ -23,6 +23,7 @@ describe("armada.toml", () => {
         labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
       },
       github: { repository: "acme/widgets" },
+      gates: { requiredChecks: [] },
       policy: { silentAfterMinutes: 15 },
     });
   });
@@ -39,9 +40,10 @@ describe("armada.toml", () => {
   test("invalid values name the key and the expected shape", () => {
     const text = DEMO_TOML.replace('slug = "widgets"', 'slug = "My Widgets"')
       .replace('repository = "acme/widgets"', 'repository = "widgets"')
-      .concat("\n[policy]\nsilent_after_minutes = -1\n");
+      .concat("\n[policy]\nsilence_minutes = -1\n[gates]\nrequired_checks = 1\n");
     expect(problemsOf(text)).toEqual([
-      '"policy.silent_after_minutes" must be a positive number',
+      '"policy.silence_minutes" must be a positive number',
+      '"gates.required_checks" must be a list of check names',
       '"project.slug" is "My Widgets", expected lowercase letters, digits and dashes',
       '"github.repository" is "widgets", expected owner/name',
     ]);

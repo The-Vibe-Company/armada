@@ -33,6 +33,8 @@ export interface InFlightTicket extends TicketRef {
   agent: string | null;
   since: string;
   lastUpdate: string;
+  /** Latest report by the worker (Turso event, status comment or claim); null if it never reported. */
+  lastReport: string | null;
   silent: boolean;
   statusLine: { summary: string; at: string; url: string } | null;
   pr: PrRef | null;
@@ -77,15 +79,28 @@ export interface BuildStatusInput {
   program: ProgramData;
   forge: ForgeData | null;
   forgeError?: string | null;
+  /** Newest Turso event per ticket id; absent when Turso was not read. */
+  lastEvents?: Record<string, string>;
+  /** Problems met on optional sources (Turso), added to the report warnings. */
+  extraWarnings?: string[];
   now: Date;
 }
 
-export function buildStatus({ config, program, forge, forgeError = null, now }: BuildStatusInput): StatusReport {
+export function buildStatus({
+  config,
+  program,
+  forge,
+  forgeError = null,
+  lastEvents,
+  extraWarnings = [],
+  now,
+}: BuildStatusInput): StatusReport {
   const issues = attachPullRequests(program, forge);
   const m = buildModel(issues, program.rootId);
   const lanes = inFlight(m, program.comments, {
     now: now.getTime(),
     silentAfterMinutes: config.policy.silentAfterMinutes,
+    ...(lastEvents ? { lastEvents } : {}),
   });
   const phaseOf = new Map(lanes.map((l) => [l.issue.id, l.phase]));
   const prRef = (p: {
@@ -125,6 +140,7 @@ export function buildStatus({ config, program, forge, forgeError = null, now }: 
       agent: l.agent,
       since: l.since,
       lastUpdate: l.lastUpdate,
+      lastReport: l.lastReport,
       silent: l.flags.includes("silent"),
       statusLine: l.statusLine ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url } : null,
       pr: l.pr ? prRef(l.pr) : null,
@@ -149,7 +165,7 @@ export function buildStatus({ config, program, forge, forgeError = null, now }: 
           ticket: ticket ? { id: ticket.id, phase: phaseOf.get(ticket.id) ?? ticket.agentPhase } : null,
         }))
       : null,
-    warnings: [...program.warnings, ...(forge?.warnings ?? [])],
+    warnings: [...program.warnings, ...(forge?.warnings ?? []), ...extraWarnings],
   };
 }
 
@@ -157,6 +173,8 @@ export interface LoadStatusOptions {
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
+  /** Newest Turso event time per ticket, read by the caller when Turso is configured. */
+  lastEvents?: () => Promise<Record<string, string>>;
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -182,6 +200,22 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         (err: unknown) => ({ forge: null, error: err instanceof Error ? err.message : String(err) }),
       )
     : Promise.resolve({ forge: null, error: "no GitHub token (set GITHUB_TOKEN or run gh auth login)" });
-  const [program, { forge, error }] = await Promise.all([programP, forgeP]);
-  return buildStatus({ config, program, forge, forgeError: error, now: now() });
+  const eventsP: Promise<{ events?: Record<string, string>; warning?: string }> = opts.lastEvents
+    ? opts.lastEvents().then(
+        (events) => ({ events }),
+        (err: unknown) => ({
+          warning: `Turso could not be read (${err instanceof Error ? err.message : String(err)}); silence is measured from Linear only`,
+        }),
+      )
+    : Promise.resolve({});
+  const [program, { forge, error }, events] = await Promise.all([programP, forgeP, eventsP]);
+  return buildStatus({
+    config,
+    program,
+    forge,
+    forgeError: error,
+    ...(events.events ? { lastEvents: events.events } : {}),
+    extraWarnings: events.warning ? [events.warning] : [],
+    now: now(),
+  });
 }

@@ -51,11 +51,29 @@ export function parseStatusLine(body: string): Comment["status"] {
   return PHASES.includes(phase) ? { phase, summary: (m[2] ?? "").trim() } : null;
 }
 
-/** First line "Agent claim — runtime: X · session: Y · branch: Z · started: D". */
+/** Removes markdown backslash escapes (Linear stores `a_b` as `a\_b`). */
+const unescapeMarkdown = (line: string) => line.replace(/\\([!-/:-@[-`{-~])/g, "$1");
+/** Emphasis wrapped around a whole value (`x`, **x**, _x_), never marks that belong to it. */
+const trimMarks = (v: string) => {
+  const t = v.trim();
+  return t.match(/^([*_`]+)(.+)\1$/)?.[2]?.trim() ?? t;
+};
+
+/**
+ * The line "Agent claim — runtime: X · session: Y · branch: Z · started: D".
+ * It may follow the comment's `Agent status:` line. Values keep their
+ * underscores and asterisks; only emphasis around them is removed.
+ */
 export function parseClaim(body: string, at: string, author: string | null): AgentClaim | null {
-  const line = firstLine(body);
-  if (!/^\s*Agent claim\b/i.test(line)) return null;
-  const field = (k: string) => line.match(new RegExp(`(?:${k})\\s*:\\s*([^·|]+)`, "i"))?.[1]?.trim() || null;
+  const line = body
+    .split("\n")
+    .map(unescapeMarkdown)
+    .find((l) => /^[\s*_`>]*Agent claim\b/i.test(l));
+  if (!line) return null;
+  const field = (k: string) => {
+    const v = line.match(new RegExp(`(?:${k})[*_\`]*\\s*:\\s*([^·|]+)`, "i"))?.[1];
+    return (v && trimMarks(v)) || null;
+  };
   return {
     runtime: field("runtime"),
     session: field("session"),
@@ -86,10 +104,18 @@ export function parsePullRequestUrl(url: string, title = ""): Issue["prs"][numbe
 
 /** Agent phase and runtime from labels, read only inside the configured groups. */
 export function agentLabels(labels: { name: string; group: string | null }[], groups: LabelGroups) {
-  const phase = labels.find((l) => l.group === groups.phaseGroup && LABEL_PHASES.includes(l.name as LabelPhase));
+  let agentPhase: LabelPhase | null = null;
+  for (const l of labels) if (l.group === groups.phaseGroup) agentPhase ??= phaseNamed(l.name);
   const runtime = labels.find((l) => l.group === groups.runtimeGroup);
-  return { agentPhase: (phase?.name as LabelPhase | undefined) ?? null, agentRuntime: runtime?.name ?? null };
+  return { agentPhase, agentRuntime: runtime?.name ?? null };
 }
+
+/** Compares names ignoring case, spaces, dashes and punctuation ("Ready to merge" = "ready-to-merge"). */
+export const sameName = (a: string, b: string) =>
+  a.toLowerCase().replace(/[^a-z0-9]/g, "") === b.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+/** The protocol phase a label name stands for, if any. */
+export const phaseNamed = (name: string): LabelPhase | null => LABEL_PHASES.find((p) => sameName(p, name)) ?? null;
 
 // ------------------------------------------------------------------ raw shapes
 
@@ -217,7 +243,14 @@ const COMMENTS_QUERY = /* GraphQL */ `
     }
   }`;
 
-async function gql<T>(opts: FetchProgramOptions, query: string, variables: object): Promise<T> {
+export interface LinearRequestOptions {
+  apiKey: string;
+  fetch?: Fetch;
+  timeoutMs?: number;
+}
+
+/** One GraphQL request to Linear; every failure becomes a LinearError that never quotes the key. */
+export async function gql<T>(opts: LinearRequestOptions, query: string, variables: object): Promise<T> {
   const doFetch = opts.fetch ?? fetch;
   const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
   const res = await doFetch(LINEAR_ENDPOINT, {
