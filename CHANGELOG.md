@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.16](https://github.com/The-Vibe-Company/armada/compare/v0.1.15...v0.1.16) (2026-09-30)
+
+
+### Features
+
+* **dashboard:** keep the organization's keys in Armada ([#39](https://github.com/The-Vibe-Company/armada/issues/39)) ([6095280](https://github.com/The-Vibe-Company/armada/commit/6095280eb326b22eea515724da0ada7ab9c9903c))
+
 ## [0.1.15](https://github.com/The-Vibe-Company/armada/compare/v0.1.14...v0.1.15) (2026-09-30)
 
 
