@@ -1,0 +1,39 @@
+packages/cli/src/worker.ts
+  s_d658e7251951c2::t_945fb395c1c1dd 31,34,44-48,100,108-109,114-117,129-133,175
+packages/core/src/linear-write.ts
+  s_d658e7251951c2::t_552b8e796759ba 52-53,91,157
+packages/core/src/linear.ts
+  s_d658e7251951c2::t_4a07714c283f67 54-58,61-62,67-68,70-73,104-105,107,110-116
+packages/core/src/phases.ts
+  s_d658e7251951c2::t_b986aa949af53f 63-64,71-75
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_6fb7dbe300a22d 9-14,92-98,108,114,266-267,269,326-338
+packages/core/src/worker.ts
+  s_d658e7251951c2::t_53470caceba1f0 5,13,28-32,52-56,60,103,153,156-162,226,275,310-314,318,346,367
+packages/core/test/linear-write.test.ts
+  s_d658e7251951c2::t_cf1c45811e19cd 25,49
+packages/core/test/linear.test.ts
+  s_d658e7251951c2::t_3f4870a8ee0136 28-31
+packages/core/test/phases.test.ts
+  s_d658e7251951c2::t_3d1a558e07efb8 63-66,84-90
+packages/core/test/support.ts
+  s_d658e7251951c2::t_ec0b4d6b2dae97 157,168-171
+packages/core/test/worker.test.ts
+  s_d658e7251951c2::t_9d4c326cb3db2c 18,92-93,95,180-181,190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "39a1f798a900feb8094376072fb21c24e131770a",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
