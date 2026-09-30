@@ -1,0 +1,33 @@
+README.md
+  s_d658e7251951c2::t_8b98e845a9e23f 109
+packages/cli/src/inbox.ts
+  s_d658e7251951c2::t_d5ff560c84b50f 102
+packages/core/src/inbox.ts
+  s_d658e7251951c2::t_9cdd258afd9d9c 14,19,103-104,121-123,127,131,146-151,159,188-194,202,275-280,302,304
+packages/core/src/linear.ts
+  s_d658e7251951c2::t_034dd821066539 53-59,66-68
+packages/core/src/merge.ts
+  s_d658e7251951c2::t_d99307ef7c9319 694-695
+packages/core/src/turso.ts
+  s_d658e7251951c2::t_79ebb0fc7c4250 508-518
+packages/core/test/inbox.test.ts
+  s_d658e7251951c2::t_6ab9081a8d630b 11,85-90,121-123,127,131-134,210-221,227,230
+packages/core/test/linear.test.ts
+  s_d658e7251951c2::t_61fe66d7cd887b 16-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ddd798dc5e11e0c5b91a4bb05809dd4a1faa35aa",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
