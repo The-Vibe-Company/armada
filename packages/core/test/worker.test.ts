@@ -137,10 +137,21 @@ describe("claim", () => {
       expect(await getRuntimeHandle(db, "widgets", "DEMO-7")).toMatchObject({ handle: "ws-1", profile: "codex" });
       expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toMatchObject({ name: "codex", routed: "opus", reason });
 
-      // A new claim without a profile forgets the old one.
+      // A resume keeps the claim's profile, whatever it asks for.
+      const resumed = await claimTicket(ctx, {
+        ticket: "DEMO-7",
+        runtime: "conductor",
+        handle: "ws-1",
+        profile: "debug",
+      });
+      expect(resumed.warnings).toContain(
+        "the claim keeps profile codex, not debug; release and claim again to change it",
+      );
+      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toMatchObject({ name: "codex" });
+
+      // A release forgets it.
       await releaseTicket(ctx, { ticket: "DEMO-7", reason: "relaunch" });
-      await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-2" });
-      expect(await getRuntimeHandle(db, "widgets", "DEMO-7")).toMatchObject({ handle: "ws-2", profile: null });
+      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toBeNull();
     });
   });
 

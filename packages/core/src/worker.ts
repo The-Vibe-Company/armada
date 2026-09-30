@@ -183,18 +183,6 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const warnings = [...ticket.warnings];
   const lines: string[] = [];
   let profile: ProfileChoice | null = null;
-  if (input.profile)
-    try {
-      profile = chooseProfile(config, {
-        ticket: ticket.id,
-        labels: ticket.labels.map((l) => l.name),
-        requested: input.profile,
-        reason: input.reason ?? null,
-      });
-    } catch (err) {
-      if (err instanceof ProfileError) throw new Refusal(err.message);
-      throw err;
-    }
 
   if (ticket.commentsTruncated)
     throw new Refusal(
@@ -215,6 +203,18 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       throw new Refusal(
         `${ticket.id} already carries the agent phase "${ticket.agentPhase}"; release it first with \`armada release\``,
       );
+    if (input.profile)
+      try {
+        profile = chooseProfile(config, {
+          ticket: ticket.id,
+          labels: ticket.labels.map((l) => l.name),
+          requested: input.profile,
+          reason: input.reason ?? null,
+        });
+      } catch (err) {
+        if (err instanceof ProfileError) throw new Refusal(err.message);
+        throw err;
+      }
     const started = ctx.now().toISOString();
     const body = `Agent status: planning — claimed by ${runtime.name} (${input.handle})\n\n${claimLine({ runtime: runtime.name, handle: input.handle, branch, started, profile })}`;
     const mine = await linear.comment(ticket.uuid, body);
@@ -232,9 +232,10 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
     );
   } else {
     lines.push(`${ticket.id} is already claimed by this session (${input.handle}); labels and state repaired.`);
-    if (profile && (holder?.profile ?? null) !== profile.name)
+    // The claim keeps the profile it was made with, even if the labels changed since.
+    if (input.profile && (holder?.profile ?? null) !== input.profile)
       warnings.push(
-        `the claim comment names ${holder?.profile ? `profile ${holder.profile}` : "no profile"}; only Turso records ${profile.name}. Release and claim again to change it on Linear`,
+        `the claim keeps ${holder?.profile ? `profile ${holder.profile}` : "no profile"}, not ${input.profile}; release and claim again to change it`,
       );
   }
 
@@ -268,8 +269,8 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       branch,
       at,
     });
-    // A new claim replaces the profile of an earlier one; a resume without --profile keeps it.
-    if (profile || !resuming)
+    // A new claim replaces the profile of an earlier one; a resume keeps it.
+    if (!resuming)
       await saveWorkerProfile(db, {
         project: config.project.slug,
         ticket: ticket.id,

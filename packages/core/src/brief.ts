@@ -358,7 +358,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
 }
 
 /** A shell word: as is when it is plain, else single-quoted. */
-export const shellWord = (s: string) => (/^[\w./:@=+-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
+export const shellWord = (s: string) => (/^\w[\w./:@+-]*$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
 
 /** Quotes a comment body as a Markdown block quote, so its headings stay inside it. */
 const quote = (body: string) =>
@@ -386,7 +386,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     `This installs the coordinator's Armada version. If the global install is refused, use \`${b.fallback}\` wherever this brief or the skill says \`armada\`.`,
     "",
-    "If the claim is refused, stop and say why in your reply: another worker holds the ticket.",
+    "If the claim is refused, stop and quote the refusal in your reply (usually another worker holds the ticket).",
     "",
     "## Branch",
     "",

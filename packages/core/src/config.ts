@@ -57,6 +57,13 @@ export interface ArmadaConfig {
   };
 }
 
+/** How routing compares label names: case, spaces and punctuation ignored, letters of any script kept. */
+export const routingLabelKey = (name: string) =>
+  name
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]/gu, "");
+
 /** A ticket carrying any of `labels` goes to `profile`, unless an earlier rule matched. */
 export interface RoutingRule {
   labels: string[];
@@ -218,7 +225,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       }
       known.push([path, r, ["labels", "profile"]]);
       const labels = r.labels;
-      const ok = Array.isArray(labels) && labels.length && labels.every((l) => typeof l === "string" && l.trim());
+      const ok =
+        Array.isArray(labels) && labels.length && labels.every((l) => typeof l === "string" && routingLabelKey(l));
       if (!ok) problems.push(`"${path}.labels" must be a non-empty list of Linear label names`);
       const profile = str(r, path, "profile");
       if (profile && !Object.hasOwn(profiles, profile))

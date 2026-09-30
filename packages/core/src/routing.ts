@@ -2,8 +2,7 @@
 // it (`[[conductor.routing]]`, first match in file order), `default_profile`
 // catches the rest, and the coordinator may override the route with `--profile`
 // only when it says why. Pure: the caller brings the ticket's labels.
-import type { ArmadaConfig, ConductorProfile } from "./config.ts";
-import { sameName } from "./linear.ts";
+import { type ArmadaConfig, type ConductorProfile, routingLabelKey } from "./config.ts";
 
 /** The rule that routed a ticket. */
 export interface MatchedRule {
@@ -30,7 +29,7 @@ export interface ProfileChoice {
   rule: MatchedRule | null;
   /** The profile routing recommends; differs from `name` when the coordinator overrode it. */
   routed: string | null;
-  /** Why the coordinator overrode the route; required then. */
+  /** Why the coordinator overrode the route; required then, when armada.toml has routing rules. */
   reason: string | null;
   /** One line saying why this profile, for people. */
   why: string;
@@ -45,7 +44,8 @@ export class ProfileError extends Error {
 export function routeProfile(config: ArmadaConfig, labels: string[]): Route | null {
   const { routing, defaultProfile, profiles } = config.conductor;
   for (const [i, rule] of routing.entries()) {
-    const label = labels.find((l) => rule.labels.some((r) => sameName(r, l)));
+    const keys = rule.labels.map(routingLabelKey);
+    const label = labels.find((l) => keys.includes(routingLabelKey(l)));
     if (label !== undefined)
       return { name: rule.profile, source: "rule", rule: { index: i + 1, labels: rule.labels, label } };
   }
@@ -113,12 +113,11 @@ export function chooseProfile(
       reason,
       why: describeRoute(route, config),
     };
-  if (route && !reason)
+  // Without routing rules the default is only a default: another profile needs no reason.
+  if (route && !reason && config.conductor.routing.length)
     throw new ProfileError(
       `${input.ticket} is routed to "${route.name}" by ${describeRoute(route, config)}; say why "${name}" instead with --reason "<why>"`,
     );
-  const why = route
-    ? `--profile, instead of "${route.name}" from ${describeRoute(route, config)}: ${reason}`
-    : `--profile${reason ? `: ${reason}` : ""}`;
+  const why = `--profile${route ? `, instead of "${route.name}" from ${describeRoute(route, config)}` : ""}${reason ? `: ${reason}` : ""}`;
   return { name, profile, source: "requested", rule: null, routed: route?.name ?? null, reason, why };
 }

@@ -20,6 +20,18 @@ describe("choosing a worker's profile", () => {
     });
     expect(choose(["bug", "web"])).toMatchObject({ name: "opus", rule: { index: 1, label: "web" } });
     expect(choose(["Feature", "BUG"])).toMatchObject({ name: "debug", profile: { effort: "xhigh" } });
+    // Letters of any script count; other characters do not make two names equal.
+    const scripts = parseConfig(
+      `${DEMO_TOML}[conductor]\ndefault_profile = "a"\n[conductor.profiles.a]\nagent = "x"\nmodel = "y"\neffort = "z"\n[[conductor.routing]]\nlabels = ["前端", "Élevé"]\nprofile = "a"\n`,
+    );
+    const source = (labels: string[]) =>
+      chooseProfile(scripts, { ticket: "DEMO-7", labels, requested: null, reason: null })?.source;
+    expect([source(["后端"]), source(["Eleve"]), source(["élevé"]), source(["前端"])]).toEqual([
+      "default",
+      "default",
+      "rule",
+      "rule",
+    ]);
   });
 
   test("a ticket no rule matches gets default_profile", () => {
@@ -60,9 +72,14 @@ describe("choosing a worker's profile", () => {
       "several Conductor profiles and no conductor.default_profile; pass --profile (a, b)",
     );
     expect(() => pick(two, "toString")).toThrow(ProfileError);
-    expect(pick(`${DEMO_TOML}[conductor]\ndefault_profile = "b"\n${profile("a")}${profile("b")}`)).toMatchObject({
-      name: "b",
-      why: "conductor.default_profile",
+    const withDefault = `${DEMO_TOML}[conductor]\ndefault_profile = "b"\n${profile("a")}${profile("b")}`;
+    expect(pick(withDefault)).toMatchObject({ name: "b", why: "conductor.default_profile" });
+    // With no routing rule, the default is only a default: another profile needs no reason.
+    expect(pick(withDefault, "a")).toMatchObject({
+      name: "a",
+      routed: "b",
+      reason: null,
+      why: '--profile, instead of "b" from conductor.default_profile',
     });
     expect(pick(DEMO_TOML + profile("a"))).toMatchObject({ name: "a", source: "only" });
     expect(pick(DEMO_TOML)).toBeNull();

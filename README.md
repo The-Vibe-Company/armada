@@ -71,8 +71,8 @@ armada brief ABC-12 --profile codex --reason "a back-end bug behind a web label"
 
 - The prompt names the ticket and its Linear branch, starts by installing the coordinator's Armada version (`npm install -g`, with an `npm exec` fallback) and running `armada claim` with the handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
 - The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables to pass: `LINEAR_API_KEY` (required), `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN` (optional), `ARMADA_TICKET=<ticket>`. Each shows whether this shell has it. No value is ever printed.
-- The profile follows the ticket's Linear labels: the first `[[conductor.routing]]` rule with a label the ticket carries (case ignored), else `conductor.default_profile`, else the only profile. The settings say which rule chose it.
-- `--profile` overrides that choice. When it differs from the routed profile, `--reason` is required and travels into the claim command, so the claim comment records the profile and why. An unknown profile exits 2.
+- The profile follows the ticket's Linear labels: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored), else `conductor.default_profile`, else the only profile. The settings say which rule chose it.
+- `--profile` overrides that choice. When `armada.toml` has routing rules and the profile differs from the routed one, `--reason` is required. The reason travels into the claim command, so the claim comment records the profile and why. An unknown profile exits 2.
 
 ## Work on a ticket (workers)
 
@@ -224,13 +224,22 @@ agent = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
 
+[conductor.profiles.debug]
+agent = "codex"
+model = "gpt-6.1-sol"
+effort = "xhigh"
+
 [[conductor.routing]]            # first rule with a label the ticket carries wins, in file order
-labels = ["web"]
+labels = ["web"]                 # any of these labels
 profile = "opus"
 
 [[conductor.routing]]
-labels = ["api", "Bug"]          # any of these labels
+labels = ["api"]
 profile = "codex"
+
+[[conductor.routing]]
+labels = ["Bug"]
+profile = "debug"
 ```
 
 A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](https://github.com/The-Vibe-Company/armada/blob/main/armada.toml).
