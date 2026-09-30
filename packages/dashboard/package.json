@@ -3,5 +3,29 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Placeholder for the live Fleet dashboard (THE-822). Nothing here yet."
+  "description": "Armada dashboard: the live Fleet view of every registered project.",
+  "scripts": {
+    "dev": "next dev --port 4822",
+    "build": "next build",
+    "start": "next start --port 4822",
+    "typecheck": "tsc --noEmit -p .",
+    "demo:seed": "bun scripts/demo.ts seed",
+    "demo:report": "bun scripts/demo.ts report"
+  },
+  "dependencies": {
+    "@armada/core": "workspace:*",
+    "@fontsource/instrument-serif": "5.3.0",
+    "@libsql/client": "0.18.0",
+    "geist": "1.7.2",
+    "next": "16.3.8",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "server-only": "0.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  }
 }

@@ -12,3 +12,8 @@ packages/cli/dist/
 packages/cli/README.md
 packages/cli/LICENSE
 *.tgz
+
+# Dashboard (Next.js) build output and local demo database
+.next/
+next-env.d.ts
+packages/dashboard/.demo/

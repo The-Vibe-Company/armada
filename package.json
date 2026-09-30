@@ -10,7 +10,7 @@
     "armada": "bun packages/cli/src/main.ts",
     "lint": "biome check .",
     "format": "biome check --write .",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/dashboard",
     "test": "bun test",
     "verify": "bun run lint && bun run typecheck && bun test"
   },
