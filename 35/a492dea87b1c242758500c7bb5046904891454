@@ -1,0 +1,63 @@
+packages/core/src/credentials.ts
+  s_d658e7251951c2::t_b133b69691a860 1-26
+.gitignore
+  s_d658e7251951c2::t_09bf8815f4ea2c 4-5
+AGENTS.md
+  s_d658e7251951c2::t_8636bcf40a49e4 23
+README.md
+  s_d658e7251951c2::t_afaccce1e91657 19-20,23-24
+packages/cli/src/cli.ts
+  s_d658e7251951c2::t_68f222818fc494 4-12,91,95
+packages/cli/src/main.ts
+  s_d658e7251951c2::t_4c38fd500407ff 18-23
+packages/cli/src/render.ts
+  s_d658e7251951c2::t_82542c5a6d3b23 97-100
+packages/cli/test/cli.test.ts
+  s_d658e7251951c2::t_482641f5444302 74-85,96-102
+packages/core/src/config.ts
+  s_d658e7251951c2::t_652e2d9a412240 119-130
+packages/core/src/fleet.ts
+  s_d658e7251951c2::t_4fff31b7464727 113-116
+packages/core/src/github.ts
+  s_d658e7251951c2::t_8b89e4f52a4161 4,103-106,117,123,128-130,134-139,149-151
+packages/core/src/index.ts
+  s_d658e7251951c2::t_da0f5b6d887e69 2
+packages/core/src/linear.ts
+  s_d658e7251951c2::t_58a46b9d232fec 10-15,30,111-130,200-202,216,222,227-229,240-246,267,272-276,289-290,300,302,307,309-311,319
+packages/core/src/status.ts
+  s_d658e7251951c2::t_2857ebd651dcd0 71-72,152
+packages/core/src/types.ts
+  s_d658e7251951c2::t_8835bde165d150 102-103,112
+packages/core/test/config.test.ts
+  s_d658e7251951c2::t_7850a0535490c2 50-56
+packages/core/test/credentials.test.ts
+  s_d658e7251951c2::t_8424f0a35be5d2 1-20
+packages/core/test/fixtures/github-pulls.json
+  s_d658e7251951c2::t_543af4748a5e05 5-7
+packages/core/test/fixtures/linear-program.json
+  s_d658e7251951c2::t_75e5e139310eef 24-26,30-32,36-38,75-77,81-83,87-89,114-116,120-122,126-128,175-177,181-183,187-189,226-228,232-234,243-245,272-274,295-297,306-308,343-345,354-356,360-362,397-399,408-410,414-416,451-453,457-459,463-465,500-502,506-508,512-514,539-541,545-547,551-553,578-580,589-591,595-597,634-636,653-655,659-661,689-691,698-700,724-726,742-744
+packages/core/test/fleet.test.ts
+  s_d658e7251951c2::t_49ef1167014627 96-101
+packages/core/test/linear.test.ts
+  s_d658e7251951c2::t_1686bcd43ac575 2,79-110
+packages/core/test/status.test.ts
+  s_d658e7251951c2::t_8c49ca0a419ff7 41-48
+packages/core/test/support.ts
+  s_d658e7251951c2::t_5a9067bbb8ea49 35-39,41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "35a492dea87b1c242758500c7bb5046904891454",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
