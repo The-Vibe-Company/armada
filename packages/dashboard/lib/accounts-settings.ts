@@ -25,6 +25,8 @@ export const INVITATION_PATH = "/invitations";
 export const ORGANIZATION_PATH = "/organization";
 /** The organization's keys (THE-840): the vault, and a person's own Linear key. */
 export const KEYS_PATH = "/organization/keys";
+/** The workers launched with a launch token (THE-841): who launched them, their sessions, Revoke. */
+export const WORKERS_PATH = "/organization/workers";
 /** Where a person confirms the code `armada login` shows. */
 export const DEVICE_PATH = "/device";
 /** The routes the Armada CLI calls: sign-in from the terminal, whoami, sign-out. */

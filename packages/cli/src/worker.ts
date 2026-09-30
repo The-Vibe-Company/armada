@@ -1,8 +1,10 @@
 // `armada claim | report | release`: how a worker tells the fleet where it is.
 // Linear is written through the one write adapter; Turso is optional and a
-// failure there only warns.
+// failure there only warns. A release, and the coordinator's merge, end the
+// ticket's worker sessions on Armada.
 import {
   type ArmadaConfig,
+  armadaApi,
   type Credentials,
   checkRequestedProfile,
   claimTicket,
@@ -13,13 +15,16 @@ import {
   LABEL_PHASES,
   LINEAR_KEY,
   lastEventTimes,
+  machinePaths,
   type Outcome,
   openTurso,
   ProfileError,
   releaseTicket,
   reportPhase,
   ticketFromBranch,
+  updateCredentialStore,
   type WorkerContext,
+  workerSessionVariable,
 } from "@armada/core";
 import { type Io, missingKey, UsageError } from "./io.ts";
 
@@ -72,8 +77,16 @@ export function statusEvents(
   };
 }
 
-/** --ticket, then ARMADA_TICKET, then the current git branch. */
-export function currentTicket(io: Io, config: ArmadaConfig, explicit: string | undefined): string {
+/**
+ * --ticket, then ARMADA_TICKET, then the current git branch, then the one
+ * ticket this machine holds a worker session for.
+ */
+export function currentTicket(
+  io: Io,
+  config: ArmadaConfig,
+  explicit: string | undefined,
+  workers: string[] = [],
+): string {
   const fromEnv = io.env.ARMADA_TICKET?.trim();
   const id =
     explicit?.trim() ||
@@ -81,7 +94,8 @@ export function currentTicket(io: Io, config: ArmadaConfig, explicit: string | u
     (() => {
       const branch = io.gitBranch?.();
       return branch ? ticketFromBranch(branch, config.tracker.programRoot) : null;
-    })();
+    })() ||
+    (workers.length === 1 ? workers[0] : null);
   if (!id) throw new UsageError("which ticket? pass --ticket <id>, set ARMADA_TICKET, or run on the ticket's branch");
   return id.toUpperCase();
 }
@@ -230,7 +244,7 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
   const message = await readMessage(io, a.options);
   if (!message?.trim() && phase !== "ready-to-merge")
     throw new UsageError("--message is required: what you did or what you are doing (first line = summary)");
-  const ticket = currentTicket(io, config, a.options.ticket);
+  const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
   return withContext(io, config, credentials, a.json, (ctx) =>
     reportPhase(ctx, {
       ticket,
@@ -246,6 +260,48 @@ export async function release(io: Io, config: ArmadaConfig, credentials: Credent
   if (a.rest.length) throw new UsageError(`unexpected argument ${a.rest[0]}`);
   const reason = a.options.reason?.trim();
   if (!reason) throw new UsageError("--reason is required: why the ticket is given back");
-  const ticket = currentTicket(io, config, a.options.ticket);
-  return withContext(io, config, credentials, a.json, (ctx) => releaseTicket(ctx, { ticket, reason }));
+  const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
+  const code = await withContext(io, config, credentials, a.json, (ctx) => releaseTicket(ctx, { ticket, reason }));
+  await endWorkerSessions(io, config, credentials, ticket, "released", a.json);
+  return code;
+}
+
+/**
+ * Ends the ticket's worker sessions on Armada once it is released or merged:
+ * a worker signs itself out and forgets its session; a signed-in coordinator
+ * ends every session of the ticket. Not signed in, there is nothing to end. A
+ * failure only warns: the session ends on its own when idle, and the Workers
+ * page revokes it.
+ */
+export async function endWorkerSessions(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  ticket: string,
+  reason: "released" | "merged",
+  quiet: boolean,
+): Promise<void> {
+  const signIn = credentials.armadaSignIn;
+  if (!signIn) return;
+  const api = armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+  try {
+    if (signIn.kind === "worker") {
+      const paths = machinePaths(io.env);
+      // Forgotten here first: the ticket is given back, whatever Armada answers.
+      if (paths) await updateCredentialStore(paths, { [workerSessionVariable(signIn.ticket)]: null });
+      await api.signOut(signIn);
+      if (!quiet)
+        io.stdout(`Signed out of Armada: the worker session of ${signIn.ticket} has ended.
+`);
+      return;
+    }
+    const ended = await api.endWorkers(signIn, { project: config.project.slug, ticket, reason });
+    if (ended && !quiet)
+      io.stdout(`Ended ${ended === 1 ? "the worker session" : `${ended} worker sessions`} of ${ticket} on Armada.
+`);
+  } catch (err) {
+    io.stderr(
+      `armada: warning: the worker session of ${ticket} was not ended on Armada (${err instanceof Error ? err.message : String(err)}); it ends on its own after 72 hours without a command, and the Workers page revokes it\n`,
+    );
+  }
 }

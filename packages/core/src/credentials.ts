@@ -3,8 +3,9 @@
 // terminal), then from the machine store (~/.config/armada/credentials),
 // then, for non-secret settings only, from the personal config. GitHub keeps
 // its own chain and ends with the GitHub CLI login. The Armada API address and
-// the terminal's sign-in to it resolve here too. Every command asks this
-// function and nothing else.
+// the terminal's sign-in to it resolve here too, including the worker session
+// of the ticket a worker command acts on. Every command asks this function and
+// nothing else.
 import type { ArmadaSignIn } from "./armada-api.ts";
 import type { PersonalConfig } from "./machine.ts";
 
@@ -32,11 +33,14 @@ export interface Credentials {
   /** The Armada API: ARMADA_API_URL, then `[api] url` in config.toml, then the built-in address. */
   armadaApi: { url: string; source: CredentialSource | { kind: "default" } };
   /**
-   * How this terminal signs in to Armada: ARMADA_API_KEY from the environment,
+   * How this terminal signs in to Armada: the worker session stored for the
+   * ticket a worker command acts on, then ARMADA_API_KEY from the environment,
    * then what `armada login` stored (a session token or an API key); null when
    * signed out. `source` is safe to print; the secret never is.
    */
   armadaSignIn: (ArmadaSignIn & { source: CredentialSource }) | null;
+  /** The tickets this machine holds a worker session for (`armada login --launch-token`). */
+  workerTickets: string[];
   /**
    * The Armada a stored sign-in belongs to when it is not `armadaApi`: the
    * sign-in is then not used, so its token never reaches another server.
@@ -60,6 +64,26 @@ export const SIGNED_IN_TO_VARIABLE = "ARMADA_SIGNED_IN_TO";
  */
 export const TURSO_LEASE_VARIABLE = "ARMADA_TURSO_LEASE";
 
+/**
+ * Credentials-file key prefix of a worker session (`armada login
+ * --launch-token`), one per ticket, so several workers can share a machine.
+ * `armada release` and `armada logout` remove it.
+ */
+export const WORKER_SESSION_PREFIX = "ARMADA_WORKER_SESSION_";
+export const workerSessionVariable = (ticket: string) =>
+  `${WORKER_SESSION_PREFIX}${ticket.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+
+/** A worker session kept on the machine: which Armada, which ticket of which project. */
+export interface StoredWorker {
+  /** The Armada that issued it (`armadaAddress`): it is sent to no other. */
+  api: string;
+  token: string;
+  ticket: string;
+  project: string;
+  organization: string;
+  id: string;
+}
+
 /** A Turso token made by Armada for this terminal. */
 export interface TursoLease {
   /** The Armada that made it (`armadaAddress`): it is used only while the CLI talks to that one. */
@@ -72,21 +96,42 @@ export interface TursoLease {
   revision: string;
 }
 
-/** The lease as one credentials-file value (base64url JSON, so it fits a KEY=value line). */
-export const formatLease = (lease: TursoLease) => Buffer.from(JSON.stringify(lease), "utf8").toString("base64url");
+/** A record as one credentials-file value (base64url JSON, so it fits a KEY=value line). */
+const formatRecord = (record: object) => Buffer.from(JSON.stringify(record), "utf8").toString("base64url");
 
-/** The lease a credentials-file value holds, or null when it is not one. */
-export function parseLease(value: string | null | undefined): TursoLease | null {
+/** The record of non-empty strings a credentials-file value holds, or null when it is not one. */
+function parseRecord<K extends string>(value: string | null | undefined, keys: readonly K[]): Record<K, string> | null {
   if (!value?.trim()) return null;
   try {
-    const l = JSON.parse(Buffer.from(value.trim(), "base64url").toString("utf8")) as Record<string, unknown>;
-    const keys = ["api", "organization", "url", "token", "expiresAt", "revision"] as const;
-    if (!keys.every((k) => typeof l[k] === "string" && l[k])) return null;
-    if (Number.isNaN(Date.parse(String(l.expiresAt)))) return null;
-    return Object.fromEntries(keys.map((k) => [k, String(l[k])])) as unknown as TursoLease;
+    const r = JSON.parse(Buffer.from(value.trim(), "base64url").toString("utf8")) as Record<string, unknown>;
+    if (!keys.every((k) => typeof r[k] === "string" && r[k])) return null;
+    return Object.fromEntries(keys.map((k) => [k, String(r[k])])) as Record<K, string>;
   } catch {
     return null;
   }
+}
+
+export const formatLease = (lease: TursoLease) => formatRecord(lease);
+
+/** The lease a credentials-file value holds, or null when it is not one. */
+export function parseLease(value: string | null | undefined): TursoLease | null {
+  const l = parseRecord(value, ["api", "organization", "url", "token", "expiresAt", "revision"]);
+  return l && !Number.isNaN(Date.parse(l.expiresAt)) ? l : null;
+}
+
+export const formatWorkerSession = (worker: StoredWorker) => formatRecord(worker);
+
+export function parseWorkerSession(value: string | null | undefined): StoredWorker | null {
+  return parseRecord(value, ["api", "token", "ticket", "project", "organization", "id"]);
+}
+
+/** The worker sessions of the credentials file, each under its ticket's key. */
+export function storedWorkers(store: Record<string, string>): StoredWorker[] {
+  return Object.entries(store).flatMap(([variable, value]) => {
+    if (!variable.startsWith(WORKER_SESSION_PREFIX)) return [];
+    const w = parseWorkerSession(value);
+    return w && workerSessionVariable(w.ticket) === variable ? [w] : [];
+  });
 }
 
 /** What Armada handed out for this command, with where each came from. */
@@ -153,6 +198,8 @@ export interface CredentialSources {
   ghToken?: () => string | null;
   /** The organization's keys from Armada, when this terminal is signed in to one that keeps them. */
   armada?: ArmadaKeys | null;
+  /** The ticket a worker command acts on: its stored worker session, if any, signs the command in. */
+  ticket?: string | null;
 }
 
 const clean = (v: string | null | undefined) => v?.trim() || null;
@@ -171,7 +218,14 @@ const fromEnv = (env: CredentialSources["env"], variable: string): Found => {
  * (the URL also from config.toml `turso.url`). GitHub: GITHUB_TOKEN, then
  * GH_TOKEN, then `gh auth token`.
  */
-export function resolveCredentials({ env, store = {}, personal, ghToken, armada }: CredentialSources): Credentials {
+export function resolveCredentials({
+  env,
+  store = {},
+  personal,
+  ghToken,
+  armada,
+  ticket,
+}: CredentialSources): Credentials {
   const fromStore = (variable: string): Found => {
     const value = clean(store[variable]);
     return value ? { value, source: { kind: "store" } } : null;
@@ -185,11 +239,18 @@ export function resolveCredentials({ env, store = {}, personal, ghToken, armada 
   const tursoUrlConfig = clean(personal?.turso.url);
   const apiUrlConfig = clean(personal?.api.url);
   const apiUrl = fromEnv(env, API_URL_VARIABLE);
+  const workers = storedWorkers(store);
+  const worker = ticket ? workers.find((w) => w.ticket === ticket.toUpperCase()) : undefined;
+  // A worker launched from another Armada talks to that one: its launch message named it once, at sign-in.
   const armadaApi: Credentials["armadaApi"] = apiUrl
     ? { url: apiUrl.value, source: apiUrl.source }
     : apiUrlConfig
       ? { url: apiUrlConfig, source: { kind: "config", key: "api.url" } }
-      : { url: DEFAULT_ARMADA_API_URL, source: { kind: "default" } };
+      : worker
+        ? { url: worker.api, source: { kind: "store" } }
+        : { url: DEFAULT_ARMADA_API_URL, source: { kind: "default" } };
+  // The worker session of the command's ticket comes first: it is what the launch set up.
+  const workerHere = worker && armadaAddress(worker.api) === armadaAddress(armadaApi.url) ? worker : null;
   // The environment's key wins: a headless coordinator is configured by its environment.
   const envKey = fromEnv(env, API_KEY_VARIABLE);
   // A stored sign-in is only sent to the Armada that issued it.
@@ -198,13 +259,21 @@ export function resolveCredentials({ env, store = {}, personal, ghToken, armada 
   const session = fromStore(SESSION_TOKEN_VARIABLE);
   const storedKey = fromStore(API_KEY_VARIABLE);
   const armadaSignInElsewhere = !here && (session || storedKey) ? signedInTo : null;
-  const armadaSignIn: Credentials["armadaSignIn"] = envKey
-    ? { kind: "api-key", key: envKey.value, source: envKey.source }
-    : session && here
-      ? { kind: "session", token: session.value, source: session.source }
-      : storedKey && here
-        ? { kind: "api-key", key: storedKey.value, source: storedKey.source }
-        : null;
+  const armadaSignIn: Credentials["armadaSignIn"] = workerHere
+    ? {
+        kind: "worker",
+        token: workerHere.token,
+        ticket: workerHere.ticket,
+        project: workerHere.project,
+        source: { kind: "store" },
+      }
+    : envKey
+      ? { kind: "api-key", key: envKey.value, source: envKey.source }
+      : session && here
+        ? { kind: "session", token: session.value, source: session.source }
+        : storedKey && here
+          ? { kind: "api-key", key: storedKey.value, source: storedKey.source }
+          : null;
   const fromArmada = (value: string | undefined, detail: string | undefined): Found =>
     value && detail ? { value, source: { kind: "armada", detail } } : null;
   // A URL from one place and a token from another would open no database: Armada gives both, or neither.
@@ -235,7 +304,8 @@ export function resolveCredentials({ env, store = {}, personal, ghToken, armada 
     },
     armadaApi,
     armadaSignIn,
-    armadaSignInElsewhere: envKey ? null : armadaSignInElsewhere,
+    workerTickets: workers.map((w) => w.ticket),
+    armadaSignInElsewhere: envKey || workerHere ? null : armadaSignInElsewhere,
   };
 }
 

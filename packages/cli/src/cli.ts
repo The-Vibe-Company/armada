@@ -24,7 +24,7 @@ import { merge } from "./merge.ts";
 import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError } from "./repo.ts";
-import { claim, release, report, statusEvents } from "./worker.ts";
+import { claim, currentTicket, release, report, statusEvents } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
 export type { Io } from "./io.ts";
@@ -87,11 +87,15 @@ const COMMAND_HELP: Record<string, string> = {
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
                     default_profile; --profile overrides it, with --reason when it differs.
-                    --prompt prints only the prompt, for \`--message-file -\`
+                    Signed in to Armada, the prompt starts with a one-time launch token, so
+                    the worker needs no key. --prompt prints only the prompt, for \`--message-file -\`
 `,
   login: `  login             Sign this terminal in to Armada: confirm the code it shows in the browser
   login --api-key   Sign a headless coordinator in with an organization API key, read from a
                     hidden prompt or standard input (ARMADA_API_KEY in the environment also works)
+  login --launch-token <token> [--api-url <url>]
+                    Worker: exchange the one-time token of the launch message for a worker
+                    session, which claims, reports, asks and releases that ticket only
 `,
   whoami: `  whoami            The person or API key this terminal is signed in as, and its organization
 `,
@@ -186,6 +190,8 @@ const VALUE_OPTIONS = [
   "profile",
   "options",
   "timeout",
+  "launch-token",
+  "api-url",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note", "api-key"];
@@ -200,8 +206,11 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug"],
   merge: ["ticket", "dry-run", "no-lock"],
   brief: ["profile", "reason", "prompt"],
-  login: ["api-key"],
+  login: ["api-key", "launch-token", "api-url"],
 };
+
+/** The worker commands a worker session signs in, on its own ticket. */
+const WORKER_COMMANDS = new Set(["claim", "report", "release", "ask"]);
 
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -336,7 +345,18 @@ export async function run(argv: string[], io: Io): Promise<number> {
     if (worker) {
       const { path, text } = await findConfig(io, args.config, args.command);
       const config = parseConfig(text, path);
-      const { credentials } = await loadCredentials(io);
+      const command = args.command;
+      const scope = WORKER_COMMANDS.has(command)
+        ? {
+            command,
+            project: config.project.slug,
+            ticket: (stored: string[]) =>
+              command === "claim"
+                ? (args.rest[0]?.toUpperCase() ?? null)
+                : currentTicket(io, config, args.options.ticket, stored),
+          }
+        : undefined;
+      const { credentials } = await loadCredentials(io, scope ? { worker: scope } : {});
       return await worker(io, config, credentials, args);
     }
     if (args.command === "merge") {
@@ -372,7 +392,12 @@ export async function run(argv: string[], io: Io): Promise<number> {
         throw new UsageError(
           `${args.command} takes no argument${args.command === "login" ? ": an API key is read from a hidden prompt or standard input, never from the command line" : ""}`,
         );
-      if (args.command === "login") return await login(io, args.options["api-key"] === "true");
+      if (args.command === "login")
+        return await login(io, {
+          apiKey: args.options["api-key"] === "true",
+          launchToken: args.options["launch-token"] ?? null,
+          apiUrl: args.options["api-url"] ?? null,
+        });
       if (args.command === "logout") return await logout(io);
       return await whoami(io, args.json);
     }

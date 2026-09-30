@@ -29,7 +29,7 @@ export async function ask(io: Io, config: ArmadaConfig, credentials: Credentials
     .split("|")
     .map((o) => o.trim())
     .filter(Boolean);
-  const ticket = currentTicket(io, config, a.options.ticket);
+  const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
   return withContext(io, config, credentials, a.json, (ctx) => askCoordinator(ctx, { ticket, question, options }));
 }
 

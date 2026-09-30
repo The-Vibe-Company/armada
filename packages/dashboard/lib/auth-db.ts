@@ -1,5 +1,6 @@
 // The accounts database: people, sessions, organizations, members,
-// invitations, device codes, API keys and the organizations' sealed keys. It is
+// invitations, device codes, API keys, the organizations' sealed keys and
+// their workers' launches. It is
 // a libSQL database of its own, separate from the fleet's Turso database.
 // Better Auth reaches it through Kysely; `LibsqlDialect` is the small driver
 // over the @libsql/client the dashboard already ships. Its schema comes from
@@ -90,7 +91,10 @@ export class LibsqlDialect implements Dialect {
  * and database rate limiting. Version 2 adds the device codes of `armada login`
  * and the organizations' API keys (THE-839). Version 3 adds the vault
  * (THE-840): the organizations' sealed keys and their audit list, Armada's own
- * tables, which Better Auth never reads.
+ * tables, which Better Auth never reads. Version 4 adds the workers (THE-841):
+ * one row per launch, its one-time launch token and the worker session it was
+ * exchanged for (both stored as hashes only), and the exchange attempts the
+ * rate limit counts.
  */
 export const AUTH_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -252,6 +256,37 @@ export const AUTH_MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
       `CREATE INDEX IF NOT EXISTS "armada_secret_event_org_idx" ON "armada_secret_event" ("organizationId", "id")`,
       `CREATE INDEX IF NOT EXISTS "armada_secret_event_actor_idx" ON "armada_secret_event" ("actorKind", "actorId", "at")`,
+    ],
+  },
+  {
+    version: 4,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS "armada_worker" (
+        "id" text NOT NULL PRIMARY KEY,
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "project" text NOT NULL,
+        "ticket" text NOT NULL,
+        "launchedByKind" text NOT NULL,
+        "launchedById" text NOT NULL,
+        "launchedByLabel" text NOT NULL,
+        "createdAt" date NOT NULL,
+        "tokenHash" text NOT NULL UNIQUE,
+        "tokenExpiresAt" date NOT NULL,
+        "tokenUsedAt" date,
+        "sessionHash" text UNIQUE,
+        "sessionExpiresAt" date,
+        "sessionSeenAt" date,
+        "endedAt" date,
+        "endReason" text,
+        "endedByLabel" text
+      )`,
+      `CREATE INDEX IF NOT EXISTS "armada_worker_org_idx" ON "armada_worker" ("organizationId", "createdAt")`,
+      `CREATE INDEX IF NOT EXISTS "armada_worker_ticket_idx" ON "armada_worker" ("organizationId", "project", "ticket")`,
+      `CREATE TABLE IF NOT EXISTS "armada_launch_attempt" (
+        "address" text NOT NULL,
+        "at" date NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS "armada_launch_attempt_idx" ON "armada_launch_attempt" ("address", "at")`,
     ],
   },
 ];

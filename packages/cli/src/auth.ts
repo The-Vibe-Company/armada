@@ -2,6 +2,9 @@
 // is ever printed; output names keys, sources and file paths only. Also where
 // every command gets its keys (`loadCredentials`): the environment, then the
 // organization's keys from Armada when signed in, then the credentials file.
+// A worker command on a ticket this machine holds a worker session for always
+// asks Armada, which renews the session, enforces its ticket and refuses a
+// revoked worker: that refusal stops the command.
 import {
   ArmadaApiError,
   type ArmadaKeys,
@@ -12,6 +15,7 @@ import {
   type Credentials,
   ensurePersonalConfig,
   formatLease,
+  type KeysPurpose,
   type MachinePaths,
   machinePaths,
   missingKeys,
@@ -21,6 +25,7 @@ import {
   readPersonalConfig,
   resolveCredentials,
   STORED_KEYS,
+  storedWorkers,
   storeIsExposed,
   TURSO_LEASE_VARIABLE,
   type TursoLease,
@@ -66,7 +71,12 @@ const fromLease = (lease: TursoLease): ArmadaKeys["turso"] => ({
  * Turso token kept earlier, while it lasts). Armada keeping no keys (503) is
  * not worth a warning: the terminal then works as before.
  */
-async function fromArmada(io: Io, machine: Machine, credentials: Credentials): Promise<ArmadaKeys | null> {
+async function fromArmada(
+  io: Io,
+  machine: Machine,
+  credentials: Credentials,
+  purpose: KeysPurpose | null,
+): Promise<ArmadaKeys | null> {
   const signIn = credentials.armadaSignIn;
   if (!signIn) return null;
   const now = (io.now ?? (() => new Date()))();
@@ -87,12 +97,15 @@ async function fromArmada(io: Io, machine: Machine, credentials: Credentials): P
     answer = await armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) }).credentials(
       signIn,
       lease ? { revision: lease.revision, expiresAt: lease.expiresAt } : null,
+      purpose,
     );
   } catch (err) {
     if (!(err instanceof ArmadaApiError)) throw err;
     // Signed out, or no longer in the organization: the token it made is not used any more.
     if (err.signedOut || err.status === 403) {
       await keep(null);
+      // A worker cut off, ended, or out of its ticket stops here, whatever keys the machine has.
+      if (signIn.kind === "worker") throw err;
       io.stderr(
         `! Armada gave no keys (${err.message}); using this machine's${err.next ? `. Next: ${err.next}` : ""}\n`,
       );
@@ -136,16 +149,36 @@ async function fromArmada(io: Io, machine: Machine, credentials: Credentials): P
 }
 
 /**
+ * A worker command (claim, report, ask, release): which ticket it acts on,
+ * given the tickets this machine holds worker sessions for; null when it
+ * cannot tell (the command then says so itself).
+ */
+export interface WorkerScope {
+  command: string;
+  /** The project of armada.toml: a worker session of another project is refused. */
+  project: string;
+  ticket: (stored: string[]) => string | null;
+}
+
+/**
  * Resolves every key from the environment, Armada (when signed in, and only
  * for the keys the environment does not set), the machine store and the
  * GitHub CLI. Commands that need no key (login, whoami, logout) pass
- * `armada: false`.
+ * `armada: false`. A worker command passes its `worker` scope: the worker
+ * session of its ticket, when the machine holds one, signs it in.
  */
 export async function loadCredentials(
   io: Io,
-  { armada = true }: { armada?: boolean } = {},
+  { armada = true, worker }: { armada?: boolean; worker?: WorkerScope } = {},
 ): Promise<{ machine: Machine; credentials: Credentials }> {
   const machine = await loadMachine(io);
+  let ticket: string | null = null;
+  if (worker)
+    try {
+      ticket = worker.ticket(storedWorkers(machine.store?.values ?? {}).map((w) => w.ticket));
+    } catch {
+      ticket = null;
+    }
   let gh: string | null | undefined;
   const sources = {
     env: io.env,
@@ -156,10 +189,23 @@ export async function loadCredentials(
     },
     ...(machine.store ? { store: machine.store.values } : {}),
     ...(machine.personal ? { personal: machine.personal.config } : {}),
+    ticket,
   };
   const local = resolveCredentials(sources);
-  if (!armada || !local.armadaSignIn || !wantsArmada(io.env)) return { machine, credentials: local };
-  const keys = await fromArmada(io, machine, local);
+  const signIn = local.armadaSignIn;
+  const purpose = worker && ticket ? { command: worker.command, project: worker.project, ticket } : null;
+  if (signIn?.kind === "worker" && armada) {
+    if (signIn.project !== worker?.project)
+      throw new UsageError(
+        `the worker session of ${signIn.ticket} is for the project ${signIn.project}, not ${worker?.project} (armada.toml): this repository is not its own`,
+        `cd into the repository of ${signIn.project}`,
+      );
+    // Always asked, even when the environment has every key: the session is renewed, and checked.
+    const keys = await fromArmada(io, machine, local, purpose);
+    return { machine, credentials: keys ? resolveCredentials({ ...sources, armada: keys }) : local };
+  }
+  if (!armada || !signIn || !wantsArmada(io.env)) return { machine, credentials: local };
+  const keys = await fromArmada(io, machine, local, purpose);
   return { machine, credentials: keys ? resolveCredentials({ ...sources, armada: keys }) : local };
 }
 
@@ -257,6 +303,8 @@ export interface AuthStatus {
     api: { url: string; source: CredentialSource | { kind: "default" } };
     method: "session" | "api-key" | null;
     source: CredentialSource | null;
+    /** The tickets this machine holds a worker session for. */
+    workers: string[];
   };
   warnings: string[];
 }
@@ -280,8 +328,10 @@ export function buildAuthStatus(machine: Machine, credentials: Credentials): Aut
       machine.paths && machine.personal ? { path: machine.paths.config, exists: machine.personal.exists } : null,
     signIn: {
       api: credentials.armadaApi,
-      method: credentials.armadaSignIn?.kind ?? null,
-      source: credentials.armadaSignIn?.source ?? null,
+      // A worker session signs in only its own ticket's commands, never auth status.
+      method: credentials.armadaSignIn?.kind === "worker" ? null : (credentials.armadaSignIn?.kind ?? null),
+      source: credentials.armadaSignIn?.kind === "worker" ? null : (credentials.armadaSignIn?.source ?? null),
+      workers: credentials.workerTickets,
     },
     warnings: storeWarnings(machine),
   };
@@ -318,6 +368,10 @@ export function renderAuthStatus(status: AuthStatus): string {
       ? `  Signed in  with ${signIn.method === "session" ? "the session of `armada login`" : "an organization API key"}, from the ${describeSource(signIn.source)}; \`armada whoami\` shows who`
       : "  Signed in  no: run `armada login`, or set ARMADA_API_KEY on a headless coordinator",
   );
+  if (signIn.workers.length)
+    lines.push(
+      `  Workers    ${signIn.workers.join(", ")}: the worker session of \`armada login --launch-token\` signs in that ticket's claim, report, ask and release`,
+    );
   return `${lines.join("\n")}\n`;
 }
 

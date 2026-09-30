@@ -1,11 +1,18 @@
 // `armada brief <ticket>`: the launch prompt and settings for a new worker.
 // Prints variable names and whether this shell has them, never their values.
+// Signed in to Armada, it asks for a one-time launch token for the ticket and
+// puts it in the prompt: the worker's runtime then needs no key.
 import {
+  ArmadaApiError,
   type ArmadaConfig,
+  armadaAddress,
+  armadaApi,
   type Brief,
   BriefError,
+  type BriefLaunch,
   type Credentials,
   checkRequestedProfile,
+  DEFAULT_ARMADA_API_URL,
   LINEAR_KEY,
   loadBrief,
   ProfileError,
@@ -31,6 +38,7 @@ export function renderBrief(b: Brief): string {
     ...(b.routing ? [`Chosen by:   ${b.routing.why}`] : []),
     `Repository:  ${b.repository.url}`,
     `Branch:      ${b.ticket.branch ?? "none suggested by Linear"} (the worker renames its workspace branch to it)`,
+    `Launch:      ${b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`}`,
     "",
     "Environment to pass (values are never printed):",
     ...b.environment.map((v) => {
@@ -48,6 +56,33 @@ export function renderBrief(b: Brief): string {
   if (b.warnings.length) out.push("", "Warnings:", ...b.warnings.map((w) => `  - ${w}`));
   out.push("", `----- prompt (\`armada brief ${b.ticket.id} --prompt\` prints only this) -----`, "", b.prompt);
   return out.join("\n");
+}
+
+/**
+ * Asks Armada for the worker's launch token, as the signed-in coordinator. Not
+ * signed in, or refused (no accounts, no vault), the brief goes on without one.
+ */
+function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
+  return async (ticket: string): Promise<BriefLaunch | { reason: string; warn: boolean }> => {
+    const signIn = credentials.armadaSignIn;
+    if (!signIn)
+      return {
+        reason: "launch tokens need this terminal signed in to an Armada with accounts: armada login",
+        warn: false,
+      };
+    const url = credentials.armadaApi.url;
+    try {
+      const t = await armadaApi({ url, ...(io.fetch ? { fetch: io.fetch } : {}) }).launchToken(signIn, {
+        project: config.project.slug,
+        ticket,
+      });
+      const builtIn = armadaAddress(url) === armadaAddress(DEFAULT_ARMADA_API_URL);
+      return { token: t.token, expiresAt: t.expiresAt, apiUrl: builtIn ? null : armadaAddress(url) };
+    } catch (err) {
+      if (!(err instanceof ArmadaApiError)) throw err;
+      return { reason: err.message, warn: true };
+    }
+  };
 }
 
 export async function brief(io: Io, config: ArmadaConfig, credentials: Credentials, a: BriefArgs, version: string) {
@@ -78,6 +113,7 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
       version,
       env: io.env,
       stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),
+      launch: launcher(io, config, credentials),
       ...(io.fetch ? { fetch: io.fetch } : {}),
       ...(io.now ? { now: io.now } : {}),
     });

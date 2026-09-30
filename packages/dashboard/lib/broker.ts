@@ -41,8 +41,10 @@ export interface BrokerDeps {
 export interface Holder {
   actor: Actor;
   organization: { id: string; name: string; slug: string };
-  /** The person, whose own keys win; null for an organization API key. */
+  /** The person, whose own keys win; null for an organization API key. For a worker, who launched it. */
   user: string | null;
+  /** The ticket the keys are for, as the terminal names it (a worker's is its own); the audit list shows it. */
+  ticket?: string | null;
 }
 
 /** What the terminal already holds: never the token, only which one. */
@@ -240,7 +242,9 @@ export async function releaseCredentials(
     action: "release",
     keys,
     actor: holder.actor,
-    detail: [...details, ...warnings.map((w) => `! ${w}`)].join("; "),
+    detail: [...(holder.ticket ? [`for ${holder.ticket}`] : []), ...details, ...warnings.map((w) => `! ${w}`)].join(
+      "; ",
+    ),
   });
   return { ok: true, release: { schemaVersion: 1, organization: holder.organization, linear, turso, warnings } };
 }
