@@ -104,6 +104,28 @@ describe("armada claim, report and release", () => {
     expect(w.err()).toContain("--reason goes with --profile");
   });
 
+  test("a ready-to-merge report without a message option stays valid", async () => {
+    const w = worker();
+    w.linear.add("DEMO-7", {
+      labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
+    });
+    w.io.fetch = async () =>
+      Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
+    expect(await run(["report", "ready-to-merge", "--pr", "9", "--sha", HEAD], w.io)).toBe(0);
+    expect(w.linear.bodies).toEqual([`Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`]);
+  });
+
+  test("an explicitly blank message file is refused even for a hand-back", async () => {
+    for (const message of ["", " \n\t"]) {
+      const w = worker();
+      const readFile = w.io.readFile;
+      w.io.readFile = async (path) => (path === "report.md" ? message : readFile(path));
+      expect(await run(["report", "ready-to-merge", "--message-file", "report.md"], w.io)).toBe(2);
+      expect(w.err()).toContain("message file report.md is empty or whitespace-only");
+      expect(w.linear.writes).toEqual([]);
+    }
+  });
+
   test("an unreachable Turso only warns; Linear is still written", async () => {
     const w = worker({ ARMADA_TURSO_URL: "file:/nonexistent-armada-dir/sub/armada.db" });
     w.linear.add("DEMO-7");

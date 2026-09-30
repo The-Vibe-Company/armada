@@ -167,6 +167,11 @@ export async function readMessage(io: Io, options: Record<string, string>): Prom
   if (file === undefined) return options.message ?? null;
   const text = file === "-" ? ((await io.readStdin?.()) ?? null) : await io.readFile(file);
   if (text === null) throw new UsageError(`cannot read the message from ${file}`);
+  if (!text.trim())
+    throw new UsageError(
+      `${file === "-" ? "standard input" : `message file ${file}`} is empty or whitespace-only`,
+      'pass --message "<text>" or pipe a non-empty message into --message-file -',
+    );
   return text;
 }
 
