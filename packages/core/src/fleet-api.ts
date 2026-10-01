@@ -39,7 +39,7 @@ import { RequestRefusal, requestMerge, requestPlanChanges, requestRelease } from
 import type { LabelPhase } from "./types.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
-export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release"] as const;
+export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat"] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
@@ -48,6 +48,7 @@ export const FLEET_OPS = [
   "coordinator",
   "request",
   "events/latest",
+  "heartbeats/latest",
   "launches",
   "inbox",
   "inbox/item",
@@ -65,7 +66,9 @@ export type FleetOp = (typeof FLEET_OPS)[number];
 export const LEASE_TTL_MAX_MS = 60 * 60_000;
 
 /** Who calls: a terminal of the project's organization, or a worker session bound to one ticket. */
-export type FleetCaller = { kind: "organization"; author?: string | null } | { kind: "worker"; ticket: string };
+export type FleetCaller =
+  | { kind: "organization"; author?: string | null }
+  | { kind: "worker"; ticket: string; sessionId?: string };
 
 export interface FleetAnswer {
   status: number;
@@ -235,6 +238,7 @@ export async function serveFleet(
               phase: phaseOf(b, "phase", true),
               resuming: bool(b, "resuming"),
               profile: profileOf(b.profile),
+              workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
             },
             at,
           );
@@ -284,6 +288,20 @@ export async function serveFleet(
         }
         case "events/latest":
           return store.lastEventTimes(slug);
+        case "heartbeats/latest":
+          return store.heartbeatTimes(slug);
+        case "heartbeat": {
+          const claimedAt = optText(b, "claimedAt", 40);
+          if (claimedAt && !Number.isFinite(Date.parse(claimedAt))) throw new Invalid("claimedAt must be a timestamp");
+          return store.recordHeartbeat({
+            project: slug,
+            ticket: ticketOf(b),
+            handle: text(b, "handle", LINE_MAX),
+            claimedAt,
+            workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
+            at,
+          });
+        }
         case "launches":
           return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
         case "inbox": {
@@ -303,6 +321,7 @@ export async function serveFleet(
               coordinator: optText(b, "coordinator", LINE_MAX),
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
               silentAfterMinutes: silent,
+              quietAfterMinutes: positiveMinutes(b, "quietAfterMinutes"),
               ...(notStarted !== undefined ? { notStartedMinutes: notStarted } : {}),
               etag: optText(b, "etag", 64),
             },
@@ -399,6 +418,8 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
+    heartbeatTimes: () => call<Record<string, string>>("heartbeats/latest", {}),
+    heartbeat: (input) => call("heartbeat", input),
     pendingLaunches: () => call<PendingLaunch[]>("launches", {}),
     claim: (c: ClaimRecord) => call<InboxItem[]>("claim", c),
     report: (r: ReportRecord) => call<InboxItem[]>("report", r),
@@ -426,4 +447,12 @@ function coordinatorFacts(input: Record<string, unknown>): CoordinatorFacts {
     model: optText(input, "model", LINE_MAX),
     cliVersion: optText(input, "cliVersion", 80),
   };
+}
+
+function positiveMinutes(input: Body, key: string): number | undefined {
+  const value = input[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+    throw new Invalid(`${key} must be a positive number of minutes`);
+  return value;
 }

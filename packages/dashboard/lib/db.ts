@@ -598,6 +598,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX attachments_retention ON attachments (project, done_at) WHERE done_at IS NOT NULL",
     ],
   },
+  {
+    version: 13,
+    statements: [
+      "ALTER TABLE runtime_handles ADD COLUMN heartbeat_at timestamptz",
+      "ALTER TABLE runtime_handles ADD COLUMN worker_session_id text",
+      "ALTER TABLE fleet_sessions ADD COLUMN heartbeat_at timestamptz",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

@@ -331,7 +331,7 @@ export function buildOverview(input: {
         url: t.statusLine?.url ?? t.url,
         detail: t.statusLine?.summary ?? null,
         author: t.agent,
-        since: kind === "silent" ? (t.lastReport ?? t.lastUpdate) : t.since,
+        since: kind === "silent" ? (t.lastHeartbeat ?? t.lastReport ?? t.lastUpdate) : t.since,
         item: null,
         answer: null,
         coordinatorSince: null,

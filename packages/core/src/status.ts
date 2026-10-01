@@ -51,6 +51,7 @@ export interface InFlightTicket extends TicketRef {
   lastUpdate: string;
   /** Latest report by the worker (live event, status comment or claim); null if it never reported. */
   lastReport: string | null;
+  lastHeartbeat?: string | null;
   silent: boolean;
   /** `plan`: the comment at `url` carries the worker's full plan. */
   statusLine: { summary: string; at: string; url: string; plan: boolean } | null;
@@ -119,6 +120,7 @@ export interface BuildStatusInput {
   forgeError?: string | null;
   /** Newest live event per ticket id; absent when the live data was not read. */
   lastEvents?: Record<string, string>;
+  heartbeats?: Record<string, string>;
   /** Live events newer than the tracker read, and open runtime handles (the dashboard's live layer). */
   live?: LaneOptions["live"];
   /** Launches no claim followed, from Armada's live data. */
@@ -139,6 +141,7 @@ export function buildStatus({
   forge,
   forgeError = null,
   lastEvents,
+  heartbeats,
   live,
   launches = [],
   extraWarnings = [],
@@ -150,6 +153,7 @@ export function buildStatus({
     now: now.getTime(),
     silentAfterMinutes: config.policy.silentAfterMinutes,
     ...(lastEvents ? { lastEvents } : {}),
+    ...(heartbeats ? { heartbeats } : {}),
     ...(live ? { live } : {}),
   });
   const phaseOf = new Map(lanes.map((l) => [l.issue.id, l.phase]));
@@ -209,6 +213,7 @@ export function buildStatus({
       since: l.since,
       lastUpdate: l.lastUpdate,
       lastReport: l.lastReport,
+      lastHeartbeat: l.lastHeartbeat,
       silent: l.flags.includes("silent"),
       statusLine: l.statusLine
         ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
@@ -255,6 +260,7 @@ export interface LoadStatusOptions {
   githubToken: string | null;
   /** Newest live event time per ticket, read by the caller through Armada when signed in. */
   lastEvents?: () => Promise<Record<string, string>>;
+  heartbeats?: () => Promise<Record<string, string>>;
   /** Launches no claim followed, read by the caller through Armada when signed in. */
   launches?: () => Promise<PendingLaunch[]>;
   fetch?: Fetch;
@@ -361,10 +367,11 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches] = await Promise.all([
+  const [{ program, forge, forgeError }, events, launches, heartbeats] = await Promise.all([
     readStatusSources(config, opts),
     eventsP,
     launchesP,
+    opts.heartbeats?.().catch(() => undefined),
   ]);
   return buildStatus({
     config,
@@ -372,6 +379,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     forge,
     forgeError,
     ...(events.events ? { lastEvents: events.events } : {}),
+    ...(heartbeats ? { heartbeats } : {}),
     ...(launches.launches ? { launches: launches.launches } : {}),
     extraWarnings: [events.warning, launches.warning].filter((w): w is string => !!w),
     now: now(),

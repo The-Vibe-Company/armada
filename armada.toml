@@ -18,7 +18,8 @@ runtime_group = "Agent runtime"
 repository = "The-Vibe-Company/armada"
 
 [policy]
-silence_minutes = 15    # a worker with no report for longer than this shows as silent
+silence_minutes = 15    # no heartbeat: probably stopped; old clients use reports
+quiet_minutes = 45      # alive but no report: a coordinator-only note
 
 [gates]
 required_checks = ["Lint, typecheck and test"]

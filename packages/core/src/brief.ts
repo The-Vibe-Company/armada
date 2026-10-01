@@ -533,11 +533,22 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       : []),
     subagent ? "## Then: install Armada and claim the ticket" : "## First: install Armada and claim the ticket",
     "",
+    ...(subagent
+      ? [
+          "Run install, login and claim first. Immediately after claim, run the final heartbeat line as a separate Bash tool call with `run_in_background: true`; keep that Bash owned by this subagent.",
+          "",
+        ]
+      : []),
     "```sh",
     b.install,
     ...(b.launch ? [b.launch.command] : []),
     b.claimCommand,
+    `armada heartbeat --every 5m --ticket ${t.id} --handle ${subagent ? subagentName(t.id) : CONDUCTOR_HANDLE} --parent "$PPID"${subagent ? "" : " --background"}`,
     "```",
+    "",
+    subagent
+      ? "Keep this Bash heartbeat in the subagent's background: it dies with the subagent, which is intended. Do not detach it from the subagent. If background processes are unavailable, report manually at least every 15 minutes."
+      : "The heartbeat detaches from the short-lived command shell (a new process group, like nohup + setsid), keeps a PID file under ~/.config/armada/watch/, and stays alive between turns and while waiting for messages. Its parent is the persistent agent PID ($PPID in the command shell), never the shell PID ($$). If startup fails or the runtime cannot keep a background process, report manually at least every 15 minutes instead.",
     "",
     `${b.armadaVersion.pinned === b.armadaVersion.coordinator ? "This installs the coordinator's Armada version." : `This installs Armada ${b.armadaVersion.pinned}, the newest on npm (the coordinator runs ${b.armadaVersion.coordinator}, not published yet).`} If the global install is refused, use \`${b.fallback}\` wherever this brief or the skill says \`armada\`.`,
     ...(b.launch

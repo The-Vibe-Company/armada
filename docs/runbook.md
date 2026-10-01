@@ -1,5 +1,13 @@
 # Runbook: start a coordinator
 
+## Worker liveness
+
+Launch briefs start a heartbeat immediately after claim. On Conductor Cloud it must detach from the short-lived command shell: `armada heartbeat --every 5m --parent "$PPID" --background` uses a new process group (like `nohup` + `setsid`) and a PID file under `~/.config/armada/watch/`. Plain background `&` and `nohup` alone can be killed by command-tool cleanup. The persistent agent parent must survive between turns; do not pass the shell's `$$`. The PID file prevents duplicates for the same current claim.
+
+Claude Code subagents use their own background Bash (`run_in_background: true`), never detached startup: background Bash dies with the subagent, which is intended. Where no background process is possible, or startup fails, the worker records the fallback and reports manually at least every 15 minutes. Older CLIs retain that manual rule. Heartbeats stop with the parent or when Armada releases, merges or revokes the current session.
+
+Reports are progress at real steps, not liveness. Configure missing liveness with `[policy] silence_minutes` (15 by default) and a live worker without progress with `quiet_minutes` (45 by default). A quiet worker gets a softer coordinator-only note; it is not an owner action or a red dashboard state.
+
 A coordinator is an agent session (Claude Code, Codex or another) that follows the `armada-coordinator` skill on one project: it launches workers, answers their questions, merges their pull requests and reports to the owner. Its state lives in Linear, GitHub and Armada, never in its own context, so it can be started anywhere: on a laptop, or in a Conductor Cloud workspace. It signs in to Armada, which keeps the organization's keys; no runtime needs a key of its own. This runbook says what the owner sets up once, how to start a coordinator in each place, and how one coordinator hands over to the next.
 
 One project has one coordinator at a time.
