@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.17](https://github.com/The-Vibe-Company/armada/compare/v0.2.16...v0.2.17) (2026-10-01)
+
+
+### Features
+
+* **cli:** choose worker profiles from plain-language rules ([#96](https://github.com/The-Vibe-Company/armada/issues/96)) ([4eacd91](https://github.com/The-Vibe-Company/armada/commit/4eacd91985917448beb073e8aa3b66095fad8a4c))
+
 ## [0.2.16](https://github.com/The-Vibe-Company/armada/compare/v0.2.15...v0.2.16) (2026-10-01)
 
 

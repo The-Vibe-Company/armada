@@ -5,12 +5,38 @@ import { DEMO_TOML } from "./support.ts";
 
 // The template's routing: web → opus, api → codex, Bug → debug, default opus.
 const routed = parseConfig(
-  configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+  configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }).replace(
+    /^when = .*\n/gm,
+    "",
+  ),
 );
 const choose = (labels: string[], requested: string | null = null, reason: string | null = null) =>
   chooseProfile(routed, { ticket: "DEMO-7", labels, requested, reason });
 
 describe("choosing a worker's profile", () => {
+  test("plain-language rules defer unmatched tickets to the coordinator, even with a default or only profile", () => {
+    const semantic = parseConfig(
+      configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+    );
+    const pick = (labels: string[], requested: string | null = null, reason: string | null = null) =>
+      chooseProfile(semantic, { ticket: "DEMO-7", labels, requested, reason });
+    expect(pick(["web"])).toMatchObject({ name: "opus", source: "rule" });
+    expect(() => pick([])).toThrow('armada brief DEMO-7 --profile <name> --reason "<why>"');
+    expect(() => pick([], "codex")).toThrow('--reason "<why>"');
+    expect(pick([], "codex", "  CLI and core\n rules (back end) ")).toMatchObject({
+      name: "codex",
+      routed: null,
+      reason: "CLI and core rules (back end)",
+      why: "Chosen by the coordinator: CLI and core rules (back end)",
+    });
+    const only = parseConfig(
+      `${DEMO_TOML}\n[conductor.profiles.backend]\nagent = "codex"\nmodel = "m"\neffort = "high"\nwhen = "back end"\n`,
+    );
+    expect(() => chooseProfile(only, { ticket: "DEMO-7", labels: [], requested: null, reason: null })).toThrow(
+      "Choose a profile",
+    );
+  });
+
   test("the first rule in file order wins, whatever the order of the ticket's labels; labels ignore case", () => {
     expect(choose(["api"])).toMatchObject({
       name: "codex",

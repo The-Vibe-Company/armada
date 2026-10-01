@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
+import { normalizeComment } from "../src/linear.ts";
 import { buildStatus, loadStatus, readStatusSources, refreshStatusSources } from "../src/status.ts";
 import { DEMO_TOML, demoConfig, issue, NOW, recordedFetch } from "./support.ts";
 
@@ -105,6 +106,43 @@ profile = "codex"
 });
 
 describe("buildStatus", () => {
+  test("the claim's profile reason reaches status and unmatched semantic tickets have no ready route", () => {
+    const config = parseConfig(
+      `${DEMO_TOML}\n[conductor]\ndefault_profile = "backend"\n[conductor.profiles.backend]\nagent = "codex"\nmodel = "m"\neffort = "high"\nwhen = "CLI, core rules and tests"\n[[conductor.routing]]\nlabels = ["api"]\nprofile = "backend"\n`,
+    );
+    const reason = "Mostly CLI and core rules";
+    const report = buildStatus({
+      config,
+      program: {
+        rootId: "DEMO-1",
+        fetchedAt: NOW.toISOString(),
+        warnings: [],
+        issues: [
+          issue("DEMO-1"),
+          issue("DEMO-2", { parentId: "DEMO-1", agentPhase: "planning" }),
+          issue("DEMO-3", { parentId: "DEMO-1" }),
+          issue("DEMO-4", { parentId: "DEMO-1", labels: ["api"] }),
+        ],
+        comments: [
+          normalizeComment(
+            {
+              id: "claim-2",
+              createdAt: NOW.toISOString(),
+              user: { name: "Ada Worker" },
+              body: `Agent claim — runtime: Conductor · session: ws-1 · profile: backend\nProfile reason: ${reason}`,
+            },
+            "DEMO-2",
+          ),
+        ],
+      },
+      forge: null,
+      now: NOW,
+    });
+    expect(report.inFlight[0]).toMatchObject({ profile: "backend", profileReason: reason });
+    expect(report.frontier.find((ticket) => ticket.id === "DEMO-3")?.route).toBeNull();
+    expect(report.frontier.find((ticket) => ticket.id === "DEMO-4")?.route?.profile).toBe("backend");
+  });
+
   test("each ready ticket keeps its own labels, without the ready label, for a project's page", () => {
     const config = demoConfig();
     const r = buildStatus({

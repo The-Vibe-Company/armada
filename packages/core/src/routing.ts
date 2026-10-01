@@ -1,6 +1,6 @@
 // Which Conductor profile a worker runs on. The ticket's Linear labels route
-// it (`[[conductor.routing]]`, first match in file order), `default_profile`
-// catches the rest, and the coordinator may override the route with `--profile`
+// it (`[[conductor.routing]]`, first match in file order); plain-language `when`
+// rules ask the coordinator instead of using a default. It may override a route with `--profile`
 // only when it says why. Pure: the caller brings the ticket's labels.
 import { type ArmadaConfig, type ConductorProfile, routingLabelKey } from "./config.ts";
 
@@ -29,7 +29,7 @@ export interface ProfileChoice {
   rule: MatchedRule | null;
   /** The profile routing recommends; differs from `name` when the coordinator overrode it. */
   routed: string | null;
-  /** Why the coordinator overrode the route; required then, when armada.toml has routing rules. */
+  /** Why the coordinator chose or overrode the profile; required for semantic choices and routing overrides. */
   reason: string | null;
   /** One line saying why this profile, for people. */
   why: string;
@@ -40,7 +40,13 @@ export class ProfileError extends Error {
   override name = "ProfileError";
 }
 
-/** The profile a ticket with these labels is routed to: first matching rule, else the default, else the only profile. */
+export const hasProfileRules = (config: ArmadaConfig): boolean =>
+  Object.values(config.conductor.profiles).some((profile) => !!profile.when);
+
+export const profileChoiceHint = (ticket: string): string =>
+  `Choose a profile: read the ticket and its parent, match the profiles' when rules, then run armada brief ${ticket} --profile <name> --reason "<why>"`;
+
+/** First matching label rule; `when` rules defer to the coordinator, otherwise the default or only profile. */
 export function routeProfile(config: ArmadaConfig, labels: string[]): Route | null {
   const { routing, defaultProfile, profiles } = config.conductor;
   for (const [i, rule] of routing.entries()) {
@@ -49,6 +55,7 @@ export function routeProfile(config: ArmadaConfig, labels: string[]): Route | nu
     if (label !== undefined)
       return { name: rule.profile, source: "rule", rule: { index: i + 1, labels: rule.labels, label } };
   }
+  if (hasProfileRules(config)) return null;
   if (defaultProfile) return { name: defaultProfile, source: "default", rule: null };
   const names = Object.keys(profiles);
   return names.length === 1 && names[0] ? { name: names[0], source: "only", rule: null } : null;
@@ -84,6 +91,8 @@ export function chooseProfile(
   // One line: it is recorded in the claim comment.
   const reason = input.reason?.replace(/\s+/g, " ").trim() || null;
   const route = routeProfile(config, input.labels);
+  const semantic = !route && hasProfileRules(config);
+  if (semantic && (input.requested === null || !reason)) throw new ProfileError(profileChoiceHint(input.ticket));
   if (input.requested === null) {
     if (route && Object.hasOwn(profiles, route.name))
       return {
@@ -118,6 +127,8 @@ export function chooseProfile(
     throw new ProfileError(
       `${input.ticket} is routed to "${route.name}" by ${describeRoute(route, config)}; say why "${name}" instead with --reason "<why>"`,
     );
-  const why = `--profile${route ? `, instead of "${route.name}" from ${describeRoute(route, config)}` : ""}${reason ? `: ${reason}` : ""}`;
+  const why = semantic
+    ? `Chosen by the coordinator: ${reason}`
+    : `--profile${route ? `, instead of "${route.name}" from ${describeRoute(route, config)}` : ""}${reason ? `: ${reason}` : ""}`;
   return { name, profile, source: "requested", rule: null, routed: route?.name ?? null, reason, why };
 }

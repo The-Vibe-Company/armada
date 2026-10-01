@@ -633,7 +633,7 @@ describe("requests from the dashboard", () => {
     const shown = await loadOverview(w.opts);
     expect(shown.ready.map((r) => [r.id, r.route?.profile, r.launch])).toEqual([
       ["WID-3", "codex", null],
-      ["WID-4", "opus", null],
+      ["WID-4", undefined, null],
     ]);
     const launch = { project: "widgets", profile: null, author: "Ada" };
 
@@ -643,6 +643,11 @@ describe("requests from the dashboard", () => {
       code: "unknown-project",
     });
     expect(await submitLaunch(w.opts, { ...launch, ticket: "WID-3" })).toMatchObject({ ok: true });
+    expect(await submitLaunch(w.opts, { ...launch, ticket: "WID-4" })).toMatchObject({ ok: true });
+    expect((await loadOverview(w.opts)).ready.find((ticket) => ticket.id === "WID-4")?.launch).toMatchObject({
+      author: "Ada",
+      profile: null,
+    });
     // Claimed after the Linear read: the next reading already has it in flight.
     await saveRuntimeHandle(db, {
       project: "widgets",

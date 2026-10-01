@@ -45,6 +45,7 @@ export interface InFlightTicket extends TicketRef {
   handle: string | null;
   /** The Conductor profile its claim named (live runtime handle, else the claim comment); null when none. */
   profile: string | null;
+  profileReason?: string | null;
   agent: string | null;
   since: string;
   lastUpdate: string;
@@ -202,6 +203,7 @@ export function buildStatus({
       runtime: l.runtime,
       handle: l.handle,
       profile: live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null,
+      profileReason: l.claim?.profileReason ?? null,
       agent: l.agent,
       since: l.since,
       lastUpdate: l.lastUpdate,

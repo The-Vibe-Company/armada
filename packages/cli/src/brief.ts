@@ -21,7 +21,9 @@ import {
   loadBrief,
   MASKED_LAUNCH_TOKEN,
   ProfileError,
+  type ProfileSelectionBrief,
   STORED_KEYS,
+  shellWord,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
@@ -53,6 +55,7 @@ export function hideLaunchToken(b: Brief): Brief {
 
 export function renderBrief(b: Brief): string {
   const p = b.profile;
+  const promptCommand = `armada brief ${b.ticket.id}${p && (b.routing?.source === "requested" || b.routing?.reason) ? ` --profile ${shellWord(p.name)}${b.routing?.reason ? ` --reason ${shellWord(b.routing.reason)}` : ""}` : ""} --prompt`;
   const width = Math.max(...b.environment.map((v) => v.name.length + (v.value ? v.value.length + 1 : 0)));
   const out = [
     `Brief for ${b.ticket.id} — ${b.ticket.title} (${b.ticket.status})`,
@@ -65,7 +68,7 @@ export function renderBrief(b: Brief): string {
     ...(b.conventions ? [`Conventions: ${b.conventions.path} (under "Project conventions" in the prompt)`] : []),
     `Repository:  ${b.repository.url}`,
     `Branch:      ${b.ticket.branch ?? "none suggested by Linear"} (the worker renames its workspace branch to it)`,
-    `Launch:      ${b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key\n             (shown as ${HIDDEN_LAUNCH_TOKEN} here; \`armada brief ${b.ticket.id} --prompt\` prints it)` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`}`,
+    `Launch:      ${b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key\n             (shown as ${HIDDEN_LAUNCH_TOKEN} here; \`${promptCommand}\` prints it)` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`}`,
     "",
     "Environment to pass (values are never printed):",
     ...b.environment.map((v) => {
@@ -81,8 +84,26 @@ export function renderBrief(b: Brief): string {
     }),
   ];
   if (b.warnings.length) out.push("", "Warnings:", ...b.warnings.map((w) => `  - ${w}`));
-  out.push("", `----- prompt (\`armada brief ${b.ticket.id} --prompt\` prints only this) -----`, "", b.prompt);
+  out.push("", `----- prompt (\`${promptCommand}\` prints only this) -----`, "", b.prompt);
   return out.join("\n");
+}
+
+export function renderProfileSelection(b: ProfileSelectionBrief): string {
+  return [
+    `Choose a profile for ${b.ticket.id} — ${b.ticket.title}`,
+    b.ticket.url,
+    "",
+    "In short:",
+    b.ticket.inShort || "No In short section on this ticket; read the full ticket before choosing.",
+    "",
+    ...(b.parent ? [`Parent: ${b.parent.id} — ${b.parent.title} (${b.parent.url}). Read it before choosing.`, ""] : []),
+    ...b.selection.profiles.map(
+      (profile) => `  ${profile.name}: ${profile.when ?? "no when rule; choose only with a reason"}`,
+    ),
+    "",
+    b.selection.hint,
+    ...b.warnings.map((warning) => `Warning: ${warning}`),
+  ].join("\n");
 }
 
 /**
@@ -142,7 +163,7 @@ export async function brief(
   const conventions = extraPath
     ? { path: extraPath, text: await io.readFile(join(dirname(configPath), extraPath)).catch(() => null) }
     : null;
-  let b: Brief;
+  let b: Brief | ProfileSelectionBrief;
   try {
     b = await loadBrief(config, {
       linearApiKey: credentials.linearApiKey,
@@ -162,6 +183,11 @@ export async function brief(
   } catch (err) {
     if (err instanceof BriefError) throw new UsageError(err.message);
     throw err;
+  }
+  if ("selection" in b) {
+    if (promptOnly) throw new UsageError(b.selection.hint);
+    io.stdout(`${a.json ? JSON.stringify(b, null, 2) : renderProfileSelection(b)}\n`);
+    return 0;
   }
   // Once this worker is launched, it is in flight with the ones known before: the stop hook counts it at once.
   const project = config.project.slug;
