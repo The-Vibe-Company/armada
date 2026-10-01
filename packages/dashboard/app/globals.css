@@ -2005,7 +2005,7 @@ a.ui-row:hover {
   -webkit-mask: radial-gradient(circle, transparent 0 42%, #000 46%);
   mask: radial-gradient(circle, transparent 0 42%, #000 46%);
 }
-.pj-row .ui-row-title {
+.ui-row.pj-row .ui-row-title {
   flex: none;
   max-width: 60%;
 }
