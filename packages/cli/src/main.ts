@@ -2,6 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { isatty } from "node:tty";
 import { run } from "./cli.ts";
 import type { Exec } from "./io.ts";
@@ -101,6 +102,10 @@ const exec: Exec = (command, args, { cwd }) =>
   });
 
 const code = await run(process.argv.slice(2), {
+  machineName: hostname(),
+  ttyName: process.stdin.isTTY
+    ? spawnSync("tty", [], { encoding: "utf8", stdio: ["inherit", "pipe", "ignore"] }).stdout?.trim() || null
+    : null,
   cwd: process.cwd(),
   env: process.env,
   // Only "not there" means keep searching upward; any other error must surface.

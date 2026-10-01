@@ -26,7 +26,10 @@ export type RequestRefusalCode =
   | "not-ready"
   | "in-flight"
   | "unknown-profile"
-  | "launch-waiting";
+  | "launch-waiting"
+  | "no-pr"
+  | "no-session"
+  | "request-waiting";
 
 export class RequestRefusal extends Error {
   override name = "RequestRefusal";
@@ -160,4 +163,78 @@ export async function requestLaunch(db: RequestStore, input: LaunchRequestInput)
   });
   if (item === null) throw new RequestRefusal("launch-waiting", `a launch of ${id} already waits for the coordinator`);
   return item;
+}
+
+type SteeringInput = { project: string; author: string; now: Date };
+
+export async function requestMerge(
+  db: RequestStore,
+  input: SteeringInput & { pr: number; openPrs: readonly number[]; ticket?: string | null },
+): Promise<number> {
+  if (!Number.isSafeInteger(input.pr) || input.pr <= 0 || !input.openPrs.includes(input.pr))
+    throw new RequestRefusal("no-pr", `PR #${input.pr} is not open in ${input.project}`);
+  const id = await db.addRequest({
+    project: input.project,
+    ticket: input.ticket ?? null,
+    kind: "merge-request",
+    author: requestAuthor(input.author),
+    body: `Please merge PR #${input.pr}.`,
+    question: null,
+    profile: null,
+    pr: input.pr,
+    at: input.now,
+  });
+  if (id === null)
+    throw new RequestRefusal("request-waiting", `a merge of PR #${input.pr} already waits for the coordinator`);
+  return id;
+}
+
+export async function requestRelease(db: RequestStore, input: SteeringInput & { ticket: string }): Promise<number> {
+  const ticket = input.ticket.trim().toUpperCase();
+  const handle = await db.getRuntimeHandle(input.project, ticket);
+  if (!handle || handle.releasedAt) throw new RequestRefusal("no-session", `${ticket} has no session to release`);
+  const id = await db.addRequest({
+    project: input.project,
+    ticket,
+    kind: "release-request",
+    author: requestAuthor(input.author),
+    body: `Please release ${ticket}.`,
+    question: null,
+    profile: null,
+    at: input.now,
+  });
+  if (id === null)
+    throw new RequestRefusal("request-waiting", `a release of ${ticket} already waits for the coordinator`);
+  return id;
+}
+
+export async function requestPlanChanges(
+  db: RequestStore,
+  input: SteeringInput & { question: number; text: string },
+): Promise<number> {
+  const author = requestAuthor(input.author);
+  const body = input.text.replace(/\r\n?/g, "\n").trim();
+  if (!body) throw new RequestRefusal("empty-answer", "the plan amendments are empty");
+  if (body.length > REQUEST_LIMITS.answer)
+    throw new RequestRefusal("answer-too-long", `plan amendments have at most ${REQUEST_LIMITS.answer} characters`);
+  const plan = await db.getInboxItem(input.project, input.question);
+  if (plan?.kind !== "plan" || plan.recipient !== "coordinator" || !plan.ticket)
+    throw new RequestRefusal("no-question", `plan #${input.question} does not exist in ${input.project}`);
+  if (plan.resolvedAt) throw new RequestRefusal("question-closed", `plan #${plan.id} is already closed`);
+  const id = await db.addRequest({
+    project: input.project,
+    ticket: plan.ticket,
+    kind: "plan-changes",
+    author,
+    body,
+    question: plan.id,
+    profile: null,
+    at: input.now,
+  });
+  if (id === null) {
+    if ((await db.getInboxItem(input.project, plan.id))?.resolvedAt)
+      throw new RequestRefusal("question-closed", `plan #${plan.id} is already closed`);
+    throw new RequestRefusal("request-waiting", `amendments to plan #${plan.id} already wait for the coordinator`);
+  }
+  return id;
 }

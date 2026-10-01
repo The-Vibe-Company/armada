@@ -41,7 +41,7 @@ Armada's app (the dashboard and the API terminals sign in to) keeps everything i
 3. Deploy. Optionally apply the schema first, from `packages/dashboard`: `ARMADA_DATABASE_URL=<direct, not pooled, URL> bun run db migrate`; otherwise the first request applies it.
 4. Sign in with GitHub as an owner address and create the organization; invite the others again.
 5. Enter the organization's keys again on Organization > Keys, and create new organization API keys for cloud coordinators: the old database's sessions, API keys and launch tokens do not carry over. Every terminal runs `armada login` again; a cloud coordinator gets its new key as `ARMADA_API_KEY`.
-6. Register each project once: `armada init` from a signed-in terminal registers it for that terminal's organization, and so does the first claim, report or inbox read of a signed-in terminal. From `packages/dashboard`, `ARMADA_DATABASE_URL=<URL> bun run db register <path to the project's armada.toml>` registers one with no organization; it joins the first organization on the next dashboard read.
+6. Register each project once: `armada init` from a signed-in terminal registers it for that terminal's organization, and so does the first claim, report or inbox read of a signed-in terminal. The first person running `init` becomes its owner. From `packages/dashboard`, `ARMADA_DATABASE_URL=<URL> bun run db register <path to the project's armada.toml>` registers one with no organization; it joins the first organization on the next dashboard read. This records the local username as owner; a service-account operator can add `--owner "Name"`. Later registrations preserve the first recorded owner.
 
 ## Reach the fleet through Armada
 

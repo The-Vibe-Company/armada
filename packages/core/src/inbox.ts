@@ -67,6 +67,7 @@ export interface InboxReport {
 }
 
 export interface InboxOptions {
+  facts?: import("./live.ts").CoordinatorFacts;
   project: string;
   coordinator?: string | null;
   /** `policy.silence_minutes`. */
@@ -96,6 +97,7 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   const query = {
     coordinator: o.coordinator ?? null,
     silentAfterMinutes: o.silentAfterMinutes,
+    ...(o.facts ? { facts: o.facts } : {}),
     ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
   };
   const first = await fleet.inbox({ ...query, etag: null });
@@ -149,7 +151,16 @@ function statusComment(phase: AgentPhase, word: "answer" | "note", text: string,
   return detail ? `${line}\n\n${detail}` : line;
 }
 
-const ANSWERABLE: InboxKind[] = ["question", "plan", "request", "answer-request", "launch-request"];
+const ANSWERABLE: InboxKind[] = [
+  "question",
+  "plan",
+  "request",
+  "answer-request",
+  "launch-request",
+  "merge-request",
+  "release-request",
+  "plan-changes",
+];
 
 /**
  * Records a coordinator's answer or note. It never calls a runtime: deliver it
@@ -222,6 +233,12 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   }
 
   if (item?.kind === "launch-request") return declineLaunch(ctx, item, text, warnings);
+  if (item && ["merge-request", "release-request", "plan-changes"].includes(item.kind)) {
+    const recorded = await live(ctx, warnings, "resolve the dashboard request", (fleet) =>
+      fleet.answer({ text, note: false, ticket: item.ticket, item: item.id }),
+    );
+    return { ticket: item.ticket ?? `#${item.id}`, url: "", lines: recorded ? [recorded] : [], warnings, inbox: null };
+  }
 
   // The question an answer-request answers; the answer-request itself is resolved with it.
   const question = item?.kind === "answer-request" ? (item.request?.question ?? null) : null;

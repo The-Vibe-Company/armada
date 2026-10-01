@@ -26,6 +26,21 @@
                   }
                 }
               ]
+            },
+            "additions": 30,
+            "deletions": 10,
+            "mergeStateStatus": "CLEAN",
+            "files": {
+              "nodes": [
+                {
+                  "path": "src/change-10.ts",
+                  "additions": 30,
+                  "deletions": 10
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false
+              }
             }
           },
           {
@@ -59,12 +74,30 @@
                             "context": "preview",
                             "state": "SUCCESS"
                           }
-                        ]
+                        ],
+                        "pageInfo": {
+                          "hasNextPage": false
+                        }
                       }
                     }
                   }
                 }
               ]
+            },
+            "additions": 27,
+            "deletions": 9,
+            "mergeStateStatus": "CLEAN",
+            "files": {
+              "nodes": [
+                {
+                  "path": "src/change-9.ts",
+                  "additions": 27,
+                  "deletions": 9
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false
+              }
             }
           },
           {
@@ -99,12 +132,30 @@
                             "status": "COMPLETED",
                             "conclusion": "FAILURE"
                           }
-                        ]
+                        ],
+                        "pageInfo": {
+                          "hasNextPage": false
+                        }
                       }
                     }
                   }
                 }
               ]
+            },
+            "additions": 24,
+            "deletions": 8,
+            "mergeStateStatus": "CLEAN",
+            "files": {
+              "nodes": [
+                {
+                  "path": "src/change-8.ts",
+                  "additions": 24,
+                  "deletions": 8
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false
+              }
             }
           },
           {
@@ -133,12 +184,30 @@
                             "status": "IN_PROGRESS",
                             "conclusion": null
                           }
-                        ]
+                        ],
+                        "pageInfo": {
+                          "hasNextPage": false
+                        }
                       }
                     }
                   }
                 }
               ]
+            },
+            "additions": 21,
+            "deletions": 7,
+            "mergeStateStatus": "UNKNOWN",
+            "files": {
+              "nodes": [
+                {
+                  "path": "src/change-7.ts",
+                  "additions": 21,
+                  "deletions": 7
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false
+              }
             }
           }
         ]
@@ -171,12 +240,30 @@
                             "status": "COMPLETED",
                             "conclusion": "SUCCESS"
                           }
-                        ]
+                        ],
+                        "pageInfo": {
+                          "hasNextPage": false
+                        }
                       }
                     }
                   }
                 }
               ]
+            },
+            "additions": 18,
+            "deletions": 6,
+            "mergeStateStatus": "CLEAN",
+            "files": {
+              "nodes": [
+                {
+                  "path": "src/change-6.ts",
+                  "additions": 18,
+                  "deletions": 6
+                }
+              ],
+              "pageInfo": {
+                "hasNextPage": false
+              }
             }
           }
         ]

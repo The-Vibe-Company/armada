@@ -5,9 +5,9 @@ import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequest
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import { notStartedBody, notStartedLaunches, type PendingLaunch } from "./live.ts";
-import { buildModel } from "./model.ts";
+import { buildModel, isDone } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
-import type { AgentPhase, CiState, ForgeData, ProgramData } from "./types.ts";
+import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest } from "./types.ts";
 
 export const STATUS_SCHEMA_VERSION = 1;
 
@@ -19,6 +19,13 @@ export interface TicketRef {
 }
 
 export interface PrRef {
+  files?: PullRequest["files"];
+  additions?: number | null;
+  deletions?: number | null;
+  filesComplete?: boolean;
+  checksComplete?: boolean;
+  mergeability?: PullRequest["mergeability"];
+  failingChecks?: string[];
   number: number;
   url: string;
   title: string;
@@ -74,6 +81,7 @@ export interface NotStartedLaunch extends PendingLaunch {
 }
 
 export interface StatusReport {
+  progress?: { done: number; total: number };
   schemaVersion: typeof STATUS_SCHEMA_VERSION;
   generatedAt: string;
   project: { name: string; slug: string; repository: string };
@@ -137,14 +145,23 @@ export function buildStatus({
     ...(live ? { live } : {}),
   });
   const phaseOf = new Map(lanes.map((l) => [l.issue.id, l.phase]));
-  const prRef = (p: {
-    number: number;
-    url: string;
-    title: string;
-    draft?: boolean;
-    ci?: CiState;
-    mergeable?: string;
-  }): PrRef => ({
+  const prRef = (
+    p: PullRequest & {
+      number: number;
+      url: string;
+      title: string;
+      draft?: boolean;
+      ci?: CiState;
+      mergeable?: string;
+    },
+  ): PrRef => ({
+    files: p.files ?? null,
+    additions: p.additions ?? null,
+    deletions: p.deletions ?? null,
+    filesComplete: p.filesComplete ?? false,
+    checksComplete: p.checksComplete ?? false,
+    mergeability: p.mergeability ?? "unknown",
+    failingChecks: (p.checks ?? []).filter((check) => check.state === "failure").map((check) => check.name),
     number: p.number,
     url: p.url,
     title: p.title,
@@ -155,6 +172,10 @@ export function buildStatus({
 
   return {
     schemaVersion: STATUS_SCHEMA_VERSION,
+    progress: {
+      done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
+      total: m.program.filter(m.isLeaf).length,
+    },
     generatedAt: now.toISOString(),
     project: { name: config.project.name, slug: config.project.slug, repository: config.github.repository },
     programRoot: { id: m.root.id, title: m.root.title, url: m.root.url },
