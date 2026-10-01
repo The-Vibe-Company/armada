@@ -58,13 +58,13 @@ export function ProjectsScreen() {
                   <ProjectChip slug={p.slug} bare />
                 </RowIcon>
                 <RowText title={p.name} line={<span className="mono">{projectLine(p)}</span>} />
-                <RowSide roomy>
+                <RowSide roomy width={230}>
                   <CoordinatorState project={p} />
                 </RowSide>
-                <RowSide>
+                <RowSide width={90}>
                   <Figure label={t.shell.inFlight} value={p.inFlight} />
                 </RowSide>
-                <RowSide>
+                <RowSide width={140}>
                   <Figure
                     label={t.shell.waitingForYou}
                     value={waiting}

@@ -127,9 +127,17 @@ export function RowText({ title, line, lineColor }: { title: ReactNode; line?: R
   );
 }
 
-/** What a row shows on its right, before its time: a tag, a figure, an action. */
-export function RowSide({ children, roomy = false }: { children: ReactNode; roomy?: boolean }) {
-  return <span className={cx("ui-row-side", roomy && "is-roomy")}>{children}</span>;
+/**
+ * What a row shows on its right, before its time: a tag, a figure, an
+ * action. `width` fixes the column, so it lines up from row to row; `roomy`
+ * hides it on narrow screens.
+ */
+export function RowSide({ children, roomy = false, width }: { children: ReactNode; roomy?: boolean; width?: number }) {
+  return (
+    <span className={cx("ui-row-side", roomy && "is-roomy")} style={width ? { width } : undefined}>
+      {children}
+    </span>
+  );
 }
 
 /** A row's time or figure on the far right, in Geist Mono. */

@@ -691,10 +691,11 @@ button.chip:hover {
   margin-bottom: 34px;
 }
 .login-card h1 {
-  font-size: 42px;
-  line-height: 1;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.1;
   margin: 0;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.028em;
 }
 .login-lead {
   margin: 12px 0 26px;
@@ -2014,6 +2015,9 @@ a.ui-row:hover {
   border: 1px solid var(--line);
   background: var(--surface);
   overflow: hidden;
+}
+.ds-items > .ds-frame {
+  flex: 1;
 }
 .ds-frame .ui-section-h {
   position: static;

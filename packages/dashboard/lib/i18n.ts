@@ -1,7 +1,7 @@
 // Interface strings in English and French. The language is the dashboard's
 // own setting: the viewer's choice (a cookie), else ARMADA_DASHBOARD_LANGUAGE,
 // else English. Tracker content (titles, statuses, questions) is shown as is.
-import type { AgentPhase, CoordinatorState, LaneFlag, RequestRefusalCode, WaitingKind } from "@armada/core/read";
+import type { AgentPhase, RequestRefusalCode, WaitingKind } from "@armada/core/read";
 import type { AgentStatus, Density, Section, StatusReason } from "./fleet-view";
 
 export const LANGUAGES = ["en", "fr"] as const;
@@ -92,23 +92,9 @@ const elapsed = (ms: number, day: string) => (ms < MIN ? `${Math.max(0, Math.rou
 const en = {
   htmlTitle: "Armada — fleet",
   brandSub: "fleet",
-  kicker: "Every project · live",
-  heading: "Fleet",
-  atWorkLine: (n: number) => (n === 0 ? "No agent at work" : n === 1 ? "1 agent at work" : `${n} agents at work`),
-  waitingLine: (n: number) =>
-    n === 0 ? "nothing waits for you" : n === 1 ? "1 thing waits for you" : `${n} things wait for you`,
-  stats: { waiting: "Waiting for you", atWork: "At work", silent: "Silent", redCi: "Red CI" },
+  stats: { silent: "Silent", redCi: "Red CI" },
   projects: "Projects",
   allProjects: "All projects",
-  coordinator: {
-    active: "coordinator active",
-    idle: "coordinator idle",
-    unknown: "coordinator unknown",
-  } satisfies Record<CoordinatorState, string>,
-  coordinatorHint: (state: CoordinatorState, ago: string | null) =>
-    state === "unknown"
-      ? "No inbox read recorded for this project's coordinator"
-      : `The coordinator last read its inbox ${ago} ago`,
   waitingTitle: "Waiting for you",
   waitingEmpty: "Nothing waits for you.",
   coordinatorLate: (d: string) => `waiting for the coordinator for ${d}`,
@@ -127,41 +113,8 @@ const en = {
     "not-started": "Never started",
     silent: "Silent",
   } satisfies Record<WaitingKind, string>,
-  phases: {
-    planning: "Planning",
-    "awaiting-approval": "Awaiting approval",
-    implementing: "Implementing",
-    shipping: "Shipping",
-    blocked: "Blocked",
-    "ready-to-merge": "Ready to merge",
-    released: "Released",
-    merged: "Merged, ticket still open",
-  } satisfies Record<AgentPhase, string>,
-  ciRunning: "CI running",
-  ciRed: "Red CI",
-  steps: ["Plan", "Approval", "Build", "PR", "CI", "Merge"],
-  flags: {
-    silent: "silent",
-    "ci-failing": "red CI",
-    conflict: "conflict",
-    "double-claim": "double claim",
-    "started-before-blockers": "started before its blockers",
-    "no-assignee": "no assignee",
-    "no-phase-label": "no phase label",
-  } satisfies Record<LaneFlag, string>,
-  ci: { success: "CI green", failure: "CI red", pending: "CI running", none: "no CI" },
-  draft: "draft",
-  merged: "merged",
   noPr: "no pull request yet",
-  inPhase: "in phase",
   lastReport: "last report",
-  neverReported: "no report yet",
-  runtimeUnknown: "runtime ?",
-  sourceLive: "Phase from a report newer than the last Linear read",
-  sourceInferred: "Phase inferred from Linear and GitHub (no phase label)",
-  sourceStatusLine: "Phase from the latest status comment (no phase label)",
-  question: "Question",
-  open: "Open",
   duration: (ms: number) => duration(ms, "d"),
   ago: (ms: number) => (ms < MIN ? "just now" : `${duration(ms, "d")} ago`),
   live: { ok: "Live", unreachable: "Linear + GitHub only", off: "Linear + GitHub only" },
@@ -494,8 +447,6 @@ const en = {
   answer: "Answer",
   approve: "Approve",
   approvalLabel: (ticket: string) => `Your approval or amendments to the plan on ${ticket}`,
-  answerSent: "answer sent",
-  plan: "plan",
   answerLabel: (ticket: string) => `Your answer to the question on ${ticket}`,
   answerPlaceholder: "Your decision, and why. The coordinator delivers it to the worker and records it on the ticket.",
   quickAnswer: "Answer with this option",
@@ -660,27 +611,9 @@ export type Strings = typeof en;
 const fr: Strings = {
   htmlTitle: "Armada — flotte",
   brandSub: "flotte",
-  kicker: "Tous les projets · en direct",
-  heading: "Flotte",
-  atWorkLine: (n) => (n === 0 ? "Aucun agent au travail" : n === 1 ? "1 agent au travail" : `${n} agents au travail`),
-  waitingLine: (n) =>
-    n === 0
-      ? "rien n'attend ta décision"
-      : n === 1
-        ? "1 point attend ta décision"
-        : `${n} points attendent ta décision`,
-  stats: { waiting: "À toi de jouer", atWork: "Au travail", silent: "Silencieux", redCi: "CI rouge" },
+  stats: { silent: "Silencieux", redCi: "CI rouge" },
   projects: "Projets",
   allProjects: "Tous les projets",
-  coordinator: {
-    active: "coordinateur actif",
-    idle: "coordinateur inactif",
-    unknown: "coordinateur inconnu",
-  },
-  coordinatorHint: (state, ago) =>
-    state === "unknown"
-      ? "Aucune lecture de boîte enregistrée pour le coordinateur de ce projet"
-      : `Le coordinateur a lu sa boîte il y a ${ago}`,
   waitingTitle: "À toi de jouer",
   waitingEmpty: "Rien n'attend ta décision.",
   coordinatorLate: (d) => `attend le coordinateur depuis ${d}`,
@@ -698,41 +631,8 @@ const fr: Strings = {
     "not-started": "Jamais démarré",
     silent: "Silencieux",
   },
-  phases: {
-    planning: "Planification",
-    "awaiting-approval": "Attend approbation",
-    implementing: "Implémentation",
-    shipping: "Livraison",
-    blocked: "Bloqué",
-    "ready-to-merge": "Prêt à fusionner",
-    released: "Libéré",
-    merged: "Fusionné, ticket ouvert",
-  },
-  ciRunning: "CI en cours",
-  ciRed: "CI rouge",
-  steps: ["Plan", "Approbation", "Implémentation", "PR", "CI", "Fusion"],
-  flags: {
-    silent: "silencieux",
-    "ci-failing": "CI rouge",
-    conflict: "conflit",
-    "double-claim": "double claim",
-    "started-before-blockers": "démarré avant ses bloquants",
-    "no-assignee": "sans assigné",
-    "no-phase-label": "sans label de phase",
-  },
-  ci: { success: "CI verte", failure: "CI rouge", pending: "CI en cours", none: "sans CI" },
-  draft: "brouillon",
-  merged: "fusionnée",
   noPr: "pas encore de pull request",
-  inPhase: "dans la phase",
   lastReport: "dernier rapport",
-  neverReported: "aucun rapport",
-  runtimeUnknown: "runtime ?",
-  sourceLive: "Phase issue d'un rapport plus récent que la dernière lecture Linear",
-  sourceInferred: "Phase déduite de Linear et GitHub (pas de label de phase)",
-  sourceStatusLine: "Phase issue du dernier commentaire de statut (pas de label de phase)",
-  question: "Question",
-  open: "Ouvrir",
   duration: (ms) => duration(ms, "j"),
   ago: (ms) => (ms < MIN ? "à l'instant" : `il y a ${duration(ms, "j")}`),
   live: { ok: "En direct", unreachable: "Linear + GitHub seulement", off: "Linear + GitHub seulement" },
@@ -1064,8 +964,6 @@ const fr: Strings = {
   answer: "Répondre",
   approve: "Approuver",
   approvalLabel: (ticket) => `Ton approbation ou tes modifications au plan de ${ticket}`,
-  answerSent: "réponse envoyée",
-  plan: "plan",
   answerLabel: (ticket) => `Ta réponse à la question de ${ticket}`,
   answerPlaceholder: "Ta décision, et pourquoi. Le coordinateur la transmet au worker et la note sur le ticket.",
   quickAnswer: "Répondre avec cette option",

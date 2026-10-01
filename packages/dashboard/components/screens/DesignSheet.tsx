@@ -5,7 +5,7 @@
 // Agents page uses it, with when to use each part; then every shared
 // component in its states.
 import type { ReactNode } from "react";
-import { AGENT_STATUSES, HARNESSES, PROJECT_PALETTE } from "@/lib/fleet-view";
+import { AGENT_STATUSES, HARNESS_NAME, HARNESSES, PROJECT_PALETTE } from "@/lib/fleet-view";
 import {
   Card,
   CardGrid,
@@ -72,7 +72,11 @@ export function DesignSheet() {
           <div className="ds-frame" title={d.sample}>
             <PageHeader
               sample
-              title={<span className="sh-crumb">{t.shell.nav.agents}</span>}
+              title={
+                <span className="sh-crumb">
+                  <span aria-current="page">{t.shell.nav.agents}</span>
+                </span>
+              }
               hints={
                 <>
                   <Kbd>j k</Kbd>
@@ -87,7 +91,12 @@ export function DesignSheet() {
                 value="all"
                 items={[
                   { key: "all", label: t.shell.all, count: 10, dot: "var(--text-3)" },
-                  ...HARNESSES.map((h, k) => ({ key: h, label: h, count: [5, 3, 2][k], dot: harnessColor(h) })),
+                  ...HARNESSES.map((h, k) => ({
+                    key: h,
+                    label: HARNESS_NAME[h],
+                    count: [5, 3, 2][k],
+                    dot: harnessColor(h),
+                  })),
                 ]}
               />
             </Toolbar>

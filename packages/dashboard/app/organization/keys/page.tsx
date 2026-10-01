@@ -73,9 +73,11 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   if (vault.kind !== "on")
     return (
       <Page>
-        <Notice tone="critical">
-          {vault.kind === "off" ? k.vaultOff(SECRETS_KEY_VARIABLE) : k.vaultInvalid(SECRETS_KEY_VARIABLE)}
-        </Notice>
+        <Section label={k.nav} side={viewer.organization.name}>
+          <Notice tone="critical">
+            {vault.kind === "off" ? k.vaultOff(SECRETS_KEY_VARIABLE) : k.vaultInvalid(SECRETS_KEY_VARIABLE)}
+          </Notice>
+        </Section>
       </Page>
     );
 

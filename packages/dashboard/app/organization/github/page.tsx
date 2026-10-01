@@ -75,11 +75,13 @@ export default async function Github({ searchParams }: { searchParams: Params })
   if (mode.kind !== "on" || !app)
     return (
       <Page>
-        <Notice tone="critical">
-          {mode.kind === "invalid"
-            ? g.invalid(mode.reason)
-            : g.off(`${GITHUB_APP_VARIABLES.id}, ${GITHUB_APP_VARIABLES.privateKey}`)}
-        </Notice>
+        <Section label={g.nav} side={viewer.organization.name}>
+          <Notice tone="critical">
+            {mode.kind === "invalid"
+              ? g.invalid(mode.reason)
+              : g.off(`${GITHUB_APP_VARIABLES.id}, ${GITHUB_APP_VARIABLES.privateKey}`)}
+          </Notice>
+        </Section>
       </Page>
     );
 
