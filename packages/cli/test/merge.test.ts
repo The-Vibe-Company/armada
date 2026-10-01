@@ -345,6 +345,8 @@ test("a refused checklist exits 1 and names each failure", async () => {
 
 test("armada merge --wait updates a head behind main on GitHub, proves the update only brings main in, and merges it", async () => {
   const f = await fixture();
+  // The base branch requires heads to be up to date, so the update cannot be replaced by a test merge.
+  f.pr.state = "BEHIND";
   expect(await run(["merge", "9", "--wait", "--timeout", "5"], f.io)).toBe(0);
   expect(f.ghCalls).toEqual([
     ["api", "--method", "PUT", "repos/acme/widgets/pulls/9/update-branch", "-f", `expected_head_sha=${f.head}`],

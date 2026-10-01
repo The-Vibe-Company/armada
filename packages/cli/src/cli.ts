@@ -93,10 +93,10 @@ const COMMAND_HELP: Record<string, string> = {
                     lock, close the ticket and list the workers to tell. Never deletes
                     the branch. --dry-run only runs the checklist. Signed in to Armada,
                     refused while Armada is down; --no-lock then merges without the lock.
-                    --wait (default 30 min): a head behind its base is updated on GitHub
-                    (a merge commit, no force-push) and its checks waited for, without the
-                    lock; a red check or a conflict stops it. A head that is the hand-back
-                    with only the base merged in counts as the hand-back.
+                    --wait (--timeout in minutes, default 30): a head behind its base is
+                    updated on GitHub (a merge commit, no force-push) and its checks waited
+                    for, without the lock; a red check or a conflict stops it. A head that
+                    is the hand-back with only the base merged in counts as the hand-back.
                     --no-ticket: a pull request no ticket owns (armada init, a release);
                     nothing is written to Linear.
 `,

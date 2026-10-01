@@ -78,14 +78,18 @@ class FakeForge implements MergeForge {
   onBase = new Set([BASE]);
   updates: { number: number; sha: string }[] = [];
   /** Answers of successive update-branch calls; by default GitHub accepts and makes UPDATED. */
-  updateAnswers: MergeAttempt[] = [];
+  updateAnswers: (MergeAttempt & { effect?: boolean })[] = [];
   async commit(sha: string) {
     return structuredClone(this.commits.get(sha) ?? null);
   }
   async updateBranch(number: number, sha: string): Promise<MergeAttempt> {
     this.updates.push({ number, sha });
-    const a = this.updateAnswers.shift() ?? { ok: true, message: "Updating pull request branch.", transient: false };
-    if (a.ok) {
+    const a: MergeAttempt & { effect?: boolean } = this.updateAnswers.shift() ?? {
+      ok: true,
+      message: "Updating pull request branch.",
+      transient: false,
+    };
+    if (a.effect ?? a.ok) {
       this.commits.set(UPDATED, { sha: UPDATED, tree: TREE, parents: [sha, BASE] });
       Object.assign(this.pr, {
         headSha: UPDATED,
@@ -596,11 +600,64 @@ describe("armada merge --wait", () => {
       "GitHub refused to update the branch of #9 with main: Resource not accessible (HTTP 403). A branch protection rule or ruleset can forbid it",
     ],
     [
+      "an update GitHub accepted that never shows",
+      (s) => {
+        s.forge.updateAnswers = [
+          { ok: true, message: "Updating pull request branch.", transient: false, effect: false },
+        ];
+      },
+      `GitHub accepted to update the branch of #9 with main, but its head is still ${HEAD} after 3 min`,
+    ],
+    [
       "the timeout",
       (s) => clocked(s),
       `#9 (DEMO-7) is still not ready after 30 min: on head abababa: required check "test" is pending`,
     ],
   ];
+  test("a required check not reported yet keeps GitHub BLOCKED with nothing running: that is waited for", async () => {
+    const s = setup();
+    Object.assign(s.forge.pr, { mergeStateStatus: "BLOCKED", checks: [] });
+    clocked(s, () => {
+      green(s);
+    });
+    expect((await mergePullRequest(s.ctx, { pr: 9, wait: WAIT })).merged).toBe(true);
+    expect(s.progress[0]).toStartWith(
+      'Waiting: on head 0123456: required check "test" has not reported on the head yet',
+    );
+  });
+
+  test("a head behind a base that does not require it up to date is test-merged, not updated", async () => {
+    const s = setup({ toml: `${GATES}local_commands = ["bun run verify"]\n` });
+    s.forge.comparison = { baseSha: BASE, status: "DIVERGED", behindBy: 2, aheadBy: 2 };
+    clocked(s);
+    expect((await mergePullRequest(s.ctx, { pr: 9, wait: WAIT })).merged).toBe(true);
+    expect([s.forge.updates, s.repo.testMerges.length]).toEqual([[], 1]);
+  });
+
+  test("signed in with Armada down, it refuses before updating the branch or waiting", async () => {
+    const s = setup({ down: true });
+    behind(s);
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, wait: WAIT }))).toStartWith(
+      "the merge lock needs Armada, which is unavailable",
+    );
+    expect([s.forge.updates, s.sleeps]).toEqual([[], []]);
+  });
+
+  test("with --no-ticket, a head this run updated waits for its checks instead of passing with none", async () => {
+    const s = setup();
+    Object.assign(s.forge.pr, { headRef: "armada/init-0.2.2", title: "chore(armada): set up Armada 0.2.2" });
+    behind(s);
+    s.forge.pr.checks = [];
+    clocked(s, (slept) => {
+      // The update's CI has not started yet on the first read; then it runs and passes.
+      if (slept === 1) Object.assign(s.forge.pr, { checks: [], mergeStateStatus: "BLOCKED" });
+      if (slept === 2) green(s);
+    });
+    const out = await mergePullRequest(s.ctx, { pr: 9, noTicket: true, wait: WAIT });
+    expect(s.forge.merges).toEqual([{ number: 9, sha: UPDATED }]);
+    expect(out.lines.join("\n")).not.toContain("ran on head");
+  });
+
   for (const [name, arrange, message] of stops)
     test(`stops on ${name}, naming it, and merges nothing`, async () => {
       const s = setup();
@@ -702,7 +759,7 @@ describe("armada merge --no-ticket", () => {
       updatedAt: "2026-03-04T09:59:30Z",
     });
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toContain(
-      "on head 0123456: no check has reported yet, and it was updated less than a minute ago",
+      "on head 0123456: no check has reported yet, and it was updated less than 1 min ago",
     );
     s.forge.pr.updatedAt = "2026-03-04T09:58:00Z";
     const out = await mergePullRequest(s.ctx, { pr: 9, noTicket: true });

@@ -8,7 +8,7 @@ import type { ArmadaConfig } from "./config.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
 import type { Fleet, Lease, RuntimeHandle } from "./live.ts";
-import { FULL_SHA } from "./phases.ts";
+import { checkIssues, FULL_SHA } from "./phases.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
 // ------------------------------------------------------------------ adapters
@@ -151,6 +151,8 @@ const UNKNOWN_BACKOFF_MS = [2_000, 4_000];
 export const MERGE_WAIT_DEFAULT_MS = 30 * 60_000;
 /** How often `--wait` reads the pull request again. */
 export const MERGE_WAIT_POLL_MS = 30_000;
+/** How long an update GitHub accepted may take to show as a new head before --wait gives up on it. */
+const UPDATE_STALL_MS = 3 * 60_000;
 /** With --no-ticket, how long after a push a head with no check at all is still expected to get one. */
 export const NO_CHECKS_GRACE_MS = 60_000;
 /** Most merge commits of the base an accepted head may stand on above the handed-back SHA. */
@@ -248,7 +250,7 @@ export function assess({ pull, ticket, handBack, requiredChecks, lineage, now }:
           `the head of ${n} is ${pull.headSha}, not the handed-back ${handBack.sha}: it moved after the hand-back${lineage?.why ? ` and ${lineage.why}` : ""}; ask the worker to report again`,
         );
     }
-  } else if (lineage?.why && lineage.from !== pull.headSha)
+  } else if (lineage?.why)
     problems.push(
       `the head of ${n} moved from ${lineage.from} to ${pull.headSha} during this merge and ${lineage.why}`,
     );
@@ -257,14 +259,15 @@ export function assess({ pull, ticket, handBack, requiredChecks, lineage, now }:
   if (!COMMITIZEN_TITLE.test(pull.title))
     problems.push(`the title "${pull.title}" is not in Commitizen format, e.g. "feat(cli): add a command"`);
 
-  const checks = checkStates(pull, requiredChecks, !ticket, now);
+  const checks = checkStates(pull, requiredChecks, !ticket && !lineage?.updates, now);
   problems.push(...checks.failed);
   waits.push(...checks.pending);
   notes.push(...checks.notes);
   const state = pull.mergeStateStatus;
-  const running = pull.checks.some((c) => c.state === "pending");
+  // A required check not reported yet keeps GitHub's state BLOCKED with nothing running: that is still a wait.
+  const running = checks.pending.length > 0 || pull.checks.some((c) => c.state === "pending");
   if (state === "UNKNOWN" || ((state === "BLOCKED" || state === "UNSTABLE") && running)) waits.push(stateLine(pull));
-  else if (state === "UNSTABLE" && checks.skipped && !pull.checks.some((c) => c.state === "failure"))
+  else if (state === "UNSTABLE" && checks.skipped)
     // What a release pull request with no CI run looks like: nothing that ran failed.
     notes.push(`GitHub reports #${pull.number} as UNSTABLE with no check failing.`);
   else if (!MERGEABLE_STATES.has(state) && state !== "BEHIND") problems.push(stateLine(pull));
@@ -282,47 +285,32 @@ export function mergeProblems(input: ChecklistInput): string[] {
 }
 
 /**
- * The checks on the head: every required check reported and green on every
- * run, or, with none declared, at least one check and all of them green.
- * With --no-ticket, a head on which none of them ran passes with a note once
- * GitHub had time to start them: a release pull request opened with the
- * workflow's own token gets no CI run at all.
+ * The checks on the head, as `checkIssues` sorts them. With --no-ticket, a
+ * head on which none of the required checks ran, nothing runs and nothing
+ * failed passes with a note once GitHub had time to start them: a release pull
+ * request opened with the workflow's own token gets no CI run at all. A head
+ * this run updated never does: its update starts CI.
  */
-function checkStates(pull: MergePull, required: readonly string[], noTicket: boolean, now: Date | undefined) {
-  const on = `on head ${pull.headSha.slice(0, 7)}: `;
+function checkStates(pull: MergePull, required: readonly string[], skippable: boolean, now: Date | undefined) {
+  const on = `on head ${short(pull.headSha)}: `;
   const failed: string[] = [];
   const pending: string[] = [];
   const notes: string[] = [];
-  const running = pull.checks.some((c) => c.state === "pending");
   const ran = required.length ? pull.checks.some((c) => required.includes(c.name)) : pull.checks.length > 0;
-  if (noTicket && !ran && !running) {
+  const quiet = pull.checks.every((c) => c.state === "success");
+  if (skippable && !ran && quiet) {
     const pushed = pull.updatedAt ? Date.parse(pull.updatedAt) : Number.NaN;
     if (!now || Number.isNaN(pushed) || now.getTime() - pushed >= NO_CHECKS_GRACE_MS) {
       const which = required.length ? `none of ${required.map((r) => `"${r}"`).join(", ")}` : "no CI check";
       notes.push(
-        `${which} ran on head ${pull.headSha.slice(0, 7)}; with --no-ticket it passes on GitHub's own state${pull.checks.length ? " and the checks that ran" : ""}, as for a release pull request opened with the workflow's token.`,
+        `${which} ran on head ${short(pull.headSha)}; with --no-ticket it passes on GitHub's own state${pull.checks.length ? " and the checks that ran" : ""}, as for a release pull request opened with the workflow's token.`,
       );
       return { failed, pending, notes, skipped: true };
     }
-    pending.push(`${on}no check has reported yet, and it was updated less than a minute ago`);
+    pending.push(`${on}no check has reported yet, and it was updated less than ${NO_CHECKS_GRACE_MS / 60_000} min ago`);
     return { failed, pending, notes, skipped: false };
   }
-  if (required.length) {
-    for (const name of required) {
-      // A check can report more than once on a head (push and pull_request): every run must be green.
-      const runs = pull.checks.filter((c) => c.name === name);
-      const bad = runs.find((c) => c.state === "failure") ?? runs.find((c) => c.state !== "success");
-      if (!runs.length) pending.push(`${on}required check "${name}" has not reported on the head yet`);
-      else if (bad?.state === "failure") failed.push(`${on}required check "${name}" is failure`);
-      else if (bad) pending.push(`${on}required check "${name}" is ${bad.state}`);
-    }
-  } else if (!pull.checks.length) {
-    pending.push(`${on}no CI check has reported on the head yet (or set [gates] required_checks in armada.toml)`);
-  } else {
-    for (const c of pull.checks)
-      if (c.state === "failure") failed.push(`${on}check "${c.name}" is failure`);
-      else if (c.state !== "success") pending.push(`${on}check "${c.name}" is ${c.state}`);
-  }
+  for (const issue of checkIssues(pull.checks, required)) (issue.pending ? pending : failed).push(`${on}${issue.text}`);
   return { failed, pending, notes, skipped: false };
 }
 
@@ -502,8 +490,8 @@ const plural = (k: number, word: string) => `${k} ${word}${k === 1 ? "" : "s"}`;
 interface Run {
   /** With --no-ticket: the head first read, which later heads must stand on with only the base merged in. */
   pin: string | null;
-  /** Heads this run asked GitHub to update with the base. */
-  updated: string[];
+  /** Heads this run asked GitHub to update with the base, with when it asked (ms). */
+  updated: Map<string, number>;
   /** Lineages already established, by head SHA. */
   lineages: Map<string, Lineage>;
 }
@@ -569,9 +557,8 @@ async function lineageOf(ctx: MergeContext, pull: MergePull, from: string, run: 
   if (known?.from === from) return known;
   const base = pull.baseRef;
   const fail = (why: string): Lineage => ({ from, updates: null, why });
-  let lineage: Lineage;
   try {
-    lineage = await (async (): Promise<Lineage> => {
+    const lineage = await (async (): Promise<Lineage> => {
       let sha = pull.headSha;
       for (let updates = 0; ; updates++) {
         if (sha === from) return { from, updates, why: null };
@@ -590,15 +577,21 @@ async function lineageOf(ctx: MergeContext, pull: MergePull, from: string, run: 
         sha = first;
       }
     })();
+    run.lineages.set(pull.headSha, lineage);
+    return lineage;
   } catch (err) {
+    // Not remembered: the next read tries again.
     return fail(`what it changes could not be checked (${err instanceof Error ? err.message : String(err)})`);
   }
-  run.lineages.set(pull.headSha, lineage);
-  return lineage;
 }
 
 /** One read of everything the merge depends on, sorted by `assess`. */
 interface Look extends Assessment {
+  /**
+   * With --wait, the head must be updated on GitHub before it can merge: it is
+   * behind, and GitHub requires it up to date or no local command can test the merge.
+   */
+  mustUpdate: boolean;
   pull: MergePull;
   ticket: Ticket | null;
   cmp: Comparison | null;
@@ -610,15 +603,11 @@ async function look(ctx: MergeContext, input: MergeInput, run: Run): Promise<Loo
   const ticket = await readTicketFor(ctx, pull, input);
   if (!ticket) run.pin ??= pull.headSha;
   const handBack = ticket ? findHandBack(ticket) : null;
+  // The SHA the head must stand on: the hand-back, or with --no-ticket the first head read.
   const from = ticket ? (handBack?.sha && FULL_SHA.test(handBack.sha) ? handBack.sha : null) : run.pin;
-  const lineage: Lineage | null =
-    !from || from === pull.headSha
-      ? from
-        ? { from, updates: 0, why: null }
-        : null
-      : pull.state === "open"
-        ? await lineageOf(ctx, pull, from, run)
-        : null;
+  let lineage: Lineage | null = null;
+  if (from === pull.headSha) lineage = { from, updates: 0, why: null };
+  else if (from && pull.state === "open") lineage = await lineageOf(ctx, pull, from, run);
   const cmp = await ctx.forge.compare(pull.baseRef, pull.headSha);
   const a = assess({
     pull,
@@ -628,14 +617,17 @@ async function look(ctx: MergeContext, input: MergeInput, run: Run): Promise<Loo
     lineage,
     now: ctx.now(),
   });
-  return { ...a, behind: a.behind || (cmp?.behindBy ?? 0) > 0, pull, ticket, cmp, lineage };
+  const behind = a.behind || (cmp?.behindBy ?? 0) > 0;
+  const testable =
+    MERGEABLE_STATES.has(pull.mergeStateStatus) && ctx.config.gates.localCommands.length > 0 && ctx.repo !== null;
+  return { ...a, behind, mustUpdate: behind && !testable, pull, ticket, cmp, lineage };
 }
 
 const label = (pull: MergePull, ticket: Ticket | null) => `#${pull.number}${ticket ? ` (${ticket.id})` : ""}`;
 
 /** Said in every refusal after this run updated the branch: the worker's copy is now behind. */
 function updatedNote(run: Run, pull: MergePull): string {
-  if (!run.updated.length) return "";
+  if (!run.updated.size) return "";
   return `\nThis run updated the branch of #${pull.number} with ${pull.baseRef} (head now ${pull.headSha}): whoever pushes to it next pulls first.`;
 }
 
@@ -681,8 +673,8 @@ async function checklist(ctx: MergeContext, input: MergeInput, run: Run): Promis
   const problems = [...l.problems];
   if (input.wait && !input.dryRun) {
     // Whatever time settles goes back to the wait, out of the lease.
-    if (!problems.length && (l.waits.length || l.behind))
-      throw new NotYet(l.behind ? `${pull.baseRef} moved` : (l.waits[0] ?? "not ready"));
+    if (!problems.length && (l.waits.length || l.mustUpdate))
+      throw new NotYet(l.mustUpdate ? `${pull.baseRef} moved` : (l.waits[0] ?? "not ready"));
   } else problems.push(...l.waits, ...(l.pull.mergeStateStatus === "BEHIND" ? [stateLine(pull)] : []));
 
   const behind = baseProblem(pull, cmp, config.gates.localCommands);
@@ -892,18 +884,23 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
     const n = `#${pull.number}`;
     if (l.problems.length) throw refuse(ctx, run, l, l.problems);
     let reason: string;
-    if (l.behind) {
+    const asked = run.updated.get(pull.headSha);
+    if (l.mustUpdate) {
       if (pull.mergeable === "CONFLICTING")
         throw refuse(ctx, run, l, [`${n} conflicts with ${pull.baseRef}; ask the worker to merge it in or rebase`]);
       if (pull.mergeable !== "MERGEABLE")
         reason = `GitHub is still computing whether ${n} merges cleanly with ${pull.baseRef}`;
-      else if (run.updated.includes(pull.headSha))
+      else if (asked !== undefined) {
+        if (ctx.now().getTime() - asked >= UPDATE_STALL_MS)
+          throw refuse(ctx, run, l, [
+            `GitHub accepted to update the branch of ${n} with ${pull.baseRef}, but its head is still ${pull.headSha} after ${UPDATE_STALL_MS / 60_000} min; update it on GitHub, or ask the worker to merge ${pull.baseRef} in`,
+          ]);
         reason = `GitHub is updating the branch of ${n} with ${pull.baseRef}`;
-      else {
+      } else {
         const res = await ctx.forge.updateBranch(pull.number, pull.headSha);
         const fresh = res.ok ? null : await ctx.forge.readPull(pull.number).catch(() => null);
         if (res.ok) {
-          run.updated.push(pull.headSha);
+          run.updated.set(pull.headSha, ctx.now().getTime());
           say(ctx, `Updated the branch of ${n} with ${pull.baseRef} (a merge commit on ${short(pull.headSha)}).`);
           reason = `the checks on the updated head of ${n}`;
         } else if (res.transient || (fresh && fresh.headSha !== pull.headSha))
@@ -934,12 +931,17 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
  * for, out of the lease, and the lease is given back whenever it needs time again.
  */
 export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Promise<MergeOutcome> {
-  const run: Run = { pin: null, updated: [], lineages: new Map() };
+  const run: Run = { pin: null, updated: new Map(), lineages: new Map() };
   if (input.dryRun) {
     const c = await checklist(ctx, input, run);
     return outcome(c, false, null, c.lines.concat("Dry run: nothing was merged."), [], null);
   }
   if (!input.wait) return locked(ctx, input, run);
+  // Before touching the branch or waiting: a merge that will need the lock and cannot have it is refused now.
+  if (!input.noLock && ctx.lockRequired) {
+    const { fleet, warning } = await ctx.fleet();
+    if (!fleet) throw lockUnavailable(ctx, input, warning);
+  }
   const deadline = ctx.now().getTime() + input.wait.timeoutMs;
   for (;;) {
     await waitUntilReady(ctx, input, run, deadline);
@@ -951,6 +953,12 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     }
   }
 }
+
+const lockUnavailable = (ctx: MergeContext, input: MergeInput, warning: string | null) =>
+  new Refusal(
+    `the merge lock needs Armada, which is unavailable (${warning ?? "no answer"}); nothing was merged`,
+    `armada merge ${input.pr} again once Armada answers, or armada merge ${input.pr} --no-lock if you are sure no other coordinator merges in ${ctx.config.project.slug} now`,
+  );
 
 /** The merge itself, under the project's merge lease. */
 async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<MergeOutcome> {
@@ -988,11 +996,7 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
     return body(async () => true);
   }
   const { fleet, warning } = await ctx.fleet();
-  if (!fleet && ctx.lockRequired)
-    throw new Refusal(
-      `the merge lock needs Armada, which is unavailable (${warning ?? "no answer"}); nothing was merged`,
-      `armada merge ${input.pr} again once Armada answers, or armada merge ${input.pr} --no-lock if you are sure no other coordinator merges in ${slug} now`,
-    );
+  if (!fleet && ctx.lockRequired) throw lockUnavailable(ctx, input, warning);
   if (!fleet) {
     early.push(
       `${warning ?? "not signed in to Armada"}; the merge lock was not taken, so make sure no other coordinator merges in ${slug} now`,

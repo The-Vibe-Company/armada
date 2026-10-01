@@ -6,17 +6,17 @@ Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` whe
 
 With several workers in flight, main often moves between a green hand-back and its merge. Instead of asking the worker to rebase, run `armada merge <pr> --wait [--timeout <min>]` (30 minutes by default), in the background where your runtime allows it (Claude Code: `run_in_background`):
 
-- A head behind main that GitHub says merges cleanly is updated with GitHub's "update branch": a merge commit on the branch, no force-push. Squash merges make that merge commit harmless.
+- A head behind main that GitHub says merges cleanly is updated with GitHub's "update branch": a merge commit on the branch, no force-push. Squash merges make that merge commit harmless. When main does not require heads to be up to date and `[gates] local_commands` is set, it is test-merged instead, as without `--wait`, so a busy main does not restart CI each time.
 - It waits for every required check on the new head, then merges pinned to that head.
-- It holds the project's merge lock only while merging, not while waiting, so two waits never block each other.
-- It stops at once, naming the cause, on a red check, a conflict, any other refused rule, or when GitHub refuses the update (a branch protection rule or ruleset can forbid it): ask the worker to fix it. A refusal after an update says so: the worker pulls the updated branch before pushing again.
+- It holds the project's merge lock only while merging, not while waiting, so two waits never block each other. Signed in with Armada down, it refuses before touching the branch.
+- It stops at once, naming the cause, on a red check, a conflict, any other refused rule, or when GitHub refuses the update (a branch protection rule or ruleset can forbid it) or accepts it without the head moving within 3 minutes: ask the worker to fix it. A refusal after an update says so: the worker pulls the updated branch before pushing again.
 - The updated head still counts as the worker's hand-back, because the only change is main coming in: `armada merge` accepts a head that is the handed-back SHA followed only by merge commits, each bringing in a commit of main, with the tree of a clean merge (checked with git). That holds without `--wait` too, for example after "Update branch" on GitHub. The ticket's merged comment names both heads: `head <new>, the handed-back <old> updated with main`.
 
 ## No ticket: `--no-ticket`
 
 `armada merge <pr> --no-ticket` merges a pull request no ticket owns: the `armada init` pull request (its output names the command) or the release pull request below. There is no hand-back and nothing is written to Linear; every other check is unchanged, and the merge is pinned to the head it checked. It refuses a branch that names a ticket of the program: that one is merged on its worker's hand-back.
 
-When none of the required checks ran on the head (a release pull request opened with the workflow's own token gets no CI run), it passes with a note, on GitHub's own state (`UNSTABLE` included, when nothing failed) and the checks that did run, once the head is a minute old; a younger head is waited for (`--wait`) or refused.
+When none of the required checks ran on the head (a release pull request opened with the workflow's own token gets no CI run), it passes with a note, on GitHub's own state (`UNSTABLE` included, when nothing failed) and the checks that did run, once the head is a minute old; a younger head, or a head this run updated (its update starts CI), is waited for (`--wait`) or refused.
 
 ## Before
 

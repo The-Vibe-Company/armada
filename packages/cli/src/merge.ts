@@ -104,7 +104,10 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
       return uses;
     },
     async mergeTree({ branch, number, ours, theirs }) {
-      await must(["fetch", "--quiet", "origin", branch, `refs/pull/${number}/head`]);
+      // One fetch brings every commit of the head: later steps of the same lineage find them here.
+      const present = async (sha: string) => (await git(["cat-file", "-e", `${sha}^{commit}`])).code === 0;
+      if (!(await present(ours)) || !(await present(theirs)))
+        await must(["fetch", "--quiet", "origin", branch, `refs/pull/${number}/head`]);
       const r = await git(["merge-tree", "--write-tree", "--no-messages", ours, theirs]);
       // Exit 1 means the merge conflicts.
       if (r.code === 1) return null;
