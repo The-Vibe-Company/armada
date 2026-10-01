@@ -12,7 +12,14 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { databaseUrlOf, openDatabase } from "../lib/db";
-import { DEMO_COORDINATOR_SEEN, DEMO_INBOX, DEMO_PROJECTS, demoEvents, projectOfTicket } from "../lib/demo/world";
+import {
+  DEMO_COORDINATOR_SEEN,
+  DEMO_INBOX,
+  DEMO_PROFILES,
+  DEMO_PROJECTS,
+  demoEvents,
+  projectOfTicket,
+} from "../lib/demo/world";
 import {
   addInboxItem,
   putHandBack,
@@ -42,14 +49,11 @@ async function seed(scenario: string) {
   for (const e of demoEvents(s)) {
     const base = { project: e.project, ticket: e.ticket };
     await saveRuntimeHandle(db, { ...base, runtime: e.runtime, handle: e.handle, branch: null, at: ago(e.claimed) });
-    const codex = e.runtime === "Codex";
     await saveWorkerProfile(db, {
       ...base,
       profile: {
-        name: codex ? "codex" : "opus",
-        agent: codex ? "codex" : "claude",
-        model: codex ? "gpt-6.1-sol" : "opus-5-5-1m",
-        effort: "high",
+        name: e.profile,
+        ...DEMO_PROFILES[e.profile],
         fastMode: false,
         routed: null,
         reason: null,
