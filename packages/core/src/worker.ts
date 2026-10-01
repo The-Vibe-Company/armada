@@ -178,6 +178,12 @@ export const firstState = (states: WorkflowState[], ...types: WorkflowState["typ
   return null;
 };
 
+/** The profile as the live data records it: the runtime is the claim's own. */
+function liveProfile({ name, profile, routed, reason, why }: ProfileChoice) {
+  const { runtime: _, ...settings } = profile;
+  return { name, ...settings, routed, reason, why };
+}
+
 function claimLine(o: {
   runtime: string;
   handle: string;
@@ -322,9 +328,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       branch,
       phase: phaseLabel ? "planning" : ticket.agentPhase,
       resuming,
-      profile: profile
-        ? { name: profile.name, ...profile.profile, routed: profile.routed, reason: profile.reason, why: profile.why }
-        : null,
+      profile: profile ? liveProfile(profile) : null,
     }),
   );
   if (launched?.length) {

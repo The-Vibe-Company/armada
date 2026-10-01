@@ -111,9 +111,9 @@ describe("armada.toml", () => {
     expect(conductor).toEqual({
       defaultProfile: "opus",
       profiles: {
-        opus: { agent: "claude", model: "opus-5-5-1m", effort: "high", fastMode: false },
-        codex: { agent: "codex", model: "gpt-6.1-sol", effort: "high", fastMode: false },
-        debug: { agent: "codex", model: "gpt-6.1-sol", effort: "xhigh", fastMode: false },
+        opus: { runtime: "conductor", agent: "claude", model: "opus-5-5-1m", effort: "high", fastMode: false },
+        codex: { runtime: "conductor", agent: "codex", model: "gpt-6.1-sol", effort: "high", fastMode: false },
+        debug: { runtime: "conductor", agent: "codex", model: "gpt-6.1-sol", effort: "xhigh", fastMode: false },
       },
       routing: [
         { labels: ["web"], profile: "opus" },
@@ -132,6 +132,26 @@ describe("armada.toml", () => {
       'missing required key "conductor.profiles.opus.effort"',
       '"conductor.default_profile" is "fast", but there is no [conductor.profiles.fast]',
       'unknown key "conductor.profiles.opus.modle"',
+    ]);
+  });
+
+  test("a profile runs on conductor or claude-code, and a claude-code profile runs claude", () => {
+    const local =
+      '\n[conductor.profiles.local]\nruntime = "claude-code"\nagent = "claude"\nmodel = "opus"\neffort = "high"\n';
+    expect(parseConfig(DEMO_TOML.concat(local)).conductor.profiles.local).toEqual({
+      runtime: "claude-code",
+      agent: "claude",
+      model: "opus",
+      effort: "high",
+      fastMode: false,
+    });
+    const text = DEMO_TOML.concat(
+      '\n[conductor.profiles.local]\nruntime = "claude-code"\nagent = "codex"\nmodel = "opus"\neffort = "high"\n',
+      '[conductor.profiles.cloud]\nruntime = "cloud"\nagent = "claude"\nmodel = "opus"\neffort = "high"\n',
+    );
+    expect(problemsOf(text)).toEqual([
+      '"conductor.profiles.local.agent" must be "claude" with runtime = "claude-code"',
+      '"conductor.profiles.cloud.runtime" must be one of "conductor", "claude-code"',
     ]);
   });
 

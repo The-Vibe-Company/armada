@@ -50,7 +50,7 @@ armada init --program-root ABC-1       # one pull request that adds it all
 `armada doctor` checks, in the repository you are in:
 
 - `armada.toml` exists and is valid;
-- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
+- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`, `armada-runtime-claude-code`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;
 - this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
@@ -71,7 +71,7 @@ On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the nam
 
 ## Launch a worker (coordinators)
 
-Armada prepares a launch; it never starts a runtime itself. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands. [`docs/runbook.md`](docs/runbook.md) says how to start a coordinator on a laptop or in Conductor Cloud, what the owner sets up once, and how one coordinator hands over to the next.
+Armada prepares a launch; it never starts a runtime itself. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands; the `armada-runtime-claude-code` skill launches a worker as a background subagent of a coordinator running in Claude Code, in its own git worktree (it dies with the coordinator's session, so long runs go to Conductor). [`docs/runbook.md`](docs/runbook.md) says how to start a coordinator on a laptop or in Conductor Cloud, what the owner sets up once, and how one coordinator hands over to the next.
 
 ```sh
 armada brief ABC-12                    # launch settings, then the worker's prompt
@@ -84,6 +84,7 @@ armada brief ABC-12 --profile codex --reason "a back-end bug behind a web label"
 - **Project conventions.** `[brief] extra = "<path>"` names a file of the repository (relative to `armada.toml`) that every prompt ends with, under "Project conventions": the checks to run, the generated files to refresh, how to bring main in. A missing file is a brief warning, and `armada doctor` checks it.
 - **Workers need no key.** When the coordinator is signed in to an Armada that keeps the organization's keys, the brief asks it for a launch token: one ticket, used once, valid one hour. The worker exchanges it for a session limited to its ticket's `claim`, `report`, `ask` and `release`, and Armada gives each of those commands its keys. The `Launch:` line says whether the prompt carries one, and when there is none, why (not signed in, or an Armada without accounts or keys). Make the brief right before the launch; the token is the only secret a prompt ever holds, useless once used. Merging or releasing the ticket ends the worker's session, and Organization > Workers on the dashboard revokes one.
 - The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables: `ARMADA_TICKET=<ticket>`, and, only without a launch token, `LINEAR_API_KEY` (required). Each shows whether this shell has it. No value is ever printed.
+- A profile with `runtime = "claude-code"` routes the launch to the `armada-runtime-claude-code` skill: the `Runtime:` line names the skill, the claim runs `--runtime claude-code` with the subagent's name as its handle (the ticket id in lowercase), and the prompt first makes the worker check it runs in its own worktree. The Agent tool applies no effort; the brief says so.
 - The profile follows the ticket's Linear labels: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored), else `conductor.default_profile`, else the only profile. The settings say which rule chose it.
 - `--profile` overrides that choice. When `armada.toml` has routing rules and the profile differs from the routed one, `--reason` is required. The reason travels into the claim command, so the claim comment records the profile and why. An unknown profile exits 2.
 
@@ -387,6 +388,7 @@ agent = "claude"
 model = "opus-5-5-1m"
 effort = "high"
 # fast_mode = true               # optional, default false
+# runtime = "conductor"          # or "claude-code": a subagent of a Claude Code coordinator (agent = "claude", model = "opus")
 
 [conductor.profiles.codex]
 agent = "codex"

@@ -7,7 +7,7 @@ The coordinator turns the owner's intent into merged pull requests. Each worker 
 
 **Standing authority.** Unless the owner said otherwise, they delegate reversible technical decisions, plan approval and merging to you: act, then report. Escalate only product decisions, irreversible or outward-facing actions, and anything that spends money.
 
-**Armada never drives a runtime.** Launching, messaging, checking and stopping a worker go through the runtime guide skill for the worker's runtime (for example `armada-runtime-conductor`). Armada records what happened.
+**Armada never drives a runtime.** Launching, messaging, checking and stopping a worker go through the runtime guide skill for the worker's runtime: `armada-runtime-conductor` for a Conductor workspace, `armada-runtime-claude-code` for a subagent of your own Claude Code session (the `Runtime:` line of `armada brief` names it). Armada records what happened.
 
 ## Take over a run
 
