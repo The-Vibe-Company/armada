@@ -261,12 +261,20 @@ export interface OrganizationKeys {
   warnings: string[];
 }
 
+const LOGGED = new Set<string>();
+
 export async function organizationKeys(
   deps: Pick<BrokerDeps, "client" | "vault">,
   organization: string,
 ): Promise<OrganizationKeys> {
   const { values, problems } = await readSecrets(deps.client, deps.vault, { organization, user: null });
-  for (const w of problems) console.error(`armada dashboard: organization ${organization}: ${w}`);
+  // Once per problem and process: the Fleet view polls every few seconds.
+  for (const w of problems) {
+    const key = `${organization}\n${w}`;
+    if (LOGGED.has(key)) continue;
+    LOGGED.add(key);
+    console.error(`armada dashboard: organization ${organization}: ${w}`);
+  }
   return {
     linearApiKey: values["linear-api-key"] ?? null,
     githubToken: values["github-token"] ?? null,

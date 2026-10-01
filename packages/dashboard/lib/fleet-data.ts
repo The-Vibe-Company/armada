@@ -15,6 +15,7 @@ import {
   type ProjectReading,
   type ProjectRecord,
   type RuntimeHandle,
+  redact,
   type StatusReport,
   type StatusSources,
 } from "@armada/core/read";
@@ -94,8 +95,19 @@ export interface LoadOptions {
   background?: (work: Promise<unknown>) => void;
 }
 
-/** An error message safe for the browser: a database URL's password is masked. */
-const message = (err: unknown) => redactDatabase(err);
+/** A Linear or GitHub error, safe for the browser: a token in a URL is masked. */
+const message = (err: unknown) => redact(err);
+
+/**
+ * Why the live data could not be read, for the browser: a time limit of ours,
+ * else a generic reason. The driver's message (it may name the database host
+ * or role) stays in the server log.
+ */
+function liveError(err: unknown): string {
+  const detail = redactDatabase(err);
+  console.error(`armada dashboard: live data unavailable: ${detail}`);
+  return /took more than \d+(\.\d+)? s$/.test(detail) ? detail : "see the server log";
+}
 
 function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -193,7 +205,7 @@ async function openLive(
     opts.cache.projects = projects;
     return { store, state: { state: "ok", error: null } };
   } catch (err) {
-    return { store: null, state: { state: "unreachable", error: message(err) } };
+    return { store: null, state: { state: "unreachable", error: liveError(err) } };
   }
 }
 
@@ -289,7 +301,7 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
       );
       liveData = new Map(read);
     } catch (err) {
-      live = { state: "unreachable", error: message(err) };
+      live = { state: "unreachable", error: liveError(err) };
     }
   }
 

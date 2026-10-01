@@ -466,27 +466,32 @@ export async function acquireLease(
 ): Promise<{ acquired: true } | { acquired: false; held: Lease | null }> {
   const expires = new Date(l.at.getTime() + l.ttlMs);
   return transaction(db, async (tx) => {
-    const inserted = await tx.query(
-      `INSERT INTO leases (project, name, holder, acquired_at, expires_at) VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (project, name) DO NOTHING`,
-      [l.project, l.name, l.holder, l.at, expires],
-    );
-    if (inserted.rowCount) return { acquired: true } as const;
-    const rs = await tx.query(
-      "SELECT project, name, holder, acquired_at, expires_at FROM leases WHERE project = $1 AND name = $2 FOR UPDATE",
-      [l.project, l.name],
-    );
-    const row = rs.rows[0];
-    const held = row ? leaseOf(row) : null;
-    if (held && held.holder !== l.holder && Date.parse(held.expiresAt) > l.at.getTime())
-      return { acquired: false, held } as const;
-    await tx.query(
-      `UPDATE leases SET holder = $3, expires_at = $5,
-         acquired_at = CASE WHEN holder = $3 THEN acquired_at ELSE $4 END
-       WHERE project = $1 AND name = $2`,
-      [l.project, l.name, l.holder, l.at, expires],
-    );
-    return { acquired: true } as const;
+    // A lease released between the insert and the lock leaves no row to update: insert again.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const inserted = await tx.query(
+        `INSERT INTO leases (project, name, holder, acquired_at, expires_at) VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (project, name) DO NOTHING`,
+        [l.project, l.name, l.holder, l.at, expires],
+      );
+      if (inserted.rowCount) return { acquired: true } as const;
+      const rs = await tx.query(
+        "SELECT project, name, holder, acquired_at, expires_at FROM leases WHERE project = $1 AND name = $2 FOR UPDATE",
+        [l.project, l.name],
+      );
+      const row = rs.rows[0];
+      if (!row) continue;
+      const held = leaseOf(row);
+      if (held.holder !== l.holder && Date.parse(held.expiresAt) > l.at.getTime())
+        return { acquired: false, held } as const;
+      const updated = await tx.query(
+        `UPDATE leases SET holder = $3, expires_at = $5,
+           acquired_at = CASE WHEN holder = $3 THEN acquired_at ELSE $4 END
+         WHERE project = $1 AND name = $2`,
+        [l.project, l.name, l.holder, l.at, expires],
+      );
+      if (updated.rowCount) return { acquired: true } as const;
+    }
+    return { acquired: false, held: null } as const;
   });
 }
 

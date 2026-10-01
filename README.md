@@ -162,7 +162,7 @@ bun run demo:seed                     # a local PGlite database (Postgres in the
 ARMADA_DASHBOARD_PASSWORD=off ARMADA_DASHBOARD_DEMO=fleet ARMADA_DATABASE_URL=pglite:.demo/armada bun run dev   # http://localhost:4822
 ```
 
-A PGlite database belongs to one process: stop the dashboard before `bun run demo:report WID-12 shipping "Opened the pull request"` and start it again to see the row change, or point both at a Postgres database (`ARMADA_DATABASE_URL=postgres://...`).
+A PGlite database belongs to one process: stop the dashboard before `bun run demo:report WID-12 shipping "Opened the pull request"` and start it again to see the row change, or point both at a Postgres database (the dashboard's `ARMADA_DATABASE_URL` and the script's `ARMADA_DEMO_DATABASE_URL`; the script never writes to the database `ARMADA_DATABASE_URL` or `DATABASE_URL` name).
 
 The same with accounts (email and password work in development only; confirmation links are printed in the server log):
 

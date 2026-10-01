@@ -1,12 +1,14 @@
-// Local demo of the live Fleet view, without any key, in the app's database
-// (ARMADA_DATABASE_URL; by default a local PGlite one in .demo/armada):
+// Local demo of the live Fleet view, without any key, in a local PGlite
+// database (.demo/armada), or the Postgres database ARMADA_DEMO_DATABASE_URL
+// names: never ARMADA_DATABASE_URL or DATABASE_URL, which may be production's.
 //   bun run demo:seed [fleet|empty]          fresh local database with the demo activity
 //   bun run demo:report <TICKET> <phase> [message]   a worker report, as `armada report` records it
 //   bun scripts/demo.ts ask <TICKET> <question>      a worker question in the coordinator's inbox
 //   bun scripts/demo.ts seen <project>               the coordinator read its inbox
 // then `ARMADA_DASHBOARD_DEMO=fleet ARMADA_DATABASE_URL=pglite:.demo/armada bun run dev`.
 // A PGlite database belongs to one process at a time: stop the dashboard before
-// `report`, `ask` or `seen` on it, or point both at a Postgres database.
+// `report`, `ask` or `seen` on it, or point both at a Postgres database
+// (the dashboard's ARMADA_DATABASE_URL and this script's ARMADA_DEMO_DATABASE_URL).
 import { mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { databaseUrlOf, openDatabase } from "../lib/db";
@@ -22,7 +24,7 @@ import {
 } from "../lib/fleet-store";
 
 const DEFAULT_DIR = resolve(import.meta.dir, "../.demo/armada");
-const configured = databaseUrlOf(process.env);
+const configured = databaseUrlOf({ ARMADA_DATABASE_URL: process.env.ARMADA_DEMO_DATABASE_URL });
 const url = configured ?? `pglite:${DEFAULT_DIR}`;
 const now = new Date();
 const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
@@ -75,7 +77,7 @@ async function seed(scenario: string) {
       await recordCoordinatorSeen(db, { project, at: ago(minutes) });
   }
   await db.end();
-  console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DATABASE_URL names" : url}`);
+  console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DEMO_DATABASE_URL names" : url}`);
 }
 
 async function withTicket(ticket: string | undefined, work: (project: string, ticket: string) => Promise<void>) {

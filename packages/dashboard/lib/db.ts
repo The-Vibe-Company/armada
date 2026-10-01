@@ -33,9 +33,13 @@ export interface Queryable {
   query<R = Row>(text: string, params?: readonly unknown[]): Promise<Rows<R>>;
 }
 
-/** A connection taken from the pool: a transaction stays on it. Release it once done. */
+/**
+ * A connection taken from the pool: a transaction stays on it. Release it once
+ * done; `destroy` after a failed statement, so a connection whose transaction
+ * may still be open never serves another request.
+ */
 export interface Connection extends Queryable {
-  release(): void;
+  release(destroy?: boolean): void;
 }
 
 export interface Database extends Queryable {
@@ -46,18 +50,18 @@ export interface Database extends Queryable {
 /** Runs `work` in one transaction on one connection: committed when it returns, rolled back when it throws. */
 export async function transaction<T>(db: Database, work: (tx: Queryable) => Promise<T>): Promise<T> {
   const conn = await db.connect();
+  let failed = false;
   try {
     await conn.query("BEGIN");
-    try {
-      const result = await work(conn);
-      await conn.query("COMMIT");
-      return result;
-    } catch (err) {
-      await conn.query("ROLLBACK").catch(() => {});
-      throw err;
-    }
+    const result = await work(conn);
+    await conn.query("COMMIT");
+    return result;
+  } catch (err) {
+    failed = true;
+    await conn.query("ROLLBACK").catch(() => {});
+    throw err;
   } finally {
-    conn.release();
+    conn.release(failed);
   }
 }
 
@@ -78,11 +82,19 @@ export const text = (v: unknown): string | null => (v === null || v === undefine
 // ------------------------------------------------------------ Kysely, for Better Auth
 
 class PgConnection implements DatabaseConnection {
+  /** A statement failed: the connection is not given back to the pool. */
+  private failed = false;
+
   constructor(private readonly conn: Connection) {}
 
   async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
-    const rs = await this.conn.query<R>(query.sql, query.parameters);
-    return { rows: rs.rows, numAffectedRows: BigInt(rs.rowCount) };
+    try {
+      const rs = await this.conn.query<R>(query.sql, query.parameters);
+      return { rows: rs.rows, numAffectedRows: BigInt(rs.rowCount) };
+    } catch (err) {
+      this.failed = true;
+      throw err;
+    }
   }
 
   // biome-ignore lint/correctness/useYield: Better Auth never streams.
@@ -91,7 +103,7 @@ class PgConnection implements DatabaseConnection {
   }
 
   release() {
-    this.conn.release();
+    this.conn.release(this.failed);
   }
 }
 
@@ -428,16 +440,20 @@ const MIGRATION_LOCK = 4_849_001;
 
 /** Applies pending migrations and returns the schema version. */
 export async function migrateDatabase(db: Database, now: Date = new Date()): Promise<number> {
-  await db.query(
-    "CREATE TABLE IF NOT EXISTS armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
-  );
   const current = async (q: Queryable) =>
     Number((await q.query<{ v: unknown }>("SELECT max(version) AS v FROM armada_migrations")).rows[0]?.v ?? 0);
-  if ((await current(db)) >= DB_SCHEMA_VERSION) return DB_SCHEMA_VERSION;
+  // The usual case, without a lock: everything applied already.
+  const applied = await db
+    .query<{ t: unknown }>("SELECT to_regclass('armada_migrations') AS t")
+    .then((rs) => rs.rows[0]?.t !== null && rs.rows[0]?.t !== undefined);
+  if (applied && (await current(db)) >= DB_SCHEMA_VERSION) return DB_SCHEMA_VERSION;
   for (const m of DB_MIGRATIONS)
     await transaction(db, async (tx) => {
       // Whoever comes second waits here, then finds the version applied.
       await tx.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK]);
+      await tx.query(
+        "CREATE TABLE IF NOT EXISTS armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
+      );
       if ((await current(tx)) >= m.version) return;
       for (const statement of m.statements) await tx.query(statement);
       await tx.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [m.version, now]);
@@ -538,8 +554,11 @@ export async function pgliteDatabase(dataDir?: string): Promise<Database> {
  */
 function strictSsl(url: string): string {
   const u = safeUrl(url);
-  const mode = u?.searchParams.get("sslmode");
-  if (!u || !mode || !["prefer", "require", "verify-ca"].includes(mode)) return url;
+  if (!u) return url;
+  const mode = u.searchParams.get("sslmode");
+  // A remote database without a mode would be reached in plain text: TLS, verified, unless the URL says otherwise.
+  const local = ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname) || u.hostname.endsWith(".localhost");
+  if (mode ? !["prefer", "require", "verify-ca"].includes(mode) : local) return url;
   u.searchParams.set("sslmode", "verify-full");
   return u.toString();
 }
@@ -576,7 +595,8 @@ async function pgDatabase(raw: string): Promise<Database> {
           const rs = await client.query(text, params ? [...params] : undefined);
           return { rows: rs.rows as R[], rowCount: rs.rowCount ?? 0 };
         },
-        release: () => client.release(),
+        // A destroyed client closes its connection, and whatever transaction it held with it.
+        release: (destroy?: boolean) => client.release(destroy === true),
       };
     },
     // Idempotent, like PGlite's close.
