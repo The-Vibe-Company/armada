@@ -2879,6 +2879,7 @@ a.ui-row:hover {
 }
 .ins-overview {
   min-height: 1lh;
+}
 
 /* A long list (THE-892): rows off screen skip style, layout and paint, and
    stay in the DOM for j/k, find and screen readers. `auto` keeps the height
