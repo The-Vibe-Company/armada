@@ -9,7 +9,7 @@
 // lib/overview-view.ts.
 import type { FleetOverview, ProjectHealth } from "@armada/core/read";
 import { type ReactNode, useMemo } from "react";
-import { HARNESS_NAME, harnessOf, paths } from "@/lib/fleet-view";
+import { HARNESS_NAME, paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import {
   decisionCards,
@@ -20,6 +20,7 @@ import {
   projectFacts,
   sentRequest,
 } from "@/lib/overview-view";
+import { coordinatorHarness } from "@/lib/project-view";
 import type { ActionContext } from "./Actions";
 import {
   Card,
@@ -254,7 +255,7 @@ function ProjectCard({ t, overview, slug }: { t: Strings; overview: FleetOvervie
   const p = overview.projects.find((x) => x.slug === slug);
   const facts = useMemo(() => projectFacts(overview, slug), [overview, slug]);
   if (!p) return null;
-  const harness = p.coordinator.harness ? harnessOf(p.coordinator.harness) : null;
+  const harness = coordinatorHarness(p.coordinator.harness);
   const coordColor =
     p.coordinator.state === "active"
       ? "var(--done)"

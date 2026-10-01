@@ -207,7 +207,7 @@ test("a project's card reads its progress, agents, ready tickets, pull requests 
     lastActivity: at(2),
   });
   expect(projectFacts(overview, "gadgets")).toEqual({
-    progress: null,
+    progress: 0,
     inFlight: 1,
     ready: 0,
     prs: null,

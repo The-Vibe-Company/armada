@@ -4,6 +4,7 @@
 // progress, what waits).
 import type { FleetOverview, InboxItem, WaitingItem } from "@armada/core/read";
 import { agentState, type DecisionKind, decisionsOf, harnessOf, paths } from "./fleet-view";
+import { lastActivity, prCounts, progressPercent } from "./project-view";
 
 /** A question, a plan or a hand-back: what the owner decides. */
 export type Decision = WaitingItem & { kind: DecisionKind };
@@ -151,7 +152,7 @@ export function problemsOf(o: Pick<FleetOverview, "rows" | "waiting" | "projects
 }
 
 export interface ProjectFacts {
-  /** Done tickets out of all under the root, in percent; null when unknown. */
+  /** Done tickets out of all under the root, in percent (`progressPercent`); null when unknown. */
   progress: number | null;
   inFlight: number;
   /** Tickets marked ready to start, or whose launch was asked. */
@@ -164,19 +165,12 @@ export interface ProjectFacts {
 
 export function projectFacts(o: Pick<FleetOverview, "rows" | "ready" | "projects">, slug: string): ProjectFacts {
   const p = o.projects.find((x) => x.slug === slug);
-  const progress = p?.progress && p.progress.total > 0 ? Math.round((p.progress.done / p.progress.total) * 100) : null;
   const rows = o.rows.filter((r) => r.project === slug);
-  const times = [...rows.map((r) => r.lastReport ?? r.lastUpdate), p?.coordinator.seenAt ?? null].filter(
-    (t): t is string => !!t,
-  );
-  const latest = times.length ? Math.max(...times.map((t) => Date.parse(t))) : null;
   return {
-    progress,
+    progress: progressPercent(p?.progress ?? null),
     inFlight: rows.length,
     ready: o.ready.filter((r) => r.project === slug && (r.readyForAgent || r.launch)).length,
-    prs: p?.pullRequests
-      ? { open: p.pullRequests.length, green: p.pullRequests.filter((pr) => pr.ci === "success").length }
-      : null,
-    lastActivity: latest === null ? null : new Date(latest).toISOString(),
+    prs: prCounts(p?.pullRequests ?? null),
+    lastActivity: p ? lastActivity(p, rows) : null,
   };
 }
