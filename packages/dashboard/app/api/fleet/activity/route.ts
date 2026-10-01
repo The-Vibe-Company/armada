@@ -1,16 +1,20 @@
 import { loadAgentActivity } from "@/lib/fleet-data";
-import { answerJson } from "@/lib/live-http";
+import { answerJson, timed } from "@/lib/live-http";
 import { fleetOf } from "@/lib/server";
 import { isProjectSlug, isTicketId } from "@/lib/workers";
 
 export const dynamic = "force-dynamic";
 
 /**
- * One ticket's activity, read by its agent's page after it opens (THE-869):
- * Postgres only, 304 while nothing changed, 404 for a project the viewer
- * may not see. Carries no secret.
+ * One ticket's activity, read again by its agent's page when the ticket moves
+ * (THE-869; its first render carries it, THE-892): Postgres only, 304 while
+ * nothing changed, 404 for a project the viewer may not see. Carries no secret.
  */
 export async function GET(request: Request) {
+  return timed("/api/fleet/activity", () => answerActivity(request));
+}
+
+async function answerActivity(request: Request): Promise<Response> {
   const { opts, scope } = await fleetOf();
   const url = new URL(request.url);
   const project = url.searchParams.get("project");

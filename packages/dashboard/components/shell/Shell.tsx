@@ -6,6 +6,7 @@
 // opens, Esc goes back). Pages render inside it from the overview it polls
 // (`useFleet`).
 import type { FleetOverview } from "@armada/core/read";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -30,7 +31,20 @@ import { HeaderSlotProvider, PageHeader } from "../page-client";
 import { Dot, harnessColor, Kbd, ProjectChip } from "../ui";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
 import { Logo, SearchIcon } from "./Logo";
-import { Palette } from "./Palette";
+
+// ⌘K and its index load apart from every page (THE-892), as soon as the
+// browser is idle: the first ⌘K finds them ready.
+const loadPalette = () => import("./Palette");
+const Palette = dynamic(() => loadPalette().then((m) => m.Palette), { ssr: false });
+
+function usePalettePreload() {
+  useEffect(() => {
+    const idle = window.requestIdleCallback ?? ((run: () => void) => window.setTimeout(run, 1));
+    const cancel = window.cancelIdleCallback ?? window.clearTimeout;
+    const id = idle(() => void loadPalette());
+    return () => cancel(id);
+  }, []);
+}
 
 export function Shell({
   initial,
@@ -92,6 +106,7 @@ function Frame({ children }: { children: ReactNode }) {
   const fromPath = useFrom(pathname);
   const from = useMemo(() => (fromPath === null ? null : placeOf(fromPath)), [fromPath]);
   const [palette, setPalette] = useState(false);
+  usePalettePreload();
   const [menu, setMenu] = useState(false);
   const main = useRef<HTMLDivElement>(null);
   const selected = useRef(-1);

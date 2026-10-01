@@ -4,8 +4,8 @@
 // the polled overview only; ↑/↓ choose, Enter opens, Esc closes.
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { filterSearch, type SearchItem, searchItems } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
+import { filterSearch, type SearchItem, searchItems } from "@/lib/search";
 import { ProjectChip, StatusDot } from "../ui";
 import { useFleet, useShell } from "./context";
 import { SearchIcon } from "./Logo";

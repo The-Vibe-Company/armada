@@ -8,17 +8,15 @@ import {
   designPageEnabled,
   escapeTarget,
   fileShape,
-  filterSearch,
   harnessOf,
   PROJECT_PALETTE,
   placeOf,
   projectColor,
-  type SearchItem,
-  searchItems,
   sectionOf,
   sessionLink,
   stepStates,
 } from "../lib/fleet-view.ts";
+import { filterSearch, type SearchItem, searchItems } from "../lib/search.ts";
 
 type Bits = Pick<FleetRow, "phase" | "pr" | "silent" | "question" | "flags">;
 const row = (over: Partial<Bits> = {}): Bits => ({
