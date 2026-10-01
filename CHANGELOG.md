@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.12](https://github.com/The-Vibe-Company/armada/compare/v0.2.11...v0.2.12) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** build every page from the Agents page's header, toolbar, sections and rows ([#81](https://github.com/The-Vibe-Company/armada/issues/81)) ([19fc1e9](https://github.com/The-Vibe-Company/armada/commit/19fc1e9be3ad564862891177632bc7bd59b491b8))
+
 ## [0.2.11](https://github.com/The-Vibe-Company/armada/compare/v0.2.10...v0.2.11) (2026-10-01)
 
 
