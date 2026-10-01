@@ -1,0 +1,25 @@
+design/landing/README.md
+  s_d658e7251951c2::t_8ed3eff1da82d6 1-15
+design/landing/landing.dc.html
+  s_d658e7251951c2::t_21a21483e759b9 1-711
+design/landing/logo.dc.html
+  s_d658e7251951c2::t_4d4aeeb63c806f 1-98
+design/landing/support.js
+  s_d658e7251951c2::t_45a068f8548506 1-1911
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d941f8cefffc3468d9f76915753976adcfe6edd8",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "unknown"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
