@@ -52,6 +52,9 @@ Then open `http://localhost:3000/`. Keyboard: `j` and `k` move through rows, `En
 ## Rules for building it
 
 - No new dependency.
+- Keep THE-892's budgets green: Lighthouse 95 at 4× CPU, CLS 0, mobile LCP under 2.5 s, first-load JS within 5%, interactions under 200 ms. The System page lists each piece's cost and rule. The two that matter most:
+  - render the status sentence and "Since you were away" with the page on the server, never inserted above content after paint;
+  - use backdrop blur only on the phone's tab bar and on toasts.
 - Motion uses transform and opacity only.
 - Reduced motion keeps crossfades and nothing else.
 - Every colour used for text passes AA on the deck and on a card; the System page computes the ratios.

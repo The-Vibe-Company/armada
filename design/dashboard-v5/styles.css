@@ -407,8 +407,8 @@ select {
   gap: 10px;
   height: 52px;
   padding: 0 20px 0 24px;
-  background: color-mix(in oklab, var(--deck) 82%, transparent);
-  backdrop-filter: blur(12px) saturate(1.2);
+  /* opaque, no backdrop blur: the sticky bar repaints on every scroll (THE-892) */
+  background: color-mix(in oklab, var(--deck) 96%, transparent);
   border-bottom: 1px solid var(--line-soft);
 }
 .crumbs {
@@ -1796,8 +1796,7 @@ a.figure:hover {
     gap: 10px;
     height: 52px;
     padding: 0 16px;
-    background: color-mix(in oklab, var(--deck) 80%, transparent);
-    backdrop-filter: blur(14px) saturate(1.2);
+    background: color-mix(in oklab, var(--deck) 96%, transparent);
     border-bottom: 1px solid var(--line-soft);
   }
   .topbar .org {

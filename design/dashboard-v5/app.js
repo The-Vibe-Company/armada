@@ -953,6 +953,21 @@ function system() {
       </div></section>
     <section><h2>Density</h2><p class="lead">Compact: 36 px rows, 34 px bands, 13 px titles. Airy: 48 px rows, 40 px bands, 14 px titles. The toggle sits on the Agents page's toolbar, as today; the phone always uses two-line 56 px rows.</p>
       <div class="demo-row"><span class="seg"><button data-density="compact" aria-pressed="${state.density === "compact"}">Compact</button><button data-density="airy" aria-pressed="${state.density === "airy"}">Airy</button></span><a class="btn is-sm" href="#/agents">See it on Agents</a></div></section>
+    <section><h2>Within THE-892's budgets</h2><p class="lead">Lighthouse 95 on every page at 4× CPU, CLS 0, LCP under 2.5 s on a phone, first-load JS within 5% of today, interactions under 200 ms. Night watch is CSS: it adds no dependency and almost no JavaScript.</p>
+      <table class="tbl"><thead><tr><th>Piece</th><th>Cost</th><th>Rule for THE-899</th></tr></thead><tbody>${[
+        ["Status sentence", "text, server-rendered", "It is most pages' LCP element: render it on the server with the page, in Geist's preloaded cut (display: optional), never after a fetch."],
+        ["Since you were away", "one section above the fold", "Render it with the overview on the server (the visit is known there), like THE-892's weekly line. Never insert it above content after paint (CLS 0). Dismiss removes it with a fade."],
+        ["Horizon", "one pseudo-element, a static radial gradient", "Driven by one data attribute on the main panel; its hue changes with an opacity fade, at most once per poll."],
+        ["Depth", "box-shadow rings", "Static shadows only; nothing animates a shadow, a size or a position."],
+        ["Backdrop blur", "paint on scroll", "Only on the phone's tab bar and on toasts. The sticky header bar and the phone's top bar are opaque."],
+        ["Motion", "compositor only", "Transform and opacity, CSS transitions and keyframes. The merge flight is one Web Animations call; no motion library."],
+        ["Live mark", "one 900 ms opacity keyframe every 3 s", "Paused while the tab is hidden, off with reduced motion."],
+        ["Timeline ships", "one element per live session", "Server-rendered with the timeline chunk; rows keep a fixed height so content-visibility still skips rows off screen."],
+        ["Rows, cards, charts", "CSS only", "Section, Row and Card keep their API and the long prop; rows keep a fixed height per density. Charts stay SVG without a library."],
+        ["Kit additions", "server components", "StatusHeader, EmptyState, Skeleton, Alert, Ring and Figure render on the server. Only the merge moment and Dismiss need client code, in the components that already have it."],
+      ]
+        .map((r) => `<tr>${r.map((c, i) => `<td>${i ? c : `<b style="font-weight:500">${c}</b>`}</td>`).join("")}</tr>`)
+        .join("")}</tbody></table></section>
     <section><h2>Building it (THE-899)</h2><p class="lead">No new dependency. styles.css maps onto globals.css token for token; the page kit gains <code class="mono">StatusHeader</code> (the display sentence and its stats), <code class="mono">EmptyState</code>, <code class="mono">Skeleton</code>, <code class="mono">Alert</code>, <code class="mono">Ring</code> and <code class="mono">Figure</code>; <code class="mono">Section</code>, <code class="mono">Row</code>, <code class="mono">Card</code> and <code class="mono">Toolbar</code> keep their API and change only their CSS. The horizon is a pseudo-element on the shell's main panel driven by one data attribute.</p></section>
   </div>`;
 }
