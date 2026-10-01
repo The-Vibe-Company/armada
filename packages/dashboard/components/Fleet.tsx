@@ -41,6 +41,7 @@ import {
 } from "./page";
 import { DecisionCard } from "./screens/DecisionCard";
 import { useFleet, useNow, useShell } from "./shell/context";
+import { LiveTimeline } from "./timeline/Timeline";
 import { Dot, EmptyState, PhasePill, ProjectChip, RelativeTime, StatusDot, Tag, type Tone } from "./ui";
 
 const PROBLEM_TONE: Record<Problem["kind"], Tone> = {
@@ -176,7 +177,7 @@ export function Fleet() {
             </Section>
           )}
 
-          <TimelineSlot />
+          <LiveTimeline />
 
           <Section label={t.overview.projectsTitle} count={overview.projects.length}>
             <CardGrid>
@@ -189,14 +190,6 @@ export function Fleet() {
       )}
     </Page>
   );
-}
-
-/**
- * THE-868: the live timeline goes here, in its own Section, between the
- * problems and the projects. Renders nothing until then.
- */
-function TimelineSlot() {
-  return null;
 }
 
 /** "Wednesday 1 October · 15:42", in the viewer's language. */

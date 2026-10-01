@@ -129,6 +129,8 @@ interface DemoTicket {
   summary: string;
   files: DemoFile[];
   pr?: { number: number; ci: CiState; mergeable?: "MERGEABLE" | "CONFLICTING"; opened: number };
+  /** Minutes ago between which the worker did not report, for a past silence on the timeline. */
+  quiet?: [number, number];
 }
 
 const f = (path: string, additions: number, deletions: number): DemoFile => ({ path, additions, deletions });
@@ -243,6 +245,7 @@ const TICKETS: DemoTicket[] = [
     summary: "Rebasing on main after the catalogue change",
     files: [f("src/search/query.ts", 45, 61), f("src/search/index.ts", 12, 3), f("src/catalogue/schema.sql", 4, 1)],
     pr: { number: 12, ci: "pending", mergeable: "CONFLICTING", opened: 25 },
+    quiet: [95, 45],
   },
   {
     id: "GAD-3",
@@ -454,6 +457,64 @@ function pullRequest(t: DemoTicket, repo: string, now: Date): PullRequest | null
   };
 }
 
+/** The phases a demo ticket went through before its current one. */
+const BEFORE: Record<LabelPhase, LabelPhase[]> = {
+  planning: [],
+  "awaiting-approval": ["planning"],
+  implementing: ["planning", "awaiting-approval"],
+  shipping: ["planning", "awaiting-approval", "implementing"],
+  "ready-to-merge": ["planning", "awaiting-approval", "implementing", "shipping"],
+  blocked: ["planning", "awaiting-approval", "implementing"],
+};
+
+const AT_WORK: Record<LabelPhase, string> = {
+  planning: "Reading the ticket and the code",
+  "awaiting-approval": "Plan posted for approval",
+  implementing: "Writing the change and its tests",
+  shipping: "Pull request open, waiting for CI",
+  "ready-to-merge": "Handed back",
+  blocked: "Waiting for an answer",
+};
+
+/** A report of a demo ticket: minutes ago, oldest first. */
+export interface DemoReport {
+  ago: number;
+  phase: LabelPhase;
+  summary: string;
+}
+
+/**
+ * The reports behind a demo ticket's timeline: its earlier phases between the
+ * claim and its current phase (shipping from its pull request), a report every
+ * 12 minutes while the worker works (one for a plan or a question), none while
+ * it is quiet, then its last report.
+ */
+export function demoReports(t: DemoTicket): DemoReport[] {
+  const past = BEFORE[t.phase];
+  const opened = t.pr?.opened;
+  const shipFrom = past.includes("shipping") && opened !== undefined ? opened : null;
+  const early = past.filter((p) => p !== "shipping" || shipFrom === null);
+  const span = (t.claimed - (shipFrom ?? t.phaseSince)) / Math.max(1, early.length);
+  const phases: { phase: LabelPhase; from: number; to: number }[] = early.map((phase, k) => ({
+    phase,
+    from: Math.round(t.claimed - k * span),
+    to: Math.round(t.claimed - (k + 1) * span),
+  }));
+  if (shipFrom !== null) phases.push({ phase: "shipping", from: shipFrom, to: t.phaseSince });
+  phases.push({ phase: t.phase, from: t.phaseSince, to: t.lastReport });
+  const reports: DemoReport[] = [];
+  const quiet = (m: number) => !!t.quiet && m < t.quiet[0] && m > t.quiet[1];
+  for (const p of phases) {
+    const once = p.phase === "awaiting-approval" || p.phase === "blocked" || p.phase === "ready-to-merge";
+    for (let m = p.from; m > p.to; m -= once ? Number.POSITIVE_INFINITY : 12)
+      if (!quiet(m) && m !== t.claimed) reports.push({ ago: m, phase: p.phase, summary: AT_WORK[p.phase] });
+  }
+  const last = reports.at(-1);
+  if (last?.ago === t.lastReport) last.summary = t.summary;
+  else reports.push({ ago: t.lastReport, phase: t.phase, summary: t.summary });
+  return reports;
+}
+
 /** The Linear program and GitHub pull requests of a demo project, as core reads them. */
 export function demoSnapshot(
   project: ProjectInput,
@@ -527,19 +588,12 @@ export function demoSnapshot(
         author: t.agent,
       },
     });
-    comments.push({
-      ...base,
-      id: `${t.id}-phase`,
-      createdAt: ago(now, t.phaseSince),
-      status: { phase: t.phase, summary: t.phaseSince === t.lastReport ? t.summary : "phase started" },
-      claim: null,
-    });
-    if (t.lastReport !== t.phaseSince)
+    for (const [k, r] of demoReports(t).entries())
       comments.push({
         ...base,
-        id: `${t.id}-report`,
-        createdAt: ago(now, t.lastReport),
-        status: { phase: t.phase, summary: t.summary },
+        id: `${t.id}-report-${k}`,
+        createdAt: ago(now, r.ago),
+        status: { phase: r.phase, summary: r.summary },
         claim: null,
       });
   }

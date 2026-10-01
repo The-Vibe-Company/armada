@@ -16,4 +16,5 @@ export * from "./overview.ts";
 export * from "./projects.ts";
 export * from "./requests.ts";
 export * from "./status.ts";
+export * from "./timeline.ts";
 export * from "./types.ts";
