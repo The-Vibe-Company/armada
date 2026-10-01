@@ -106,7 +106,9 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     coordinator,
     silentAfterMinutes: config.policy.silentAfterMinutes,
     now: io.now ?? (() => new Date()),
-    ...(wait ? { waitMs: timeoutMs } : {}),
+    ...(wait
+      ? { wait: { timeoutMs, sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))) } }
+      : {}),
   });
   io.stdout(a.json ? `${JSON.stringify(report, null, 2)}\n` : renderInbox(report));
   for (const w of report.warnings) io.stderr(`armada: warning: ${w}\n`);

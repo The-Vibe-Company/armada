@@ -17,7 +17,7 @@ import { type Auth, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
 import { type Holder, releaseCredentials } from "./broker";
 import type { Database, Queryable } from "./db";
-import { fleetStore, holdProject, listProjects } from "./fleet-store";
+import { fleetStore, holdProject, projectsOf } from "./fleet-store";
 import { SECRETS_KEY_VARIABLE, type VaultKey, type VaultMode } from "./vault";
 import {
   createLaunch,
@@ -47,8 +47,6 @@ export interface CliApiDeps {
   /** The vault's master key; off, `POST credentials` answers 503 and the CLI keeps its local keys. */
   vault?: () => VaultMode;
   now?: () => Date;
-  /** How a waiting inbox read waits between two looks. */
-  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Who a terminal is signed in as. Carries no secret. */
@@ -470,11 +468,9 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       `the project ${project.slug} belongs to another organization`,
       `another slug in armada.toml ([project] slug), or sign in to the organization of ${project.slug}`,
     );
-  const answer = await serveFleet(
-    fleetStore(a.client),
-    { op, project, caller, input: body.input },
-    { now, sleep: deps.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))) },
-  );
+  const answer = await serveFleet(fleetStore(a.client), { op, project, caller, input: body.input }, { now });
+  // An unchanged inbox: nothing to send.
+  if (answer.status === 304) return new Response(null, { status: 304, headers: NO_STORE });
   if (answer.status !== 200)
     console.info(
       `armada dashboard: fleet ${op} refused (${answer.status}) for ${project.slug}: ${String(answer.body.error)}`,
@@ -489,7 +485,7 @@ async function projects(a: CliAccounts, request: Request, now: Date): Promise<Re
   if (identity.via === "worker") return refuse(403, `${WORKER_SCOPE}: it lists no project`, "the coordinator does it");
   const organization = identity.organization;
   if (!organization) return noOrganization(a);
-  const own = (await listProjects(a.client)).filter((p) => p.organization === organization.id);
+  const own = await projectsOf(a.client, organization.id);
   return Response.json(
     {
       schemaVersion: 1,

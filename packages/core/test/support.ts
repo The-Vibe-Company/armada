@@ -127,6 +127,7 @@ export async function answerFleet(
     );
   await store.ensureProject(project, clock.now());
   const answer = await serveFleet(store, { op, project, caller, input: b.input }, clock);
+  if (answer.status === 304) return new Response(null, { status: 304 });
   return Response.json(answer.body, { status: answer.status });
 }
 
@@ -157,15 +158,22 @@ export function tempFleet(
   const clock = o.clock ?? fakeClock();
   const project = o.project ?? DEMO_PROJECT;
   const calls: string[] = [];
+  /** The HTTP status of each answer, in order: 304 for an unchanged inbox. */
+  const statuses: number[] = [];
   const caller = o.caller ?? { kind: "organization" };
   const fetch: Fetch = async (url, init) => {
     const op = url.slice(`${ARMADA_URL}/api/cli/fleet/`.length);
     calls.push(op);
-    return answerFleet(store, clock, op, JSON.parse(String(init.body)), { ...caller, project: project.slug });
+    const res = await answerFleet(store, clock, op, JSON.parse(String(init.body)), {
+      ...caller,
+      project: project.slug,
+    });
+    statuses.push(res.status);
+    return res;
   };
   const signIn: ArmadaSignIn = { kind: "api-key", key: "armada_key_TEST" };
   const fleet: Fleet = fleetClient({ api: armadaApi({ url: ARMADA_URL, fetch }), signIn, project });
-  return { store, fleet, clock, calls };
+  return { store, fleet, clock, calls, statuses };
 }
 
 // ------------------------------------------------------------------ fake Linear writer

@@ -92,6 +92,24 @@ export async function listProjects(db: Queryable): Promise<ProjectRecord[]> {
   }));
 }
 
+/** The projects an organization holds, by slug. */
+export async function projectsOf(db: Queryable, organization: string): Promise<ProjectRecord[]> {
+  const rs = await db.query(
+    `SELECT slug, name, repository, program_root, organization_id, created_at, updated_at FROM projects
+     WHERE organization_id = $1 ORDER BY slug`,
+    [organization],
+  );
+  return rs.rows.map((r) => ({
+    slug: String(r.slug),
+    name: String(r.name),
+    repository: String(r.repository),
+    programRoot: String(r.program_root),
+    organization: text(r.organization_id),
+    createdAt: isoAt(r.created_at),
+    updatedAt: isoAt(r.updated_at),
+  }));
+}
+
 /**
  * Gives every project that has no organization to `organization`, and returns
  * how many it assigned. A project that has one keeps it, so running this again,
@@ -412,13 +430,17 @@ export async function resolveInboxItem(
   return rs.rowCount > 0;
 }
 
-/** When the newest question or plan of each ticket was resolved, by ticket id. */
-export async function lastAnsweredAt(db: Queryable, project: string): Promise<Record<string, string>> {
+/** When the newest question or plan of each ticket was resolved, by ticket id; with `since`, only answers since then. */
+export async function lastAnsweredAt(
+  db: Queryable,
+  project: string,
+  opts: { since?: Date } = {},
+): Promise<Record<string, string>> {
   const rs = await db.query(
     `SELECT ticket, max(resolved_at) AS at FROM inbox_items
-     WHERE project = $1 AND kind IN ('question', 'plan') AND ticket IS NOT NULL AND resolved_at IS NOT NULL
+     WHERE project = $1 AND kind IN ('question', 'plan') AND ticket IS NOT NULL AND resolved_at >= $2
      GROUP BY ticket`,
-    [project],
+    [project, opts.since ?? new Date(0)],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
 }
@@ -576,7 +598,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   openInboxItems: (q) => openInboxItems(db, q),
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   resolveInboxItem: (q) => resolveInboxItem(db, q),
-  lastAnsweredAt: (project) => lastAnsweredAt(db, project),
+  lastAnsweredAt: (project, opts) => lastAnsweredAt(db, project, opts),
   resolveInboxItems: (q) => resolveInboxItems(db, q),
   resolveAnswerRequests: (q) => resolveAnswerRequests(db, q),
   resolvePlans: (q) => resolvePlans(db, q),

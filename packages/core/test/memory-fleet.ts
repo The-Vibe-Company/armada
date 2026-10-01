@@ -241,10 +241,17 @@ export function memoryFleet(): FleetStore & {
         ) > 0
       );
     },
-    async lastAnsweredAt(project) {
+    async lastAnsweredAt(project, opts = {}) {
+      const since = opts.since?.toISOString() ?? "";
       const out: Record<string, string> = {};
       for (const i of items)
-        if (i.project === project && ["question", "plan"].includes(i.kind) && i.ticket && i.resolvedAt)
+        if (
+          i.project === project &&
+          ["question", "plan"].includes(i.kind) &&
+          i.ticket &&
+          i.resolvedAt &&
+          i.resolvedAt >= since
+        )
           if (!out[i.ticket] || i.resolvedAt > (out[i.ticket] ?? "")) out[i.ticket] = i.resolvedAt;
       return out;
     },

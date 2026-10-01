@@ -73,15 +73,9 @@ afterAll(async () => {
   await client.end();
 });
 
-/** What the server waits with: a waiting inbox read moves the clock, and `onSleep` plays what happens meanwhile. */
-let onSleep: (() => Promise<void>) | null = null;
 const deps: Omit<CliApiDeps, "accounts"> = {
   vault: () => vaultModeOf({ ARMADA_SECRETS_KEY: Buffer.alloc(32, 9).toString("base64") }),
   now,
-  sleep: async (ms) => {
-    clock += ms;
-    await onSleep?.();
-  },
 };
 
 /** The terminal's fetch, answered by the routes in this process. */
@@ -126,7 +120,14 @@ const claim = (ticket: string, handle: string) => ({
   },
 });
 
-const read = { coordinator: "ws-c/s-c", silentAfterMinutes: 15, known: null, waitMs: 0 };
+const read = { coordinator: "ws-c/s-c", silentAfterMinutes: 15, etag: null };
+
+/** A first read of the inbox: never "not modified". */
+async function inboxOf(f: Fleet) {
+  const r = await f.inbox(read);
+  if (!r) throw new Error("a first read came back empty");
+  return r;
+}
 
 describe("the fleet through the Armada API", () => {
   test("a worker with a launch token and a signed-in coordinator run a ticket from claim to merge; no database key anywhere", async () => {
@@ -143,7 +144,7 @@ describe("the fleet through the Armada API", () => {
       prUrl: null,
       headSha: null,
     });
-    const plan = (await coordinator.inbox(read)).items;
+    const plan = (await inboxOf(coordinator)).items;
     expect(plan.map((e) => [e.kind, e.ticket, e.author, e.body])).toEqual([
       ["plan", "WID-7", "ws-7/s-1", "plan\n\n1. Build.\n2. Test."],
     ]);
@@ -165,7 +166,7 @@ describe("the fleet through the Armada API", () => {
       prUrl: "https://github.com/acme/widgets/pull/9",
       headSha: HEAD,
     });
-    expect((await coordinator.inbox(read)).items.map((e) => e.kind)).toEqual(["hand-back"]);
+    expect((await inboxOf(coordinator)).items.map((e) => e.kind)).toEqual(["hand-back"]);
 
     // The merge lock, then the merge's record: the session is released and the hand-back resolved.
     expect(await coordinator.acquireLease({ name: "merge", holder: "c-1", ttlMs: 60_000 })).toEqual({ acquired: true });
@@ -234,25 +235,26 @@ describe("the fleet through the Armada API", () => {
     expect(bad.status).toBe(400);
   });
 
-  test("inbox --wait is a long poll: the server answers when a new item comes, or after 25 s at most", async () => {
+  test("an unchanged inbox is answered 304 Not Modified, with no body; a change is answered in full", async () => {
     const coordinator = fleetOf({ kind: "api-key", key: apiKey });
     const w = fleetOf(await worker("WID-10"));
     await w.claim(claim("WID-10", "ws-10"));
-    const known = (await coordinator.inbox(read)).items.map((e) => (e.id === null ? `silent:${e.ticket}` : `#${e.id}`));
-    let sleeps = 0;
-    onSleep = async () => {
-      if (++sleeps === 2) await w.ask({ ticket: "WID-10", body: "Now?" });
-    };
-    const before = clock;
-    const woke = await coordinator.inbox({ ...read, known, waitMs: 60_000 });
-    expect([woke.timedOut, woke.items.filter((e) => e.new).map((e) => e.body), clock - before]).toEqual([
-      false,
-      ["Now?"],
-      4_000,
-    ]);
-    onSleep = null;
-    const idle = await coordinator.inbox({ ...read, known: woke.items.map((e) => `#${e.id}`), waitMs: 60_000 });
-    expect([idle.timedOut, clock - before]).toEqual([true, 29_000]);
+    const first = await inboxOf(coordinator);
+    const raw = await fetch(`${BASE}/api/cli/fleet/inbox`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": apiKey },
+      body: JSON.stringify({ project: WIDGETS, input: { ...read, etag: first.etag } }),
+    });
+    expect([raw.status, await raw.text(), raw.headers.get("cache-control")]).toEqual([304, "", "no-store"]);
+    // A worker turning silent is a new entry; then its minutes change, its entry does not: not modified.
+    clock += 20 * 60_000;
+    const silent = await coordinator.inbox({ ...read, etag: first.etag });
+    expect(silent?.items.map((e) => [e.kind, e.ticket])).toContainEqual(["silent", "WID-10"]);
+    clock += 5 * 60_000;
+    expect(await coordinator.inbox({ ...read, etag: silent?.etag ?? null })).toBeNull();
+    await w.ask({ ticket: "WID-10", body: "Now?" });
+    const changed = await coordinator.inbox({ ...read, etag: silent?.etag ?? null });
+    expect(changed?.items.map((e) => e.body)).toContain("Now?");
   });
 
   test("two coordinators taking the merge lock at once: one gets it, the other waits for it", async () => {

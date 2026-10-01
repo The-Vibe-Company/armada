@@ -455,6 +455,18 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 3,
     statements: [`DELETE FROM "armada_secret" WHERE "name" LIKE 'turso-%'`],
   },
+  {
+    // What the CLI's calls through the API read on every poll (THE-850): the
+    // sessions holding a ticket, the answers since the oldest open claim, and
+    // an organization's projects. Each stays an index lookup as history grows.
+    version: 4,
+    statements: [
+      "CREATE INDEX IF NOT EXISTS runtime_handles_open ON runtime_handles (project) WHERE released_at IS NULL",
+      `CREATE INDEX IF NOT EXISTS inbox_answered ON inbox_items (project, resolved_at)
+        WHERE kind IN ('question', 'plan') AND resolved_at IS NOT NULL`,
+      "CREATE INDEX IF NOT EXISTS projects_by_organization ON projects (organization_id)",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

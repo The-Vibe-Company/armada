@@ -3,14 +3,7 @@
 // The coordinator reads the inbox (`armada inbox`), delivers the answer in the
 // worker's session through the runtime guide, then records it (`armada answer`).
 // Armada never calls a runtime: these commands only record.
-import {
-  entryKey,
-  type Fleet,
-  INBOX_WAIT_MAX_MS,
-  type InboxEntry,
-  type InboxKind,
-  type StoredInboxItem,
-} from "./live.ts";
+import { entryKey, type Fleet, type InboxEntry, type InboxKind, type StoredInboxItem } from "./live.ts";
 import type { AgentPhase } from "./types.ts";
 import { live, type Outcome, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
 
@@ -77,42 +70,50 @@ export interface InboxOptions {
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
   now: () => Date;
-  /** Wait this long at most for a new item; each call to Armada waits `INBOX_WAIT_MAX_MS` at most. */
-  waitMs?: number;
+  /** Wait at most `timeoutMs` for a new item, asking Armada every `pollMs`. */
+  wait?: { timeoutMs: number; sleep: (ms: number) => Promise<void>; pollMs?: number };
 }
 
 /**
+ * How often `armada inbox --wait` asks Armada. Each ask is one short request
+ * that Armada answers "not modified" while the inbox is unchanged: nothing
+ * holds a server function open between two asks.
+ */
+export const INBOX_POLL_MS = 15_000;
+
+/**
  * Reads the coordinator's inbox through Armada, which records the
- * coordinator's presence for the dashboard. With `waitMs`, it returns as soon
- * as an item that was not there at the previous read appears (marked `new`),
- * or at the timeout: Armada holds each call open (a long poll) and the CLI
- * calls again until its own timeout.
+ * coordinator's presence for the dashboard. With `wait`, it asks again every
+ * `INBOX_POLL_MS` and returns as soon as an item that was not there at the
+ * previous read appears (marked `new`), or at the timeout.
  */
 export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxReport> {
   const started = o.now();
   const query = { coordinator: o.coordinator ?? null, silentAfterMinutes: o.silentAfterMinutes };
-  const first = await fleet.inbox({ ...query, known: null, waitMs: 0 });
+  const first = await fleet.inbox({ ...query, etag: null });
+  if (!first) throw new Error("Armada answered the first inbox read with nothing");
   const warnings = [...first.warnings];
   let items = first.items;
+  let etag = first.etag;
   const report = (timedOut: boolean | null): InboxReport => ({
     project: o.project,
     generatedAt: o.now().toISOString(),
     items,
-    wait:
-      o.waitMs !== undefined && timedOut !== null ? { timeoutSeconds: Math.round(o.waitMs / 1000), timedOut } : null,
+    wait: o.wait && timedOut !== null ? { timeoutSeconds: Math.round(o.wait.timeoutMs / 1000), timedOut } : null,
     warnings: [...new Set(warnings)],
   });
-  if (o.waitMs === undefined) return report(null);
+  if (!o.wait) return report(null);
+  const { sleep, timeoutMs, pollMs = INBOX_POLL_MS } = o.wait;
   for (;;) {
-    const left = o.waitMs - (o.now().getTime() - started.getTime());
+    const left = timeoutMs - (o.now().getTime() - started.getTime());
     if (left <= 0) return report(true);
-    const read = await fleet.inbox({
-      ...query,
-      known: items.map(entryKey),
-      waitMs: Math.min(left, INBOX_WAIT_MAX_MS),
-    });
+    await sleep(Math.min(pollMs, left));
+    const read = await fleet.inbox({ ...query, etag });
+    if (!read) continue;
+    const known = new Set(items.map(entryKey));
+    items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
+    etag = read.etag;
     warnings.push(...read.warnings);
-    items = read.items;
     if (items.some((e) => e.new)) return report(false);
   }
 }

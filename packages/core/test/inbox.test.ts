@@ -267,7 +267,7 @@ describe("the coordinator's inbox", () => {
     expect(items[1]?.body).toStartWith("no report for 40 min (phase implementing, Conductor ws/DEMO-1)");
   });
 
-  test("--wait long-polls Armada until a new question, or its own timeout; each read records the presence", async () => {
+  test("--wait asks Armada every 15 s, answered 304 while nothing changed, until a new question or the timeout", async () => {
     const clock = fakeClock();
     const live = tempFleet({ clock });
     const db = live.store;
@@ -289,9 +289,8 @@ describe("the coordinator's inbox", () => {
       at: at(30),
     });
     let sleeps = 0;
-    const tick = clock.sleep;
-    clock.sleep = async (ms: number) => {
-      await tick(ms);
+    const sleep = async (ms: number) => {
+      await clock.sleep(ms);
       if (++sleeps === 3)
         await db.addInboxItem({
           project: P,
@@ -305,28 +304,29 @@ describe("the coordinator's inbox", () => {
     };
     const options = { project: P, coordinator: "ws-coordinator/session", silentAfterMinutes: 15, now: clock.now };
 
-    const got = await checkInbox(live.fleet, { ...options, waitMs: 300_000 });
+    const got = await checkInbox(live.fleet, { ...options, wait: { timeoutMs: 300_000, sleep } });
     expect(got.items.map((e) => [e.body, e.new])).toEqual([
       ["old", false],
       ["new", true],
     ]);
-    // Armada read it again every 2 s, and answered at the third look.
-    expect([got.wait, clock.now().getTime() - NOW.getTime(), live.calls]).toEqual([
+    // A first read, two unchanged answers (304, no body), then the new question at the third ask.
+    expect([got.wait, clock.now().getTime() - NOW.getTime(), live.statuses]).toEqual([
       { timeoutSeconds: 300, timedOut: false },
-      6_000,
-      ["inbox", "inbox"],
+      45_000,
+      [200, 304, 304, 200],
     ]);
 
-    live.calls.length = 0;
-    const idle = await checkInbox(live.fleet, { ...options, waitMs: 60_000 });
+    live.statuses.length = 0;
+    const idle = await checkInbox(live.fleet, { ...options, wait: { timeoutMs: 40_000, sleep: clock.sleep } });
     expect([idle.wait?.timedOut, idle.items.some((e) => e.new), clock.now().getTime() - NOW.getTime()]).toEqual([
       true,
       false,
-      66_000,
+      85_000,
     ]);
-    // One read, then calls of at most 25 s each until the CLI's own timeout: 25 + 25 + 10 s.
-    expect(live.calls).toEqual(["inbox", "inbox", "inbox", "inbox"]);
-    expect(await db.lastCoordinatorSeen(P)).toBe(new Date(NOW.getTime() + 56_000).toISOString());
+    // 15 + 15 + 10 s: every ask unchanged.
+    expect(live.statuses).toEqual([200, 304, 304, 304]);
+    // The presence is recorded at most once a minute, with the coordinator's handle.
+    expect(await db.lastCoordinatorSeen(P)).toBe(new Date(NOW.getTime() + 60_000).toISOString());
     expect(db.presence.get(P)?.handle).toBe("ws-coordinator/session");
   });
 

@@ -280,42 +280,33 @@ describe("armada ask, inbox and answer", () => {
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["Conductor", "implementing"]);
   });
 
-  test("inbox --wait polls Armada until a new item arrives, or until its timeout", async () => {
-    // The server's clock moves only while a long poll waits; the CLI reads the same clock.
+  test("inbox --wait asks Armada every 15 s, sending the last read's etag, until a new item or its timeout", async () => {
     const clock = fakeClock();
     const w = worker(SIGNED_IN, { clock });
     w.io.now = clock.now;
+    w.io.sleep = clock.sleep;
     expect(await run(["inbox", "--wait", "--timeout", "60"], w.io)).toBe(0);
     expect(w.out()).toBe("Inbox of widgets: nothing waits for you.\nNo new item within 60 s.\n");
-    // One read, then long polls of at most 25 s each until the 60 s are up.
-    expect(w.armada.calls.map((c) => (c.body as { input: { waitMs: number } }).input.waitMs)).toEqual([
-      0, 25_000, 25_000, 10_000,
-    ]);
+    // One read, then an ask every 15 s with the etag of that read: Armada answers 304 each time.
+    const etags = w.armada.calls.map((c) => (c.body as { input: { etag: string | null } }).input.etag);
+    expect([etags.length, etags[0], new Set(etags.slice(1)).size]).toEqual([5, null, 1]);
     expect(clock.now().toISOString()).toBe(new Date(NOW.getTime() + 60_000).toISOString());
 
     // A question asked while the coordinator waits ends the wait, marked new.
-    const asking = fakeClock();
     const store = memoryFleet();
-    const w2 = worker(SIGNED_IN, {
-      store,
-      clock: {
-        ...asking,
-        sleep: async (ms) => {
-          asking.advance(ms);
-          if (!store.items.some((i) => i.ticket === "DEMO-9"))
-            await store.addInboxItem({
-              project: "widgets",
-              ticket: "DEMO-9",
-              kind: "question",
-              recipient: "coordinator",
-              author: "ws-9/s-9",
-              body: "Which queue?",
-              at: asking.now(),
-            });
-        },
-      },
-    });
-    w2.io.now = asking.now;
+    const w2 = worker(SIGNED_IN, { store, clock: fakeClock() });
+    w2.io.sleep = async () => {
+      if (!store.items.some((i) => i.ticket === "DEMO-9"))
+        await store.addInboxItem({
+          project: "widgets",
+          ticket: "DEMO-9",
+          kind: "question",
+          recipient: "coordinator",
+          author: "ws-9/s-9",
+          body: "Which queue?",
+          at: NOW,
+        });
+    };
     expect(await run(["inbox", "--wait", "--json"], w2.io)).toBe(0);
     const report = JSON.parse(w2.out());
     expect(report.items.map((e: { ticket: string; new: boolean }) => [e.ticket, e.new])).toEqual([["DEMO-9", true]]);

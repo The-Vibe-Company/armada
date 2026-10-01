@@ -38,7 +38,7 @@ describe("the fleet through Armada", () => {
       "the coordinator does it",
     ]);
     for (const call of [
-      () => fleet.inbox({ coordinator: null, silentAfterMinutes: 15, known: null, waitMs: 0 }),
+      () => fleet.inbox({ coordinator: null, silentAfterMinutes: 15, etag: null }),
       () => fleet.inboxItem(1),
       () => fleet.answer({ text: "yes", note: false, ticket: "DEMO-7", item: 1 }),
       () => fleet.acquireLease({ name: "merge", holder: "w", ttlMs: 60_000 }),

@@ -175,6 +175,8 @@ export function armadaApi(opts: ArmadaApiOptions) {
         "the same command again once it answers, or check ARMADA_API_URL",
       );
     });
+    // Not modified: no body to read (an unchanged inbox).
+    if (res.status === 304) return { status: 304, body: {} };
     const body = (await res.json().catch(() => null)) as unknown;
     if (typeof body !== "object" || body === null || Array.isArray(body))
       throw new ArmadaApiError(
@@ -273,8 +275,9 @@ export function armadaApi(opts: ArmadaApiOptions) {
     },
 
     /**
-     * One operation on the fleet's live data (`fleet-api.ts`): its result, or
-     * an ArmadaApiError naming the refusal. `timeoutMs` covers a long poll.
+     * One operation on the fleet's live data (`fleet-api.ts`): its result,
+     * null when Armada answers "not modified" (304), or an ArmadaApiError
+     * naming the refusal.
      */
     async fleet(signIn: ArmadaSignIn, op: string, body: object, timeoutMs?: number): Promise<unknown> {
       const { status, body: answer } = await call("POST", `fleet/${op}`, {
@@ -282,6 +285,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
         body,
         ...(timeoutMs ? { timeoutMs } : {}),
       });
+      if (status === 304) return null;
       if (status !== 200) throw refusal(status, answer, status === 401 ? null : "Armada refused");
       if (!("result" in answer))
         throw new ArmadaApiError(`Armada (${host}) answered fleet/${op} in a shape this CLI does not know`);

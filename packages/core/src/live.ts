@@ -7,6 +7,7 @@
 // records there, run by the app (`serveFleet` in `fleet-api.ts`) with its own
 // clock. Losing this data loses live detail, never progress: Linear stays the
 // record.
+import { createHash } from "node:crypto";
 import { NEEDS_HUMAN } from "./fleet.ts";
 import type { AgentPhase, LabelPhase } from "./types.ts";
 
@@ -187,8 +188,8 @@ export interface FleetStore {
   getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
   /** Resolves one open item; false when it was already resolved. */
   resolveInboxItem(q: { project: string; id: number; resolution: string; at: Date }): Promise<boolean>;
-  /** When the newest question or plan of each ticket was resolved, by ticket id. */
-  lastAnsweredAt(project: string): Promise<Record<string, string>>;
+  /** When the newest question or plan of each ticket was resolved, by ticket id; with `since`, only answers since then. */
+  lastAnsweredAt(project: string, opts?: { since?: Date }): Promise<Record<string, string>>;
   /** Resolves the open items of one kind for a ticket; returns how many. */
   resolveInboxItems(q: {
     project: string;
@@ -487,16 +488,21 @@ export interface InboxReadOptions {
  * (open runtime handle), its newest event is older than the silence threshold,
  * and its phase does not wait on someone else (awaiting-approval, blocked,
  * ready-to-merge). An answer given after its newest event means it owes a
- * report: silence then counts from the answer, whatever the phase.
+ * report: silence then counts from the answer, whatever the phase. Events and
+ * answers are read only since the oldest open claim (each claim records an
+ * event), so the read stays bounded by the work in flight, not the history.
  */
 export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise<InboxEntry[]> {
   const now = o.now.getTime();
-  const [items, handles, events, answered] = await Promise.all([
+  const [items, handles] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
     store.openRuntimeHandles(o.project),
-    store.latestEvents(o.project),
-    store.lastAnsweredAt(o.project),
   ]);
+  const oldest = handles.reduce((min, h) => (h.claimedAt < min ? h.claimedAt : min), handles[0]?.claimedAt ?? "");
+  const since = new Date(oldest);
+  const [events, answered] = handles.length
+    ? await Promise.all([store.latestEvents(o.project, { since }), store.lastAnsweredAt(o.project, { since })])
+    : [{} as Record<string, LatestEvent>, {} as Record<string, string>];
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
     kind: i.kind,
@@ -537,66 +543,62 @@ export interface InboxQuery {
   coordinator: string | null;
   silentAfterMinutes: number;
   /**
-   * The entries of the caller's previous read (`entryKey`): the read then
-   * waits, up to `waitMs`, for one that is not among them, and marks it new.
-   * Null reads once, without waiting.
+   * The `etag` of the caller's previous read. When the inbox still has the
+   * same entries, Armada answers "not modified" (HTTP 304, no body): a
+   * waiting coordinator polls cheaply.
    */
-  known: string[] | null;
-  waitMs: number;
+  etag: string | null;
 }
 
 export interface InboxRead {
   /** Oldest first. */
   items: InboxEntry[];
-  /** True when it waited `waitMs` and nothing new came. */
-  timedOut: boolean;
+  /** Which entries these are (`inboxTag`), for the next read's `etag`. */
+  etag: string;
   /** Problems that did not stop the read, such as a presence that could not be recorded. */
   warnings: string[];
 }
 
-/** The longest one inbox read waits on the server, under the hosting platform's function time limit. */
-export const INBOX_WAIT_MAX_MS = 25_000;
-/** How often the server reads the inbox again while it waits. */
-export const INBOX_POLL_MS = 2_000;
+/** The coordinator's presence is recorded at most this often: a waiting coordinator reads every few seconds. */
+export const PRESENCE_EVERY_MS = MIN;
 
 /**
- * Reads the inbox and records the coordinator's presence for the dashboard.
- * With `known`, waits (at most `INBOX_WAIT_MAX_MS`) until an entry that was
- * not there at the previous read appears, marked `new`.
+ * Which entries an inbox holds: its items and silent workers, not their
+ * wording (a silent worker's minutes change every minute, its entry does not).
+ */
+export function inboxTag(items: Pick<InboxEntry, "id" | "ticket">[]): string {
+  const keys = items.map(entryKey).sort().join("\n");
+  return `"${createHash("sha256").update(keys).digest("base64url").slice(0, 22)}"`;
+}
+
+/**
+ * One read of the coordinator's inbox, run by Armada with its clock: records
+ * the coordinator's presence for the dashboard (at most once a minute), then
+ * reads. Null when the entries are still those of `etag`: nothing to send.
  */
 export async function serveInbox(
   store: FleetStore,
   project: string,
   q: InboxQuery,
-  deps: { now: () => Date; sleep: (ms: number) => Promise<void>; pollMs?: number },
-): Promise<InboxRead> {
+  now: Date,
+): Promise<InboxRead | null> {
   const warnings: string[] = [];
-  const started = deps.now();
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
-  await store.recordCoordinatorSeen({ project, handle: q.coordinator, at: started }).catch((err: unknown) => {
+  try {
+    const seen = await store.lastCoordinatorSeen(project);
+    if (!seen || now.getTime() - Date.parse(seen) >= PRESENCE_EVERY_MS)
+      await store.recordCoordinatorSeen({ project, handle: q.coordinator, at: now });
+  } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
-  });
-  const read = () =>
-    readInbox(store, {
-      project,
-      coordinator: q.coordinator,
-      silentAfterMinutes: q.silentAfterMinutes,
-      now: deps.now(),
-    });
-  let items = await read();
-  if (q.known === null) return { items, timedOut: false, warnings };
-  const waitMs = Math.min(Math.max(q.waitMs, 0), INBOX_WAIT_MAX_MS);
-  const poll = deps.pollMs ?? INBOX_POLL_MS;
-  let known = new Set(q.known);
-  for (;;) {
-    items = items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
-    if (items.some((e) => e.new)) return { items, timedOut: false, warnings };
-    const left = waitMs - (deps.now().getTime() - started.getTime());
-    if (left <= 0) return { items, timedOut: true, warnings };
-    known = new Set(items.map(entryKey));
-    await deps.sleep(Math.min(poll, left));
-    items = await read();
   }
+  const items = await readInbox(store, {
+    project,
+    coordinator: q.coordinator,
+    silentAfterMinutes: q.silentAfterMinutes,
+    now,
+  });
+  const etag = inboxTag(items);
+  return q.etag === etag ? null : { items, etag, warnings };
 }
 
 // ------------------------------------------------------------------ the CLI's side
@@ -614,8 +616,8 @@ export interface Fleet {
   report(r: ReportRecord): Promise<InboxItem[]>;
   ask(q: { ticket: string; body: string }): Promise<number>;
   release(r: { ticket: string; reason: string }): Promise<void>;
-  /** The coordinator's inbox; with `known`, a long poll. */
-  inbox(q: InboxQuery): Promise<InboxRead>;
+  /** The coordinator's inbox; null when its entries are still those of `q.etag` (not modified). */
+  inbox(q: InboxQuery): Promise<InboxRead | null>;
   /** One inbox item, open or resolved; null when the project has no such item. */
   inboxItem(id: number): Promise<StoredInboxItem | null>;
   /** The coordinator's open items for one ticket. */

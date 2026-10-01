@@ -170,17 +170,20 @@ function profileOf(v: unknown): WorkerProfile | null {
 
 const refuse = (status: number, error: string, next: string): FleetAnswer => ({ status, body: { error, next } });
 
+/** An inbox read whose entries did not change: answered 304, with no body. */
+const NOT_MODIFIED = Symbol("not modified");
+
 export interface ServeFleetDeps {
   now: () => Date;
-  sleep: (ms: number) => Promise<void>;
-  /** How often a waiting inbox read looks again. */
-  pollMs?: number;
 }
 
 /**
  * Runs one operation for `project`, already registered for the caller's
- * organization by the host. Answers `{ result }`, or a refusal with the
- * next step: 400 for a malformed request, 403 beyond a worker's scope.
+ * organization by the host. Answers `{ result }`; 304 with no body for an
+ * inbox read whose entries did not change; or a refusal with the next step:
+ * 400 for a malformed request, 403 beyond a worker's scope. Every operation
+ * is a few indexed reads and writes of the fleet's database, with nothing
+ * held open and no call to Linear or GitHub.
  */
 export async function serveFleet(
   store: FleetStore,
@@ -244,28 +247,20 @@ export async function serveFleet(
         case "events/latest":
           return store.lastEventTimes(slug);
         case "inbox": {
-          const known = b.known;
-          if (
-            known !== null &&
-            known !== undefined &&
-            !(Array.isArray(known) && known.every((k) => typeof k === "string"))
-          )
-            throw new Invalid("known must be a list of inbox entries");
           const silent = b.silentAfterMinutes;
           if (typeof silent !== "number" || !Number.isFinite(silent) || silent < 0)
             throw new Invalid("silentAfterMinutes must be a number of minutes");
-          const waitMs = typeof b.waitMs === "number" && Number.isFinite(b.waitMs) ? b.waitMs : 0;
-          return serveInbox(
+          const read = await serveInbox(
             store,
             slug,
             {
               coordinator: optText(b, "coordinator", LINE_MAX),
               silentAfterMinutes: silent,
-              known: Array.isArray(known) ? (known as string[]).slice(0, 1000) : null,
-              waitMs,
+              etag: optText(b, "etag", 64),
             },
-            deps,
+            at,
           );
+          return read ?? NOT_MODIFIED;
         }
         case "inbox/item":
           return store.getInboxItem(slug, idOf(b, "id"));
@@ -327,6 +322,7 @@ export async function serveFleet(
           return store.releaseLease({ project: slug, name: text(b, "name", 64), holder: text(b, "holder", LINE_MAX) });
       }
     })();
+    if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
     if (err instanceof Invalid)
@@ -337,7 +333,7 @@ export async function serveFleet(
 
 // ------------------------------------------------------------------ the CLI's half
 
-/** One command's calls to the fleet: under the API's own time limit, plus a long poll's wait. */
+/** How long one call to the fleet may take. */
 const CALL_TIMEOUT_MS = 15_000;
 
 /**
@@ -346,8 +342,8 @@ const CALL_TIMEOUT_MS = 15_000;
  * warning, since Linear is the record.
  */
 export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSignIn; project: ProjectInput }): Fleet {
-  const call = async <T>(op: FleetOp, input: object, timeoutMs = CALL_TIMEOUT_MS): Promise<T> =>
-    (await o.api.fleet(o.signIn, op, { project: o.project, input }, timeoutMs)) as T;
+  const call = async <T>(op: FleetOp, input: object): Promise<T> =>
+    (await o.api.fleet(o.signIn, op, { project: o.project, input }, CALL_TIMEOUT_MS)) as T;
   return {
     register: () => call<null>("register", {}).then(() => undefined),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
@@ -355,7 +351,8 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     report: (r: ReportRecord) => call<InboxItem[]>("report", r),
     ask: (q) => call<number>("ask", q),
     release: (r) => call<null>("release", r).then(() => undefined),
-    inbox: (q: InboxQuery) => call<InboxRead>("inbox", q, CALL_TIMEOUT_MS + (q.known ? q.waitMs : 0)),
+    // Null: not modified (304).
+    inbox: (q: InboxQuery) => call<InboxRead | null>("inbox", q),
     inboxItem: (id) => call<StoredInboxItem | null>("inbox/item", { id }),
     ticketItems: (ticket) => call<InboxItem[]>("inbox/ticket", { ticket }),
     answer: (a: AnswerRecord) => call<string>("answer", a),

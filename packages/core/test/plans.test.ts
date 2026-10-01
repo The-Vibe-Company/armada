@@ -46,12 +46,16 @@ test("a plan reaches the coordinator with its full text and handle, once per app
 test("inbox --wait wakes when a worker posts a plan", async () => {
   const clock = fakeClock();
   const { ctx, live } = await setup(clock);
-  const tick = clock.sleep;
-  clock.sleep = async (ms) => {
-    await tick(ms);
+  const sleep = async (ms: number) => {
+    await clock.sleep(ms);
     await reportPlan(ctx);
   };
-  const out = await checkInbox(live.fleet, { project, silentAfterMinutes: 15, now: clock.now, waitMs: 10_000 });
+  const out = await checkInbox(live.fleet, {
+    project,
+    silentAfterMinutes: 15,
+    now: clock.now,
+    wait: { timeoutMs: 60_000, sleep },
+  });
   expect(out.wait?.timedOut).toBe(false);
   expect(out.items).toEqual([expect.objectContaining({ kind: "plan", body: plan, new: true })]);
 });
