@@ -145,6 +145,40 @@ const WAITS = [
   { id: "THE-128", title: "Send the receipt again from the account page", phase: "Waiting for approval", since: "Thu 1 Oct", d: "2 h 04", m: 124, c: "var(--yours)" },
 ];
 
+// The fleet's activity (THE-894): newest first, today; the owner last looked at 16:20.
+// kind: merge | claim | report | handback | question | validation | plan | decision | coord
+const LAST_VISIT = "16:20";
+const FEED = [
+  ["17:39", "report", "THE-862", "Add a local Codex harness adapter", "Mapping Codex session events onto armada report", "armada", "agent", 3],
+  ["17:38", "report", "GAD-5", "Speed up the product search page", "Rebasing on main after the catalogue change", "gadgets", "agent", 1],
+  ["17:36", "validation", "WID-18", "Add a dark theme to the settings page", "Merge to approve: touches the settings page users see", "widgets", "coordinator"],
+  ["17:35", "handback", "WID-18", "Add a dark theme to the settings page", "PR #44 is ready: head a3f9c2e, CI green", "widgets", "agent"],
+  ["17:34", "claim", "GAD-6", "Send a weekly digest email", "Codex, profile codex", "gadgets", "agent"],
+  ["17:31", "handback", "THE-858", "Show the harness on every session", "PR #317 is ready: head 7c1e0a4, CI green", "armada", "agent"],
+  ["17:28", "question", "WID-15", "Sign in with a magic link", "How long should a sign-in link stay valid?", "widgets", "agent"],
+  ["17:26", "validation", "GAD-9", "Design the catalogue's product card", "Two directions for the product card, attached", "gadgets", "agent"],
+  ["17:22", "plan", "GAD-3", "Import products from a spreadsheet", "Parse the sheet, validate every row, then import in one transaction", "gadgets", "agent"],
+  ["17:18", "question", "THE-862", "Add a local Codex harness adapter", "Should the local Codex adapter ship behind a flag first?", "armada", "coordinator"],
+  ["17:00", "decision", "THE-858", "Show the harness on every session", "Approved: looks right on mobile too", "armada", "Ada Lovelace"],
+  ["16:58", "silent", "WID-17", "Retry failed webhook deliveries", "No heartbeat since 16:58", "widgets", "agent"],
+  ["16:56", "claim", "GAD-3", "Import products from a spreadsheet", "Claude Code, profile opus", "gadgets", "agent"],
+  ["16:42", "claim", "THE-862", "Add a local Codex harness adapter", "Conductor Cloud, profile opus", "armada", "agent"],
+  ["16:31", "merge", "THE-131", "Keep the coupon when the cart changes", "PR #312 merged, the release follows", "armada", "coordinator"],
+  ["16:25", "claim", "WID-12", "Let users export a report as CSV", "Claude Code, profile opus", "widgets", "agent"],
+  ["16:12", "merge", "THE-130", "Explain why a coupon was refused", "PR #309 merged", "armada", "coordinator"],
+  ["16:05", "coord", null, "Gadgets coordinator started", "Claude Code on hugo-mbp/ttys004", "gadgets", "coordinator"],
+  ["15:48", "merge", "WID-11", "Show the order number in the receipt", "PR #41 merged", "widgets", "coordinator"],
+  ["15:23", "merge", "THE-127", "Let a customer change the shipping address", "PR #305 merged", "armada", "coordinator"],
+];
+const AWAY = {
+  since: "14:20",
+  // minutes after 14:20 for each event, over 200 minutes to 17:40
+  marks: [
+    [18, "merge"], [41, "claim"], [63, "merge"], [88, "merge"], [105, "claim"], [112, "merge"], [131, "merge"], [142, "claim"],
+    [158, "silent"], [176, "claim"], [184, "merge"], [196, "yours"],
+  ],
+};
+
 /* ───────────────────────── Prototype state ───────────────────────── */
 
 const state = {
@@ -152,12 +186,13 @@ const state = {
   mode: "live", // live | loading | empty | error
   motion: matchMedia("(prefers-reduced-motion: reduce)").matches ? "reduced" : "full",
   horizon: "auto", // auto | calm | yours | fail | clear
+  away: "on", // the overview's "Since you were away": on | off
   panelOpen: true,
   merged: new Set(),
   selected: -1,
 };
 const params = new URLSearchParams(location.search);
-for (const k of ["density", "mode", "motion", "horizon"]) if (params.get(k)) state[k] = params.get(k);
+for (const k of ["density", "mode", "motion", "horizon", "away"]) if (params.get(k)) state[k] = params.get(k);
 if (params.get("panel") === "off") document.documentElement.classList.add("hide-shots");
 
 /* ───────────────────────── Marks and glyphs ───────────────────────── */
@@ -231,6 +266,7 @@ const ICONS = {
   projects: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="2" width="5" height="5" rx="1.5"/><rect x="9" y="2" width="5" height="5" rx="1.5"/><rect x="2" y="9" width="5" height="5" rx="1.5"/><rect x="9" y="9" width="5" height="5" rx="1.5"/></svg>`,
   agents: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M8 2.5L11 8H5Z"/><path d="M4 9.5L6.5 14h-5Z"/><path d="M12 9.5L14.5 14h-5Z"/></svg>`,
   insights: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 13.5h11"/><path d="M4.5 11V8"/><path d="M8 11V4.5"/><path d="M11.5 11V6.5"/></svg>`,
+  activity: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4.5 3.5h9M4.5 8h9M4.5 12.5h9"/><circle cx="2" cy="3.5" r=".6" fill="currentColor"/><circle cx="2" cy="8" r=".6" fill="currentColor"/><circle cx="2" cy="12.5" r=".6" fill="currentColor"/></svg>`,
   system: `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M3.6 12.4L5 11M11 5l1.4-1.4"/></svg>`,
   search: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>`,
   back: `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L5 8l5 5"/></svg>`,
@@ -292,6 +328,7 @@ const NAV = [
   { key: "validations", label: "Validations", icon: "validations", n: 3, yours: true },
   { key: "projects", label: "Projects", icon: "projects", n: 3 },
   { key: "agents", label: "Agents", icon: "agents", n: 11 },
+  { key: "activity", label: "Activity", icon: "activity" },
   { key: "insights", label: "Insights", icon: "insights" },
 ];
 
@@ -379,11 +416,12 @@ function overview() {
     <div class="actions"><button class="btn is-primary">Launch THE-866</button><a class="btn is-quiet" href="#/projects/armada">See the ready tickets</a></div></div>`;
   return `${head}${errorAlert()}
   <div class="status">
-    <h1>11 agents in flight. <span class="then">4 wait for you.</span></h1>
-    <p>Thursday 1 October, 17:40. Three projects, each with its coordinator, on three harnesses.</p>
+    <h1>${state.away === "on" ? `Welcome back. 6 merged while you were away. <span class="then">4 wait for you.</span>` : `11 agents in flight. <span class="then">4 wait for you.</span>`}</h1>
+    <p>Thursday 1 October, 17:40. 11 agents in flight across three projects, each with its coordinator, on three harnesses.</p>
     <div class="chips">${stat(4, "to decide", "is-yours", "#/validations")}${stat(2, "failing", "is-fail", "#/agents")}${stat(1, "silent", "is-silent", "#/agents")}${stat(2, "ready to merge", "is-done", "#/agents")}
     <a class="stat" href="#/insights">This week <b>30</b> merged <span class="trend">↑ 43%</span></a></div>
   </div>
+  ${state.away === "on" ? sinceAway() : ""}
   ${band("Yours to decide", 4, `<a href="#/validations">All validations</a>`)}
   <div class="cards">${DECISIONS.map(decisionCard).join("")}</div>
   ${band("Live fleet", 11, `<span class="seg hide-sm"><button aria-pressed="true">All <span class="n">11</span></button><button>${harness("conductor", false)}Conductor <span class="n">6</span></button><button>${harness("claude", false)}Claude Code <span class="n">3</span></button><button>${harness("codex", false)}Codex <span class="n">2</span></button></span>`)}
@@ -719,6 +757,105 @@ function insights() {
   </div>`;
 }
 
+/* "Since you were away" (THE-894): back after more than 30 minutes, the
+   overview replays the absence on one strip, then names each part as a link. */
+function sinceAway() {
+  const x = (m) => `${(m / 200) * 100}%`;
+  const marks = AWAY.marks
+    .map(([m, k]) =>
+      k === "merge"
+        ? `<span class="aw-mark" style="left:${x(m)}" title="merged">${ship("var(--done)", 10)}</span>`
+        : k === "claim"
+          ? `<i class="aw-tick" style="left:${x(m)};--c:var(--flight)" title="started"></i>`
+          : k === "silent"
+            ? `<i class="aw-tick is-silent" style="left:${x(m)}" title="went silent"></i>`
+            : `<i class="aw-dot" style="left:${x(m)}" title="waits for you"></i>`,
+    )
+    .join("");
+  return `<section class="section away" aria-labelledby="away-h">
+    <div class="band"><span class="dot" style="background:var(--flight)"></span><h2 id="away-h">Since you were away</h2><span class="count hide-sm">14:20 → now</span>
+      <span class="band-side"><a class="hide-sm" href="#/activity">All activity</a><button class="btn is-quiet is-sm" type="button" data-dismiss-away>Dismiss</button></span></div>
+    <div class="aw">
+      <div class="aw-strip" role="img" aria-label="Between 14:20 and now: 6 merged, 4 started, 1 went silent, 1 waits for you">
+        <span class="aw-line"></span>${marks}<span class="aw-now"></span>
+        <span class="aw-t" style="left:0">14:20</span><span class="aw-t" style="left:${x(100)}">16:00</span><span class="aw-t is-now" style="right:0">now</span>
+      </div>
+      <div class="aw-parts">
+        <a class="aw-part" href="#/activity">${ship("var(--done)", 11)}<b>6</b> merged</a>
+        <a class="aw-part" href="#/activity"><i class="aw-key" style="background:var(--flight)"></i><b>4</b> started</a>
+        <a class="aw-part is-yours" href="#/validations"><span class="dot" style="background:var(--yours)"></span><b>4</b> wait for you</a>
+        <a class="aw-part" href="#/agents/WID-17"><i class="aw-key" style="background:var(--silent)"></i><b>WID-17</b> silent for 42 min</a>
+      </div>
+    </div>
+  </section>`;
+}
+
+/* /activity (THE-894): every event, newest first, one sentence each, on a
+   rail; the owner's last visit is a line across it. Reports of one ticket in
+   a row fold into one line. Filters are the address (a GET form). */
+const FEED_LOOK = {
+  merge: ["done", "Merged"],
+  claim: ["ship", "Claimed"],
+  report: ["report", "Reported"],
+  handback: ["merge", "Handed back"],
+  question: ["yours", "Asked a question"],
+  validation: ["yours", "Asked for your validation"],
+  plan: ["yours", "Submitted a plan"],
+  decision: ["done", "You decided"],
+  silent: ["silent", "Went silent"],
+  coord: ["coord", "Coordinator started"],
+};
+function feedGlyph(k) {
+  const g = FEED_LOOK[k][0];
+  if (g === "ship") return `<span class="glyph" role="img" aria-label="claimed">${ship("var(--flight)", 12)}</span>`;
+  if (g === "report") return `<span class="glyph" role="img" aria-label="report"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.5" fill="var(--ink-3)"/></svg></span>`;
+  return glyph(g, FEED_LOOK[k][1]);
+}
+function who(w) {
+  if (w === "agent" || w === "coordinator") return `<span class="who">${w}</span>`;
+  const ini = w
+    .split(" ")
+    .map((x) => x[0])
+    .join("");
+  return `<span class="who is-person"><span class="ini">${ini}</span>${w}</span>`;
+}
+function activity() {
+  const head = bar(`<span>Activity</span>`) + topbar("Activity");
+  const kinds = [
+    ["Everything", true],
+    ["Needs you"],
+    ["Merges"],
+    ["Claims"],
+    ["Reports"],
+    ["Decisions"],
+  ];
+  const toolbar = `<form class="toolbar" onsubmit="return false"><span class="seg" role="group" aria-label="Kind">${kinds.map(([k, on]) => `<button type="button" aria-pressed="${!!on}">${k}</button>`).join("")}</span>
+    <span class="seg hide-sm"><button type="button" aria-pressed="true">All projects</button>${PROJECTS.map((p) => `<button type="button">${p.name}</button>`).join("")}</span>
+    <span class="grow"></span><input class="input mono hide-sm" style="width:120px" placeholder="Ticket" aria-label="Ticket"/><select class="input hide-sm" aria-label="Who"><option>Anyone</option><option>Agents</option><option>Coordinators</option><option>People</option></select></form>`;
+  if (state.mode === "loading") return head + skeletonStatus() + toolbar + band("Today", "…") + `<div class="rows">${skeletonRows(9)}</div>`;
+  if (state.mode === "empty")
+    return `${head}<div class="status"><h1>Nothing happened yet.</h1><p>Claims, reports, questions, decisions and merges appear here as they happen.</p></div>${toolbar}
+    <div class="empty">${formationAtRest(104)}<h3>The log starts with the first claim</h3><p>Launch a ready ticket and follow it here from its claim to its merge.</p><div class="actions"><a class="btn is-primary" href="#/projects/armada">See the ready tickets</a></div></div>`;
+  const rows = FEED.map(([t, k, id, title, detail, proj, w, n], i) => {
+    const divider =
+      t < "16:21" && FEED[i - 1] && FEED[i - 1][0] >= "16:21"
+        ? `<div class="visit" role="separator"><span>${mark(12)}Your last visit, ${LAST_VISIT}: newer above</span></div>`
+        : "";
+    const quiet = k === "report";
+    const what = k === "report" && n > 1 ? `Reported ${n} times` : FEED_LOOK[k][1];
+    return `${divider}<a class="ev ${quiet ? "is-quiet" : ""}" href="${id ? `#/agents/${id}` : `#/projects/${proj}`}">
+      <time class="ev-t">${t}</time>${feedGlyph(k)}
+      <span class="ev-s"><b>${what}</b>${id ? ` <span class="mono ev-id">${id}</span>` : ""} <span class="ev-title">${esc(title)}</span> <span class="ev-d">${esc(detail)}</span></span>
+      <span class="ev-end">${projChip(proj)}${who(w)}</span></a>`;
+  }).join("");
+  return `${head}${errorAlert()}
+  <div class="status"><h1>16 events since you last looked. <span class="then">1 merge, 4 claims, 3 for you.</span></h1><p>Today, newest first, in your time zone. Each line opens its agent, validation or project.</p></div>
+  ${toolbar}
+  ${band("Today", `${FEED.length} events`, `<span class="mono">Thu 1 Oct</span>`)}
+  <div class="feed">${rows}</div>
+  <div class="empty-inline" style="justify-content:center"><a class="btn is-sm" href="#/activity">Older</a></div>`;
+}
+
 /* The System page: the direction's tokens, with live contrast ratios. */
 function lum(hex) {
   const [r, g, b] = hex
@@ -849,6 +986,7 @@ function render() {
   else if (sec === "projects") html = projects();
   else if (sec === "validations") html = validations();
   else if (sec === "insights") html = insights();
+  else if (sec === "activity") html = activity();
   else if (sec === "system") html = system();
   else html = overview();
   deck.innerHTML = `<div class="page">${html}</div>`;
@@ -868,6 +1006,7 @@ function renderPanel() {
     <label>State ${seg("mode", [["live", "Live"], ["loading", "Loading"], ["empty", "Empty"], ["error", "Error"]])}</label>
     <label>Density ${seg("density", [["compact", "Compact"], ["airy", "Airy"]])}</label>
     <label>Motion ${seg("motion", [["full", "Full"], ["reduced", "Reduced"]])}</label>
+    <label>Back after 3 h ${seg("away", [["on", "Since you were away"], ["off", "Off"]])}</label>
     <label>Horizon ${seg("horizon", [["auto", "Auto"], ["calm", "Calm"], ["yours", "Yours"], ["fail", "Fail"]])}</label>
     <button class="btn is-sm" data-play-merge>Play a merge (THE-858)</button>`;
 }
@@ -998,9 +1137,17 @@ function bindTimeline() {
 }
 
 document.addEventListener("click", (e) => {
-  const t = e.target.closest("[data-k],[data-density],[data-play-merge],[data-toggle-panel],[data-set-horizon]");
+  const t = e.target.closest("[data-k],[data-density],[data-play-merge],[data-toggle-panel],[data-set-horizon],[data-dismiss-away]");
   if (!t) return;
-  if (t.dataset.k) {
+  if (t.hasAttribute("data-dismiss-away")) {
+    // Dismissed: the section leaves (220 ms), the status sentence returns to the fleet.
+    const sec = t.closest(".away");
+    sec.classList.add("is-leaving");
+    setTimeout(() => {
+      state.away = "off";
+      render();
+    }, reduced() ? 0 : 220);
+  } else if (t.dataset.k) {
     state[t.dataset.k] = t.dataset.v;
     render();
   } else if (t.dataset.density) {

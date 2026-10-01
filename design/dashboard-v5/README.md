@@ -6,7 +6,7 @@ The idea: the dashboard is the night sky the landing flies in, seen from the bri
 
 - three planes (sky, deck, instruments);
 - the horizon glow, whose colour is the fleet's state;
-- each page's status sentence in display type;
+- each page's status sentence in display type, which says "Welcome back" and replays your absence on one strip when you return;
 - one meaning per colour;
 - the formation mark used with restraint;
 - the timeline drawn as flight paths;
@@ -26,6 +26,7 @@ The screens:
 - `#/projects/armada`: a project's page;
 - `#/validations`;
 - `#/insights`;
+- `#/activity`: every event on one rail, with your last visit as a line across it (THE-894);
 - `#/system`: the direction itself, with tokens, live contrast ratios, the type scale, the motion table, the mark's uses and density.
 
 The Prototype panel, bottom right, switches:
@@ -33,7 +34,8 @@ The Prototype panel, bottom right, switches:
 - the state: live, loading, empty or error;
 - the density: Compact or Airy;
 - reduced motion;
-- the horizon.
+- the horizon;
+- "Since you were away" on the overview, on or off.
 
 It also plays the merge moment. Query parameters set the same options for screenshots, for example `?mode=empty&density=airy&motion=reduced&panel=off#/agents`. Under 720 px the shell becomes the phone layout. It keeps THE-891's top bar, with the home mark, the organization and search, and moves the five sections from that bar into a bottom tab bar with labels and counts. THE-891's other rules for narrow screens stay as built: nothing scrolls sideways, the timeline scrolls inside itself and has its table, and headers and bands wrap.
 
