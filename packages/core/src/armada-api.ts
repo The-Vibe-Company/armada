@@ -423,7 +423,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
       const { status, body } = await call("POST", "secrets/release", { signIn, body: { project, names } });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada gave no secrets");
       const secrets = Array.isArray(body.secrets) ? (body.secrets as Record<string, unknown>[]) : null;
-      if (!secrets || !secrets.every((s) => typeof s.name === "string" && typeof s.value === "string"))
+      if (!secrets?.every((s) => typeof s.name === "string" && typeof s.value === "string"))
         throw new ArmadaApiError(`Armada (${host}) answered the secrets in a shape this CLI does not know`);
       const strings = (v: unknown) => (Array.isArray(v) ? v.filter((w): w is string => typeof w === "string") : []);
       return {
