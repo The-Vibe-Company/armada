@@ -171,8 +171,16 @@ export interface FleetStore {
   lastEventTimes(project: string): Promise<Record<string, string>>;
   /** The newest event of every ticket of a project; with `since`, only tickets with an event since then. */
   latestEvents(project: string, opts?: { since?: Date }): Promise<Record<string, LatestEvent>>;
-  /** Records that the coordinator of a project is at work (it read its inbox). */
-  recordCoordinatorSeen(seen: { project: string; handle?: string | null; at: Date }): Promise<void>;
+  /**
+   * Records that the coordinator of a project is at work (it read its inbox),
+   * with the version of its CLI when it sent one (kept otherwise).
+   */
+  recordCoordinatorSeen(seen: {
+    project: string;
+    handle?: string | null;
+    cliVersion?: string | null;
+    at: Date;
+  }): Promise<void>;
   lastCoordinatorSeen(project: string): Promise<string | null>;
 
   /** Records the profile of the claim now holding a ticket; null forgets the one of an earlier claim. */
@@ -478,8 +486,12 @@ export async function recordMerge(
 
 const MIN = 60_000;
 
-/** `silent` and `not-started` are read from the fleet, not stored: they clear on their own. */
-export type InboxEntryKind = InboxKind | "silent" | "not-started";
+/**
+ * `silent`: a worker gone quiet; `not-started`: a worker launched that never
+ * claimed (both read from the fleet, they clear on their own); `version`: a
+ * newer Armada is out (`armada watch` only, never stored).
+ */
+export type InboxEntryKind = InboxKind | "silent" | "not-started" | "version";
 
 export interface InboxEntry {
   /**
@@ -498,6 +510,8 @@ export interface InboxEntry {
   new: boolean;
   /** Dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
   request?: { question: number | null; profile: string | null };
+  /** A `version` entry: the Armada release that is out. */
+  version?: string;
 }
 
 /** Items a worker's report rewrites in place: a hand-back on a new head, a plan. */
@@ -506,13 +520,20 @@ const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan"];
 const digest = (text: string) => createHash("sha256").update(text).digest("base64url").slice(0, 12);
 
 /**
- * How an entry is told apart between two reads: `#12`, `silent:<ticket>` or
- * `not-started:<ticket>`. A hand-back or a plan rewritten in place keeps its
- * id, so its key carries a digest of its text too (a hand-back's names its
- * head SHA): handed back again on a new head, it is new to the coordinator.
+ * How an entry is told apart between two reads: `#12`, `silent:<ticket>`,
+ * `not-started:<ticket>` or `version:<version>`. A hand-back or a plan
+ * rewritten in place keeps its id, so its key carries a digest of its text
+ * too (a hand-back's names its head SHA): handed back again on a new head, it
+ * is new to the coordinator.
  */
-export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body">) =>
-  e.id === null ? `${e.kind}:${e.ticket}` : REWRITTEN.includes(e.kind) ? `#${e.id}@${digest(e.body)}` : `#${e.id}`;
+export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined }) =>
+  e.id !== null
+    ? REWRITTEN.includes(e.kind)
+      ? `#${e.id}@${digest(e.body)}`
+      : `#${e.id}`
+    : e.version
+      ? `version:${e.version}`
+      : `${e.kind}:${e.ticket}`;
 
 export interface InboxReadOptions {
   project: string;
@@ -688,13 +709,15 @@ export async function serveInbox(
   project: string,
   q: InboxQuery,
   now: Date,
+  /** The coordinator's CLI version, from the request's `x-armada-cli-version`. */
+  cliVersion: string | null = null,
 ): Promise<InboxRead | null> {
   const warnings: string[] = [];
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
   try {
     const seen = await store.lastCoordinatorSeen(project);
     if (!seen || now.getTime() - Date.parse(seen) >= PRESENCE_EVERY_MS)
-      await store.recordCoordinatorSeen({ project, handle: q.coordinator, at: now });
+      await store.recordCoordinatorSeen({ project, handle: q.coordinator, cliVersion, at: now });
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }

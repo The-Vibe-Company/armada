@@ -2,6 +2,7 @@
 // dashboard's Fleet view (one per ticket in flight, across projects) and the
 // list of what waits for the owner. Pure: the dashboard reads the sources,
 // calls `buildOverview` and renders the result as is.
+import { newerRelease } from "./armada-api.ts";
 import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
 import type { InboxItem } from "./live.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
@@ -100,8 +101,12 @@ export interface ProjectOverview {
   name: string;
   repository: string;
   programRoot: StatusReport["programRoot"] | null;
-  /** Active when it read its inbox within the project's silence threshold. */
-  coordinator: { state: CoordinatorState; seenAt: string | null };
+  /**
+   * Active when it read its inbox within the project's silence threshold.
+   * `cliVersion`: the CLI it ran at that read (null when unknown);
+   * `updateAvailable`: a newer CLI is released than the one it runs.
+   */
+  coordinator: { state: CoordinatorState; seenAt: string | null; cliVersion: string | null; updateAvailable: boolean };
   inFlight: number;
   waiting: number;
   sources: StatusReport["sources"] | null;
@@ -125,7 +130,7 @@ export interface ProjectReading {
   reading?: boolean;
   warnings?: string[];
   /** Null when the live data was not read. */
-  live: { inbox: InboxItem[]; coordinatorSeenAt: string | null } | null;
+  live: { inbox: InboxItem[]; coordinatorSeenAt: string | null; coordinatorCliVersion?: string | null } | null;
   /** `[conductor.profiles]` of its armada.toml. */
   profiles?: Record<string, ConductorProfile>;
 }
@@ -157,6 +162,8 @@ export function buildOverview(input: {
   projects: ProjectReading[];
   live: FleetOverview["live"];
   now: Date;
+  /** The latest CLI released, which each coordinator's is compared with; null when unknown. */
+  latestCli?: string | null;
 }): FleetOverview {
   const now = input.now.getTime();
   const rows: FleetRow[] = [];
@@ -275,6 +282,7 @@ export function buildOverview(input: {
     for (const f of p.report?.frontier ?? []) ready.push({ ...f, project: p.slug, launch: launches.get(f.id) ?? null });
 
     const seenAt = p.live?.coordinatorSeenAt ?? null;
+    const cliVersion = p.live?.coordinatorCliVersion ?? null;
     const threshold = (p.report?.silentAfterMinutes ?? 15) * MIN;
     projects.push({
       slug: p.slug,
@@ -284,6 +292,8 @@ export function buildOverview(input: {
       coordinator: {
         state: seenAt === null ? "unknown" : now - Date.parse(seenAt) <= threshold ? "active" : "idle",
         seenAt,
+        cliVersion,
+        updateAvailable: cliVersion !== null && newerRelease(cliVersion, input.latestCli) !== null,
       },
       inFlight: tickets.length,
       waiting: perTicket.size + projectWide,

@@ -112,6 +112,8 @@ const en = {
   waitingTitle: "Waiting for you",
   waitingEmpty: "Nothing waits for you.",
   coordinatorLate: (d: string) => `waiting for the coordinator for ${d}`,
+  /** The coordinator's CLI version, and whether a newer one is out. */
+  coordinatorCli: (version: string, update: boolean) => (update ? `${version} · update available` : version),
   atWorkTitle: "At work",
   emptyFleet: "No one in flight.",
   emptyFleetHint: "A ticket claimed with armada claim shows here within seconds.",
@@ -670,6 +672,7 @@ const fr: Strings = {
   waitingTitle: "À toi de jouer",
   waitingEmpty: "Rien n'attend ta décision.",
   coordinatorLate: (d) => `attend le coordinateur depuis ${d}`,
+  coordinatorCli: (version, update) => (update ? `${version} · mise à jour disponible` : version),
   atWorkTitle: "Au travail",
   emptyFleet: "Personne en vol.",
   emptyFleetHint: "Un ticket réclamé avec armada claim apparaît ici en quelques secondes.",

@@ -127,6 +127,7 @@ export async function answerFleet(
   op: string,
   body: unknown,
   caller: FleetCaller & { project?: string },
+  cliVersion: string | null = null,
 ): Promise<Response> {
   const b = (body ?? {}) as { project?: unknown; input?: unknown };
   const project = parseProject(b.project);
@@ -138,7 +139,7 @@ export async function answerFleet(
       { status: 403 },
     );
   await store.ensureProject(project, clock.now());
-  const answer = await serveFleet(store, { op, project, caller, input: b.input }, clock);
+  const answer = await serveFleet(store, { op, project, caller, input: b.input }, { now: clock.now, cliVersion });
   if (answer.status === 304) return new Response(null, { status: 304 });
   return Response.json(answer.body, { status: answer.status });
 }
@@ -573,6 +574,7 @@ export function fakeArmada(
         call.path.slice("fleet/".length),
         call.body,
         worker ? { kind: "worker", ticket: worker.ticket, project: worker.project } : { kind: "organization" },
+        call.version,
       );
     }
     if (call.method === "POST" && call.path.startsWith("secrets/")) {

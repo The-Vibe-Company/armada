@@ -391,7 +391,7 @@ local_commands = ["npm ci", "npm test"]  # run by `armada merge` on a test merge
 [policy]
 silence_minutes = 15             # a worker with no report for longer is flagged silent (default 15)
 coordinator_minutes = 10         # an inbox item open longer shows "waiting for the coordinator" (default 10)
-not_started_minutes = 10         # a launched worker that has not claimed after this long shows as not started (default 10; Armada 0.2.9+)
+not_started_minutes = 10         # a launched worker that has not claimed after this long shows as not started (default 10; a CLI older than this setting refuses it)
 plans = "approve"                # or "pre-approved": workers post their plan and go on (default "approve")
 pre_approved_label = "plan-approved"     # a ticket with this label is pre-approved (default)
 approval_label = "needs-plan-approval"   # a ticket with this label waits for approval; wins over the other (default)

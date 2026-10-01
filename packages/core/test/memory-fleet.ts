@@ -39,7 +39,7 @@ export function memoryFleet(): FleetStore & {
   events: EventRow[];
   items: ItemRow[];
   leases: Map<string, Lease>;
-  presence: Map<string, { handle: string | null; at: string }>;
+  presence: Map<string, { handle: string | null; cliVersion: string | null; at: string }>;
   /** Launches, as the app's `createLaunch` and `exchangeLaunch` write them: tests push and edit them. */
   launches: LaunchRow[];
 } {
@@ -49,7 +49,7 @@ export function memoryFleet(): FleetStore & {
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
-  const presence = new Map<string, { handle: string | null; at: string }>();
+  const presence = new Map<string, { handle: string | null; cliVersion: string | null; at: string }>();
   const launches: LaunchRow[] = [];
 
   const stored = (r: ItemRow): StoredInboxItem => {
@@ -136,7 +136,12 @@ export function memoryFleet(): FleetStore & {
     async recordCoordinatorSeen(seen) {
       const was = presence.get(seen.project);
       const at = seen.at.toISOString();
-      if (!was || was.at <= at) presence.set(seen.project, { handle: seen.handle ?? null, at });
+      if (!was || was.at <= at)
+        presence.set(seen.project, {
+          handle: seen.handle ?? null,
+          cliVersion: seen.cliVersion ?? was?.cliVersion ?? null,
+          at,
+        });
     },
     async lastCoordinatorSeen(project) {
       return presence.get(project)?.at ?? null;

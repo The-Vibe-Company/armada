@@ -239,6 +239,22 @@ describe("fleet overview", () => {
     expect(o.projects[0]?.profiles).toEqual([{ name: "opus", agent: "claude", model: "opus-5-5", effort: "high" }]);
   });
 
+  test("each coordinator's CLI version, and whether a newer one is released", () => {
+    const seen = (slug: string, coordinatorCliVersion: string | null) =>
+      reading(slug, [], { inbox: [], coordinatorSeenAt: at("09:50"), coordinatorCliVersion });
+    const o = buildOverview({
+      projects: [seen("widgets", "0.2.1"), seen("gadgets", "0.2.4"), seen("gizmos", null)],
+      live: { state: "ok", error: null },
+      now: NOW,
+      latestCli: "0.2.4",
+    });
+    expect(o.projects.map((p) => [p.slug, p.coordinator.cliVersion, p.coordinator.updateAvailable])).toEqual([
+      ["widgets", "0.2.1", true],
+      ["gadgets", "0.2.4", false],
+      ["gizmos", null, false],
+    ]);
+  });
+
   test("without the live data the waiting list comes from the tracker and the coordinator is unknown", () => {
     const o = buildOverview({
       projects: [reading("widgets", [ticket("W-1", { phase: "ready-to-merge" })], null)],
@@ -246,7 +262,12 @@ describe("fleet overview", () => {
       now: NOW,
     });
     expect(o.waiting.map((w) => [w.kind, w.ticket])).toEqual([["hand-back", "W-1"]]);
-    expect(o.projects[0]?.coordinator).toEqual({ state: "unknown", seenAt: null });
+    expect(o.projects[0]?.coordinator).toEqual({
+      state: "unknown",
+      seenAt: null,
+      cliVersion: null,
+      updateAvailable: false,
+    });
   });
 
   test("the pipeline places each phase on its step and marks what needs someone", () => {

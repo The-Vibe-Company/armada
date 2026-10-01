@@ -84,7 +84,8 @@ const fetch = async (url: string, init: RequestInit) =>
     accounts: async () => accounts,
     ...deps,
   });
-const api = armadaApi({ url: BASE, fetch });
+const CLI = "9.9.9";
+const api = armadaApi({ url: BASE, fetch, version: CLI });
 const fleetOf = (signIn: ArmadaSignIn, project: ProjectInput = WIDGETS): Fleet => fleetClient({ api, signIn, project });
 
 async function worker(ticket: string): Promise<ArmadaSignIn> {
@@ -186,7 +187,11 @@ describe("the fleet through the Armada API", () => {
     expect(await live.latestEvents("widgets", { since: start })).toMatchObject({
       "WID-7": { kind: "merge", phase: "merged", at: new Date(clock).toISOString() },
     });
-    expect(await live.lastCoordinatorSeen("widgets")).toBe(new Date(clock).toISOString());
+    // The coordinator's presence, with the CLI version its inbox reads sent.
+    expect(await live.coordinatorPresence("widgets")).toEqual({
+      seenAt: new Date(clock).toISOString(),
+      cliVersion: CLI,
+    });
     expect(await fleetStore(client).getWorkerProfile("widgets", "WID-7")).toBeNull();
     expect(await coordinator.lastEventTimes()).toEqual({ "WID-7": new Date(clock).toISOString() });
   });

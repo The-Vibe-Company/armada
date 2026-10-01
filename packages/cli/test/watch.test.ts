@@ -2,9 +2,17 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { machinePaths, readWatchState, takeWatchLock, updateWatchState, watchFiles } from "@armada/core";
+import {
+  machinePaths,
+  readWatchState,
+  type ServerCli,
+  takeWatchLock,
+  updateWatchState,
+  watchFiles,
+} from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
+import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 
 const KEY = "armada_key_CANARY_watch";
@@ -18,12 +26,12 @@ afterEach(async () => {
 });
 
 /** A coordinator's terminal on a fresh machine store, signed in to the fake Armada; `alive` lists the running pids. */
-async function coordinator(o: { key?: string } = {}) {
+async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
   const home = await mkdtemp(join(tmpdir(), "armada-watch-"));
   dirs.push(home);
   const store = memoryFleet();
   const clock = fakeClock();
-  const armada = fakeArmada({ keys: { [KEY]: "fleet" }, store, clock });
+  const armada = fakeArmada({ keys: { [KEY]: "fleet" }, store, clock, ...(o.cli ? { cli: o.cli } : {}) });
   const out: string[] = [];
   const err: string[] = [];
   const alive = new Set<number>();
@@ -87,6 +95,37 @@ async function hook(c: Awaited<ReturnType<typeof coordinator>>, cwd: string, env
 }
 
 describe("armada watch", () => {
+  test("a new release ends the watch as a version item, once, and no notice repeats it", async () => {
+    const c = await coordinator({ cli: { minimum: "0.0.1", latest: "99.1.0" } });
+    await c.hold("DEMO-2");
+    expect(await run(["watch"], c.io)).toBe(0);
+    expect(c.out()).toBe(
+      [
+        "Inbox of widgets (1), oldest first:",
+        `* version · ${NOW.toISOString()}`,
+        `    Armada 99.1.0 is out (you run ${version}). Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0`,
+        "    Not urgent: finish what is in flight first, then, between rounds:",
+        "      1. npm install -g @the-vibe-company/armada@99.1.0",
+        "      2. armada init, then merge its pull request: armada merge <n> --no-ticket",
+        "    Workers in flight keep the version their brief pinned: tell them nothing unless the notes say otherwise.",
+        "New items are marked *.",
+        "1 worker in flight (DEMO-2) — act on the items above, then keep watching: armada watch",
+        "",
+      ].join("\n"),
+    );
+    expect(c.err()).toBe("");
+
+    // The next watch waits for what is new to the coordinator: the release is not.
+    c.reset();
+    c.onSleep.push(async () => {
+      await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #4", at: c.clock.now() });
+    });
+    expect(await run(["watch"], c.io)).toBe(0);
+    expect(c.out()).toContain("* #1 hand-back · DEMO-2");
+    expect(c.out()).not.toContain("version");
+    expect(c.err()).toBe("");
+  });
+
   test("watches until a hand-back, prints it with the re-arm line, and leaves the state for the stop hook", async () => {
     const c = await coordinator();
     await c.hold("DEMO-2");
