@@ -103,7 +103,12 @@ export function ValidationCard({
           <span aria-hidden>↗</span>
         </a>
       )}
-      <Gallery t={t} items={v.gallery} compact={mode === "compact"} more={paths.validation(v.id)} />
+      <Gallery
+        t={t}
+        items={v.gallery}
+        compact={mode === "compact" || v.decision !== null}
+        more={paths.validation(v.id)}
+      />
       {v.decision ? (
         <p className="vd-decided">
           <Dot color={v.decision.outcome === "approved" ? "var(--done)" : "var(--text-3)"} size={6} />
