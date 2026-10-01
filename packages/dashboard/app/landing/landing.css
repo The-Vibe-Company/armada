@@ -1167,8 +1167,12 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
   font-size: 11px;
   color: var(--lp-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .lp-pipe-step i {
   height: 4px;
