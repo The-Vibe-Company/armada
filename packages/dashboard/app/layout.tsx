@@ -1,5 +1,6 @@
 import "@fontsource/instrument-serif/400.css";
 import "@fontsource/instrument-serif/400-italic.css";
+import { SpeedInsights } from "@vercel/speed-insights/next";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata } from "next";
@@ -21,7 +22,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   const lang = languageOf((await cookies()).get(LANGUAGE_COOKIE)?.value);
   return (
     <html lang={lang} className={`${GeistSans.variable} ${GeistMono.variable}`}>
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* Real page speed from viewers' browsers (THE-853); a no-op outside Vercel. */}
+        <SpeedInsights />
+      </body>
     </html>
   );
 }

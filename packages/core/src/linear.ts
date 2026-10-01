@@ -327,6 +327,30 @@ const chunks = <T>(xs: T[], n: number) =>
   Array.from({ length: Math.ceil(xs.length / n) }, (_, k) => xs.slice(k * n, k * n + n));
 const CLOSED = new Set(["completed", "canceled"]);
 
+/** Comments matter only where an agent may be working: claims and status lines. */
+const isCandidate = (i: Issue, rootId: string) =>
+  i.id !== rootId && !CLOSED.has(i.statusType) && (i.agentPhase !== null || i.statusType === "started");
+
+/** Every comment of `issues`, newest first per issue. */
+async function readComments(opts: LinearRequestOptions, issues: Issue[], warnings: string[]): Promise<Comment[]> {
+  const comments: Comment[] = [];
+  for (const batch of chunks(
+    issues.map((i) => i.uuid),
+    COMMENT_BATCH,
+  )) {
+    const data = await gql<{ issues: { nodes: { identifier: string; comments: Connection<RawComment> }[] } }>(
+      opts,
+      COMMENTS_QUERY,
+      { ids: batch },
+    );
+    for (const n of data.issues.nodes) {
+      await readRest(opts, n.identifier, MORE.comments, n.comments, warnings);
+      for (const c of n.comments.nodes) comments.push(normalizeComment(c, n.identifier));
+    }
+  }
+  return comments;
+}
+
 /** Reads the whole program under `rootId` plus the comments of every ticket an agent may hold. */
 export async function fetchProgram(opts: FetchProgramOptions): Promise<ProgramData> {
   try {
@@ -369,25 +393,11 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
       await readRest(opts, r.identifier, MORE[field], r[field] as Connection<unknown>, warnings);
 
   const issues = all.map((r) => normalizeIssue(r, opts.labels));
-  // Comments matter only where an agent may be working: claims and status lines.
-  const candidates = issues.filter(
-    (i) => i.id !== root.identifier && !CLOSED.has(i.statusType) && (i.agentPhase || i.statusType === "started"),
+  const comments = await readComments(
+    opts,
+    issues.filter((i) => isCandidate(i, root.identifier)),
+    warnings,
   );
-  const comments: Comment[] = [];
-  for (const batch of chunks(
-    candidates.map((i) => i.uuid),
-    COMMENT_BATCH,
-  )) {
-    const data = await gql<{ issues: { nodes: { identifier: string; comments: Connection<RawComment> }[] } }>(
-      opts,
-      COMMENTS_QUERY,
-      { ids: batch },
-    );
-    for (const n of data.issues.nodes) {
-      await readRest(opts, n.identifier, MORE.comments, n.comments, warnings);
-      for (const c of n.comments.nodes) comments.push(normalizeComment(c, n.identifier));
-    }
-  }
 
   return {
     rootId: root.identifier,
@@ -432,4 +442,161 @@ export async function readRest<T>(
       return;
     }
   }
+}
+
+// ------------------------------------------------------------------ incremental reads
+
+const CHANGED_QUERY = (d: boolean) => `${FIELDS(d)}
+  query Changed($filter: IssueFilter, $after: String) {
+    issues(first: 50, after: $after, filter: $filter) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ...F }
+    }
+  }`;
+const CHANGED_COMMENTS_QUERY = /* GraphQL */ `
+  query ChangedComments($filter: CommentFilter, $after: String) {
+    comments(first: ${MORE_PAGE}, after: $after, filter: $filter) {
+      pageInfo { hasNextPage endCursor }
+      nodes { ${MORE.comments.nodes} issue { identifier } }
+    }
+  }`;
+/** Ids per `in` filter of an incremental read: a 300-ticket program takes two requests. */
+const IDS_PER_FILTER = 200;
+/** Pages read per incremental query; a change touching more is a full read's job. */
+const MAX_CHANGED_PAGES = 20;
+
+export interface FetchChangesOptions extends FetchProgramOptions {
+  /** The last reading, whose tickets are read again only when they changed. */
+  previous: ProgramData;
+  /** Tickets and comments updated after this instant (ISO) are read again; give some overlap. */
+  since: string;
+  /** Linear ids (uuids) of tickets a webhook named: read again whatever their update time. */
+  touched?: string[];
+}
+
+/** An incremental read stopped short: a full read follows instead. */
+class IncompleteChanges extends Error {}
+
+/** Every page of one `issues` or `comments` query; throws `IncompleteChanges` when they cannot all be read. */
+async function readPages<T>(
+  opts: LinearRequestOptions,
+  query: string,
+  field: "issues" | "comments",
+  filter: object,
+): Promise<T[]> {
+  const nodes: T[] = [];
+  let after: string | null = null;
+  for (let page = 0; ; page++) {
+    const data: Record<string, Connection<T>> = await gql(opts, query, { filter, after });
+    const conn = data[field];
+    if (!conn) break;
+    nodes.push(...conn.nodes);
+    const next = conn.pageInfo;
+    if (!next?.hasNextPage) break;
+    if (!next.endCursor || next.endCursor === after || page + 1 >= MAX_CHANGED_PAGES) throw new IncompleteChanges();
+    after = next.endCursor;
+  }
+  return nodes;
+}
+
+/**
+ * Reads what changed in a program since the last reading and returns the
+ * whole program again, as `fetchProgram` would: the tickets of the program
+ * updated after `since`, the `touched` ones, new tickets under any of them
+ * (any depth), and the comments updated since on the tickets an agent may
+ * hold (every comment of a ticket that just became one). A few requests
+ * instead of one per level and page of the whole tree. Tickets deleted or
+ * moved out of Linear's reach stay until the next full read. When the changes
+ * are too many to read in a few pages, the program is read whole instead.
+ */
+export async function fetchProgramChanges(opts: FetchChangesOptions): Promise<ProgramData> {
+  try {
+    try {
+      return await readChanges(opts, true);
+    } catch (err) {
+      if (err instanceof LinearError && /delegate/i.test(err.message)) return await readChanges(opts, false);
+      throw err;
+    }
+  } catch (err) {
+    if (err instanceof IncompleteChanges) return fetchProgram(opts);
+    throw err;
+  }
+}
+
+async function readChanges(opts: FetchChangesOptions, delegate: boolean): Promise<ProgramData> {
+  const { previous, since } = opts;
+  const warnings: string[] = [];
+  const known = previous.issues.map((i) => i.uuid);
+  const isKnown = new Set(known);
+  const raws: RawIssue[] = [];
+  const read = (filter: object) => readPages<RawIssue>(opts, CHANGED_QUERY(delegate), "issues", filter);
+
+  // Tickets of the program updated since, and new tickets under them.
+  for (const ids of chunks(known, IDS_PER_FILTER))
+    raws.push(
+      ...(await read({
+        updatedAt: { gt: since },
+        or: [{ id: { in: ids } }, { parent: { id: { in: ids } } }],
+      })),
+    );
+  const touched = [...new Set(opts.touched ?? [])].filter((id) => !raws.some((r) => r.id === id));
+  // A webhook may name a ticket outside the program (the new parent of one moved out): only
+  // tickets of the program, or now under one of its tickets, are kept.
+  const inProgram = new Set([...previous.issues.map((i) => i.id), ...raws.map((r) => r.identifier)]);
+  for (const ids of chunks(touched, IDS_PER_FILTER))
+    for (const r of await read({ id: { in: ids } }))
+      if (isKnown.has(r.id) || (r.parent && inProgram.has(r.parent.identifier))) raws.push(r);
+  // A ticket new to the program brings its own subtree, read whole.
+  const seen = new Set([...known, ...raws.map((r) => r.id)]);
+  let fresh = raws.filter((r) => !isKnown.has(r.id)).map((r) => r.id);
+  for (let depth = 0; depth < MAX_DEPTH && fresh.length; depth++) {
+    const children: RawIssue[] = [];
+    for (const ids of chunks(fresh, IDS_PER_FILTER)) children.push(...(await read({ parent: { id: { in: ids } } })));
+    const added = children.filter((c) => !seen.has(c.id));
+    for (const c of added) seen.add(c.id);
+    raws.push(...added);
+    fresh = added.map((c) => c.id);
+  }
+  for (const r of raws)
+    for (const field of ["inverseRelations", "labels", "attachments"] as const)
+      await readRest(opts, r.identifier, MORE[field], r[field] as Connection<unknown>, warnings);
+
+  const byUuid = new Map(previous.issues.map((i) => [i.uuid, i]));
+  for (const r of raws) byUuid.set(r.id, normalizeIssue(r, opts.labels));
+  const issues = [...byUuid.values()];
+
+  // Comments: updated since on the tickets that already were candidates, every one on the new candidates.
+  const wasCandidate = new Set(previous.issues.filter((i) => isCandidate(i, previous.rootId)).map((i) => i.uuid));
+  const candidates = issues.filter((i) => isCandidate(i, previous.rootId));
+  const comments = new Map(
+    previous.comments.filter((c) => candidates.some((i) => i.id === c.issueId)).map((c) => [c.id, c]),
+  );
+  const kept = candidates.filter((i) => wasCandidate.has(i.uuid));
+  for (const ids of chunks(
+    kept.map((i) => i.uuid),
+    IDS_PER_FILTER,
+  )) {
+    const changed = await readPages<RawComment & { issue: { identifier: string } | null }>(
+      opts,
+      CHANGED_COMMENTS_QUERY,
+      "comments",
+      { updatedAt: { gt: since }, issue: { id: { in: ids } } },
+    );
+    for (const c of changed) if (c.issue) comments.set(c.id, normalizeComment(c, c.issue.identifier));
+  }
+  for (const c of await readComments(
+    opts,
+    candidates.filter((i) => !wasCandidate.has(i.uuid)),
+    warnings,
+  ))
+    comments.set(c.id, c);
+
+  return {
+    rootId: previous.rootId,
+    fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
+    issues: issues.sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true })),
+    comments: [...comments.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
+    // The full read's caps still hold until the next one.
+    warnings: [...new Set([...previous.warnings, ...warnings])],
+  };
 }

@@ -308,6 +308,9 @@ describe("the proxy with accounts", () => {
     }
     expect(passed(await accountsGuard(request("/login"), deps("none")))).toBe(true);
     expect(passed(await accountsGuard(request("/api/auth/callback/github?code=x"), deps("none")))).toBe(true);
+    // The webhooks carry a signature, never a session: they check it themselves, even while sign-in is down.
+    for (const hook of ["/api/webhooks/linear", "/api/webhooks/github"])
+      expect(passed(await accountsGuard(request(hook, { method: "POST" }), deps("unavailable")))).toBe(true);
   });
 
   test("half-configured accounts serve nothing, not even the password gate, and name what is missing", async () => {

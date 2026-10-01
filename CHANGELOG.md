@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/The-Vibe-Company/armada/compare/v0.2.2...v0.2.3) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** make the dashboard instant and cheap to run ([#59](https://github.com/The-Vibe-Company/armada/issues/59)) ([cb71f78](https://github.com/The-Vibe-Company/armada/commit/cb71f78b66b1a533f3f26824b2ef53a9b5dae213))
+
 ## [0.2.2](https://github.com/The-Vibe-Company/armada/compare/v0.2.1...v0.2.2) (2026-10-01)
 
 
