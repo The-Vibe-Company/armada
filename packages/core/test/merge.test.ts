@@ -254,7 +254,7 @@ describe("the checklist refuses, naming the rule", () => {
       (s) => {
         s.forge.comparison = { baseSha: BASE, status: "DIVERGED", behindBy: 2, aheadBy: 1 };
       },
-      "the head lacks 2 commits of main; ask the worker to rebase, or declare [gates] local_commands",
+      "the head lacks 2 commits of main; ask the worker to bring main in, or declare [gates] local_commands",
     ],
   ];
   for (const [name, arrange, problem] of cases)
@@ -590,7 +590,7 @@ describe("armada merge --wait", () => {
       (s) => {
         Object.assign(s.forge.pr, { mergeStateStatus: "DIRTY", mergeable: "CONFLICTING" });
       },
-      "GitHub reports #9 as DIRTY, not CLEAN: it conflicts with its base; ask the worker to rebase",
+      "GitHub reports #9 as DIRTY, not CLEAN: it conflicts with its base; ask the worker to bring the base branch in and resolve the conflicts",
     ],
     [
       "GitHub refusing the update (a protected branch)",

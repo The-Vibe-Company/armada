@@ -2,7 +2,15 @@
 // responses (no network), a builder for normalized issues, a fake Linear
 // writer, and a fake Armada API with the fleet's live data in memory.
 
-import { type ArmadaIdentity, type ArmadaSignIn, armadaApi } from "../src/armada-api.ts";
+import {
+  type ArmadaIdentity,
+  type ArmadaSignIn,
+  armadaApi,
+  CLI_LATEST_HEADER,
+  CLI_MINIMUM_HEADER,
+  CLI_VERSION_HEADER,
+  type ServerCli,
+} from "../src/armada-api.ts";
 import { type ArmadaConfig, parseConfig } from "../src/config.ts";
 import { type FleetCaller, fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
@@ -446,6 +454,8 @@ export interface ArmadaCall {
   path: string;
   authorization: string | null;
   apiKey: string | null;
+  /** The CLI version the call said it came from. */
+  version: string | null;
   body: unknown;
 }
 
@@ -480,6 +490,8 @@ export function fakeArmada(
     /** The fleet's live data behind `fleet/*`; a fresh one by default. */
     store?: FleetStore;
     clock?: Clock;
+    /** The CLIs this Armada serves, sent on every answer the way the app does; none by default (an older server). */
+    cli?: ServerCli;
   } = {},
 ) {
   const store = o.store ?? memoryFleet();
@@ -495,6 +507,14 @@ export function fakeArmada(
     for (const w of workers.values()) if (w.ticket === ticket && !w.ended) w.ended = why;
   };
   const fetch: Fetch = async (url, init) => {
+    const res = await answer(url, init);
+    if (o.cli) {
+      res.headers.set(CLI_MINIMUM_HEADER, o.cli.minimum);
+      if (o.cli.latest) res.headers.set(CLI_LATEST_HEADER, o.cli.latest);
+    }
+    return res;
+  };
+  const answer: Fetch = async (url, init) => {
     if (!url.startsWith(`${ARMADA_URL}/api/cli/`)) throw new Error(`unexpected URL ${url}`);
     const headers = new Headers(init.headers);
     const call: ArmadaCall = {
@@ -502,6 +522,7 @@ export function fakeArmada(
       path: url.slice(`${ARMADA_URL}/api/cli/`.length),
       authorization: headers.get("authorization"),
       apiKey: headers.get("x-api-key"),
+      version: headers.get(CLI_VERSION_HEADER),
       body: init.body ? JSON.parse(String(init.body)) : null,
     };
     calls.push(call);

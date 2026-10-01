@@ -1,23 +1,29 @@
 // `armada doctor`: what this repository lacks to be run by Armada, each
-// problem with its fix, and whether this terminal is signed in to Armada, so
-// that the briefs it makes give workers a launch token instead of keys. Exit 1
-// when anything is an error.
+// problem with its fix, whether this terminal is signed in to Armada, so
+// that the briefs it makes give workers a launch token instead of keys,
+// whether this CLI is as recent as Armada expects, and whether the conductor
+// command the runtime guide launches workers with is found. Exit 1 when
+// anything is an error.
 import {
   API_KEY_VARIABLE,
+  type ArmadaApi,
   ArmadaApiError,
-  armadaApi,
+  type ArmadaConfig,
   type Check,
   CONFIG_FILE,
   ConfigError,
   type Credentials,
   checkLabels,
   checkRepository,
+  compareVersions,
+  installCommand,
   LINEAR_KEY,
   parseConfig,
   RETIRED_VARIABLES,
   readLabels,
   STORED_KEYS,
 } from "@armada/core";
+import { apiOf } from "./api.ts";
 import { loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
 import { describeIdentity, hostOf } from "./login.ts";
@@ -39,7 +45,7 @@ const SIGN_IN_FIX = `\`armada login\`; a headless coordinator sets ${API_KEY_VAR
  * an error: without a sign-in Armada still works on the keys of the
  * environment (CI, self-hosting), but the briefs carry no launch token.
  */
-async function signInChecks(io: Io, credentials: Credentials): Promise<Check[]> {
+async function signInChecks(credentials: Credentials, api: ArmadaApi): Promise<Check[]> {
   const host = hostOf(credentials.armadaApi.url);
   const signIn = credentials.armadaSignIn;
   const warning = (message: string, fix: string): Check[] => [{ id: "sign-in", level: "warning", message, fix }];
@@ -59,10 +65,7 @@ async function signInChecks(io: Io, credentials: Credentials): Promise<Check[]> 
     );
   }
   try {
-    const identity = await armadaApi({
-      url: credentials.armadaApi.url,
-      ...(io.fetch ? { fetch: io.fetch } : {}),
-    }).whoami(signIn);
+    const identity = await api.whoami(signIn);
     if (!identity.organization)
       return warning(
         `signed in to ${host} as ${describeIdentity(identity)}: launch tokens need an organization`,
@@ -73,6 +76,7 @@ async function signInChecks(io: Io, credentials: Credentials): Promise<Check[]> 
     ];
   } catch (err) {
     if (!(err instanceof ArmadaApiError)) throw err;
+    if (err.upgrade) throw err; // the version check says it
     if (err.signedOut)
       return warning(
         `the Armada sign-in of this terminal no longer works: ${err.message}`,
@@ -115,16 +119,20 @@ function keyFileChecks(machine: Machine, credentials: Credentials): Check[] {
   ];
 }
 
-async function labelChecks(io: Io, root: string, credentials: Credentials): Promise<Check[]> {
+/** The repository's armada.toml; null when absent or invalid (the config check reports it). */
+async function projectConfig(root: string): Promise<ArmadaConfig | null> {
   const text = await fsRepoView(root).readFile(CONFIG_FILE);
-  if (text === null) return [];
-  let config: ReturnType<typeof parseConfig>;
+  if (text === null) return null;
   try {
-    config = parseConfig(text, CONFIG_FILE);
+    return parseConfig(text, CONFIG_FILE);
   } catch (err) {
-    if (err instanceof ConfigError) return []; // already reported by the config check
+    if (err instanceof ConfigError) return null;
     throw err;
   }
+}
+
+async function labelChecks(io: Io, config: ArmadaConfig | null, credentials: Credentials): Promise<Check[]> {
+  if (!config) return [];
   const { linearApiKey } = credentials;
   if (!linearApiKey)
     return [
@@ -150,14 +158,121 @@ async function labelChecks(io: Io, root: string, credentials: Credentials): Prom
   }
 }
 
+/**
+ * Whether this CLI is as recent as the Armada it talks to expects, from what
+ * that Armada said on its answers. None when it was not asked (signed out) or
+ * says nothing (an older server).
+ */
+function versionChecks(host: string, api: ArmadaApi, armadaVersion: string, outdated: ArmadaApiError | null): Check[] {
+  if (outdated?.upgrade)
+    return [
+      {
+        id: "cli-version",
+        level: "error",
+        message: `Armada ${armadaVersion} is older than ${host} expects: it no longer reads its answers`,
+        fix: installCommand(outdated.upgrade),
+      },
+    ];
+  const server = api.serverCli();
+  if (!server) return [];
+  const newer = server.latest && compareVersions(server.latest, armadaVersion) > 0 ? server.latest : null;
+  return [
+    {
+      id: "cli-version",
+      level: "ok",
+      message: `Armada ${armadaVersion} is recent enough for ${host} (${server.minimum} or newer)${newer ? `; ${newer} is out: ${installCommand(newer)}` : ""}`,
+      fix: null,
+    },
+  ];
+}
+
+/** Where the Conductor app for macOS ships its command line tool; it is not on PATH by itself. */
+export const BUNDLED_CONDUCTOR = "/Applications/Conductor.app/Contents/Resources/bin/conductor";
+
+/**
+ * The first line `<command> --version` prints, "" when it prints none or
+ * fails (it is there all the same); null when it cannot be run at all.
+ */
+async function versionOf(io: Io, command: string): Promise<string | null> {
+  if (!io.exec) return null;
+  try {
+    const r = await io.exec(command, ["--version"], { cwd: io.cwd });
+    return r.code === 0 ? (r.stdout.trim().split("\n")[0] ?? "") : "";
+  } catch {
+    return null; // not installed there
+  }
+}
+
+/**
+ * Whether the `conductor` command the runtime guide launches workers with is
+ * found: on PATH, or only inside the macOS app, where the fix is a link from a
+ * directory already on PATH (no sudo), else a PATH line, else a link in
+ * /usr/local/bin. Only for a project with a profile that runs on Conductor.
+ */
+async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Check[]> {
+  if (!io.exec || !Object.values(config?.conductor.profiles ?? {}).some((p) => p.runtime === "conductor")) return [];
+  const onPath = await versionOf(io, "conductor");
+  if (onPath !== null)
+    return [
+      { id: "conductor-cli", level: "ok", message: `conductor ${onPath ? `${onPath} ` : ""}is on PATH`, fix: null },
+    ];
+  const home = io.env.HOME?.replace(/\/+$/, "");
+  const path = (io.env.PATH ?? "").split(":").map((d) => d.replace(/\/+$/, ""));
+  const userBin = home ? [".local/bin", "bin"].find((d) => path.includes(`${home}/${d}`)) : undefined;
+  const link = (dir: string) => `ln -s "${BUNDLED_CONDUCTOR}" ${dir}/conductor`;
+  const pathLine = `export PATH="${BUNDLED_CONDUCTOR.slice(0, -"/conductor".length)}:$PATH"`;
+  const fix = userBin
+    ? link(`~/${userBin}`)
+    : `add \`${pathLine}\` to your shell profile (~/.zshrc), or \`sudo ${link("/usr/local/bin")}\``;
+  if ((await versionOf(io, BUNDLED_CONDUCTOR)) !== null)
+    return [
+      {
+        id: "conductor-cli",
+        level: "warning",
+        message: `conductor is not on PATH; the Conductor app ships it at ${BUNDLED_CONDUCTOR}`,
+        fix,
+      },
+    ];
+  return [
+    {
+      id: "conductor-cli",
+      level: "warning",
+      message: `conductor is not on PATH, nor at ${BUNDLED_CONDUCTOR}: the armada-runtime-conductor guide launches workers with it`,
+      fix: "on a Mac, install the Conductor app, then run doctor again; elsewhere, put a conductor command on PATH (a Conductor workspace has one)",
+    },
+  ];
+}
+
 export async function buildDoctor(io: Io, armadaVersion: string): Promise<DoctorReport> {
   const root = (io.exec ? await gitRoot(io.exec, io.cwd) : null) ?? io.cwd;
-  const { machine, credentials } = await loadCredentials(io);
+  // Older than Armada expects, it gets no keys from it: the checks go on with this machine's.
+  const upgrade = (err: unknown) => (err instanceof ArmadaApiError && err.upgrade ? err : null);
+  let outdated: ArmadaApiError | null = null;
+  let loaded: Awaited<ReturnType<typeof loadCredentials>>;
+  try {
+    loaded = await loadCredentials(io);
+  } catch (err) {
+    outdated = upgrade(err);
+    if (!outdated) throw err;
+    loaded = await loadCredentials(io, { armada: false });
+  }
+  const { machine, credentials } = loaded;
+  const api = apiOf(io, credentials.armadaApi.url, armadaVersion);
+  const config = await projectConfig(root);
+  let signIn: Check[] = [];
+  try {
+    signIn = await signInChecks(credentials, api);
+  } catch (err) {
+    outdated = upgrade(err);
+    if (!outdated) throw err;
+  }
   const checks = [
     ...(await checkRepository(fsRepoView(root), armadaVersion)),
-    ...(await signInChecks(io, credentials)),
+    ...signIn,
+    ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
     ...keyFileChecks(machine, credentials),
-    ...(await labelChecks(io, root, credentials)),
+    ...(await labelChecks(io, config, credentials)),
+    ...(await conductorChecks(io, config)),
   ];
   return {
     schemaVersion: 1,

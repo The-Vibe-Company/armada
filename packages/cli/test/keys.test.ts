@@ -2,8 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { ServerCli } from "../../core/src/armada-api.ts";
 import type { Fetch } from "../../core/src/linear.ts";
 import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
+import { version } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 
@@ -28,7 +30,15 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
     now: () => NOW,
     ...over,
   };
-  const armada = fakeArmada({ token: SESSION, polls: ["approve"], vault });
+  let cli: ServerCli | undefined;
+  const armada = fakeArmada({
+    token: SESSION,
+    polls: ["approve"],
+    vault,
+    get cli() {
+      return cli;
+    },
+  });
   const linear = recordedFetch();
   let down = false;
   const fetch: Fetch = async (u, init) => {
@@ -58,6 +68,10 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
     credentials,
     armadaDown: (value: boolean) => {
       down = value;
+    },
+    /** What Armada says of the CLIs it serves, from now on. */
+    serverCli: (value: ServerCli) => {
+      cli = value;
     },
     asked: () => armada.calls.filter((c) => c.path === "credentials"),
     /** Everything printed since the last call; asserts no secret leaked. */
@@ -126,6 +140,19 @@ describe("the organization's keys from Armada", () => {
     const revoked = m.printed();
     expect(revoked).toContain("Next: armada login");
     expect(revoked).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
+  });
+
+  test("a CLI older than Armada expects stops on one line that upgrades it, whatever keys the machine has", async () => {
+    const m = await machine();
+    expect(await run(["login"], m.io)).toBe(0);
+    m.printed();
+    await writeFile(m.credentials, `${await readFile(m.credentials, "utf8")}LINEAR_API_KEY=lin_api_local\n`);
+    m.serverCli({ minimum: "99.0.0", latest: "99.1.0" });
+    expect(await run(["status"], m.io)).toBe(1);
+    expect(m.printed()).toBe(
+      `armada: Armada ${version} is older than this server expects: npm install -g @the-vibe-company/armada@99.1.0\n`,
+    );
+    expect(m.asked().at(-1)?.version).toBe(version);
   });
 
   test("an Armada without a vault, or keys in the environment, leave the terminal as it was", async () => {

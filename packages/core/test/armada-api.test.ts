@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ArmadaApiError, armadaApi, waitForApproval } from "../src/armada-api.ts";
+import { ArmadaApiError, armadaApi, compareVersions, waitForApproval } from "../src/armada-api.ts";
 import { ARMADA_URL, fakeArmada, NOW } from "./support.ts";
 
 /** A clock that moves only when the code sleeps. */
@@ -83,4 +83,32 @@ test("a revoked credential is signed out with the server's next step; an address
   // Plain http carries tokens in the clear: only to this machine.
   expect(() => armadaApi({ url: "http://armada.example.test" })).toThrow("must use https");
   expect(() => armadaApi({ url: "http://localhost:4822" })).not.toThrow();
+});
+
+test("a CLI older than the server expects gets one upgrade line instead of an answer it cannot read", async () => {
+  const armada = fakeArmada({ cli: { minimum: "0.2.0", latest: "0.2.5" } });
+  const signIn = { kind: "session" as const, token: "t" };
+  const old = armadaApi({ url: ARMADA_URL, fetch: armada.fetch, version: "0.1.22" });
+  const err = await old.whoami(signIn).catch((e: ArmadaApiError) => e);
+  expect(err).toBeInstanceOf(ArmadaApiError);
+  expect(err).toMatchObject({
+    message: "Armada 0.1.22 is older than this server expects: npm install -g @the-vibe-company/armada@0.2.5",
+    upgrade: "0.2.5",
+    signedOut: false,
+  });
+  expect(armada.calls.at(-1)?.version).toBe("0.1.22");
+
+  // Current, or talking to a server that names no minimum: answers as before.
+  const current = armadaApi({ url: ARMADA_URL, fetch: armada.fetch, version: "0.2.0" });
+  expect(await current.startDeviceLogin()).toMatchObject({ userCode: "WDJBMJHT" });
+  expect(current.serverCli()).toEqual({ minimum: "0.2.0", latest: "0.2.5" });
+  const older = armadaApi({ url: ARMADA_URL, fetch: fakeArmada().fetch, version: "0.1.22" });
+  expect(await older.startDeviceLogin()).toMatchObject({ userCode: "WDJBMJHT" });
+  expect(older.serverCli()).toBeNull();
+});
+
+test("versions compare by number", () => {
+  expect(compareVersions("0.1.22", "0.2.0")).toBe(-1);
+  expect(compareVersions("0.10.0", "0.9.9")).toBe(1);
+  expect(compareVersions("1.2.3-beta.1", "1.2.3")).toBe(0);
 });

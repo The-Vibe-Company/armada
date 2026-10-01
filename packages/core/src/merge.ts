@@ -184,9 +184,10 @@ export function findHandBack(ticket: Ticket): HandBack | null {
 const MERGEABLE_STATES = new Set(["CLEAN", "HAS_HOOKS"]);
 
 const STATE_HELP: Record<string, string> = {
-  BEHIND: "the base branch requires it to be up to date; ask the worker to rebase, or armada merge --wait updates it",
+  BEHIND:
+    "the base branch requires it to be up to date; ask the worker to bring the base branch in, or armada merge --wait updates it",
   BLOCKED: "a branch protection rule blocks it (a required review or check)",
-  DIRTY: "it conflicts with its base; ask the worker to rebase",
+  DIRTY: "it conflicts with its base; ask the worker to bring the base branch in and resolve the conflicts",
   DRAFT: "it is a draft",
   UNKNOWN: "GitHub is still computing mergeability; try again in a minute",
   UNSTABLE: "a check that is not required is failing",
@@ -319,7 +320,7 @@ export function baseProblem(pull: MergePull, cmp: Comparison | null, localComman
   if (!cmp) return `GitHub could not compare the head of #${pull.number} with ${pull.baseRef}`;
   if (cmp.behindBy === 0) return null;
   if (!localCommands.length)
-    return `the head lacks ${cmp.behindBy} commit${cmp.behindBy > 1 ? "s" : ""} of ${pull.baseRef}; ask the worker to rebase, or declare [gates] local_commands in armada.toml so armada merge can test the merge (armada merge --wait updates the branch instead)`;
+    return `the head lacks ${cmp.behindBy} commit${cmp.behindBy > 1 ? "s" : ""} of ${pull.baseRef}; ask the worker to bring ${pull.baseRef} in, or declare [gates] local_commands in armada.toml so armada merge can test the merge (armada merge --wait updates the branch instead)`;
   return null;
 }
 

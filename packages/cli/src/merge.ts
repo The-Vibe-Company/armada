@@ -179,7 +179,7 @@ function render(o: MergeOutcome): string {
   if (!o.merged) return `${out.join("\n")}\n`;
   if (!o.workers.length) out.push("No other worker is in flight.");
   else {
-    out.push(`Tell these workers in flight what landed on ${o.pr.base} (rebase, shared files, new checks):`);
+    out.push(`Tell these workers in flight what landed on ${o.pr.base} (bring it in, shared files, new checks):`);
     for (const w of o.workers)
       out.push(
         `  ${w.ticket}  ${w.phase}  ${[w.runtime, w.handle].filter(Boolean).join(" · ") || "runtime unknown"}  ${w.title}`,

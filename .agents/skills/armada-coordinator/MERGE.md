@@ -1,10 +1,10 @@
 # Merging a pull request
 
-Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker session to archive. When a refusal names a rule, fix the cause (usually: ask the worker to rebase and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
+Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker session to archive. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
 
 ## Main kept moving: `--wait`
 
-With several workers in flight, main often moves between a green hand-back and its merge. Instead of asking the worker to rebase, run `armada merge <pr> --wait [--timeout <min>]` (30 minutes by default), in the background where your runtime allows it (Claude Code: `run_in_background`):
+With several workers in flight, main often moves between a green hand-back and its merge. Instead of asking the worker to bring main in, run `armada merge <pr> --wait [--timeout <min>]` (30 minutes by default), in the background where your runtime allows it (Claude Code: `run_in_background`):
 
 - A head behind main that GitHub says merges cleanly is updated with GitHub's "update branch": a merge commit on the branch, no force-push. Squash merges make that merge commit harmless. When main does not require heads to be up to date and `[gates] local_commands` is set, it is test-merged instead, as without `--wait`, so a busy main does not restart CI each time.
 - It waits for every required check on the new head, then merges pinned to that head.
@@ -23,7 +23,7 @@ When none of the required checks ran on the head (a release pull request opened 
 1. The worker has handed back: `Agent phase` is `ready-to-merge` and you have the full 40-character head SHA it reported.
 2. `gh pr view <n> --json headRefOid,mergeStateStatus,isDraft,title` shows that SHA (or that SHA with only main merged in), `CLEAN` (or `HAS_HOOKS`), not a draft, and a Commitizen title.
 3. `gh pr checks <n>` shows every required check passing.
-4. The head contains the current default branch: `git merge-base --is-ancestor origin/<default> <sha>`. If not, update it (`--wait`) or ask the worker to rebase.
+4. The head contains the current default branch: `git merge-base --is-ancestor origin/<default> <sha>`. If not, update it (`--wait`) or ask the worker to bring the default branch in (rebase, or merge it into their branch; never force-push a branch someone else pushed to).
 5. Semantic check: search the default branch for callers of anything the pull request deletes or renames.
 
 ## Merge
