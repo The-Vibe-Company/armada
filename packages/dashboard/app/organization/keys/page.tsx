@@ -132,7 +132,7 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
     const id = `key-${label}`;
     return (
       <Row key={label} className="sc-key">
-        <RowText title={k.labels[label]} line={status(info)} lineColor={info ? undefined : "var(--text-4)"} />
+        <RowText title={k.labels[label]} line={status(info)} lineColor={info ? undefined : "var(--text-3)"} />
         {editable && (
           <RowSide>
             <Form action={saveKey}>

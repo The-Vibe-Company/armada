@@ -396,7 +396,11 @@ function Stepper({ row, color }: { row: FleetRow; color: string }) {
   return (
     <span className="sc-stepper" style={{ ["--tone" as string]: color }}>
       {t.shell.steps.map((s, k) => (
-        <span key={s} className={`sc-stepper-step is-${states[k]}`}>
+        <span
+          key={s}
+          className={`sc-stepper-step is-${states[k]}`}
+          aria-current={states[k] === "now" ? "step" : undefined}
+        >
           <span className="sc-stepper-dot" aria-hidden />
           <span className="sc-stepper-label">
             {s}
@@ -642,6 +646,7 @@ function Agent({
       >
         <Decision ctx={ctx} row={row} state={state} label={label} project={project} />
         <Section
+          id="agent-tab"
           long={tab === "activity" && activity.entries.length > LONG_LIST}
           label={tab === "attachments" ? a.attachments : tab === "files" ? a.files : a.activity}
           count={
@@ -656,6 +661,7 @@ function Agent({
               label={a.tabs}
               value={tab}
               size="sm"
+              controls="agent-tab"
               items={TABS.map((k) => ({
                 key: k,
                 label: k === "attachments" ? a.attachments : k === "files" ? a.files : a.activity,

@@ -8,7 +8,7 @@ import { splitQuestion } from "../Actions";
 import { Row, RowId, RowSide, RowText, RowTime } from "../page";
 import { useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
-import { Dot, HarnessBadge, harnessColor, PhasePill, RelativeTime, StatusDot, Steps, Tag, toneColor } from "../ui";
+import { HarnessBadge, PhasePill, RelativeTime, StatusDot, Steps, Tag, toneColor } from "../ui";
 
 /** What a row says under its title: the open question, else the worker's last status. */
 export const rowLine = (r: FleetRow) =>
@@ -77,9 +77,7 @@ export function AgentRow({
         <Steps step={r.pipeline.step} tone={state.status} />
       </RowSide>
       <RowSide>
-        <span title={harness}>
-          <Dot color={harnessColor(harness)} />
-        </span>
+        <HarnessBadge harness={harness} bare />
       </RowSide>
       <RowTime color={r.silent ? "var(--active)" : undefined}>
         <RelativeTime at={r.lastReport} format="duration" />

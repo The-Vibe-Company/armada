@@ -9,8 +9,11 @@
 // the "ago" column stay put. Each row is one SVG in percent of the 24 h track,
 // drawn from what core gives it (`FleetTimeline`, from /api/fleet/timeline,
 // read while the section is on screen and the overview changed): no rule is
-// decided here. Rows redraw every `STEP_MS` and on a new history only.
+// decided here. Rows redraw every `STEP_MS` and on a new history only. The
+// drawing is for the eye; "Show as table" gives the same sessions, phases and
+// times as a table, for a screen reader or a keyboard (THE-891).
 import type { CoordinatorTrack, FleetRow, FleetTimeline, ProjectOverview, SessionTimeline } from "@armada/core/read";
+import Link from "next/link";
 import { type CSSProperties, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentState, HARNESS_NAME, HARNESSES, type Harness, harnessCounts, harnessOf, paths } from "@/lib/fleet-view";
 import type { Language, Strings } from "@/lib/i18n";
@@ -63,6 +66,7 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
   const { t, lang } = useShell();
   const now = useNow();
   const [harness, setHarness] = useState<Harness | "all">("all");
+  const [table, setTable] = useState(false);
   const [tip, setTip] = useState<(Tip & { x: number; y: number; left: boolean }) | null>(null);
   // Hour marks and tips follow the viewer's clock, which the server does not know: drawn once in the browser.
   const [mounted, setMounted] = useState(false);
@@ -134,7 +138,16 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
               })),
             ]}
           />
-          <Button type="button" onClick={toNow} disabled={atNow} title={t.timeline.backToNow}>
+          <Button type="button" onClick={() => setTable(!table)} aria-controls="tl-view">
+            {table ? t.a11y.showChart : t.a11y.showTable}
+          </Button>
+          <Button
+            type="button"
+            onClick={toNow}
+            disabled={atNow || table}
+            title={t.timeline.backToNow}
+            aria-label={t.timeline.backToNow}
+          >
             {t.timeline.now}
             <svg className="tl-now-icon" width="12" height="12" viewBox="0 0 16 16" aria-hidden>
               <path
@@ -150,10 +163,22 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
         </>
       }
     >
-      <div className="tl" ref={setBox}>
+      <div className="tl" ref={setBox} id="tl-view">
+        {table && (
+          <TimelineTable projects={projects} rows={rows} history={history} t={t} clock={clock} end={scale.end} />
+        )}
         <Hatch />
         {/* Right to left, so the browser opens it on now before any script runs; every row inside reads left to right. */}
-        <div className="tl-scroll" ref={scroller} dir="rtl" style={{ "--tl-zoom": ZOOM } as CSSProperties}>
+        <section
+          className="tl-scroll"
+          ref={scroller}
+          dir="rtl"
+          style={{ "--tl-zoom": ZOOM } as CSSProperties}
+          hidden={table}
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: a scroller the arrow keys move must take the focus.
+          tabIndex={0}
+          aria-label={t.a11y.timelineScroll}
+        >
           <div className={rows.length > LONG_LIST ? "tl-rows is-long" : "tl-rows"} dir="ltr">
             <Row className="tl-head">
               <span className="tl-label faint">{t.timeline.session}</span>
@@ -201,8 +226,8 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
               );
             })}
           </div>
-        </div>
-        <SectionBody className="tl-legend">
+        </section>
+        <SectionBody className={table ? "tl-legend is-hidden" : "tl-legend"}>
           <span>
             <i className="tl-swatch is-past" />
             {t.timeline.legend.past}
@@ -244,6 +269,96 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
         )}
       </div>
     </Section>
+  );
+}
+
+/**
+ * The timeline as a table: per project, each session shown, its status, its
+ * phases from its claim with when each began and how long it lasted, and its
+ * last report. Its times are the viewer's clock, like the drawing's tips.
+ */
+function TimelineTable({
+  projects,
+  rows,
+  history,
+  t,
+  clock,
+  end,
+}: {
+  projects: ProjectOverview[];
+  rows: FleetRow[];
+  history: History;
+  t: Strings;
+  clock: Clock | null;
+  end: number;
+}) {
+  const x = t.a11y.table;
+  const shown = projects.flatMap((p) => rows.filter((r) => r.project === p.slug).map((r) => ({ p, r })));
+  if (shown.length === 0)
+    return (
+      <SectionBody>
+        <p>{x.none}</p>
+      </SectionBody>
+    );
+  return (
+    <div className="tl-table-wrap">
+      <table className="tl-table">
+        <caption className="sr-only">{x.caption}</caption>
+        <thead>
+          <tr>
+            <th scope="col" className="tl-cell is-head">
+              {x.project}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.session}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.status}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.phases}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.lastReport}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map(({ p, r }) => {
+            const phases = history.rows.get(`${r.project}/${r.id}`)?.phases ?? [];
+            return (
+              <tr key={`${r.project}/${r.id}`}>
+                <td className="tl-cell">{p.name}</td>
+                <th scope="row" className="tl-cell is-row">
+                  <Link href={paths.agent(r.id)} prefetch className="tl-table-link">
+                    <span className="mono">{r.id}</span> {r.title}
+                  </Link>
+                </th>
+                <td className="tl-cell">{stateLabel(t, agentState(r), r.phase)}</td>
+                <td className="tl-cell">
+                  {phases.length === 0 || !clock ? (
+                    t.shell.phases[r.phase]
+                  ) : (
+                    <ol className="tl-table-phases">
+                      {phases.map((s) => (
+                        <li key={`${s.phase}-${s.from}`}>
+                          {x.phaseAt(
+                            t.shell.phases[s.phase],
+                            clock(s.from),
+                            t.duration((s.to === null ? end : Date.parse(s.to)) - Date.parse(s.from)),
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </td>
+                <td className="tl-cell">{r.lastReport ? t.ago(Math.max(0, end - Date.parse(r.lastReport))) : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -608,7 +723,7 @@ const DRAG_PX = 4;
  * now is at scrollLeft 0 and stays there as the track grows.
  */
 function useTimeScroll() {
-  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [el, setEl] = useState<HTMLElement | null>(null);
   const [atNow, setAtNow] = useState(true);
   const drag = useRef<{ x: number; left: number; id: number; moved: boolean } | null>(null);
   const swallow = useRef(false);

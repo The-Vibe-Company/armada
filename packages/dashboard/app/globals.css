@@ -14,11 +14,13 @@
   --raised: #2a2a2e;
   --overlay: rgba(28, 28, 31, 0.92);
 
-  /* Text, four steps. */
+  /* Text, four steps. WCAG 2.2 AA (THE-891, test/contrast.test.ts): every text
+     step reads at 4.5:1 at least on every surface below; --text-4 is for marks
+     (a dot, a bar, a separator), never text, at 3:1. */
   --text: #f0efec;
   --text-2: #a1a1a6;
-  --text-3: #6e6e73;
-  --text-4: #48484d;
+  --text-3: #88888d;
+  --text-4: #6a6a6f;
 
   /* Hairlines and fills over a surface. */
   --line: rgba(255, 255, 255, 0.06);
@@ -395,8 +397,12 @@ button {
 button:disabled {
   cursor: default;
 }
+/* The kit's one focus ring (THE-891): every control the keyboard reaches shows it. */
 textarea:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+[tabindex="0"]:focus-visible {
   outline: 2px solid var(--frontier);
   outline-offset: 1px;
 }
@@ -822,7 +828,7 @@ a.sh-item:hover {
 .sh-count {
   margin-left: auto;
   font-size: 11.5px;
-  color: var(--text-4);
+  color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
 .sh-count.is-hot {
@@ -846,7 +852,7 @@ a.sh-item:hover {
   place-items: center;
 }
 .sh-item.is-soon {
-  color: var(--text-4);
+  color: var(--text-3);
 }
 .sh-soon-dot {
   width: 7px;
@@ -904,6 +910,25 @@ a.sh-item:hover {
 .sh-crumb-sep {
   color: var(--text-4);
 }
+/* The first stop of the keyboard on every page (THE-891): out of sight until focused. */
+.sh-skip {
+  position: fixed;
+  z-index: 200;
+  top: 8px;
+  left: 8px;
+  padding: 6px 12px;
+  border-radius: var(--r);
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 500;
+  translate: 0 -200%;
+}
+.sh-skip:focus {
+  translate: none;
+}
+.sh-main:focus {
+  outline: none;
+}
 .sh-scroll {
   flex: 1;
   min-height: 0;
@@ -914,10 +939,18 @@ a.sh-item:hover {
   .sh-side {
     width: var(--rail);
   }
-  .sh-label,
-  .sh-side .sh-count,
   .sh-search .ui-kbd {
     display: none;
+  }
+  /* Hidden from sight, still each link's name for a screen reader (THE-891). */
+  .sh-label,
+  .sh-side .sh-count {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
   .sh-brand {
     flex-direction: column;
@@ -1163,6 +1196,9 @@ a.sh-item:hover {
 .ui-tab-count {
   color: var(--text-3);
   font-weight: 400;
+}
+.ui-tab[aria-selected="true"] .ui-tab-count {
+  color: var(--text-2);
 }
 .ui-empty {
   margin: 20px;
@@ -2412,6 +2448,13 @@ a.ui-row:hover {
   font-size: 11.5px;
   color: var(--text-3);
 }
+.ui-section-body.tl-legend.is-hidden {
+  display: none;
+}
+.tl-scroll:focus-visible {
+  outline: 2px solid var(--frontier);
+  outline-offset: -2px;
+}
 .tl-legend > span {
   display: inline-flex;
   align-items: center;
@@ -2725,7 +2768,119 @@ a.ui-row:hover {
   align-self: start;
 }
 /* The shell keeps 720 px for its lists; the approval page alone is read on a phone, without the sidebar. */
+/* Under 720 px (a phone, or a laptop at 200% zoom, THE-891): the sidebar is
+   a bar on top (home, organization, search, the four sections) and the page
+   takes the whole width, so nothing scrolls sideways but the timeline. The
+   projects and harnesses stay one tap away, on Projects and Agents. */
 @media (max-width: 719px) {
+  .sh {
+    min-width: 0;
+    flex-direction: column;
+    padding: 0;
+    height: 100dvh;
+  }
+  .sh-side {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 8px;
+    overflow: visible;
+  }
+  .sh-side > .sh-group,
+  .sh-side > .spacer,
+  .sh-side > .sh-live {
+    display: none;
+  }
+  .sh-brand {
+    flex-direction: row;
+    gap: 2px;
+    padding: 0;
+  }
+  .sh-search,
+  .sh-nav-item {
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+  .sh-nav {
+    flex-direction: row;
+    gap: 2px;
+    margin-left: auto;
+  }
+  .sh-main {
+    border-radius: 0;
+    border-width: 1px 0 0;
+  }
+  .ui-header,
+  .ui-toolbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .ui-header-hints {
+    display: none;
+  }
+  .ui-header {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 48px;
+    row-gap: 6px;
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+  .ui-header-actions {
+    flex-wrap: wrap;
+  }
+  /* A band's figures and a row's form go to the next line rather than off the screen. */
+  .ui-section-h {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 36px;
+    row-gap: 2px;
+    padding: 6px 12px;
+  }
+  .ui-section-side {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+  .ui-row {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  /* A fact's name over its value, the value on as many lines as it needs. */
+  .ui-row:has(> .sc-fact-k) {
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .ui-row:has(> .sc-fact-k) > .ui-row-icon {
+    display: none;
+  }
+  .sc-fact-k {
+    width: auto;
+    flex-basis: 100%;
+  }
+  .sc-fact-v {
+    flex-wrap: wrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* The steps keep their dots; only the current one keeps its label in sight. */
+  .sc-stepper-step:not(.is-now) .sc-stepper-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .ui-row:has(form) {
+    flex-wrap: wrap;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
   .sh.is-focus {
     min-width: 0;
     padding: 0;
@@ -2879,6 +3034,44 @@ a.ui-row:hover {
 }
 .ins-overview {
   min-height: 1lh;
+}
+
+/* The timeline as a table (THE-891): the rows' type, a hairline under each session. */
+.tl-table-wrap {
+  overflow-x: auto;
+}
+.tl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.tl-cell {
+  padding: 9px 20px 9px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.tl-cell:first-child {
+  padding-left: 20px;
+}
+.tl-cell.is-head {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.tl-cell.is-row {
+  color: var(--text);
+  font-weight: 500;
+}
+.tl-table-link:hover {
+  text-decoration: underline;
+}
+.tl-table-phases {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
 /* A long list (THE-892): rows off screen skip style, layout and paint, and

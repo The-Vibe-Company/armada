@@ -15,7 +15,8 @@
     "icons": "bun scripts/icons.ts",
     "fonts": "bun scripts/fonts.ts",
     "landing": "bun scripts/landing.ts",
-    "perf": "bun scripts/perf.ts"
+    "perf": "bun scripts/perf.ts",
+    "a11y": "bun scripts/a11y.ts"
   },
   "dependencies": {
     "@armada/core": "workspace:*",
@@ -33,6 +34,7 @@
     "server-only": "0.0.1"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@resvg/resvg-js": "2.6.2",
     "@types/node": "26.6.3",
     "@types/pg": "8.23.1",

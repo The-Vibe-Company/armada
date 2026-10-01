@@ -46,6 +46,7 @@
         "server-only": "0.0.1",
       },
       "devDependencies": {
+        "@axe-core/playwright": "4.13.0",
         "@resvg/resvg-js": "2.6.2",
         "@types/node": "26.6.3",
         "@types/pg": "8.23.1",
@@ -63,6 +64,8 @@
     "@armada/core": ["@armada/core@workspace:packages/core"],
 
     "@armada/dashboard": ["@armada/dashboard@workspace:packages/dashboard"],
+
+    "@axe-core/playwright": ["@axe-core/playwright@4.13.0", "", { "dependencies": { "axe-core": "~4.13.0" }, "peerDependencies": { "playwright-core": ">= 1.0.0" } }, "sha512-6YLx+kxXu5GJceG4ozFg+33a2EMTdjYwWGloJ3sb9Kta5pp+ZNS53uxGVog5JetIY8s++P5UrtX+cri+u0VAVg=="],
 
     "@better-auth/api-key": ["@better-auth/api-key@1.7.6", "", { "dependencies": { "zod": "^4.5.4" }, "peerDependencies": { "@better-auth/core": "^1.7.6", "@better-auth/utils": "0.4.2", "better-auth": "^1.7.6", "better-call": "1.4.0" } }, "sha512-BDoi3iUZpUioB3bSdzOZ7Nd9850vv5zFu0QxlZma9nwgMcNtUNsO0ky9toeDFY2h5vxNpdaIVBDRKUJ31RSCDg=="],
 

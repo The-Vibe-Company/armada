@@ -332,7 +332,10 @@ function LaunchRow({ ticket: r }: { ticket: ReadyTicket }) {
   return (
     <Row className="pj-ready">
       <RowIcon>
-        <Dot color={r.onCriticalPath ? "var(--critical)" : "var(--text-4)"} />
+        <span title={r.onCriticalPath ? t.a11y.criticalPath : undefined}>
+          <Dot color={r.onCriticalPath ? "var(--critical)" : "var(--text-4)"} />
+        </span>
+        {r.onCriticalPath && <span className="sr-only">{t.a11y.criticalPath}</span>}
       </RowIcon>
       <RowId>{r.id}</RowId>
       <RowText

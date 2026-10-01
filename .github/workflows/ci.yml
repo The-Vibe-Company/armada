@@ -51,6 +51,64 @@ jobs:
         working-directory: packages/dashboard
         run: bun run build
 
+  accessibility:
+    name: Every page meets WCAG 2.2 AA
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The demo world on Postgres (PGlite is for development only), with
+    # accounts so the organization's pages are checked signed in. Every value
+    # here is the throwaway demo's; the secret is drawn per run.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: armada
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      ARMADA_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
+      ARMADA_DEMO_DATABASE_URL: postgres://postgres:postgres@localhost:5432/armada?sslmode=disable
+      ARMADA_DASHBOARD_DEMO: fleet
+      ARMADA_AUTH_URL: http://localhost:4822
+      ARMADA_AUTH_OWNER_EMAILS: olive.owner@example.test
+      ARMADA_AUTH_GITHUB_CLIENT_ID: a11y-demo
+      ARMADA_AUTH_GITHUB_CLIENT_SECRET: a11y-demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Draw the demo's session secret
+        run: echo "ARMADA_AUTH_SECRET=$(openssl rand -base64 32)" >> "$GITHUB_ENV"
+      - name: Build the dashboard
+        working-directory: packages/dashboard
+        run: bun run build
+      - name: Seed the demo world, an owner and an invited member
+        working-directory: packages/dashboard
+        run: bun run demo:seed && bun run a11y seed
+      - name: Start the dashboard
+        working-directory: packages/dashboard
+        run: |
+          nohup bun run start > "$RUNNER_TEMP/dashboard.log" 2>&1 &
+          for i in $(seq 60); do curl -sf -o /dev/null http://localhost:4822/landing && exit 0; sleep 1; done
+          cat "$RUNNER_TEMP/dashboard.log"; exit 1
+      # axe on every page in English and French, compact and airy; 320 px
+      # without sideways scroll and no motion under reduced motion; the
+      # keyboard's promises. The runner's Google Chrome runs it.
+      - name: Check every page
+        working-directory: packages/dashboard
+        run: bun run a11y scan
+      - name: The dashboard's log
+        if: failure()
+        run: cat "$RUNNER_TEMP/dashboard.log"
+
   performance:
     name: Dashboard performance budgets
     # docs/performance.md: Lighthouse, first-load JS per route and the main
