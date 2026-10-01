@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.23](https://github.com/The-Vibe-Company/armada/compare/v0.2.22...v0.2.23) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** preload only the Latin cut of Geist and Geist Mono ([#109](https://github.com/The-Vibe-Company/armada/issues/109)) ([377f7ae](https://github.com/The-Vibe-Company/armada/commit/377f7ae6d585b38cb821f9218dc29905c6d6fd63))
+
 ## [0.2.22](https://github.com/The-Vibe-Company/armada/compare/v0.2.21...v0.2.22) (2026-10-01)
 
 
