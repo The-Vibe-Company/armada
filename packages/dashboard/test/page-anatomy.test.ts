@@ -33,7 +33,7 @@ function reach(start: string, seen = new Set<string>()): Set<string> {
   if (seen.has(start)) return seen;
   seen.add(start);
   const source = readFileSync(start, "utf8");
-  for (const [, spec] of source.matchAll(/(?:from|import)\s+"((?:@\/|\.)[^"]+)"/g)) {
+  for (const [, spec] of source.matchAll(/(?:from|import)\s*\(?"((?:@\/|\.)[^"]+)"/g)) {
     const file = spec && resolveImport(start, spec);
     if (file && /\.(tsx?)$/.test(file)) reach(file, seen);
   }

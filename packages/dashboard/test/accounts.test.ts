@@ -323,11 +323,17 @@ describe("the proxy with accounts", () => {
       },
     };
     expect(rewrittenTo(await accountsGuard(request("/"), never))).toBe("/landing");
-    for (const path of ["/landing", "/landing/opengraph-image"])
+    expect(rewrittenTo(await accountsGuard(request("/?utm_campaign=launch"), never))).toBe("/landing");
+    for (const path of ["/landing", "/landing/fleet.json"])
       expect(passed(await accountsGuard(request(path), never))).toBe(true);
+    // The landing reads only: a write to it goes through the gate.
+    const write = request("/landing", { method: "POST", headers: { "next-action": "7f00aa" } });
+    expect((await accountsGuard(write, deps("none"))).status).toBe(401);
     // A cookie that no longer opens a session: the landing too; a valid one: the overview.
     expect(rewrittenTo(await accountsGuard(request("/", { headers: SESSION }), deps("none")))).toBe("/landing");
     expect(passed(await accountsGuard(request("/", { headers: SESSION }), deps("signed-in")))).toBe(true);
+    // No shared cache keeps the landing under / for a member.
+    expect((await accountsGuard(request("/"), never)).headers.get("vary")).toBe("Cookie");
     // Every other page still goes to sign-in.
     expect((await accountsGuard(request("/agents"), deps("none"))).status).toBe(307);
   });

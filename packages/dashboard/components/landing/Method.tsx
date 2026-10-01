@@ -308,7 +308,7 @@ export function Check() {
   );
 }
 
-/** A ship in flight: the mark's triangle, stretched into a dart (sky.ts). */
+/** A ship in flight: the mark's triangle, stretched into a dart (flock.ts). */
 export function Dart({ color = "var(--frontier)", className }: { color?: string; className?: string }) {
   return (
     <svg viewBox="0 0 24 16" width="24" height="16" aria-hidden className={className}>

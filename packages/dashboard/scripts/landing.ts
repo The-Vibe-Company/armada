@@ -6,6 +6,7 @@
 // project; `armada watch` is core's readInbox over the demo world's inbox and
 // workers, rendered by the CLI's renderEntries and the re-arm line. Run it
 // after a change to either, or to the demo world: test/landing.test.ts fails until then.
+import { execFileSync } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -117,7 +118,7 @@ export const TRANSCRIPT: TerminalCommand[] = ${JSON.stringify(commands, null, 2)
 
 export const SHARE_IMAGE_FILE = join(import.meta.dir, "..", "app", "landing", "opengraph-image.png");
 
-/** A dart of the sky (components/landing/sky.ts): the mark's triangle stretched, at (x, y), heading `a`. */
+/** A dart of the sky (components/landing/flock.ts): the mark's triangle stretched, at (x, y), heading `a`. */
 function dart(x: number, y: number, a: number, len: number, color: string, opacity: number): string {
   const c = Math.cos(a);
   const s = Math.sin(a);
@@ -191,6 +192,8 @@ export async function shareImage(): Promise<Buffer> {
 
 if (import.meta.main) {
   await writeFile(TRANSCRIPT_FILE, transcriptModule(await landingTranscript()));
+  // In the repository's style, so a run that changes nothing leaves no diff.
+  execFileSync("bunx", ["biome", "format", "--write", TRANSCRIPT_FILE], { stdio: "ignore" });
   console.log(`Wrote ${TRANSCRIPT_FILE}`);
   await writeFile(SHARE_IMAGE_FILE, await shareImage());
   console.log(`Wrote ${SHARE_IMAGE_FILE}`);

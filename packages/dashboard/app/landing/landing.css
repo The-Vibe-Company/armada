@@ -204,7 +204,7 @@
     background-color var(--t-fast) ease;
 }
 .lp-copy:active {
-  transform: scale(0.98);
+  transform: scale(0.96);
 }
 .lp-copy.is-lg {
   height: 56px;
@@ -462,16 +462,18 @@
 /* The first second: the words come into focus while the mark flies in. They
    are fully opaque from the first frame, so the page's largest paint is not
    delayed; the smaller parts around them fade in after. */
-.lp-word,
+.lp-word {
+  animation: lp-focus 700ms calc(40ms + var(--i, 0) * 40ms) var(--lp-ease) both;
+}
 .lp-lead {
-  animation: lp-focus 800ms calc(60ms + var(--i, 0) * 45ms) var(--lp-ease) both;
+  animation: lp-focus-soft 600ms 300ms var(--lp-ease) both;
 }
 .lp-enter {
   animation: lp-rise 700ms calc(420ms + var(--i, 0) * 80ms) var(--lp-ease) both;
 }
 .lp-shine {
   animation:
-    lp-focus 800ms calc(60ms + var(--i, 0) * 45ms) var(--lp-ease) both,
+    lp-focus 700ms calc(40ms + var(--i, 0) * 40ms) var(--lp-ease) both,
     lp-shine 1600ms 1250ms var(--lp-ease-io) both;
 }
 
@@ -479,6 +481,16 @@
   from {
     transform: translateY(0.18em);
     filter: blur(8px);
+  }
+  to {
+    transform: none;
+    filter: none;
+  }
+}
+@keyframes lp-focus-soft {
+  from {
+    transform: translateY(6px);
+    filter: blur(3px);
   }
   to {
     transform: none;

@@ -40,7 +40,7 @@ export function Crew() {
                 <i className="lp-role-mark is-you" />
                 You
               </dt>
-              <dd>answer, approve, launch and merge from the dashboard</dd>
+              <dd>answer, approve, launch and ask to merge from the dashboard</dd>
             </div>
           </dl>
         </div>
@@ -90,8 +90,8 @@ export function Keys() {
           <div className="lp-fact lp-reveal">
             <span className="lp-fact-figure">1 ticket</span>
             <p>
-              A worker session can claim, report, ask and release its own ticket, and nothing else. It ends on release,
-              on merge, or when you revoke it.
+              A worker session acts on its own ticket only: claim, report, ask and release, with the keys they need. It
+              ends on release, on merge, or when you revoke it.
             </p>
           </div>
           <div className="lp-fact lp-reveal">
@@ -116,7 +116,7 @@ export function Install() {
           Launch your fleet.
         </h2>
         <p className="lp-body lp-reveal">
-          Three commands, and a repository is ready for its first worker: one pull request adds what it lacks.
+          Three commands set a repository up: init opens one pull request that adds what it lacks.
         </p>
         <ol className="lp-install-steps lp-reveal">
           {SETUP.map((s, k) => (

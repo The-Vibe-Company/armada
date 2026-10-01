@@ -30,6 +30,8 @@ export interface Ship {
   angle: number;
   /** Size over its layer's; the mark's ships start large. */
   size: number;
+  /** The size it settles to: the mark's five stay a little larger than the flock, its flagships. */
+  rest: number;
   /**
    * Length over the mark's triangle, which is nearly equilateral and so shows
    * no heading: 1 in the mark, a slender dart in flight.
@@ -89,6 +91,8 @@ export interface SkyState {
   seed: number;
   /** How many ships the sky holds at most, from its area. */
   cap: number;
+  /** When a squadron next splits, in sky time: drawn per split, not per frame, so 60 Hz and 120 Hz agree. */
+  nextSplit: number;
 }
 
 /** The intro's schedule, in seconds of sky time: arrival, hold, then the break. */
@@ -182,6 +186,7 @@ function addSquadron(
       vy: Math.sin(angle) * speed,
       angle,
       size: 1,
+      rest: 1,
       stretch: DART,
       color,
       tone: 1,
@@ -219,6 +224,7 @@ export function createSky(
     nextId: 1,
     seed: opts.seed ?? 887,
     cap: capOf(width, height),
+    nextSplit: BREAK_AT + 4,
   };
   const playIntro = opts.intro ?? true;
 
@@ -228,6 +234,7 @@ export function createSky(
     sh.color = k === 0 ? LIME : BONE;
     sh.tone = MARK_TONES[k] ?? 1;
     sh.size = opts.markScale;
+    sh.rest = 1.35;
     sh.stretch = 1;
   });
   mark.calm = 1e9;
@@ -237,14 +244,14 @@ export function createSky(
   // Squadrons already in the sky, mostly away from the words, so it is never empty, even before the mark lands.
   const already = Math.max(3, Math.round(s.cap / 10));
   for (let k = 0; k < already; k++) {
-    const layer = (k % 3 === 2 ? 1 : 0) as 0 | 1;
+    const layer = (k % 2) as 0 | 1;
     const angle = wind(0) + (random(s) - 0.5) * 0.5;
     const x = width * (0.3 + random(s) * 0.7);
     addSquadron(s, layer, x, height * (0.08 + random(s) * 0.84), angle, 3 + Math.floor(random(s) * 3));
   }
   // The flock flies in as the mark breaks.
-  const incoming = Math.max(4, Math.round(s.cap / 7));
-  for (let k = 0; k < incoming; k++) s.arrivals.push(BREAK_AT - 0.5 + k * (1.6 / incoming) + random(s) * 0.15);
+  const incoming = Math.max(5, Math.round(s.cap / 5));
+  for (let k = 0; k < incoming; k++) s.arrivals.push(BREAK_AT - 0.6 + k * (2.2 / incoming) + random(s) * 0.15);
   // The still sky: the mark in place, the flock already spread out.
   if (!playIntro) while (s.arrivals.length) arrive(s, true);
   return s;
@@ -255,7 +262,7 @@ function arrive(s: SkyState, anywhere = false) {
   s.arrivals.shift();
   if (shipCount(s) >= s.cap) return;
   const r = random(s);
-  const layer = (r < 0.25 ? 0 : r < 0.6 ? 1 : 2) as 0 | 1 | 2;
+  const layer = (r < 0.15 ? 0 : r < 0.55 ? 1 : 2) as 0 | 1 | 2;
   const count = 3 + Math.floor(random(s) * 3);
   if (anywhere) {
     const angle = wind(0) + (random(s) - 0.5) * 0.6;
@@ -387,7 +394,7 @@ function steerLeader(s: SkyState, sq: Squadron, dt: number) {
   if (sq.boost === 0) sq.bearing = null;
   // The mark's ships shrink to the flock's size and stretch into darts as they leave it.
   for (const sh of sq.ships) {
-    if (sh.size > 1) sh.size = Math.max(1, sh.size - (sh.size - 1) * ease(1.6, dt) - dt * 0.05);
+    if (sh.size > sh.rest) sh.size = Math.max(sh.rest, sh.size - (sh.size - sh.rest) * ease(1.6, dt) - dt * 0.05);
     if (sh.stretch < DART) sh.stretch = Math.min(DART, sh.stretch + (DART - sh.stretch) * ease(4, dt) + dt * 0.02);
   }
   const speed = CRUISE * layer.speed * (1 + sq.boost * 1.4);
@@ -503,9 +510,10 @@ function splitAndMerge(s: SkyState, dt: number) {
       }
     }
   }
-  // Split: one wing of a long V breaks away and turns off to its side.
+  // Split: now and then, one wing of a long V breaks away and turns off to its side.
   const long = ready.filter((q) => q.ships.length >= 4);
-  if (!long.length || random(s) >= dt * 0.3) return;
+  if (!long.length || s.time < s.nextSplit) return;
+  s.nextSplit = s.time + 2.5 + random(s) * 4;
   const sq = long[Math.floor(random(s) * long.length)];
   if (!sq) return;
   const leaving = sq.ships.filter((_, k) => k % 2 === 1);

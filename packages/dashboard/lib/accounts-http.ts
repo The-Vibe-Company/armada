@@ -42,8 +42,15 @@ export function hasSessionCookie(request: NextRequest): boolean {
   return request.cookies.getAll().some((c) => c.name === name || c.name === `__Secure-${name}`);
 }
 
-/** The landing, shown on the viewer's own URL (`/`). */
-export const landing = (request: NextRequest) => NextResponse.rewrite(new URL(LANDING_PATH, request.url));
+/**
+ * The landing, shown on the viewer's own URL (`/`). `Vary: Cookie`, so no
+ * shared cache in front of the app serves it to a member, whose `/` is the overview.
+ */
+export function landing(request: NextRequest): NextResponse {
+  const response = NextResponse.rewrite(new URL(LANDING_PATH, request.url));
+  response.headers.set("Vary", "Cookie");
+  return response;
+}
 
 const isAuthApi = (pathname: string) => pathname === AUTH_API_PREFIX || pathname.startsWith(`${AUTH_API_PREFIX}/`);
 
@@ -58,7 +65,7 @@ export async function accountsGuard(request: NextRequest, { env, session }: Acco
   if (isCliApi(pathname) || isWebhook(pathname)) return NextResponse.next();
   // The landing reads no fleet data. A visitor without a session cookie gets it
   // on `/` without a session lookup, so it shows even while the database is down.
-  if (isLanding(pathname)) return NextResponse.next();
+  if (isLanding(request)) return NextResponse.next();
   if (isFront(request) && !hasSessionCookie(request)) return landing(request);
   const state = await session(request);
   if (state === "unavailable") return unavailable(wantsData(request), languageOf(request, env));

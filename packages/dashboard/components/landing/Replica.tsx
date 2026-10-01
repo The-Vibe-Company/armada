@@ -8,6 +8,8 @@
 // so the timeline moves. It plays only while on screen; it is inert (nothing
 // in it can be clicked or focused) and reads nothing from any server.
 import type { FleetOverview } from "@armada/core/read";
+// The context Next's Link reads its router from: without one, a Link prefetches nothing (see below).
+import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Fleet } from "@/components/Fleet";
 import { HeaderSlotProvider, PageHeader } from "@/components/page-client";
@@ -98,6 +100,7 @@ export function Replica({ base }: { base: FleetOverview }) {
     const stop = () => {
       for (const t of timers) clearTimeout(t);
       timers = [];
+      for (const b of el.querySelectorAll("[data-pressed]")) b.removeAttribute("data-pressed");
       if (tick) clearInterval(tick);
       tick = null;
     };
@@ -119,14 +122,18 @@ export function Replica({ base }: { base: FleetOverview }) {
           <span className="lp-replica-nav" />
         </div>
         <div className="sh-main lp-replica-main" data-density="compact">
-          <ShowcaseProvider overview={shown.overview} now={shown.now} account={VIEWER}>
-            <HeaderSlotProvider>
-              <PageHeader title={<span className="lp-replica-crumb">Overview</span>} />
-              <div className="lp-replica-scroll">
-                <Fleet />
-              </div>
-            </HeaderSlotProvider>
-          </ShowcaseProvider>
+          {/* No router: the replica's links (agents, projects) never prefetch the real pages, which
+              would send a signed-out visitor's browser through the sign-in gate for nothing. */}
+          <AppRouterContext.Provider value={null}>
+            <ShowcaseProvider overview={shown.overview} now={shown.now} account={VIEWER}>
+              <HeaderSlotProvider>
+                <PageHeader title={<span className="lp-replica-crumb">Overview</span>} />
+                <div className="lp-replica-scroll">
+                  <Fleet />
+                </div>
+              </HeaderSlotProvider>
+            </ShowcaseProvider>
+          </AppRouterContext.Provider>
         </div>
       </div>
       {pointer && (

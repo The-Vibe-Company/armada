@@ -1,13 +1,12 @@
 "use client";
 
-// The hero's sky (THE-887): one canvas drawing the squadrons of sky.ts. It
+// The hero's sky (THE-887): one canvas drawing the squadrons of flock.ts. It
 // steps the simulation with the real time between frames, so it moves the
 // same at 60 Hz and 120 Hz; it runs only while the hero is on screen and the
 // tab is visible. The mark lands on the `[data-mark]` box of the hero, so CSS
 // decides where it sits on a phone and on a laptop. With reduced motion it
 // draws one still sky, the mark already in place.
 import { useEffect, useRef } from "react";
-import { onFrame, prefersReducedMotion, whileVisible } from "./frames";
 import {
   createSky,
   INTRO,
@@ -21,7 +20,8 @@ import {
   type SkyState,
   type Squadron,
   step,
-} from "./sky";
+} from "./flock";
+import { onFrame, prefersReducedMotion, whileVisible } from "./frames";
 
 /** The mark's width in the sky's units: 32 grid units of SHIP / 4 pixels at scale 1. */
 const MARK_WIDTH = 32 * (SHIP / 4);

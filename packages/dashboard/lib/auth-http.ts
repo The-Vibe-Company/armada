@@ -3,7 +3,8 @@
 // Each takes the environment, the clock and the limiter as arguments so tests
 // drive them without a server.
 import { type NextRequest, NextResponse } from "next/server";
-import { isCliApi, isFront, isLanding, isWebhook, LANDING_PATH } from "./accounts-settings";
+import { landing } from "./accounts-http";
+import { isCliApi, isFront, isLanding, isWebhook } from "./accounts-settings";
 import {
   clearedSessionCookie,
   clientAddress,
@@ -56,8 +57,8 @@ export function guard(request: NextRequest, { env, now }: GateDeps): NextRespons
   // refuse the terminal with the next step while the dashboard has no accounts,
   // and the webhooks, which check their own signature.
   // The landing reads no fleet data: a viewer without a session sees it on `/`.
-  if (isLanding(pathname)) return NextResponse.next();
-  if (!signedIn && isFront(request)) return NextResponse.rewrite(new URL(LANDING_PATH, request.url));
+  if (isLanding(request)) return NextResponse.next();
+  if (!signedIn && isFront(request)) return landing(request);
   if (signedIn || pathname === LOGIN_ROUTE || pathname === LOGOUT_ROUTE || isCliApi(pathname) || isWebhook(pathname))
     return NextResponse.next();
   if (wantsData(request))
