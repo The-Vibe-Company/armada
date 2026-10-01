@@ -30,17 +30,21 @@ import { ownsKeys } from "@/lib/keyboard";
 import { decideCount, pendingValidations } from "@/lib/overview-view";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
 import { Dot, harnessColor, Kbd, ProjectChip } from "../ui";
+import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
 import { Logo, SearchIcon } from "./Logo";
 import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
-import { Palette } from "./Palette";
 import { useViews, ViewsProvider } from "./views";
 import { VisitProvider } from "./visit";
 
+// ⌘K and its index load apart from every page, as soon as the browser is idle (THE-892).
+const loadPalette = () => import("./Palette").then((m) => m.Palette);
+
 export function Shell({
   initial,
+  initialTag,
   initialLanguage,
   initialDensity,
   account,
@@ -50,6 +54,8 @@ export function Shell({
   children,
 }: {
   initial: FleetOverview;
+  /** The ETag `/api/fleet` gives `initial`: the first poll answers 304 while nothing changed. */
+  initialTag: string;
   initialLanguage: Language;
   initialDensity: Density;
   account: Account | null;
@@ -62,6 +68,7 @@ export function Shell({
   return (
     <FleetProvider
       initial={initial}
+      initialTag={initialTag}
       initialLanguage={initialLanguage}
       initialDensity={initialDensity}
       account={account}
@@ -99,6 +106,7 @@ function Frame({ children }: { children: ReactNode }) {
   const fromPath = useFrom(pathname);
   const from = useMemo(() => (fromPath === null ? null : placeOf(fromPath)), [fromPath]);
   const [palette, setPalette] = useState(false);
+  const Palette = useLazy(loadPalette);
   const [menu, setMenu] = useState(false);
   const main = useRef<HTMLDivElement>(null);
   const selected = useRef(-1);
@@ -207,7 +215,7 @@ function Frame({ children }: { children: ReactNode }) {
           </div>
         </HeaderSlotProvider>
       </main>
-      {palette && <Palette onClose={() => setPalette(false)} />}
+      {palette && Palette && <Palette onClose={() => setPalette(false)} />}
       <Announcer />
       <Notifier />
     </div>

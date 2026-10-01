@@ -10,12 +10,13 @@ import type { FleetOverview, FleetTimeline } from "@armada/core/read";
 // Private data: never stored by a cache; the page sends the tag it holds itself.
 const HEADERS = { "Cache-Control": "no-store" };
 
-const tagOf = (content: unknown) =>
+/** The ETag of a JSON answer: what `answerJson` sends, and what a page rendered with it already holds. */
+export const jsonTag = (content: unknown) =>
   `"${createHash("sha256").update(JSON.stringify(content)).digest("base64url").slice(0, 27)}"`;
 
 export function overviewTag(overview: FleetOverview): string {
   const { generatedAt: _, ...content } = overview;
-  return tagOf(content);
+  return jsonTag(content);
 }
 
 /** 304 when `If-None-Match` names `tag`, else `body`. */
@@ -45,5 +46,24 @@ export function answerTimeline(request: Request, overview: FleetOverview): Respo
 
 /** The same for any read an agent's page polls (its activity): tagged by its whole content. */
 export function answerJson(request: Request, body: unknown): Response {
-  return answerTagged(request, body, tagOf(body));
+  return answerTagged(request, body, jsonTag(body));
+}
+
+/**
+ * The answer of a polled route with its time on the server (THE-892): a
+ * `Server-Timing` header for the browser, and one log line, `armada timing
+ * <route> <status> <ms>ms`, from which the deployment's logs give the p75.
+ */
+export async function timed(
+  route: string,
+  answer: () => Promise<Response>,
+  now: () => number = () => performance.now(),
+  log: (line: string) => void = console.info,
+): Promise<Response> {
+  const start = now();
+  const response = await answer();
+  const ms = now() - start;
+  response.headers.set("Server-Timing", `app;dur=${ms.toFixed(1)}`);
+  log(`armada timing ${route} ${response.status} ${Math.round(ms)}ms`);
+  return response;
 }

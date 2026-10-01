@@ -15,6 +15,7 @@ import {
   CONFIG_FILE,
   type FleetOverview,
   fetchDefaultBranchFile,
+  insightsSummary,
   parseConfig,
   readProjectConfig,
   readStatusSources,
@@ -22,6 +23,7 @@ import {
   resolveCredentials,
 } from "@armada/core/read";
 import { after } from "next/server";
+import { cache } from "react";
 import { type Access, requireFleetAccess, scopeOf } from "./access";
 import { accounts, homeOrganization } from "./accounts-server";
 import { appDatabase } from "./app-db";
@@ -30,6 +32,8 @@ import { demoSources } from "./demo/sources";
 import {
   type FleetCache,
   type LoadOptions,
+  loadAgentActivity,
+  loadInsights,
   loadOverview,
   MARK_GAP_MS,
   newCache,
@@ -37,6 +41,7 @@ import {
   refreshProject,
   type Scope,
   type Sources,
+  type TaggedActivity,
 } from "./fleet-data";
 import { listProjects, liveStore } from "./fleet-store";
 import {
@@ -49,9 +54,11 @@ import {
   repositoryToken,
 } from "./github-app";
 import { isLanguage, type Language } from "./i18n";
-import { withoutTimeline } from "./live-http";
+import type { InsightsLineReading } from "./insights-view";
+import { jsonTag, withoutTimeline } from "./live-http";
 import { dbSnapshots } from "./snapshots";
 import { vaultModeOf } from "./vault";
+import { isTicketId } from "./workers";
 
 /** Comma- or space-separated owner/name list, shown when the registry cannot be read. */
 function repositoriesFromEnv(): ProjectRef[] {
@@ -272,9 +279,34 @@ export async function refreshMarked(keys: string[]): Promise<void> {
  * timeline's history, which pages leave out (`withoutTimeline`).
  */
 export async function getOverview(opts: { timeline?: boolean } = {}): Promise<FleetOverview> {
-  const fleet = await fleetOf();
-  const overview = await loadOverview(fleet.opts, fleet.scope);
+  const overview = await overviewOfRequest();
   return opts.timeline ? overview : withoutTimeline(overview);
+}
+
+// Read once per render: the shell and an agent's page both need it.
+const overviewOfRequest = cache(async () => {
+  const fleet = await fleetOf();
+  return loadOverview(fleet.opts, fleet.scope);
+});
+
+/** The overview's insights line for its first render, so it neither arrives late nor moves the page (THE-892). */
+export async function initialInsightsLine(): Promise<InsightsLineReading | null> {
+  const { opts, scope } = await fleetOf();
+  const reading = await loadInsights(opts, scope, { range: "7d", project: null }).catch(() => null);
+  if (!reading) return null;
+  const body = { range: "7d" as const, project: null, live: reading.live, summary: insightsSummary(reading.insights) };
+  return { body, tag: jsonTag(body) };
+}
+
+/** The ticket's activity for its page's first render; null when the viewer cannot see it or it cannot be read. */
+export async function initialActivity(ticket: string): Promise<TaggedActivity | null> {
+  const id = ticket.toUpperCase();
+  if (!isTicketId(id)) return null;
+  const [overview, { opts, scope }] = await Promise.all([getOverview(), fleetOf()]);
+  const row = overview.rows.find((r) => r.id.toUpperCase() === id);
+  if (!row) return null;
+  const activity = await loadAgentActivity(opts, scope, row.project, row.id).catch(() => null);
+  return activity && { activity, tag: jsonTag(activity) };
 }
 
 /**

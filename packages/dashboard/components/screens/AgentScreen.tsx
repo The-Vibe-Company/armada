@@ -3,8 +3,9 @@
 // /agents/[ticket] (THE-869): one session from plan to merge. Its status and
 // steps, what waits for the owner with the same requests as the overview, its
 // activity and its pull request's files, and its session, coordinator and
-// code facts. Renders from the overview the shell polls, so it opens at once;
-// the ticket's history is read after (`/api/fleet/activity`, Postgres only).
+// code facts. Renders from the overview the shell polls and the ticket's
+// history its page read with it; that history is read again when the ticket
+// moves (`/api/fleet/activity`, Postgres only).
 import {
   type ActivityEntry,
   agentActivity,
@@ -16,6 +17,7 @@ import {
 import { useParams, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { releaseTicket } from "@/app/actions";
+import type { TaggedActivity } from "@/lib/fleet-data";
 import {
   type AgentState,
   agentState,
@@ -34,6 +36,7 @@ import { type ActionContext, splitQuestion } from "../Actions";
 import {
   Columns,
   HeaderActions,
+  LONG_LIST,
   Page,
   Row,
   RowIcon,
@@ -149,11 +152,14 @@ function knownActivity(row: FleetRow): ActivityEntry[] {
  * The ticket's history from the server, read again when the row changes;
  * the server answers 304 while it is the same.
  */
-function useActivity(row: FleetRow, requests: InboxItem[]) {
+function useActivity(row: FleetRow, requests: InboxItem[], initial: TaggedActivity | null) {
   const [read, setRead] = useState<{ key: string; entries: ActivityEntry[]; live: boolean } | null>(null);
   const tag = useRef<string | null>(null);
   const project = row.project;
   const ticket = row.id;
+  const key = `${project}/${ticket}`;
+  // The activity the page was rendered with, while it is this ticket's.
+  const given = initial && `${initial.activity.project}/${initial.activity.ticket}` === key ? initial : null;
   const changed = [
     row.lastUpdate,
     row.lastReport,
@@ -165,9 +171,9 @@ function useActivity(row: FleetRow, requests: InboxItem[]) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: `changed` says when the history may have changed.
   useEffect(() => {
     let live = true;
-    const key = `${project}/${ticket}`;
     const url = `/api/fleet/activity?project=${encodeURIComponent(project)}&ticket=${encodeURIComponent(ticket)}`;
-    fetch(url, { cache: "no-store", headers: tag.current ? { "If-None-Match": tag.current } : {} })
+    const known = read?.key === key ? tag.current : (given?.tag ?? null);
+    fetch(url, { cache: "no-store", headers: known ? { "If-None-Match": known } : {} })
       .then(async (res) => {
         if (res.status === 304 || !res.ok || !live) return;
         const body = (await res.json()) as { entries: ActivityEntry[]; live: boolean };
@@ -179,8 +185,9 @@ function useActivity(row: FleetRow, requests: InboxItem[]) {
       live = false;
     };
   }, [project, ticket, changed]);
-  const mine = read?.key === `${project}/${ticket}` ? read : null;
-  return mine ?? { entries: knownActivity(row), live: true, key: "" };
+  if (read?.key === key) return read;
+  if (given) return { key, entries: given.activity.entries, live: given.activity.live };
+  return { entries: knownActivity(row), live: true, key: "" };
 }
 
 function ActivityRow({ e, row, t }: { e: ActivityEntry; row: FleetRow; t: Strings }) {
@@ -416,7 +423,7 @@ function Stepper({ row, color }: { row: FleetRow; color: string }) {
 const TABS = ["activity", "files", "attachments"] as const;
 type Tab = (typeof TABS)[number];
 
-export function AgentScreen() {
+export function AgentScreen({ initialActivity = null }: { initialActivity?: TaggedActivity | null }) {
   const { t, author, setAuthor, account } = useShell();
   const { overview, failed, refresh, version } = useFleet();
   const now = useNow();
@@ -440,7 +447,9 @@ export function AgentScreen() {
     version,
     refresh,
   };
-  return <Agent row={row} project={project} requests={requests} tab={tab} ctx={ctx} />;
+  return (
+    <Agent row={row} project={project} requests={requests} tab={tab} ctx={ctx} initialActivity={initialActivity} />
+  );
 }
 
 function Agent({
@@ -449,12 +458,14 @@ function Agent({
   requests,
   tab,
   ctx,
+  initialActivity,
 }: {
   row: FleetRow;
   project: ProjectOverview | undefined;
   requests: InboxItem[];
   tab: Tab;
   ctx: ActionContext;
+  initialActivity: TaggedActivity | null;
 }) {
   const { t } = ctx;
   const a = t.shell.agent;
@@ -464,7 +475,7 @@ function Agent({
   const harness = harnessOf(row.runtime);
   const handle = row.session?.handle ?? row.handle;
   const link = sessionLink(row.runtime, handle);
-  const activity = useActivity(row, requests);
+  const activity = useActivity(row, requests, initialActivity);
   const attachments = useAttachments(row.project, row.id, ctx.version);
   const branch = row.session?.branch ?? activity.entries.find((e) => e.kind === "branch")?.branch ?? null;
   const files = row.pr?.files ?? null;
@@ -636,6 +647,7 @@ function Agent({
         <Decision ctx={ctx} row={row} state={state} label={label} project={project} />
         <Section
           id="agent-tab"
+          long={tab === "activity" && activity.entries.length > LONG_LIST}
           label={tab === "attachments" ? a.attachments : tab === "files" ? a.files : a.activity}
           count={
             tab === "attachments"

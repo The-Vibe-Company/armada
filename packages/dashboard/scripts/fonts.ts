@@ -270,6 +270,7 @@ export function fontsModule(families: Cut[]): string {
   src: "./${family.file}-latin.woff2",
   variable: "${family.variable}",
   weight: "100 900",
+  display: "optional",
 ${fallback}  declarations: [{ prop: "unicode-range", value: "${unicodeRange(LATIN)}" }],
 });`,
       `export const ${family.name}Full = localFont({
@@ -289,8 +290,10 @@ ${fallback}  declarations: [{ prop: "unicode-range", value: "${unicodeRange(LATI
     ];
   });
   return `// Written by \`bun run fonts\` (scripts/fonts.ts) from the \`geist\` package: do not edit.
-// Each Latin cut is preloaded on every page; each full font is listed first in
-// --font-sans and --font-mono (app/globals.css) and loads only for a character in its range.
+// Each Latin cut is preloaded on every page, \`optional\`: a page that would
+// paint before it arrives keeps its fallback rather than move (THE-892); each
+// full font is listed first in --font-sans and --font-mono (app/globals.css)
+// and loads only for a character in its range.
 import localFont from "next/font/local";
 
 ${calls.join("\n\n")}

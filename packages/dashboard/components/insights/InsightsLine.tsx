@@ -2,21 +2,22 @@
 
 // The overview's line under its summary (THE-893): this week's merges, their
 // median claim to merge and the change from last week, linking to /insights.
-// Read on its own, once on load and every five minutes, never with the
-// overview's poll: the numbers move by the hour, not the second.
+// Rendered with the page (THE-892), then read on its own every five minutes,
+// never with the overview's poll: the numbers move by the hour, not the second.
 import type { InsightsSummary } from "@armada/core/read";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { insightsHref } from "@/lib/insights-view";
+import { type InsightsLineReading, insightsHref } from "@/lib/insights-view";
 import { useShell } from "../shell/context";
 
 const EVERY_MS = 5 * 60_000;
 
-export function InsightsLine() {
+export function InsightsLine({ initial = null }: { initial?: InsightsLineReading | null }) {
   const { t } = useShell();
-  const [summary, setSummary] = useState<InsightsSummary | null>(null);
+  const [summary, setSummary] = useState<InsightsSummary | null>(initial?.body.live ? initial.body.summary : null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: read from the page's first reading on, once.
   useEffect(() => {
-    let tag: string | null = null;
+    let tag: string | null = initial?.tag ?? null;
     let stopped = false;
     const read = async () => {
       try {

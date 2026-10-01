@@ -505,9 +505,11 @@ export const DEMO_COORDINATOR_SEEN: Record<string, number> = Object.fromEntries(
 /**
  * `fleet` is the mockup's world; `busy` adds twenty sessions that ran the
  * whole day, a report every 2 minutes, to try the live timeline at 30
- * sessions over 24 hours (THE-880); `empty` has none.
+ * sessions over 24 hours (THE-880); `large` adds 240 sessions, the first
+ * reporting every minute for six hours, for lists of hundreds of rows
+ * (THE-892: the responsiveness check runs on it); `empty` has none.
  */
-export type Scenario = "fleet" | "busy" | "empty";
+export type Scenario = "fleet" | "busy" | "large" | "empty";
 
 const BUSY: DemoTicket[] = Array.from({ length: 20 }, (_, k) => {
   const project = DEMO_PROJECTS[k % DEMO_PROJECTS.length] as ProjectInput;
@@ -530,12 +532,42 @@ const BUSY: DemoTicket[] = Array.from({ length: 20 }, (_, k) => {
   };
 });
 
+const LARGE_PHASES: LabelPhase[] = ["implementing", "planning", "shipping", "implementing"];
+
+const LARGE: DemoTicket[] = Array.from({ length: 240 }, (_, k) => {
+  const project = DEMO_PROJECTS[k % DEMO_PROJECTS.length] as ProjectInput;
+  const prefix = project.programRoot.split("-")[0];
+  const claimed = k === 0 ? 360 : 30 + ((k * 37) % 420);
+  return {
+    id: `${prefix}-${400 + k}`,
+    project: project.slug,
+    title: `Large fleet session ${k + 1}`,
+    phase: LARGE_PHASES[k % LARGE_PHASES.length] as LabelPhase,
+    runtime: ["Conductor", "Claude Code", "Codex"][k % 3] as string,
+    agent: `Large worker ${k + 1}`,
+    handle: `ws-large/ses-${k + 1}`,
+    profile: "opus",
+    claimed,
+    phaseSince: claimed - 10,
+    lastReport: 1 + (k % 9),
+    summary: "Working through the list",
+    files: [],
+    every: k === 0 ? 1 : 30,
+  };
+});
+
 export const demoTickets = (scenario: Scenario) =>
-  scenario === "empty" ? [] : scenario === "busy" ? [...TICKETS, ...BUSY] : TICKETS;
+  scenario === "empty"
+    ? []
+    : scenario === "busy"
+      ? [...TICKETS, ...BUSY]
+      : scenario === "large"
+        ? [...TICKETS, ...LARGE]
+        : TICKETS;
 
 /** The scenario a mode names (`ARMADA_DASHBOARD_DEMO`, `demo:seed`); the mockup's world by default. */
 export const scenarioOf = (mode: string | undefined): Scenario =>
-  mode === "empty" || mode === "busy" ? mode : "fleet";
+  mode === "empty" || mode === "busy" || mode === "large" ? mode : "fleet";
 
 const ago = (now: Date, minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
 

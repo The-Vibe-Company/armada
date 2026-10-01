@@ -10,6 +10,7 @@
 // (components/shell/context.tsx), on the page kit (components/page.tsx),
 // through the view rules of lib/overview-view.ts.
 import type { FleetOverview, ProjectHealth } from "@armada/core/read";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { type ReactNode, useMemo } from "react";
 import { HARNESS_NAME, paths } from "@/lib/fleet-view";
@@ -39,8 +40,11 @@ import {
 import { SinceAway } from "./SinceAway";
 import { ValidationCard } from "./screens/ValidationCard";
 import { useFleet, useNow, useShell } from "./shell/context";
-import { LiveTimeline } from "./timeline/Timeline";
 import { Dot, EmptyState, ProjectChip, RelativeTime, Tag } from "./ui";
+
+// The timeline is its own chunk (THE-892): rendered on the server as before,
+// so nothing moves, but the rest of the overview does not wait for its code.
+const LiveTimeline = dynamic(() => import("./timeline/Timeline").then((m) => m.LiveTimeline));
 
 const HEALTH_COLOR: Record<ProjectHealth, string> = {
   blocked: "var(--critical)",
@@ -125,7 +129,7 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
       >
         <SectionBody>
           <p>
-            <time dateTime={new Date(now).toISOString()} suppressHydrationWarning>
+            <time className="tnum" dateTime={new Date(now).toISOString()} suppressHydrationWarning>
               {dateLabel(now, t.overview.locale)}
             </time>
             {" · "}

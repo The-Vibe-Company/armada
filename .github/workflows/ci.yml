@@ -109,6 +109,108 @@ jobs:
         if: failure()
         run: cat "$RUNNER_TEMP/dashboard.log"
 
+  performance:
+    name: Dashboard performance budgets
+    # docs/performance.md: Lighthouse, first-load JS per route and the main
+    # interactions, on a production build of the demo world. The PR comment
+    # shows the numbers; a broken budget fails the job.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      NEXT_TELEMETRY_DISABLED: "1"
+      # The gate of this job's own servers, on a throwaway database: not a secret.
+      ARMADA_DASHBOARD_PASSWORD: ci-performance-budgets
+      ARMADA_DASHBOARD_AUTHOR: CI
+      PGPASSWORD: postgres
+    defaults:
+      run:
+        working-directory: packages/dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      # Lighthouse runs in Node (22.19 or later).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+        working-directory: .
+      - name: Build the dashboard
+        run: bun run build
+      - name: First-load JS per route
+        id: bundles
+        continue-on-error: true
+        run: bun run perf bundles
+      - name: Seed the demo worlds and start the dashboard on each
+        run: |
+          set -euo pipefail
+          for world in fleet large; do
+            psql -h localhost -U postgres -c "create database $world"
+            ARMADA_DEMO_DATABASE_URL="postgres://postgres:postgres@localhost:5432/$world" bun run demo:seed "$world"
+          done
+          ARMADA_DATABASE_URL=postgres://postgres:postgres@localhost:5432/fleet ARMADA_DASHBOARD_DEMO=fleet \
+            nohup bunx next start --port 4822 > "$RUNNER_TEMP/fleet.log" 2>&1 &
+          ARMADA_DATABASE_URL=postgres://postgres:postgres@localhost:5432/large ARMADA_DASHBOARD_DEMO=large \
+            nohup bunx next start --port 4823 > "$RUNNER_TEMP/large.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf -o /dev/null localhost:4822/landing && curl -sf -o /dev/null localhost:4823/landing && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/fleet.log" "$RUNNER_TEMP/large.log"
+          exit 1
+      - name: Interactions under a 4x slower CPU (large world)
+        id: inp
+        continue-on-error: true
+        run: bun run perf inp http://localhost:4823
+      - name: Lighthouse, mobile and desktop (demo world)
+        id: lighthouse
+        continue-on-error: true
+        run: bun run perf lighthouse http://localhost:4822
+      - name: Report
+        if: always()
+        run: |
+          bun run perf report > /dev/null
+          cat .perf/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Comment on the pull request
+        # A fork's token cannot comment: the job summary has the same table.
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          id=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.body | startswith("<!-- armada-perf -->")) | .id' | head -n 1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@.perf/report.md > /dev/null
+          else
+            gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@.perf/report.md > /dev/null
+          fi
+      - name: Server logs
+        if: failure() || steps.lighthouse.outcome == 'failure' || steps.inp.outcome == 'failure'
+        run: tail -n 100 "$RUNNER_TEMP/fleet.log" "$RUNNER_TEMP/large.log"
+      - name: Every budget holds
+        if: always()
+        run: |
+          test "${{ steps.bundles.outcome }}" = success
+          test "${{ steps.inp.outcome }}" = success
+          test "${{ steps.lighthouse.outcome }}" = success
+
   package:
     name: Packed CLI runs under Node
     runs-on: ubuntu-latest

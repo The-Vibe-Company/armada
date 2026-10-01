@@ -1,0 +1,62 @@
+{
+  "lighthouse": {
+    "pages": ["/landing", "/", "/agents", "/agents/WID-12", "/projects", "/validations", "/insights", "/activity"],
+    "runs": {
+      "mobile": 3,
+      "desktop": 1
+    },
+    "cpuSlowdown": 4,
+    "budgets": [
+      {
+        "metric": "performance",
+        "min": 95
+      },
+      {
+        "metric": "accessibility",
+        "min": 100
+      },
+      {
+        "metric": "best-practices",
+        "min": 95
+      },
+      {
+        "metric": "cls",
+        "max": 0
+      },
+      {
+        "metric": "lcp",
+        "max": 2500,
+        "formFactor": "mobile"
+      }
+    ]
+  },
+  "inp": {
+    "maxMs": 200,
+    "cpuSlowdown": 4
+  },
+  "bundles": {
+    "tolerance": 0.05,
+    "routes": {
+      "/": 198928,
+      "/_not-found": 135591,
+      "/activity": 185822,
+      "/agents": 189590,
+      "/agents/[ticket]": 199068,
+      "/approve/[id]": 196398,
+      "/design": 186172,
+      "/device": 172264,
+      "/insights": 182876,
+      "/invitations/[id]": 172264,
+      "/landing": 147934,
+      "/login": 172264,
+      "/organization": 184616,
+      "/organization/github": 182876,
+      "/organization/keys": 182876,
+      "/organization/workers": 182876,
+      "/projects": 187563,
+      "/projects/[slug]": 192526,
+      "/validations": 196398,
+      "/welcome": 172264
+    }
+  }
+}

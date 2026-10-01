@@ -1,12 +1,15 @@
 // Written by `bun run fonts` (scripts/fonts.ts) from the `geist` package: do not edit.
-// Each Latin cut is preloaded on every page; each full font is listed first in
-// --font-sans and --font-mono (app/globals.css) and loads only for a character in its range.
+// Each Latin cut is preloaded on every page, `optional`: a page that would
+// paint before it arrives keeps its fallback rather than move (THE-892); each
+// full font is listed first in --font-sans and --font-mono (app/globals.css)
+// and loads only for a character in its range.
 import localFont from "next/font/local";
 
 export const geist = localFont({
   src: "./geist-latin.woff2",
   variable: "--font-geist-sans",
   weight: "100 900",
+  display: "optional",
   declarations: [{ prop: "unicode-range", value: "U+0-17F, U+2000-206F, U+20AC, U+2122, U+2190-21FF, U+2212" }],
 });
 
@@ -29,6 +32,7 @@ export const geistMono = localFont({
   src: "./geist-mono-latin.woff2",
   variable: "--font-geist-mono",
   weight: "100 900",
+  display: "optional",
   adjustFontFallback: false,
   fallback: [
     "ui-monospace",

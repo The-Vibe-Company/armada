@@ -1,7 +1,7 @@
 // Local demo of the live Fleet view, without any key, in a local PGlite
 // database (.demo/armada), or the Postgres database ARMADA_DEMO_DATABASE_URL
 // names: never ARMADA_DATABASE_URL or DATABASE_URL, which may be production's.
-//   bun run demo:seed [fleet|busy|empty]     fresh local database with the demo activity
+//   bun run demo:seed [fleet|busy|large|empty]     fresh local database with the demo activity
 //   bun run demo:report <TICKET> <phase> [message]   a worker report, as `armada report` records it
 //   bun scripts/demo.ts ask <TICKET> <question>      a worker question in the coordinator's inbox
 //   bun scripts/demo.ts seen <project>               the coordinator read its inbox
