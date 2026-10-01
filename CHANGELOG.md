@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.8](https://github.com/The-Vibe-Company/armada/compare/v0.2.7...v0.2.8) (2026-10-01)
+
+
+### Features
+
+* keep keys and secrets per project, fetched by workers with armada run ([#72](https://github.com/The-Vibe-Company/armada/issues/72)) ([d916cf3](https://github.com/The-Vibe-Company/armada/commit/d916cf3024a69756aba4568766911d54fda330f1))
+
 ## [0.2.7](https://github.com/The-Vibe-Company/armada/compare/v0.2.6...v0.2.7) (2026-10-01)
 
 
