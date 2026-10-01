@@ -126,6 +126,10 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
+/** The version an outdated CLI is told to install: the latest, never below the minimum. */
+export const versionToInstall = (minimum: string, latest: string | null) =>
+  latest && compareVersions(latest, minimum) >= 0 ? latest : minimum;
+
 /** The command that installs `version` of the CLI. */
 export const installCommand = (version: string) => `npm install -g ${CLI_PACKAGE}@${version}`;
 
@@ -229,7 +233,8 @@ export function armadaApi(opts: ArmadaApiOptions) {
     const latest = res.headers.get(CLI_LATEST_HEADER) || null;
     if (minimum) serverCli = { minimum, latest };
     if (opts.version && minimum && compareVersions(opts.version, minimum) < 0) {
-      const install = latest ?? minimum;
+      await res.body?.cancel().catch(() => {});
+      const install = versionToInstall(minimum, latest);
       throw new ArmadaApiError(upgradeLine(opts.version, install), null, false, res.status, install);
     }
     // Not modified: no body to read (an unchanged inbox).

@@ -32,11 +32,18 @@ export interface BriefArgs {
 /** How a launch token shows outside `--prompt`. */
 export const HIDDEN_LAUNCH_TOKEN = "armada_launch_••••";
 
-/** The brief with its launch token hidden, for the human view and --json. */
+/**
+ * The brief with its launch token hidden, for the human view and --json: the
+ * word after --launch-token, and anything else shaped like a launch token.
+ */
 export function hideLaunchToken(b: Brief): Brief {
-  const token = b.launch?.command.match(/--launch-token (\S+)/)?.[1];
-  if (!b.launch || !token) return b;
-  const hide = (text: string) => text.replaceAll(token, HIDDEN_LAUNCH_TOKEN);
+  if (!b.launch) return b;
+  const token = b.launch.command.match(/--launch-token[ =](\S+)/)?.[1];
+  const hide = (text: string) =>
+    (token ? text.replaceAll(token, HIDDEN_LAUNCH_TOKEN) : text).replace(
+      /armada_launch_[^\s'"`•]+/g,
+      HIDDEN_LAUNCH_TOKEN,
+    );
   return { ...b, prompt: hide(b.prompt), launch: { ...b.launch, command: hide(b.launch.command) } };
 }
 

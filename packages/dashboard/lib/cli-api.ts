@@ -18,11 +18,14 @@ import {
   CLI_LATEST_HEADER,
   CLI_MINIMUM_HEADER,
   CLI_VERSION_HEADER,
+  compareVersions,
   type FleetCaller,
   installCommand,
   MINIMUM_CLI_VERSION,
   parseProject,
   serveFleet,
+  upgradeLine,
+  versionToInstall,
 } from "@armada/core/read";
 import cliPackage from "../../cli/package.json" with { type: "json" };
 import { type Auth, firstOrganization, organizationOf } from "./accounts";
@@ -47,8 +50,8 @@ import {
   workerSession,
 } from "./workers";
 
-/** The CLI released from this commit: what an outdated CLI is told to install. */
-const LATEST_CLI_VERSION = cliPackage.version;
+/** The CLI released from this commit, what an outdated CLI is told to install; never below the minimum. */
+const LATEST_CLI_VERSION = versionToInstall(MINIMUM_CLI_VERSION, cliPackage.version);
 
 export interface CliAccounts {
   auth: Auth;
@@ -239,6 +242,10 @@ function holderOf(identity: CliIdentity & { launch?: Worker }): Holder | null {
 }
 
 async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, now: Date): Promise<Response> {
+  const vault = vaultKeyOf(deps, "it hands out no key");
+  if (vault instanceof Response) return vault;
+  const identity = await identify(a, credentialOf(request), now);
+  if (identity instanceof Response) return identity;
   const body = await jsonBody(request);
   // A CLI from before 0.2.0 sends no version but still asks for the retired fleet database's
   // token, and reads no version header: its refusal names the upgrade itself.
@@ -248,10 +255,6 @@ async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, n
       `this CLI is older than this server expects (${MINIMUM_CLI_VERSION} or newer)`,
       installCommand(LATEST_CLI_VERSION),
     );
-  const vault = vaultKeyOf(deps, "it hands out no key");
-  if (vault instanceof Response) return vault;
-  const identity = await identify(a, credentialOf(request), now);
-  if (identity instanceof Response) return identity;
   const holder = holderOf(identity);
   if (!holder) return noOrganization(a);
   const purpose = purposeOf(body);
@@ -571,6 +574,10 @@ export async function handleCli(request: Request, path: string[], deps: CliApiDe
 }
 
 async function answerCli(request: Request, path: string[], deps: CliApiDeps): Promise<Response> {
+  // An outdated CLI is refused before anything runs: no write happens that it could not read back.
+  const version = request.headers.get(CLI_VERSION_HEADER);
+  if (version && compareVersions(version, MINIMUM_CLI_VERSION) < 0)
+    return refuse(426, upgradeLine(version, LATEST_CLI_VERSION), installCommand(LATEST_CLI_VERSION));
   const now = deps.now?.() ?? new Date();
   let a: CliAccounts | null;
   try {

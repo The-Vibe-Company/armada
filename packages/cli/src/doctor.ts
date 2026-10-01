@@ -189,12 +189,15 @@ function versionChecks(host: string, api: ArmadaApi, armadaVersion: string, outd
 /** Where the Conductor app for macOS ships its command line tool; it is not on PATH by itself. */
 export const BUNDLED_CONDUCTOR = "/Applications/Conductor.app/Contents/Resources/bin/conductor";
 
-/** The first line `<command> --version` prints; null when it cannot be run. */
+/**
+ * The first line `<command> --version` prints, "" when it prints none or
+ * fails (it is there all the same); null when it cannot be run at all.
+ */
 async function versionOf(io: Io, command: string): Promise<string | null> {
   if (!io.exec) return null;
   try {
     const r = await io.exec(command, ["--version"], { cwd: io.cwd });
-    return r.code === 0 ? r.stdout.trim().split("\n")[0] || "" : null;
+    return r.code === 0 ? (r.stdout.trim().split("\n")[0] ?? "") : "";
   } catch {
     return null; // not installed there
   }
@@ -210,7 +213,9 @@ async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Che
   if (!io.exec || !config || !Object.keys(config.conductor.profiles).length) return [];
   const onPath = await versionOf(io, "conductor");
   if (onPath !== null)
-    return [{ id: "conductor-cli", level: "ok", message: `conductor ${onPath} is on PATH`.trimEnd(), fix: null }];
+    return [
+      { id: "conductor-cli", level: "ok", message: `conductor ${onPath ? `${onPath} ` : ""}is on PATH`, fix: null },
+    ];
   const home = io.env.HOME?.replace(/\/+$/, "");
   const path = (io.env.PATH ?? "").split(":").map((d) => d.replace(/\/+$/, ""));
   const userBin = home ? [".local/bin", "bin"].find((d) => path.includes(`${home}/${d}`)) : undefined;
@@ -233,7 +238,7 @@ async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Che
       id: "conductor-cli",
       level: "warning",
       message: `conductor is not on PATH, nor at ${BUNDLED_CONDUCTOR}: the armada-runtime-conductor guide launches workers with it`,
-      fix: "install the Conductor app on this Mac, then run doctor again; in a Conductor workspace it is on PATH",
+      fix: "on a Mac, install the Conductor app, then run doctor again; elsewhere, put a conductor command on PATH (a Conductor workspace has one)",
     },
   ];
 }

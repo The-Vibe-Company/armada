@@ -218,6 +218,26 @@ describe("without accounts", () => {
   });
 });
 
+describe("an outdated CLI", () => {
+  test("a CLI older than the minimum is refused before anything runs, with the upgrade line", async () => {
+    const request = (version: string) =>
+      new Request(`${BASE}/api/cli/device/code`, { method: "POST", headers: { "x-armada-cli-version": version } });
+    const before = (await client.query(`SELECT count(*)::int AS n FROM "deviceCode"`)).rows[0] as { n: number };
+    const old = await handleCli(request("0.1.22"), ["device", "code"], { accounts: async () => accounts });
+    expect(old.status).toBe(426);
+    expect(await old.json()).toEqual({
+      error: `Armada 0.1.22 is older than this server expects: npm install -g @the-vibe-company/armada@${version}`,
+      next: `npm install -g @the-vibe-company/armada@${version}`,
+    });
+    const after = (await client.query(`SELECT count(*)::int AS n FROM "deviceCode"`)).rows[0] as { n: number };
+    expect(after.n).toBe(before.n);
+    const current = await handleCli(request(MINIMUM_CLI_VERSION), ["device", "code"], {
+      accounts: async () => accounts,
+    });
+    expect(current.status).toBe(200);
+  });
+});
+
 describe("the organization's keys, handed to a signed-in terminal", () => {
   // Synthetic keys, for these tests only.
   const ORG_LINEAR = "lin_api_synthetic_org_0001";

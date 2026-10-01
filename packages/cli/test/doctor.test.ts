@@ -214,6 +214,13 @@ effort = "high"
       fix: null,
     });
     expect(await conductor([], {}, TOML.slice(0, TOML.indexOf("[conductor")))).toBeUndefined();
+    // A conductor that refuses --version is there all the same.
+    const refusing: Exec = async (command) => {
+      if (command !== "conductor") throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: "ENOENT" });
+      return { code: 2, stdout: "", stderr: "unknown flag" };
+    };
+    const t = await terminal({}, {}, null, { exec: refusing, toml: TOML });
+    expect((await t.doctor()).find((c) => c.id === "conductor-cli")?.message).toBe("conductor is on PATH");
   });
 
   test("only inside the macOS app, the fix links it from a directory on PATH, else adds it to PATH", async () => {
