@@ -90,13 +90,19 @@ const COMMAND_HELP: Record<string, string> = {
   answer --note <ticket|plan item> "<message>"
                     Coordinator: record a delivered note; an open plan is resolved
 `,
-  merge: `  merge <pr> [--ticket <id>] [--dry-run] [--no-lock]
+  merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
                     lock, close the ticket and list the workers to tell. Never deletes
                     the branch. --dry-run only runs the checklist. Signed in to Armada,
                     refused while Armada is down; --no-lock then merges without the lock.
+                    --wait (--timeout in minutes, default 30): a head behind its base is
+                    updated on GitHub (a merge commit, no force-push) and its checks waited
+                    for, without the lock; a red check or a conflict stops it. A head that
+                    is the hand-back with only the base merged in counts as the hand-back.
+                    --no-ticket: a pull request no ticket owns (armada init, a release);
+                    nothing is written to Linear.
 `,
   brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt]
                     A new worker's launch prompt, the Conductor profile (agent, model,
@@ -230,7 +236,7 @@ const VALUE_OPTIONS = [
   "api-url",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note", "api-key", "no-stop-hook"];
+const FLAG_OPTIONS = ["dry-run", "no-lock", "no-ticket", "prompt", "wait", "note", "api-key", "no-stop-hook"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch", "profile", "reason"],
@@ -240,7 +246,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   inbox: ["wait", "timeout"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook"],
-  merge: ["ticket", "dry-run", "no-lock"],
+  merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout"],
   brief: ["profile", "reason", "prompt"],
   login: ["api-key", "launch-token", "api-url"],
 };

@@ -350,3 +350,30 @@ export async function fetchPullDiff(opts: FetchForgeOptions & { number: number }
   if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading the diff of #${opts.number}`);
   return res.text();
 }
+
+/** A commit as `armada merge` checks an updated head: its parents and its tree. */
+export interface CommitShape {
+  sha: string;
+  tree: string;
+  parents: string[];
+}
+
+const COMMIT_QUERY = /* GraphQL */ `
+  query Commit($owner: String!, $name: String!, $oid: GitObjectID!) {
+    repository(owner: $owner, name: $name) {
+      object(oid: $oid) { ... on Commit { oid tree { oid } parents(first: 3) { nodes { oid } } } }
+    }
+  }`;
+
+/** One commit of the repository; null when GitHub does not know it. */
+export async function fetchCommit(opts: FetchForgeOptions & { sha: string }): Promise<CommitShape | null> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{
+    repository: {
+      object: { oid?: string; tree?: { oid: string }; parents?: { nodes: { oid: string }[] } } | null;
+    } | null;
+  }>(opts, COMMIT_QUERY, { owner, name, oid: opts.sha });
+  const c = json.data?.repository?.object;
+  if (!c?.oid || !c.tree || !c.parents) return null;
+  return { sha: c.oid, tree: c.tree.oid, parents: c.parents.nodes.map((p) => p.oid) };
+}

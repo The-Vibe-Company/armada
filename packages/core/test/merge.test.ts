@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
-import type { Comparison, MergePull } from "../src/github.ts";
+import type { CommitShape, Comparison, MergePull } from "../src/github.ts";
 import type { Fleet } from "../src/live.ts";
 import {
   type LocalRepo,
@@ -19,6 +19,9 @@ const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const BASE = "fedcba9876543210fedcba9876543210fedcba98";
 const SQUASH = "5555555555555555555555555555555555555555";
 const GATES = '\n[gates]\nrequired_checks = ["test"]\n';
+/** The head after GitHub's "update branch": HEAD with BASE merged in. */
+const UPDATED = "abababababababababababababababababababab";
+const TREE = "7777777777777777777777777777777777777777";
 
 function pull(over: Partial<MergePull> = {}): MergePull {
   return {
@@ -34,6 +37,7 @@ function pull(over: Partial<MergePull> = {}): MergePull {
     headRef: "feature/demo-7-do-the-thing",
     headSha: HEAD,
     mergedAt: null,
+    updatedAt: "2026-03-04T09:00:00Z",
     mergeStateStatus: "CLEAN",
     baseRef: "main",
     mergeCommit: null,
@@ -60,12 +64,41 @@ class FakeForge implements MergeForge {
   }
   /** Called on every comparison (to change GitHub while the checklist runs). */
   onCompare: (() => Promise<void>) | null = null;
-  async compare() {
+  async compare(_base: string, head: string) {
     await this.onCompare?.();
+    if (this.onBase.has(head)) return { baseSha: BASE, status: "BEHIND" as const, behindBy: 0, aheadBy: 0 };
     return structuredClone(this.comparison);
   }
   async diff() {
     return this.diffText;
+  }
+  /** Commits GitHub knows, by SHA. */
+  commits = new Map<string, CommitShape>();
+  /** Commits on the base branch: compared with it, they are BEHIND. */
+  onBase = new Set([BASE]);
+  updates: { number: number; sha: string }[] = [];
+  /** Answers of successive update-branch calls; by default GitHub accepts and makes UPDATED. */
+  updateAnswers: (MergeAttempt & { effect?: boolean })[] = [];
+  async commit(sha: string) {
+    return structuredClone(this.commits.get(sha) ?? null);
+  }
+  async updateBranch(number: number, sha: string): Promise<MergeAttempt> {
+    this.updates.push({ number, sha });
+    const a: MergeAttempt & { effect?: boolean } = this.updateAnswers.shift() ?? {
+      ok: true,
+      message: "Updating pull request branch.",
+      transient: false,
+    };
+    if (a.effect ?? a.ok) {
+      this.commits.set(UPDATED, { sha: UPDATED, tree: TREE, parents: [sha, BASE] });
+      Object.assign(this.pr, {
+        headSha: UPDATED,
+        mergeStateStatus: "BLOCKED",
+        checks: [{ name: "test", state: "pending" }],
+      });
+      this.comparison = { baseSha: BASE, status: "AHEAD", behindBy: 0, aheadBy: 3 };
+    }
+    return a;
   }
   async merge(number: number, sha: string): Promise<MergeAttempt> {
     this.merges.push({ number, sha });
@@ -82,6 +115,11 @@ class FakeRepo implements LocalRepo {
   testMerges: { base: string; head: string; commands: string[] }[] = [];
   async grepWords() {
     return this.uses;
+  }
+  /** Trees of clean merges, by `ours:theirs`; a pair not listed conflicts. */
+  trees = new Map([[`${HEAD}:${BASE}`, TREE]]);
+  async mergeTree(o: { ours: string; theirs: string }) {
+    return this.trees.get(`${o.ours}:${o.theirs}`) ?? null;
   }
   async testMerge(o: { base: string; head: string; commands: string[] }) {
     this.testMerges.push({ base: o.base, head: o.head, commands: o.commands });
@@ -481,6 +519,270 @@ describe("armada merge", () => {
     expect(first).not.toBe(second);
     expect(timeline).toContain(`${second} waits`);
   });
+});
+
+/** A clock for --wait: every sleep moves it and then runs `tick` (GitHub changing meanwhile). */
+function clocked(s: ReturnType<typeof setup>, tick: (slept: number) => Promise<void> | void = () => {}) {
+  let t = NOW.getTime();
+  let slept = 0;
+  s.ctx.now = () => new Date(t);
+  s.ctx.sleep = async (ms) => {
+    t += ms;
+    s.sleeps.push(ms);
+    await tick(++slept);
+  };
+}
+
+const green = (s: ReturnType<typeof setup>) =>
+  Object.assign(s.forge.pr, { mergeStateStatus: "CLEAN", checks: [{ name: "test", state: "success" }] });
+
+describe("armada merge --wait", () => {
+  const WAIT = { timeoutMs: 30 * 60_000 };
+  const behind = (s: ReturnType<typeof setup>) => {
+    s.forge.pr.mergeStateStatus = "BEHIND";
+    s.forge.comparison = { baseSha: BASE, status: "DIVERGED", behindBy: 2, aheadBy: 2 };
+  };
+
+  test("updates a head behind main, waits for its checks without the lock, then merges the new head as the hand-back", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    behind(s);
+    // While A waits for its checks, another coordinator merges #10: the lock is free.
+    const b = setup({ live: tempFleet({ store: live.store, clock: live.clock }), holder: "coordinator-b" });
+    b.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
+    b.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #10, head ${HEAD}, CI green`, "2026-03-04T09:30:00Z");
+    let other: Awaited<ReturnType<typeof mergePullRequest>> | null = null;
+    clocked(s, async (slept) => {
+      if (slept === 1) other = await mergePullRequest(b.ctx, { pr: 10 });
+      if (slept === 2) green(s);
+    });
+
+    const out = await mergePullRequest(s.ctx, { pr: 9, wait: WAIT });
+
+    expect(other).toMatchObject({ merged: true });
+    expect(s.forge.updates).toEqual([{ number: 9, sha: HEAD }]);
+    expect(s.forge.merges).toEqual([{ number: 9, sha: UPDATED }]);
+    expect(s.progress).toContain("Updated the branch of #9 with main (a merge commit on 0123456).");
+    expect(s.progress).toContain(
+      'Waiting: on head abababa: required check "test" is pending; GitHub reports #9 as BLOCKED, not CLEAN: a branch protection rule blocks it (a required review or check)…',
+    );
+    expect(out.lines[0]).toBe(
+      `Checklist passed for #9 (DEMO-7): handed back at ${HEAD}, now ${UPDATED} with only main merged in (1 merge commit), CLEAN, checks green, no open review thread.`,
+    );
+    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toBe(
+      `PR #9 squash-merged into main as ${SQUASH}, head ${UPDATED}, the handed-back ${HEAD} updated with main`,
+    );
+    expect(live.store.leases.size).toBe(0);
+  });
+
+  const stops: [string, (s: ReturnType<typeof setup>) => void, string][] = [
+    [
+      "a red check after the update",
+      (s) => {
+        clocked(s, () => {
+          Object.assign(s.forge.pr, { mergeStateStatus: "BLOCKED", checks: [{ name: "test", state: "failure" }] });
+        });
+      },
+      `  - on head abababa: required check "test" is failure\n  - GitHub reports #9 as BLOCKED, not CLEAN: a branch protection rule blocks it (a required review or check)\nThis run updated the branch of #9 with main (head now ${UPDATED}): whoever pushes to it next pulls first.`,
+    ],
+    [
+      "a conflict",
+      (s) => {
+        Object.assign(s.forge.pr, { mergeStateStatus: "DIRTY", mergeable: "CONFLICTING" });
+      },
+      "GitHub reports #9 as DIRTY, not CLEAN: it conflicts with its base; ask the worker to rebase",
+    ],
+    [
+      "GitHub refusing the update (a protected branch)",
+      (s) => {
+        s.forge.updateAnswers = [{ ok: false, message: "Resource not accessible (HTTP 403)", transient: false }];
+      },
+      "GitHub refused to update the branch of #9 with main: Resource not accessible (HTTP 403). A branch protection rule or ruleset can forbid it",
+    ],
+    [
+      "an update GitHub accepted that never shows",
+      (s) => {
+        s.forge.updateAnswers = [
+          { ok: true, message: "Updating pull request branch.", transient: false, effect: false },
+        ];
+      },
+      `GitHub accepted to update the branch of #9 with main, but its head is still ${HEAD} after 3 min`,
+    ],
+    [
+      "the timeout",
+      (s) => clocked(s),
+      `#9 (DEMO-7) is still not ready after 30 min: on head abababa: required check "test" is pending`,
+    ],
+  ];
+  test("a required check not reported yet keeps GitHub BLOCKED with nothing running: that is waited for", async () => {
+    const s = setup();
+    Object.assign(s.forge.pr, { mergeStateStatus: "BLOCKED", checks: [] });
+    clocked(s, () => {
+      green(s);
+    });
+    expect((await mergePullRequest(s.ctx, { pr: 9, wait: WAIT })).merged).toBe(true);
+    expect(s.progress[0]).toStartWith(
+      'Waiting: on head 0123456: required check "test" has not reported on the head yet',
+    );
+  });
+
+  test("a head behind a base that does not require it up to date is test-merged, not updated", async () => {
+    const s = setup({ toml: `${GATES}local_commands = ["bun run verify"]\n` });
+    s.forge.comparison = { baseSha: BASE, status: "DIVERGED", behindBy: 2, aheadBy: 2 };
+    clocked(s);
+    expect((await mergePullRequest(s.ctx, { pr: 9, wait: WAIT })).merged).toBe(true);
+    expect([s.forge.updates, s.repo.testMerges.length]).toEqual([[], 1]);
+  });
+
+  test("signed in with Armada down, it refuses before updating the branch or waiting", async () => {
+    const s = setup({ down: true });
+    behind(s);
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, wait: WAIT }))).toStartWith(
+      "the merge lock needs Armada, which is unavailable",
+    );
+    expect([s.forge.updates, s.sleeps]).toEqual([[], []]);
+  });
+
+  test("with --no-ticket, a head this run updated waits for its checks instead of passing with none", async () => {
+    const s = setup();
+    Object.assign(s.forge.pr, { headRef: "armada/init-0.2.2", title: "chore(armada): set up Armada 0.2.2" });
+    behind(s);
+    s.forge.pr.checks = [];
+    clocked(s, (slept) => {
+      // The update's CI has not started yet on the first read; then it runs and passes.
+      if (slept === 1) Object.assign(s.forge.pr, { checks: [], mergeStateStatus: "BLOCKED" });
+      if (slept === 2) green(s);
+    });
+    const out = await mergePullRequest(s.ctx, { pr: 9, noTicket: true, wait: WAIT });
+    expect(s.forge.merges).toEqual([{ number: 9, sha: UPDATED }]);
+    expect(out.lines.join("\n")).not.toContain("ran on head");
+  });
+
+  for (const [name, arrange, message] of stops)
+    test(`stops on ${name}, naming it, and merges nothing`, async () => {
+      const s = setup();
+      behind(s);
+      clocked(s);
+      arrange(s);
+      expect(await refusal(mergePullRequest(s.ctx, { pr: 9, wait: WAIT }))).toContain(message);
+      expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
+    });
+});
+
+describe("a head that moved after the hand-back", () => {
+  type S = ReturnType<typeof setup>;
+  /** The head is a merge commit with parents `parents` and tree `tree`. */
+  const moved = (s: S, parents: string[], tree = TREE) => {
+    s.forge.commits.set(UPDATED, { sha: UPDATED, tree, parents });
+    s.forge.pr.headSha = UPDATED;
+  };
+
+  test("counts as the hand-back when it only merges main in, as GitHub's update branch does", async () => {
+    const s = setup();
+    moved(s, [HEAD, BASE]);
+    const out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(s.forge.merges).toEqual([{ number: 9, sha: UPDATED }]);
+    expect(out.merged).toBe(true);
+  });
+
+  const refused: [string, (s: S) => void, string][] = [
+    [
+      "a merge that changes more than main",
+      (s) => moved(s, [HEAD, BASE], SQUASH),
+      "the merge commit abababa changes more than a clean merge of main",
+    ],
+    [
+      "a merge of a commit not on main",
+      (s) => moved(s, [HEAD, SQUASH]),
+      "the merge commit abababa brings in 5555555, which is not on main",
+    ],
+    [
+      "a clean merge of main on top of a new commit",
+      (s) => {
+        moved(s, [SQUASH, BASE]);
+        s.repo.trees.set(`${SQUASH}:${BASE}`, TREE);
+      },
+      "5555555 is not a merge commit of main",
+    ],
+    ["a plain commit", (s) => moved(s, [HEAD]), "abababa is not a merge commit of main"],
+    [
+      "no git to check the merge",
+      (s) => {
+        moved(s, [HEAD, BASE]);
+        s.ctx.repo = null;
+      },
+      "git is not available to check what the merge commit abababa changes",
+    ],
+  ];
+  for (const [name, arrange, why] of refused)
+    test(`is refused for ${name}`, async () => {
+      const s = setup();
+      arrange(s);
+      const message = await refusal(mergePullRequest(s.ctx, { pr: 9 }));
+      expect(message).toContain(
+        `the head of #9 is ${UPDATED}, not the handed-back ${HEAD}: it moved after the hand-back and ${why}`,
+      );
+      expect(s.forge.merges).toEqual([]);
+    });
+});
+
+describe("armada merge --no-ticket", () => {
+  const init = (s: ReturnType<typeof setup>, over: Partial<MergePull> = {}) =>
+    Object.assign(s.forge.pr, {
+      title: "chore(armada): set up Armada 0.2.2",
+      headRef: "armada/init-0.2.2",
+      ...over,
+    });
+
+  test("merges a pull request no ticket owns with every other check, and writes nothing to Linear", async () => {
+    const s = setup();
+    init(s);
+    const out = await mergePullRequest(s.ctx, { pr: 9, noTicket: true });
+    expect([out.merged, out.ticket, out.archive]).toEqual([true, null, null]);
+    expect(out.lines[0]).toBe(`Checklist passed for #9: head ${HEAD}, CLEAN, checks green, no open review thread.`);
+    expect(out.workers.map((w) => w.ticket)).toEqual(["DEMO-7", "DEMO-8"]);
+    expect([s.forge.merges, s.linear.writes]).toEqual([[{ number: 9, sha: HEAD }], []]);
+
+    init(s, { state: "open", checks: [{ name: "test", state: "failure" }] });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toContain(
+      `#9 cannot be merged:\n  - on head 0123456: required check "test" is failure`,
+    );
+  });
+
+  test("merges a release pull request on which no CI ran, with a note, once GitHub had time to start one", async () => {
+    const s = setup();
+    init(s, {
+      title: "chore(main): release 0.2.3",
+      headRef: "release-please--branches--main--components--widgets",
+      checks: [{ name: "Vercel", state: "success" }],
+      mergeStateStatus: "UNSTABLE",
+      updatedAt: "2026-03-04T09:59:30Z",
+    });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toContain(
+      "on head 0123456: no check has reported yet, and it was updated less than 1 min ago",
+    );
+    s.forge.pr.updatedAt = "2026-03-04T09:58:00Z";
+    const out = await mergePullRequest(s.ctx, { pr: 9, noTicket: true });
+    expect(out.merged).toBe(true);
+    expect(out.lines.slice(1, 3)).toEqual([
+      "none of \"test\" ran on head 0123456; with --no-ticket it passes on GitHub's own state and the checks that ran, as for a release pull request opened with the workflow's token.",
+      "GitHub reports #9 as UNSTABLE with no check failing.",
+    ]);
+    expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+  });
+
+  test("refuses a branch that names a ticket of the program: its worker hands it back", async () => {
+    const s = setup();
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toBe(
+      "the branch of #9 (feature/demo-7-do-the-thing) names DEMO-7: merge it on its worker's hand-back, not with --no-ticket\nNext: armada merge 9",
+    );
+  });
+});
+
+test("GitHub's HAS_HOOKS (mergeable, with pre-receive hooks) merges like CLEAN", async () => {
+  const s = setup();
+  s.forge.pr.mergeStateStatus = "HAS_HOOKS";
+  expect((await mergePullRequest(s.ctx, { pr: 9 })).merged).toBe(true);
 });
 
 describe("merge lease", () => {

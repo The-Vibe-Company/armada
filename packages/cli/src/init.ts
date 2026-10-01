@@ -142,6 +142,10 @@ function prText(plan: SetupPlan, version: string) {
   return { title, body: lines.join("\n") };
 }
 
+/** No ticket owns the setup pull request, so the coordinator merges it with --no-ticket. */
+const mergeHint = (n: number) =>
+  `No ticket owns it: merge it with armada merge ${n} --no-ticket --wait, which waits for its checks`;
+
 export async function init(io: Io, opts: InitOptions): Promise<number> {
   const exec = requireExec(io);
   const first = (await loadCredentials(io)).credentials;
@@ -234,6 +238,7 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
           body,
         ]);
         log(`Updated pull request ${existing.url}`);
+        log(mergeHint(existing.number));
       } else {
         const url = await sh(exec, root, "gh", [
           "pr",
@@ -249,7 +254,10 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
           "--body",
           body,
         ]);
-        log(`Opened pull request ${url.split("\n").pop()}`);
+        const opened = url.split("\n").pop() ?? "";
+        log(`Opened pull request ${opened}`);
+        const number = opened.match(/\/pull\/(\d+)/)?.[1];
+        if (number) log(mergeHint(Number(number)));
       }
       if (plan.installed.length) log(`Installs: ${plan.installed.join(", ")}`);
       if (plan.updated.length) log(`Updates: ${plan.updated.join(", ")}`);

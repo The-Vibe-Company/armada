@@ -188,7 +188,9 @@ describe("armada doctor and armada init", () => {
       base: "main",
       title: `chore(armada): set up Armada ${VERSION}`,
     });
-    expect(first.out).toContain(`Opened pull request ${pr.url}\n`);
+    expect(first.out).toContain(
+      `Opened pull request ${pr.url}\nNo ticket owns it: merge it with armada merge ${pr.number} --no-ticket --wait, which waits for its checks\n`,
+    );
     // Without a terminal to ask, the stop hook is added, to the repository's settings only.
     expect(first.out).toContain(
       "Adds the Claude Code stop hook to .claude/settings.json: this repository's settings, not your user settings.\n",
