@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { approveDevice, denyDevice, signOut } from "@/app/auth-actions";
 import { AuthCard } from "@/components/AuthCard";
@@ -49,9 +50,9 @@ export default async function Device({ searchParams }: { searchParams: Params })
         lead={done === "approved" ? t.device.approved : t.device.denied}
       >
         <p className="login-switch">
-          <a className="link" href="/">
+          <Link className="link" href="/">
             {t.org.back}
-          </a>
+          </Link>
         </p>
       </AuthCard>
     );

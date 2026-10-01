@@ -3,7 +3,9 @@
 // The owner's two actions on the Fleet view: answer a worker's question, and
 // ask for a ready ticket to be launched. Each only drops a request in the
 // coordinator's inbox (a server action); the coordinator carries it out, and
-// the request shows as pending until it does.
+// the request shows as pending until it does. The screen changes on the
+// click, before the server answers (THE-853); a refusal puts the form back
+// with the reason.
 import type { CoordinatorState, PendingAnswer, ProfileSummary, ReadyTicket } from "@armada/core/read";
 import { type FormEvent, type KeyboardEvent, useId, useRef, useState, useTransition } from "react";
 import { answerQuestion, launchTicket } from "@/app/actions";
@@ -45,21 +47,32 @@ export function splitQuestion(body: string): { text: string; options: string[] }
   return options.length ? { text: body.slice(0, at), options } : { text: body, options: [] };
 }
 
-/** Runs one request; keeps its error code, and hands the sent form over on success. */
-function useRequest(send: (form: FormData) => Promise<RequestResult>, onSent: (form: FormData) => void) {
+/** What a request does to the screen: at once on submit, once recorded, and back if refused. */
+interface RequestSteps {
+  start: (form: FormData) => void;
+  done: (form: FormData) => void;
+  undo: () => void;
+}
+
+/** Runs one request optimistically; keeps its error code when refused. */
+function useRequest(send: (form: FormData) => Promise<RequestResult>, steps: RequestSteps) {
   const [busy, start] = useTransition();
   const [error, setError] = useState<RequestError | null>(null);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     setError(null);
+    steps.start(form);
     start(async () => {
-      try {
-        const result = await send(form);
-        if (result.ok) onSent(form);
-        else setError(result.code);
-      } catch {
-        setError("failed");
+      const result: RequestResult = await send(form).catch(() => ({
+        ok: false as const,
+        code: "failed" as const,
+        message: "",
+      }));
+      if (result.ok) steps.done(form);
+      else {
+        steps.undo();
+        setError(result.code);
       }
     });
   };
@@ -73,7 +86,7 @@ function useSent<T>(version: number) {
   const latest = useRef(version);
   latest.current = version;
   const current = sent && version < sent.version + 2 ? sent : null;
-  return [current, (value: T) => setSent({ ...value, version: latest.current })] as const;
+  return [current, (value: T) => setSent({ ...value, version: latest.current }), () => setSent(null)] as const;
 }
 
 /** Who the request just sent was signed by; a typed name is remembered for the next one. */
@@ -183,14 +196,25 @@ export function QuestionBlock({
   const { text, options } = approval ? { text: body, options: [] } : splitQuestion(body);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
-  const [sent, markSent] = useSent<PendingAnswer>(ctx.version);
+  const [sent, markSent, unmark] = useSent<PendingAnswer>(ctx.version);
   const opener = useRef<HTMLButtonElement>(null);
-  const req = useRequest(answerQuestion, (form) => {
-    const author = signerOf(ctx.signer, form);
-    markSent({ id: 0, body: draft.trim(), author, at: new Date().toISOString() });
-    setOpen(false);
-    setDraft("");
-    ctx.refresh();
+  const shown = useRef<PendingAnswer | null>(null);
+  const req = useRequest(answerQuestion, {
+    start: (form) => {
+      shown.current = { id: 0, body: draft.trim(), author: signerOf(ctx.signer, form), at: new Date().toISOString() };
+      markSent(shown.current);
+      setOpen(false);
+    },
+    done: () => {
+      // Kept until two reads after the write, so the answer never flickers away.
+      if (shown.current) markSent(shown.current);
+      setDraft("");
+      ctx.refresh();
+    },
+    undo: () => {
+      unmark();
+      setOpen(true);
+    },
   });
   const pending = answer ?? sent;
   const canAnswer = ctx.live && item !== null && !pending;
@@ -370,14 +394,25 @@ function ReadyRow({
   const routed = r.route?.profile ?? null;
   const [open, setOpen] = useState(false);
   const [profile, setProfile] = useState(routed ?? profiles[0]?.name ?? "");
-  const [sent, markSent] = useSent<{ author: string; at: string; profile: string | null }>(ctx.version);
+  type Launch = { author: string; at: string; profile: string | null };
+  const [sent, markSent, unmark] = useSent<Launch>(ctx.version);
   const opener = useRef<HTMLButtonElement>(null);
+  const shown = useRef<Launch | null>(null);
   const panel = useId();
-  const req = useRequest(launchTicket, (form) => {
-    const author = signerOf(ctx.signer, form);
-    markSent({ author, at: new Date().toISOString(), profile: profile || null });
-    setOpen(false);
-    ctx.refresh();
+  const req = useRequest(launchTicket, {
+    start: (form) => {
+      shown.current = { author: signerOf(ctx.signer, form), at: new Date().toISOString(), profile: profile || null };
+      markSent(shown.current);
+      setOpen(false);
+    },
+    done: () => {
+      if (shown.current) markSent(shown.current);
+      ctx.refresh();
+    },
+    undo: () => {
+      unmark();
+      setOpen(true);
+    },
   });
   const pending = r.launch ?? sent;
   const close = () => {

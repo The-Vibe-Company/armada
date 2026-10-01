@@ -47,6 +47,9 @@ export const DEVICE_PATH = "/device";
 export const CLI_API_PREFIX = "/api/cli";
 /** Whether a path is one of the CLI's routes, which check their own credential behind either gate. */
 export const isCliApi = (pathname: string) => pathname === CLI_API_PREFIX || pathname.startsWith(`${CLI_API_PREFIX}/`);
+/** Linear's and the GitHub App's webhooks (THE-853): they carry a signature, never a cookie, and check it themselves. */
+export const WEBHOOKS_PREFIX = "/api/webhooks";
+export const isWebhook = (pathname: string) => pathname.startsWith(`${WEBHOOKS_PREFIX}/`);
 /** The client id `armada login` sends; device codes for any other are refused. */
 export const CLI_CLIENT_ID = "armada-cli";
 /** Every organization API key starts with it, so a leaked one is recognisable. */

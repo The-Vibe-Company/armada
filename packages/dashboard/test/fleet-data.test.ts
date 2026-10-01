@@ -9,7 +9,14 @@ import {
 } from "@armada/core/read";
 import { issue } from "../../core/test/support.ts";
 import type { Database } from "../lib/db.ts";
-import { type LoadOptions, loadOverview as load, newCache, type Scope, type Sources } from "../lib/fleet-data.ts";
+import {
+  type LoadOptions,
+  loadOverview as load,
+  loadProject,
+  newCache,
+  type Scope,
+  type Sources,
+} from "../lib/fleet-data.ts";
 import {
   addInboxItem,
   assignUnownedProjects,
@@ -19,6 +26,7 @@ import {
   upsertProject,
 } from "../lib/fleet-store.ts";
 import { submitAnswer as answer, submitLaunch as launchReq } from "../lib/requests.ts";
+import { markRepository } from "../lib/snapshots.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
 const open: Database[] = [];
@@ -66,6 +74,7 @@ function world(db: Database | null, over: Partial<Sources> = {}) {
   const reads = { snapshots: 0 };
   const sources: Sources = {
     live: async () => (db ? liveStore(db) : null),
+    database: async () => db,
     fallbackProjects: () => [{ repository: WIDGETS.repository }],
     readConfig: async () => ({ config: parseConfig(configTemplate(WIDGETS)), warning: null }),
     readSnapshot: async (config) => {
@@ -92,10 +101,20 @@ function world(db: Database | null, over: Partial<Sources> = {}) {
     snapshotMs: 60_000,
     background: (work) => background.push(work),
   };
+  /** Runs the refreshes the reads started, as `after()` does once the response is sent. */
+  const settle = async () => {
+    while (background.length) await Promise.all(background.splice(0));
+  };
   return {
     opts,
     reads,
     background,
+    settle,
+    /** A first view, which starts the first reading, then the reading done. */
+    warm: async (scope: Scope = HOME) => {
+      await load(opts, scope);
+      await settle();
+    },
     advance: (ms: number) => {
       clock += ms;
     },
@@ -109,6 +128,11 @@ describe("live Fleet reading", () => {
     await upsertProject(db, WIDGETS);
     const w = world(db);
 
+    // The first view never waits for Linear and GitHub: their first reading runs after it.
+    const cold = await loadOverview(w.opts);
+    expect(cold.projects.map((p) => [p.slug, p.reading, p.error])).toEqual([["widgets", true, null]]);
+    expect(cold.rows).toEqual([]);
+    await w.settle();
     const first = await loadOverview(w.opts);
     expect(first.rows.map((r) => [r.id, r.phase, r.phaseSource])).toEqual([["WID-2", "implementing", "label"]]);
 
@@ -132,7 +156,7 @@ describe("live Fleet reading", () => {
     const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const w = world(db);
-    await loadOverview(w.opts);
+    await w.warm();
 
     await db.end();
     const fallback = await loadOverview(w.opts);
@@ -146,6 +170,7 @@ describe("live Fleet reading", () => {
         throw new Error("connection refused");
       },
     });
+    await cold.warm();
     const coldView = await loadOverview(cold.opts);
     expect(coldView.projects.map((p) => [p.slug, p.repository, p.inFlight])).toEqual([["widgets", "acme/widgets", 1]]);
   });
@@ -160,7 +185,7 @@ describe("live Fleet reading", () => {
       if (fail) throw new Error("Linear: HTTP 503");
       return read(config);
     };
-    await loadOverview(w.opts);
+    await w.warm();
 
     fail = true;
     w.advance(61_000);
@@ -181,6 +206,92 @@ describe("live Fleet reading", () => {
   });
 });
 
+describe("speed: a page reads Postgres only (THE-853)", () => {
+  test("no page or poll ever waits for Linear or GitHub, cold, stale or marked by a webhook", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    await w.warm();
+    // From now on Linear and GitHub never answer, and any direct call fails the test.
+    const never = new Promise<never>(() => {});
+    w.opts.sources.readConfig = () => never;
+    w.opts.sources.readSnapshot = () => never;
+    w.opts.sources.readChanges = () => never;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (() => {
+      throw new Error("a page request called the network");
+    }) as unknown as typeof fetch;
+    try {
+      w.advance(61_000);
+      const stale = await loadOverview(w.opts);
+      expect(stale.rows.map((r) => r.id)).toEqual(["WID-2"]);
+      expect(w.background).toHaveLength(1);
+      expect((await loadProject(w.opts, "widgets", HOME))?.report.inFlight.map((t) => t.id)).toEqual(["WID-2"]);
+      expect(await markRepository(db, "acme/widgets")).toEqual(["widgets"]);
+      expect((await loadOverview(w.opts)).rows.map((r) => r.id)).toEqual(["WID-2"]);
+
+      // Another server, cold: the reading comes from Postgres, not from Linear.
+      const other = world(db);
+      other.opts.sources.readSnapshot = () => never;
+      const cold = await loadOverview(other.opts);
+      expect(cold.rows.map((r) => r.id)).toEqual(["WID-2"]);
+      expect(other.reads.snapshots).toBe(0);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  test("one refresh per project at a time across servers; the others serve the reading they have", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const a = world(db);
+    const b = world(db);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const read = a.opts.sources.readSnapshot;
+    let reads = 0;
+    for (const w of [a, b])
+      w.opts.sources.readSnapshot = async (config) => {
+        reads++;
+        await gate;
+        return read(config);
+      };
+    const views = await Promise.all([loadOverview(a.opts), loadOverview(b.opts)]);
+    expect(views.map((v) => v.projects[0]?.reading)).toEqual([true, true]);
+    // Whichever started second finds the lease taken, or the reading already written.
+    await Promise.all([loadOverview(a.opts), loadOverview(b.opts)]);
+    release();
+    await Promise.all([a.settle(), b.settle()]);
+    expect(reads).toBe(1);
+    expect((await loadOverview(b.opts)).rows.map((r) => r.id)).toEqual(["WID-2"]);
+  });
+
+  test("a stale reading is brought up to date with Linear's changes and the pull requests, and read whole every 30 minutes", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    const asks: unknown[] = [];
+    w.opts.sources.readChanges = async (_config, previous, ask) => {
+      asks.push(ask);
+      return previous;
+    };
+    await w.warm();
+    expect(w.reads.snapshots).toBe(1);
+
+    w.advance(61_000);
+    await w.warm();
+    expect(asks).toEqual([{ linearSince: new Date(T0 - 120_000).toISOString(), touched: [], forge: true }]);
+    expect(w.reads.snapshots).toBe(1);
+
+    w.advance(30 * 60_000);
+    await w.warm();
+    expect(w.reads.snapshots).toBe(2);
+    expect(asks).toHaveLength(1);
+  });
+});
+
 describe("organizations", () => {
   test("each organization sees only its projects; projects registered without one go to the first organization", async () => {
     const db = await tempDb();
@@ -196,12 +307,14 @@ describe("organizations", () => {
     expect((await loadOverview(w.opts, { organization: "org-home", home: "org-other" })).projects).toHaveLength(1);
 
     // A request names a project the viewer cannot see: refused as unknown, nothing written.
+    await w.settle();
     const launch = { project: "widgets", ticket: "WID-3", profile: null, author: "Ada <ada@example.test>" };
     expect(await submitLaunch(w.opts, launch, other)).toMatchObject({ ok: false, code: "unknown-project" });
     expect(await submitLaunch(w.opts, launch)).toMatchObject({ ok: true });
 
     // ARMADA_REPOSITORIES, shown while the registry was never read, belongs to the first organization too.
     const cold = world(null);
+    await cold.warm();
     expect((await loadOverview(cold.opts)).projects.map((p) => p.slug)).toEqual(["widgets"]);
     expect((await loadOverview(cold.opts, other)).projects).toEqual([]);
   });
@@ -225,6 +338,8 @@ describe("organizations: a repository naming another project", () => {
       at: new Date(T0),
     });
     const w = world(db);
+    await w.warm();
+    await w.warm({ organization: "org-other", home: "org-home" });
     expect((await loadOverview(w.opts)).waiting.map((i) => i.kind)).toEqual(["question"]);
     const other = await loadOverview(w.opts, { organization: "org-other", home: "org-home" });
     expect(other.projects).toHaveLength(1);
@@ -246,6 +361,7 @@ describe("requests from the dashboard", () => {
       body: "Add export validation\n\n1. Validate rows.\n2. Test malformed rows.",
       at: new Date(T0),
     });
+    await w.warm();
     expect((await loadOverview(w.opts)).waiting).toEqual([expect.objectContaining({ kind: "approval", item: plan })]);
     expect(
       await submitAnswer(w.opts, { project: "widgets", question: plan, text: "approved", author: "Ada" }),
@@ -264,6 +380,7 @@ describe("requests from the dashboard", () => {
     const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const w = world(db);
+    await w.warm();
     const shown = await loadOverview(w.opts);
     expect(shown.ready.map((r) => [r.id, r.route?.profile, r.launch])).toEqual([
       ["WID-3", "codex", null],
@@ -310,7 +427,7 @@ describe("requests from the dashboard", () => {
 
   test("without the database nothing is recorded, and the reason is given", async () => {
     const w = world(null);
-    await loadOverview(w.opts);
+    await w.warm();
     expect(
       await submitLaunch(w.opts, { project: "widgets", ticket: "WID-3", profile: null, author: "Ada" }),
     ).toMatchObject({
