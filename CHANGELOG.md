@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/The-Vibe-Company/armada/compare/v0.2.5...v0.2.6) (2026-10-01)
+
+
+### Bug Fixes
+
+* **cli:** tell an outdated CLI to upgrade, hide the launch token in briefs, find Conductor's bundled CLI ([#65](https://github.com/The-Vibe-Company/armada/issues/65)) ([53344de](https://github.com/The-Vibe-Company/armada/commit/53344de608e994b788282d8e95266fa95121b6bf))
+
 ## [0.2.5](https://github.com/The-Vibe-Company/armada/compare/v0.2.4...v0.2.5) (2026-10-01)
 
 
