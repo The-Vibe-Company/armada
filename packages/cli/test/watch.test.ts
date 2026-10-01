@@ -199,6 +199,16 @@ describe("armada watch", () => {
     expect(c.err()).toBe("armada: warning: Armada refused: Armada is restarting; still watching, next try in 15 s\n");
     expect(c.out()).toContain("* #1 question · DEMO-2 · from ws/DEMO-2");
 
+    // Signed out: refused before any read, and recorded so the stop hook stops asking.
+    c.reset();
+    delete c.io.env.ARMADA_API_KEY;
+    expect(await run(["watch"], c.io)).toBe(2);
+    expect((await readWatchState(c.paths, P))?.stopped).toContain("not signed in to Armada");
+    expect(await hook(c, COORDINATOR_ROOT)).toBeNull();
+    expect(await run(["inbox"], { ...c.io, env: { ...c.io.env, ARMADA_API_KEY: KEY } })).toBe(0);
+    expect((await readWatchState(c.paths, P))?.stopped).toBeNull();
+    expect(await hook(c, COORDINATOR_ROOT)).not.toBeNull();
+
     c.reset();
     c.io.env.ARMADA_API_KEY = "armada_key_REVOKED";
     expect(await run(["watch"], c.io)).toBe(1);

@@ -39,11 +39,16 @@ export interface WatchState {
 
 export const EMPTY_WATCH_STATE: WatchState = { root: null, seen: [], inFlight: null, readAt: null, stopped: null };
 
-/** A failure worth waiting out: Armada unreachable, timed out, overloaded or failing (5xx). */
+/**
+ * A failure worth waiting out: Armada unreachable, timed out, overloaded or
+ * failing (5xx, even as a proxy's HTML page). An answer this CLI cannot read
+ * or a refusal is not: waiting would hide it.
+ */
 export function transientFailure(err: unknown): boolean {
   if (!(err instanceof ArmadaApiError)) return false;
   const s = err.status;
-  return s === null || s >= 500 || s === 408 || s === 429;
+  if (s !== null) return s >= 500 || s === 408 || s === 429;
+  return /\bunreachable\b|\bHTTP (?:5\d\d|408|429) without JSON\b/.test(err.message);
 }
 
 export interface WatchOptions {

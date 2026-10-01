@@ -109,6 +109,8 @@ export interface MergeOutcome {
   hints: string[];
   /** In-flight workers to tell what landed; empty for a dry run. */
   workers: WorkerToTell[];
+  /** False when the workers in flight could not be listed (or for a dry run): `workers` is then not the whole fleet. */
+  workersListed: boolean;
   /**
    * The merged worker's session to archive with its runtime guide. `guide` is
    * the installed guide skill, or null when the repository has none for that
@@ -714,6 +716,7 @@ async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: st
   if (live$?.resolved) lines.push(`Hand-back resolved in the coordinator's inbox.`);
 
   let workers: WorkerToTell[] = [];
+  let listed = false;
   try {
     const handles = new Map<string, RuntimeHandle>((live$?.open ?? []).map((h) => [h.ticket, h]));
     workers = (await ctx.inFlight())
@@ -725,6 +728,7 @@ async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: st
         runtime: t.runtime ?? handles.get(t.id)?.runtime ?? null,
         handle: handles.get(t.id)?.handle ?? null,
       }));
+    listed = true;
   } catch (err) {
     c.warnings.push(
       `could not list the workers in flight (${err instanceof Error ? err.message : String(err)}); run armada status`,
@@ -741,7 +745,7 @@ async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: st
     c.warnings.push(`could not look for the ${expected} skill (${err instanceof Error ? err.message : String(err)})`);
   }
   const archive = { runtime, handle: live$?.handle?.handle ?? claim?.session ?? null, guide };
-  return outcome(c, true, merged, lines, workers, archive);
+  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed };
 }
 
 function outcome(
@@ -767,6 +771,7 @@ function outcome(
     lines,
     hints: c.hints,
     workers,
+    workersListed: false,
     archive,
     warnings: c.warnings,
   };

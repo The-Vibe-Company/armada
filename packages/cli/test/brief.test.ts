@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { machinePaths, readWatchState, updateWatchState } from "@armada/core";
 import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
@@ -264,6 +265,17 @@ describe("armada brief", () => {
     expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
     expect(b.out()).toMatch(/ {2}LINEAR_API_KEY +required {2}in credentials file /);
     expect(b.out() + b.err()).not.toContain(SECRETS.LINEAR_API_KEY);
+  });
+
+  test("a brief counts its ticket in flight at once, for the stop hook, even with --prompt", async () => {
+    const home = await mkdtemp(join(tmpdir(), "armada-brief-"));
+    homes.push(home);
+    const paths = machinePaths({ XDG_CONFIG_HOME: home });
+    if (!paths) throw new Error("no machine store");
+    await updateWatchState(paths, "widgets", { root: "/work/widgets", inFlight: [] });
+    const b = briefIo({ ...SECRETS, XDG_CONFIG_HOME: home });
+    expect(await run(["brief", "DEMO-13", "--prompt"], b.io)).toBe(0);
+    expect((await readWatchState(paths, "widgets"))?.inFlight).toEqual(["DEMO-13"]);
   });
 
   test("overriding the routed profile without a reason is a usage error", async () => {

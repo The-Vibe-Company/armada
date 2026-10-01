@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { ArmadaApiError } from "../src/armada-api.ts";
 import { entryKey, inboxTag } from "../src/live.ts";
-import { EMPTY_WATCH_STATE, rearm, stopHookDecision, type WatchState, watchInbox } from "../src/watch.ts";
+import {
+  EMPTY_WATCH_STATE,
+  rearm,
+  stopHookDecision,
+  transientFailure,
+  type WatchState,
+  watchInbox,
+} from "../src/watch.ts";
 import { fakeClock, NOW, tempFleet } from "./support.ts";
 
 const P = "widgets";
@@ -191,6 +199,25 @@ describe("armada watch", () => {
       fail: () => Response.json({ error: "this sign-in was revoked" }, { status: 401 }),
     });
     await expect(watchInbox(live.fleet, options(live).o)).rejects.toThrow("this sign-in was revoked");
+  });
+});
+
+describe("what the watch waits out", () => {
+  test("Armada unreachable or failing, not a refusal or an answer it cannot read", () => {
+    const api = (message: string, status: number | null = null) => new ArmadaApiError(message, null, false, status);
+    expect(
+      [
+        api("Armada (a.test) unreachable: fetch failed"),
+        api("Armada (a.test) answered HTTP 502 without JSON: is https://a.test an Armada?"),
+        api("Armada refused: HTTP 503", 503),
+        api("Armada refused: slow down", 429),
+        api("not signed in to Armada", 401),
+        api("Armada refused: the project belongs to another organization", 403),
+        api("Armada (a.test) answered HTTP 200 without JSON: is https://a.test an Armada?"),
+        api("Armada (a.test) answered fleet/inbox in a shape this CLI does not know"),
+        new TypeError("x is undefined"),
+      ].map(transientFailure),
+    ).toEqual([true, true, true, true, false, false, false, false, false]);
   });
 });
 

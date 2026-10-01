@@ -179,9 +179,9 @@ export function buildOverview(input: {
 
     // The oldest item of each ticket open in the coordinator's inbox for too long: the coordinator is not answering.
     const lateAfter = (p.report?.coordinatorMinutes ?? CONFIG_DEFAULTS.coordinatorMinutes) * MIN;
-    const late = new Map<string | null, string>();
+    const late = new Map<string, string>();
     for (const i of inbox)
-      if (now - Date.parse(i.createdAt) > lateAfter) {
+      if (i.ticket && now - Date.parse(i.createdAt) > lateAfter) {
         const held = late.get(i.ticket);
         if (!held || i.createdAt < held) late.set(i.ticket, i.createdAt);
       }
@@ -190,7 +190,9 @@ export function buildOverview(input: {
     const perTicket = new Map<string, WaitingItem>();
     let projectWide = 0;
     const offer = (offered: WaitingItem) => {
-      const item = { ...offered, coordinatorSince: late.get(offered.ticket) ?? null };
+      // A ticket waits for the coordinator since its oldest late item; a project-wide item, on its own.
+      const own = now - Date.parse(offered.since) > lateAfter ? offered.since : null;
+      const item = { ...offered, coordinatorSince: offered.ticket ? (late.get(offered.ticket) ?? null) : own };
       if (!item.ticket) {
         projectWide++;
         waiting.push(item);

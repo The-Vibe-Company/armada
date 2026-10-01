@@ -177,7 +177,13 @@ describe("repository checks", () => {
     expect(problems(await checkRepository(repo.view, VERSION)).map((c) => [c.id, c.message])).toEqual([
       ["stop-hook", "Claude Code stop hook not checked: .claude/settings.json is not valid JSON"],
     ]);
-    await expect(planSetup(repo.view, { armadaVersion: VERSION, configText: null })).rejects.toThrow(SetupError);
+    await expect(planSetup(repo.view, { armadaVersion: VERSION, configText: null })).rejects.toThrow(
+      ".claude/settings.json is not valid JSON: fix it, or leave the stop hook out with `armada init --no-stop-hook`",
+    );
+    // Left out, the settings are not read: init goes on.
+    expect((await planSetup(repo.view, { armadaVersion: VERSION, configText: null, stopHook: false })).writes).toEqual(
+      [],
+    );
   });
 
   test("a routing rule naming an unknown profile is a doctor error", async () => {

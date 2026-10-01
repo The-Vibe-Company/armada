@@ -169,6 +169,20 @@ describe("fleet overview", () => {
       ["W-3", null],
       ["W-2", null],
     ]);
+    // A project-wide item is late on its own, not since the oldest of them.
+    const r = reading("widgets", [], {
+      inbox: [item({ body: "Old", createdAt: at("09:30") }), item({ body: "New", createdAt: at("09:58") })],
+      coordinatorSeenAt: null,
+    });
+    expect(
+      buildOverview({ projects: [r], live: { state: "ok", error: null }, now: NOW }).waiting.map((w) => [
+        w.detail,
+        w.coordinatorSince,
+      ]),
+    ).toEqual([
+      ["Old", at("09:30")],
+      ["New", null],
+    ]);
   });
 
   test("the owner's requests show as pending on their question and their ready ticket, never as waiting for the owner", () => {

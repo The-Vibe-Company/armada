@@ -3,7 +3,7 @@
 // the only code that touches those files. It never logs or returns a value in
 // an error; values leave it only through resolveCredentials.
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { parse, TomlError } from "smol-toml";
 import { ConfigError } from "./config.ts";
@@ -276,20 +276,26 @@ export async function takeWatchLock(
 ): Promise<{ taken: true } | { taken: false; pid: number }> {
   const { lock } = watchFiles(paths, project);
   await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const handle = await open(lock, "wx", 0o600);
-      await handle.writeFile(`${pid}\n`, "utf8");
-      await handle.close();
-      return { taken: true };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  // The pid is written first, then linked into place: the lock never exists empty.
+  const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(tmp, `${pid}\n`, { mode: 0o600 });
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await link(tmp, lock);
+        return { taken: true };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
+      const held = await readWatchLock(paths, project);
+      if (held !== null && held !== pid && alive(held)) return { taken: false, pid: held };
+      // Stale: its watch is gone. Removed only if no other watch took it over meanwhile.
+      if ((await readWatchLock(paths, project)) === held) await rm(lock, { force: true });
     }
-    const held = await readWatchLock(paths, project);
-    if (held !== null && held !== pid && alive(held)) return { taken: false, pid: held };
-    await rm(lock, { force: true });
+    throw new Error(`cannot take the watch lock ${lock}`);
+  } finally {
+    await rm(tmp, { force: true });
   }
-  throw new Error(`cannot take the watch lock ${lock}`);
 }
 
 /** Gives the lock back, unless another watch holds it now. */

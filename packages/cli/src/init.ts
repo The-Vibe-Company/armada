@@ -170,7 +170,11 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
     await sh(exec, root, "git", ["worktree", "add", "--quiet", "--detach", checkout, baseSha]);
     const { config, text, source } = await resolveConfig(exec, root, checkout, opts);
     const view = fsRepoView(checkout);
-    let plan = await planSetup(view, { armadaVersion: opts.armadaVersion, configText: text });
+    let plan = await planSetup(view, {
+      armadaVersion: opts.armadaVersion,
+      configText: text,
+      stopHook: opts.stopHook !== false,
+    });
     // Asked only when the hook is missing: a declined hook is left out of this pull request.
     if (plan.stopHook && !(await wantsStopHook(io, opts)))
       plan = await planSetup(view, { armadaVersion: opts.armadaVersion, configText: text, stopHook: false });

@@ -214,15 +214,18 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
   });
-  // The workers still in flight, for the re-arm line: read after a merge, the last known ones for a dry run.
+  // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
   const project = config.project.slug;
   const coordinator = coordinatorHandle(io);
-  const inFlight = o.merged
+  const known = (await watchOf(io, project)).state?.inFlight ?? null;
+  const inFlight = o.workersListed
     ? o.workers
         .filter((w) => !coordinator || w.handle !== coordinator)
         .map((w) => w.ticket)
         .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
-    : ((await watchOf(io, project)).state?.inFlight ?? null);
+    : o.merged && known
+      ? known.filter((t) => t !== o.ticket.id)
+      : known;
   if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
   const next = await rearmFor(io, project, { inFlight, open: null });
   io.stdout(a.json ? `${JSON.stringify({ ...o, watch: next }, null, 2)}\n` : `${render(o)}${next.line}\n`);

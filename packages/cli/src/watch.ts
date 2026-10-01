@@ -88,6 +88,23 @@ export const shown = (io: Io, items: InboxEntry[], inFlight: string[] | null): P
 
 export async function watch(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs, configPath: string) {
   if (a.rest.length) throw new UsageError(`unexpected argument ${a.rest[0]}`);
+  const project = config.project.slug;
+  try {
+    return await watchUntil(io, config, credentials, a.json, configPath);
+  } catch (err) {
+    // A watch that cannot run (signed out, refused, Armada unknown): the stop hook stops asking for one.
+    await remember(io, project, { stopped: err instanceof Error ? err.message : String(err) });
+    throw err;
+  }
+}
+
+async function watchUntil(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  json: boolean,
+  configPath: string,
+): Promise<number> {
   requireSignIn(credentials);
   const { fleet, warning } = liveFleet(io, config, credentials);
   if (!fleet)
@@ -99,41 +116,33 @@ export async function watch(io: Io, config: ArmadaConfig, credentials: Credentia
     const lock = await takeWatchLock(paths, project, pid, alive(io));
     if (!lock.taken) {
       const line = `armada watch is already running for ${project} (pid ${lock.pid}): its output arrives when it ends.`;
-      io.stdout(a.json ? `${JSON.stringify({ project, running: lock.pid, line }, null, 2)}\n` : `${line}\n`);
+      io.stdout(json ? `${JSON.stringify({ project, running: lock.pid, line }, null, 2)}\n` : `${line}\n`);
       return 0;
     }
   }
   try {
     const before = paths ? await readWatchState(paths, project) : null;
     await remember(io, project, { root: dirname(configPath), stopped: null });
-    let report: Awaited<ReturnType<typeof watchInbox>>;
-    try {
-      report = await watchInbox(fleet, {
-        project,
-        coordinator: coordinatorHandle(io),
-        silentAfterMinutes: config.policy.silentAfterMinutes,
-        seen: before?.seen ?? [],
-        now: io.now ?? (() => new Date()),
-        sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))),
-        onRead: async ({ inFlight }) => {
-          if (inFlight) await remember(io, project, { inFlight, readAt: now(io).toISOString() });
-        },
-        onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
-      });
-    } catch (err) {
-      // The stop hook stops asking for a watch that cannot run (signed out, refused).
-      await remember(io, project, { stopped: err instanceof Error ? err.message : String(err) });
-      throw err;
-    }
+    const report = await watchInbox(fleet, {
+      project,
+      coordinator: coordinatorHandle(io),
+      silentAfterMinutes: config.policy.silentAfterMinutes,
+      seen: before?.seen ?? [],
+      now: io.now ?? (() => new Date()),
+      sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))),
+      onRead: async ({ inFlight }) => {
+        if (inFlight) await remember(io, project, { inFlight, readAt: now(io).toISOString() });
+      },
+      onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
+    });
     await remember(io, project, shown(io, report.items, report.inFlight));
     const next = rearm({ inFlight: report.inFlight, open: report.items.length, running: null, act: true });
-    if (a.json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
+    if (json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
     else {
       const out =
         report.outcome === "nothing"
           ? [`Nothing to watch on ${project}: no worker in flight and nothing open.`]
-          : [...renderEntries(project, report.items), "New items are marked *."];
-      if (report.outcome === "items") out.push(next.line);
+          : [...renderEntries(project, report.items), "New items are marked *.", next.line];
       io.stdout(`${out.join("\n")}\n`);
     }
     for (const w of report.warnings) io.stderr(`armada: warning: ${w}\n`);

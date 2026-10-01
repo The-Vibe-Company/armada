@@ -431,7 +431,13 @@ export async function planSetup(view: RepoView, opts: PlanOptions): Promise<Setu
 
   if (opts.stopHook ?? true) {
     const before = await view.readFile(CLAUDE_SETTINGS);
-    const after = withStopHook(before);
+    let after: string;
+    try {
+      after = withStopHook(before);
+    } catch (err) {
+      if (!(err instanceof SetupError)) throw err;
+      throw new SetupError(`${err.message}: fix it, or leave the stop hook out with \`armada init --no-stop-hook\``);
+    }
     if (after !== (before ?? "")) {
       plan.writes.push({ path: CLAUDE_SETTINGS, content: after });
       plan.stopHook = true;
