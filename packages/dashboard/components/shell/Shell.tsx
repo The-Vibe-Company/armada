@@ -139,9 +139,9 @@ function Frame({ children }: { children: ReactNode }) {
       }
       if (e.key === "Enter" && selected.current >= 0) {
         const row = rows()[selected.current];
-        // A focused control (a link, a tab, a button) answers Enter itself.
+        // A focused control (a link, a tab, a button) answers Enter itself; the page (after "Skip to content") does not.
         const focused = document.activeElement;
-        if (row && (!focused || focused === document.body)) {
+        if (row && (!focused || focused === document.body || focused.id === "content")) {
           e.preventDefault();
           router.push(row.getAttribute("href") ?? "/");
         }

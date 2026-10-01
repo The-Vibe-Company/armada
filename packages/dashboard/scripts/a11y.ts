@@ -288,10 +288,15 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
     return inside && (await page.locator(".sh-palette").count()) === 0 && (await focused(page)).includes("sh-search");
   });
 
-  await check("j and k move through the rows, and stay in a text field", async () => {
+  await check("j moves through the rows, Enter opens one, and both stay in a text field", async () => {
     await page.locator(".sh-main").focus();
     await page.keyboard.press("j");
     const moved = (await page.locator("a[data-row][data-selected]").count()) === 1;
+    // Enter opens the selected row from the page itself, where "Skip to content" leaves the focus.
+    const href = await page.locator("a[data-row][data-selected]").getAttribute("href");
+    await page.keyboard.press("Enter");
+    await page.waitForURL((url) => url.pathname === href, { timeout: 5_000 });
+    await page.goBack();
     await page.locator(".sh-search").click();
     await page.locator(".sh-palette input").waitFor();
     await page.keyboard.type("jk");
@@ -338,6 +343,14 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
 
   if (seeded) {
     await open(page, "/organization");
+    await check("j and k typed in a form's field stay in it", async () => {
+      const field = page.locator("input.ui-input:not([type='hidden'])").first();
+      await field.focus();
+      await page.keyboard.type("jk");
+      return (
+        (await field.inputValue()).endsWith("jk") && (await page.locator("a[data-row][data-selected]").count()) === 0
+      );
+    });
     await check("the organization menu closes on Esc and gives the focus back", async () => {
       await page.locator(".sh-org-button").focus();
       await page.keyboard.press("Enter");
