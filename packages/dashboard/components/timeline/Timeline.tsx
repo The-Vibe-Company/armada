@@ -11,6 +11,7 @@ import type { FleetRow, ProjectOverview } from "@armada/core/read";
 import { memo, useEffect, useMemo, useState } from "react";
 import { agentState, HARNESS_NAME, HARNESSES, type Harness, harnessCounts, harnessOf, paths } from "@/lib/fleet-view";
 import type { Language, Strings } from "@/lib/i18n";
+import { coordinatorHarness } from "@/lib/project-view";
 import { Row, RowSide, Section, SectionBody } from "../page";
 import { rowProgress } from "../screens/AgentRow";
 import { useFleet, useNow, useShell } from "../shell/context";
@@ -55,10 +56,15 @@ const clockOf = (lang: Language): Clock => {
   return (at: number | string) => format.format(typeof at === "string" ? Date.parse(at) : at);
 };
 
+const coordinatorName = (h: ProjectOverview["coordinator"]["harness"]) => {
+  const harness = coordinatorHarness(h);
+  return harness ? HARNESS_NAME[harness] : null;
+};
+
 const pc = (n: number) => `${n.toFixed(3)}%`;
 
 /** The timeline of the projects shown: every one, or the one the overview is filtered on. */
-export function LiveTimeline({ project }: { project: string | null }) {
+export function LiveTimeline({ project = null }: { project?: string | null }) {
   const { overview } = useFleet();
   const { t, lang } = useShell();
   const now = useNow();
@@ -378,9 +384,7 @@ function CoordinatorRow({
         <span className={`sc-coord-mark is-${c.state}`} style={{ color }} aria-hidden />
         <span className="tl-label-text">
           <span className="tl-coord">
-            {t.timeline.coordinator(
-              c.harness === "terminal" ? "Terminal" : c.harness ? HARNESS_NAME[harnessOf(c.harness)] : null,
-            )}
+            {t.timeline.coordinator(c.harness === "terminal" ? "Terminal" : coordinatorName(c.harness))}
           </span>
         </span>
       </span>

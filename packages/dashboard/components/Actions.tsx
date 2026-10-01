@@ -50,19 +50,19 @@ export function splitQuestion(body: string): { text: string; options: string[] }
 }
 
 /** What a request does to the screen: at once on submit, once recorded, and back if refused. */
-interface RequestSteps {
+export interface RequestSteps {
   start: (form: FormData) => void;
   done: (form: FormData) => void;
   undo: () => void;
 }
 
-/** Runs one request optimistically; keeps its error code when refused. */
+/** Runs one request optimistically; keeps its error code when refused. The clicked button's name and value are in the form. */
 export function useRequest(send: (form: FormData) => Promise<RequestResult>, steps: RequestSteps) {
   const [busy, start] = useTransition();
   const [error, setError] = useState<RequestError | null>(null);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter);
     setError(null);
     steps.start(form);
     start(async () => {
@@ -92,14 +92,14 @@ export function useSent<T>(version: number) {
 }
 
 /** Who the request just sent was signed by; a typed name is remembered for the next one. */
-function signerOf(signer: Signer, form: FormData): string {
+export function signerOf(signer: Signer, form: FormData): string {
   if (signer.fixed) return signer.name;
   const typed = String(form.get("author") ?? "");
   signer.set(typed);
   return typed;
 }
 
-function SignerField({ t, signer }: { t: Strings; signer: Signer }) {
+export function SignerField({ t, signer }: { t: Strings; signer: Signer }) {
   const [editing, setEditing] = useState(!signer.name && !signer.fixed);
   const id = useId();
   if (signer.fixed)
@@ -138,7 +138,7 @@ function SignerField({ t, signer }: { t: Strings; signer: Signer }) {
   );
 }
 
-function ErrorLine({ t, code }: { t: Strings; code: RequestError | null }) {
+export function ErrorLine({ t, code }: { t: Strings; code: RequestError | null }) {
   if (!code) return null;
   return (
     <p className="req-error" role="alert">
@@ -147,7 +147,7 @@ function ErrorLine({ t, code }: { t: Strings; code: RequestError | null }) {
   );
 }
 
-function PendingNote({
+export function PendingNote({
   label,
   detail,
   quote,
