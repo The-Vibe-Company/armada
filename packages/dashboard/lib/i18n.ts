@@ -91,7 +91,6 @@ const elapsed = (ms: number, day: string) => (ms < MIN ? `${Math.max(0, Math.rou
 
 const en = {
   htmlTitle: "Armada — fleet",
-  brandSub: "fleet",
   stats: { silent: "Silent", redCi: "Red CI" },
   projects: "Projects",
   allProjects: "All projects",
@@ -226,6 +225,7 @@ const en = {
     sendInvite: "Invite",
     invitations: "Pending invitations",
     noInvitations: "No invitation waits.",
+    noInvitationsHint: "An invitation shows here until it is accepted, declined, cancelled or expires.",
     copyLink: "Copy link",
     copied: "Copied",
     cancel: "Cancel",
@@ -254,6 +254,7 @@ const en = {
     apiKeysHint:
       "A key signs a headless coordinator in for this organization, with ARMADA_API_KEY or armada login --api-key. Revoking it signs that coordinator out.",
     noApiKeys: "No API key.",
+    noApiKeysHint: "Create one below for a coordinator that runs without a person at the keyboard.",
     apiKeyName: "Key name, e.g. cloud coordinator",
     createApiKey: "Create a key",
     apiKeyCreated: (name: string) => `Key “${name}” created. Copy it now: it is shown only once.`,
@@ -395,7 +396,7 @@ const en = {
   workers: {
     nav: "Workers",
     lead: "Each worker a coordinator launched with a one-time launch token: who launched it, when its token was used, and whether its session is still open. A worker session only claims, reports, asks and releases its own ticket.",
-    launchedBy: (who: string, when: string) => `launched by ${who}, ${when}`,
+    launchedBy: (who: string) => `launched by ${who}`,
     states: {
       waiting: "token not used yet",
       unused: "token expired unused",
@@ -414,7 +415,8 @@ const en = {
     revokeHint:
       "Revoking ends a worker's session at once: its next command fails, and it gets no more keys and no more access to the fleet's data.",
     onlyAdmins: "Only owners and admins revoke a worker.",
-    none: "No worker launched with a token yet. A signed-in coordinator makes one with armada brief <ticket>.",
+    none: "No worker launched with a token yet.",
+    noneHint: "A signed-in coordinator makes one with armada brief <ticket>.",
     errors: {
       forbidden: "Your role does not allow this.",
       gone: "This worker had already ended.",
@@ -604,7 +606,9 @@ const en = {
           "A band: an icon or status dot, a label, a count, a side. Rows go inside; anything else in a SectionBody.",
         Row: "40 px compact, 48 px airy, a hairline. With href it opens a page and joins j/k; ids and times in Geist Mono (RowId, RowTime).",
         Card: "Only where the design draws cards (decisions, projects): the rows' padding, hairline and type, in a CardGrid.",
+        Form: "A form on one line: Input, Select, then its Buttons (primary for the submit, danger to delete or revoke); grow fills a section's width.",
       },
+      forms: { primary: "Invite", plain: "Copy link", danger: "Revoke", disabled: "Sending…" },
     },
   },
 };
@@ -613,7 +617,6 @@ export type Strings = typeof en;
 
 const fr: Strings = {
   htmlTitle: "Armada — flotte",
-  brandSub: "flotte",
   stats: { silent: "Silencieux", redCi: "CI rouge" },
   projects: "Projets",
   allProjects: "Tous les projets",
@@ -749,6 +752,7 @@ const fr: Strings = {
     sendInvite: "Inviter",
     invitations: "Invitations en attente",
     noInvitations: "Aucune invitation en attente.",
+    noInvitationsHint: "Une invitation reste ici jusqu'à ce qu'elle soit acceptée, refusée, annulée ou expirée.",
     copyLink: "Copier le lien",
     copied: "Copié",
     cancel: "Annuler",
@@ -777,6 +781,7 @@ const fr: Strings = {
     apiKeysHint:
       "Une clé connecte un coordinateur sans navigateur pour cette organisation, avec ARMADA_API_KEY ou armada login --api-key. La révoquer le déconnecte.",
     noApiKeys: "Aucune clé d'API.",
+    noApiKeysHint: "Crées-en une ci-dessous pour un coordinateur qui tourne sans personne au clavier.",
     apiKeyName: "Nom de la clé, par ex. coordinateur cloud",
     createApiKey: "Créer une clé",
     apiKeyCreated: (name) => `Clé « ${name} » créée. Copie-la maintenant : elle n'est montrée qu'une fois.`,
@@ -915,7 +920,7 @@ const fr: Strings = {
   workers: {
     nav: "Workers",
     lead: "Chaque worker lancé par un coordinateur avec un jeton de lancement à usage unique : qui l'a lancé, quand son jeton a servi, et si sa session est encore ouverte. Une session de worker ne fait que réclamer, rapporter, demander et rendre son propre ticket.",
-    launchedBy: (who, when) => `lancé par ${who}, ${when}`,
+    launchedBy: (who) => `lancé par ${who}`,
     states: {
       waiting: "jeton pas encore utilisé",
       unused: "jeton expiré sans servir",
@@ -934,7 +939,8 @@ const fr: Strings = {
     revokeHint:
       "Révoquer met fin tout de suite à la session d'un worker : sa prochaine commande échoue, et il ne reçoit plus ni clé ni accès aux données de la flotte.",
     onlyAdmins: "Seuls les propriétaires et les admins révoquent un worker.",
-    none: "Aucun worker lancé avec un jeton pour l'instant. Un coordinateur connecté en crée un avec armada brief <ticket>.",
+    none: "Aucun worker lancé avec un jeton pour l'instant.",
+    noneHint: "Un coordinateur connecté en crée un avec armada brief <ticket>.",
     errors: {
       forbidden: "Ton rôle ne le permet pas.",
       gone: "Ce worker était déjà arrêté.",
@@ -1120,7 +1126,9 @@ const fr: Strings = {
           "Une bande : une icône ou un point d'état, un libellé, un compte, un côté. Les lignes dedans ; le reste dans un SectionBody.",
         Row: "40 px en compact, 48 px en aéré, un filet. Avec href elle ouvre une page et suit j/k ; ids et heures en Geist Mono (RowId, RowTime).",
         Card: "Seulement là où le design dessine des cartes (décisions, projets) : le padding, le filet et le texte des lignes, dans une CardGrid.",
+        Form: "Un formulaire sur une ligne : Input, Select, puis ses Button (primary pour envoyer, danger pour supprimer ou révoquer) ; grow prend la largeur d'une section.",
       },
+      forms: { primary: "Inviter", plain: "Copier le lien", danger: "Révoquer", disabled: "Envoi…" },
     },
   },
 };

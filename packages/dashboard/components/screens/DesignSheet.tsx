@@ -7,12 +7,15 @@
 import type { ReactNode } from "react";
 import { AGENT_STATUSES, HARNESS_NAME, HARNESSES, PROJECT_PALETTE } from "@/lib/fleet-view";
 import {
+  Button,
   Card,
   CardGrid,
   CardHead,
   CardMeta,
   CardTitle,
   DensityToggle,
+  Form,
+  Input,
   Notice,
   Page,
   PageHeader,
@@ -24,6 +27,7 @@ import {
   RowTime,
   Section,
   SectionBody,
+  Select,
   Toolbar,
 } from "../page";
 import { useNow, useShell } from "../shell/context";
@@ -162,6 +166,24 @@ export function DesignSheet() {
           <Notice tone="warn">{t.unreachableBanner("timeout")}</Notice>
           <Notice>{t.readingProject("Widgets")}</Notice>
         </div>
+      </Specimen>
+
+      <Specimen name="Form · Input · Select · Button">
+        <Form onSubmit={(e) => e.preventDefault()}>
+          <Input aria-label="email" type="email" placeholder="lea.martin@example.com" />
+          <Select aria-label="role" defaultValue="member">
+            <option value="member">member</option>
+            <option value="admin">admin</option>
+          </Select>
+          <Button tone="primary">{d.forms.primary}</Button>
+          <Button type="button">{d.forms.plain}</Button>
+          <Button type="button" tone="danger">
+            {d.forms.danger}
+          </Button>
+          <Button type="button" disabled>
+            {d.forms.disabled}
+          </Button>
+        </Form>
       </Specimen>
 
       <Specimen name="StatusDot">

@@ -3,7 +3,8 @@ import { cookies, headers } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { acceptInvitation, rejectInvitation, signOut } from "@/app/auth-actions";
-import { AuthCard } from "@/components/AuthCard";
+import { AuthCard, AuthNotice } from "@/components/AuthCard";
+import { Button, Form } from "@/components/page";
 import { isRole } from "@/lib/accounts";
 import { requireAccounts, requireSession } from "@/lib/accounts-server";
 import { accountsModeOf } from "@/lib/accounts-settings";
@@ -36,20 +37,15 @@ export default async function Invitation({ params, searchParams }: Props) {
   if (invitation?.status !== "pending") {
     // Better Auth refuses to show an invitation to another address: say which one is signed in.
     return (
-      <AuthCard
-        brandSub={t.brandSub}
-        kicker={t.org.invitationTitle}
-        heading={t.org.invitationTitle}
-        lead={t.org.invitationGone}
-      >
-        <p className="login-hint">{t.org.signedInAs(viewer.user.email)}</p>
-        <p className="login-switch">
-          <Link className="link" href="/">
+      <AuthCard kicker={t.org.invitationTitle} heading={t.org.invitationTitle} lead={t.org.invitationGone}>
+        <p className="au-hint">{t.org.signedInAs(viewer.user.email)}</p>
+        <p className="au-foot">
+          <Link className="au-link" href="/">
             {t.org.back}
           </Link>
         </p>
-        <form action={signOut} className="login-switch">
-          <button type="submit" className="link">
+        <form action={signOut} className="au-foot">
+          <button type="submit" className="au-link">
             {t.auth.logout}
           </button>
         </form>
@@ -60,29 +56,24 @@ export default async function Invitation({ params, searchParams }: Props) {
   const role = t.org.roles[isRole(invitation.role) ? invitation.role : "member"];
   return (
     <AuthCard
-      brandSub={t.brandSub}
       kicker={t.org.invitationTitle}
       heading={t.org.invitationHeading(invitation.organizationName)}
       lead={t.org.invitationLead(invitation.inviterEmail, role)}
     >
-      {error && (
-        <p className="login-error" role="alert">
-          {t.org.errors[error]}
-        </p>
-      )}
-      <div className="row-actions is-spread">
-        <form action={acceptInvitation} className="login-form is-grow">
+      {error && <AuthNotice tone="critical">{t.org.errors[error]}</AuthNotice>}
+      <div className="au-actions">
+        <Form action={acceptInvitation} grow>
           <input type="hidden" name="invitation" value={invitation.id} />
-          <button type="submit">{t.org.accept}</button>
-        </form>
-        <form action={rejectInvitation}>
+          <Button tone="primary" className="au-submit">
+            {t.org.accept}
+          </Button>
+        </Form>
+        <Form action={rejectInvitation}>
           <input type="hidden" name="invitation" value={invitation.id} />
-          <button type="submit" className="btn">
-            {t.org.decline}
-          </button>
-        </form>
+          <Button className="au-submit">{t.org.decline}</Button>
+        </Form>
       </div>
-      <p className="login-hint">{viewer.user.email}</p>
+      <p className="au-hint">{viewer.user.email}</p>
     </AuthCard>
   );
 }

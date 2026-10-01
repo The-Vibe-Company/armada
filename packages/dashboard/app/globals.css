@@ -193,25 +193,6 @@ button {
 }
 
 /* ------------------------------------------------------------ top bar */
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-}
-.brand-mark {
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: conic-gradient(from 200deg, var(--done), var(--frontier), var(--active), var(--done));
-  box-shadow: 0 0 18px var(--done-dim);
-}
-.brand small {
-  color: var(--faint);
-  font-weight: 400;
-}
 /* The overview's live line, in the header bar. */
 .refresh {
   display: inline-flex;
@@ -295,11 +276,6 @@ button {
   color: var(--text);
 }
 
-.kicker {
-  font-size: 12px;
-  color: var(--text-3);
-  margin-bottom: 8px;
-}
 .calm {
   color: var(--text-3);
   font-size: 12.5px;
@@ -669,267 +645,8 @@ button.chip:hover {
   font-size: 12.5px;
 }
 
-/* ------------------------------------------------------------ narrow screens */
-/* ------------------------------------------------------------ login */
-.login {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 32px 20px;
-}
-.login-card {
-  width: 100%;
-  max-width: 420px;
-  padding: 30px 32px 26px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-  animation: rise 0.7s var(--ease) both;
-}
-.login-card .brand {
-  margin-bottom: 34px;
-}
-.login-card h1 {
-  font-size: 30px;
-  font-weight: 600;
-  line-height: 1.1;
-  margin: 0;
-  letter-spacing: -0.028em;
-}
-.login-lead {
-  margin: 12px 0 26px;
-  color: var(--muted);
-}
-.login-form {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.login-form label {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-.login-form input {
-  font: inherit;
-  color: var(--text);
-  background: var(--panel-2);
-  border: 1px solid var(--line-2);
-  border-radius: 10px;
-  padding: 10px 12px;
-  transition:
-    border-color 0.2s,
-    box-shadow 0.2s;
-}
-.login-form input:focus {
-  outline: none;
-  border-color: var(--frontier);
-  box-shadow: 0 0 0 3px var(--frontier-dim);
-}
-.login-form input[aria-invalid="true"] {
-  border-color: var(--critical);
-}
-.login-error {
-  margin: 0;
-  font-size: 13px;
-  color: var(--critical);
-}
-.login-form button {
-  margin-top: 10px;
-  border: 0;
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-weight: 600;
-  background: var(--done);
-  color: var(--bg);
-  cursor: pointer;
-  transition: filter 0.2s;
-}
-.login-form button:hover {
-  filter: brightness(1.08);
-}
-.login-hint {
-  margin: 18px 0 0;
-  font-size: 12px;
-  color: var(--faint);
-}
-
-/* ------------------------------------------------------------ accounts */
-.login-card.is-wide {
-  max-width: 640px;
-}
-.login-card a.brand {
-  color: inherit;
-  text-decoration: none;
-}
-.login-notice {
-  margin: 0 0 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--done-dim);
-  border-radius: 10px;
-  background: var(--done-dim);
-  font-size: 13px;
-}
-.login-card > .login-error {
-  margin-bottom: 14px;
-}
-.login-form button.is-github {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 0;
-  background: var(--text);
-  color: var(--bg);
-}
-.login-or {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 20px 0 14px;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-.login-or::before,
-.login-or::after {
-  content: "";
-  flex: 1;
-  border-top: 1px solid var(--line);
-}
-.login-switch {
-  margin: 14px 0 0;
-  font-size: 13px;
-}
-.section-label {
-  margin: 0 0 10px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-.welcome-invitations {
-  margin-bottom: 22px;
-}
-.plain-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  overflow: hidden;
-}
-.invite-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  background: var(--panel-2);
-}
-.invite-row + .invite-row {
-  border-top: 1px solid var(--line);
-}
-.row-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-.row-actions form {
-  margin: 0;
-}
-.row-actions.is-spread {
-  gap: 10px;
-  align-items: stretch;
-}
-.row-actions .is-grow {
-  flex: 1;
-}
-.row-actions .is-grow button {
-  margin-top: 0;
-  width: 100%;
-}
-.inline-form {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.btn {
-  border: 1px solid var(--line-2);
-  background: var(--panel);
-  border-radius: 8px;
-  padding: 5px 10px;
-  font-size: 12.5px;
-  color: var(--text);
-  cursor: pointer;
-  white-space: nowrap;
-  transition:
-    border-color 0.2s,
-    background 0.2s;
-}
-.btn:hover {
-  border-color: var(--faint);
-}
-.btn.is-primary {
-  border-color: transparent;
-  background: var(--done);
-  color: var(--bg);
-  font-weight: 600;
-}
-.btn.is-danger:hover {
-  border-color: var(--critical);
-  color: var(--critical);
-}
-.login-card select,
-.ui-section select,
-.invite-form input {
-  font: inherit;
-  font-size: 13px;
-  color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--line-2);
-  border-radius: 8px;
-  padding: 5px 8px;
-}
-.invite-form {
-  display: flex;
-  gap: 8px;
-}
-.invite-form input {
-  flex: 1;
-  min-width: 0;
-  padding: 7px 10px;
-}
-.invite-form .btn {
-  padding: 7px 14px;
-}
-.ui-section-body .invite-form {
-  align-self: stretch;
-  max-width: 640px;
-}
-.row-actions.is-spread .btn {
-  height: 100%;
-  padding: 10px 14px;
-  border-radius: 10px;
-}
-@media (max-width: 560px) {
-  .invite-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .invite-form {
-    flex-wrap: wrap;
-  }
-}
-
 @media (max-width: 640px) {
-  .refresh-text,
-  .brand small {
+  .refresh-text {
     display: none;
   }
   .block-hint,
@@ -953,49 +670,6 @@ button.chip:hover {
     /* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over every transition */
     transition: none !important;
   }
-}
-
-/* ------------------------------------------------------------ terminal sign-in and API keys */
-.device-code {
-  margin: 0 0 18px;
-  padding: 14px;
-  text-align: center;
-  font-size: 30px;
-  letter-spacing: 0.18em;
-  border: 1px solid var(--line-2);
-  border-radius: 12px;
-  background: var(--panel-2);
-}
-.secret-once {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0 0 12px;
-}
-.secret-once code {
-  display: block;
-  padding: 10px 12px;
-  overflow-wrap: anywhere;
-  border: 1px solid var(--line-2);
-  border-radius: 10px;
-  background: var(--panel-2);
-  font-size: 12.5px;
-}
-.login-hint.is-top {
-  margin: 0 0 10px;
-}
-
-/* ------------------------------------------------------------ keys */
-.key-value {
-  font-size: 12.5px;
-  overflow-wrap: anywhere;
-}
-.row-actions.is-key {
-  flex-shrink: 1;
-  align-items: stretch;
-}
-.row-actions.is-key .invite-form {
-  flex: 1;
 }
 
 /* ===================================================================== v4
@@ -1422,9 +1096,6 @@ a.sh-item:hover {
   color: var(--text-3);
 }
 
-/* The organization's pages keep their card, without its brand, inside the frame. */
-/* Today's Fleet view inside the frame: its bar scrolls with it. */
-
 /* --------------------------------------------------------- components */
 .ui-status {
   flex: none;
@@ -1587,6 +1258,11 @@ a.sh-item:hover {
   border-radius: var(--r-lg);
   background: var(--card);
   color: var(--text-2);
+}
+.ui-empty.is-compact {
+  margin: 12px 20px;
+  padding: 16px 20px;
+  border-radius: var(--r-md);
 }
 .ui-empty-title {
   color: var(--text);
@@ -1918,6 +1594,267 @@ a.ui-row:hover {
 .ui-button.is-disabled:hover {
   background: var(--fill-2);
 }
+.ui-button.is-primary {
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 600;
+}
+.ui-button.is-primary:hover {
+  background: #fff;
+}
+.ui-button.is-danger {
+  background: transparent;
+  color: var(--critical);
+}
+.ui-button.is-danger:hover {
+  background: var(--critical-dim);
+}
+.ui-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.ui-input {
+  height: 28px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+.ui-input::placeholder {
+  color: var(--text-3);
+}
+.ui-input:focus {
+  border-color: var(--frontier);
+}
+.ui-select {
+  padding-right: 6px;
+  cursor: pointer;
+}
+.ui-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+}
+.ui-form .ui-input:not(.ui-select) {
+  width: 220px;
+}
+.ui-form.is-grow {
+  flex: 1;
+  align-self: stretch;
+}
+.ui-form.is-grow .ui-input:not(.ui-select) {
+  flex: 1 1 180px;
+  width: auto;
+}
+.ui-section-body > .ui-form.is-grow {
+  width: 100%;
+  max-width: 640px;
+}
+.ui-card.ui-secret {
+  align-self: stretch;
+  max-width: 640px;
+}
+.ui-secret-value {
+  display: block;
+  padding: 8px 10px;
+  border-radius: var(--r);
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------- before the shell */
+/* components/AuthCard.tsx: sign in, welcome, a terminal's code, an
+   invitation. Centered, the Armada mark over one card, the kit's controls. */
+.au {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 40px 20px;
+}
+.au-column {
+  width: 100%;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  animation: rise 0.6s var(--ease) both;
+}
+.au-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.au-card {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 26px 28px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 24px 48px -24px rgba(0, 0, 0, 0.8);
+}
+.au-kicker {
+  margin-bottom: -6px;
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.au-heading {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+.au-lead {
+  margin: -4px 0 4px;
+  color: var(--text-2);
+}
+.au-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.au-form label {
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.au-form .ui-input,
+.au-form .ui-button {
+  height: 36px;
+  font-size: 13px;
+}
+.au-form .ui-input[aria-invalid="true"] {
+  border-color: var(--critical);
+}
+.ui-button.au-submit {
+  height: 36px;
+  justify-content: center;
+  border-radius: var(--r-btn);
+  font-size: 13px;
+}
+.au-form label ~ .au-submit {
+  margin-top: 6px;
+}
+.au-submit.is-github {
+  gap: 10px;
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 600;
+}
+.au-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.au-or::before,
+.au-or::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--line);
+}
+.au-notice {
+  margin: 0;
+  padding: 9px 12px;
+  border-radius: var(--r);
+  font-size: 12.5px;
+}
+.au-notice.is-critical {
+  color: var(--critical);
+  background: var(--critical-dim);
+}
+.au-notice.is-done {
+  color: var(--text);
+  background: var(--done-dim);
+}
+.au-actions {
+  display: flex;
+  gap: 8px;
+}
+.au-actions .ui-form.is-grow .au-submit {
+  flex: 1;
+}
+.au-code {
+  margin: 0;
+  padding: 14px;
+  border-radius: var(--r-md);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--line);
+  text-align: center;
+  font-size: 26px;
+  letter-spacing: 0.18em;
+}
+.au-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.au-list-label {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--band);
+  font-size: 12px;
+  font-weight: 600;
+}
+.au-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+.au-list-text {
+  flex: 1;
+  min-width: 0;
+}
+.au-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.au-foot {
+  margin: 0;
+  font-size: 12.5px;
+}
+.au-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.au-link:hover {
+  color: var(--text);
+}
 
 /* ------------------------------------------------------------- screens */
 .sc-agent.is-airy {
@@ -2085,7 +2022,22 @@ a.ui-row:hover {
   flex-basis: 100%;
   min-width: 0;
 }
-.sc-key .key-value {
+.sc-key-hint {
   font-size: 12px;
+  color: var(--text-3);
+}
+.sc-key-value {
+  font-size: 12px;
+  color: var(--text-2);
   overflow-wrap: anywhere;
+}
+.sc-key .ui-row-side {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+@media (max-width: 760px) {
+  .sc-key .ui-row-side {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
 }

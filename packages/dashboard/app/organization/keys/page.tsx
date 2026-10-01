@@ -2,8 +2,22 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { deleteKey, saveKey } from "@/app/keys-actions";
-import { Notice, Page, Row, RowSide, RowText, RowTime, Section, SectionBody, Toolbar } from "@/components/page";
-import { Tabs, Tag } from "@/components/ui";
+import { OrganizationTabs } from "@/components/OrganizationTabs";
+import {
+  Button,
+  Form,
+  Input,
+  Notice,
+  Page,
+  Row,
+  RowSide,
+  RowText,
+  RowTime,
+  Section,
+  SectionBody,
+  Toolbar,
+} from "@/components/page";
+import { EmptyState, PhasePill, Tabs, Tag } from "@/components/ui";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
 import { accountsModeOf, KEYS_PATH } from "@/lib/accounts-settings";
 import { projectsOf } from "@/lib/fleet-store";
@@ -70,9 +84,10 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   });
   const when = (iso: string) => date.format(new Date(iso));
 
+  const tabs = <OrganizationTabs t={t} page="keys" />;
   if (vault.kind !== "on")
     return (
-      <Page>
+      <Page toolbar={<Toolbar>{tabs}</Toolbar>}>
         <Section label={k.nav} side={viewer.organization.name}>
           <Notice tone="critical">
             {vault.kind === "off" ? k.vaultOff(SECRETS_KEY_VARIABLE) : k.vaultInvalid(SECRETS_KEY_VARIABLE)}
@@ -116,17 +131,15 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
     const id = `key-${label}`;
     return (
       <Row key={label} className="sc-key">
-        <RowText title={k.labels[label]} line={status(info)} />
-        <span className="sc-key-wide faint">{k.hints[label]}</span>
-        {info?.value && <code className="mono key-value sc-key-wide">{info.value}</code>}
+        <RowText title={k.labels[label]} line={status(info)} lineColor={info ? undefined : "var(--text-4)"} />
         {editable && (
-          <span className="row-actions is-key sc-key-wide">
-            <form action={saveKey} className="invite-form">
+          <RowSide>
+            <Form action={saveKey}>
               {slotFields(name, scope)}
               <label className="sr-only" htmlFor={id}>
                 {`${k.labels[label]}: ${k.newValue}`}
               </label>
-              <input
+              <Input
                 id={id}
                 name="value"
                 type={secret ? "password" : "text"}
@@ -136,20 +149,18 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
                 placeholder={k.newValue}
                 maxLength={4096}
               />
-              <button type="submit" className="btn is-primary">
-                {info ? k.replace : k.save}
-              </button>
-            </form>
+              <Button tone="primary">{info ? k.replace : k.save}</Button>
+            </Form>
             {info && (
-              <form action={deleteKey}>
+              <Form action={deleteKey}>
                 {slotFields(name, scope)}
-                <button type="submit" className="btn is-danger">
-                  {k.remove}
-                </button>
-              </form>
+                <Button tone="danger">{k.remove}</Button>
+              </Form>
             )}
-          </span>
+          </RowSide>
         )}
+        <span className="sc-key-wide sc-key-hint">{k.hints[label]}</span>
+        {info?.value && <code className="mono sc-key-wide sc-key-value">{info.value}</code>}
       </Row>
     );
   };
@@ -161,13 +172,13 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
       <Row key={info.name} className="sc-key">
         <RowText title={<span className="mono">{info.name}</span>} line={status(info)} />
         {manager && (
-          <span className="row-actions is-key sc-key-wide">
-            <form action={saveKey} className="invite-form">
+          <RowSide>
+            <Form action={saveKey}>
               {slotFields(info.name, secretScope)}
               <label className="sr-only" htmlFor={id}>
                 {`${info.name}: ${k.newValue}`}
               </label>
-              <input
+              <Input
                 id={id}
                 name="value"
                 type="password"
@@ -177,17 +188,13 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
                 placeholder={k.newValue}
                 maxLength={32768}
               />
-              <button type="submit" className="btn is-primary">
-                {k.replace}
-              </button>
-            </form>
-            <form action={deleteKey}>
+              <Button tone="primary">{k.replace}</Button>
+            </Form>
+            <Form action={deleteKey}>
               {slotFields(info.name, secretScope)}
-              <button type="submit" className="btn is-danger">
-                {k.remove}
-              </button>
-            </form>
-          </span>
+              <Button tone="danger">{k.remove}</Button>
+            </Form>
+          </RowSide>
         )}
       </Row>
     );
@@ -199,19 +206,23 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   return (
     <Page
       toolbar={
-        projects.length > 0 && (
-          <Toolbar>
-            <Tabs
-              label={k.scope}
-              value={slug}
-              items={[{ slug: "", name: k.organizationScope }, ...projects].map((p) => ({
-                key: p.slug,
-                label: p.name,
-                href: scopeHref(p.slug),
-              }))}
-            />
-          </Toolbar>
-        )
+        <Toolbar
+          end={
+            projects.length > 0 && (
+              <Tabs
+                label={k.scope}
+                value={slug}
+                items={[{ slug: "", name: k.organizationScope }, ...projects].map((p) => ({
+                  key: p.slug,
+                  label: p.name,
+                  href: scopeHref(p.slug),
+                }))}
+              />
+            )
+          }
+        >
+          {tabs}
+        </Toolbar>
       }
     >
       {error && <Notice tone="critical">{k.errors[error]}</Notice>}
@@ -237,51 +248,47 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
       <Section label={k.workerSecrets} count={workerSecrets.length}>
         <SectionBody>
           <p>{k.workerSecretsHint(!project)}</p>
-          {workerSecrets.length === 0 && <p className="faint">{k.noSecrets}</p>}
+          {fromOrganization.length > 0 && (
+            <p className="faint mono">{k.fromOrganization(fromOrganization.join(", "))}</p>
+          )}
         </SectionBody>
+        {workerSecrets.length === 0 && <EmptyState compact title={k.noSecrets} />}
         {workerSecrets.map(workerRow)}
-        {(fromOrganization.length > 0 || manager) && (
+        {manager && (
           <SectionBody>
-            {fromOrganization.length > 0 && (
-              <p className="faint mono">{k.fromOrganization(fromOrganization.join(", "))}</p>
-            )}
-            {manager && (
-              <form action={saveKey} className="invite-form">
-                <input type="hidden" name="scope" value={secretScope} />
-                {project && <input type="hidden" name="project" value={slug} />}
-                <label className="sr-only" htmlFor="secret-name">
-                  {k.secretName}
-                </label>
-                <input
-                  id="secret-name"
-                  name="name"
-                  type="text"
-                  required
-                  autoComplete="off"
-                  spellCheck={false}
-                  pattern="[A-Za-z][A-Za-z0-9_]{0,63}"
-                  placeholder={k.secretNamePlaceholder}
-                  maxLength={64}
-                  className="mono"
-                />
-                <label className="sr-only" htmlFor="secret-value">
-                  {k.newValue}
-                </label>
-                <input
-                  id="secret-value"
-                  name="value"
-                  type="password"
-                  required
-                  autoComplete="new-password"
-                  spellCheck={false}
-                  placeholder={k.newValue}
-                  maxLength={32768}
-                />
-                <button type="submit" className="btn is-primary">
-                  {k.add}
-                </button>
-              </form>
-            )}
+            <Form action={saveKey} grow>
+              <input type="hidden" name="scope" value={secretScope} />
+              {project && <input type="hidden" name="project" value={slug} />}
+              <label className="sr-only" htmlFor="secret-name">
+                {k.secretName}
+              </label>
+              <Input
+                id="secret-name"
+                name="name"
+                type="text"
+                required
+                autoComplete="off"
+                spellCheck={false}
+                pattern="[A-Za-z][A-Za-z0-9_]{0,63}"
+                placeholder={k.secretNamePlaceholder}
+                maxLength={64}
+                className="mono"
+              />
+              <label className="sr-only" htmlFor="secret-value">
+                {k.newValue}
+              </label>
+              <Input
+                id="secret-value"
+                name="value"
+                type="password"
+                required
+                autoComplete="new-password"
+                spellCheck={false}
+                placeholder={k.newValue}
+                maxLength={32768}
+              />
+              <Button tone="primary">{k.add}</Button>
+            </Form>
           </SectionBody>
         )}
       </Section>
@@ -293,8 +300,8 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
               {k.auditHint}
               {project ? ` ${k.auditProjectHint(project.name)}` : ""}
             </p>
-            {events.length === 0 && <p className="faint">{k.noEvents}</p>}
           </SectionBody>
+          {events.length === 0 && <EmptyState compact title={k.noEvents} />}
           {events.map((e) => (
             <Row key={e.id}>
               <RowText
@@ -307,8 +314,8 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
                 }
               />
               <RowSide>
-                <Tag>{k.actions[e.action]}</Tag>
                 {!project && e.project && <Tag>{e.project}</Tag>}
+                <PhasePill tone={e.action === "refuse" ? "error" : "neutral"}>{k.actions[e.action]}</PhasePill>
               </RowSide>
               <RowTime>{when(e.at)}</RowTime>
             </Row>
