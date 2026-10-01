@@ -8,9 +8,11 @@
 // stays the record.
 import type {
   Attachment,
+  CatchupRecords,
   CoordinatorPresence,
   CoordinatorSeen,
   EventInput,
+  FeedEntry,
   FleetStore,
   HeartbeatRecord,
   HeartbeatResult,
@@ -39,6 +41,7 @@ import type {
   WorkerProfile,
 } from "@armada/core/read";
 import { REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
+import { catchupRecords, type FeedQuery, feedPage, feedPeople } from "./activity-store";
 import { ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
 import { endWorker } from "./workers";
@@ -1179,6 +1182,11 @@ export interface LiveStore extends RequestStore {
     since: Date,
     silentAfterMinutes: number,
   ): Promise<Omit<ProjectInsightRecords, "project" | "silentAfterMinutes">>;
+  /** The Activity feed and the people its filter offers (THE-894). */
+  feedPage(q: FeedQuery): Promise<FeedEntry[]>;
+  feedPeople(projects: string[], now: Date): Promise<string[]>;
+  /** What the overview's "since you were away" sums up (THE-894). */
+  catchupRecords(project: string, since: Date, silentAfterMinutes: number, now: Date): Promise<CatchupRecords>;
 }
 
 /** A ticket's history in the app's database: its events, inbox items and launches. */
@@ -1216,4 +1224,8 @@ export const liveStore = (db: Database): LiveStore => ({
   decideValidation: (d) => decideValidation(db, d),
   ticketsAttachments: (project, tickets) => ticketsAttachments(db, project, tickets),
   insightRecords: (project, since, silentAfterMinutes) => insightRecords(db, project, since, silentAfterMinutes),
+  feedPage: (q) => feedPage(db, q),
+  feedPeople: (projects, now) => feedPeople(db, projects, now),
+  catchupRecords: (project, since, silentAfterMinutes, now) =>
+    catchupRecords(db, project, since, silentAfterMinutes, now),
 });

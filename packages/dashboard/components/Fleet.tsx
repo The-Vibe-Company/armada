@@ -36,6 +36,7 @@ import {
   Section,
   SectionBody,
 } from "./page";
+import { SinceAway } from "./SinceAway";
 import { ValidationCard } from "./screens/ValidationCard";
 import { useFleet, useNow, useShell } from "./shell/context";
 import { LiveTimeline } from "./timeline/Timeline";
@@ -80,6 +81,7 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
           onRefresh={refresh}
         />
       </HeaderActions>
+      <SinceAway />
       {overview.live.state === "unreachable" && <Notice tone="warn">{t.unreachableBanner(overview.live.error)}</Notice>}
       {overview.live.state === "off" && <Notice>{t.offBanner}</Notice>}
       {unread.map((p) =>

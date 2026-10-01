@@ -86,9 +86,14 @@ describe("the landing page", () => {
       // The landing's own static files (its replica's overview) are fine to fetch.
       .filter((f) => /next\/headers|\bfetch\((?!"\/landing\/)|cookies\(\)/.test(read(f)))
       .map((f) => relative(ROOT, f));
-    // Both read the server only in the shell: its poll (FleetProvider), and the timeline's history
-    // when none is given. The replica runs in ShowcaseProvider, which gives the history and never polls.
-    expect(offenders.sort()).toEqual(["components/shell/context.tsx", "components/timeline/Timeline.tsx"]);
+    // They read the server only in the shell: its poll (FleetProvider), its visit beacon (VisitProvider,
+    // THE-894), and the timeline's history when none is given. The replica runs in ShowcaseProvider,
+    // which gives the history, never polls and has no visit.
+    expect(offenders.sort()).toEqual([
+      "components/shell/context.tsx",
+      "components/shell/visit.tsx",
+      "components/timeline/Timeline.tsx",
+    ]);
   });
 });
 
