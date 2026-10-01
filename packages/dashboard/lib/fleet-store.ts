@@ -192,23 +192,37 @@ export async function latestEvents(
 
 // ------------------------------------------------------------------ coordinator presence
 
-/** Records that the coordinator of a project is at work (it read its inbox): one row per project. */
+/**
+ * Records that the coordinator of a project is at work (it read its inbox):
+ * one row per project, with its CLI version when it sent one (kept otherwise).
+ */
 export async function recordCoordinatorSeen(
   db: Queryable,
-  seen: { project: string; handle?: string | null; at: Date },
+  seen: { project: string; handle?: string | null; cliVersion?: string | null; at: Date },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO coordinator_presence (project, handle, seen_at) VALUES ($1, $2, $3)
-     ON CONFLICT (project) DO UPDATE SET handle = excluded.handle, seen_at = excluded.seen_at
+    `INSERT INTO coordinator_presence (project, handle, seen_at, cli_version) VALUES ($1, $2, $3, $4)
+     ON CONFLICT (project) DO UPDATE SET handle = excluded.handle, seen_at = excluded.seen_at,
+       cli_version = COALESCE(excluded.cli_version, coordinator_presence.cli_version)
      WHERE coordinator_presence.seen_at <= excluded.seen_at`,
-    [seen.project, seen.handle ?? null, seen.at],
+    [seen.project, seen.handle ?? null, seen.at, seen.cliVersion ?? null],
   );
 }
 
 /** When the coordinator of a project last read its inbox; null if it never did. */
 export async function lastCoordinatorSeen(db: Queryable, project: string): Promise<string | null> {
-  const rs = await db.query("SELECT seen_at FROM coordinator_presence WHERE project = $1", [project]);
-  return iso(rs.rows[0]?.seen_at);
+  return (await coordinatorPresence(db, project))?.seenAt ?? null;
+}
+
+/** The coordinator's presence: when it last read its inbox and the CLI it ran; null if it never did. */
+export async function coordinatorPresence(
+  db: Queryable,
+  project: string,
+): Promise<{ seenAt: string; cliVersion: string | null } | null> {
+  const rs = await db.query("SELECT seen_at, cli_version FROM coordinator_presence WHERE project = $1", [project]);
+  const row = rs.rows[0];
+  const seenAt = iso(row?.seen_at);
+  return seenAt ? { seenAt, cliVersion: text(row?.cli_version) } : null;
 }
 
 // ------------------------------------------------------------------ runtime handles and profiles
@@ -625,7 +639,7 @@ export interface LiveStore extends RequestStore {
   latestEvents(project: string, opts: { since: Date }): Promise<Record<string, LatestEvent>>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   openInboxItems(q: { project: string; recipient: InboxRecipient }): Promise<InboxItem[]>;
-  lastCoordinatorSeen(project: string): Promise<string | null>;
+  coordinatorPresence(project: string): Promise<{ seenAt: string; cliVersion: string | null } | null>;
 }
 
 export const liveStore = (db: Queryable): LiveStore => ({
@@ -634,7 +648,7 @@ export const liveStore = (db: Queryable): LiveStore => ({
   latestEvents: (project, opts) => latestEvents(db, project, opts),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   openInboxItems: (q) => openInboxItems(db, q),
-  lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
+  coordinatorPresence: (project) => coordinatorPresence(db, project),
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addRequest: (r) => addRequest(db, r),

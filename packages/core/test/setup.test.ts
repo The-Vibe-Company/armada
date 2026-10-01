@@ -8,6 +8,7 @@ import {
   SetupError,
   type SetupPlan,
   skillFolderHash,
+  skillsBehind,
 } from "../src/index.ts";
 import { DEMO_TOML } from "./support.ts";
 
@@ -86,7 +87,15 @@ describe("repository checks", () => {
     const repo = await setUpRepo();
     repo.files.set(".agents/skills/armada-worker/SKILL.md", "an older worker skill");
     repo.files.set(".agents/skills/armada-worker/OLD.md", "a file the new version dropped");
+    const lockBefore = repo.files.get("skills-lock.json") ?? "{}";
+    const lock = JSON.parse(lockBefore);
+    lock.skills["armada-worker"].ref = "v1.1.0";
+    lock.skills["armada-coordinator"].ref = "v1.0.0";
+    repo.files.set("skills-lock.json", JSON.stringify(lock));
     const checks = await checkRepository(repo.view, VERSION);
+    // The version line names only the skills that differ, and the release the lock records for them.
+    const line = "this project's Armada skills are 1.1.0 (armada-worker differs), the CLI is 1.2.3";
+    expect(await skillsBehind(repo.view)).toEqual({ recorded: "1.1.0", differing: ["armada-worker"] });
     expect(problems(checks).map((c) => [c.id, c.level, c.message])).toEqual([
       ["skill:armada-worker", "warning", "skill armada-worker differs from the version in Armada 1.2.3"],
       [
@@ -94,7 +103,12 @@ describe("repository checks", () => {
         "warning",
         "skills-lock.json records a different content for armada-worker than .agents/skills/armada-worker",
       ],
+      ["skills-version", "warning", line],
     ]);
+    expect(checks.find((c) => c.id === "skills-version")?.fix).toBe(
+      "run `armada init` and merge its PR (`armada merge <n> --no-ticket`)",
+    );
+    repo.files.set("skills-lock.json", lockBefore);
     const plan = await planSetup(repo.view, { armadaVersion: VERSION, configText: null });
     expect(plan.updated).toEqual(["armada-worker"]);
     expect(plan.installed).toEqual([]);

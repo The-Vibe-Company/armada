@@ -4,7 +4,7 @@
 // Armada expects, and whether the conductor command is found. A fake Armada
 // answers.
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Check, ServerCli } from "@armada/core";
@@ -50,12 +50,13 @@ async function terminal(
     ...(more.cli ? { cli: more.cli } : {}),
   });
   const out: string[] = [];
+  const errs: string[] = [];
   const io: Io = {
     cwd: home,
     env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, ...env },
     readFile: async () => null,
     stdout: (t) => out.push(t),
-    stderr: (t) => out.push(t),
+    stderr: (t) => errs.push(t),
     ghToken: () => null,
     fetch: armada.fetch,
     now: () => NOW,
@@ -65,13 +66,15 @@ async function terminal(
   const doctor = async () => {
     await run(["doctor", "--json"], io);
     const text = out.splice(0).join("");
-    for (const secret of [KEY, SESSION, LINEAR]) expect(text).not.toContain(secret);
+    for (const secret of [KEY, SESSION, LINEAR]) expect([text, ...errs].join("")).not.toContain(secret);
     const report = JSON.parse(text.slice(text.indexOf("{"))) as { checks: Check[] };
     return report.checks.filter((c) =>
       ["sign-in", "cli-version", "local-keys", "retired-keys", "conductor-cli"].includes(c.id),
     );
   };
-  return { doctor, credentials: join(home, "armada", "credentials") };
+  /** What the last runs printed on stderr, emptied. */
+  const stderr = () => errs.splice(0).join("");
+  return { doctor, stderr, home, credentials: join(home, "armada", "credentials") };
 }
 
 describe("armada doctor: the sign-in to Armada", () => {
@@ -175,6 +178,35 @@ describe("armada doctor: this CLI's version", () => {
       message: `Armada ${version} is recent enough for armada.example.test (0.0.1 or newer); 99.1.0 is out: npm install -g @the-vibe-company/armada@99.1.0`,
       fix: null,
     });
+  });
+});
+
+describe("a newer Armada release", () => {
+  const notice = `armada: Armada 99.1.0 is out (you run ${version}): npm install -g @the-vibe-company/armada@99.1.0 — then armada init to refresh this project's skills. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0\n`;
+
+  test("a coordinator command says it once per version on this machine", async () => {
+    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, null, { cli: { minimum: "0.0.1", latest: "99.1.0" } });
+    await t.doctor();
+    expect(t.stderr()).toBe(notice);
+    await t.doctor();
+    expect(t.stderr()).toBe("");
+    expect(JSON.parse(await readFile(join(t.home, "armada", "releases.json"), "utf8"))).toEqual({
+      noticed: ["99.1.0"],
+    });
+  });
+
+  test("a worker is never told: it installs the version its brief names", async () => {
+    const t = await terminal({ ARMADA_API_KEY: KEY, ARMADA_TICKET: "DEMO-2" }, {}, null, {
+      cli: { minimum: "0.0.1", latest: "99.1.0" },
+    });
+    await t.doctor();
+    expect(t.stderr()).toBe("");
+  });
+
+  test("a CLI older than the server's minimum gets the upgrade line only", async () => {
+    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, null, { cli: { minimum: "99.0.0", latest: "99.1.0" } });
+    await t.doctor();
+    expect(t.stderr()).not.toContain("is out");
   });
 });
 

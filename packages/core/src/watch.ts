@@ -7,7 +7,7 @@
 // and no watch runs. This file is the pure side: the loop over an injected
 // fleet and clock, the line and the hook's decision; the watch state file is
 // `machine.ts`.
-import { ArmadaApiError } from "./armada-api.ts";
+import { ArmadaApiError, installCommand, releaseNotesUrl } from "./armada-api.ts";
 import { entryKey, type Fleet, type InboxEntry } from "./live.ts";
 
 /** How often the watch asks Armada while a worker is in flight; Armada answers 304 while nothing changed. */
@@ -64,6 +64,11 @@ export interface WatchOptions {
   onRead?: (read: { items: InboxEntry[]; inFlight: string[] | null }) => Promise<void>;
   /** A failure the watch waits out. */
   onRetry?: (message: string) => void;
+  /**
+   * A newer Armada release the coordinator was not told of yet (`releaseEntry`),
+   * asked after every read: it ends the watch, after every inbox entry.
+   */
+  release?: () => InboxEntry | null;
   pollMs?: number;
   idlePollMs?: number;
 }
@@ -126,11 +131,37 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
       known = new Set(items.map(entryKey));
       for (const w of read.warnings) warnings.add(w);
       await o.onRead?.({ items, inFlight });
-      if (items.some((e) => e.new)) return report("items");
-      if (inFlight !== null && !inFlight.length && !items.length) return report("nothing");
     }
+    // Not urgent: a release comes after the questions, plans and hand-backs already open.
+    const release = o.release?.() ?? null;
+    if (release) items = [...items, { ...release, new: true }];
+    if (items.some((e) => e.new)) return report("items");
+    if (read && inFlight !== null && !inFlight.length && !items.length) return report("nothing");
     await o.sleep(inFlight !== null && !inFlight.length ? idlePollMs : pollMs);
   }
+}
+
+/**
+ * The watch's entry for a newer Armada release: what is out, where its notes
+ * are, and the steps, between rounds: workers in flight keep their version.
+ */
+export function releaseEntry(running: string, latest: string, at: Date): InboxEntry {
+  return {
+    id: null,
+    kind: "version",
+    ticket: null,
+    author: null,
+    version: latest,
+    body: [
+      `Armada ${latest} is out (you run ${running}). Changes: ${releaseNotesUrl(latest)}`,
+      "Not urgent: finish what is in flight first, then, between rounds:",
+      `  1. ${installCommand(latest)}`,
+      "  2. armada init, then merge its pull request: armada merge <n> --no-ticket",
+      "Workers in flight keep the version their brief pinned: tell them nothing unless the notes say otherwise.",
+    ].join("\n"),
+    createdAt: at.toISOString(),
+    new: false,
+  };
 }
 
 // ------------------------------------------------------------------ the re-arm line

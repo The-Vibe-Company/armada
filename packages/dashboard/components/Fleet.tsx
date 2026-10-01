@@ -296,6 +296,12 @@ function ProjectBar({
               <i aria-hidden />
               {t.coordinator[p.coordinator.state]}
               {ago && <span className="faint"> · {ago}</span>}
+              {p.coordinator.cliVersion && (
+                <span className="faint">
+                  {" "}
+                  · {t.coordinatorCli(p.coordinator.cliVersion, p.coordinator.updateAvailable)}
+                </span>
+              )}
             </span>
           </button>
         );

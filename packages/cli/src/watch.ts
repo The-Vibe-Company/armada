@@ -26,9 +26,11 @@ import {
   type WatchState,
   watchInbox,
 } from "@armada/core";
+import { version } from "../package.json" with { type: "json" };
 import { renderEntries } from "./inbox.ts";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
+import { noticedReleases, pendingRelease, rememberRelease } from "./release.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
 /** The coordinator's own session, never counted as a worker: ARMADA_COORDINATOR_HANDLE, else Conductor's. */
@@ -134,8 +136,10 @@ async function watchUntil(
         if (inFlight) await remember(io, project, { inFlight, readAt: now(io).toISOString() });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
+      release: pendingRelease(io, version, await noticedReleases(io)),
     });
     await remember(io, project, shown(io, report.items, report.inFlight));
+    for (const e of report.items) if (e.kind === "version" && e.version) await rememberRelease(io, e.version);
     const next = rearm({ inFlight: report.inFlight, open: report.items.length, running: null, act: true });
     if (json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
     else {

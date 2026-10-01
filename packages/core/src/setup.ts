@@ -3,6 +3,7 @@
 // RepoView, so the same rules run on a working tree or on a fresh checkout of
 // the default branch, and tests need no git.
 import { parse, TomlError } from "smol-toml";
+import { compareVersions } from "./armada-api.ts";
 import { CONFIG_FILE, ConfigError, parseConfig } from "./config.ts";
 import { BUNDLED_SKILLS, type BundledSkill, SKILLS_SOURCE, skillFolderHash } from "./skills.ts";
 
@@ -113,6 +114,63 @@ const IGNORES_SHIP = new Set(["plans/ship-pr-dev/", "plans/ship-pr-dev", "plans/
 export const ignoresShipArtifacts = (gitignore: string | null) =>
   (gitignore ?? "").split(/\r?\n/).some((l) => IGNORES_SHIP.has(l.trim().replace(/^\//, "")));
 
+/** The hash of a vendored skill's folder; null when it is not installed. */
+async function installedHash(view: RepoView, name: string): Promise<string | null> {
+  const folder = await view.readFolder(skillDir(name));
+  return folder?.some((f) => f.path === "SKILL.md") ? skillFolderHash(folder) : null;
+}
+
+/**
+ * The project's Armada skills that differ from this CLI's copy, and the
+ * oldest release `skills-lock.json` records for them (null when it records
+ * none). A recorded release older than the CLI alone is not "behind": Armada
+ * releases several times a day, mostly without a skill change.
+ */
+export interface SkillsBehind {
+  recorded: string | null;
+  differing: string[];
+}
+
+const SKILLS_BEHIND_FIX = "run `armada init` and merge its PR (`armada merge <n> --no-ticket`)";
+
+function behindOf(lock: SkillsLock | null, differing: string[]): SkillsBehind | null {
+  if (!differing.length) return null;
+  const refs = differing.flatMap((name) => {
+    const ref = lock?.skills[name]?.ref;
+    return typeof ref === "string" && /^v\d/.test(ref) ? [ref.slice(1)] : [];
+  });
+  const recorded = refs.sort(compareVersions)[0] ?? null;
+  return { recorded, differing };
+}
+
+const skillsBehindMessage = (b: SkillsBehind, cli: string) =>
+  `this project's Armada skills are ${b.recorded ?? "of an unrecorded version"} (${b.differing.join(", ")} ${b.differing.length === 1 ? "differs" : "differ"}), the CLI is ${cli}`;
+
+/** The one line naming skills behind the CLI, with what to do; for `armada status`. */
+export const skillsBehindLine = (b: SkillsBehind, cli: string) =>
+  `${skillsBehindMessage(b, cli)}: ${SKILLS_BEHIND_FIX}`;
+
+/**
+ * Whether the project's vendored Armada skills differ from this CLI's copy;
+ * null when they match, or are not installed (`armada doctor` says that), or
+ * the lock cannot be read.
+ */
+export async function skillsBehind(view: RepoView): Promise<SkillsBehind | null> {
+  let lock: SkillsLock | null;
+  try {
+    lock = parseSkillsLock(await view.readFile(SKILLS_LOCK_FILE));
+  } catch (err) {
+    if (err instanceof SetupError) lock = null;
+    else throw err;
+  }
+  const differing: string[] = [];
+  for (const skill of BUNDLED_SKILLS) {
+    const installed = await installedHash(view, skill.name);
+    if (installed !== null && installed !== bundledHash(skill)) differing.push(skill.name);
+  }
+  return behindOf(lock, differing);
+}
+
 /** Checks everything in the repository itself; the tracker labels are checked by checkLabels. */
 export async function checkRepository(view: RepoView, armadaVersion: string): Promise<Check[]> {
   const checks: Check[] = [];
@@ -159,15 +217,18 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
   if (lockError) checks.push(bad("skills-lock", "error", lockError, `repair or delete ${SKILLS_LOCK_FILE}`));
 
   const wholeDir = await linksWholeDir(view);
+  const differing: string[] = [];
+  let present = 0;
   for (const skill of BUNDLED_SKILLS) {
-    const folder = await view.readFolder(skillDir(skill.name));
-    const installed = folder?.some((f) => f.path === "SKILL.md") ? skillFolderHash(folder) : null;
+    const installed = await installedHash(view, skill.name);
     const id = `skill:${skill.name}`;
     if (installed === null) {
       // Its link and lock entry come with the install; one line per missing skill is enough.
       checks.push(bad(id, "error", `skill ${skill.name} is missing from ${AGENTS_SKILLS_DIR}`, "run `armada init`"));
       continue;
     }
+    present++;
+    if (installed !== bundledHash(skill)) differing.push(skill.name);
     if (installed !== bundledHash(skill))
       checks.push(
         bad(
@@ -212,6 +273,10 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
       );
     else checks.push(ok(lockId, `${SKILLS_LOCK_FILE} records ${skill.name}`));
   }
+  const behind = behindOf(lock, differing);
+  if (behind)
+    checks.push(bad("skills-version", "warning", skillsBehindMessage(behind, armadaVersion), SKILLS_BEHIND_FIX));
+  else if (present) checks.push(ok("skills-version", `this project's Armada skills match Armada ${armadaVersion}'s`));
 
   const settings = await view.readFile(CONDUCTOR_SETTINGS);
   if (settings === null)

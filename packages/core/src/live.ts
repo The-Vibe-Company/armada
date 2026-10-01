@@ -154,8 +154,16 @@ export interface FleetStore {
   lastEventTimes(project: string): Promise<Record<string, string>>;
   /** The newest event of every ticket of a project; with `since`, only tickets with an event since then. */
   latestEvents(project: string, opts?: { since?: Date }): Promise<Record<string, LatestEvent>>;
-  /** Records that the coordinator of a project is at work (it read its inbox). */
-  recordCoordinatorSeen(seen: { project: string; handle?: string | null; at: Date }): Promise<void>;
+  /**
+   * Records that the coordinator of a project is at work (it read its inbox),
+   * with the version of its CLI when it sent one (kept otherwise).
+   */
+  recordCoordinatorSeen(seen: {
+    project: string;
+    handle?: string | null;
+    cliVersion?: string | null;
+    at: Date;
+  }): Promise<void>;
   lastCoordinatorSeen(project: string): Promise<string | null>;
 
   /** Records the profile of the claim now holding a ticket; null forgets the one of an earlier claim. */
@@ -452,7 +460,8 @@ export async function recordMerge(
 
 const MIN = 60_000;
 
-export type InboxEntryKind = InboxKind | "silent";
+/** `silent`: a worker gone quiet; `version`: a newer Armada is out (`armada watch` only, never stored). */
+export type InboxEntryKind = InboxKind | "silent" | "version";
 
 export interface InboxEntry {
   /** Inbox item id for `armada answer`; null for a silent worker (it clears when the worker reports). */
@@ -468,10 +477,13 @@ export interface InboxEntry {
   new: boolean;
   /** Dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
   request?: { question: number | null; profile: string | null };
+  /** A `version` entry: the Armada release that is out. */
+  version?: string;
 }
 
-/** How an entry is told apart between two reads: `#12`, or `silent:<ticket>`. */
-export const entryKey = (e: Pick<InboxEntry, "id" | "ticket">) => (e.id === null ? `silent:${e.ticket}` : `#${e.id}`);
+/** How an entry is told apart between two reads: `#12`, `silent:<ticket>` or `version:<version>`. */
+export const entryKey = (e: Pick<InboxEntry, "id" | "ticket"> & { version?: string | undefined }) =>
+  e.id !== null ? `#${e.id}` : e.version ? `version:${e.version}` : `silent:${e.ticket}`;
 
 export interface InboxReadOptions {
   project: string;
@@ -601,13 +613,15 @@ export async function serveInbox(
   project: string,
   q: InboxQuery,
   now: Date,
+  /** The coordinator's CLI version, from the request's `x-armada-cli-version`. */
+  cliVersion: string | null = null,
 ): Promise<InboxRead | null> {
   const warnings: string[] = [];
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
   try {
     const seen = await store.lastCoordinatorSeen(project);
     if (!seen || now.getTime() - Date.parse(seen) >= PRESENCE_EVERY_MS)
-      await store.recordCoordinatorSeen({ project, handle: q.coordinator, at: now });
+      await store.recordCoordinatorSeen({ project, handle: q.coordinator, cliVersion, at: now });
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }

@@ -27,7 +27,7 @@ import {
   storeIsExposed,
   updateCredentialStore,
 } from "@armada/core";
-import { apiOf } from "./api.ts";
+import { apiOf, heard } from "./api.ts";
 import { type Io, UsageError } from "./io.ts";
 
 export interface Machine {
@@ -131,6 +131,8 @@ export async function loadCredentials(
   };
   const local = resolveCredentials(sources);
   const signIn = local.armadaSignIn;
+  // A worker installs the version its brief names: it is never told of a newer release.
+  if (signIn?.kind === "worker") heard(io).worker = true;
   const purpose = worker && ticket ? { command: worker.command, project: worker.project, ticket } : null;
   if (signIn?.kind === "worker" && armada) {
     if (signIn.project !== worker?.project)

@@ -313,3 +313,29 @@ export async function runningWatch(
   const pid = await readWatchLock(paths, project).catch(() => null);
   return pid !== null && alive(pid) ? pid : null;
 }
+
+// ------------------------------------------------------------------ releases already noticed
+
+/** How many noticed releases the file keeps: enough to never repeat a recent one. */
+const NOTICED_KEPT = 50;
+
+/** `releases.json`: the Armada releases this machine's coordinator was told of, once each. No secret. */
+export const releasesFile = (paths: MachinePaths) => join(paths.dir, "releases.json");
+
+/** The releases already noticed on this machine; none when the file is missing or unreadable. */
+export async function readNoticedReleases(paths: MachinePaths): Promise<string[]> {
+  try {
+    const raw = JSON.parse(await readFile(releasesFile(paths), "utf8")) as { noticed?: unknown };
+    return strings(raw?.noticed) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Remembers that the coordinator was told of `version`. */
+export async function addNoticedRelease(paths: MachinePaths, version: string): Promise<void> {
+  const noticed = (await readNoticedReleases(paths)).filter((v) => v !== version);
+  noticed.push(version);
+  const text = `${JSON.stringify({ noticed: noticed.slice(-NOTICED_KEPT) }, null, 2)}\n`;
+  await writePrivate(paths, releasesFile(paths), text, 0o644);
+}

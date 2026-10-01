@@ -4,6 +4,7 @@ import { entryKey, inboxTag } from "../src/live.ts";
 import {
   EMPTY_WATCH_STATE,
   rearm,
+  releaseEntry,
   stopHookDecision,
   transientFailure,
   type WatchState,
@@ -146,6 +147,36 @@ describe("armada watch", () => {
       ["question", "DEMO-3", true],
     ]);
     expect(live.clock.now().getTime() - NOW.getTime()).toBe(60_000);
+  });
+
+  test("a new release ends the watch, after the open items", async () => {
+    const live = tempFleet();
+    await holding(live, "DEMO-2");
+    await handBack(live, "DEMO-2");
+    const shown = await live.fleet.inbox({ coordinator: COORDINATOR, silentAfterMinutes: 15, etag: null });
+    let latest: string | null = null;
+    let sleeps = 0;
+    const { o } = options(live, {
+      seen: (shown?.items ?? []).map(entryKey),
+      // The server names 0.2.4 from its second answer on.
+      release: () => (latest ? releaseEntry("0.2.3", latest, live.clock.now()) : null),
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (++sleeps === 2) latest = "0.2.4";
+      },
+    });
+    const got = await watchInbox(live.fleet, o);
+    expect(got.items.map((e) => [e.kind, e.ticket, e.new])).toEqual([
+      ["hand-back", "DEMO-2", false],
+      ["version", null, true],
+    ]);
+    const version = got.items[1];
+    expect(version && entryKey(version)).toBe("version:0.2.4");
+    expect(version?.body).toContain("https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4");
+    expect(version?.body).toContain("npm install -g @the-vibe-company/armada@0.2.4");
+    expect(version?.body).toContain("armada merge <n> --no-ticket");
+    // Woken on the first read after the release, not before.
+    expect(live.clock.now().getTime() - NOW.getTime()).toBe(30_000);
   });
 
   test("with no worker in flight and nothing open, there is nothing to watch", async () => {

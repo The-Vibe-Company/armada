@@ -11,6 +11,7 @@ import {
   pullResponse,
   recordedFetch,
 } from "../../core/test/support.ts";
+import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
@@ -257,7 +258,11 @@ describe("armada ask, inbox and answer", () => {
       handles.filter((handle) => handle !== coordinator),
     );
     expect(cli.err()).toBe("");
-    expect(cli.store.presence.get("widgets")).toEqual({ handle: coordinator, at: NOW.toISOString() });
+    expect(cli.store.presence.get("widgets")).toEqual({
+      handle: coordinator,
+      cliVersion: version,
+      at: NOW.toISOString(),
+    });
   });
 
   test("a worker asks, the coordinator reads its inbox and records the answer, the worker resumes", async () => {
