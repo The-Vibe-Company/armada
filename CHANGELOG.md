@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.24](https://github.com/The-Vibe-Company/armada/compare/v0.2.23...v0.2.24) (2026-10-01)
+
+
+### Bug Fixes
+
+* **api:** announce CLI releases only after npm serves their tarballs ([#113](https://github.com/The-Vibe-Company/armada/issues/113)) ([61d5b8d](https://github.com/The-Vibe-Company/armada/commit/61d5b8d9d6f3ae39a06d9c57e764f727937df4ba))
+
 ## [0.2.23](https://github.com/The-Vibe-Company/armada/compare/v0.2.22...v0.2.23) (2026-10-01)
 
 
