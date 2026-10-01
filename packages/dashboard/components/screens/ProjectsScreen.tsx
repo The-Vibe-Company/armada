@@ -5,10 +5,12 @@
 // root, coordinator, health, agents, pull requests, owner and last activity.
 // Registering a project stays a terminal step: the header's button shows them.
 import type { FleetRow, ProjectHealth, ProjectOverview } from "@armada/core/read";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { filterProjects, hasFilters } from "@/lib/filters";
 import { HARNESS_NAME, harnessOf, paths } from "@/lib/fleet-view";
 import { coordinatorHarness, lastActivity, prCounts, progressPercent, REGISTER_STEPS } from "@/lib/project-view";
-import { HeaderActions, Notice, Page, Row, RowIcon, RowSide, RowText, RowTime, Section } from "../page";
+import { FilterBar, useListFilters } from "../FilterBar";
+import { Button, HeaderActions, Notice, Page, Row, RowIcon, RowSide, RowText, RowTime, Section } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Avatar, Dot, EmptyState, harnessColor, ProjectChip, RelativeTime } from "../ui";
 
@@ -168,8 +170,10 @@ export function ProjectsScreen() {
   const { t } = useShell();
   const { overview } = useFleet();
   const [register, setRegister] = useState(false);
+  const { filters, go } = useListFilters("projects");
+  const shown = useMemo(() => filterProjects(overview, filters), [overview, filters]);
   return (
-    <Page>
+    <Page toolbar={overview.projects.length > 0 ? <FilterBar list="projects" /> : undefined}>
       <HeaderActions>
         <button type="button" className="ui-button" aria-expanded={register} onClick={() => setRegister(!register)}>
           {t.projectPages.register}
@@ -178,13 +182,22 @@ export function ProjectsScreen() {
       {register && <RegisterSteps onClose={() => setRegister(false)} />}
       {overview.projects.length === 0 ? (
         <EmptyState title={t.shell.noProjects} hint={t.shell.noProjectsHint} />
+      ) : shown.length === 0 && hasFilters(filters) ? (
+        <EmptyState title={t.filters.noMatch} hint={t.filters.noMatchHint}>
+          <Button
+            type="button"
+            onClick={() => go({ project: null, harness: null, state: null, profile: null, mine: false, q: "" })}
+          >
+            {t.filters.clear}
+          </Button>
+        </EmptyState>
       ) : (
         <Section
           label={t.allProjects}
-          count={overview.projects.length}
+          count={shown.length}
           side={<span className="pj-lead">{t.projectPages.lead}</span>}
         >
-          {overview.projects.map((p) => (
+          {shown.map((p) => (
             <ProjectRow key={p.slug} project={p} rows={overview.rows.filter((r) => r.project === p.slug)} />
           ))}
         </Section>

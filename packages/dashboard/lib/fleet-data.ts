@@ -52,6 +52,7 @@ import { LATEST_CLI_VERSION } from "./cli-version";
 import { type Database, redactDatabase } from "./db";
 import type { LiveStore } from "./fleet-store";
 import { insightKey } from "./insights-view";
+import { DONE_SEARCH_DAYS, indexOfReading, type SearchIndex } from "./search";
 import {
   type ClaimOptions,
   dbSnapshots,
@@ -840,4 +841,49 @@ export async function loadCatchup(
     liveError(err);
     return null;
   }
+}
+
+// ------------------------------------------------------------------ search (THE-895)
+
+/**
+ * ⌘K's search index for the scope's projects, what the polled overview does
+ * not carry: every ticket of each project's last reading (done ones of the
+ * last 30 days), the pull requests GitHub gave, and the captions of the
+ * attachments of the last 30 days. Postgres only; without the live data, the
+ * readings' part alone.
+ */
+export async function loadSearchIndex(opts: LoadOptions, scope: Scope | null): Promise<SearchIndex> {
+  const now = opts.now();
+  const { store, shown } = await shownProjects(opts, scope);
+  const index: SearchIndex = { tickets: [], prs: [], attachments: [] };
+  for (const { slug, snap } of shown) {
+    if (!snap) continue;
+    const part = indexOfReading(slug, snap.sources, now);
+    index.tickets.push(...part.tickets);
+    index.prs.push(...part.prs);
+  }
+  if (store) {
+    const since = new Date(now.getTime() - DONE_SEARCH_DAYS * 24 * 3_600_000);
+    try {
+      const found = await withTimeout(
+        Promise.all(shown.map(({ slug }) => store.captionedAttachments(slug, since))),
+        opts.liveTimeoutMs ?? 4000,
+        "reading the attachments",
+      );
+      for (const a of found.flat())
+        if (a.caption)
+          index.attachments.push({
+            project: a.project,
+            id: a.id,
+            ticket: a.ticket,
+            caption: a.caption,
+            kind: a.kind,
+            url: a.url,
+            createdAt: a.createdAt,
+          });
+    } catch (err) {
+      liveError(err);
+    }
+  }
+  return index;
 }

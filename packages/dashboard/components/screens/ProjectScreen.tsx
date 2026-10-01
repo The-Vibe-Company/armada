@@ -7,14 +7,12 @@
 // Health and progress are core's; each section's count is its figure.
 import type { ProjectOverview, ReadyTicket } from "@armada/core/read";
 import { useParams } from "next/navigation";
-import { type ReactNode, useRef, useState } from "react";
-import { launchTicket } from "@/app/actions";
+import type { ReactNode } from "react";
 import { decisionsOf, HARNESS_NAME, paths } from "@/lib/fleet-view";
 import {
   type Blocker,
   coordinatorHarness,
   coordinatorLink,
-  launchProfileLabel,
   type PrState,
   prCounts,
   progressPercent,
@@ -22,11 +20,11 @@ import {
   projectSlice,
   prState,
 } from "@/lib/project-view";
-import { useRequest, useSent } from "../Actions";
 import { HeaderActions, Page, Row, RowIcon, RowId, RowSide, RowText, RowTime, Section, SectionBody } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Dot, EmptyState, harnessColor, ProjectChip, RelativeTime, Tag, toneColor } from "../ui";
 import { AgentRow } from "./AgentRow";
+import { LaunchControl, useLaunch } from "./Launch";
 import { Health, healthColor, Owner, ProgressRing, ProjectNotice, projectLine } from "./ProjectsScreen";
 
 const PR_COLOR: Record<PrState, string> = {
@@ -303,32 +301,9 @@ function BlockerRow({ blocker: b }: { blocker: Blocker }) {
  * and goes back, with the reason, when it is refused.
  */
 function LaunchRow({ ticket: r }: { ticket: ReadyTicket }) {
-  const { t, author, setAuthor, account } = useShell();
-  const { overview, failed, version, refresh } = useFleet();
-  const now = useNow();
-  const live = overview.live.state === "ok" && !failed;
-  const profile = r.route?.profile ?? null;
-  type Launch = { author: string; at: string };
-  const [sent, markSent, unmark] = useSent<Launch>(version);
-  const [naming, setNaming] = useState(false);
-  const shown = useRef<Launch | null>(null);
-  const req = useRequest(launchTicket, {
-    start: (form) => {
-      const typed = String(form.get("author") ?? "");
-      if (!account && typed) setAuthor(typed);
-      shown.current = { author: account ? author : typed, at: new Date().toISOString() };
-      markSent(shown.current);
-      setNaming(false);
-    },
-    done: () => {
-      if (shown.current) markSent(shown.current);
-      refresh();
-    },
-    undo: () => unmark(),
-  });
-  const pending = r.launch ?? sent;
-  const needsName = !account && !author;
-
+  const { t } = useShell();
+  const launch = useLaunch(r);
+  const { error } = launch.req;
   return (
     <Row className="pj-ready">
       <RowIcon>
@@ -345,9 +320,9 @@ function LaunchRow({ ticket: r }: { ticket: ReadyTicket }) {
           </a>
         }
         line={
-          r.labels.length > 0 || req.error ? (
+          r.labels.length > 0 || error ? (
             <span className="pj-labels">
-              {req.error && <span style={{ color: "var(--critical)" }}>{t.requestErrors[req.error]}</span>}
+              {error && <span style={{ color: "var(--critical)" }}>{t.requestErrors[error]}</span>}
               {r.labels.map((l) => (
                 <Tag key={l}>{l}</Tag>
               ))}
@@ -356,51 +331,7 @@ function LaunchRow({ ticket: r }: { ticket: ReadyTicket }) {
         }
       />
       <RowSide>
-        {pending ? (
-          <span className="pj-sent" role="status">
-            <Dot color="var(--frontier)" pulse="breathe" size={6} />
-            {t.projectPages.launchSent}
-            <span className="faint">
-              {pending.author ? `· ${pending.author} ` : ""}· {t.ago(Math.max(0, now - Date.parse(pending.at)))}
-            </span>
-          </span>
-        ) : !r.readyForAgent ? (
-          <span className="faint">{t.projectPages.notReady}</span>
-        ) : (
-          live && (
-            <form className="pj-launch" onSubmit={req.submit}>
-              <input type="hidden" name="project" value={r.project} />
-              <input type="hidden" name="ticket" value={r.id} />
-              {profile && <input type="hidden" name="profile" value={profile} />}
-              {needsName && naming ? (
-                <input
-                  className="pj-name-input"
-                  name="author"
-                  placeholder={t.yourName}
-                  title={t.nameHint}
-                  aria-label={t.yourName}
-                  required
-                  maxLength={80}
-                  autoComplete="name"
-                  // biome-ignore lint/a11y/noAutofocus: the field appears on the click that asked for it.
-                  autoFocus
-                />
-              ) : (
-                !account && author && <input type="hidden" name="author" value={author} />
-              )}
-              <button
-                type={needsName && !naming ? "button" : "submit"}
-                className="ui-button pj-launch-button"
-                disabled={req.busy}
-                aria-label={t.launchLabel(r.id)}
-                onClick={needsName && !naming ? () => setNaming(true) : undefined}
-              >
-                {req.busy ? t.sending : t.launch}
-                <span className="mono pj-profile">{launchProfileLabel(r, t.projectPages.coordinatorChoice)}</span>
-              </button>
-            </form>
-          )
-        )}
+        <LaunchControl ticket={r} launch={launch} />
       </RowSide>
     </Row>
   );

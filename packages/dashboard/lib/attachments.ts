@@ -70,6 +70,17 @@ export async function ticketsAttachments(db: Queryable, project: string, tickets
   ).rows.map(metadata);
 }
 
+/** The attachments of a project with a caption, added since `since`, newest first: what ⌘K finds (THE-895). */
+export async function captionedAttachments(db: Queryable, project: string, since: Date): Promise<Attachment[]> {
+  return (
+    await db.query(
+      `SELECT ${COLUMNS} FROM attachments WHERE project = $1 AND caption IS NOT NULL AND created_at >= $2
+      ORDER BY created_at DESC, id LIMIT 500`,
+      [project, since],
+    )
+  ).rows.map(metadata);
+}
+
 export async function readAttachment(
   db: Queryable,
   scope: Scope,
