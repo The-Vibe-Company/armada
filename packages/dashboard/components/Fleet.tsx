@@ -1,67 +1,71 @@
 "use client";
 
-// The overview until THE-867 rebuilds it: what waits for the owner across
-// every project, the agents at work, the tickets ready to start and each
-// project's coordinator. It renders the overview core builds, as the v4 shell
-// polls it (components/shell/context.tsx), on the page kit (components/page.tsx).
-import type { CoordinatorState, FleetOverview, ProjectOverview, WaitingItem, WaitingKind } from "@armada/core/read";
-import { useMemo, useState } from "react";
-import { projectColor } from "@/lib/fleet-view";
+// The overview (THE-867): what waits for the owner across every project. A
+// summary band (how many agents run, what waits, what fails, the active
+// coordinators), the decisions as cards the owner acts on, the problems as
+// rows, the live timeline (THE-868) and one card per project. It renders the
+// overview core builds, as the shell polls it (components/shell/context.tsx),
+// on the page kit (components/page.tsx), through the view rules of
+// lib/overview-view.ts.
+import type { FleetOverview, ProjectHealth } from "@armada/core/read";
+import { type ReactNode, useMemo } from "react";
+import { HARNESS_NAME, paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
-import { type ActionContext, QuestionBlock, ReadyBlock } from "./Actions";
+import {
+  decisionCards,
+  handBackPr,
+  overviewFigures,
+  type Problem,
+  problemsOf,
+  projectFacts,
+  sentRequest,
+} from "@/lib/overview-view";
+import { coordinatorHarness } from "@/lib/project-view";
+import type { ActionContext } from "./Actions";
 import {
   Card,
   CardGrid,
   CardHead,
   CardMeta,
-  CardTitle,
   HeaderActions,
   Notice,
   Page,
+  Row,
+  RowIcon,
+  RowId,
+  RowSide,
+  RowText,
+  RowTime,
   Section,
   SectionBody,
-  Toolbar,
 } from "./page";
-import { AgentRow } from "./screens/AgentRow";
-import { CoordinatorState as CoordinatorLine, Figure } from "./screens/ProjectsScreen";
+import { DecisionCard } from "./screens/DecisionCard";
 import { useFleet, useNow, useShell } from "./shell/context";
-import { Dot, EmptyState, ProjectChip, Tabs, Tag } from "./ui";
+import { Dot, EmptyState, PhasePill, ProjectChip, RelativeTime, StatusDot, Tag, type Tone } from "./ui";
 
-const since = (now: number, iso: string | null | undefined) => (iso ? now - Date.parse(iso) : 0);
-
-/** A waiting item's color, by kind; a kind added later reads as a decision. */
-const KIND_COLOR: Partial<Record<WaitingKind, string>> = {
-  question: "var(--accent)",
-  approval: "var(--accent)",
-  blocked: "var(--critical)",
-  "hand-back": "var(--done)",
-  silent: "var(--active)",
-  "not-started": "var(--active)",
+const PROBLEM_TONE: Record<Problem["kind"], Tone> = {
+  ci: "error",
+  conflict: "error",
+  blocked: "error",
+  silent: "silent",
+  "not-started": "silent",
 };
 
-export function Fleet({ initialProject }: { initialProject: string | null }) {
+const HEALTH_COLOR: Record<ProjectHealth, string> = {
+  blocked: "var(--critical)",
+  watch: "var(--active)",
+  "on-track": "var(--done)",
+};
+
+export function Fleet() {
   const { overview, checkedAt, failed, pending, refresh, version } = useFleet();
-  const { t, author, setAuthor, account, density } = useShell();
+  const { t, author, setAuthor, account } = useShell();
   const now = useNow();
-  const [project, setProject] = useState(initialProject);
-
-  const chooseProject = (next: string | null) => {
-    setProject(next);
-    const url = new URL(window.location.href);
-    if (next) url.searchParams.set("project", next);
-    else url.searchParams.delete("project");
-    window.history.replaceState(null, "", url);
-  };
-
-  const known = overview.projects.some((p) => p.slug === project);
-  const active = known ? project : null;
-  const rows = useMemo(() => overview.rows.filter((r) => !active || r.project === active), [overview, active]);
-  const waiting = useMemo(() => overview.waiting.filter((w) => !active || w.project === active), [overview, active]);
-  const projects = overview.projects.filter((p) => !active || p.slug === active);
+  const figures = useMemo(() => overviewFigures(overview), [overview]);
+  const decisions = useMemo(() => decisionCards(overview), [overview]);
+  const problems = useMemo(() => problemsOf(overview), [overview]);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
-  const ready = useMemo(() => overview.ready.filter((r) => !active || r.project === active), [overview, active]);
-  const coordinators = new Map<string, CoordinatorState>(overview.projects.map((p) => [p.slug, p.coordinator.state]));
-  const profiles = new Map(overview.projects.map((p) => [p.slug, p.profiles]));
+  const coordinators = new Map(overview.projects.map((p) => [p.slug, p.coordinator.state]));
   const ctx: ActionContext = {
     t,
     signer: { name: author, set: setAuthor, fixed: account !== null },
@@ -70,33 +74,10 @@ export function Fleet({ initialProject }: { initialProject: string | null }) {
     version,
     refresh,
   };
-  const silent = rows.filter((r) => r.silent).length;
-  const redCi = rows.filter((r) => r.flags.includes("ci-failing")).length;
-  const problems = projects.filter((p) => p.error || p.reading);
+  const unread = overview.projects.filter((p) => p.error || p.reading);
 
   return (
-    <Page
-      toolbar={
-        overview.projects.length > 0 && (
-          <Toolbar>
-            <Tabs
-              label={t.filterLabel}
-              value={active ?? ""}
-              onChange={(slug) => chooseProject(slug || null)}
-              items={[
-                { key: "", label: t.allProjects, count: overview.rows.length, dot: "var(--text-3)" },
-                ...overview.projects.map((p) => ({
-                  key: p.slug,
-                  label: p.name,
-                  count: p.inFlight,
-                  dot: projectColor(p.slug),
-                })),
-              ]}
-            />
-          </Toolbar>
-        )
-      }
-    >
+    <Page>
       <HeaderActions>
         <LiveLine
           t={t}
@@ -110,76 +91,212 @@ export function Fleet({ initialProject }: { initialProject: string | null }) {
       </HeaderActions>
       {overview.live.state === "unreachable" && <Notice tone="warn">{t.unreachableBanner(overview.live.error)}</Notice>}
       {overview.live.state === "off" && <Notice>{t.offBanner}</Notice>}
-
-      <Section label={t.waitingTitle} count={waiting.length}>
-        {waiting.length === 0 ? (
-          <SectionBody>
-            <p>{t.waitingEmpty}</p>
-          </SectionBody>
+      {unread.map((p) =>
+        p.error ? (
+          <Notice key={p.slug} tone="critical">
+            {t.projectError(p.name)} {p.error}
+          </Notice>
         ) : (
-          <CardGrid wide>
-            {waiting.map((w, k) => (
-              <WaitingCard
-                key={`${w.project}-${w.ticket ?? k}-${w.kind}`}
-                ctx={ctx}
-                w={w}
-                names={names}
-                coordinator={coordinators.get(w.project) ?? "unknown"}
-              />
-            ))}
-          </CardGrid>
-        )}
-      </Section>
+          <Notice key={p.slug}>{t.readingProject(p.name)}</Notice>
+        ),
+      )}
 
       <Section
-        label={t.atWorkTitle}
-        count={rows.length}
+        label={t.overview.headline(figures.inFlight, figures.decide)}
         side={
           <>
-            <Figure label={t.stats.silent} value={silent} dot={silent ? "var(--active)" : undefined} />
-            <Figure label={t.stats.redCi} value={redCi} dot={redCi ? "var(--critical)" : undefined} />
+            <Figure label={t.overview.figures.inFlight} value={figures.inFlight} />
+            <Figure
+              label={t.overview.figures.decide}
+              value={figures.decide}
+              dot={figures.decide ? "var(--accent)" : undefined}
+            />
+            <Figure
+              label={t.overview.figures.failing}
+              value={figures.failing}
+              dot={figures.failing ? "var(--critical)" : undefined}
+            />
+            <Figure
+              label={t.overview.figures.silent}
+              value={figures.silent}
+              dot={figures.silent ? "var(--active)" : undefined}
+            />
+            <Figure
+              label={t.overview.figures.coordinators}
+              value={`${figures.coordinators.active}/${figures.coordinators.total}`}
+            />
           </>
         }
       >
-        {problems.map((p) =>
-          p.error ? (
-            <Notice key={p.slug} tone="critical">
-              {t.projectError(p.name)} {p.error}
-            </Notice>
-          ) : (
-            <Notice key={p.slug}>{t.readingProject(p.name)}</Notice>
-          ),
-        )}
-        {overview.projects.length === 0 ? (
-          <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
-        ) : rows.length === 0 ? (
-          <EmptyState title={t.emptyFleet} hint={t.emptyFleetHint} />
-        ) : (
-          rows.map((r) => (
-            <AgentRow
-              key={`${r.project}-${r.id}`}
-              row={r}
-              projectName={names.get(r.project) ?? r.project}
-              airy={density === "airy"}
-            />
-          ))
-        )}
+        <SectionBody>
+          <p>
+            <time dateTime={new Date(now).toISOString()} suppressHydrationWarning>
+              {dateLabel(now, t.overview.locale)}
+            </time>
+            {" · "}
+            {t.overview.subline(figures)}
+          </p>
+        </SectionBody>
       </Section>
 
-      {overview.projects.length > 0 && (
-        <ReadyBlock ctx={ctx} ready={ready} profiles={profiles} names={names} coordinators={coordinators} />
-      )}
+      {overview.projects.length === 0 ? (
+        <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
+      ) : (
+        <>
+          <Section label={t.overview.decideTitle} count={decisions.length}>
+            {decisions.length === 0 ? (
+              <SectionBody>
+                <p>{t.overview.decideEmpty}</p>
+              </SectionBody>
+            ) : (
+              <CardGrid>
+                {decisions.map((w, k) => {
+                  const pr = w.kind === "hand-back" ? handBackPr(overview, w) : null;
+                  return (
+                    <DecisionCard
+                      key={`${w.project}-${w.ticket ?? k}-${w.kind}`}
+                      ctx={ctx}
+                      w={w}
+                      projectName={names.get(w.project) ?? w.project}
+                      coordinator={coordinators.get(w.project) ?? "unknown"}
+                      pr={pr}
+                      sent={sentRequest(overview, w, pr)}
+                    />
+                  );
+                })}
+              </CardGrid>
+            )}
+          </Section>
 
-      {projects.length > 0 && (
-        <Section label={t.projects} count={projects.length} side={t.footerRefresh}>
-          <CardGrid>
-            {projects.map((p) => (
-              <ProjectCard key={p.slug} t={t} p={p} now={now} />
-            ))}
-          </CardGrid>
-        </Section>
+          {problems.length > 0 && (
+            <Section label={t.overview.problemsTitle} count={problems.length}>
+              {problems.map((p) => (
+                <ProblemRow key={`${p.project}-${p.ticket}`} t={t} p={p} now={now} projectName={names.get(p.project)} />
+              ))}
+            </Section>
+          )}
+
+          <TimelineSlot />
+
+          <Section label={t.overview.projectsTitle} count={overview.projects.length}>
+            <CardGrid>
+              {overview.projects.map((p) => (
+                <ProjectCard key={p.slug} t={t} overview={overview} slug={p.slug} />
+              ))}
+            </CardGrid>
+          </Section>
+        </>
       )}
     </Page>
+  );
+}
+
+/**
+ * THE-868: the live timeline goes here, in its own Section, between the
+ * problems and the projects. Renders nothing until then.
+ */
+function TimelineSlot() {
+  return null;
+}
+
+/** "Wednesday 1 October · 15:42", in the viewer's language. */
+function dateLabel(now: number, locale: string): string {
+  const d = new Date(now);
+  const day = new Intl.DateTimeFormat(locale, { weekday: "long", day: "numeric", month: "long" }).format(d);
+  const time = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(d);
+  return `${day.charAt(0).toUpperCase()}${day.slice(1)} · ${time}`;
+}
+
+/** A figure of a section's side, its label in grey: "En vol 10". */
+function Figure({ label, value, dot }: { label: string; value: number | string; dot?: string }) {
+  return (
+    <span className="sc-figure">
+      {dot && <Dot color={dot} size={6} />}
+      <span className="faint">{label}</span> <span className="mono">{value}</span>
+    </span>
+  );
+}
+
+/** Something broken, as a row that opens the agent (or, for a launch never started, its project). */
+function ProblemRow({ t, p, now, projectName }: { t: Strings; p: Problem; now: number; projectName?: string }) {
+  const tone = PROBLEM_TONE[p.kind];
+  const line =
+    p.kind === "ci"
+      ? t.overview.ciLine(p.pr, p.check)
+      : p.kind === "conflict"
+        ? t.overview.conflictLine(p.pr)
+        : p.kind === "silent"
+          ? t.overview.silentLine(t.duration(Math.max(0, now - Date.parse(p.since))))
+          : (p.detail ?? "");
+  return (
+    <Row href={p.href}>
+      <RowIcon>
+        <StatusDot status={tone === "error" ? "error" : "silent"} label={t.overview.problems[p.kind]} />
+      </RowIcon>
+      <RowId>{p.ticket}</RowId>
+      <RowText title={p.title ?? p.ticket} line={line} />
+      {projectName && (
+        <RowSide roomy>
+          <Tag>{projectName}</Tag>
+        </RowSide>
+      )}
+      <RowSide>
+        <PhasePill tone={tone}>{t.overview.problems[p.kind]}</PhasePill>
+      </RowSide>
+      <RowTime>
+        <RelativeTime at={p.since} format="duration" />
+      </RowTime>
+    </Row>
+  );
+}
+
+/** A project's card: its progress, health, coordinator, agents, pull requests and last activity. */
+function ProjectCard({ t, overview, slug }: { t: Strings; overview: FleetOverview; slug: string }) {
+  const p = overview.projects.find((x) => x.slug === slug);
+  const facts = useMemo(() => projectFacts(overview, slug), [overview, slug]);
+  if (!p) return null;
+  const harness = coordinatorHarness(p.coordinator.harness);
+  const coordColor =
+    p.coordinator.state === "active"
+      ? "var(--done)"
+      : p.coordinator.state === "idle"
+        ? "var(--active)"
+        : "var(--text-3)";
+  return (
+    <Card href={paths.project(p.slug)}>
+      <CardHead
+        icon={<ProjectChip slug={p.slug} bare />}
+        label={p.name}
+        color="var(--text)"
+        side={facts.progress === null ? "—" : `${facts.progress}%`}
+      />
+      <CardMeta>
+        <span className="mono">{p.repository}</span>
+      </CardMeta>
+      <Fact label={t.overview.healthKey}>
+        {p.health ? <span style={{ color: HEALTH_COLOR[p.health] }}>{t.overview.health[p.health]}</span> : "—"}
+      </Fact>
+      <Fact label={t.overview.coordinatorKey}>
+        <Dot color={coordColor} size={6} />
+        {harness ? HARNESS_NAME[harness] : t.shell.coordinatorUnknown}
+      </Fact>
+      <Fact label={t.overview.agentsKey}>{t.overview.agents(facts.inFlight, facts.ready)}</Fact>
+      <Fact label={t.overview.prsKey}>{facts.prs ? t.overview.prs(facts.prs.open, facts.prs.green) : "—"}</Fact>
+      <Fact label={t.overview.activityKey}>
+        <RelativeTime at={facts.lastActivity} />
+      </Fact>
+    </Card>
+  );
+}
+
+/** A line of a project's card: its name in grey, its value after. */
+function Fact({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <CardMeta>
+      <span className="sc-figure">
+        <span className="faint">{label}</span> {children}
+      </span>
+    </CardMeta>
   );
 }
 
@@ -244,95 +361,5 @@ function LiveLine({
         </svg>
       </button>
     </span>
-  );
-}
-
-/** One item waiting for the owner, as a decision card, with its answer or approval form. */
-function WaitingCard({
-  ctx,
-  w,
-  names,
-  coordinator,
-}: {
-  ctx: ActionContext;
-  w: WaitingItem;
-  names: Map<string, string>;
-  coordinator: CoordinatorState;
-}) {
-  const { t, now } = ctx;
-  const color = KIND_COLOR[w.kind] ?? "var(--accent)";
-  return (
-    <Card>
-      <CardHead
-        icon={<Dot color={color} />}
-        label={t.kinds[w.kind]}
-        color={color}
-        side={<span title={w.since}>{t.duration(since(now, w.since))}</span>}
-      />
-      <CardTitle>
-        {w.url ? (
-          <a href={w.url} target="_blank" rel="noreferrer">
-            {w.title ?? w.ticket} <span className="faint">↗</span>
-          </a>
-        ) : (
-          (w.title ?? w.ticket ?? names.get(w.project))
-        )}
-      </CardTitle>
-      <CardMeta>
-        <Tag>{names.get(w.project) ?? w.project}</Tag>
-        {w.ticket && <span className="mono">{w.ticket}</span>}
-        {w.author && <span>{w.author}</span>}
-        {w.coordinatorSince && (
-          <span className="late">{t.coordinatorLate(t.duration(since(now, w.coordinatorSince)))}</span>
-        )}
-      </CardMeta>
-      {(w.kind === "question" || w.kind === "approval") && w.detail ? (
-        <QuestionBlock
-          ctx={ctx}
-          project={w.project}
-          ticket={w.ticket}
-          item={w.item}
-          body={w.detail}
-          answer={w.answer}
-          coordinator={coordinator}
-          approval={w.kind === "approval"}
-        />
-      ) : (
-        w.detail && <p className="wait-detail">{w.detail}</p>
-      )}
-    </Card>
-  );
-}
-
-/** A project's card: its coordinator (and the CLI it runs), when Linear and GitHub were read, its notes. */
-function ProjectCard({ t, p, now }: { t: Strings; p: ProjectOverview; now: number }) {
-  return (
-    <Card>
-      <CardHead icon={<ProjectChip slug={p.slug} bare />} label={p.name} color="var(--text)" side={p.repository} />
-      <CardMeta>
-        <Figure label={t.shell.inFlight} value={p.inFlight} />
-        <Figure label={t.shell.waitingForYou} value={p.waiting} dot={p.waiting ? "var(--accent)" : undefined} />
-      </CardMeta>
-      <CardMeta>
-        <CoordinatorLine project={p} />
-        {p.coordinator.cliVersion && (
-          <span className="mono">{t.coordinatorCli(p.coordinator.cliVersion, p.coordinator.updateAvailable)}</span>
-        )}
-      </CardMeta>
-      <CardMeta>
-        {p.sources ? t.linearRead(t.duration(since(now, p.sources.linear.fetchedAt))) : "—"}
-        {p.sources?.github.error ? ` · ${t.githubMissing}` : ""}
-      </CardMeta>
-      {p.warnings.length > 0 && (
-        <details className="notes">
-          <summary>{t.notes(p.warnings.length)}</summary>
-          <ul>
-            {p.warnings.map((w) => (
-              <li key={w}>{w}</li>
-            ))}
-          </ul>
-        </details>
-      )}
-    </Card>
   );
 }
