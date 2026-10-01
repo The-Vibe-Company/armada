@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/The-Vibe-Company/armada/compare/v0.2.6...v0.2.7) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** lay out the v4 shell with sidebar, pages, search, keyboard and design tokens ([#71](https://github.com/The-Vibe-Company/armada/issues/71)) ([aa5a32f](https://github.com/The-Vibe-Company/armada/commit/aa5a32f4e242874d3a44621512dae8c6ab35690d))
+
 ## [0.2.6](https://github.com/The-Vibe-Company/armada/compare/v0.2.5...v0.2.6) (2026-10-01)
 
 
