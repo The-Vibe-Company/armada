@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.15](https://github.com/The-Vibe-Company/armada/compare/v0.2.14...v0.2.15) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** restyle the organization and sign-in pages in the v4 look ([#85](https://github.com/The-Vibe-Company/armada/issues/85)) ([c0eaf58](https://github.com/The-Vibe-Company/armada/commit/c0eaf589abeab70a3f001a786fffc8240c9c0dbf))
+* **dashboard:** show every agent and each agent's page ([#86](https://github.com/The-Vibe-Company/armada/issues/86)) ([c6298b1](https://github.com/The-Vibe-Company/armada/commit/c6298b182a49291807992658a81404a906d056aa))
+
 ## [0.2.14](https://github.com/The-Vibe-Company/armada/compare/v0.2.13...v0.2.14) (2026-10-01)
 
 
