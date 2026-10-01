@@ -462,6 +462,9 @@ function WaitingRow({
           <span className="tag">{names.get(w.project) ?? w.project}</span>
           {w.ticket && <span className="mono">{w.ticket}</span>}
           {w.author && <span>{w.author}</span>}
+          {w.coordinatorSince && (
+            <span className="late">{t.coordinatorLate(t.duration(since(now, w.coordinatorSince)))}</span>
+          )}
         </div>
         {(w.kind === "question" || w.kind === "approval") && w.detail ? (
           <QuestionBlock

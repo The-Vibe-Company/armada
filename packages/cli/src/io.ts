@@ -41,6 +41,10 @@ export interface Io {
   openUrl?: (url: string) => boolean;
   /** Waits; tests make it instant. */
   sleep?: (ms: number) => Promise<void>;
+  /** This process's id, for the watch lock (default `process.pid`). */
+  pid?: number;
+  /** Whether a process still runs, for a watch lock left behind (default: signal 0). */
+  processAlive?: (pid: number) => boolean;
   /** Replaces the Linear write adapter (tests use an in-memory fake). */
   linearWriter?: (options: LinearWriterOptions) => LinearWriter;
   /** Runs git and gh; required by doctor, init and merge. */

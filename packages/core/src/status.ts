@@ -72,6 +72,8 @@ export interface StatusReport {
     github: { fetchedAt: string | null; error: string | null };
   };
   silentAfterMinutes: number;
+  /** `policy.coordinator_minutes`: an inbox item open longer than this waits for the coordinator. */
+  coordinatorMinutes: number;
   inFlight: InFlightTicket[];
   /** Ready to start: the frontier, ranked. `readyForAgent` marks tickets that carry the ready label. */
   frontier: FrontierTicket[];
@@ -145,6 +147,7 @@ export function buildStatus({
       github: { fetchedAt: forge?.fetchedAt ?? null, error: forge ? null : (forgeError ?? "not read") },
     },
     silentAfterMinutes: config.policy.silentAfterMinutes,
+    coordinatorMinutes: config.policy.coordinatorMinutes,
     inFlight: lanes.map((l) => ({
       id: l.issue.id,
       title: l.issue.title,

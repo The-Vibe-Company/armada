@@ -20,6 +20,7 @@ test("the plan is never written through a linked folder, so the link's target st
     links: [{ path: ".claude/skills/armada-worker", target: "../../.agents/skills/armada-worker" }],
     installed: [],
     updated: [],
+    stopHook: false,
   };
   await expect(applyPlan(root, plan)).rejects.toThrow(".claude is a link; Armada does not write through it");
   expect(await readdir(join(root, ".agents/skills/armada-worker"))).toEqual([]);

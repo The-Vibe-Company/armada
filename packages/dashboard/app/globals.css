@@ -549,6 +549,11 @@ button {
   color: var(--faint);
   font-size: 11.5px;
 }
+/* an inbox item the coordinator has not acted on for policy.coordinator_minutes */
+.meta .late {
+  color: var(--accent);
+  font-weight: 600;
+}
 .tag {
   font-size: 11px;
   font-weight: 500;

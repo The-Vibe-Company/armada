@@ -264,6 +264,11 @@ describe("the fleet through the Armada API", () => {
     await w.ask({ ticket: "WID-10", body: "Now?" });
     const changed = await coordinator.inbox({ ...read, etag: silent?.etag ?? null });
     expect(changed?.items.map((e) => e.body)).toContain("Now?");
+    // The workers in flight are part of the read: the last one leaving is a change `armada watch` sees.
+    expect(changed?.inFlight).toContain("WID-10");
+    await w.release({ ticket: "WID-10", reason: "done" });
+    const left = await coordinator.inbox({ ...read, etag: changed?.etag ?? null });
+    expect(left?.inFlight).not.toContain("WID-10");
   });
 
   test("two coordinators taking the merge lock at once: one gets it, the other waits for it", async () => {

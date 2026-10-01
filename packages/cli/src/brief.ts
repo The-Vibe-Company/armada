@@ -19,6 +19,7 @@ import {
   STORED_KEYS,
 } from "@armada/core";
 import { type Io, missingKey, UsageError } from "./io.ts";
+import { rearmFor, remember, watchOf } from "./watch.ts";
 
 export interface BriefArgs {
   rest: string[];
@@ -121,10 +122,19 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
     if (err instanceof BriefError) throw new UsageError(err.message);
     throw err;
   }
-  if (a.json) io.stdout(`${JSON.stringify(b, null, 2)}\n`);
-  else if (promptOnly) {
+  // Once this worker is launched, it is in flight with the ones known before: the stop hook counts it at once.
+  const project = config.project.slug;
+  const known = (await watchOf(io, project)).state?.inFlight ?? [];
+  const inFlight = [...new Set([...known, b.ticket.id])].sort((x, y) => x.localeCompare(y, "en", { numeric: true }));
+  await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
+  if (promptOnly) {
+    // The worker's prompt, as is: the re-arm line is for the coordinator.
     io.stdout(b.prompt);
     for (const w of b.warnings) io.stderr(`armada: warning: ${w}\n`);
-  } else io.stdout(renderBrief(b));
+    return 0;
+  }
+  const next = await rearmFor(io, project, { inFlight, open: null });
+  if (a.json) io.stdout(`${JSON.stringify({ ...b, watch: next }, null, 2)}\n`);
+  else io.stdout(`${renderBrief(b)}\n\n----- once launched -----\n${next.line}\n`);
   return 0;
 }

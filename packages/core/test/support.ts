@@ -152,7 +152,14 @@ export const projectInputOf = (config: ArmadaConfig): ProjectInput => ({
  * organization unless `caller` is a worker), `clock` the server's clock.
  */
 export function tempFleet(
-  o: { project?: ProjectInput; caller?: FleetCaller; clock?: Clock; store?: ReturnType<typeof memoryFleet> } = {},
+  o: {
+    project?: ProjectInput;
+    caller?: FleetCaller;
+    clock?: Clock;
+    store?: ReturnType<typeof memoryFleet>;
+    /** Answers an operation in Armada's place: a response (a 503), a thrown error (the network), or null to let it through. */
+    fail?: (op: string) => Response | Error | null;
+  } = {},
 ) {
   const store = o.store ?? memoryFleet();
   const clock = o.clock ?? fakeClock();
@@ -164,6 +171,12 @@ export function tempFleet(
   const fetch: Fetch = async (url, init) => {
     const op = url.slice(`${ARMADA_URL}/api/cli/fleet/`.length);
     calls.push(op);
+    const failure = o.fail?.(op) ?? null;
+    if (failure instanceof Error) throw failure;
+    if (failure) {
+      statuses.push(failure.status);
+      return failure;
+    }
     const res = await answerFleet(store, clock, op, JSON.parse(String(init.body)), {
       ...caller,
       project: project.slug,

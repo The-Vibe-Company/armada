@@ -3,11 +3,12 @@
 // the only code that touches those files. It never logs or returns a value in
 // an error; values leave it only through resolveCredentials.
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, rm, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { chmod, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 import { parse, TomlError } from "smol-toml";
 import { ConfigError } from "./config.ts";
 import { parseDotenv, updateDotenv } from "./dotenv.ts";
+import { EMPTY_WATCH_STATE, type WatchState } from "./watch.ts";
 
 export interface MachinePaths {
   dir: string;
@@ -65,6 +66,7 @@ async function writePrivate(paths: MachinePaths, path: string, text: string, mod
   await mkdir(paths.dir, { recursive: true, mode: 0o700 });
   // mkdir leaves an existing directory alone; Armada owns this one, so tighten it.
   await chmod(paths.dir, 0o700);
+  if (dirname(path) !== paths.dir) await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   const handle = await open(tmp, "wx", mode);
   try {
@@ -190,4 +192,124 @@ export async function ensurePersonalConfig(paths: MachinePaths): Promise<boolean
   }
   await writePrivate(paths, paths.config, PERSONAL_CONFIG_TEMPLATE, 0o644);
   return true;
+}
+
+// ------------------------------------------------------------------ the watch state
+
+/**
+ * Where a project's watch lives on this machine: `watch/<project>.json`, its
+ * state (no secret), and `watch/<project>.pid`, the lock a running
+ * `armada watch` holds. The project is its armada.toml slug, already a safe
+ * file name.
+ */
+export function watchFiles(paths: MachinePaths, project: string): { state: string; lock: string } {
+  const dir = join(paths.dir, "watch");
+  return { state: join(dir, `${project}.json`), lock: join(dir, `${project}.pid`) };
+}
+
+const strings = (v: unknown): string[] | null =>
+  Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : null;
+const stringOr = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+
+/** The project's watch state; null when there is none or it cannot be read as one. */
+export async function readWatchState(paths: MachinePaths, project: string): Promise<WatchState | null> {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await readFile(watchFiles(paths, project).state, "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  return {
+    root: stringOr(r.root),
+    seen: strings(r.seen) ?? [],
+    inFlight: strings(r.inFlight),
+    readAt: stringOr(r.readAt),
+    stopped: stringOr(r.stopped),
+  };
+}
+
+/** Sets some fields of the project's watch state, keeping the others; returns the state written. */
+export async function updateWatchState(
+  paths: MachinePaths,
+  project: string,
+  patch: Partial<WatchState>,
+): Promise<WatchState> {
+  const state = { ...EMPTY_WATCH_STATE, ...(await readWatchState(paths, project)), ...patch };
+  await writePrivate(paths, watchFiles(paths, project).state, `${JSON.stringify(state, null, 2)}\n`, 0o600);
+  return state;
+}
+
+/** The pid in the project's watch lock, or null when there is no lock. */
+export async function readWatchLock(paths: MachinePaths, project: string): Promise<number | null> {
+  try {
+    const pid = Number((await readFile(watchFiles(paths, project).lock, "utf8")).trim());
+    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+  } catch (err) {
+    if (missing(err)) return null;
+    throw err;
+  }
+}
+
+/** True while the process `pid` exists. */
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: it exists, under another user.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Takes the project's watch lock for `pid`, atomically: one watch per project
+ * and machine. A lock whose process is gone is stale and taken over. Returns
+ * the pid of the watch already running otherwise.
+ */
+export async function takeWatchLock(
+  paths: MachinePaths,
+  project: string,
+  pid: number,
+  alive: (pid: number) => boolean = processAlive,
+): Promise<{ taken: true } | { taken: false; pid: number }> {
+  const { lock } = watchFiles(paths, project);
+  await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
+  // The pid is written first, then linked into place: the lock never exists empty.
+  const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(tmp, `${pid}\n`, { mode: 0o600 });
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await link(tmp, lock);
+        return { taken: true };
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
+      const held = await readWatchLock(paths, project);
+      if (held !== null && held !== pid && alive(held)) return { taken: false, pid: held };
+      // Stale: its watch is gone. Removed only if no other watch took it over meanwhile.
+      if ((await readWatchLock(paths, project)) === held) await rm(lock, { force: true });
+    }
+    throw new Error(`cannot take the watch lock ${lock}`);
+  } finally {
+    await rm(tmp, { force: true });
+  }
+}
+
+/** Gives the lock back, unless another watch holds it now. */
+export async function releaseWatchLock(paths: MachinePaths, project: string, pid: number): Promise<void> {
+  if ((await readWatchLock(paths, project).catch(() => null)) === pid)
+    await rm(watchFiles(paths, project).lock, { force: true });
+}
+
+/** The pid of the live watch of the project on this machine, or null. */
+export async function runningWatch(
+  paths: MachinePaths,
+  project: string,
+  alive: (pid: number) => boolean = processAlive,
+): Promise<number | null> {
+  const pid = await readWatchLock(paths, project).catch(() => null);
+  return pid !== null && alive(pid) ? pid : null;
 }

@@ -51,7 +51,7 @@ From this version on, the CLI reads and writes the fleet's live data only throug
 3. Remove the database variables of earlier versions wherever they are still set (Conductor's environment, a laptop's shell, the deployment): nothing reads them.
 4. Check from a terminal with no database variable at all: `armada inbox`, `armada status` and `armada merge <pr> --dry-run` work, and the dashboard's live view shows the claims and reports.
 
-A terminal not signed in still claims, reports and releases in Linear, with a warning that the live record was skipped; `armada inbox`, `armada init` and `armada status --all` need a sign-in.
+A terminal not signed in still claims, reports and releases in Linear, with a warning that the live record was skipped; `armada inbox`, `armada watch`, `armada init` and `armada status --all` need a sign-in.
 
 ## Read GitHub through the Armada GitHub App
 
@@ -132,5 +132,6 @@ Without a coordination ticket, skip step 1: the next coordinator resumes from `a
 - `armada` reports a missing key: `armada doctor` says whether the terminal is signed in; signed in, the key is missing from Armada's Keys page. On an Armada without accounts, set it in the environment or with `armada auth login`.
 - `armada brief` shows `Launch: no launch token (…)`: the reason says what to fix, usually the sign-in (`armada login`, or `ARMADA_API_KEY`). A worker whose token was refused or who was cut off gets a new brief's `armada login --launch-token` line, as the runtime guide says.
 - `armada inbox` needs a sign-in to Armada; without one, questions, plans and hand-backs are on the tickets only, and `armada status` still reads the fleet from Linear. Approve or amend each `plan` from the inbox, deliver the decision through the runtime guide, then record it with `armada answer <item> "<decision>"`. Pre-approved plans go straight to `implementing`.
+- A Claude Code coordinator is refused the end of its turn by the stop hook: workers are in flight and no `armada watch` runs in its checkout. Start `armada watch` in the background; once nothing is in flight it exits "nothing to watch" and the hook lets the turn end. If the hook itself misbehaves, set `ARMADA_STOP_HOOK=off` in the coordinator's environment and report it.
 - `conductor` exits 3: check `conductor auth whoami`. A command refused by your `conductor` version: compare with `conductor <command> --help`; the runtime guide names the versions it was checked against.
 - A fact the coordinator could not find in the repository, the tracker or Armada: add it to the skill or to this runbook in a pull request, so the next coordinator finds it.

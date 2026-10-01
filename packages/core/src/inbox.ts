@@ -58,6 +58,8 @@ export interface InboxReport {
   generatedAt: string;
   /** Oldest first. */
   items: InboxEntry[];
+  /** Tickets a worker holds, the coordinator's own excluded; null when Armada did not say. */
+  inFlight: string[] | null;
   /** Set by --wait: how long it waited at most, and whether it stopped on the timeout. */
   wait: { timeoutSeconds: number; timedOut: boolean } | null;
   /** Problems that did not stop the read, such as a presence that could not be recorded. */
@@ -94,11 +96,13 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   if (!first) throw new Error("Armada answered the first inbox read with nothing");
   const warnings = [...first.warnings];
   let items = first.items;
+  let inFlight = first.inFlight ?? null;
   let etag = first.etag;
   const report = (timedOut: boolean | null): InboxReport => ({
     project: o.project,
     generatedAt: o.now().toISOString(),
     items,
+    inFlight,
     wait: o.wait && timedOut !== null ? { timeoutSeconds: Math.round(o.wait.timeoutMs / 1000), timedOut } : null,
     warnings: [...new Set(warnings)],
   });
@@ -112,6 +116,7 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     if (!read) continue;
     const known = new Set(items.map(entryKey));
     items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
+    inFlight = read.inFlight ?? null;
     etag = read.etag;
     warnings.push(...read.warnings);
     if (items.some((e) => e.new)) return report(false);

@@ -493,6 +493,14 @@ export interface InboxReadOptions {
  * event), so the read stays bounded by the work in flight, not the history.
  */
 export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise<InboxEntry[]> {
+  return (await readInboxAndFlight(store, o)).items;
+}
+
+/** `readInbox`, with the tickets a worker holds (open runtime handle), the coordinator's own excluded. */
+async function readInboxAndFlight(
+  store: FleetStore,
+  o: InboxReadOptions,
+): Promise<{ items: InboxEntry[]; inFlight: string[] }> {
   const now = o.now.getTime();
   const [items, handles] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
@@ -514,10 +522,12 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
     ...(i.request ? { request: i.request } : {}),
   }));
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
+  const inFlight: string[] = [];
   for (const h of handles) {
     if (o.coordinator && h.handle === o.coordinator) continue;
     const e = events[h.ticket];
     if (e && (e.kind === "release" || e.kind === "merge")) continue;
+    inFlight.push(h.ticket);
     if (asking.has(h.ticket)) continue;
     const reported = e?.at ?? h.claimedAt;
     const answer = answered[h.ticket];
@@ -536,7 +546,10 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
       new: false,
     });
   }
-  return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0));
+  return {
+    items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
+    inFlight: inFlight.sort(),
+  };
 }
 
 export interface InboxQuery {
@@ -553,7 +566,13 @@ export interface InboxQuery {
 export interface InboxRead {
   /** Oldest first. */
   items: InboxEntry[];
-  /** Which entries these are (`inboxTag`), for the next read's `etag`. */
+  /**
+   * Tickets a worker holds (an open runtime handle), the coordinator's own
+   * excluded: `armada watch` stops when none is left. Absent from an Armada
+   * older than this field.
+   */
+  inFlight?: string[];
+  /** Which entries and workers these are (`inboxTag`), for the next read's `etag`. */
   etag: string;
   /** Problems that did not stop the read, such as a presence that could not be recorded. */
   warnings: string[];
@@ -564,10 +583,11 @@ export const PRESENCE_EVERY_MS = MIN;
 
 /**
  * Which entries an inbox holds: its items and silent workers, not their
- * wording (a silent worker's minutes change every minute, its entry does not).
+ * wording (a silent worker's minutes change every minute, its entry does not),
+ * and which tickets are in flight.
  */
-export function inboxTag(items: Pick<InboxEntry, "id" | "ticket">[]): string {
-  const keys = items.map(entryKey).sort().join("\n");
+export function inboxTag(items: Pick<InboxEntry, "id" | "ticket">[], inFlight: readonly string[] = []): string {
+  const keys = [...items.map(entryKey), ...inFlight.map((t) => `flight:${t}`)].sort().join("\n");
   return `"${createHash("sha256").update(keys).digest("base64url").slice(0, 22)}"`;
 }
 
@@ -591,14 +611,14 @@ export async function serveInbox(
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
-  const items = await readInbox(store, {
+  const { items, inFlight } = await readInboxAndFlight(store, {
     project,
     coordinator: q.coordinator,
     silentAfterMinutes: q.silentAfterMinutes,
     now,
   });
-  const etag = inboxTag(items);
-  return q.etag === etag ? null : { items, etag, warnings };
+  const etag = inboxTag(items, inFlight);
+  return q.etag === etag ? null : { items, inFlight, etag, warnings };
 }
 
 // ------------------------------------------------------------------ the CLI's side

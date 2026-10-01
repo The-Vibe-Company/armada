@@ -262,6 +262,7 @@ describe("armada ask, inbox and answer", () => {
         "    1. SQLite",
         "    2. Redis",
         'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+        "1 worker in flight (DEMO-7) — act on the items above, then keep watching: armada watch",
         "",
       ].join("\n"),
     );
@@ -286,7 +287,9 @@ describe("armada ask, inbox and answer", () => {
     w.io.now = clock.now;
     w.io.sleep = clock.sleep;
     expect(await run(["inbox", "--wait", "--timeout", "60"], w.io)).toBe(0);
-    expect(w.out()).toBe("Inbox of widgets: nothing waits for you.\nNo new item within 60 s.\n");
+    expect(w.out()).toBe(
+      "Inbox of widgets: nothing waits for you.\nNo new item within 60 s.\nNo worker in flight and nothing open — nothing to watch.\n",
+    );
     // One read, then an ask every 15 s with the etag of that read: Armada answers 304 each time.
     const etags = w.armada.calls.map((c) => (c.body as { input: { etag: string | null } }).input.etag);
     expect([etags.length, etags[0], new Set(etags.slice(1)).size]).toEqual([5, null, 1]);
