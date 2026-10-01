@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+html,body{margin:0;padding:0;background:#09090b;color:#f0efec;font-family:'Geist',ui-sans-serif,sans-serif;font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:#f0efec;text-decoration:none}a:hover{color:#ffffff}
+::selection{background:#b6f15a;color:#09090b}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:6px;border:3px solid transparent;background-clip:padding-box}
+input,textarea,button{font:inherit;color:inherit}
+textarea::placeholder,input::placeholder{color:#6e6e73}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(126,166,255,.55)}70%{box-shadow:0 0 0 7px rgba(126,166,255,0)}100%{box-shadow:0 0 0 0 rgba(126,166,255,0)}}
+@keyframes livepulse{0%{box-shadow:0 0 0 0 rgba(182,241,90,.5)}70%{box-shadow:0 0 0 6px rgba(182,241,90,0)}100%{box-shadow:0 0 0 0 rgba(182,241,90,0)}}
+@keyframes breathe{50%{opacity:.4}}
+</style>
+</helmet>
+<div style="display:flex;height:100vh;background:#09090b;padding:8px 8px 8px 0;min-width:720px">
+
+<aside style="flex:none;width:{{ sideW }};display:flex;flex-direction:column;gap:20px;padding:6px 10px;overflow-y:auto;overflow-x:hidden">
+  <div style="display:flex;align-items:center;gap:10px;height:32px;padding:0 6px">
+    <svg width="20" height="20" viewBox="0 0 32 32" style="flex:none"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity=".45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity=".45"></path></svg>
+    <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+      <span style="font-weight:600;font-size:14px;letter-spacing:-.02em">Armada</span>
+      <span style="flex:1"></span>
+      <span style="font-size:12px;color:#6e6e73;white-space:nowrap">Acme ▾</span>
+    </sc-if>
+  </div>
+  <div onClick="{{ openPal }}" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:8px;background:rgba(255,255,255,.04);color:#6e6e73;cursor:pointer" style-hover="background:rgba(255,255,255,.07);color:#a1a1a6">
+    <svg width="13" height="13" viewBox="0 0 16 16" style="flex:none"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"></circle><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg>
+    <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+      <span style="white-space:nowrap">Rechercher</span><span style="flex:1"></span>
+      <span style="font-family:'Geist Mono',monospace;font-size:10.5px;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.06)">⌘K</span>
+    </sc-if>
+  </div>
+  <nav style="display:flex;flex-direction:column;gap:1px">
+    <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="3">
+      <div onClick="{{ n.onClick }}" title="{{ n.label }}" style="display:flex;align-items:center;gap:10px;height:30px;padding:0 8px;border-radius:8px;cursor:pointer;background:{{ n.bg }};color:{{ n.color }}" style-hover="color:#f0efec">
+        <span style="width:14px;height:14px;flex:none;display:grid;place-items:center"><span style="width:{{ n.iw }};height:{{ n.ih }};border-radius:{{ n.ir }};border:1.5px solid currentColor"></span></span>
+        <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+          <span style="font-weight:500;white-space:nowrap">{{ n.label }}</span><span style="flex:1"></span>
+          <span style="font-size:11.5px;color:{{ n.countColor }};font-variant-numeric:tabular-nums">{{ n.count }}</span>
+        </sc-if>
+      </div>
+    </sc-for>
+  </nav>
+  <div style="display:flex;flex-direction:column;gap:1px">
+    <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><div style="padding:0 8px 6px;font-size:11.5px;font-weight:500;color:#6e6e73">Projets</div></sc-if>
+    <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+      <div onClick="{{ p.open }}" title="{{ p.name }}" style="display:flex;align-items:center;gap:10px;height:28px;padding:0 8px;border-radius:8px;cursor:pointer;color:#a1a1a6;background:{{ p.navBg }}" style-hover="color:#f0efec">
+        <span style="width:14px;flex:none;display:grid;place-items:center"><span style="width:8px;height:8px;border-radius:2.5px;background:{{ p.color }}"></span></span>
+        <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><span style="white-space:nowrap">{{ p.name }}</span><span style="flex:1"></span><span style="font-size:11.5px;color:#48484d">{{ p.agentCount }}</span></sc-if>
+      </div>
+    </sc-for>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:1px">
+    <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><div style="padding:0 8px 6px;font-size:11.5px;font-weight:500;color:#6e6e73">Harness</div></sc-if>
+    <sc-for list="{{ harnesses }}" as="h" hint-placeholder-count="3">
+      <div onClick="{{ h.open }}" title="{{ h.name }}" style="display:flex;align-items:center;gap:10px;height:28px;padding:0 8px;border-radius:8px;cursor:pointer;color:#a1a1a6" style-hover="color:#f0efec">
+        <span style="width:14px;flex:none;display:grid;place-items:center"><span style="width:7px;height:7px;border-radius:50%;background:{{ h.color }}"></span></span>
+        <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><span style="white-space:nowrap">{{ h.name }}</span><span style="flex:1"></span><span style="font-size:11.5px;color:#48484d">{{ h.count }}</span></sc-if>
+      </div>
+    </sc-for>
+    <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;align-items:center;gap:10px;height:28px;padding:0 8px;color:#48484d">
+        <span style="width:14px;flex:none;display:grid;place-items:center"><span style="width:7px;height:7px;border-radius:50%;border:1px dashed #6e6e73"></span></span>
+        <span>boat.dev</span><span style="flex:1"></span><span style="font-size:10.5px;color:#6e6e73">bientôt</span>
+      </div>
+    </sc-if>
+  </div>
+  <div style="flex:1"></div>
+  <div style="display:flex;align-items:center;gap:9px;padding:8px">
+    <span style="width:7px;height:7px;flex:none;border-radius:50%;background:#b6f15a;animation:livepulse 2.4s infinite"></span>
+    <sc-if value="{{ wide }}" hint-placeholder-val="{{ true }}"><span style="font-size:12px;color:#6e6e73;white-space:nowrap">En direct · il y a {{ checked }} s</span></sc-if>
+  </div>
+</aside>
+
+<main style="flex:1;min-width:0;display:flex;flex-direction:column;border-radius:12px;background:#111113;border:1px solid rgba(255,255,255,.06);box-shadow:0 1px 0 rgba(255,255,255,.03) inset;overflow:hidden">
+  <header style="display:flex;align-items:center;gap:10px;height:48px;flex:none;padding:0 20px;border-bottom:1px solid rgba(255,255,255,.06)">
+    <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="1">
+      <div style="display:flex;align-items:center;gap:10px;min-width:0">
+        <sc-if value="{{ c.sep }}" hint-placeholder-val="{{ false }}"><span style="color:#48484d">›</span></sc-if>
+        <span onClick="{{ c.onClick }}" style="cursor:pointer;white-space:nowrap;font-weight:500;color:{{ c.color }}" style-hover="color:#f0efec">{{ c.label }}</span>
+      </div>
+    </sc-for>
+    <span style="flex:1"></span>
+    <sc-if value="{{ isDetail }}" hint-placeholder-val="{{ false }}">
+      <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6e6e73;white-space:nowrap"><span style="font-family:'Geist Mono',monospace;font-size:10.5px;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.06)">esc</span>retour</span>
+    </sc-if>
+    <sc-if value="{{ isAgents }}" hint-placeholder-val="{{ false }}">
+      <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:#6e6e73;white-space:nowrap"><span style="font-family:'Geist Mono',monospace;font-size:10.5px;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.06)">j k</span>naviguer <span style="font-family:'Geist Mono',monospace;font-size:10.5px;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.06)">↵</span>ouvrir</span>
+    </sc-if>
+  </header>
+
+  <div style="flex:1;overflow-y:auto;min-height:0">
+
+  <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+    <div style="max-width:1200px;margin:0 auto;padding:36px 32px 64px;display:flex;flex-direction:column;gap:44px">
+      <div style="display:flex;flex-direction:column;gap:22px">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <span style="font-size:12.5px;color:#6e6e73">{{ dateLabel }}</span>
+          <h1 style="margin:0;font-size:32px;font-weight:600;letter-spacing:-.028em;line-height:1.1;text-wrap:balance">{{ headline }}</h1>
+          <p style="margin:0;font-size:14px;color:#a1a1a6;text-wrap:pretty">{{ subline }}</p>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;column-gap:20px;border-top:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06)">
+          <sc-for list="{{ metrics }}" as="m" hint-placeholder-count="5">
+            <div style="flex:1 1 110px;display:flex;flex-direction:column;gap:4px;padding:14px 0">
+              <span style="font-size:12px;color:#6e6e73;white-space:nowrap">{{ m.label }}</span>
+              <span style="font-size:26px;font-weight:500;letter-spacing:-.03em;font-variant-numeric:tabular-nums;color:{{ m.color }}">{{ m.value }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+      <section style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:baseline;gap:8px">
+          <h2 style="margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em">À toi de décider</h2>
+          <span style="font-size:13px;color:#6e6e73">{{ decisionCount }}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px">
+          <sc-for list="{{ decisions }}" as="d" hint-placeholder-count="4">
+            <div style="display:flex;flex-direction:column;gap:12px;padding:16px;border-radius:14px;background:#18181b;border:1px solid rgba(255,255,255,.06);box-shadow:0 1px 0 rgba(255,255,255,.04) inset">
+              <div style="display:flex;align-items:center;gap:8px;font-size:12px">
+                <span style="width:7px;height:7px;border-radius:50%;background:{{ d.color }}"></span>
+                <span style="font-weight:500;color:{{ d.color }}">{{ d.kindLabel }}</span>
+                <span style="flex:1"></span>
+                <span style="color:#6e6e73;white-space:nowrap">{{ d.age }}</span>
+              </div>
+              <div onClick="{{ d.open }}" style="display:flex;flex-direction:column;gap:4px;cursor:pointer">
+                <span style="font-size:11.5px;color:#6e6e73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="font-family:'Geist Mono',monospace">{{ d.id }}</span> · {{ d.title }}</span>
+                <span style="font-size:15px;font-weight:500;line-height:1.35;letter-spacing:-.01em;text-wrap:pretty">{{ d.body }}</span>
+              </div>
+              <div style="flex:1"></div>
+              <sc-if value="{{ d.pending }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:#a1a1a6"><span style="width:6px;height:6px;flex:none;border-radius:50%;background:#7ea6ff;animation:breathe 1.6s infinite"></span>Transmis au coordinateur {{ d.projectName }} : {{ d.sent }}</div>
+              </sc-if>
+              <sc-if value="{{ d.showActions }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <sc-for list="{{ d.actions }}" as="ac" hint-placeholder-count="2">
+                    <button onClick="{{ ac.onClick }}" style="height:32px;padding:0 12px;border-radius:9px;border:0;font-size:12.5px;font-weight:500;cursor:pointer;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:{{ ac.bg }};color:{{ ac.color }}" style-hover="filter:brightness(1.18)">{{ ac.label }}</button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;flex-direction:column;border-radius:12px;border:1px solid rgba(255,255,255,.06);overflow:hidden">
+          <sc-for list="{{ alerts }}" as="w" hint-placeholder-count="3">
+            <div onClick="{{ w.open }}" style="display:flex;align-items:center;gap:12px;min-height:42px;padding:8px 16px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer" style-hover="background:rgba(255,255,255,.025)">
+              <span style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ w.color }}"></span>
+              <span style="font-weight:500;color:{{ w.color }};white-space:nowrap">{{ w.kindLabel }}</span>
+              <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73;white-space:nowrap">{{ w.id }}</span>
+              <span style="flex:1;min-width:0;color:#a1a1a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ w.body }}</span>
+              <span style="font-size:12px;color:#6e6e73;white-space:nowrap">{{ w.age }}</span>
+              <span style="color:#48484d">›</span>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+
+      <section style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <h2 style="margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em">Flotte en direct</h2>
+          <span style="font-size:13px;color:#6e6e73">{{ agentCount }} sessions</span>
+          <span style="flex:1"></span>
+          <div style="display:flex;gap:14px;margin-right:6px">
+            <sc-for list="{{ harnesses }}" as="h" hint-placeholder-count="3">
+              <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:#a1a1a6;white-space:nowrap"><span style="width:7px;height:7px;border-radius:50%;background:{{ h.color }}"></span>{{ h.short }}</span>
+            </sc-for>
+          </div>
+          <div style="display:flex;padding:2px;border-radius:8px;background:rgba(255,255,255,.05)">
+            <sc-for list="{{ hourBtns }}" as="b" hint-placeholder-count="3">
+              <button onClick="{{ b.onClick }}" style="border:0;padding:3px 10px;border-radius:6px;font-size:12px;cursor:pointer;background:{{ b.bg }};color:{{ b.color }}">{{ b.label }}</button>
+            </sc-for>
+          </div>
+        </div>
+        <div style="border-radius:14px;border:1px solid rgba(255,255,255,.06);background:#0e0e10;overflow:hidden">
+          <div style="display:grid;grid-template-columns:{{ tlCols }};height:32px;align-items:center;border-bottom:1px solid rgba(255,255,255,.05)">
+            <span style="padding-left:16px;font-size:11.5px;color:#6e6e73">Session</span>
+            <div style="position:relative;height:100%;margin-right:22px">
+              <sc-for list="{{ ticks }}" as="t" hint-placeholder-count="4">
+                <span style="position:absolute;top:9px;left:{{ t.left }};transform:translateX(-50%);font-size:11px;color:#6e6e73;font-variant-numeric:tabular-nums;white-space:nowrap">{{ t.label }}</span>
+              </sc-for>
+              <span style="position:absolute;top:9px;right:-14px;font-size:11px;color:#7ea6ff;white-space:nowrap">maintenant</span>
+            </div>
+          </div>
+          <sc-for list="{{ tlGroups }}" as="g" hint-placeholder-count="3">
+            <div style="display:flex;flex-direction:column">
+              <div onClick="{{ g.open }}" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 16px;background:rgba(255,255,255,.02);border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer;font-size:12px;font-weight:500;color:#a1a1a6" style-hover="color:#f0efec">
+                <span style="width:8px;height:8px;border-radius:2.5px;background:{{ g.color }}"></span>{{ g.name }}<span style="color:#48484d;font-weight:400">{{ g.agentCount }}</span>
+              </div>
+              <div onClick="{{ g.open }}" style="display:grid;grid-template-columns:{{ tlCols }};height:38px;align-items:center;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" style-hover="background:rgba(255,255,255,.025)">
+                <div style="display:flex;align-items:center;gap:10px;padding:0 14px 0 17px;min-width:0">
+                  <span style="width:10px;height:10px;flex:none;transform:rotate(45deg);border-radius:2px;border:1.5px solid {{ g.coordColor }};background:{{ g.coordFill }}"></span>
+                  <span style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="font-weight:500">Coordinateur</span> <span style="color:#6e6e73">· {{ g.coordH }}</span></span>
+                </div>
+                <div style="position:relative;height:100%;margin-right:22px">
+                  <span style="position:absolute;top:18px;left:0;right:0;height:2px;border-radius:1px;background:{{ g.coordLine }}"></span>
+                  <sc-for list="{{ g.coordMarks }}" as="mk" hint-placeholder-count="4"><span style="position:absolute;top:15px;width:2px;height:8px;border-radius:1px;left:{{ mk.left }};background:{{ g.coordColor }}"></span></sc-for>
+                </div>
+                <sc-if value="{{ roomy }}" hint-placeholder-val="{{ true }}">
+                  <span style="padding-right:16px;text-align:right;font-size:12px;color:{{ g.coordColor }};white-space:nowrap">{{ g.coordShort }}</span>
+                </sc-if>
+              </div>
+              <sc-for list="{{ g.rows }}" as="a" hint-placeholder-count="3">
+                <div onClick="{{ a.open }}" style="display:grid;grid-template-columns:{{ tlCols }};height:46px;align-items:center;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" style-hover="background:rgba(255,255,255,.025)">
+                  <div style="display:flex;align-items:center;gap:10px;padding:0 14px 0 16px;min-width:0">
+                    <span style="width:13px;height:13px;flex:none;border-radius:50%;border:{{ a.iconBorder }};background:{{ a.iconBg }}"></span>
+                    <div style="display:flex;flex-direction:column;gap:1px;min-width:0">
+                      <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.title }}</span>
+                      <span style="font-size:11.5px;color:#6e6e73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="font-family:'Geist Mono',monospace">{{ a.id }}</span> · <span style="color:{{ a.statusColor }}">{{ a.statusLabel }}</span></span>
+                    </div>
+                  </div>
+                  <div style="position:relative;height:100%;margin-right:22px">
+                    <sc-for list="{{ ticks }}" as="t" hint-placeholder-count="4"><span style="position:absolute;top:0;bottom:0;left:{{ t.left }};width:1px;background:rgba(255,255,255,.035)"></span></sc-for>
+                    <span style="position:absolute;top:0;bottom:0;right:0;width:1px;background:rgba(126,166,255,.25)"></span>
+                    <span style="position:absolute;top:19px;height:8px;border-radius:4px 0 0 4px;left:{{ a.tl.preLeft }};width:{{ a.tl.preW }};background:{{ a.tl.preBg }}"></span>
+                    <span style="position:absolute;top:16px;height:14px;border-radius:4px;left:{{ a.tl.phLeft }};width:{{ a.tl.phW }};background:{{ a.tl.phBg }};box-shadow:inset -2px 0 0 {{ a.statusColor }}"></span>
+                    <sc-if value="{{ a.tl.hatch }}" hint-placeholder-val="{{ false }}">
+                      <span style="position:absolute;top:16px;height:14px;left:{{ a.tl.hatchLeft }};width:{{ a.tl.hatchW }};background:repeating-linear-gradient(135deg,rgba(255,181,71,.35) 0 2px,transparent 2px 6px);border-radius:0 4px 4px 0"></span>
+                    </sc-if>
+                    <sc-for list="{{ a.tl.markers }}" as="mk" hint-placeholder-count="1">
+                      <span title="{{ mk.title }}" style="position:absolute;top:20px;width:6px;height:6px;margin-left:-3px;left:{{ mk.left }};border-radius:{{ mk.radius }};transform:{{ mk.rot }};background:{{ mk.color }};box-shadow:0 0 0 2px #0e0e10"></span>
+                    </sc-for>
+                    <span style="position:absolute;top:19px;right:-4px;width:8px;height:8px;border-radius:50%;background:{{ a.statusColor }};animation:{{ a.tl.capAnim }}"></span>
+                  </div>
+                  <sc-if value="{{ roomy }}" hint-placeholder-val="{{ true }}">
+                    <span style="padding-right:16px;text-align:right;font-size:12px;color:{{ a.agoColor }};font-variant-numeric:tabular-nums;white-space:nowrap">{{ a.agoShort }}</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+          <div style="display:flex;flex-wrap:wrap;gap:16px;padding:10px 16px;font-size:11.5px;color:#6e6e73">
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:6px;border-radius:3px;background:rgba(255,255,255,.1)"></span>phases précédentes</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:8px;border-radius:3px;background:rgba(126,166,255,.3)"></span>phase en cours</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;transform:rotate(45deg);background:#f0efec"></span>PR ouverte</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:#a1a1a6"></span>rapport</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:14px;height:8px;background:repeating-linear-gradient(135deg,rgba(255,181,71,.5) 0 2px,transparent 2px 5px)"></span>silence</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:2px;height:8px;background:#b6f15a"></span>lecture de l'inbox par le coordinateur</span>
+          </div>
+        </div>
+      </section>
+
+      <section style="display:flex;flex-direction:column;gap:14px">
+        <h2 style="margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em">Projets</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px">
+          <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+            <div onClick="{{ p.open }}" style="display:flex;flex-direction:column;gap:16px;padding:16px;border-radius:14px;background:#18181b;border:1px solid rgba(255,255,255,.06);cursor:pointer" style-hover="border-color:rgba(255,255,255,.12)">
+              <div style="display:flex;align-items:center;gap:12px">
+                <div style="width:40px;height:40px;flex:none;border-radius:50%;background:{{ p.ring }};display:grid;place-items:center">
+                  <div style="width:32px;height:32px;border-radius:50%;background:#18181b;display:grid;place-items:center;font-size:10.5px;font-weight:600;font-variant-numeric:tabular-nums">{{ p.pctLabel }}</div>
+                </div>
+                <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                  <span style="font-size:14px;font-weight:600;letter-spacing:-.01em">{{ p.name }}</span>
+                  <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#6e6e73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.repo }}</span>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:7px;font-size:12.5px">
+                <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#6e6e73">Santé</span><span style="color:{{ p.healthColor }}">{{ p.health }}</span></div>
+                <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#6e6e73">Coordinateur</span><span style="display:flex;align-items:center;gap:7px;white-space:nowrap"><span style="width:6px;height:6px;border-radius:50%;background:{{ p.coordColor }}"></span>{{ p.coordHShort }}</span></div>
+                <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#6e6e73">Agents</span><span>{{ p.agentCount }} en vol · {{ p.readyCount }} prêts</span></div>
+                <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#6e6e73">PRs</span><span>{{ p.prSummary }}</span></div>
+                <div style="display:flex;justify-content:space-between;gap:8px"><span style="color:#6e6e73">Activité</span><span style="color:#a1a1a6">{{ p.lastActivity }}</span></div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isProjects }}" hint-placeholder-val="{{ false }}">
+    <div style="max-width:1200px;margin:0 auto;padding:36px 32px 64px;display:flex;flex-direction:column;gap:22px">
+      <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <h1 style="margin:0;font-size:28px;font-weight:600;letter-spacing:-.025em">Projets</h1>
+          <span style="font-size:13.5px;color:#a1a1a6">Un projet, c'est un repo GitHub et une racine Linear.</span>
+        </div>
+        <span style="flex:1"></span>
+        <button style="height:32px;padding:0 14px;border-radius:9px;border:0;background:#f0efec;color:#09090b;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap" style-hover="background:#ffffff">Enregistrer un projet</button>
+      </div>
+      <div style="display:flex;flex-direction:column;border-radius:14px;border:1px solid rgba(255,255,255,.06);overflow:hidden">
+        <sc-for list="{{ projects }}" as="p" hint-placeholder-count="3">
+          <div onClick="{{ p.open }}" style="display:flex;flex-wrap:wrap;align-items:center;gap:14px 28px;padding:18px 20px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer" style-hover="background:rgba(255,255,255,.025)">
+            <div style="display:flex;align-items:center;gap:14px;flex:1 1 240px;min-width:0">
+              <div style="width:44px;height:44px;flex:none;border-radius:50%;background:{{ p.ring }};display:grid;place-items:center">
+                <div style="width:36px;height:36px;border-radius:50%;background:#111113;display:grid;place-items:center;font-size:11px;font-weight:600">{{ p.pctLabel }}</div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:3px;min-width:0">
+                <span style="display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;letter-spacing:-.01em"><span style="width:8px;height:8px;border-radius:2.5px;background:{{ p.color }}"></span>{{ p.name }}</span>
+                <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ p.repo }} · {{ p.root }} · {{ p.done }}/{{ p.total }} tickets</span>
+              </div>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:12px 28px;flex:2 1 420px">
+              <div style="display:flex;flex-direction:column;gap:3px;min-width:140px"><span style="font-size:11.5px;color:#6e6e73">Coordinateur</span><span style="display:flex;align-items:center;gap:7px;white-space:nowrap"><span style="width:8px;height:8px;flex:none;transform:rotate(45deg);border-radius:2px;border:1.5px solid {{ p.coordColor }};background:{{ p.coordFill }}"></span>{{ p.coordHShort }}</span><span style="font-size:11.5px;color:{{ p.coordColor }};white-space:nowrap">{{ p.coordShort }}</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;min-width:90px"><span style="font-size:11.5px;color:#6e6e73">Santé</span><span style="color:{{ p.healthColor }};font-weight:500">{{ p.health }}</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;min-width:100px">
+                <span style="font-size:11.5px;color:#6e6e73">Agents actifs</span>
+                <div style="display:flex;align-items:center;gap:6px"><div style="display:flex;gap:2px"><sc-for list="{{ p.agentDots }}" as="d" hint-placeholder-count="2"><span style="width:5px;height:14px;border-radius:2px;background:{{ d.color }}"></span></sc-for></div><span>{{ p.agentCount }}</span></div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:3px;min-width:110px"><span style="font-size:11.5px;color:#6e6e73">main · PRs</span><span>{{ p.prSummary }}</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;min-width:110px"><span style="font-size:11.5px;color:#6e6e73">Activité</span><span style="color:#a1a1a6;white-space:nowrap">{{ p.lastActivity }}</span></div>
+              <div style="display:flex;flex-direction:column;gap:3px;min-width:110px">
+                <span style="font-size:11.5px;color:#6e6e73">Propriétaire</span>
+                <span style="display:flex;align-items:center;gap:7px;white-space:nowrap"><span style="width:18px;height:18px;border-radius:50%;background:#2a2a2e;display:grid;place-items:center;font-size:8.5px;font-weight:600">{{ p.ownerInitials }}</span>{{ p.owner }}</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isAgents }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;flex-direction:column">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 20px;border-bottom:1px solid rgba(255,255,255,.06)">
+        <div style="display:flex;padding:2px;border-radius:9px;background:rgba(255,255,255,.05);flex-wrap:wrap">
+          <sc-for list="{{ harnessTabs }}" as="t" hint-placeholder-count="4">
+            <button onClick="{{ t.onClick }}" style="display:flex;align-items:center;gap:7px;border:0;height:26px;padding:0 11px;border-radius:7px;font-size:12.5px;cursor:pointer;white-space:nowrap;background:{{ t.bg }};color:{{ t.color }};box-shadow:{{ t.shadow }}">
+              <span style="width:7px;height:7px;border-radius:50%;background:{{ t.dot }}"></span>{{ t.label }}<span style="color:#6e6e73">{{ t.count }}</span>
+            </button>
+          </sc-for>
+        </div>
+        <span style="flex:1"></span>
+        <div style="display:flex;padding:2px;border-radius:9px;background:rgba(255,255,255,.05)">
+          <button onClick="{{ setCompact }}" style="border:0;height:26px;padding:0 11px;border-radius:7px;font-size:12.5px;cursor:pointer;background:{{ densityBtn.compactBg }};color:{{ densityBtn.compactColor }}">Compact</button>
+          <button onClick="{{ setAiry }}" style="border:0;height:26px;padding:0 11px;border-radius:7px;font-size:12.5px;cursor:pointer;background:{{ densityBtn.airyBg }};color:{{ densityBtn.airyColor }}">Aéré</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column">
+        <div style="display:flex;align-items:center;gap:10px;height:36px;padding:0 20px;background:#141416;border-bottom:1px solid rgba(255,255,255,.05)">
+          <span style="width:13px;display:grid;place-items:center"><span style="width:9px;height:9px;flex:none;transform:rotate(45deg);border-radius:2px;border:1.5px solid {{ coordHeadColor }};background:{{ coordHeadFill }}"></span></span>
+          <span style="font-weight:600">Coordinateurs</span><span style="color:#6e6e73">{{ coordCount }}</span>
+          <span style="flex:1"></span><span style="font-size:12px;color:#6e6e73">un par projet</span>
+        </div>
+        <sc-for list="{{ projects }}" as="c" hint-placeholder-count="3">
+          <div onClick="{{ c.open }}" style="display:flex;align-items:center;gap:12px;height:40px;padding:0 20px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" style-hover="background:rgba(255,255,255,.03)">
+            <span style="width:13px;flex:none;display:grid;place-items:center"><span style="width:9px;height:9px;flex:none;transform:rotate(45deg);border-radius:2px;border:1.5px solid {{ c.coordColor }};background:{{ c.coordFill }}"></span></span>
+            <span style="width:58px;flex:none;font-weight:500">{{ c.name }}</span>
+            <span style="flex:1;min-width:0;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden;color:#a1a1a6"><span style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ c.coordHColor }}"></span>{{ c.coordH }}<span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73;overflow:hidden;text-overflow:ellipsis">{{ c.coordHandle }}</span></span>
+            <sc-if value="{{ roomy }}" hint-placeholder-val="{{ true }}"><span style="flex:none;font-size:12px;color:{{ c.inboxColor }};white-space:nowrap">{{ c.inboxLabel }}</span></sc-if>
+            <span style="flex:none;width:150px;text-align:right;font-size:12px;color:{{ c.coordColor }};white-space:nowrap">{{ c.coordShort }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <sc-for list="{{ groups }}" as="g" hint-placeholder-count="3">
+        <div style="display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:10px;height:36px;padding:0 20px;background:#141416;border-bottom:1px solid rgba(255,255,255,.05);position:sticky;top:0;z-index:2">
+            <span style="width:13px;height:13px;border-radius:50%;border:{{ g.iconBorder }};background:{{ g.iconBg }}"></span>
+            <span style="font-weight:600">{{ g.label }}</span>
+            <span style="color:#6e6e73">{{ g.count }}</span>
+          </div>
+          <sc-if value="{{ compact }}" hint-placeholder-val="{{ true }}">
+            <sc-for list="{{ g.items }}" as="a" hint-placeholder-count="2">
+              <div onClick="{{ a.open }}" style="display:flex;align-items:center;gap:12px;height:40px;padding:0 20px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;background:{{ a.selBg }};box-shadow:{{ a.selBar }}" style-hover="background:rgba(255,255,255,.03)">
+                <span style="width:13px;height:13px;flex:none;border-radius:50%;border:{{ a.iconBorder }};background:{{ a.iconBg }}"></span>
+                <span style="width:58px;flex:none;font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73;white-space:nowrap">{{ a.id }}</span>
+                <div style="flex:1;min-width:0;display:flex;align-items:baseline;gap:10px;white-space:nowrap;overflow:hidden">
+                  <span style="font-weight:500">{{ a.title }}</span>
+                  <span style="color:#6e6e73;overflow:hidden;text-overflow:ellipsis">{{ a.line }}</span>
+                </div>
+                <sc-if value="{{ roomy }}" hint-placeholder-val="{{ true }}">
+                  <span style="flex:none;font-size:11.5px;padding:1px 7px;border-radius:6px;background:rgba(255,255,255,.05);color:#a1a1a6;white-space:nowrap">{{ a.projectName }}</span>
+                  <div style="flex:none;width:60px;display:grid;grid-template-columns:repeat(6,1fr);gap:2px"><sc-for list="{{ a.steps }}" as="s" hint-placeholder-count="6"><span style="height:4px;border-radius:2px;background:{{ s.color }}"></span></sc-for></div>
+                </sc-if>
+                <span title="{{ a.hName }}" style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ a.hColor }}"></span>
+                <span style="flex:none;width:46px;text-align:right;font-size:12px;color:{{ a.agoColor }};font-variant-numeric:tabular-nums;white-space:nowrap">{{ a.agoShort }}</span>
+              </div>
+            </sc-for>
+          </sc-if>
+          <sc-if value="{{ airy }}" hint-placeholder-val="{{ false }}">
+            <sc-for list="{{ g.items }}" as="a" hint-placeholder-count="2">
+              <div onClick="{{ a.open }}" style="display:flex;flex-wrap:wrap;align-items:center;gap:12px 28px;padding:18px 20px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer;background:{{ a.selBg }};box-shadow:{{ a.selBar }}" style-hover="background:rgba(255,255,255,.03)">
+                <div style="flex:1 1 320px;display:flex;gap:12px;min-width:0">
+                  <span style="width:14px;height:14px;flex:none;margin-top:2px;border-radius:50%;border:{{ a.iconBorder }};background:{{ a.iconBg }}"></span>
+                  <div style="display:flex;flex-direction:column;gap:6px;min-width:0">
+                    <span style="font-size:15px;font-weight:500;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.title }}</span>
+                    <span style="font-size:12px;color:#6e6e73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="font-family:'Geist Mono',monospace">{{ a.id }}</span> · {{ a.projectName }} · <span style="color:{{ a.hColor }}">●</span> {{ a.hName }} · {{ a.profile }} · {{ a.filesLabel }}</span>
+                    <span style="font-size:13px;color:{{ a.lineColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.line }}</span>
+                  </div>
+                </div>
+                <div style="flex:0 1 220px;display:flex;flex-direction:column;gap:8px;min-width:170px">
+                  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:3px"><sc-for list="{{ a.steps }}" as="s" hint-placeholder-count="6"><span style="height:5px;border-radius:3px;background:{{ s.color }}"></span></sc-for></div>
+                  <span style="font-size:12px;color:{{ a.statusColor }};white-space:nowrap">{{ a.statusLabel }} <span style="color:#6e6e73">· {{ a.phaseDur }}</span></span>
+                </div>
+                <div style="flex:none;display:flex;flex-direction:column;gap:3px;align-items:flex-end;min-width:110px">
+                  <span style="font-size:12.5px;color:{{ a.agoColor }};white-space:nowrap">{{ a.agoLong }}</span>
+                  <span style="font-size:11.5px;color:#6e6e73;white-space:nowrap">dernier rapport</span>
+                </div>
+              </div>
+            </sc-for>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isAgent }}" hint-placeholder-val="{{ false }}">
+    <div style="max-width:1200px;margin:0 auto;padding:32px 32px 64px;display:flex;flex-direction:column;gap:28px">
+      <div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:18px">
+        <div style="flex:1 1 420px;display:flex;flex-direction:column;gap:10px;min-width:0">
+          <div style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:#6e6e73;flex-wrap:wrap">
+            <span style="font-family:'Geist Mono',monospace">{{ ag.id }}</span><span>·</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:2px;background:{{ ag.projectColor }}"></span>{{ ag.projectName }}</span><span>·</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:{{ ag.hColor }}"></span>{{ ag.hName }}</span>
+          </div>
+          <h1 style="margin:0;font-size:30px;font-weight:600;letter-spacing:-.028em;line-height:1.15;text-wrap:balance">{{ ag.title }}</h1>
+          <div style="display:flex;align-items:center;gap:10px;font-size:13.5px;min-width:0">
+            <span style="display:flex;align-items:center;gap:7px;color:{{ ag.statusColor }};font-weight:500;white-space:nowrap"><span style="width:8px;height:8px;border-radius:50%;background:{{ ag.statusColor }};animation:{{ ag.capAnim }}"></span>{{ ag.statusLabel }}</span>
+            <span style="color:#a1a1a6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ ag.summary }}</span>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button style="height:34px;padding:0 14px;border-radius:10px;border:0;background:#f0efec;color:#09090b;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap" style-hover="background:#ffffff">Ouvrir dans {{ ag.hOpen }}</button>
+          <button style="height:34px;padding:0 14px;border-radius:10px;border:0;background:rgba(255,255,255,.07);color:#f0efec;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap" style-hover="background:rgba(255,255,255,.11)">Linear ↗</button>
+          <button style="height:34px;padding:0 14px;border-radius:10px;border:0;background:rgba(255,255,255,.07);color:#f0efec;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap" style-hover="background:rgba(255,255,255,.11)">{{ ag.prButton }}</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));padding:18px 20px 16px;border-radius:14px;background:#18181b;border:1px solid rgba(255,255,255,.06)">
+        <sc-for list="{{ ag.nodes }}" as="s" hint-placeholder-count="6">
+          <div style="position:relative;display:flex;flex-direction:column;gap:10px;min-width:0">
+            <sc-if value="{{ s.hasLine }}" hint-placeholder-val="{{ true }}"><span style="position:absolute;top:6px;left:18px;right:4px;height:2px;border-radius:1px;background:{{ s.lineColor }}"></span></sc-if>
+            <span style="width:14px;height:14px;border-radius:50%;border:2px solid {{ s.border }};background:{{ s.fill }};animation:{{ s.anim }}"></span>
+            <div style="display:flex;flex-direction:column;gap:2px;min-width:0;padding-right:8px">
+              <span style="font-size:12.5px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:{{ s.labelColor }}">{{ s.label }}</span>
+              <span style="font-size:11.5px;color:#6e6e73;white-space:nowrap">{{ s.sub }}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
+        <div style="flex:1 1 520px;display:flex;flex-direction:column;gap:22px;min-width:0">
+          <sc-if value="{{ ag.attn }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:14px;padding:18px;border-radius:14px;border:1px solid {{ ag.attnBorder }};background:{{ ag.attnBg }}">
+              <span style="display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:{{ ag.attnColor }}"><span style="width:7px;height:7px;border-radius:50%;background:{{ ag.attnColor }}"></span>{{ ag.attnTitle }}</span>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                <span style="font-size:18px;font-weight:500;letter-spacing:-.015em;line-height:1.35;text-wrap:pretty">{{ ag.attnBody }}</span>
+                <span style="font-size:13px;color:#a1a1a6;text-wrap:pretty">{{ ag.attnHint }}</span>
+              </div>
+              <sc-if value="{{ ag.attnPending }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#a1a1a6"><span style="width:6px;height:6px;border-radius:50%;background:#7ea6ff;animation:breathe 1.6s infinite"></span>Transmis au coordinateur : <span style="color:#f0efec">{{ ag.attnSent }}</span></div>
+              </sc-if>
+              <sc-if value="{{ ag.showComposer }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;flex-direction:column;gap:6px">
+                  <sc-for list="{{ ag.choices }}" as="o" hint-placeholder-count="2">
+                    <div onClick="{{ o.onClick }}" style="display:flex;align-items:center;gap:12px;min-height:40px;padding:0 14px;border-radius:10px;cursor:pointer;background:{{ o.bg }};border:1px solid {{ o.border }}">
+                      <span style="width:16px;height:16px;flex:none;border-radius:50%;border:1.5px solid {{ o.ring }};background:{{ o.dot }}"></span>
+                      <span style="font-size:13.5px">{{ o.label }}</span>
+                    </div>
+                  </sc-for>
+                  <textarea value="{{ ag.draft }}" onChange="{{ ag.onDraft }}" placeholder="Ou écris ta propre réponse…" style="min-height:64px;resize:vertical;padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,.08);background:rgba(0,0,0,.25);font-size:13.5px;line-height:1.45;outline:none"></textarea>
+                  <div style="display:flex;align-items:center;gap:10px">
+                    <button onClick="{{ ag.submit }}" style="height:34px;padding:0 16px;border-radius:10px;border:0;font-size:13px;font-weight:600;cursor:pointer;background:{{ ag.submitBg }};color:{{ ag.submitColor }}">Envoyer au coordinateur</button>
+                    <span style="font-size:12px;color:#6e6e73">Le coordinateur {{ ag.projectName }} relaie la réponse à l'agent.</span>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ ag.showButtons }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <sc-for list="{{ ag.buttons }}" as="ac" hint-placeholder-count="2">
+                    <button onClick="{{ ac.onClick }}" style="height:34px;padding:0 14px;border-radius:10px;border:0;font-size:13px;font-weight:500;cursor:pointer;white-space:nowrap;background:{{ ac.bg }};color:{{ ac.color }}" style-hover="filter:brightness(1.15)">{{ ac.label }}</button>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+
+          <div style="display:flex;align-self:flex-start;padding:2px;border-radius:9px;background:rgba(255,255,255,.05)">
+            <sc-for list="{{ tabs }}" as="t" hint-placeholder-count="3">
+              <button onClick="{{ t.onClick }}" style="display:flex;align-items:center;gap:6px;border:0;height:28px;padding:0 13px;border-radius:7px;font-size:12.5px;font-weight:500;cursor:pointer;white-space:nowrap;background:{{ t.bg }};color:{{ t.color }};box-shadow:{{ t.shadow }}">{{ t.label }}<span style="color:#6e6e73;font-weight:400">{{ t.count }}</span></button>
+            </sc-for>
+          </div>
+
+          <sc-if value="{{ tabActivity }}" hint-placeholder-val="{{ true }}">
+            <div style="display:flex;flex-direction:column">
+              <sc-for list="{{ ag.timeline }}" as="e" hint-placeholder-count="5">
+                <div style="display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:14px">
+                  <div style="display:flex;flex-direction:column;align-items:center">
+                    <span style="width:9px;height:9px;flex:none;margin-top:5px;border-radius:50%;background:{{ e.dot }};box-shadow:0 0 0 4px #111113"></span>
+                    <span style="flex:1;width:1px;background:{{ e.line }}"></span>
+                  </div>
+                  <div style="display:flex;flex-direction:column;gap:3px;padding-bottom:20px;min-width:0">
+                    <span style="font-size:13.5px;font-weight:500">{{ e.text }}</span>
+                    <span style="font-size:12.5px;color:#a1a1a6;text-wrap:pretty">{{ e.sub }}</span>
+                  </div>
+                  <span style="font-size:12px;color:#6e6e73;font-variant-numeric:tabular-nums;white-space:nowrap;padding-top:2px">{{ e.time }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ tabFiles }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <sc-if value="{{ ag.noFiles }}" hint-placeholder-val="{{ false }}">
+                <div style="padding:36px;text-align:center;border-radius:14px;background:#18181b;color:#a1a1a6">Aucun fichier modifié pour l'instant. L'agent est encore en planification.</div>
+              </sc-if>
+              <sc-if value="{{ ag.hasFiles }}" hint-placeholder-val="{{ true }}">
+                <div style="display:flex;gap:14px;font-size:12.5px;color:#a1a1a6"><span style="font-family:'Geist Mono',monospace">{{ ag.branch }}</span><span><span style="color:#b6f15a">+{{ ag.addTotal }}</span> <span style="color:#ff6b5b">−{{ ag.delTotal }}</span></span></div>
+              </sc-if>
+              <div style="display:flex;flex-direction:column;border-radius:14px;border:1px solid rgba(255,255,255,.06);overflow:hidden">
+                <sc-for list="{{ ag.files }}" as="f" hint-placeholder-count="3">
+                  <div style="display:flex;flex-direction:column;border-bottom:1px solid rgba(255,255,255,.05)">
+                    <div onClick="{{ f.toggle }}" style="display:flex;align-items:center;gap:12px;height:42px;padding:0 16px;cursor:pointer" style-hover="background:rgba(255,255,255,.025)">
+                      <span style="width:10px;color:#6e6e73;font-size:10px">{{ f.chev }}</span>
+                      <span style="flex:1;min-width:0;font-family:'Geist Mono',monospace;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="color:#6e6e73">{{ f.dir }}</span>{{ f.name }}</span>
+                      <span style="font-family:'Geist Mono',monospace;font-size:11.5px;white-space:nowrap"><span style="color:#b6f15a">+{{ f.add }}</span> <span style="color:#ff6b5b">−{{ f.del }}</span></span>
+                      <div style="display:flex;gap:2px"><sc-for list="{{ f.bar }}" as="b" hint-placeholder-count="5"><span style="width:7px;height:7px;border-radius:2px;background:{{ b.c }}"></span></sc-for></div>
+                    </div>
+                    <sc-if value="{{ f.open }}" hint-placeholder-val="{{ false }}">
+                      <div style="background:#0c0c0e;border-top:1px solid rgba(255,255,255,.05);padding:8px 0;font-family:'Geist Mono',monospace;font-size:12px;line-height:21px;overflow-x:auto">
+                        <sc-for list="{{ f.diff }}" as="l" hint-placeholder-count="6">
+                          <div style="display:grid;grid-template-columns:48px 18px max-content;white-space:pre;background:{{ l.bg }};color:{{ l.color }}">
+                            <span style="color:#48484d;text-align:right;padding-right:12px">{{ l.n }}</span><span style="opacity:.7">{{ l.sign }}</span><span style="padding-right:24px">{{ l.text }}</span>
+                          </div>
+                        </sc-for>
+                        <sc-if value="{{ f.noDiff }}" hint-placeholder-val="{{ false }}"><div style="padding:6px 20px;color:#6e6e73">Diff complet sur la PR ou dans la session {{ ag.handle }}</div></sc-if>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{ tabLogs }}" hint-placeholder-val="{{ false }}">
+            <div style="border-radius:14px;background:#0c0c0e;border:1px solid rgba(255,255,255,.06);padding:14px 0;font-family:'Geist Mono',monospace;font-size:12px;line-height:22px;overflow-x:auto">
+              <sc-for list="{{ ag.logs }}" as="l" hint-placeholder-count="8">
+                <div style="display:grid;grid-template-columns:78px minmax(0,1fr);padding:0 18px;color:{{ l.color }}">
+                  <span style="color:#48484d">{{ l.time }}</span><span style="white-space:pre-wrap;overflow-wrap:anywhere">{{ l.text }}</span>
+                </div>
+              </sc-for>
+              <div style="display:flex;align-items:center;gap:8px;padding:8px 18px 0;color:#6e6e73"><span style="width:7px;height:14px;background:#7ea6ff;animation:breathe 1.1s infinite"></span>suivi en direct · {{ ag.handle }}</div>
+            </div>
+          </sc-if>
+        </div>
+
+        <aside style="flex:1 1 280px;max-width:360px;display:flex;flex-direction:column;gap:20px">
+          <sc-for list="{{ ag.inspector }}" as="grp" hint-placeholder-count="3">
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <span style="padding-left:14px;font-size:12px;font-weight:500;color:#6e6e73">{{ grp.title }}</span>
+              <div style="display:flex;flex-direction:column;border-radius:12px;background:#18181b;overflow:hidden">
+                <sc-for list="{{ grp.rows }}" as="r" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:10px;min-height:38px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,.05)">
+                    <span style="flex:none;color:#a1a1a6;font-size:12.5px">{{ r.k }}</span>
+                    <span style="flex:1"></span>
+                    <sc-if value="{{ r.hasDot }}" hint-placeholder-val="{{ false }}"><span style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ r.dot }}"></span></sc-if>
+                    <span style="min-width:0;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:{{ r.font }};color:{{ r.color }}">{{ r.v }}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+          <button style="height:34px;border-radius:10px;border:0;background:transparent;color:#ff6b5b;font-size:13px;cursor:pointer" style-hover="background:rgba(255,107,91,.08)">Demander de relâcher le ticket</button>
+        </aside>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isProject }}" hint-placeholder-val="{{ false }}">
+    <div style="max-width:1200px;margin:0 auto;padding:32px 32px 64px;display:flex;flex-direction:column;gap:32px">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:20px">
+        <div style="width:76px;height:76px;flex:none;border-radius:50%;background:{{ pj.ring }};display:grid;place-items:center">
+          <div style="width:64px;height:64px;border-radius:50%;background:#111113;display:flex;flex-direction:column;align-items:center;justify-content:center"><span style="font-size:18px;font-weight:600;letter-spacing:-.02em">{{ pj.pctLabel }}</span></div>
+        </div>
+        <div style="flex:1 1 320px;display:flex;flex-direction:column;gap:6px;min-width:0">
+          <h1 style="margin:0;font-size:30px;font-weight:600;letter-spacing:-.028em">{{ pj.name }}</h1>
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;font-size:12.5px;color:#a1a1a6">
+            <span style="font-family:'Geist Mono',monospace;color:#6e6e73">{{ pj.repo }} · {{ pj.root }}</span>
+            <span style="color:{{ pj.healthColor }};font-weight:500">{{ pj.health }}</span>
+            <span style="display:flex;align-items:center;gap:6px"><span style="width:16px;height:16px;border-radius:50%;background:#2a2a2e;display:grid;place-items:center;font-size:8px;font-weight:600;color:#f0efec">{{ pj.ownerInitials }}</span>{{ pj.owner }}</span>
+            
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;column-gap:20px;border-top:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06)">
+        <sc-for list="{{ pj.metrics }}" as="m" hint-placeholder-count="4">
+          <div style="flex:1 1 110px;display:flex;flex-direction:column;gap:4px;padding:14px 0">
+            <span style="font-size:12px;color:#6e6e73">{{ m.label }}</span>
+            <span style="font-size:24px;font-weight:500;letter-spacing:-.03em;color:{{ m.color }}">{{ m.value }}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <section style="display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;gap:10px"><span style="width:10px;height:10px;flex:none;transform:rotate(45deg);border-radius:2px;border:1.5px solid {{ pj.coordColor }};background:{{ pj.coordFill }}"></span><h2 style="margin:0;font-size:15px;font-weight:600">Coordinateur</h2><span style="font-size:12.5px;color:{{ pj.coordColor }}">{{ pj.coordShort }}</span><span style="flex:1"></span><button style="height:30px;padding:0 12px;border-radius:9px;border:0;background:rgba(255,255,255,.07);color:#f0efec;font-size:12.5px;font-weight:500;cursor:pointer;white-space:nowrap" style-hover="background:rgba(255,255,255,.11)">Ouvrir la session ↗</button></div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));border-radius:12px;background:#18181b;overflow:hidden">
+          <sc-for list="{{ pj.coordRows }}" as="r" hint-placeholder-count="6">
+            <div style="display:flex;flex-direction:column;gap:3px;padding:12px 14px;box-shadow:inset -1px -1px 0 rgba(255,255,255,.05);min-width:0">
+              <span style="font-size:11.5px;color:#6e6e73">{{ r.k }}</span>
+              <span style="display:flex;align-items:center;gap:7px;min-width:0"><sc-if value="{{ r.hasDot }}" hint-placeholder-val="{{ false }}"><span style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ r.dot }}"></span></sc-if><span style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:{{ r.font }};color:{{ r.color }}">{{ r.v }}</span></span>
+            </div>
+          </sc-for>
+        </div>
+      </section>
+      <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
+        <div style="flex:1 1 520px;display:flex;flex-direction:column;gap:28px;min-width:0">
+          <section style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:baseline;gap:8px"><h2 style="margin:0;font-size:15px;font-weight:600">Agents en vol</h2><span style="color:#6e6e73">{{ pj.agentCount }}</span></div>
+            <div style="display:flex;flex-direction:column;border-radius:14px;border:1px solid rgba(255,255,255,.06);overflow:hidden">
+              <sc-for list="{{ pj.agents }}" as="a" hint-placeholder-count="3">
+                <div onClick="{{ a.open }}" style="display:flex;align-items:center;gap:12px;height:44px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.04);cursor:pointer" style-hover="background:rgba(255,255,255,.025)">
+                  <span style="width:13px;height:13px;flex:none;border-radius:50%;border:{{ a.iconBorder }};background:{{ a.iconBg }}"></span>
+                  <span style="width:58px;flex:none;font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73">{{ a.id }}</span>
+                  <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px">
+                    <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.title }}</span>
+                    <span style="font-size:11.5px;color:{{ a.statusColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.statusLabel }} <span style="color:#6e6e73">· {{ a.line }}</span></span>
+                  </div>
+                  <div style="flex:none;width:60px;display:grid;grid-template-columns:repeat(6,1fr);gap:2px"><sc-for list="{{ a.steps }}" as="s" hint-placeholder-count="6"><span style="height:4px;border-radius:2px;background:{{ s.color }}"></span></sc-for></div>
+                  <span title="{{ a.hName }}" style="width:7px;height:7px;flex:none;border-radius:50%;background:{{ a.hColor }}"></span>
+                  <span style="flex:none;width:46px;text-align:right;font-size:12px;color:{{ a.agoColor }};white-space:nowrap">{{ a.agoShort }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+          <section style="display:flex;flex-direction:column;gap:12px">
+            <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap"><h2 style="margin:0;font-size:15px;font-weight:600">Prêts à lancer</h2><span style="color:#6e6e73">{{ pj.readyCount }}</span><span style="flex:1"></span><span style="font-size:12px;color:#6e6e73">Profil choisi par le routage d'armada.toml</span></div>
+            <div style="display:flex;flex-direction:column;border-radius:14px;border:1px solid rgba(255,255,255,.06);overflow:hidden">
+              <sc-for list="{{ pj.ready }}" as="r" hint-placeholder-count="3">
+                <div style="display:flex;align-items:center;gap:12px;min-height:48px;padding:6px 16px;border-bottom:1px solid rgba(255,255,255,.04)">
+                  <span style="width:58px;flex:none;font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73">{{ r.id }}</span>
+                  <div style="flex:1;min-width:0;display:flex;align-items:center;gap:8px">
+                    <span style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span>
+                    <sc-for list="{{ r.labels }}" as="lb" hint-placeholder-count="1"><span style="flex:none;font-size:11px;padding:1px 7px;border-radius:6px;background:rgba(255,255,255,.05);color:#a1a1a6">{{ lb.name }}</span></sc-for>
+                  </div>
+                  <span style="font-size:12px;color:#6e6e73;white-space:nowrap">{{ r.note }}</span>
+                  <sc-if value="{{ r.canLaunch }}" hint-placeholder-val="{{ true }}">
+                    <button onClick="{{ r.launch }}" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 12px;border-radius:9px;border:0;background:rgba(255,255,255,.07);color:#f0efec;font-size:12.5px;font-weight:500;cursor:pointer;white-space:nowrap" style-hover="background:#b6f15a;color:#09090b">Lancer <span style="font-family:'Geist Mono',monospace;font-size:11px;opacity:.6">{{ r.profile }}</span></button>
+                  </sc-if>
+                  <sc-if value="{{ r.launched }}" hint-placeholder-val="{{ false }}">
+                    <span style="display:flex;align-items:center;gap:7px;font-size:12px;color:#7ea6ff;white-space:nowrap"><span style="width:6px;height:6px;border-radius:50%;background:#7ea6ff;animation:breathe 1.6s infinite"></span>Demande envoyée</span>
+                  </sc-if>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </div>
+        <div style="flex:1 1 280px;max-width:360px;display:flex;flex-direction:column;gap:24px">
+          <section style="display:flex;flex-direction:column;gap:10px">
+            <span style="padding-left:14px;font-size:12px;font-weight:500;color:#6e6e73">Blocages</span>
+            <sc-if value="{{ pj.noBlocks }}" hint-placeholder-val="{{ false }}"><div style="padding:14px;border-radius:12px;background:#18181b;color:#a1a1a6;font-size:12.5px">Rien ne bloque ce projet.</div></sc-if>
+            <div style="display:flex;flex-direction:column;border-radius:12px;background:#18181b;overflow:hidden">
+              <sc-for list="{{ pj.blocks }}" as="b" hint-placeholder-count="2">
+                <div onClick="{{ b.open }}" style="display:flex;flex-direction:column;gap:3px;padding:11px 14px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer" style-hover="background:rgba(255,255,255,.03)">
+                  <span style="display:flex;align-items:center;gap:7px;font-size:12.5px;font-weight:500;color:{{ b.color }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ b.color }}"></span>{{ b.label }} <span style="font-family:'Geist Mono',monospace;color:#6e6e73;font-weight:400">{{ b.id }}</span></span>
+                  <span style="font-size:12.5px;color:#a1a1a6">{{ b.text }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+          <section style="display:flex;flex-direction:column;gap:10px">
+            <span style="padding-left:14px;font-size:12px;font-weight:500;color:#6e6e73">PRs ouvertes</span>
+            <sc-if value="{{ pj.noPrs }}" hint-placeholder-val="{{ false }}"><div style="padding:14px;border-radius:12px;background:#18181b;color:#a1a1a6;font-size:12.5px">Aucune PR ouverte.</div></sc-if>
+            <div style="display:flex;flex-direction:column;border-radius:12px;background:#18181b;overflow:hidden">
+              <sc-for list="{{ pj.prs }}" as="r" hint-placeholder-count="2">
+                <div onClick="{{ r.open }}" style="display:flex;align-items:center;gap:10px;min-height:44px;padding:6px 14px;border-bottom:1px solid rgba(255,255,255,.05);cursor:pointer" style-hover="background:rgba(255,255,255,.03)">
+                  <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#a1a1a6;width:38px;flex:none">#{{ r.n }}</span>
+                  <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px"><span style="font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ r.title }}</span><span style="font-family:'Geist Mono',monospace;font-size:11px;color:#6e6e73">{{ r.branch }}</span></div>
+                  <span style="display:flex;align-items:center;gap:6px;font-size:12px;color:{{ r.color }};white-space:nowrap"><span style="width:6px;height:6px;border-radius:50%;background:{{ r.color }}"></span>{{ r.ci }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+
+  </div>
+</main>
+
+<sc-if value="{{ palOpen }}" hint-placeholder-val="{{ false }}">
+  <div onClick="{{ closePal }}" style="position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.45);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);display:flex;justify-content:center;align-items:flex-start;padding-top:14vh">
+    <div onClick="{{ stop }}" style="width:min(580px,calc(100vw - 48px));border-radius:16px;background:rgba(28,28,31,.92);border:1px solid rgba(255,255,255,.1);box-shadow:0 30px 80px -20px rgba(0,0,0,.8),0 1px 0 rgba(255,255,255,.06) inset;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:10px;height:52px;padding:0 18px;border-bottom:1px solid rgba(255,255,255,.07)">
+        <svg width="15" height="15" viewBox="0 0 16 16" style="flex:none;color:#6e6e73"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"></circle><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg>
+        <input ref="{{ palRef }}" value="{{ query }}" onChange="{{ onQuery }}" placeholder="Aller à un agent, un projet, un ticket…" style="flex:1;border:0;outline:none;background:transparent;font-size:15px">
+        <span style="font-family:'Geist Mono',monospace;font-size:10.5px;padding:1px 5px;border-radius:4px;background:rgba(255,255,255,.06);color:#6e6e73">esc</span>
+      </div>
+      <div style="display:flex;flex-direction:column;padding:6px;max-height:380px;overflow-y:auto">
+        <sc-for list="{{ palItems }}" as="it" hint-placeholder-count="5">
+          <div onClick="{{ it.run }}" style="display:flex;align-items:center;gap:12px;height:40px;padding:0 12px;border-radius:9px;cursor:pointer;background:{{ it.bg }}" style-hover="background:rgba(255,255,255,.06)">
+            <span style="width:13px;height:13px;flex:none;border-radius:{{ it.radius }};border:{{ it.iconBorder }};background:{{ it.iconBg }}"></span>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ it.label }}</span>
+            <span style="font-size:12px;color:#6e6e73;white-space:nowrap">{{ it.sub }}</span>
+          </div>
+        </sc-for>
+        <sc-if value="{{ palEmpty }}" hint-placeholder-val="{{ false }}"><div style="padding:18px 12px;color:#6e6e73">Aucun résultat.</div></sc-if>
+      </div>
+    </div>
+  </div>
+</sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;density&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;compact&quot;, &quot;airy&quot;], &quot;default&quot;: &quot;compact&quot;, &quot;tsType&quot;: &quot;'compact' | 'airy'&quot;}, &quot;timelineHours&quot;: {&quot;editor&quot;: &quot;enum&quot;, &quot;options&quot;: [&quot;2&quot;, &quot;4&quot;, &quot;8&quot;], &quot;default&quot;: &quot;4&quot;, &quot;tsType&quot;: &quot;'2' | '4' | '8'&quot;}}">
+const RT = { 'Conductor Cloud': '#BB87FC', 'Claude Code': '#D97757', 'Codex': '#10A37F' };
+const RT_NAME = { 'Conductor Cloud': 'Conductor Cloud', 'Claude Code': 'Claude Code · local', 'Codex': 'Codex · local' };
+const RT_OPEN = { 'Conductor Cloud': 'Conductor', 'Claude Code': 'le terminal', 'Codex': 'le terminal' };
+const MODEL = { opus: 'opus-5-5-1m · high', codex: 'gpt-6.1-sol · high', debug: 'gpt-6.1-sol · xhigh' };
+const PHASE = { planning: 'Planification', 'awaiting-approval': "En attente d'approbation", implementing: 'Implémentation', shipping: 'Livraison', 'ready-to-merge': 'Prêt à fusionner', blocked: 'Bloqué' };
+const STEPS = ['Plan', 'Approbation', 'Implémentation', 'PR', 'CI', 'Fusion'];
+const K = { bg: '#111113', text: '#f0efec', sec: '#a1a1a6', ter: '#6e6e73', quat: '#48484d', track: 'rgba(255,255,255,.1)', done: '#b6f15a', active: '#ffb547', frontier: '#7ea6ff', critical: '#ff6b5b', accent: '#ff8a4c' };
+const mix = (c, p) => `color-mix(in srgb, ${c} ${p}%, transparent)`;
+
+const PROJECTS = [
+  { slug: 'widgets', name: 'Widgets', repo: 'acme/widgets', root: 'WID-1', color: '#7ea6ff', owner: 'Léa Martin', done: 14, total: 24, coord: { h: 'Conductor Cloud', handle: 'ws-0c01/coord', prof: 'opus', state: 'active', seen: 2, since: 420 } },
+  { slug: 'gadgets', name: 'Gadgets', repo: 'acme/gadgets', root: 'GAD-1', color: '#ffb547', owner: 'Hugo Bernard', done: 6, total: 13, coord: { h: 'Claude Code', handle: 'local · tty s004', prof: 'opus', state: 'idle', seen: 24, since: 300 } },
+  { slug: 'armada', name: 'Armada', repo: 'The-Vibe-Company/armada', root: 'THE-812', color: '#b6f15a', owner: 'Camille Roux', done: 31, total: 38, coord: { h: 'Codex', handle: 'local · tty s011', prof: 'codex', state: 'active', seen: 1, since: 190 } },
+];
+
+const AGENTS = [
+  { id: 'WID-15', p: 'widgets', title: 'Sign in with a magic link', phase: 'blocked', h: 'Conductor Cloud', prof: 'opus', handle: 'ws-4f2a/ses-91', claimed: 95, phaseSince: 12, last: 12, summary: 'Asked how long a sign-in link stays valid', tok: 1240, cost: 6.12,
+    q: { kind: 'question', body: 'How long should a sign-in link stay valid?', hint: 'Shorter is safer; longer survives a slow mail server.', options: ['15 minutes (recommended)', '30 minutes'] },
+    files: [{ path: 'src/auth/magic-link.ts', add: 142, del: 0, diff: '@@ -0,0 +1,142 @@\n+import { randomBytes } from "node:crypto";\n+import { hash } from "./hash";\n+\n+export const LINK_TTL_MINUTES = 15; // TODO: confirm with owner\n+\n+export async function issueLink(email: string, now = new Date()) {\n+  const token = randomBytes(32).toString("base64url");\n+  const expiresAt = new Date(now.getTime() + LINK_TTL_MINUTES * 60_000);\n+  await links.insert({ email, tokenHash: hash(token), expiresAt });\n+  return { token, expiresAt };\n+}' }, { path: 'src/auth/routes.ts', add: 38, del: 6 }, { path: 'src/mail/templates/sign-in.tsx', add: 64, del: 0 }, { path: 'test/auth/magic-link.test.ts', add: 97, del: 0 }] },
+  { id: 'WID-18', p: 'widgets', title: 'Add a dark theme to the settings page', phase: 'ready-to-merge', h: 'Claude Code', prof: 'opus', handle: 'ws-77c0/ses-12', claimed: 210, phaseSince: 6, last: 6, summary: 'Handed back: CI green on the final head', tok: 2810, cost: 11.4, pr: { n: 44, ci: 'success', opened: 70 },
+    handback: 'PR #44 is ready: head a3f9c2e, CI green.',
+    files: [{ path: 'src/settings/theme.css', add: 88, del: 12, diff: '@@ -1,12 +1,24 @@\n :root {\n-  --surface: #ffffff;\n-  --ink: #111111;\n+  --surface: light-dark(#ffffff, #121316);\n+  --ink: light-dark(#111111, #ecebe7);\n+  --muted: light-dark(#5f6168, #9b9ea5);\n }\n+\n+[data-theme="dark"] {\n+  color-scheme: dark;\n+}' }, { path: 'src/settings/ThemeToggle.tsx', add: 54, del: 0 }, { path: 'src/settings/page.tsx', add: 9, del: 3 }] },
+  { id: 'WID-14', p: 'widgets', title: 'Show the invoice total on the order page', phase: 'shipping', h: 'Conductor Cloud', prof: 'opus', handle: 'ws-1b9e/ses-40', claimed: 160, phaseSince: 38, last: 4, summary: 'Fixing the rounding test that fails in CI', tok: 1960, cost: 8.75, pr: { n: 41, ci: 'failure', opened: 38 },
+    files: [{ path: 'src/orders/total.ts', add: 22, del: 9, diff: '@@ -12,9 +12,12 @@ export function orderTotal(lines: OrderLine[]) {\n   const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);\n-  const tax = Math.round(subtotal * TAX_RATE * 100) / 100;\n-  return subtotal + tax;\n+  const cents = toCents(subtotal);\n+  const taxCents = Math.round(cents * TAX_RATE);\n+  return fromCents(cents + taxCents);\n }\n+\n+const toCents = (n: number) => Math.round(n * 100);\n+const fromCents = (c: number) => c / 100;' }, { path: 'src/orders/OrderPage.tsx', add: 31, del: 4 }, { path: 'test/orders/total.test.ts', add: 40, del: 2 }] },
+  { id: 'WID-12', p: 'widgets', title: 'Let users export a report as CSV', phase: 'implementing', h: 'Claude Code', prof: 'opus', handle: 'ws-c3d1/ses-08', claimed: 75, phaseSince: 52, last: 3, summary: 'Streaming rows instead of building the file in memory', tok: 880, cost: 3.96,
+    files: [{ path: 'src/reports/export-csv.ts', add: 118, del: 0, diff: '@@ -0,0 +1,118 @@\n+export function exportCsv(report: Report): ReadableStream<string> {\n+  const rows = report.rows();\n+  return new ReadableStream({\n+    start(c) { c.enqueue(header(report.columns)); },\n+    async pull(c) {\n+      const { value, done } = await rows.next();\n+      done ? c.close() : c.enqueue(line(value));\n+    },\n+  });\n+}' }, { path: 'src/reports/routes.ts', add: 14, del: 1 }, { path: 'test/reports/export-csv.test.ts', add: 76, del: 0 }] },
+  { id: 'WID-17', p: 'widgets', title: 'Retry failed webhook deliveries', phase: 'implementing', h: 'Codex', prof: 'codex', handle: 'ws-90aa/ses-33', claimed: 130, phaseSince: 100, last: 42, summary: 'Backoff schedule written, wiring the queue', tok: 1120, cost: 2.84,
+    files: [{ path: 'src/webhooks/retry.ts', add: 67, del: 0, diff: '@@ -0,0 +1,67 @@\n+const SCHEDULE_S = [30, 120, 600, 3600, 21600];\n+\n+export function nextAttempt(attempt: number, now: Date) {\n+  const delay = SCHEDULE_S[attempt];\n+  if (delay === undefined) return null; // give up, mark failed\n+  const jitter = Math.random() * delay * 0.1;\n+  return new Date(now.getTime() + (delay + jitter) * 1000);\n+}' }, { path: 'src/webhooks/queue.ts', add: 21, del: 8 }] },
+  { id: 'GAD-5', p: 'gadgets', title: 'Speed up the product search page', phase: 'shipping', h: 'Conductor Cloud', prof: 'codex', handle: 'ws-5e61/ses-02', claimed: 240, phaseSince: 25, last: 2, summary: 'Rebasing on main after the catalogue change', tok: 3050, cost: 7.1, pr: { n: 12, ci: 'pending', conflict: true, opened: 25 },
+    files: [{ path: 'src/search/query.ts', add: 45, del: 61, diff: '@@ -20,14 +20,9 @@ export async function search(q: string) {\n-  const all = await db.products.findMany();\n-  return all\n-    .filter((p) => p.name.toLowerCase().includes(q.toLowerCase()))\n-    .slice(0, 50);\n+  return db.query(\n+    "SELECT * FROM products WHERE search @@ plainto_tsquery($1) LIMIT 50",\n+    [q],\n+  );\n }' }, { path: 'src/search/index.ts', add: 12, del: 3 }, { path: 'src/catalogue/schema.sql', add: 4, del: 1 }] },
+  { id: 'GAD-3', p: 'gadgets', title: 'Import products from a spreadsheet', phase: 'awaiting-approval', h: 'Claude Code', prof: 'opus', handle: 'ws-d810/ses-17', claimed: 44, phaseSince: 18, last: 18, summary: 'Plan posted: parse, validate, then import in one transaction', tok: 410, cost: 1.92,
+    q: { kind: 'approval', body: 'Parse the sheet, validate every row, then import in one transaction.', hint: 'Rows that fail validation are listed back to the user; nothing is written until all pass.', options: ['Approuver le plan', 'Demander des changements'] },
+    files: [{ path: 'docs/plans/gad-3.md', add: 48, del: 0, diff: '@@ -0,0 +1,48 @@\n+# GAD-3 — Import products from a spreadsheet\n+\n+1. Parse .xlsx / .csv with a streaming reader\n+2. Validate each row against the catalogue schema\n+3. Report every invalid row with its line number\n+4. Import all rows in one transaction, or none' }] },
+  { id: 'GAD-6', p: 'gadgets', title: 'Send a weekly digest email', phase: 'planning', h: 'Codex', prof: 'codex', handle: 'ws-2c47/ses-55', claimed: 6, phaseSince: 6, last: 4, summary: 'Reading the spec and the mailer code', tok: 96, cost: 0.21, files: [] },
+  { id: 'THE-862', p: 'armada', title: 'Add a local Codex harness adapter', phase: 'implementing', h: 'Conductor Cloud', prof: 'opus', handle: 'ws-a1c4/ses-03', claimed: 58, phaseSince: 31, last: 1, summary: 'Mapping Codex session events onto armada report', tok: 1530, cost: 7.02,
+    files: [{ path: 'packages/core/src/harness/codex-local.ts', add: 156, del: 0, diff: '@@ -0,0 +1,156 @@\n+export const codexLocal: Harness = {\n+  name: "Codex",\n+  where: "local",\n+  async sessions(io) {\n+    const out = await io.run("codex", ["sessions", "--json"]);\n+    return JSON.parse(out).map(toSession);\n+  },\n+};' }, { path: 'packages/core/src/harness/index.ts', add: 8, del: 2 }, { path: 'packages/core/test/codex-local.test.ts', add: 88, del: 0 }] },
+  { id: 'THE-858', p: 'armada', title: 'Show the harness on every session', phase: 'ready-to-merge', h: 'Conductor Cloud', prof: 'opus', handle: 'ws-b20e/ses-77', claimed: 180, phaseSince: 9, last: 9, summary: 'Handed back: PR #317 green, head 7c1e0a4', tok: 2240, cost: 9.88, pr: { n: 317, ci: 'success', opened: 52 },
+    handback: 'PR #317 is ready: head 7c1e0a4, CI green.',
+    files: [{ path: 'packages/dashboard/components/Fleet.tsx', add: 36, del: 4, diff: '@@ -512,6 +512,14 @@ function CrewRow({\n           {r.profile && (\n             <span className="mono faint">{r.profile}</span>\n           )}\n+          {r.harness && (\n+            <span className="rt">\n+              <i className="rt-mark" />{r.harness.name}\n+            </span>\n+          )}' }, { path: 'packages/core/src/live.ts', add: 19, del: 2 }] },
+];
+
+const READY = [
+  { id: 'WID-20', p: 'widgets', title: 'Let users change their email address', labels: ['ready-for-agent', 'web'] },
+  { id: 'WID-21', p: 'widgets', title: 'Rate-limit the public API', labels: ['ready-for-agent', 'api'] },
+  { id: 'WID-22', p: 'widgets', title: 'Fix: refunds round the total the wrong way', labels: ['ready-for-agent', 'Bug'] },
+  { id: 'WID-23', p: 'widgets', title: 'Archive invoices older than a year', labels: [] },
+  { id: 'WID-24', p: 'widgets', title: 'Email the invoice as a PDF', labels: ['ready-for-agent'], blockedBy: 'WID-14' },
+  { id: 'GAD-8', p: 'gadgets', title: 'Filter the catalogue by size', labels: ['ready-for-agent', 'web'] },
+  { id: 'THE-864', p: 'armada', title: 'Spike a boat.dev harness', labels: ['ready-for-agent'] },
+  { id: 'THE-866', p: 'armada', title: 'Filter the fleet by harness', labels: ['ready-for-agent', 'web'] },
+];
+
+const dur = (m) => (m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')}`);
+const ago = (m) => (m < 1 ? "à l'instant" : `il y a ${dur(m)}`);
+const clock = (m) => { const t = 15 * 60 + 42 - m; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
+const tok = (k) => (k >= 1000 ? `${(k / 1000).toFixed(2).replace('.', ',')} M` : `${k} k`);
+const usd = (c) => `${c.toFixed(2).replace('.', ',')} $`;
+const initials = (n) => n.split(' ').map((w) => w[0]).join('');
+const route = (labels) => (labels.includes('Bug') ? 'debug' : labels.includes('api') ? 'codex' : 'opus');
+
+function statusOf(a) {
+  if (a.q && a.q.kind === 'question') return { key: 'waiting', label: 'Attend ta réponse', color: K.accent };
+  if (a.q && a.q.kind === 'approval') return { key: 'waiting', label: 'Attend ton approbation', color: K.accent };
+  if (a.pr && a.pr.ci === 'failure') return { key: 'error', label: 'CI rouge', color: K.critical };
+  if (a.pr && a.pr.conflict) return { key: 'error', label: 'Conflit avec main', color: K.critical };
+  if (a.last > 15) return { key: 'silent', label: 'Silencieux', color: K.active };
+  if (a.phase === 'ready-to-merge') return { key: 'done', label: 'Prêt à fusionner', color: K.done };
+  return { key: 'running', label: PHASE[a.phase], color: K.frontier };
+}
+const stepOf = (a) => (a.phase === 'shipping' ? (a.pr ? 4 : 3) : { planning: 0, 'awaiting-approval': 1, implementing: 2, blocked: 2, 'ready-to-merge': 5 }[a.phase]);
+function iconOf(key, pct) {
+  if (key === 'waiting') return { iconBorder: `1.5px solid ${K.accent}`, iconBg: `radial-gradient(circle, ${K.accent} 0 2.5px, transparent 3px)` };
+  if (key === 'error') return { iconBorder: `1.5px solid ${K.critical}`, iconBg: `radial-gradient(circle, ${K.bg} 0 1.6px, ${K.critical} 2.2px)` };
+  if (key === 'silent') return { iconBorder: `1.5px dashed ${K.active}`, iconBg: 'transparent' };
+  if (key === 'done') return { iconBorder: `1.5px solid ${K.done}`, iconBg: `radial-gradient(circle, ${K.bg} 0 1.6px, ${K.done} 2.2px)` };
+  return { iconBorder: `1.5px solid ${K.frontier}`, iconBg: `conic-gradient(${K.frontier} ${pct}%, transparent 0)` };
+}
+const GROUPS = [
+  { key: 'waiting', label: 'Attendent ta décision' },
+  { key: 'error', label: 'En erreur' },
+  { key: 'silent', label: 'Silencieux' },
+  { key: 'running', label: 'En cours' },
+  { key: 'done', label: 'Prêts à fusionner' },
+];
+
+class Component extends DCLogic {
+  state = { view: 'overview', agentId: null, projectId: null, tab: 'activity', harness: null, density: null, hours: null, sent: {}, choice: {}, draft: {}, launched: {}, openFile: 0, checked: 0, prev: null, sel: 0, pal: false, query: '', palIdx: 0, vw: typeof window !== 'undefined' ? window.innerWidth : 1400 };
+  palRef = React.createRef();
+
+  componentDidMount() {
+    this.timer = setInterval(() => this.setState((s) => ({ checked: (s.checked + 1) % 5 })), 1000);
+    this.onResize = () => this.setState({ vw: window.innerWidth });
+    window.addEventListener('resize', this.onResize);
+    this.onKey = (e) => this.key(e);
+    window.addEventListener('keydown', this.onKey);
+  }
+  componentWillUnmount() { clearInterval(this.timer); window.removeEventListener('resize', this.onResize); window.removeEventListener('keydown', this.onKey); }
+  componentDidUpdate(_, prev) { if (this.state.pal && !prev.pal && this.palRef.current) this.palRef.current.focus(); }
+
+  key(e) {
+    const s = this.state;
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); this.setState({ pal: !s.pal, query: '', palIdx: 0 }); return; }
+    if (s.pal) {
+      const items = this.palList();
+      if (e.key === 'Escape') this.setState({ pal: false });
+      else if (e.key === 'ArrowDown') { e.preventDefault(); this.setState({ palIdx: Math.min(items.length - 1, s.palIdx + 1) }); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); this.setState({ palIdx: Math.max(0, s.palIdx - 1) }); }
+      else if (e.key === 'Enter' && items[s.palIdx]) { e.preventDefault(); items[s.palIdx].go(); }
+      return;
+    }
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.key === 'Escape') this.back();
+    if (s.view === 'agents') {
+      const flat = this.flatAgents();
+      if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); this.setState({ sel: Math.min(flat.length - 1, s.sel + 1) }); }
+      if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); this.setState({ sel: Math.max(0, s.sel - 1) }); }
+      if (e.key === 'Enter' && flat[s.sel]) this.openAgent(flat[s.sel].id);
+    }
+  }
+  flatAgents() {
+    const s = this.state;
+    const all = AGENTS.filter((a) => !s.harness || a.h === s.harness);
+    return GROUPS.flatMap((g) => all.filter((a) => statusOf(a).key === g.key));
+  }
+  palList() {
+    const q = this.state.query.trim().toLowerCase();
+    const items = [
+      ...AGENTS.map((a) => { const st = statusOf(a); return { label: a.title, sub: `${a.id} · ${st.label}`, ...iconOf(st.key, 50), radius: '50%', hay: `${a.title} ${a.id} ${a.p}`, go: () => { this.setState({ pal: false }); this.openAgent(a.id); } }; }),
+      ...PROJECTS.map((p) => ({ label: p.name, sub: `Projet · ${p.repo}`, iconBorder: `1.5px solid ${p.color}`, iconBg: p.color, radius: '3px', hay: `${p.name} ${p.repo} coordinateur ${p.coord.h}`, go: () => { this.setState({ pal: false }); this.openProject(p.slug); } })),
+      { label: 'Aller à Agents', sub: 'Navigation', iconBorder: `1.5px solid ${K.ter}`, iconBg: 'transparent', radius: '3px', hay: 'agents', go: () => this.setState({ pal: false, view: 'agents' }) },
+      { label: 'Aller à Projets', sub: 'Navigation', iconBorder: `1.5px solid ${K.ter}`, iconBg: 'transparent', radius: '3px', hay: 'projets', go: () => this.setState({ pal: false, view: 'projects' }) },
+    ];
+    return (q ? items.filter((i) => i.hay.toLowerCase().includes(q)) : items).slice(0, 9);
+  }
+  back() {
+    const s = this.state;
+    if (s.view === 'agent') this.setState(s.prev && s.prev.view === 'project' ? { view: 'project', projectId: s.prev.projectId } : { view: s.prev ? s.prev.view : 'agents' });
+    else if (s.view === 'project') this.setState({ view: 'projects' });
+  }
+  openAgent(id) { this.setState((s) => ({ view: 'agent', agentId: id, tab: 'activity', openFile: 0, prev: s.view === 'agent' ? s.prev : { view: s.view, projectId: s.projectId } })); }
+  openProject(slug) { this.setState({ view: 'project', projectId: slug }); }
+  send(id, text) { this.setState((s) => ({ sent: { ...s.sent, [id]: text } })); }
+
+  agent(a, W) {
+    const st = statusOf(a);
+    const step = stepOf(a);
+    const proj = PROJECTS.find((p) => p.slug === a.p);
+    const pct = Math.round(((step + 0.5) / 6) * 100);
+    const steps = STEPS.map((label, k) => ({ label, color: k < step ? 'rgba(240,239,236,.45)' : k === step ? st.color : 'rgba(255,255,255,.08)' }));
+    const ci = a.pr ? (a.pr.ci === 'success' ? K.done : a.pr.ci === 'failure' ? K.critical : K.active) : 'transparent';
+    const add = a.files.reduce((s, f) => s + f.add, 0);
+    const del = a.files.reduce((s, f) => s + f.del, 0);
+    const pos = (m) => Math.max(0, Math.min(100, ((W - m) / W) * 100));
+    const pc = (n) => `${n.toFixed(2)}%`;
+    const markers = [];
+    if (a.pr && a.pr.opened < W) markers.push({ left: pc(pos(a.pr.opened)), color: K.text, radius: '1px', rot: 'rotate(45deg)', title: `PR #${a.pr.n} ouverte` });
+    if (a.last < W && a.last > 1) markers.push({ left: pc(pos(a.last)), color: a.last > 15 ? K.active : K.sec, radius: '50%', rot: 'none', title: 'Dernier rapport' });
+    if (a.q && a.phaseSince < W) markers.push({ left: pc(pos(a.phaseSince)), color: K.accent, radius: '50%', rot: 'none', title: a.q.kind === 'question' ? 'Question' : 'Plan soumis' });
+    const tl = {
+      preLeft: pc(pos(a.claimed)), preW: pc(pos(a.phaseSince) - pos(a.claimed)),
+      preBg: a.claimed > W ? `linear-gradient(90deg, transparent, ${K.track} 28px)` : K.track,
+      phLeft: pc(pos(a.phaseSince)), phW: pc(100 - pos(a.phaseSince)),
+      phBg: `linear-gradient(90deg, ${mix(st.color, 12)}, ${mix(st.color, 34)})`,
+      hatch: st.key === 'silent', hatchLeft: pc(pos(a.last)), hatchW: pc(100 - pos(a.last)), markers,
+      capAnim: st.key === 'running' ? 'pulse 2s infinite' : 'none',
+    };
+    return {
+      ...a, ...iconOf(st.key, pct), status: st.key, statusLabel: st.label, statusColor: st.color, tl,
+      projectName: proj.name, projectColor: proj.color, hColor: RT[a.h], hName: RT_NAME[a.h], hOpen: RT_OPEN[a.h],
+      profile: a.prof, steps, step, ciColor: ci, hasPr: !!a.pr, prButton: a.pr ? `PR #${a.pr.n} ↗` : 'Pas de PR',
+      phaseDur: dur(a.phaseSince),
+      agoShort: dur(a.last), agoLong: ago(a.last), agoColor: a.last > 15 ? K.active : K.ter,
+      line: a.q ? a.q.body : a.summary, lineColor: a.q ? K.accent : K.sec,
+      filesLabel: a.files.length ? `${a.files.length} fichiers` : 'aucun fichier',
+      addTotal: add, delTotal: del, branch: `feature/${a.id.toLowerCase()}`, capAnim: tl.capAnim,
+      open: () => this.openAgent(a.id),
+    };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const density = s.density ?? this.props.density ?? 'compact';
+    const hours = s.hours ?? Number(this.props.timelineHours ?? 4);
+    const W = hours * 60;
+    const wide = s.vw >= 1180;
+    const mainW = s.vw - (wide ? 216 : 56) - 16;
+    const roomy = mainW >= 820;
+    const all = AGENTS.map((a) => this.agent(a, W));
+    const byId = Object.fromEntries(all.map((a) => [a.id, a]));
+
+    const pill = (primary, color) => primary ? { bg: color || K.text, color: '#09090b' } : { bg: 'rgba(255,255,255,.07)', color: K.text };
+    const decisionActions = (a) => {
+      const opts = a.q ? a.q.options : ['Demander la fusion'];
+      return opts.map((label, k) => ({ label, ...pill(k === 0), onClick: () => this.send(a.id, label) }));
+    };
+    const decisionsSrc = all.filter((a) => a.status === 'waiting' || a.status === 'done');
+    const decisions = decisionsSrc.map((a) => ({
+      id: a.id, title: a.title, projectName: a.projectName, kindLabel: a.q ? (a.q.kind === 'question' ? 'Question' : 'Plan à approuver') : 'Prêt à fusionner',
+      color: a.q ? K.accent : K.done, body: a.q ? a.q.body : a.handback, age: ago(a.phaseSince), open: a.open,
+      pending: !!s.sent[a.id], sent: s.sent[a.id] ? `« ${s.sent[a.id]} »` : '', showActions: !s.sent[a.id], actions: decisionActions(a),
+    }));
+    const alerts = all.filter((a) => a.status === 'error' || a.status === 'silent').map((a) => ({
+      id: a.id, kindLabel: a.statusLabel, color: a.statusColor, open: a.open, age: ago(a.status === 'silent' ? a.last : a.phaseSince),
+      body: a.status === 'silent' ? `Aucun rapport depuis ${dur(a.last)} — ${a.title}` : a.pr.ci === 'failure' ? `PR #${a.pr.n} · “Lint, typecheck and test” échoue — ${a.title}` : `PR #${a.pr.n} en conflit avec main — ${a.title}`,
+    }));
+
+    const projects = PROJECTS.map((p) => {
+      const ags = all.filter((a) => a.p === p.slug);
+      const ready = READY.filter((r) => r.p === p.slug);
+      const prs = ags.filter((a) => a.pr);
+      const errs = ags.filter((a) => a.status === 'error').length;
+      const health = p.slug === 'gadgets' ? ['Bloqué', K.critical] : errs || ags.some((a) => a.status === 'silent') ? ['À surveiller', K.active] : ['En bonne voie', K.done];
+      const pct = Math.round((p.done / p.total) * 100);
+      return {
+        ...p, agentCount: ags.length, readyCount: ready.length, ownerInitials: initials(p.owner),
+        health: health[0], healthColor: health[1], pctLabel: `${pct}%`,
+        ring: `conic-gradient(${K.done} 0 ${pct}%, ${K.frontier} ${pct}% ${pct + (ags.length / p.total) * 100}%, rgba(255,255,255,.08) 0)`,
+        lastActivity: ago(Math.min(...ags.map((a) => a.last))), agentDots: ags.map((a) => ({ color: a.hColor })),
+        prSummary: prs.length ? `${prs.length} ouverte${prs.length > 1 ? 's' : ''} · ${prs.filter((a) => a.pr.ci === 'success').length} verte${prs.filter((a) => a.pr.ci === 'success').length > 1 ? 's' : ''}` : 'aucune',
+        ...(() => {
+          const c = p.coord, on = c.state === 'active', marks = [];
+          for (let m = c.seen; m < Math.min(W, c.since); m += 15) marks.push({ left: `${Math.max(0, ((W - m) / W) * 100).toFixed(2)}%` });
+          const pend = ags.filter((a) => a.status === 'waiting' || a.status === 'done').length;
+          return { coordH: RT_NAME[c.h], coordHShort: c.h, coordHColor: RT[c.h], coordHandle: c.handle, coordColor: on ? K.done : K.active, coordFill: on ? mix(K.done, 35) : 'transparent',
+            coordShort: on ? `actif · ${ago(c.seen)}` : `inactif depuis ${dur(c.seen)}`, coordMarks: marks,
+            coordLine: on ? 'rgba(182,241,90,.25)' : 'repeating-linear-gradient(90deg, rgba(255,181,71,.45) 0 4px, transparent 4px 8px)',
+            inboxLabel: pend ? `${pend} en attente de toi` : 'inbox vide', inboxColor: pend ? K.accent : K.ter,
+            coordRows: [
+              { k: 'Harness', v: RT_NAME[c.h], hasDot: true, dot: RT[c.h], font: "'Geist',sans-serif", color: K.text },
+              { k: 'Session', v: c.handle, hasDot: false, font: "'Geist Mono',monospace", color: K.text },
+              { k: 'Modèle', v: `${c.prof} · ${MODEL[c.prof]}`, hasDot: false, font: "'Geist Mono',monospace", color: K.text },
+              { k: 'État', v: on ? `actif · inbox lue ${ago(c.seen)}` : `inactif depuis ${dur(c.seen)}`, hasDot: true, dot: on ? K.done : K.active, font: "'Geist',sans-serif", color: on ? K.text : K.active },
+              { k: 'Inbox', v: pend ? `${pend} en attente de toi` : 'vide', hasDot: false, font: "'Geist',sans-serif", color: pend ? K.accent : K.text },
+              { k: 'En poste depuis', v: `${clock(c.since)} · ${dur(c.since)}`, hasDot: false, font: "'Geist',sans-serif", color: K.text },
+            ] };
+        })(),
+        navBg: (s.view === 'project' && s.projectId === p.slug) ? 'rgba(255,255,255,.06)' : 'transparent',
+        open: () => this.openProject(p.slug), agents: ags,
+        metrics: [
+          { label: 'Terminés', value: `${p.done}/${p.total}`, color: K.text },
+          { label: 'En vol', value: ags.length, color: K.frontier },
+          { label: 'Prêts à lancer', value: ready.length, color: K.text },
+          { label: 'PRs ouvertes', value: prs.length, color: K.text },
+        ],
+        ready: ready.map((r) => {
+          const notReady = !r.labels.includes('ready-for-agent');
+          const launched = !!s.launched[r.id];
+          return { ...r, labels: r.labels.filter((l) => l !== 'ready-for-agent').map((name) => ({ name })), profile: route(r.labels), launched, canLaunch: !notReady && !r.blockedBy && !launched,
+            note: r.blockedBy ? `Bloqué par ${r.blockedBy}` : notReady ? 'Pas encore prêt' : '',
+            launch: () => this.setState((st) => ({ launched: { ...st.launched, [r.id]: true } })) };
+        }),
+        blocks: ags.filter((a) => a.status === 'error' || a.status === 'silent' || a.status === 'waiting').map((a) => ({ id: a.id, label: a.statusLabel, color: a.statusColor, text: a.q ? a.q.body : a.summary, open: a.open })),
+        prs: prs.map((a) => ({ n: a.pr.n, title: a.title, branch: a.branch, color: a.pr.conflict ? K.critical : a.ciColor, ci: a.pr.conflict ? 'conflit' : a.pr.ci === 'success' ? 'verte' : a.pr.ci === 'failure' ? 'rouge' : 'en cours', open: a.open })),
+      };
+    });
+    projects.forEach((p) => { p.noBlocks = p.blocks.length === 0; p.noPrs = p.prs.length === 0; });
+
+    const hs = ['Conductor Cloud', 'Claude Code', 'Codex'];
+    const harnesses = hs.map((h) => ({ name: RT_NAME[h], short: h, color: RT[h], count: all.filter((a) => a.h === h).length, open: () => this.setState({ view: 'agents', harness: h, sel: 0 }) }));
+    const seg = (on) => ({ bg: on ? '#2a2a2e' : 'transparent', color: on ? K.text : K.sec, shadow: on ? '0 1px 2px rgba(0,0,0,.4)' : 'none' });
+    const harnessTabs = [{ key: null, label: 'Tous', dot: K.ter }, ...hs.map((h) => ({ key: h, label: h, dot: RT[h] }))].map((t) => ({ ...t, ...seg(s.harness === t.key), count: all.filter((a) => !t.key || a.h === t.key).length, onClick: () => this.setState({ harness: t.key, sel: 0 }) }));
+
+    const filtered = all.filter((a) => !s.harness || a.h === s.harness);
+    let idx = 0;
+    const groups = GROUPS.map((g) => ({ ...g, ...iconOf(g.key, 50), items: filtered.filter((a) => a.status === g.key) })).filter((g) => g.items.length).map((g) => ({
+      ...g, count: g.items.length,
+      items: g.items.map((a) => { const on = idx++ === s.sel; return { ...a, selBg: on ? 'rgba(255,255,255,.045)' : 'transparent', selBar: on ? `inset 2px 0 0 ${K.frontier}` : 'none' }; }),
+    }));
+
+    const ticks = [];
+    for (let m = 42; m < W - 10; m += hours > 4 ? 120 : 60) ticks.push({ left: `${(((W - m) / W) * 100).toFixed(2)}%`, label: clock(m) });
+    const tlGroups = projects;
+    const hourBtns = [2, 4, 8].map((h) => ({ label: `${h} h`, ...seg(h === hours), onClick: () => this.setState({ hours: h }) }));
+
+    let ag = null;
+    if (s.view === 'agent' && byId[s.agentId]) {
+      const a = byId[s.agentId];
+      const t = [
+        { m: a.claimed, text: `Lancé par le coordinateur ${a.projectName} sur ${a.hName}`, sub: `Session ${a.handle} · profil ${a.prof}`, dot: K.quat },
+        { m: a.claimed - 1, text: `Branche ${a.branch} créée`, sub: 'Depuis main', dot: K.quat },
+      ];
+      if (a.phaseSince !== a.claimed) t.push({ m: a.phaseSince, text: `Passage en ${PHASE[a.phase].toLowerCase()}`, sub: a.phaseSince === a.last ? a.summary : 'Phase démarrée', dot: K.frontier });
+      if (a.pr) t.push({ m: a.pr.opened, text: `PR #${a.pr.n} ouverte`, sub: `${a.files.length} fichiers · +${a.addTotal} −${a.delTotal}`, dot: K.text });
+      if (a.pr && a.pr.ci === 'failure') t.push({ m: a.pr.opened - 6, text: 'CI rouge', sub: 'Lint, typecheck and test — total.test.ts › rounds tax half-up', dot: K.critical });
+      if (a.pr && a.pr.conflict) t.push({ m: a.phaseSince - 3, text: 'Conflit avec main', sub: 'src/catalogue/schema.sql a changé sur main', dot: K.critical });
+      if (a.last !== a.phaseSince) t.push({ m: a.last, text: 'Dernier rapport', sub: a.summary, dot: a.last > 15 ? K.active : K.done });
+      if (a.q) t.push({ m: a.phaseSince, text: a.q.kind === 'question' ? 'Question posée' : 'Plan soumis pour approbation', sub: a.q.body, dot: K.accent });
+      if (s.sent[a.id]) t.push({ m: 0, text: 'Ta réponse a été transmise', sub: s.sent[a.id], dot: K.frontier });
+      const timeline = t.sort((x, y) => y.m - x.m).map((e, i, arr) => ({ ...e, time: clock(e.m), line: i === arr.length - 1 ? 'transparent' : 'rgba(255,255,255,.08)' }));
+
+      const files = a.files.map((f, k) => {
+        const tot = f.add + f.del;
+        const g = tot ? Math.round((f.add / tot) * 5) : 0;
+        const open = s.openFile === k;
+        let n = 0;
+        const diff = open && f.diff ? f.diff.split('\n').map((line) => {
+          const c = line[0];
+          if (c === '@') return { n: '', sign: '', text: line, color: K.frontier, bg: 'rgba(126,166,255,.06)' };
+          n += 1;
+          if (c === '+') return { n, sign: '+', text: line.slice(1), color: '#dff5bd', bg: 'rgba(182,241,90,.07)' };
+          if (c === '-') return { n, sign: '−', text: line.slice(1), color: '#ffcdc6', bg: 'rgba(255,107,91,.08)' };
+          return { n, sign: '', text: line.slice(1), color: K.sec, bg: 'transparent' };
+        }) : [];
+        const cut = f.path.lastIndexOf('/') + 1;
+        return { ...f, dir: f.path.slice(0, cut), name: f.path.slice(cut), open, noDiff: open && !f.diff, diff, chev: open ? '▾' : '▸', bar: [0, 1, 2, 3, 4].map((i) => ({ c: i < g ? K.done : K.critical })), toggle: () => this.setState({ openFile: open ? -1 : k }) };
+      });
+
+      const logs = [
+        { m: a.claimed, text: '$ armada login --launch-token ••••••••', color: K.ter },
+        { m: a.claimed, text: `✓ worker session for ${a.id} (${a.p})`, color: K.done },
+        { m: a.claimed, text: `$ armada claim ${a.id} --runtime "${a.h}"`, color: K.sec },
+        { m: a.claimed, text: `$ armada report ${a.id} --phase planning "claimed, reading the ticket"`, color: K.sec },
+        ...a.files.map((f, k) => ({ m: Math.max(a.last + 1, a.phaseSince - k * 3), text: `edit ${f.path}  +${f.add} −${f.del}`, color: K.text })),
+      ];
+      if (a.pr) logs.push({ m: a.pr.opened, text: `$ gh pr create --fill  →  #${a.pr.n}`, color: K.sec });
+      if (a.pr) logs.push({ m: a.pr.opened - 2, text: a.pr.ci === 'failure' ? '✗ bun run verify — 1 failing: total.test.ts › rounds tax half-up (expected 10.05, got 10.04)' : a.pr.conflict ? '! merge conflict: src/catalogue/schema.sql' : '✓ bun run verify — 214 passed', color: a.pr.ci === 'failure' || a.pr.conflict ? K.critical : K.done });
+      if (a.q) logs.push({ m: a.phaseSince, text: `$ armada ask ${a.id} "${a.q.body}"`, color: K.accent });
+      logs.push({ m: a.last, text: `$ armada report ${a.id} --phase ${a.phase} "${a.summary}"`, color: K.sec });
+      const logLines = logs.sort((x, y) => y.m - x.m).map((l) => ({ ...l, time: `${clock(l.m)}:${String((l.m * 37) % 60).padStart(2, '0')}` }));
+
+      const nodes = STEPS.map((label, k) => {
+        const past = k < a.step, now = k === a.step;
+        return { label, hasLine: k < 5, lineColor: past ? 'rgba(240,239,236,.35)' : 'rgba(255,255,255,.08)',
+          border: past ? 'rgba(240,239,236,.6)' : now ? a.statusColor : 'rgba(255,255,255,.14)',
+          fill: past ? 'rgba(240,239,236,.6)' : now ? mix(a.statusColor, 25) : 'transparent',
+          anim: now && a.status === 'running' ? 'pulse 2s infinite' : 'none',
+          labelColor: now ? K.text : past ? K.sec : K.ter, sub: now ? dur(a.phaseSince) : past ? 'fait' : '' };
+      });
+
+      const mono = "'Geist Mono',monospace", sans = "'Geist',sans-serif";
+      const row = (k, v, o = {}) => ({ k, v, hasDot: !!o.dot, dot: o.dot, font: o.mono ? mono : sans, color: o.color || K.text });
+      const inspector = [
+        { title: 'Session', rows: [row('Harness', a.hName, { dot: a.hColor }), row('Profil', a.prof, { mono: true }), row('Modèle', MODEL[a.prof], { mono: true }), row('Session', a.handle, { mono: true }), row('Démarrée', `${clock(a.claimed)} · ${dur(a.claimed)}`), row('Dernier rapport', ago(a.last), { color: a.agoColor === K.active ? K.active : K.text })] },
+        { title: 'Coordinateur', rows: [(() => { const p = PROJECTS.find((x) => x.slug === a.p); return row(a.projectName, RT_NAME[p.coord.h], { dot: RT[p.coord.h] }); })(), (() => { const p = PROJECTS.find((x) => x.slug === a.p); const on = p.coord.state === 'active'; return row('État', on ? `actif · ${ago(p.coord.seen)}` : `inactif depuis ${dur(p.coord.seen)}`, { color: on ? K.done : K.active }); })()] },
+        { title: 'Code', rows: [row('Branche', a.branch, { mono: true }), row('PR', a.pr ? `#${a.pr.n}` : '—', { mono: true, dot: a.pr ? a.ciColor : null }),
+          ...(a.pr ? [row('Lint, typecheck…', a.pr.ci === 'success' ? 'ok' : a.pr.ci === 'failure' ? 'échec' : 'en cours', { dot: a.ciColor, color: a.ciColor }), row('Fusionnable', a.pr.conflict ? 'conflit' : 'oui', { color: a.pr.conflict ? K.critical : K.text })] : []),
+          row('Modifs', a.files.length ? `+${a.addTotal} −${a.delTotal}` : '—', { mono: true })] },
+      ];
+
+      let attn = null;
+      if (a.q) attn = { title: a.q.kind === 'question' ? `${a.id} attend ta réponse` : 'Plan à approuver', color: K.accent, body: a.q.body, hint: a.q.hint, composer: true };
+      else if (a.status === 'done') attn = { title: 'Prêt à fusionner', color: K.done, body: a.handback, hint: `Le coordinateur ${a.projectName} fusionne après ton feu vert. Les workers ne fusionnent jamais.`, buttons: [{ label: 'Demander la fusion', primary: true, c: K.done }, { label: 'Voir la PR ↗' }] };
+      else if (a.status === 'error') attn = { title: a.statusLabel, color: K.critical, body: a.pr.ci === 'failure' ? '1 test échoue : total.test.ts › rounds tax half-up' : 'La branche est en conflit avec main.', hint: a.summary, buttons: [{ label: 'Voir les logs', tab: 'logs', primary: true, c: K.text }, { label: 'Demander une relance' }] };
+      else if (a.status === 'silent') attn = { title: 'Silencieux', color: K.active, body: `Aucun rapport depuis ${dur(a.last)}.`, hint: `Dernier message : ${a.summary}`, buttons: [{ label: "Relancer l'agent", primary: true, c: K.active }, { label: 'Ouvrir la session' }] };
+
+      const choice = s.choice[a.id];
+      const draft = s.draft[a.id] || '';
+      const answer = draft.trim() || choice;
+      ag = {
+        ...a, timeline, files, logs: logLines, nodes, inspector, noFiles: a.files.length === 0, hasFiles: a.files.length > 0,
+        attn: !!attn, attnTitle: attn ? attn.title : '', attnColor: attn ? attn.color : K.text, attnBody: attn ? attn.body : '', attnHint: attn ? attn.hint : '',
+        attnBorder: attn ? mix(attn.color, 30) : 'transparent', attnBg: attn ? mix(attn.color, 6) : 'transparent',
+        attnPending: !!s.sent[a.id], attnSent: s.sent[a.id] ? `« ${s.sent[a.id]} »` : '',
+        showComposer: !!(attn && attn.composer && !s.sent[a.id]), showButtons: !!(attn && attn.buttons && !s.sent[a.id]),
+        choices: a.q ? a.q.options.map((label) => { const on = choice === label && !draft.trim(); return { label, bg: on ? mix(K.accent, 10) : 'rgba(255,255,255,.03)', border: on ? mix(K.accent, 45) : 'rgba(255,255,255,.06)', ring: on ? K.accent : K.quat, dot: on ? `radial-gradient(circle, ${K.accent} 0 4px, transparent 4.5px)` : 'transparent', onClick: () => this.setState((st) => ({ choice: { ...st.choice, [a.id]: label }, draft: { ...st.draft, [a.id]: '' } })) }; }) : [],
+        draft, onDraft: (e) => { const v = e.target.value; this.setState((st) => ({ draft: { ...st.draft, [a.id]: v } })); },
+        submitBg: answer ? K.text : 'rgba(255,255,255,.07)', submitColor: answer ? '#09090b' : K.ter,
+        submit: () => { if (answer) this.send(a.id, answer); },
+        buttons: attn && attn.buttons ? attn.buttons.map((b) => ({ label: b.label, ...pill(!!b.primary, b.c), onClick: () => (b.tab ? this.setState({ tab: b.tab }) : this.send(a.id, b.label)) })) : [],
+      };
+    }
+    const pj = s.view === 'project' ? projects.find((p) => p.slug === s.projectId) : null;
+    const tabs = ag ? [['activity', 'Activité', ''], ['files', 'Fichiers', String(ag.files.length)], ['logs', 'Terminal', '']].map(([key, label, count]) => ({ label, count, ...seg(s.tab === key), onClick: () => this.setState({ tab: key }) })) : [];
+
+    const inProjects = s.view === 'projects' || s.view === 'project' || (s.view === 'agent' && s.prev && s.prev.view === 'project');
+    const inOverview = s.view === 'overview' || (s.view === 'agent' && s.prev && s.prev.view === 'overview');
+    const inAgents = !inProjects && !inOverview;
+    const nav = (label, on, count, countColor, onClick, iw, ih, ir) => ({ label, count, countColor, onClick, iw, ih, ir, bg: on ? 'rgba(255,255,255,.07)' : 'transparent', color: on ? K.text : K.sec });
+    const navItems = [
+      nav("Vue d'ensemble", inOverview, decisions.length, K.accent, () => this.setState({ view: 'overview' }), '11px', '11px', '3px'),
+      nav('Projets', inProjects, PROJECTS.length, K.quat, () => this.setState({ view: 'projects' }), '12px', '10px', '2.5px'),
+      nav('Agents', inAgents, all.length, K.quat, () => this.setState({ view: 'agents', harness: null, sel: 0 }), '12px', '12px', '50%'),
+    ];
+
+    const c = (label, onClick, last) => ({ label, onClick, color: last ? K.text : K.ter });
+    let crumbs = [];
+    if (s.view === 'overview') crumbs = [c("Vue d'ensemble", null, true)];
+    if (s.view === 'projects') crumbs = [c('Projets', null, true)];
+    if (s.view === 'agents') crumbs = [c('Agents', null, true)];
+    if (pj) crumbs = [c('Projets', () => this.setState({ view: 'projects' })), c(pj.name, null, true)];
+    if (ag) {
+      const from = s.prev ? s.prev.view : 'agents';
+      if (from === 'project') { const p = projects.find((x) => x.slug === s.prev.projectId); crumbs = [c('Projets', () => this.setState({ view: 'projects' })), c(p.name, () => this.openProject(p.slug)), c(ag.id, null, true)]; }
+      else if (from === 'overview') crumbs = [c("Vue d'ensemble", () => this.setState({ view: 'overview' })), c(ag.id, null, true)];
+      else crumbs = [c('Agents', () => this.setState({ view: 'agents' })), c(ag.id, null, true)];
+    }
+    crumbs = crumbs.map((x, i) => ({ ...x, sep: i > 0 }));
+
+    const palItems = s.pal ? this.palList().map((it, i) => ({ ...it, run: it.go, bg: i === s.palIdx ? 'rgba(255,255,255,.07)' : 'transparent' })) : [];
+    const errorCount = all.filter((a) => a.status === 'error').length;
+    const silentCount = all.filter((a) => a.status === 'silent').length;
+
+    return {
+      wide, roomy, sideW: wide ? '216px' : '56px',
+      isOverview: s.view === 'overview', isProjects: s.view === 'projects', isAgents: s.view === 'agents', isAgent: !!ag, isProject: !!pj, isDetail: !!ag || !!pj,
+      navItems, crumbs, checked: s.checked,
+      dateLabel: 'Mercredi 1 octobre · 15:42',
+      headline: `${all.length} agents en vol, ${decisions.length} attendent ta décision`,
+      subline: `${PROJECTS.length} projets, chacun avec son coordinateur, sur ${hs.length} harness. ${errorCount} sessions en erreur, ${silentCount} silencieuse.`,
+      metrics: [
+        { label: 'En vol', value: all.length, color: K.text },
+        { label: 'À décider', value: decisions.length, color: K.accent },
+        { label: 'En erreur', value: errorCount, color: K.critical },
+        { label: 'Silencieux', value: silentCount, color: K.active },
+        { label: 'Coordinateurs actifs', value: `${PROJECTS.filter((p) => p.coord.state === 'active').length}/${PROJECTS.length}`, color: K.text },
+      ],
+      decisions, decisionCount: decisions.length, alerts,
+      agentCount: all.length, projects, harnesses, harnessTabs, groups,
+      ticks, tlGroups, hourBtns, coordCount: PROJECTS.length, coordHeadColor: K.text, coordHeadFill: 'transparent', tlCols: roomy ? 'minmax(220px,300px) minmax(0,1fr) 120px' : '210px minmax(0,1fr)',
+      compact: density === 'compact', airy: density !== 'compact',
+      densityBtn: { compactBg: density === 'compact' ? '#2a2a2e' : 'transparent', compactColor: density === 'compact' ? K.text : K.sec, airyBg: density !== 'compact' ? '#2a2a2e' : 'transparent', airyColor: density !== 'compact' ? K.text : K.sec },
+      setCompact: () => this.setState({ density: 'compact' }), setAiry: () => this.setState({ density: 'airy' }),
+      ag: ag || {}, pj: pj || {}, tabs,
+      tabActivity: s.tab === 'activity', tabFiles: s.tab === 'files', tabLogs: s.tab === 'logs',
+      palOpen: s.pal, palItems, palEmpty: s.pal && palItems.length === 0, query: s.query, palRef: this.palRef,
+      onQuery: (e) => this.setState({ query: e.target.value, palIdx: 0 }),
+      openPal: () => this.setState({ pal: true, query: '', palIdx: 0 }), closePal: () => this.setState({ pal: false }), stop: (e) => e.stopPropagation(),
+    };
+  }
+}
+</script>
+</body>
+</html>
