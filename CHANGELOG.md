@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/The-Vibe-Company/armada/compare/v0.1.22...v0.2.0) (2026-10-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** reach the fleet's live data only through the Armada API ([#55](https://github.com/The-Vibe-Company/armada/issues/55))
+
+### Features
+
+* **cli:** reach the fleet's live data only through the Armada API ([#55](https://github.com/The-Vibe-Company/armada/issues/55)) ([69a60ab](https://github.com/The-Vibe-Company/armada/commit/69a60ab5954986be29355ea2564fd50dc0def2f7))
+
 ## [0.1.22](https://github.com/The-Vibe-Company/armada/compare/v0.1.21...v0.1.22) (2026-10-01)
 
 
