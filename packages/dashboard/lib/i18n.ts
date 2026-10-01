@@ -36,7 +36,7 @@ export const ORG_NOTICES = ["invited", "cancelled", "updated", "removed", "revok
 export type OrgNotice = (typeof ORG_NOTICES)[number];
 
 /** Why a key could not be saved or deleted (a `?error=` of the Keys page). */
-export const KEYS_ERRORS = ["forbidden", "invalid", "vault", "failed"] as const;
+export const KEYS_ERRORS = ["forbidden", "invalid", "name", "project", "vault", "failed"] as const;
 export type KeysError = (typeof KEYS_ERRORS)[number];
 
 /** What a change on the Keys page did (a `?done=`). */
@@ -59,7 +59,7 @@ export type WorkersError = (typeof WORKERS_ERRORS)[number];
 type WorkerStateLabel = "waiting" | "unused" | "active" | "idle" | "released" | "merged" | "revoked";
 
 /** The keys the Keys page names: the vault's, plus a person's own Linear key. */
-export type KeyLabel = "linear-api-key" | "own-linear-api-key" | "github-token";
+export type KeyLabel = "linear-api-key" | "own-linear-api-key" | "project-linear-api-key" | "github-token";
 
 /** Why a code of `armada login` could not be approved or denied, shown on the /device page. */
 export const DEVICE_ERRORS = ["unknown", "used", "forbidden", "failed"] as const;
@@ -323,6 +323,7 @@ const en = {
     labels: {
       "linear-api-key": "Organization key",
       "own-linear-api-key": "Your own key",
+      "project-linear-api-key": "Project key",
       "github-token": "GitHub token",
     } satisfies Record<KeyLabel, string>,
     hints: {
@@ -330,6 +331,8 @@ const en = {
         "Linear > Settings > Security & access > Personal API keys. Workers post their comments with it.",
       "own-linear-api-key":
         "Optional. Your terminals use it instead of the organization's, so the comments they post carry your name. Only you use it.",
+      "project-linear-api-key":
+        "Optional. For this project only, it wins over the organization's key and over anyone's own: for a project in another Linear workspace. Its workers and the dashboard read this project's Linear with it.",
       "github-token":
         "Only without the Armada GitHub App: with it, the dashboard reads pull requests, CI and armada.toml through the app (Organization > GitHub). Terminals keep GITHUB_TOKEN or gh.",
     } satisfies Record<KeyLabel, string>,
@@ -341,23 +344,44 @@ const en = {
     remove: "Delete",
     newValue: "New value",
     onlyAdmins: "Only owners and admins set the organization's keys.",
+    scope: "Keys of",
+    organizationScope: "Organization",
+    projectLead: (project: string) =>
+      `The keys and secrets of ${project} only. For this project, they win over the organization's.`,
+    workerSecrets: "Secrets for workers",
+    workerSecretsHint: (organization: boolean): string =>
+      organization
+        ? "What workers need to build and test (an LLM provider key, a test database URL), for every project. A project's own secret with the same name wins. Workers fetch them with armada run -- <command>, never at launch."
+        : "What this project's workers need to build and test (an LLM provider key, a test database URL). Workers fetch them with armada run -- <command>, never at launch; a worker of another project never gets them.",
+    secretName: "Name",
+    secretNamePlaceholder: "OPENAI_API_KEY",
+    add: "Add",
+    noSecrets: "No secret yet.",
+    fromOrganization: (names: string) => `Also from the organization: ${names}.`,
     audit: "Audit",
     auditHint: "Every change and every key handed out: who, which key, when. Never a value.",
+    auditProjectHint: (project: string) => `Only what concerns ${project}.`,
     noEvents: "Nothing yet.",
     actions: {
       set: "set",
       delete: "deleted",
       release: "handed out",
+      refuse: "refused",
       launch: "launch token made",
       exchange: "launch token used",
       end: "worker ended",
       link: "GitHub installation linked",
       unlink: "GitHub installation unlinked",
-    } satisfies Record<"set" | "delete" | "release" | "launch" | "exchange" | "end" | "link" | "unlink", string>,
+    } satisfies Record<
+      "set" | "delete" | "release" | "refuse" | "launch" | "exchange" | "end" | "link" | "unlink",
+      string
+    >,
     nothing: "no key",
     errors: {
       forbidden: "Your role does not allow this.",
       invalid: "This value does not look right for this key.",
+      name: "A secret's name is in upper snake case (OPENAI_API_KEY), and is not one Armada uses itself (LINEAR_API_KEY, GITHUB_TOKEN, GH_TOKEN, ARMADA_…).",
+      project: "This project is not one of this organization's.",
       vault: "The vault is off: nothing was saved.",
       failed: "That did not work. Try again in a moment.",
     } satisfies Record<KeysError, string>,
@@ -858,6 +882,7 @@ const fr: Strings = {
     labels: {
       "linear-api-key": "Clé de l'organisation",
       "own-linear-api-key": "Ta propre clé",
+      "project-linear-api-key": "Clé du projet",
       "github-token": "Jeton GitHub",
     },
     hints: {
@@ -865,6 +890,8 @@ const fr: Strings = {
         "Linear > Settings > Security & access > Personal API keys. Les workers publient leurs commentaires avec.",
       "own-linear-api-key":
         "Facultative. Tes terminaux l'utilisent à la place de celle de l'organisation : leurs commentaires portent ton nom. Toi seul t'en sers.",
+      "project-linear-api-key":
+        "Facultative. Pour ce projet seulement, elle passe avant la clé de l'organisation et avant celle de chacun : pour un projet dans un autre espace Linear. Ses workers et le tableau de bord lisent le Linear de ce projet avec elle.",
       "github-token":
         "Seulement sans l'app GitHub d'Armada : avec elle, le tableau de bord lit pull requests, CI et armada.toml par l'app (Organisation > GitHub). Les terminaux gardent GITHUB_TOKEN ou gh.",
     },
@@ -876,13 +903,29 @@ const fr: Strings = {
     remove: "Supprimer",
     newValue: "Nouvelle valeur",
     onlyAdmins: "Seuls les propriétaires et les admins définissent les clés de l'organisation.",
+    scope: "Clés de",
+    organizationScope: "Organisation",
+    projectLead: (project) =>
+      `Les clés et secrets de ${project} seulement. Pour ce projet, ils passent avant ceux de l'organisation.`,
+    workerSecrets: "Secrets des workers",
+    workerSecretsHint: (organization) =>
+      organization
+        ? "Ce dont les workers ont besoin pour compiler et tester (une clé de fournisseur de LLM, l'URL d'une base de test), pour chaque projet. Le secret d'un projet du même nom passe avant. Les workers les obtiennent par armada run -- <commande>, jamais au lancement."
+        : "Ce dont les workers de ce projet ont besoin pour compiler et tester (une clé de fournisseur de LLM, l'URL d'une base de test). Les workers les obtiennent par armada run -- <commande>, jamais au lancement ; un worker d'un autre projet ne les reçoit jamais.",
+    secretName: "Nom",
+    secretNamePlaceholder: "OPENAI_API_KEY",
+    add: "Ajouter",
+    noSecrets: "Aucun secret pour l'instant.",
+    fromOrganization: (names) => `Aussi de l'organisation : ${names}.`,
     audit: "Journal",
     auditHint: "Chaque changement et chaque clé remise : qui, quelle clé, quand. Jamais une valeur.",
+    auditProjectHint: (project) => `Seulement ce qui concerne ${project}.`,
     noEvents: "Rien pour l'instant.",
     actions: {
       set: "définie",
       delete: "supprimée",
       release: "remise",
+      refuse: "refusée",
       launch: "jeton de lancement créé",
       exchange: "jeton de lancement utilisé",
       end: "worker arrêté",
@@ -893,6 +936,8 @@ const fr: Strings = {
     errors: {
       forbidden: "Ton rôle ne le permet pas.",
       invalid: "Cette valeur ne semble pas convenir à cette clé.",
+      name: "Le nom d'un secret est en majuscules avec des tirets bas (OPENAI_API_KEY), et n'est pas l'un de ceux qu'Armada utilise lui-même (LINEAR_API_KEY, GITHUB_TOKEN, GH_TOKEN, ARMADA_…).",
+      project: "Ce projet n'est pas l'un de ceux de cette organisation.",
       vault: "Le coffre est coupé : rien n'a été enregistré.",
       failed: "Ça n'a pas marché. Réessaie dans un instant.",
     },

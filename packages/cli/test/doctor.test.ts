@@ -1,8 +1,8 @@
 // `armada doctor`'s checks of this terminal: whether it is signed in to
 // Armada (so its briefs give workers a launch token), whether keys left in the
 // credentials file are no longer needed, whether this CLI is as recent as
-// Armada expects, and whether the conductor command is found. A fake Armada
-// answers.
+// Armada expects, whether the conductor command is found, and which secrets
+// the project expects are not set in Armada. A fake Armada answers.
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -34,7 +34,7 @@ async function terminal(
   env: Record<string, string>,
   stored: Record<string, string> = {},
   v: FakeVault | null = null,
-  more: { cli?: ServerCli; exec?: Exec; toml?: string } = {},
+  more: { cli?: ServerCli; exec?: Exec; toml?: string; secrets?: Record<string, Record<string, string>> } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "armada-doctor-"));
   dirs.push(home);
@@ -48,6 +48,7 @@ async function terminal(
     keys: { [KEY]: "coordinator" },
     ...(v ? { vault: v } : {}),
     ...(more.cli ? { cli: more.cli } : {}),
+    ...(more.secrets ? { secrets: more.secrets } : {}),
   });
   const out: string[] = [];
   const io: Io = {
@@ -68,10 +69,10 @@ async function terminal(
     for (const secret of [KEY, SESSION, LINEAR]) expect(text).not.toContain(secret);
     const report = JSON.parse(text.slice(text.indexOf("{"))) as { checks: Check[] };
     return report.checks.filter((c) =>
-      ["sign-in", "cli-version", "local-keys", "retired-keys", "conductor-cli"].includes(c.id),
+      ["sign-in", "cli-version", "local-keys", "retired-keys", "conductor-cli", "secrets"].includes(c.id),
     );
   };
-  return { doctor, credentials: join(home, "armada", "credentials") };
+  return { doctor, home, credentials: join(home, "armada", "credentials") };
 }
 
 describe("armada doctor: the sign-in to Armada", () => {
@@ -246,5 +247,33 @@ effort = "high"
       level: "warning",
       message: `conductor is not on PATH, nor at ${BUNDLED_CONDUCTOR}: the armada-runtime-conductor guide launches workers with it`,
     });
+  });
+});
+
+describe("armada doctor: the secrets the project expects", () => {
+  const toml = (names: string) =>
+    `[project]\nname = "Widgets"\nslug = "widgets"\n\n[tracker]\nprogram_root = "DEMO-1"\n\n[github]\nrepository = "acme/widgets"\n\n[secrets]\nnames = ${names}\n`;
+
+  test("names those not set in Armada, by name only; all set is ok; signed out it says it could not check", async () => {
+    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, null, {
+      secrets: { widgets: { OPENAI_API_KEY: "sk-CANARY-1" }, "": { SENTRY_DSN: "CANARY-dsn" } },
+    });
+    await writeFile(join(t.home, "armada.toml"), toml(`["OPENAI_API_KEY", "SENTRY_DSN", "TEST_DATABASE_URL"]`));
+    const missing = (await t.doctor()).find((c) => c.id === "secrets");
+    expect(missing).toEqual({
+      id: "secrets",
+      level: "warning",
+      message:
+        "the project expects the secrets OPENAI_API_KEY, SENTRY_DSN, TEST_DATABASE_URL; not set in Armada: TEST_DATABASE_URL",
+      fix: "an owner or admin runs `armada secrets set <NAME>` for each (or sets it on the Keys page of Armada)",
+    });
+    await writeFile(join(t.home, "armada.toml"), toml(`["OPENAI_API_KEY", "SENTRY_DSN"]`));
+    expect((await t.doctor()).find((c) => c.id === "secrets")?.level).toBe("ok");
+
+    const out = await terminal({}, {}, null);
+    await writeFile(join(out.home, "armada.toml"), toml(`["OPENAI_API_KEY"]`));
+    expect((await out.doctor()).find((c) => c.id === "secrets")?.message).toBe(
+      "the project expects the secrets OPENAI_API_KEY; not checked: not signed in to Armada",
+    );
   });
 });

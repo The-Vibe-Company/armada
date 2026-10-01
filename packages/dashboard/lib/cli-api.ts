@@ -2,8 +2,9 @@
 // (Better Auth's device authorization), who is signed in, signing out, the
 // organization's Linear key from the vault (`POST credentials`, THE-840), the
 // workers' launch tokens (THE-841: `launch-tokens`, `launch-tokens/exchange`,
-// `workers/end`), and the fleet's live data (THE-850: `fleet/<operation>`,
-// run by core's `serveFleet` on `fleet-store.ts`; `projects`). No terminal
+// `workers/end`), the fleet's live data (THE-850: `fleet/<operation>`,
+// run by core's `serveFleet` on `fleet-store.ts`; `projects`), and each
+// project's secrets for workers (THE-859: `secrets/<operation>`). No terminal
 // ever holds a database key. A terminal holds a session token from `armada login` (sent
 // as `Authorization: Bearer`), an organization API key (`x-api-key`), or a
 // worker session from `armada login --launch-token` (a bearer token too, told
@@ -28,12 +29,24 @@ import {
   versionToInstall,
 } from "@armada/core/read";
 import cliPackage from "../../cli/package.json" with { type: "json" };
-import { type Auth, firstOrganization, organizationOf } from "./accounts";
+import { type Auth, apiKeyCreatorRole, firstOrganization, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
-import { type Holder, releaseCredentials } from "./broker";
+import { type Holder, releaseCredentials, releaseWorkerSecrets } from "./broker";
 import type { Database, Queryable } from "./db";
 import { fleetStore, holdProject, projectsOf } from "./fleet-store";
-import { SECRETS_KEY_VARIABLE, type VaultKey, type VaultMode } from "./vault";
+import {
+  checkWorkerSecret,
+  deleteSecret,
+  isWorkerSecretName,
+  listWorkerSecrets,
+  projectsWithLinearKey,
+  recordEvent,
+  SECRETS_KEY_VARIABLE,
+  setSecret,
+  type VaultKey,
+  type VaultMode,
+  workerSecretRefusal,
+} from "./vault";
 import {
   createLaunch,
   endTicketWorkers,
@@ -225,7 +238,9 @@ function holderOf(identity: CliIdentity & { launch?: Worker }): Holder | null {
   const org = { id: organization.id, name: organization.name, slug: organization.slug };
   if (identity.via === "worker") {
     const w = identity.launch;
-    return w ? { actor: workerActor(w), organization: org, user: launchingUser(w), ticket: w.ticket } : null;
+    return w
+      ? { actor: workerActor(w), organization: org, user: launchingUser(w), ticket: w.ticket, project: w.project }
+      : null;
   }
   if (identity.via === "api-key") {
     const key = identity.apiKey;
@@ -264,7 +279,11 @@ async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, n
       console.warn(`armada dashboard: keys refused to ${holder.actor.label} (${holder.organization.slug}): ${scope}`);
       return refuse(403, scope, "the coordinator does it");
     }
-  } else if (purpose.ticket) holder.ticket = purpose.ticket;
+  } else {
+    if (purpose.ticket) holder.ticket = purpose.ticket;
+    // The project's own Linear key, among the organization's rows only.
+    if (purpose.project) holder.project = purpose.project;
+  }
   const answer = await releaseCredentials({ client: a.client, vault, now: () => now }, holder);
   if (!answer.ok) return refuse(429, "too many requests for keys in a minute", "the same command again in a minute");
   const r = answer.release;
@@ -505,6 +524,154 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   return Response.json(answer.body, { status: answer.status, headers: NO_STORE });
 }
 
+const SECRET_OPS = ["list", "release", "set", "unset"] as const;
+type SecretOp = (typeof SECRET_OPS)[number];
+const isSecretOp = (v: string): v is SecretOp => SECRET_OPS.includes(v as SecretOp);
+const MANAGERS = ["owner", "admin"];
+
+/**
+ * Why an organization API key may not touch secrets; null when it may. A key
+ * acts with the rights its creator holds today: one whose creator left the
+ * organization, or is no longer an owner or admin of it, is refused.
+ */
+async function apiKeyRefusal(a: CliAccounts, identity: CliIdentity, organization: string): Promise<Response | null> {
+  const keyId = identity.apiKey?.id ?? "";
+  const role = await apiKeyCreatorRole(a.client, keyId, organization);
+  if (role && MANAGERS.includes(role)) return null;
+  const next = "an owner makes a new API key on the Organization page of Armada";
+  return refuse(
+    403,
+    role === null
+      ? "Armada does not know this API key's creator as a member of its organization (they left it, or the key predates THE-859), so it touches no secret"
+      : `this API key's creator is no longer an owner or admin of ${identity.organization?.name ?? "its organization"}, so it touches no secret`,
+    next,
+  );
+}
+
+/** The names a release asks for: null for every one. */
+function namesOf(v: unknown): string[] | null | "invalid" {
+  if (v === undefined || v === null) return null;
+  if (!Array.isArray(v) || v.length > 100 || !v.every(isWorkerSecretName)) return "invalid";
+  return [...new Set(v as string[])];
+}
+
+/**
+ * `POST secrets/<operation>`: one project's secrets for workers (THE-859).
+ * `list` names them, with who set each and when; `release` hands their values
+ * out, recorded with the project and the names; `set` and `unset` change one,
+ * for the project or (`scope: "organization"`) every project. A worker
+ * session lists and releases its own project's only, and a request for another
+ * project is refused and recorded; setting needs an owner or admin, or an API
+ * key whose creator is still one. Nothing is cached: each call reads the rows.
+ */
+async function secrets(a: CliAccounts, request: Request, op: string, deps: CliApiDeps, now: Date): Promise<Response> {
+  if (!isSecretOp(op)) return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
+  const vault = vaultKeyOf(deps, "it keeps no secret for workers");
+  if (vault instanceof Response) return vault;
+  const identity = await identify(a, credentialOf(request), now);
+  if (identity instanceof Response) return identity;
+  const holder = holderOf(identity);
+  if (!holder) return noOrganization(a);
+  const organization = holder.organization;
+  const body = await jsonBody(request);
+  const project = parseProject(body.project);
+  if (!project)
+    return refuse(400, "a secrets request names its project: slug, name, repository and program root", UPDATE_CLI);
+  const names = namesOf(body.names);
+  if (names === "invalid") return refuse(400, "names must be a list of secret names, upper snake case", UPDATE_CLI);
+
+  if (identity.via === "worker") {
+    const w = identity.launch;
+    if (!w) return workerRefusal(null);
+    if (op === "set" || op === "unset")
+      return refuse(
+        403,
+        "a worker session sets and unsets no secret",
+        "ask the coordinator: `armada secrets set <NAME>`, signed in as an owner or admin",
+      );
+    if (project.slug !== w.project) {
+      const why = `this worker session is for the project ${w.project}, not ${project.slug}`;
+      await recordEvent(a.client, organization.id, {
+        at: now.toISOString(),
+        action: "refuse",
+        project: project.slug,
+        keys: names ?? [],
+        actor: holder.actor,
+        detail: `secrets of ${project.slug} refused: ${why}`,
+      });
+      console.warn(`armada dashboard: secrets refused to ${holder.actor.label} (${organization.slug}): ${why}`);
+      return refuse(403, why, "the coordinator does it");
+    }
+  } else if (identity.via === "api-key") {
+    const refusal = await apiKeyRefusal(a, identity, organization.id);
+    if (refusal) return refusal;
+  } else if ((op === "set" || op === "unset") && !MANAGERS.includes(identity.organization?.role ?? ""))
+    return refuse(
+      403,
+      `only an owner or admin of ${organization.name} sets or unsets secrets`,
+      "ask an owner or admin of the organization",
+    );
+
+  const home = async () => (await firstOrganization(a.client))?.id ?? null;
+  if (!(await holdProject(a.client, project, organization.id, home, now)))
+    return refuse(
+      403,
+      `the project ${project.slug} belongs to another organization`,
+      `another slug in armada.toml ([project] slug), or sign in to the organization of ${project.slug}`,
+    );
+
+  if (op === "list")
+    return Response.json(
+      {
+        schemaVersion: 1,
+        project: project.slug,
+        secrets: await listWorkerSecrets(a.client, { organization: organization.id, project: project.slug }),
+      },
+      { headers: NO_STORE },
+    );
+
+  if (op === "release") {
+    const answer = await releaseWorkerSecrets(
+      { client: a.client, vault, now: () => now },
+      { ...holder, project: project.slug },
+      names,
+    );
+    if (!answer.ok) return refuse(429, "too many requests for keys in a minute", "the same command again in a minute");
+    // Names what went out, never a value.
+    console.info(
+      `armada dashboard: secrets of ${project.slug} released to ${holder.actor.label} (${organization.slug}): ${answer.release.secrets.map((x) => x.name).join(", ") || "none"}`,
+    );
+    return Response.json(answer.release, { headers: NO_STORE });
+  }
+
+  const name = typeof body.name === "string" ? body.name : "";
+  const refusal = workerSecretRefusal(name);
+  if (refusal) return refuse(400, refusal, "armada secrets set <NAME>, upper snake case");
+  const scope = body.scope === "organization" ? "organization" : "project";
+  const target = {
+    organization: organization.id,
+    project: scope === "project" ? project.slug : null,
+    user: null,
+    name,
+    actor: holder.actor,
+    now,
+  };
+  const where = scope === "project" ? `the project ${project.slug}` : `every project of ${organization.name}`;
+  if (op === "set") {
+    const value = typeof body.value === "string" ? body.value : "";
+    if (!checkWorkerSecret(value))
+      return refuse(400, `the value of ${name} is empty or too long (32 KB at most)`, "armada secrets set <NAME>");
+    await setSecret(a.client, vault, { ...target, value });
+    console.info(`armada dashboard: secret ${name} set for ${where} by ${holder.actor.label} (${organization.slug})`);
+    return Response.json({ schemaVersion: 1, name, scope, project: project.slug }, { headers: NO_STORE });
+  }
+  const deleted = await deleteSecret(a.client, target);
+  console.info(
+    `armada dashboard: secret ${name} ${deleted ? "unset" : "not set"} for ${where} by ${holder.actor.label} (${organization.slug})`,
+  );
+  return Response.json({ schemaVersion: 1, name, scope, project: project.slug, deleted }, { headers: NO_STORE });
+}
+
 /** `GET projects`: the projects of the caller's organization (`armada status --all`). */
 async function projects(a: CliAccounts, request: Request, now: Date): Promise<Response> {
   const identity = await identify(a, credentialOf(request), now);
@@ -513,10 +680,17 @@ async function projects(a: CliAccounts, request: Request, now: Date): Promise<Re
   const organization = identity.organization;
   if (!organization) return noOrganization(a);
   const own = await projectsOf(a.client, organization.id);
+  const keyed = await projectsWithLinearKey(a.client, organization.id);
   return Response.json(
     {
       schemaVersion: 1,
-      projects: own.map(({ slug, name, repository, programRoot }) => ({ slug, name, repository, programRoot })),
+      projects: own.map(({ slug, name, repository, programRoot }) => ({
+        slug,
+        name,
+        repository,
+        programRoot,
+        ownLinearKey: keyed.has(slug),
+      })),
     },
     { headers: NO_STORE },
   );
@@ -615,6 +789,8 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps): Pr
   if (route === "POST launch-tokens/exchange") return exchange(a, request, now);
   if (route === "POST workers/end") return endWorkers(a, request, now);
   if (route === "GET projects") return projects(a, request, now);
+  if (request.method === "POST" && path[0] === "secrets" && path.length === 2)
+    return secrets(a, request, path[1] ?? "", deps, now);
   if (request.method === "POST" && path[0] === "fleet" && path.length > 1)
     return fleet(a, request, path.slice(1).join("/"), deps);
   if (route === "DELETE session") {

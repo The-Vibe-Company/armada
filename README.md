@@ -220,10 +220,11 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 | `ARMADA_SECRETS_KEY` | The vault's master key: 32 random bytes in base64 or hex, `openssl rand -base64 32`. It stays in the deployment's environment, never in a database. Changing it makes every stored key unreadable (the Keys page asks to enter them again) |
 
 - The Keys page holds the Linear API key, and a GitHub token for the dashboard's own reads, needed only without the [GitHub App](#github-app). Each member may add their own Linear key: their terminals use it, so the comments they post carry their name.
-- Values are write-only: once saved, a secret is never shown again, only who set it and when. Each value is sealed with AES-256-GCM under its own data key, itself sealed by the master key, and bound to its organization, person and name.
+- Each project can keep its own keys (pick it at the top of the Keys page): a Linear key, which wins for that project over the organization's and anyone's own (a project in another Linear workspace); the dashboard and every command run for that project (`status --all` and `doctor` included) read its Linear with it. And its secrets for workers (see [Secrets for workers](#secrets-for-workers)), next to the organization's, which every project gets; a project's own wins over the organization's of the same name.
+- Values are write-only: once saved, a secret is never shown again, only who set it and when. Each value is sealed with AES-256-GCM under its own data key, itself sealed by the master key, and bound to its organization, project, person and name.
 - A signed-in terminal (a session of `armada login`, an organization API key, or a worker session) calls `POST /api/cli/credentials`. It receives the Linear key (the person's own first), so workers and coordinators can search and edit Linear freely. Answers are never cached; a terminal asking more than 30 times a minute is refused for a minute.
 - No terminal ever receives a database key. Every read and write of the fleet's live data (claims, reports, questions and plans, the inbox, answers, the merge lock, the project registry) goes through `POST /api/cli/fleet/<operation>` with the terminal's sign-in. Armada checks each one: the project must belong to the caller's organization (a project is registered for the first organization that names it), and a worker session only claims, reports, asks and releases its own ticket. Times are Armada's.
-- Every change and every key handed out is in the audit list at the bottom of the Keys page (owners and admins): who, which key, when; never a value.
+- Every change and every key handed out is in the audit list at the bottom of the Keys page (owners and admins): who, which key, when, for which project; never a value. A project picked at the top shows only its own.
 - The dashboard reads each organization's fleet with that organization's Linear and GitHub keys from the vault. Only the deployment's first organization falls back to the environment's (and to `ARMADA_REPOSITORIES`): another organization could name any repository in the registry. Once the keys are on the Keys page, the environment shrinks to `ARMADA_DATABASE_URL`, the accounts variables, `ARMADA_SECRETS_KEY` and the GitHub App's. With the [GitHub App](#github-app), GitHub is read through it rather than with a stored token.
 - Without `ARMADA_SECRETS_KEY` (or under the shared password), nothing changes: the Keys page says how to turn the vault on, the CLI's call answers 503 with that next step, and terminals keep their own keys.
 
@@ -346,6 +347,19 @@ url = "https://<your-armada-dashboard>"
 url = "https://armada.example.com"   # a self-hosted Armada for `armada login`; used when ARMADA_API_URL is not set
 ```
 
+### Secrets for workers
+
+What a project's workers need to build and test (an LLM provider key, a test database URL) is kept in Armada with the project, never in a worker's launch environment. Names are in upper snake case; the keys Armada itself uses (`LINEAR_API_KEY`, `GITHUB_TOKEN`, `GH_TOKEN`, `ARMADA_*`) are not secrets for workers.
+
+- The coordinator sets them, signed in as an owner or admin (or with an organization API key whose creator still is one): `armada secrets set <NAME>` for the current project, `--org` for every project of the organization. The value is read from a hidden prompt, from standard input (`--value-stdin`), or from a variable of the coordinator's environment (`--from-env <VAR>`), so an agent can move a key without reading it. Never from the command line. `armada secrets unset <NAME> [--org]` removes one. Owners and admins can also do both on the Keys page.
+- `armada secrets` lists the names, where each is set (project or organization), who set it and when. Never a value.
+- A worker fetches them through Armada, with its worker session, for its own project only (another project's is refused, and the refusal is in the audit list), in this order:
+  - `armada run [--only A,B] -- <command>` runs the command with them in its environment: tests, builds, dev servers. Armada's value wins over a variable of the same name (stderr names it). Nothing is written to disk or printed; the exit code is the command's.
+  - `armada secrets export --file <path> [--only A,B]` writes a dotenv file with mode 0600, for a tool that reads one (`.env.local`). It refuses a path git tracks or does not ignore.
+  - `armada secrets get <NAME>` prints one value, for a person, with a warning on stderr that it is now visible. An agent never runs it: its command output is its transcript.
+- Every fetch is one release in the audit list, naming the project and the secrets. Nothing is cached: an unset secret is no longer handed out, and a changed one takes effect on the next command.
+- `[secrets] names` in `armada.toml` lists what the project expects; `armada doctor` names those Armada does not keep for it.
+
 ## Configure a project
 
 Add an `armada.toml` at the root of the repository. One project is one repository plus one Linear program root. The file holds no secrets.
@@ -381,6 +395,9 @@ approval_label = "needs-plan-approval"   # a ticket with this label waits for ap
 
 [brief]
 extra = "docs/worker-conventions.md"     # every brief ends with this file under "Project conventions" (default: none)
+
+[secrets]
+names = ["OPENAI_API_KEY", "TEST_DATABASE_URL"]   # what workers need from Armada; `armada doctor` names those not set (names only)
 
 [conductor]
 default_profile = "opus"         # for tickets no routing rule matches (required with routing)

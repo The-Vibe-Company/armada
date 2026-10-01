@@ -1079,6 +1079,17 @@ button.chip:hover {
 .chip.is-static {
   color: var(--muted);
 }
+a.chip.is-scope {
+  padding: 3px 10px;
+  text-decoration: none;
+}
+a.chip.is-scope:hover {
+  border-color: var(--accent);
+}
+a.chip.is-scope[aria-current="page"] {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
 .chip-n {
   display: inline-grid;
   place-items: center;

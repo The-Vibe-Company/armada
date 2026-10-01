@@ -36,6 +36,7 @@ describe("armada.toml", () => {
         approvalLabel: "needs-plan-approval",
       },
       brief: { extra: null },
+      secrets: { names: [] },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
     });
   });
@@ -69,6 +70,18 @@ describe("armada.toml", () => {
       '\n[deploys]\nprofile = "x"\n',
     );
     expect(problemsOf(text)).toEqual(['unknown key "tracker.redy_label"']);
+  });
+
+  test("the secrets a project's workers expect: names only, upper snake case", () => {
+    const named = parseConfig(
+      `${DEMO_TOML}\n[secrets]\nnames = ["OPENAI_API_KEY", " TEST_DATABASE_URL ", "OPENAI_API_KEY"]\n`,
+    );
+    expect(named.secrets.names).toEqual(["OPENAI_API_KEY", "TEST_DATABASE_URL"]);
+    expect(problemsOf(`${DEMO_TOML}\n[secrets]\nnames = ["GITHUB_TOKEN"]\n`)).toHaveLength(1);
+    expect(problemsOf(`${DEMO_TOML}\n[secrets]\nnames = ["openai_api_key"]\nvalues = 1\n`)).toEqual([
+      'unknown key "secrets.values"',
+      '"secrets.names" must be a list of secret names in upper snake case, e.g. ["OPENAI_API_KEY"], none of Armada\'s own keys',
+    ]);
   });
 
   test("the plan policy, its two labels and the brief's conventions file", () => {

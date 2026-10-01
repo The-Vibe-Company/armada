@@ -511,6 +511,27 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
         ADD COLUMN IF NOT EXISTS github_hook_at timestamptz`,
     ],
   },
+  {
+    // Each project's keys and secrets (THE-859): a row of the vault belongs to
+    // the organization (project '', every row so far) or to one project, and
+    // so does an event of the audit list, which a project filters. Who
+    // created each organization API key, so its rights are those its creator
+    // still has.
+    version: 7,
+    statements: [
+      `ALTER TABLE "armada_secret" ADD COLUMN IF NOT EXISTS "project" text NOT NULL DEFAULT ''`,
+      `ALTER TABLE "armada_secret" DROP CONSTRAINT IF EXISTS "armada_secret_pkey"`,
+      `ALTER TABLE "armada_secret" ADD PRIMARY KEY ("organizationId", "project", "userId", "name")`,
+      `ALTER TABLE "armada_secret_event" ADD COLUMN IF NOT EXISTS "project" text NOT NULL DEFAULT ''`,
+      `CREATE INDEX IF NOT EXISTS "armada_secret_event_project_idx" ON "armada_secret_event" ("organizationId", "project", "id")`,
+      `CREATE TABLE IF NOT EXISTS "armada_api_key_creator" (
+        "keyId" text NOT NULL PRIMARY KEY,
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "userId" text NOT NULL,
+        "createdAt" timestamptz NOT NULL
+      )`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
