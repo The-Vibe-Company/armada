@@ -9,15 +9,19 @@ import {
   coordinatorPresence,
   getLease,
   getRuntimeHandle,
+  heartbeatTimes,
   lastCoordinatorSeen,
+  lastEventTimes,
   latestEvents,
   listProjects,
+  listSessions,
   openInboxItems,
   openRuntimeHandles,
   putHandBack,
   putPlan,
   recordCoordinatorSeen,
   recordEvent,
+  recordHeartbeat,
   releaseLease,
   releaseRuntimeHandle,
   renewLease,
@@ -63,6 +67,59 @@ describe("the project registry", () => {
 });
 
 describe("live data", () => {
+  test("heartbeats atomically target the current claim, never change reports, and stop on release or replacement", async () => {
+    const ticket = "WID-99";
+    const handle = {
+      project: P,
+      ticket,
+      runtime: "Conductor",
+      handle: "workspace/session",
+      branch: "feature/wid-99",
+      workerSessionId: "worker-one",
+      at: at(0),
+    };
+    await saveRuntimeHandle(db, handle);
+    await recordEvent(db, {
+      project: P,
+      ticket,
+      kind: "report",
+      phase: "implementing",
+      message: "building",
+      at: at(1),
+    });
+    const ping = {
+      project: P,
+      ticket,
+      handle: handle.handle,
+      claimedAt: at(0).toISOString(),
+      workerSessionId: "worker-one",
+      at: at(5),
+    };
+    expect(await recordHeartbeat(db, ping)).toEqual({ active: true, claimedAt: at(0).toISOString() });
+    expect((await heartbeatTimes(db, P))[ticket]).toBe(at(5).toISOString());
+    expect((await latestEvents(db, P))[ticket]?.phase).toBe("implementing");
+    expect((await lastEventTimes(db, P))[ticket]).toBe(at(1).toISOString());
+    expect((await listSessions(db, P, { since: at(0) })).find((session) => session.ticket === ticket)).toMatchObject({
+      lastHeartbeatAt: at(5).toISOString(),
+      lastReport: { at: at(1).toISOString(), message: "building", phase: "implementing" },
+    });
+    expect(await recordHeartbeat(db, { ...ping, workerSessionId: "stale-worker" })).toEqual({
+      active: false,
+      claimedAt: null,
+    });
+    expect(await recordHeartbeat(db, { ...ping, project: "another-project" })).toEqual({
+      active: false,
+      claimedAt: null,
+    });
+    await saveRuntimeHandle(db, { ...handle, workerSessionId: "replacement", at: at(10) });
+    expect(await recordHeartbeat(db, ping)).toEqual({ active: false, claimedAt: null });
+    expect((await getRuntimeHandle(db, P, ticket))?.lastHeartbeatAt).toBeUndefined();
+    const replacement = { ...ping, workerSessionId: "replacement", claimedAt: at(10).toISOString(), at: at(11) };
+    expect(await recordHeartbeat(db, replacement)).toEqual({ active: true, claimedAt: at(10).toISOString() });
+    await releaseRuntimeHandle(db, P, ticket, at(12));
+    expect(await recordHeartbeat(db, replacement)).toEqual({ active: false, claimedAt: null });
+    expect((await heartbeatTimes(db, P))[ticket]).toBeUndefined();
+  });
   test("the newest event of each ticket since a time, the coordinator's newest inbox read, the open sessions", async () => {
     await recordEvent(db, { project: P, ticket: "WID-2", kind: "claim", phase: "planning", at: at(1) });
     await recordEvent(db, { project: P, ticket: "WID-2", kind: "report", phase: "shipping", prUrl: "u", at: at(3) });

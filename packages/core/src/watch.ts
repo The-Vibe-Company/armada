@@ -57,6 +57,7 @@ export interface WatchOptions {
   coordinator: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  quietAfterMinutes?: number;
   /** `policy.not_started_minutes`. */
   notStartedMinutes?: number;
   /** Entries already shown to the coordinator (`WatchState.seen`). */
@@ -100,6 +101,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   const query = {
     coordinator: o.coordinator,
     silentAfterMinutes: o.silentAfterMinutes,
+    quietAfterMinutes: o.quietAfterMinutes,
     ...(o.facts ? { facts: o.facts } : {}),
     ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
   };

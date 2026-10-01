@@ -19,6 +19,7 @@ import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { doctor } from "./doctor.ts";
+import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
@@ -43,6 +44,11 @@ const COMMAND_HELP: Record<string, string> = {
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
                     or HTTPS links. Prints a dashboard URL for each attachment.
                     --for keeps a free reference for an owner validation item
+`,
+  heartbeat: `  heartbeat --every 5m --parent <agent-pid> [--background] [--ticket <id>] [--handle <id>]
+                    Keep the current worker session alive through Armada only, with no
+                    Linear comment. Stops with the parent or the released/revoked session.
+                    --background detaches from the command shell and keeps a PID file
 `,
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
   status --all      The same for every project registered by \`armada init\`
@@ -267,6 +273,8 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "every",
+  "parent",
   "runtime",
   "handle",
   "branch",
@@ -294,6 +302,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "background",
   "dry-run",
   "no-lock",
   "no-ticket",
@@ -309,6 +318,7 @@ const FLAG_OPTIONS = [
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   attach: ["caption", "for"],
+  heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason"],
   report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha"],
   release: ["ticket", "reason"],
@@ -503,6 +513,19 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         worker: { command: "attach", project: config.project.slug, ticket: () => args.rest[0]?.toUpperCase() ?? null },
       });
       return await attachCommand(io, config, credentials, args);
+    }
+    if (args.command === "heartbeat") {
+      const { path, text } = await findConfig(io, args.config, "heartbeat");
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, {
+        armada: false,
+        worker: {
+          command: "heartbeat",
+          project: config.project.slug,
+          ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
+        },
+      });
+      return await heartbeat(io, config, credentials, args);
     }
     const worker = { claim, report, release, ask, inbox, answer }[args.command];
     if (worker) {
