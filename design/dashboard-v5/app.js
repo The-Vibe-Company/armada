@@ -344,7 +344,7 @@ function bar(crumbs, actions = "") {
 }
 function topbar(title, back = "") {
   return `<header class="topbar">${back ? `<a class="back" href="${back}" aria-label="Back">${ICONS.back}</a>` : mark(18, state.mode === "error" ? "is-paused" : "js-beat")}
-    <span class="t">${title}</span><span class="end"><button class="icon-btn" aria-label="Search">${ICONS.search}</button></span></header>`;
+    <span class="t">${title}</span><span class="end">${back ? "" : `<button class="org" type="button">Acme ${ICONS.chev}</button>`}<button class="icon-btn" aria-label="Search">${ICONS.search}</button></span></header>`;
 }
 const crumb = (parts) =>
   parts.map((p, i) => (i < parts.length - 1 ? `<a href="${p[1]}">${p[0]}</a><span class="sep">/</span>` : `<span>${p[0]}</span>`)).join("");

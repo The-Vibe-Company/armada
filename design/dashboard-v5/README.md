@@ -35,7 +35,7 @@ The Prototype panel, bottom right, switches:
 - reduced motion;
 - the horizon.
 
-It also plays the merge moment. Query parameters set the same options for screenshots, for example `?mode=empty&density=airy&motion=reduced&panel=off#/agents`. Under 720 px the shell becomes the phone layout.
+It also plays the merge moment. Query parameters set the same options for screenshots, for example `?mode=empty&density=airy&motion=reduced&panel=off#/agents`. Under 720 px the shell becomes the phone layout. It keeps THE-891's top bar, with the home mark, the organization and search, and moves the five sections from that bar into a bottom tab bar with labels and counts. THE-891's other rules for narrow screens stay as built: nothing scrolls sideways, the timeline scrolls inside itself and has its table, and headers and bands wrap.
 
 ## Open it
 

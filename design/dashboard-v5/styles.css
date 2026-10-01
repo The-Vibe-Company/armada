@@ -20,8 +20,8 @@
      (System page lists each ratio); --ink-4 is for marks and disabled only. */
   --ink: #f2f1ee; /* --text */
   --ink-2: #b6b6bd; /* --text-2 */
-  --ink-3: #8e8e97; /* --text-3, was #6e6e73 (3.9:1) */
-  --ink-4: #4a4b52; /* --text-4, never text */
+  --ink-3: #8e8e97; /* --text-3: v4 #6e6e73 (3.9:1), THE-891 #88888d */
+  --ink-4: #6a6a6f; /* --text-4, as THE-891: marks and disabled, 3:1 for graphics */
 
   /* Hairlines and fills. Shadows draw depth, lines draw structure. */
   --line: rgba(255, 255, 255, 0.06);
@@ -1799,6 +1799,18 @@ a.figure:hover {
     background: color-mix(in oklab, var(--deck) 80%, transparent);
     backdrop-filter: blur(14px) saturate(1.2);
     border-bottom: 1px solid var(--line-soft);
+  }
+  .topbar .org {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 28px;
+    padding: 0 8px;
+    border-radius: 8px;
+    border: 0;
+    background: var(--fill);
+    color: var(--ink-2);
+    font-size: var(--fs-small);
   }
   .topbar .t {
     font-weight: 600;
