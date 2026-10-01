@@ -38,7 +38,10 @@ describe("tracker labels", () => {
       { name: "Agent runtime", id: null, scope: null, missing: ["Claude Code", "Codex", "Conductor"] },
     ]);
     expect(checkLabels(state).map((c) => [c.level, c.message])).toEqual([
-      ["error", 'label group "Agent phase" lacks "awaiting-approval", "shipping", "blocked", "ready-to-merge", "awaiting-validation"'],
+      [
+        "error",
+        'label group "Agent phase" lacks "awaiting-approval", "shipping", "blocked", "ready-to-merge", "awaiting-validation"',
+      ],
       ["error", 'label group "Agent runtime" does not exist in Linear team DEMO'],
     ]);
   });

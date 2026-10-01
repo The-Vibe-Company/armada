@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
 import { NEEDS_HUMAN } from "./fleet.ts";
 import type { AgentPhase, LabelPhase } from "./types.ts";
+import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
 
 // ------------------------------------------------------------------ records
 
@@ -122,9 +123,11 @@ export interface SessionRecord extends RuntimeHandle {
  * `note`: an unsolicited coordinator message to a worker, stored already resolved as a record.
  * `answer-request` and `launch-request`: the owner's requests from the dashboard, which the
  * coordinator carries out (it delivers the answer, or launches the ticket) and then resolves.
- * `request` is an older generic kind, kept readable.
+ * `request` is an older generic kind, kept readable. `decision`: the owner's
+ * decision on a validation (THE-885), which the coordinator carries out
+ * (merges, or relays it to the worker) and then resolves.
  */
-export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | RequestKind;
+export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | "decision" | RequestKind;
 export type InboxRecipient = "coordinator" | "worker";
 /** The inbox kinds the dashboard writes. */
 export type RequestKind = "answer-request" | "launch-request" | "merge-request" | "release-request" | "plan-changes";
@@ -146,7 +149,7 @@ export interface InboxItem {
   body: string;
   createdAt: string;
   /** Set on dashboard requests: the question or plan an answer-request answers, the profile a launch-request asks for. */
-  request?: { question: number | null; profile: string | null; pr?: number | null };
+  request?: { question: number | null; profile: string | null; pr?: number | null; validation?: number | null };
 }
 
 /** An inbox item with its resolution: when it was resolved, and the answer or reason. */
@@ -298,6 +301,27 @@ export interface FleetStore {
    */
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
   expireUnusedLaunches(project: string, now: Date): Promise<PendingLaunch[]>;
+
+  /**
+   * Adds what the owner validates (THE-885). An open one it repeats (the same
+   * pull request's merge, the same ticket's validation) is superseded by it, atomically.
+   */
+  addValidation(v: NewValidation): Promise<Validation>;
+  /** A project's validations, newest first: the open ones, and those decided since `decidedSince` (all without it). */
+  listValidations(q: { project: string; ticket?: string; pr?: number; decidedSince?: Date }): Promise<Validation[]>;
+  getValidation(project: string, id: number): Promise<Validation | null>;
+  /**
+   * Records the owner's decision on an open validation and puts it in the
+   * coordinator's inbox (a `decision` item), atomically; null when it was
+   * already decided.
+   */
+  decideValidation(d: {
+    project: string;
+    id: number;
+    decision: Omit<ValidationDecision, "at">;
+    body: string;
+    at: Date;
+  }): Promise<{ item: number } | null>;
 }
 
 // ------------------------------------------------------------------ what each command records
@@ -493,6 +517,8 @@ export interface MergeRecord {
   url: string;
   mergeCommit: string | null;
   headSha: string;
+  /** How the merge was decided (THE-885): "merged on its own (rule: …)" or "approved by <owner> at <time>". */
+  decision?: string | null;
 }
 
 export interface MergeRecorded {
@@ -517,7 +543,7 @@ export async function recordMerge(
     ticket: m.ticket,
     kind: "merge",
     phase: "merged",
-    message: `PR #${m.number} merged as ${m.mergeCommit ?? "unknown"}`,
+    message: `PR #${m.number} merged as ${m.mergeCommit ?? "unknown"}${m.decision ? `; ${m.decision}` : ""}`,
     prUrl: m.url,
     headSha: m.headSha,
     at,
@@ -532,7 +558,55 @@ export async function recordMerge(
   // No worker is left to take an answer.
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });
+  await store.resolveInboxItems({ project, ticket: m.ticket, kind: "decision", resolution: "merged", at });
   await store.releaseRuntimeHandle(project, m.ticket, at);
+  return { handle, resolved, open: await store.openRuntimeHandles(project) };
+}
+
+export interface ValidationRecord {
+  ticket: string;
+  kind: NewValidation["kind"];
+  what: string;
+  reason: string | null;
+  choices: string[] | null;
+  pr: NewValidation["pr"];
+  attachments: string[];
+}
+
+/** What the owner is asked to validate, signed with the worker's session when a worker asks, else `author`. */
+export async function recordValidation(
+  store: FleetStore,
+  project: string,
+  v: ValidationRecord & { worker: boolean; author: string | null },
+  at: Date,
+): Promise<Validation> {
+  const held = v.worker ? await store.getRuntimeHandle(project, v.ticket) : null;
+  const { worker: _worker, author, ...rest } = v;
+  return store.addValidation({
+    project,
+    ...rest,
+    author: held && !held.releasedAt ? held.handle : author,
+    at,
+  });
+}
+
+/**
+ * A ticket done without a pull request once the owner approved its
+ * validation (a design ticket, `armada done`): recorded like a merge, so its
+ * session ends, its items close and the dashboard shows it landed.
+ */
+export async function recordDone(
+  store: FleetStore,
+  project: string,
+  d: { ticket: string; message: string },
+  at: Date,
+): Promise<MergeRecorded> {
+  const handle = await store.getRuntimeHandle(project, d.ticket);
+  await store.recordEvent({ project, ticket: d.ticket, kind: "merge", phase: "merged", message: d.message, at });
+  let resolved = 0;
+  for (const kind of ["hand-back", "question", "answer-request", "decision", "plan"] as const)
+    resolved += await store.resolveInboxItems({ project, ticket: d.ticket, kind, resolution: d.message, at });
+  await store.releaseRuntimeHandle(project, d.ticket, at);
   return { handle, resolved, open: await store.openRuntimeHandles(project) };
 }
 
@@ -839,6 +913,12 @@ export interface Fleet {
   /** Resolves one open item (a declined launch); false when it was already resolved. */
   resolve(r: { id: number; resolution: string }): Promise<boolean>;
   merge(m: MergeRecord): Promise<MergeRecorded>;
+  /** Asks the owner to validate (THE-885); `url` is the approval link on the dashboard. */
+  validate(v: ValidationRecord): Promise<{ validation: Validation; url: string }>;
+  /** A ticket's or a pull request's validations, newest first. */
+  validations(q: { ticket?: string; pr?: number }): Promise<Validation[]>;
+  /** Records a ticket done without a pull request after the owner's approval (`armada done`). */
+  done(d: { ticket: string; message: string }): Promise<MergeRecorded>;
   acquireLease(l: { name: string; holder: string; ttlMs: number }): Promise<LeaseResult>;
   renewLease(l: { name: string; holder: string; ttlMs: number }): Promise<boolean>;
   releaseLease(l: { name: string; holder: string }): Promise<void>;

@@ -59,6 +59,14 @@ export interface ArmadaConfig {
     attachmentsPerTicket: number;
     attachmentsProjectMb: number;
     attachmentsRetentionDays: number;
+    /**
+     * `merge_approval`: which merges need the owner's approval, in plain words
+     * (THE-885). The coordinator judges it per pull request; null: it merges
+     * everything on its own.
+     */
+    mergeApproval: string | null;
+    /** `[[policy.validation]]` in file order: kinds of tickets whose work the owner validates before it goes on. */
+    validations: ValidationRule[];
   };
   brief: {
     /** Repository path, relative to armada.toml, of a file every brief carries under "Project conventions"; null when unset. */
@@ -91,6 +99,17 @@ export const routingLabelKey = (name: string) =>
     .normalize("NFKC")
     .toLowerCase()
     .replace(/[^\p{L}\p{M}\p{N}]/gu, "");
+
+/**
+ * A kind of ticket whose work the owner validates (THE-885): the coordinator
+ * judges at launch whether `when` describes the ticket, and the worker then
+ * does what `show` says (the file's `then`) and waits for the owner's decision.
+ */
+export interface ValidationRule {
+  when: string;
+  /** `then` in armada.toml, a name no object should carry in JavaScript (it would look like a promise). */
+  show: string;
+}
 
 /** A ticket carrying any of `labels` goes to `profile`, unless an earlier rule matched. */
 export interface RoutingRule {
@@ -256,6 +275,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "attachments_per_ticket",
         "attachments_project_mb",
         "attachments_retention_days",
+        "merge_approval",
+        "validation",
       ],
     ],
     ["brief", briefT, ["extra"]],
@@ -378,6 +399,23 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const attachmentsPerTicket = quota("attachments_per_ticket", CONFIG_DEFAULTS.attachmentsPerTicket);
   const attachmentsProjectMb = quota("attachments_project_mb", CONFIG_DEFAULTS.attachmentsProjectMb);
   const attachmentsRetentionDays = quota("attachments_retention_days", CONFIG_DEFAULTS.attachmentsRetentionDays);
+  const mergeApproval = policyT.merge_approval === undefined ? null : str(policyT, "policy", "merge_approval") || null;
+  const validations: ValidationRule[] = [];
+  const validationRaw = policyT.validation ?? [];
+  if (!Array.isArray(validationRaw)) problems.push(`"policy.validation" must be a list of [[policy.validation]] rules`);
+  else
+    for (const [i, r] of validationRaw.entries()) {
+      const path = `policy.validation[${i + 1}]`;
+      if (!isTable(r)) {
+        problems.push(`"${path}" must be a table`);
+        continue;
+      }
+      for (const key of Object.keys(r))
+        if (key !== "when" && key !== "then") problems.push(`unknown key "${path}.${key}"`);
+      const when = str(r, path, "when");
+      const then = str(r, path, "then");
+      if (when && then) validations.push({ when, show: then });
+    }
   const approvalLabel = str(policyT, "policy", "approval_label", { default: CONFIG_DEFAULTS.approvalLabel });
   if (preApprovedLabel && approvalLabel && routingLabelKey(preApprovedLabel) === routingLabelKey(approvalLabel))
     problems.push(`"policy.pre_approved_label" and "policy.approval_label" must name different labels`);
@@ -449,6 +487,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       attachmentsPerTicket,
       attachmentsProjectMb,
       attachmentsRetentionDays,
+      mergeApproval,
+      validations,
     },
     brief: { extra },
     secrets: { names: secretNames },
@@ -495,6 +535,15 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # attachments_retention_days = 30
 # pre_approved_label = "plan-approved"      # a ticket with this label skips the approval
 # approval_label = "needs-plan-approval"    # a ticket with this label waits for it; wins over the other
+# Which merges need your approval, in plain words; without it the coordinator merges everything on its own.
+# The coordinator judges it per pull request and sends you one approval link for the others.
+# merge_approval = "merge on your own, except front-end changes: send me a link to check them first"
+
+# Kinds of tickets whose work you validate before it goes on: the coordinator judges at launch
+# which apply, and the worker shows you its work with \`armada validate\` and waits for your decision.
+# [[policy.validation]]
+# when = "a design ticket: a mockup, a visual direction or the look of a new screen"
+# then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
 
 [brief]
 # extra = "docs/worker-conventions.md"  # a file every worker brief carries under "Project conventions"

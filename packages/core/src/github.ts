@@ -414,3 +414,53 @@ export async function fetchCommit(opts: FetchForgeOptions & { sha: string }): Pr
   if (!c?.oid || !c.tree || !c.parents) return null;
   return { sha: c.oid, tree: c.tree.oid, parents: c.parents.nodes.map((p) => p.oid) };
 }
+
+const PREVIEW_QUERY = /* GraphQL */ `
+  query Preview($owner: String!, $name: String!, $oid: GitObjectID!) {
+    repository(owner: $owner, name: $name) {
+      object(oid: $oid) {
+        ... on Commit {
+          deployments(last: 10) { nodes { environment latestStatus { state environmentUrl } } }
+          status { contexts { context state targetUrl } }
+        }
+      }
+    }
+  }`;
+
+const https = (url: string | null | undefined): string | null => {
+  try {
+    return url && new URL(url).protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The preview deployment of a commit, for the owner to try (THE-885): the
+ * newest successful GitHub deployment's URL (a preview environment first),
+ * else the target of a green Vercel status; null when there is none.
+ */
+export async function fetchPreview(opts: FetchForgeOptions & { sha: string }): Promise<string | null> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{
+    repository: {
+      object: {
+        deployments?: {
+          nodes: {
+            environment: string | null;
+            latestStatus: { state: string; environmentUrl: string | null } | null;
+          }[];
+        };
+        status?: { contexts: { context: string; state: string; targetUrl: string | null }[] } | null;
+      } | null;
+    } | null;
+  }>(opts, PREVIEW_QUERY, { owner, name, oid: opts.sha });
+  const commit = json.data?.repository?.object;
+  const deployed = (commit?.deployments?.nodes ?? [])
+    .filter((d) => d.latestStatus?.state === "SUCCESS" && https(d.latestStatus.environmentUrl))
+    .reverse();
+  const preview = deployed.find((d) => /preview/i.test(d.environment ?? "")) ?? deployed[0];
+  if (preview) return preview.latestStatus?.environmentUrl ?? null;
+  const vercel = commit?.status?.contexts.find((c) => /vercel/i.test(c.context) && c.state === "SUCCESS");
+  return https(vercel?.targetUrl);
+}

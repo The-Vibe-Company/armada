@@ -38,6 +38,8 @@ describe("armada.toml", () => {
         plans: "approve",
         preApprovedLabel: "plan-approved",
         approvalLabel: "needs-plan-approval",
+        mergeApproval: null,
+        validations: [],
       },
       brief: { extra: null },
       secrets: { names: [] },
@@ -115,6 +117,25 @@ describe("armada.toml", () => {
     ]);
   });
 
+  test("which merges and which kinds of tickets need the owner, in plain words", () => {
+    const config = parseConfig(
+      DEMO_TOML.concat(
+        '\n[policy]\nmerge_approval = " merge on your own, except front end "\n[[policy.validation]]\nwhen = "a design ticket"\nthen = "attach the design and wait"\n',
+      ),
+    );
+    expect(config.policy.mergeApproval).toBe("merge on your own, except front end");
+    expect(config.policy.validations).toEqual([{ when: "a design ticket", show: "attach the design and wait" }]);
+    expect(
+      problemsOf(
+        DEMO_TOML.concat('\n[policy]\nmerge_approval = ""\n[[policy.validation]]\nwhen = "a design"\nshow = "x"\n'),
+      ),
+    ).toEqual([
+      '"policy.merge_approval" must be a non-empty string',
+      'unknown key "policy.validation[1].show"',
+      'missing required key "policy.validation[1].then"',
+    ]);
+  });
+
   test("the template init writes is a valid file for the project it names", () => {
     const text = configTemplate({
       name: "Widgets",
@@ -125,6 +146,8 @@ describe("armada.toml", () => {
     // The plan policy and the conventions file are written commented, with their defaults.
     expect(text).toMatch(/\[policy\][^[]*\n# plans = "approve"[^[]*\n# approval_label = "needs-plan-approval"/);
     expect(text).toContain("[brief]\n# extra = ");
+    expect(text).toContain("\n# merge_approval = ");
+    expect(text).toContain("\n# [[policy.validation]]\n# when = ");
     const { conductor, ...rest } = parseConfig(text);
     const { conductor: _none, ...demo } = parseConfig(DEMO_TOML);
     expect(rest).toEqual(demo);
