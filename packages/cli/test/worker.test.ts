@@ -219,7 +219,29 @@ describe("armada claim, report and release", () => {
     expect(await run(["status", "--json"], w.io)).toBe(0);
     const lane = JSON.parse(w.out()).inFlight.find((t: { id: string }) => t.id === "DEMO-11");
     expect([lane.lastReport, lane.silent]).toEqual(["2026-03-04T09:55:00.000Z", false]);
-    expect(w.armada.calls.map((c) => c.path)).toEqual(["fleet/events/latest"]);
+    expect(w.armada.calls.map((c) => c.path)).toEqual(["fleet/events/latest", "fleet/launches"]);
+  });
+
+  test("armada status lists the workers launched that never claimed, under their own heading", async () => {
+    const w = worker(SIGNED_IN);
+    const launch = { project: "widgets", tokenUsedAt: null, handle: null, endedAt: null };
+    w.store.launches.push(
+      { ...launch, ticket: "DEMO-7", launchedAt: "2026-03-04T09:35:00.000Z" },
+      { ...launch, ticket: "DEMO-8", launchedAt: "2026-03-04T09:40:00.000Z", tokenUsedAt: "2026-03-04T09:42:00.000Z" },
+      // Within the 10 minutes `not_started_minutes` gives it.
+      { ...launch, ticket: "DEMO-9", launchedAt: "2026-03-04T09:55:00.000Z" },
+    );
+    w.net.rest = recordedFetch().fetch;
+    expect(await run(["status"], w.io)).toBe(0);
+    expect(w.out()).toContain(
+      [
+        "Launched, not started (2)",
+        "  DEMO-7   launched 25 min ago · launch token never used",
+        "           ! check its session with the runtime guide's status section",
+        "  DEMO-8   launched 20 min ago · signed in 18 min ago, no claim",
+      ].join("\n"),
+    );
+    expect(w.out()).not.toContain("DEMO-9   launched");
   });
 });
 

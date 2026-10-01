@@ -36,6 +36,7 @@ const KIND_COLOR: Partial<Record<WaitingKind, string>> = {
   blocked: "var(--critical)",
   "hand-back": "var(--done)",
   silent: "var(--active)",
+  "not-started": "var(--active)",
 };
 
 export function Fleet({ initialProject }: { initialProject: string | null }) {

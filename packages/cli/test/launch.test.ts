@@ -108,10 +108,24 @@ describe("a worker signed in with its launch token", () => {
     expect(await readFile(r.credentials, "utf8")).toBe("");
   });
 
-  test("the token signs in once; another ticket gets no key from the session", async () => {
+  test("the masked token of the brief's human view is named at once, without asking Armada", async () => {
     const r = await runtime();
+    expect(await run(["login", "--launch-token", "armada_launch_••••", "--api-url", ARMADA_URL], r.io)).toBe(1);
+    expect(r.printed()).toBe(
+      "armada: this is the masked token from `armada brief`'s human view, not a launch token\nNext: ask the coordinator for the `armada brief <ticket> --prompt` text: only it carries the token\n",
+    );
+    expect(r.armada.calls).toEqual([]);
+  });
+
+  test("the token signs in once, naming its Conductor session; another ticket gets no key from the session", async () => {
+    const r = await runtime({ CONDUCTOR_WORKSPACE_ID: "ws-7", CONDUCTOR_SESSION_ID: "s-7" });
     expect(await run(["login", "--launch-token", LAUNCH, "--api-url", ARMADA_URL], r.io)).toBe(0);
     r.printed();
+    // Armada shows the session if the worker never claims.
+    expect(r.armada.calls.find((c) => c.path === "launch-tokens/exchange")?.body).toEqual({
+      token: LAUNCH,
+      handle: "ws-7/s-7",
+    });
     expect(await run(["login", "--launch-token", LAUNCH, "--api-url", ARMADA_URL], r.io)).toBe(1);
     expect(r.printed()).toBe("armada: this launch token was already used\nNext: a new launch\n");
 

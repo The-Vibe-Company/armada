@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.10](https://github.com/The-Vibe-Company/armada/compare/v0.2.9...v0.2.10) (2026-10-01)
+
+
+### Features
+
+* **cli:** flag a launched worker that never starts, and pin a version npm serves in armada brief ([#76](https://github.com/The-Vibe-Company/armada/issues/76)) ([b644d1d](https://github.com/The-Vibe-Company/armada/commit/b644d1db1559b909b95f66684c464e7aae860b6c))
+
+## [0.2.9](https://github.com/The-Vibe-Company/armada/compare/v0.2.8...v0.2.9) (2026-10-01)
+
+
+### Features
+
+* **cli:** tell coordinators when a new Armada version is out ([#74](https://github.com/The-Vibe-Company/armada/issues/74)) ([4b65767](https://github.com/The-Vibe-Company/armada/commit/4b657679e3f4f6108d8524853563316884722f7e))
+
 ## [0.2.8](https://github.com/The-Vibe-Company/armada/compare/v0.2.7...v0.2.8) (2026-10-01)
 
 
