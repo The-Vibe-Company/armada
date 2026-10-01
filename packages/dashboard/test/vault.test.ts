@@ -1,9 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Client } from "@libsql/client";
-import { openAuthDatabase } from "../lib/auth-db.ts";
+import type { Database } from "../lib/db.ts";
 import {
   deleteSecret,
   listEvents,
@@ -17,6 +13,7 @@ import {
   type VaultKey,
   vaultModeOf,
 } from "../lib/vault.ts";
+import { tempDatabase } from "./support.ts";
 
 // Synthetic master keys and values, for these tests only.
 const KEY_A = Buffer.alloc(32, 7).toString("base64");
@@ -99,22 +96,19 @@ describe("what a key may be", () => {
 });
 
 describe("the keys of an organization", () => {
-  let dir = "";
-  let client: Client;
+  let client: Database;
   const now = new Date("2026-09-30T12:00:00Z");
   const owner = { kind: "person" as const, id: "u-owner", label: "Olive Owner <owner@example.test>" };
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "armada-vault-"));
-    client = await openAuthDatabase({ url: `file:${join(dir, "accounts.db")}`, token: null });
+    client = await tempDatabase();
     // The rows reference an organization.
-    await client.execute(
+    await client.query(
       `INSERT INTO "organization" ("id", "name", "slug", "createdAt") VALUES ('org-1', 'Acme', 'acme', '2026-09-30')`,
     );
   });
   afterAll(async () => {
-    client.close();
-    await rm(dir, { recursive: true, force: true });
+    await client.end();
   });
 
   test("are listed with who set them and when, never a secret's value; the audit list names keys, never values", async () => {
@@ -205,8 +199,8 @@ describe("the keys of an organization", () => {
       "set turso-url for the organization",
       "set linear-api-key for the organization",
     ]);
-    const stored = JSON.stringify((await client.execute(`SELECT * FROM "armada_secret_event"`)).rows);
-    const secrets = JSON.stringify((await client.execute(`SELECT * FROM "armada_secret"`)).rows);
+    const stored = JSON.stringify((await client.query(`SELECT * FROM "armada_secret_event"`)).rows);
+    const secrets = JSON.stringify((await client.query(`SELECT * FROM "armada_secret"`)).rows);
     for (const text of [stored, secrets]) {
       expect(text).not.toContain(LINEAR);
       expect(text).not.toContain("lin_api_synthetic_own_0002");

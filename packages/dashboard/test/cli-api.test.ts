@@ -1,32 +1,28 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Client } from "@libsql/client";
 import { NextRequest } from "next/server";
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
 import { accountsGuard } from "../lib/accounts-http.ts";
 import { type AuthSettings, accountsModeOf } from "../lib/accounts-settings.ts";
-import { openAuthDatabase } from "../lib/auth-db.ts";
 import { guard } from "../lib/auth-http.ts";
-import { type DashboardTursoCache, fleetKeysOf, organizationKeys, type Release } from "../lib/broker.ts";
+import { fleetKeysOf, organizationKeys, type Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliApiDeps, type CliIdentity, handleCli } from "../lib/cli-api.ts";
+import type { Database } from "../lib/db.ts";
 import { deleteSecret, listEvents, type SecretName, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
+import { tempDatabase } from "./support.ts";
 
 // Synthetic people and secrets, for these tests only.
 const BASE = "http://localhost:4839";
 const OWNER = "owner@example.test";
 const PASSWORD = "a synthetic password";
 const ENV = {
-  ARMADA_AUTH_DATABASE_URL: "file:accounts.db",
+  ARMADA_DATABASE_URL: "pglite:memory",
   ARMADA_AUTH_SECRET: "a synthetic secret for tests, long enough",
   ARMADA_AUTH_URL: BASE,
   ARMADA_AUTH_OWNER_EMAILS: OWNER,
   NODE_ENV: "test",
 };
 
-let dir = "";
-let client: Client;
+let client: Database;
 let auth: Auth;
 let settings: AuthSettings;
 let accounts: CliAccounts;
@@ -50,8 +46,7 @@ async function signUp(email: string, name: string): Promise<string> {
 }
 
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "armada-cli-api-"));
-  client = await openAuthDatabase({ url: `file:${join(dir, "accounts.db")}`, token: null });
+  client = await tempDatabase();
   const mode = accountsModeOf(ENV);
   if (mode.kind !== "accounts") throw new Error("test settings incomplete");
   settings = mode.settings;
@@ -69,8 +64,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  client.close();
-  await rm(dir, { recursive: true, force: true });
+  await client.end();
 });
 
 /** One call from the terminal to /api/cli. */
@@ -94,7 +88,7 @@ function cli(
 
 /** Polls once, as if the interval had passed since the last poll. */
 async function poll(deviceCode: string) {
-  await client.execute(`UPDATE "deviceCode" SET "lastPolledAt" = NULL`);
+  await client.query(`UPDATE "deviceCode" SET "lastPolledAt" = NULL`);
   const res = await cli("POST", "device/token", { body: { device_code: deviceCode } });
   return { res, body: (await res.json()) as Record<string, string> };
 }
@@ -420,7 +414,7 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     );
     expect(releases.some((e) => e.detail.includes("Turso token kept"))).toBe(true);
     const everything = [
-      JSON.stringify((await client.execute(`SELECT * FROM "armada_secret_event"`)).rows),
+      JSON.stringify((await client.query(`SELECT * FROM "armada_secret_event"`)).rows),
       ...logged,
     ].join("\n");
     for (const value of [ORG_LINEAR, OWN_LINEAR, PLATFORM, PLATFORM_NEW, STORED, "synthetic-minted-"])
@@ -428,54 +422,30 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     expect(logged.some((l) => l.includes("keys released to"))).toBe(true);
   });
 
-  test("the dashboard reads with the organization's keys: its Turso token is kept in memory and renewed near its end", async () => {
+  test("the dashboard reads with the organization's Linear and GitHub keys, never a person's own, and asks Turso nothing", async () => {
     now = at(8 * 60);
     await set("turso-platform-token", PLATFORM);
     await set("turso-organization", "acme");
     await set("turso-database", "fleet");
     await set("github-token", "synthetic-github-token-0006");
     await set("linear-api-key", OWN_LINEAR, memberId);
-    const cache: DashboardTursoCache = new Map();
-    const read = () => organizationKeys({ client, vault, fetch: tursoFetch, now: () => now, cache }, orgId);
     turso.length = 0;
-    const first = await read();
-    // The organization's keys, never a person's own.
-    expect(first).toMatchObject({ linearApiKey: ORG_LINEAR, githubToken: "synthetic-github-token-0006" });
-    expect(first.turso?.expiresAt?.toISOString()).toBe(at(12 * 60).toISOString());
-    const mints = () => turso.filter((c) => c.url.includes("/auth/tokens")).length;
-    now = at(10 * 60);
-    expect((await read()).turso?.token).toBe(first.turso?.token ?? "");
-    expect(mints()).toBe(1);
-    now = at(11 * 60 + 1);
-    expect((await read()).turso?.token).not.toBe(first.turso?.token ?? "");
-    expect(mints()).toBe(2);
-    const [latest] = await listEvents(client, orgId, 1);
-    expect(latest).toMatchObject({ action: "release", keys: ["turso"], actor: { kind: "dashboard" } });
+    const own = await organizationKeys({ client, vault }, orgId);
+    expect(own).toEqual({ linearApiKey: ORG_LINEAR, githubToken: "synthetic-github-token-0006", warnings: [] });
+    // The fleet's live data is in the app's database: no Turso token is made for the dashboard.
+    expect(turso).toEqual([]);
   });
 
-  test("an organization with its own Turso reads with none of the deployment's keys, unless it is the first one", () => {
-    const env = {
-      linearApiKey: "env-linear",
-      githubToken: "env-github",
-      turso: { url: "libsql://env.example.test", token: "env-turso" },
-    };
-    const none = { linearApiKey: null, githubToken: null, turso: null, warnings: [] };
-    const ownTurso = { ...none, turso: { url: "libsql://own.example.test", token: "own", expiresAt: null } };
+  test("only the first organization, and the shared-password gate, fall back to the deployment's keys", () => {
+    const env = { linearApiKey: "env-linear", githubToken: "env-github" };
+    const none = { linearApiKey: null, githubToken: null, warnings: [] };
     const home = { organization: "org-a", home: "org-a" };
     const second = { organization: "org-b", home: "org-a" };
-    // No Turso of its own: the deployment's registry, scoped as before, read with the deployment's keys.
-    expect(fleetKeysOf(none, env, "org-b", second)).toEqual({ keys: { ...env, envRepositories: true }, scope: second });
-    // Its own registry could list anyone's repository: nothing of the deployment's.
-    expect(fleetKeysOf(ownTurso, env, "org-b", second)).toEqual({
-      keys: { linearApiKey: null, githubToken: null, turso: ownTurso.turso, envRepositories: false },
-      scope: { organization: "org-b", home: "org-b" },
-    });
-    // The first organization owns the deployment's keys.
-    expect(fleetKeysOf(ownTurso, env, "org-a", home).keys).toMatchObject({
-      linearApiKey: "env-linear",
-      githubToken: "env-github",
-      envRepositories: true,
-    });
+    expect(fleetKeysOf(none, env, home)).toEqual({ ...env, envRepositories: true });
+    expect(fleetKeysOf(null, env, null)).toEqual({ ...env, envRepositories: true });
+    // Another organization could name anyone's repository in its registry: nothing of the deployment's.
+    expect(fleetKeysOf(none, env, second)).toEqual({ linearApiKey: null, githubToken: null, envRepositories: false });
+    expect(fleetKeysOf({ ...none, linearApiKey: "own" }, env, second)).toMatchObject({ linearApiKey: "own" });
   });
 
   test("a terminal asking more than 30 times a minute is refused until the minute has passed", async () => {

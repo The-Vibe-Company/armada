@@ -3,7 +3,6 @@
 // second check behind proxy.ts, so a read or a write refuses a viewer without
 // a session even if a matcher change ever left it outside the proxy.
 import "server-only";
-import type { Client } from "@libsql/client";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
@@ -16,14 +15,15 @@ import {
   type ViewerOrganization,
 } from "./accounts";
 import { type AuthSettings, accountsModeOf, signatureOf, WELCOME_PATH } from "./accounts-settings";
+import { appDatabase } from "./app-db";
 import { LOGIN_PATH } from "./auth";
-import { openAuthDatabase } from "./auth-db";
+import type { Database } from "./db";
 
 export type { ViewerOrganization } from "./accounts";
 
 export interface Accounts {
   auth: Auth;
-  client: Client;
+  client: Database;
   settings: AuthSettings;
   home?: string | undefined;
 }
@@ -40,12 +40,15 @@ export async function accounts(): Promise<Accounts | null> {
   if (mode.kind === "incomplete") throw new Error(`accounts are not fully configured: set ${mode.missing.join(", ")}`);
   const key = JSON.stringify(mode.settings);
   if (holder.__armadaAccounts?.key !== key) {
-    const opening = openAuthDatabase(mode.settings.database).then((client) => ({
-      client,
-      settings: mode.settings,
-      // The only email sender for now: messages go to the server log (see consoleSender).
-      auth: createAuth(mode.settings, { client, sender: consoleSender }),
-    }));
+    const opening = appDatabase().then((client) => {
+      if (!client) throw new Error("the app's database is not configured");
+      return {
+        client,
+        settings: mode.settings,
+        // The only email sender for now: messages go to the server log (see consoleSender).
+        auth: createAuth(mode.settings, { client, sender: consoleSender }),
+      };
+    });
     opening.catch(() => {
       if (holder.__armadaAccounts?.opening === opening) holder.__armadaAccounts = undefined;
     });

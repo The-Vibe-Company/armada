@@ -1,23 +1,38 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   type ArmadaConfig,
-  addInboxItem,
-  assignUnownedProjects,
   configTemplate,
-  type Db,
   type Issue,
   type ProjectInput,
   parseConfig,
-  recordEvent,
   type StatusSources,
+} from "@armada/core/read";
+import { issue } from "../../core/test/support.ts";
+import type { Database } from "../lib/db.ts";
+import { type LoadOptions, loadOverview as load, newCache, type Scope, type Sources } from "../lib/fleet-data.ts";
+import {
+  addInboxItem,
+  assignUnownedProjects,
+  liveStore,
+  recordEvent,
   saveRuntimeHandle,
   upsertProject,
-} from "@armada/core/read";
-import { closeTempTurso, issue, tempTurso } from "../../core/test/support.ts";
-import { type LoadOptions, loadOverview as load, newCache, type Scope, type Sources } from "../lib/fleet-data.ts";
+} from "../lib/fleet-store.ts";
 import { submitAnswer as answer, submitLaunch as launchReq } from "../lib/requests.ts";
+import { addOrganizations, tempDatabase } from "./support.ts";
 
-afterEach(closeTempTurso);
+const open: Database[] = [];
+afterEach(async () => {
+  await Promise.all(open.splice(0).map((db) => db.end().catch(() => {})));
+});
+
+/** A fresh app database with the organizations these tests name. */
+async function tempDb(): Promise<Database> {
+  const db = await tempDatabase();
+  open.push(db);
+  await addOrganizations(db, "org-home", "org-other");
+  return db;
+}
 
 /** A member of the deployment's first organization, the one that owns every project in these tests. */
 const HOME: Scope = { organization: "org-home", home: "org-home" };
@@ -46,11 +61,11 @@ function snapshot(config: ArmadaConfig, at: number, tickets: Issue[]): StatusSou
 }
 
 /** One project with one worker implementing WID-2 and two tickets ready to start (WID-3, an api one, and WID-4); `reads` counts the Linear and GitHub reads. */
-function world(db: Db | null, over: Partial<Sources> = {}) {
+function world(db: Database | null, over: Partial<Sources> = {}) {
   let clock = T0;
   const reads = { snapshots: 0 };
   const sources: Sources = {
-    openLive: async () => db,
+    live: async () => (db ? liveStore(db) : null),
     fallbackProjects: () => [{ repository: WIDGETS.repository }],
     readConfig: async () => ({ config: parseConfig(configTemplate(WIDGETS)), warning: null }),
     readSnapshot: async (config) => {
@@ -90,7 +105,7 @@ function world(db: Db | null, over: Partial<Sources> = {}) {
 
 describe("live Fleet reading", () => {
   test("a report recorded after the Linear read shows on the next poll without reading Linear again", async () => {
-    const { db } = await tempTurso();
+    const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const w = world(db);
 
@@ -113,13 +128,13 @@ describe("live Fleet reading", () => {
     expect(w.reads.snapshots).toBe(1);
   });
 
-  test("with Turso unreachable the view falls back to Linear and GitHub and says so", async () => {
-    const { db } = await tempTurso();
+  test("with the database unreachable the view falls back to Linear and GitHub and says so", async () => {
+    const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const w = world(db);
     await loadOverview(w.opts);
 
-    db.close();
+    await db.end();
     const fallback = await loadOverview(w.opts);
     expect(fallback.live.state).toBe("unreachable");
     expect(fallback.rows.map((r) => r.id)).toEqual(["WID-2"]);
@@ -127,37 +142,12 @@ describe("live Fleet reading", () => {
 
     // A fresh server with no registry reading yet shows the repositories it was given.
     const cold = world(null, {
-      openLive: async () => {
+      live: async () => {
         throw new Error("connection refused");
       },
     });
     const coldView = await loadOverview(cold.opts);
     expect(coldView.projects.map((p) => [p.slug, p.repository, p.inFlight])).toEqual([["widgets", "acme/widgets", 1]]);
-  });
-
-  test("a replaced or renewed Turso key closes the open client and opens one with the new key", async () => {
-    let opens = 0;
-    let closed = 0;
-    const w = world(null, {
-      liveKey: "token-1",
-      openLive: async () => {
-        opens++;
-        const { db } = await tempTurso();
-        await upsertProject(db, WIDGETS);
-        const close = db.close.bind(db);
-        db.close = () => {
-          closed++;
-          close();
-        };
-        return db;
-      },
-    });
-    await loadOverview(w.opts);
-    await loadOverview(w.opts);
-    expect([opens, closed]).toEqual([1, 0]);
-    w.opts.sources.liveKey = "token-2";
-    expect((await loadOverview(w.opts)).live.state).toBe("ok");
-    expect([opens, closed]).toEqual([2, 1]);
   });
 
   test("a stale reading is served while it refreshes; a failed refresh keeps it, warns and waits a period", async () => {
@@ -193,7 +183,7 @@ describe("live Fleet reading", () => {
 
 describe("organizations", () => {
   test("each organization sees only its projects; projects registered without one go to the first organization", async () => {
-    const { db } = await tempTurso();
+    const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const other: Scope = { organization: "org-other", home: "org-home" };
     const w = world(db);
@@ -219,7 +209,7 @@ describe("organizations", () => {
 
 describe("organizations: a repository naming another project", () => {
   test("shows none of that project's live data to the other organization", async () => {
-    const { db } = await tempTurso();
+    const db = await tempDb();
     await upsertProject(db, WIDGETS);
     await assignUnownedProjects(db, "org-home");
     // Registered by another organization, but its armada.toml says "widgets" (every config in this world does).
@@ -244,7 +234,7 @@ describe("organizations: a repository naming another project", () => {
 
 describe("requests from the dashboard", () => {
   test("approving a waiting plan creates a signed answer request, not a worker or runtime action", async () => {
-    const { db } = await tempTurso();
+    const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const w = world(db);
     const plan = await addInboxItem(db, {
@@ -271,7 +261,7 @@ describe("requests from the dashboard", () => {
   });
 
   test("a launch is checked against the frontier shown and the claims recorded since; an answer against the open question", async () => {
-    const { db } = await tempTurso();
+    const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const w = world(db);
     const shown = await loadOverview(w.opts);
@@ -318,7 +308,7 @@ describe("requests from the dashboard", () => {
     expect(w.reads.snapshots).toBe(1);
   });
 
-  test("without Turso nothing is recorded, and the reason is given", async () => {
+  test("without the database nothing is recorded, and the reason is given", async () => {
     const w = world(null);
     await loadOverview(w.opts);
     expect(

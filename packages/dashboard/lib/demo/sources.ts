@@ -1,6 +1,6 @@
 // Demo mode (ARMADA_DASHBOARD_DEMO=fleet|empty): Linear and GitHub are replaced
-// by the synthetic world in ./world; Turso stays real, usually a local
-// `file:` database seeded with `bun run demo:seed`. No key is needed.
+// by the synthetic world in ./world; the app's database stays real, usually a
+// local PGlite one (`pglite:` URL) seeded with `bun run demo:seed`. No key is needed.
 import { configTemplate, parseConfig } from "@armada/core/read";
 import type { Sources } from "../fleet-data";
 import { DEMO_PROJECTS, demoSnapshot, type Scenario } from "./world";
@@ -13,8 +13,7 @@ export function demoSources(mode: string, real: Sources): Sources {
     return p;
   };
   return {
-    openLive: real.openLive,
-    ...(real.liveKey ? { liveKey: real.liveKey } : {}),
+    live: real.live,
     fallbackProjects: () => {
       const fromEnv = real.fallbackProjects();
       return fromEnv.length ? fromEnv : DEMO_PROJECTS.map((p) => ({ repository: p.repository }));

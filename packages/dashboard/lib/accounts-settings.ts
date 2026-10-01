@@ -4,11 +4,12 @@
 // once every required variable is set; until then the password gate keeps
 // working exactly as before, and with neither the dashboard fails closed.
 // `proxy.ts`, the Better Auth instance (`accounts.ts`) and the server checks
-// share these rules. No secret leaves the server.
+// share these rules. No secret leaves the server. Accounts live in the app's
+// one database (`db.ts`, ARMADA_DATABASE_URL), with the fleet's data.
+import { DATABASE_VARIABLE, databaseUrlOf } from "./db";
 
 export const AUTH_VARIABLES = {
-  databaseUrl: "ARMADA_AUTH_DATABASE_URL",
-  databaseToken: "ARMADA_AUTH_DATABASE_TOKEN",
+  database: DATABASE_VARIABLE,
   secret: "ARMADA_AUTH_SECRET",
   url: "ARMADA_AUTH_URL",
   githubId: "ARMADA_AUTH_GITHUB_CLIENT_ID",
@@ -16,6 +17,13 @@ export const AUTH_VARIABLES = {
   owners: "ARMADA_AUTH_OWNER_EMAILS",
   emailPassword: "ARMADA_AUTH_EMAIL_PASSWORD",
 } as const;
+
+/**
+ * The accounts database of THE-838 to THE-842 (libSQL), replaced by the app's
+ * database. Still set, they count as accounts being set up: a deployment that
+ * has not moved yet fails closed and names ARMADA_DATABASE_URL.
+ */
+const RETIRED_VARIABLES = ["ARMADA_AUTH_DATABASE_URL", "ARMADA_AUTH_DATABASE_TOKEN"];
 
 /** Better Auth's own routes (sign-in, OAuth callback, email verification, sign-out). */
 export const AUTH_API_PREFIX = "/api/auth";
@@ -45,7 +53,8 @@ export const MIN_SECRET_LENGTH = 32;
 export type Env = Readonly<Record<string, string | undefined>>;
 
 export interface AuthSettings {
-  database: { url: string; token: string | null };
+  /** The app's database URL (`db.ts`); `pglite:` outside production. */
+  database: string;
   secret: string;
   /** The public address of the dashboard, e.g. https://armada.example.com: OAuth callbacks and email links. */
   baseUrl: string;
@@ -105,33 +114,31 @@ export const ownersOf = (value: string | null | undefined): string[] =>
 export function accountsModeOf(env: Env): AccountsMode {
   const V = AUTH_VARIABLES;
   const production = env.NODE_ENV === "production";
-  const url = read(env, V.databaseUrl);
-  const token = read(env, V.databaseToken);
+  const database = databaseUrlOf(env);
   const secret = read(env, V.secret);
   const baseUrl = baseUrlOf(read(env, V.url));
   const githubId = read(env, V.githubId);
   const githubSecret = read(env, V.githubSecret);
   const emailPassword = !production && flag(read(env, V.emailPassword), true);
-  const started = [V.databaseUrl, V.databaseToken, V.secret, V.url, V.githubId, V.githubSecret, V.owners].some((v) =>
+  // The database alone does not start accounts: the shared-password gate reads the fleet from it too.
+  const started = [V.secret, V.url, V.githubId, V.githubSecret, V.owners, ...RETIRED_VARIABLES].some((v) =>
     read(env, v),
   );
   if (!started) return { kind: "off" };
 
   const missing: string[] = [];
-  if (!url) missing.push(V.databaseUrl);
-  // A remote database needs its token; a local file (development, tests) does not.
-  else if (!url.startsWith("file:") && !token) missing.push(V.databaseToken);
+  if (!database) missing.push(V.database);
   if (!secret || secret.length < MIN_SECRET_LENGTH) missing.push(V.secret);
   if (!baseUrl) missing.push(V.url);
   if (Boolean(githubId) !== Boolean(githubSecret)) missing.push(githubId ? V.githubSecret : V.githubId);
   // No way to sign in at all is the same as no accounts.
   if (!githubId && !emailPassword) missing.push(V.githubId);
-  if (missing.length || !url || !secret || !baseUrl) return { kind: "incomplete", missing };
+  if (missing.length || !database || !secret || !baseUrl) return { kind: "incomplete", missing };
 
   return {
     kind: "accounts",
     settings: {
-      database: { url, token },
+      database,
       secret,
       baseUrl,
       github: githubId && githubSecret ? { clientId: githubId, clientSecret: githubSecret } : null,

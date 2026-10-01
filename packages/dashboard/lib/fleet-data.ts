@@ -1,41 +1,32 @@
 // The dashboard's reading of the fleet. Two speeds: Linear and GitHub are read
 // at most once per snapshot period per project (they are slow and rate
-// limited), Turso on every poll (a few SQL reads). Every poll rebuilds the
-// overview through core, so a worker's report shows as soon as it lands in
-// Turso. This module only orchestrates I/O; every fleet rule lives in core.
+// limited), the fleet's live data in the app's database on every poll (a few
+// SQL reads, next to the function: THE-849). Every poll rebuilds the overview
+// through core, so a worker's report shows as soon as it is recorded. This
+// module only orchestrates I/O; every fleet rule lives in core.
 import {
   type ArmadaConfig,
-  assignUnownedProjects,
   buildOverview,
   buildStatus,
-  type Db,
   type FleetOverview,
   type InboxItem,
-  lastCoordinatorSeen,
-  latestEvents,
-  listProjects,
-  openInboxItems,
-  openRuntimeHandles,
+  type LatestEvent,
   type ProjectConfigReading,
   type ProjectReading,
   type ProjectRecord,
-  redact,
+  type RuntimeHandle,
   type StatusReport,
   type StatusSources,
 } from "@armada/core/read";
+import { redactDatabase } from "./db";
+import type { LiveStore } from "./fleet-store";
 
 /** A project to show: a registry record, or only a repository when the registry could not be read. */
 export type ProjectRef = Pick<ProjectRecord, "repository"> & Partial<Omit<ProjectRecord, "repository">>;
 
 export interface Sources {
-  /** The Turso database; null when none is configured. Throws when it is unreachable. */
-  openLive(): Promise<Db | null>;
-  /**
-   * Which Turso access `openLive` uses (a fingerprint, never the token). A
-   * client opened with another one is closed and opened again: the key was
-   * replaced, or a short-lived token renewed.
-   */
-  liveKey?: string;
+  /** The fleet's live data (the app's database); null when none is configured. Throws when it is unreachable. */
+  live(): Promise<LiveStore | null>;
   /** Repositories to show when the registry cannot be read (ARMADA_REPOSITORIES). */
   fallbackProjects(): ProjectRef[];
   readConfig(p: ProjectRef): Promise<ProjectConfigReading>;
@@ -43,7 +34,7 @@ export interface Sources {
 }
 
 interface Snapshot {
-  /** When the read started: Turso events after this are newer than what it says. */
+  /** When the read started: live events after this are newer than what it says. */
   startedAt: Date;
   config: ArmadaConfig;
   configWarning: string | null;
@@ -61,22 +52,11 @@ interface Entry {
 /** Server memory kept between polls. One per server process. */
 export interface FleetCache {
   snapshots: Map<string, Entry>;
-  /** The last project list read from the registry, used while Turso is unreachable. */
+  /** The last project list read from the registry, used while the database is unreachable. */
   projects: ProjectRef[] | null;
-  db: Db | null;
-  /** The `liveKey` the client was opened with. */
-  dbKey: string | null;
-  /** The client being opened, shared by concurrent requests. */
-  opening: Promise<Db | null> | null;
 }
 
-export const newCache = (): FleetCache => ({
-  snapshots: new Map(),
-  projects: null,
-  db: null,
-  dbKey: null,
-  opening: null,
-});
+export const newCache = (): FleetCache => ({ snapshots: new Map(), projects: null });
 
 /**
  * Whose fleet a request reads: the viewer's organization, and the deployment's
@@ -99,7 +79,7 @@ export const inScope = (p: ProjectRef, scope: Scope | null): boolean =>
   !scope ||
   (p.organization ? p.organization === scope.organization : scope.home !== null && scope.organization === scope.home);
 
-/** Turso events older than this are not read on each poll: they no longer change what a row shows. */
+/** Live events older than this are not read on each poll: they no longer change what a row shows. */
 const LIVE_WINDOW_MS = 7 * 24 * 3_600_000;
 
 export interface LoadOptions {
@@ -108,14 +88,14 @@ export interface LoadOptions {
   now: () => Date;
   /** How long a Linear and GitHub read stays fresh. */
   snapshotMs: number;
-  /** Turso reads slower than this count as unreachable. */
+  /** Live reads slower than this count as unreachable. */
   liveTimeoutMs?: number;
   /** Keeps a background refresh alive after the response (Next's `after`). */
   background?: (work: Promise<unknown>) => void;
 }
 
-/** An error message safe for the browser: a Turso URL's `authToken=` is masked. */
-const message = (err: unknown) => redact(err);
+/** An error message safe for the browser: a database URL's password is masked. */
+const message = (err: unknown) => redactDatabase(err);
 
 function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -173,76 +153,51 @@ async function snapshotOf(p: ProjectRef, key: string, opts: LoadOptions): Promis
 }
 
 interface LiveProject {
-  events: Awaited<ReturnType<typeof latestEvents>>;
-  handles: Awaited<ReturnType<typeof openRuntimeHandles>>;
+  events: Record<string, LatestEvent>;
+  handles: RuntimeHandle[];
   inbox: InboxItem[];
   coordinatorSeenAt: string | null;
 }
 
-async function readLive(db: Db, project: string, now: Date): Promise<LiveProject> {
+async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
   const [events, handles, inbox, coordinatorSeenAt] = await Promise.all([
-    latestEvents(db, project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
-    openRuntimeHandles(db, project),
-    openInboxItems(db, { project, recipient: "coordinator" }),
-    lastCoordinatorSeen(db, project),
+    store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+    store.openRuntimeHandles(project),
+    store.openInboxItems({ project, recipient: "coordinator" }),
+    store.lastCoordinatorSeen(project),
   ]);
   return { events, handles, inbox, coordinatorSeenAt };
 }
 
-function liveClient(opts: LoadOptions): Promise<Db | null> {
-  const key = opts.sources.liveKey ?? null;
-  if (opts.cache.db && opts.cache.dbKey === key) return Promise.resolve(opts.cache.db);
-  if (opts.cache.db) dropClient(opts);
-  // One open at a time; a slow open still lands in the cache for the next poll.
-  opts.cache.opening ??= opts.sources
-    .openLive()
-    .then((db) => {
-      opts.cache.db = db;
-      opts.cache.dbKey = key;
-      return db;
-    })
-    .finally(() => {
-      opts.cache.opening = null;
-    });
-  return opts.cache.opening;
-}
-
 /**
  * The registry, with every project that has no organization given to the
- * first one: the one-time move of the projects registered before accounts,
- * and of those the CLI registers until it signs in (THE-839).
+ * first one: the projects registered before accounts, and those a terminal
+ * registers without an organization (THE-839).
  */
-async function readRegistry(db: Db, scope: Scope | null, now: Date): Promise<ProjectRef[]> {
-  const projects = await listProjects(db);
+async function readRegistry(store: LiveStore, scope: Scope | null, now: Date): Promise<ProjectRef[]> {
+  const projects = await store.listProjects();
   if (!scope?.home || projects.every((p) => p.organization)) return projects;
-  await assignUnownedProjects(db, scope.home, now);
-  return listProjects(db);
+  await store.assignUnownedProjects(scope.home, now);
+  return store.listProjects();
 }
 
 async function openLive(
   opts: LoadOptions,
   scope: Scope | null,
-): Promise<{ db: Db | null; state: FleetOverview["live"] }> {
+): Promise<{ store: LiveStore | null; state: FleetOverview["live"] }> {
   const timeout = opts.liveTimeoutMs ?? 4000;
   try {
-    const db = await withTimeout(liveClient(opts), timeout, "opening Turso");
-    if (!db) return { db: null, state: { state: "off", error: null } };
-    const projects = await withTimeout(readRegistry(db, scope, opts.now()), timeout, "reading the project registry");
+    const store = await withTimeout(opts.sources.live(), timeout, "opening the database");
+    if (!store) return { store: null, state: { state: "off", error: null } };
+    const projects = await withTimeout(readRegistry(store, scope, opts.now()), timeout, "reading the project registry");
     opts.cache.projects = projects;
-    return { db, state: { state: "ok", error: null } };
+    return { store, state: { state: "ok", error: null } };
   } catch (err) {
-    dropClient(opts);
-    return { db: null, state: { state: "unreachable", error: message(err) } };
+    return { store: null, state: { state: "unreachable", error: message(err) } };
   }
 }
 
-/** Reopen on the next poll: the client may be stuck on a dead connection. */
-function dropClient(opts: LoadOptions) {
-  opts.cache.db?.close();
-  opts.cache.db = null;
-}
-
-/** The project's status: the Linear and GitHub snapshot with the Turso events newer than it on top. */
+/** The project's status: the Linear and GitHub snapshot with the live events newer than it on top. */
 function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusReport {
   return buildStatus({
     config: snap.config,
@@ -263,8 +218,8 @@ function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusRepor
 
 /** One project as the Fleet view shows it, for a request to act on. */
 export interface ProjectState {
-  /** Null when Turso is not configured or unreachable: requests cannot be written then. */
-  db: Db | null;
+  /** Null when the database is not configured or unreachable: requests cannot be written then. */
+  store: LiveStore | null;
   config: ArmadaConfig;
   report: StatusReport;
 }
@@ -275,12 +230,12 @@ const projectsOf = (opts: LoadOptions, scope: Scope | null) =>
 
 /**
  * Reads one project the way `loadOverview` does (the cached Linear and GitHub
- * snapshot, Turso read now), so a request is checked against what the viewer
+ * snapshot, live data read now), so a request is checked against what the viewer
  * sees, plus every claim recorded since. Null when no such project is shown to
  * the scope's organization.
  */
 export async function loadProject(opts: LoadOptions, slug: string, scope: Scope | null): Promise<ProjectState | null> {
-  const { db } = await openLive(opts, scope);
+  const { store } = await openLive(opts, scope);
   const projects = projectsOf(opts, scope);
   // Registry projects are keyed by slug; a repository-only project by the slug its armada.toml gives.
   const candidates = [
@@ -293,17 +248,19 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
     const entry = await snapshotOf(p, p.slug ?? p.repository, opts);
     const snap = entry.snapshot;
     if (!snap || snap.config.project.slug !== slug) continue;
-    const l = db
-      ? await withTimeout(readLive(db, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading Turso").catch(() => null)
+    const l = store
+      ? await withTimeout(readLive(store, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading live data").catch(
+          () => null,
+        )
       : null;
-    return { db: l ? db : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
+    return { store: l ? store : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
   }
   return null;
 }
 
 /** Reads every project of the scope's organization and builds the overview the Fleet view renders. */
 export async function loadOverview(opts: LoadOptions, scope: Scope | null): Promise<FleetOverview> {
-  const { db, state } = await openLive(opts, scope);
+  const { store, state } = await openLive(opts, scope);
   const projects = projectsOf(opts, scope);
   let live = state;
 
@@ -319,20 +276,19 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
   const liveSlug = (p: ProjectRef, snap: Snapshot | null) =>
     snap && (!p.slug || p.slug === snap.config.project.slug) ? snap.config.project.slug : null;
 
-  // Live data for every project, or for none: Turso failing midway must not
-  // show some rows live under the "unreachable" banner.
+  // Live data for every project, or for none: the database failing midway must
+  // not show some rows live under the "unreachable" banner.
   let liveData = new Map<string, LiveProject>();
-  if (db) {
+  if (store) {
     try {
       const slugs = entries.flatMap((e) => liveSlug(e.p, e.entry.snapshot) ?? []);
       const read = await withTimeout(
-        Promise.all(slugs.map(async (slug) => [slug, await readLive(db, slug, opts.now())] as const)),
+        Promise.all(slugs.map(async (slug) => [slug, await readLive(store, slug, opts.now())] as const)),
         opts.liveTimeoutMs ?? 4000,
-        "reading Turso",
+        "reading live data",
       );
       liveData = new Map(read);
     } catch (err) {
-      dropClient(opts);
       live = { state: "unreachable", error: message(err) };
     }
   }

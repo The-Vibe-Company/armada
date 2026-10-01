@@ -9,11 +9,11 @@
 // only claims, reports, asks and releases its own ticket. Both proxy gates let /api/cli through: each
 // route checks its own credential, and while the deployment has no accounts
 // every route refuses with the next step instead of a password prompt.
-// Everything is injected so tests run it on a local database.
-import type { Client } from "@libsql/client";
+// Everything is injected so tests run it on PGlite.
 import { type Auth, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
 import { type Fetch, type HeldTurso, type Holder, releaseCredentials } from "./broker";
+import type { Database, Queryable } from "./db";
 import { SECRETS_KEY_VARIABLE, type VaultKey, type VaultMode } from "./vault";
 import {
   createLaunch,
@@ -33,7 +33,7 @@ import {
 
 export interface CliAccounts {
   auth: Auth;
-  client: Client;
+  client: Database;
   settings: AuthSettings;
 }
 
@@ -118,11 +118,8 @@ async function sessionOf(a: CliAccounts, token: string, now: Date) {
   return { ...found, expiresAt: expires };
 }
 
-async function organizationById(client: Client, id: string) {
-  const rs = await client.execute({
-    sql: `SELECT "id", "name", "slug" FROM "organization" WHERE "id" = ?`,
-    args: [id],
-  });
+async function organizationById(client: Queryable, id: string) {
+  const rs = await client.query(`SELECT "id", "name", "slug" FROM "organization" WHERE "id" = $1`, [id]);
   const row = rs.rows[0];
   return row ? { id: String(row.id), name: String(row.name), slug: String(row.slug), role: null } : null;
 }

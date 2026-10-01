@@ -1,0 +1,583 @@
+// The app's one database: Postgres (Neon in production, THE-849). Accounts,
+// organizations, the vault, the workers and the fleet's live data (projects,
+// events, runtime handles, worker profiles, the coordinators' inboxes, leases
+// and coordinator presence) all live here, next to the app's functions.
+//
+// Everything reaches it through `Database`, the small part of node-postgres's
+// pool the app uses, so the same code runs on Neon (`pg`) and, for tests and
+// local development, on PGlite (Postgres in WebAssembly, `pglite:` URLs).
+// Better Auth reaches it through Kysely with `PgDialect`. The schema comes from
+// `DB_MIGRATIONS`, applied once each in order, never from Better Auth's
+// automatic migration: a test checks the two agree.
+import {
+  type CompiledQuery,
+  type DatabaseConnection,
+  type Dialect,
+  type Driver,
+  PostgresAdapter,
+  PostgresIntrospector,
+  PostgresQueryCompiler,
+  type QueryResult,
+} from "kysely";
+
+export type Row = Record<string, unknown>;
+
+export interface Rows<R = Row> {
+  rows: R[];
+  /** Rows written by an INSERT, UPDATE or DELETE. */
+  rowCount: number;
+}
+
+/** One statement with `$1`-style parameters. */
+export interface Queryable {
+  query<R = Row>(text: string, params?: readonly unknown[]): Promise<Rows<R>>;
+}
+
+/** A connection taken from the pool: a transaction stays on it. Release it once done. */
+export interface Connection extends Queryable {
+  release(): void;
+}
+
+export interface Database extends Queryable {
+  connect(): Promise<Connection>;
+  end(): Promise<void>;
+}
+
+/** Runs `work` in one transaction on one connection: committed when it returns, rolled back when it throws. */
+export async function transaction<T>(db: Database, work: (tx: Queryable) => Promise<T>): Promise<T> {
+  const conn = await db.connect();
+  try {
+    await conn.query("BEGIN");
+    try {
+      const result = await work(conn);
+      await conn.query("COMMIT");
+      return result;
+    } catch (err) {
+      await conn.query("ROLLBACK").catch(() => {});
+      throw err;
+    }
+  } finally {
+    conn.release();
+  }
+}
+
+// ------------------------------------------------------------ values
+
+/** A timestamp column as core's ISO string; null stays null. */
+export function iso(v: unknown): string | null {
+  if (v === null || v === undefined) return null;
+  const d = v instanceof Date ? v : new Date(typeof v === "number" ? v : String(v));
+  return Number.isNaN(d.getTime()) ? String(v) : d.toISOString();
+}
+
+/** A timestamp column that is never null. */
+export const isoAt = (v: unknown): string => iso(v) ?? "";
+
+export const text = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
+
+// ------------------------------------------------------------ Kysely, for Better Auth
+
+class PgConnection implements DatabaseConnection {
+  constructor(private readonly conn: Connection) {}
+
+  async executeQuery<R>(query: CompiledQuery): Promise<QueryResult<R>> {
+    const rs = await this.conn.query<R>(query.sql, query.parameters);
+    return { rows: rs.rows, numAffectedRows: BigInt(rs.rowCount) };
+  }
+
+  // biome-ignore lint/correctness/useYield: Better Auth never streams.
+  async *streamQuery<R>(): AsyncIterableIterator<QueryResult<R>> {
+    throw new Error("the app's database driver does not stream queries");
+  }
+
+  release() {
+    this.conn.release();
+  }
+}
+
+class PgDriver implements Driver {
+  constructor(private readonly db: Database) {}
+  async init(): Promise<void> {}
+  async acquireConnection(): Promise<DatabaseConnection> {
+    return new PgConnection(await this.db.connect());
+  }
+  async beginTransaction(c: DatabaseConnection): Promise<void> {
+    await c.executeQuery({ sql: "BEGIN", parameters: [] } as unknown as CompiledQuery);
+  }
+  async commitTransaction(c: DatabaseConnection): Promise<void> {
+    await c.executeQuery({ sql: "COMMIT", parameters: [] } as unknown as CompiledQuery);
+  }
+  async rollbackTransaction(c: DatabaseConnection): Promise<void> {
+    await c.executeQuery({ sql: "ROLLBACK", parameters: [] } as unknown as CompiledQuery);
+  }
+  async releaseConnection(c: DatabaseConnection): Promise<void> {
+    (c as PgConnection).release();
+  }
+  // The pool belongs to whoever opened it (`openDatabase`).
+  async destroy(): Promise<void> {}
+}
+
+/** Kysely over the app's database, on either driver. */
+export class PgDialect implements Dialect {
+  constructor(private readonly db: Database) {}
+  createAdapter = () => new PostgresAdapter();
+  createDriver = () => new PgDriver(this.db);
+  createQueryCompiler = () => new PostgresQueryCompiler();
+  createIntrospector = (db: Parameters<Dialect["createIntrospector"]>[0]) => new PostgresIntrospector(db);
+}
+
+// ------------------------------------------------------------ the schema
+
+/**
+ * The schema, one entry per version. Each version is applied once, in order,
+ * in one transaction that first takes an advisory lock, so two servers
+ * starting together apply it once. Never edit an applied version: add one.
+ *
+ * Version 1 is everything the app had on libSQL and Turso, moved to one
+ * Postgres database (THE-849):
+ * - what Better Auth 1.7 needs for email and password, GitHub, organizations,
+ *   database rate limiting, device authorization (`armada login`) and the
+ *   organizations' API keys;
+ * - the vault (THE-840): the organizations' sealed keys and their audit list;
+ * - the workers (THE-841): one row per launch, its one-time launch token and
+ *   the worker session it was exchanged for (both hashes only), and the
+ *   exchange attempts the rate limit counts;
+ * - the fleet: projects and the organization each belongs to, events, the
+ *   runtime session holding each ticket and the profile its claim named, the
+ *   coordinators' inboxes (a dashboard request's question or profile is on its
+ *   item), leases, and when each project's coordinator last read its inbox.
+ *   Partial unique indexes keep one open plan, hand-back, launch request per
+ *   ticket and one open answer request per question, whatever the races.
+ */
+export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
+  {
+    version: 1,
+    statements: [
+      // ---------------------------------------------------------- Better Auth
+      `CREATE TABLE IF NOT EXISTS "user" (
+        "id" text NOT NULL PRIMARY KEY,
+        "name" text NOT NULL,
+        "email" text NOT NULL UNIQUE,
+        "emailVerified" boolean NOT NULL,
+        "image" text,
+        "createdAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS "session" (
+        "id" text NOT NULL PRIMARY KEY,
+        "expiresAt" timestamptz NOT NULL,
+        "token" text NOT NULL UNIQUE,
+        "createdAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" timestamptz NOT NULL,
+        "ipAddress" text,
+        "userAgent" text,
+        "userId" text NOT NULL REFERENCES "user" ("id") ON DELETE CASCADE,
+        "activeOrganizationId" text
+      )`,
+      `CREATE TABLE IF NOT EXISTS "account" (
+        "id" text NOT NULL PRIMARY KEY,
+        "accountId" text NOT NULL,
+        "providerId" text NOT NULL,
+        "userId" text NOT NULL REFERENCES "user" ("id") ON DELETE CASCADE,
+        "accessToken" text,
+        "refreshToken" text,
+        "idToken" text,
+        "accessTokenExpiresAt" timestamptz,
+        "refreshTokenExpiresAt" timestamptz,
+        "scope" text,
+        "password" text,
+        "createdAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" timestamptz NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS "verification" (
+        "id" text NOT NULL PRIMARY KEY,
+        "identifier" text NOT NULL,
+        "value" text NOT NULL,
+        "expiresAt" timestamptz NOT NULL,
+        "createdAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE TABLE IF NOT EXISTS "organization" (
+        "id" text NOT NULL PRIMARY KEY,
+        "name" text NOT NULL,
+        "slug" text NOT NULL UNIQUE,
+        "logo" text,
+        "createdAt" timestamptz NOT NULL,
+        "metadata" text
+      )`,
+      `CREATE TABLE IF NOT EXISTS "member" (
+        "id" text NOT NULL PRIMARY KEY,
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "userId" text NOT NULL REFERENCES "user" ("id") ON DELETE CASCADE,
+        "role" text NOT NULL,
+        "createdAt" timestamptz NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS "invitation" (
+        "id" text NOT NULL PRIMARY KEY,
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "email" text NOT NULL,
+        "role" text,
+        "status" text NOT NULL,
+        "expiresAt" timestamptz NOT NULL,
+        "createdAt" timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "inviterId" text NOT NULL REFERENCES "user" ("id") ON DELETE CASCADE
+      )`,
+      `CREATE TABLE IF NOT EXISTS "rateLimit" (
+        "id" text NOT NULL PRIMARY KEY,
+        "key" text NOT NULL UNIQUE,
+        "count" integer NOT NULL,
+        "lastRequest" bigint NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS "deviceCode" (
+        "id" text NOT NULL PRIMARY KEY,
+        "deviceCode" text NOT NULL,
+        "userCode" text NOT NULL,
+        "userId" text,
+        "expiresAt" timestamptz NOT NULL,
+        "status" text NOT NULL,
+        "lastPolledAt" timestamptz,
+        "pollingInterval" integer,
+        "clientId" text,
+        "scope" text
+      )`,
+      `CREATE TABLE IF NOT EXISTS "apikey" (
+        "id" text NOT NULL PRIMARY KEY,
+        "configId" text NOT NULL,
+        "name" text,
+        "start" text,
+        "referenceId" text NOT NULL,
+        "prefix" text,
+        "key" text NOT NULL,
+        "refillInterval" integer,
+        "refillAmount" integer,
+        "lastRefillAt" timestamptz,
+        "enabled" boolean,
+        "rateLimitEnabled" boolean,
+        "rateLimitTimeWindow" integer,
+        "rateLimitMax" integer,
+        "requestCount" integer,
+        "remaining" integer,
+        "lastRequest" timestamptz,
+        "expiresAt" timestamptz,
+        "createdAt" timestamptz NOT NULL,
+        "updatedAt" timestamptz NOT NULL,
+        "permissions" text,
+        "metadata" text
+      )`,
+      `CREATE INDEX IF NOT EXISTS "session_userId_idx" ON "session" ("userId")`,
+      `CREATE INDEX IF NOT EXISTS "account_userId_idx" ON "account" ("userId")`,
+      `CREATE INDEX IF NOT EXISTS "verification_identifier_idx" ON "verification" ("identifier")`,
+      `CREATE INDEX IF NOT EXISTS "member_organizationId_idx" ON "member" ("organizationId")`,
+      `CREATE INDEX IF NOT EXISTS "member_userId_idx" ON "member" ("userId")`,
+      `CREATE INDEX IF NOT EXISTS "invitation_organizationId_idx" ON "invitation" ("organizationId")`,
+      `CREATE INDEX IF NOT EXISTS "invitation_email_idx" ON "invitation" ("email")`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "deviceCode_deviceCode_uidx" ON "deviceCode" ("deviceCode")`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS "deviceCode_userCode_uidx" ON "deviceCode" ("userCode")`,
+      `CREATE INDEX IF NOT EXISTS "apikey_configId_idx" ON "apikey" ("configId")`,
+      `CREATE INDEX IF NOT EXISTS "apikey_referenceId_idx" ON "apikey" ("referenceId")`,
+      `CREATE INDEX IF NOT EXISTS "apikey_key_idx" ON "apikey" ("key")`,
+
+      // ---------------------------------------------------------- the vault
+      `CREATE TABLE IF NOT EXISTS "armada_secret" (
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "userId" text NOT NULL DEFAULT '',
+        "name" text NOT NULL,
+        "sealed" text NOT NULL,
+        "setById" text NOT NULL,
+        "setByLabel" text NOT NULL,
+        "createdAt" timestamptz NOT NULL,
+        "updatedAt" timestamptz NOT NULL,
+        PRIMARY KEY ("organizationId", "userId", "name")
+      )`,
+      `CREATE TABLE IF NOT EXISTS "armada_secret_event" (
+        "id" bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        "organizationId" text NOT NULL,
+        "at" timestamptz NOT NULL,
+        "action" text NOT NULL,
+        "keys" text NOT NULL,
+        "actorKind" text NOT NULL,
+        "actorId" text NOT NULL,
+        "actorLabel" text NOT NULL,
+        "detail" text NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS "armada_secret_event_org_idx" ON "armada_secret_event" ("organizationId", "id")`,
+      `CREATE INDEX IF NOT EXISTS "armada_secret_event_actor_idx" ON "armada_secret_event" ("actorKind", "actorId", "at")`,
+
+      // ---------------------------------------------------------- the workers
+      `CREATE TABLE IF NOT EXISTS "armada_worker" (
+        "id" text NOT NULL PRIMARY KEY,
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "project" text NOT NULL,
+        "ticket" text NOT NULL,
+        "launchedByKind" text NOT NULL,
+        "launchedById" text NOT NULL,
+        "launchedByLabel" text NOT NULL,
+        "createdAt" timestamptz NOT NULL,
+        "tokenHash" text NOT NULL UNIQUE,
+        "tokenExpiresAt" timestamptz NOT NULL,
+        "tokenUsedAt" timestamptz,
+        "sessionHash" text UNIQUE,
+        "sessionExpiresAt" timestamptz,
+        "sessionSeenAt" timestamptz,
+        "endedAt" timestamptz,
+        "endReason" text,
+        "endedByLabel" text
+      )`,
+      `CREATE INDEX IF NOT EXISTS "armada_worker_org_idx" ON "armada_worker" ("organizationId", "createdAt")`,
+      `CREATE INDEX IF NOT EXISTS "armada_worker_ticket_idx" ON "armada_worker" ("organizationId", "project", "ticket")`,
+      `CREATE TABLE IF NOT EXISTS "armada_launch_attempt" (
+        "address" text NOT NULL,
+        "at" timestamptz NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS "armada_launch_attempt_idx" ON "armada_launch_attempt" ("address", "at")`,
+
+      // ---------------------------------------------------------- the fleet
+      // `organization_id` is null until the project is given to one (see `assignUnownedProjects`).
+      `CREATE TABLE IF NOT EXISTS projects (
+        slug text PRIMARY KEY,
+        name text NOT NULL,
+        repository text NOT NULL,
+        program_root text NOT NULL,
+        organization_id text REFERENCES "organization" ("id"),
+        created_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        organization_assigned_at timestamptz
+      )`,
+      // kind: claim | report | release | merge.
+      `CREATE TABLE IF NOT EXISTS events (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL,
+        ticket text NOT NULL,
+        kind text NOT NULL,
+        phase text,
+        message text,
+        runtime text,
+        handle text,
+        pr_url text,
+        head_sha text,
+        created_at timestamptz NOT NULL
+      )`,
+      "CREATE INDEX IF NOT EXISTS events_by_ticket ON events (project, ticket, created_at)",
+      "CREATE INDEX IF NOT EXISTS events_by_time ON events (project, created_at)",
+      `CREATE TABLE IF NOT EXISTS runtime_handles (
+        project text NOT NULL,
+        ticket text NOT NULL,
+        runtime text NOT NULL,
+        handle text NOT NULL,
+        branch text,
+        claimed_at timestamptz NOT NULL,
+        released_at timestamptz,
+        PRIMARY KEY (project, ticket)
+      )`,
+      `CREATE TABLE IF NOT EXISTS worker_profiles (
+        project text NOT NULL,
+        ticket text NOT NULL,
+        profile text NOT NULL,
+        agent text NOT NULL,
+        model text NOT NULL,
+        effort text NOT NULL,
+        fast_mode boolean NOT NULL,
+        routed text,
+        reason text,
+        why text NOT NULL,
+        recorded_at timestamptz NOT NULL,
+        PRIMARY KEY (project, ticket)
+      )`,
+      // kind: question | plan | request | hand-back | note | answer-request | launch-request.
+      // request_question and request_profile: what a dashboard request is about.
+      `CREATE TABLE IF NOT EXISTS inbox_items (
+        id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+        project text NOT NULL,
+        ticket text,
+        kind text NOT NULL,
+        recipient text NOT NULL,
+        author text,
+        body text NOT NULL,
+        created_at timestamptz NOT NULL,
+        resolved_at timestamptz,
+        resolution text,
+        request_question bigint REFERENCES inbox_items (id),
+        request_profile text
+      )`,
+      "CREATE INDEX IF NOT EXISTS inbox_open ON inbox_items (project, recipient, resolved_at)",
+      `CREATE UNIQUE INDEX IF NOT EXISTS inbox_one_open_per_ticket ON inbox_items (project, ticket, kind)
+        WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS inbox_one_open_answer ON inbox_items (project, request_question)
+        WHERE resolved_at IS NULL AND kind = 'answer-request'`,
+      `CREATE TABLE IF NOT EXISTS leases (
+        project text NOT NULL,
+        name text NOT NULL,
+        holder text NOT NULL,
+        acquired_at timestamptz NOT NULL,
+        expires_at timestamptz NOT NULL,
+        PRIMARY KEY (project, name)
+      )`,
+      `CREATE TABLE IF NOT EXISTS coordinator_presence (
+        project text PRIMARY KEY,
+        handle text,
+        seen_at timestamptz NOT NULL
+      )`,
+    ],
+  },
+];
+
+export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
+
+/** Any 64-bit number the app alone uses: the lock migrations take. */
+const MIGRATION_LOCK = 4_849_001;
+
+/** Applies pending migrations and returns the schema version. */
+export async function migrateDatabase(db: Database, now: Date = new Date()): Promise<number> {
+  await db.query(
+    "CREATE TABLE IF NOT EXISTS armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
+  );
+  const current = async (q: Queryable) =>
+    Number((await q.query<{ v: unknown }>("SELECT max(version) AS v FROM armada_migrations")).rows[0]?.v ?? 0);
+  if ((await current(db)) >= DB_SCHEMA_VERSION) return DB_SCHEMA_VERSION;
+  for (const m of DB_MIGRATIONS)
+    await transaction(db, async (tx) => {
+      // Whoever comes second waits here, then finds the version applied.
+      await tx.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK]);
+      if ((await current(tx)) >= m.version) return;
+      for (const statement of m.statements) await tx.query(statement);
+      await tx.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [m.version, now]);
+    });
+  return DB_SCHEMA_VERSION;
+}
+
+// ------------------------------------------------------------ opening
+
+/** The variables that name the database, in order: ours first, then the one Neon's Vercel integration sets. */
+export const DATABASE_VARIABLES = ["ARMADA_DATABASE_URL", "DATABASE_URL"] as const;
+export const DATABASE_VARIABLE = DATABASE_VARIABLES[0];
+
+export type Env = Readonly<Record<string, string | undefined>>;
+
+/**
+ * The database URL the environment gives, or null. `pglite:` (in memory) and
+ * `pglite:<directory>` run Postgres inside the process: tests and local
+ * development only, never in production, where its data would not survive.
+ */
+export function databaseUrlOf(env: Env): string | null {
+  for (const name of DATABASE_VARIABLES) {
+    const v = env[name]?.trim();
+    if (!v) continue;
+    if (v.startsWith("pglite:")) return env.NODE_ENV === "production" ? null : v;
+    return /^postgres(ql)?:\/\//i.test(v) ? v : null;
+  }
+  return null;
+}
+
+/** An error message without the URL's password, even if a driver quoted the URL. */
+export function redactDatabase(err: unknown, url?: string | null): string {
+  let message = err instanceof Error ? err.message : String(err);
+  const password = url ? safeUrl(url)?.password : "";
+  if (password) message = message.split(decodeURIComponent(password)).join("***").split(password).join("***");
+  return message.replace(/(postgres(?:ql)?:\/\/[^:/\s]+:)[^@\s]+@/gi, "$1***@");
+}
+
+function safeUrl(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Postgres in the process (PGlite) behind the pool's interface. One session
+ * serves every caller: a connection (a transaction) is held by one caller at a
+ * time, so two transactions never mix. A single statement outside them runs at
+ * once, as on its own connection would, but in that one session it joins
+ * whatever transaction is open: Better Auth's hooks read while it holds one.
+ * Fine for tests and local development, not a production database.
+ */
+export async function pgliteDatabase(dataDir?: string): Promise<Database> {
+  const { PGlite } = await import("@electric-sql/pglite");
+  const pg = dataDir ? new PGlite(dataDir) : new PGlite();
+  await pg.waitReady;
+  let queue: Promise<void> = Promise.resolve();
+  const lock = async (): Promise<() => void> => {
+    let free = () => {};
+    const held = new Promise<void>((resolve) => {
+      free = resolve;
+    });
+    const before = queue;
+    queue = queue.then(() => held);
+    await before;
+    return free;
+  };
+  const run = async <R>(text: string, params?: readonly unknown[]): Promise<Rows<R>> => {
+    const rs = await pg.query<R>(text, params ? [...params] : []);
+    return { rows: rs.rows, rowCount: rs.affectedRows ?? 0 };
+  };
+  return {
+    query: <R = Row>(text: string, params?: readonly unknown[]) => run<R>(text, params),
+    async connect() {
+      const free = await lock();
+      let released = false;
+      return {
+        query: <R = Row>(text: string, params?: readonly unknown[]) => run<R>(text, params),
+        release() {
+          if (released) return;
+          released = true;
+          free();
+        },
+      };
+    },
+    async end() {
+      await pg.close();
+    },
+  };
+}
+
+/** A node-postgres pool, released before the platform suspends the function. */
+async function pgDatabase(url: string): Promise<Database> {
+  const { Pool } = await import("pg");
+  const pool = new Pool({ connectionString: url, max: 10, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 30_000 });
+  // An idle client losing its connection must not crash the process.
+  pool.on("error", (err) => console.error(`armada dashboard: database connection lost: ${redactDatabase(err, url)}`));
+  try {
+    const { attachDatabasePool } = await import("@vercel/functions");
+    attachDatabasePool(pool);
+  } catch {
+    // Not on Vercel's runtime: the pool lives as long as the process.
+  }
+  return {
+    async query<R = Row>(text: string, params?: readonly unknown[]) {
+      const rs = await pool.query(text, params ? [...params] : undefined);
+      return { rows: rs.rows as R[], rowCount: rs.rowCount ?? 0 };
+    },
+    async connect() {
+      const client = await pool.connect();
+      return {
+        async query<R = Row>(text: string, params?: readonly unknown[]) {
+          const rs = await client.query(text, params ? [...params] : undefined);
+          return { rows: rs.rows as R[], rowCount: rs.rowCount ?? 0 };
+        },
+        release: () => client.release(),
+      };
+    },
+    end: () => pool.end(),
+  };
+}
+
+/** Opens the database and brings its schema up to date. The password never appears in an error. */
+export async function openDatabase(url: string): Promise<Database> {
+  let db: Database;
+  try {
+    if (url.startsWith("pglite:")) {
+      const dir = url.slice("pglite:".length).replace(/^\/\//, "");
+      db = await pgliteDatabase(dir && dir !== "memory" ? dir : undefined);
+    } else db = await pgDatabase(url);
+  } catch (err) {
+    throw new Error(`the app's database cannot be opened: ${redactDatabase(err, url)}`);
+  }
+  try {
+    await migrateDatabase(db);
+  } catch (err) {
+    await db.end().catch(() => {});
+    throw new Error(`the app's database is unavailable: ${redactDatabase(err, url)}`);
+  }
+  return db;
+}

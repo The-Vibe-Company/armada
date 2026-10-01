@@ -3,11 +3,35 @@
 // an item in the coordinator's inbox, scoped to the ticket's project and
 // signed by its author. The coordinator carries it out through the runtime
 // guide, then resolves it: `armada answer` for an answer, the worker's claim
-// for a launch. Every check the dashboard makes before writing lives here.
+// for a launch. Every check the dashboard makes before writing lives here,
+// over `RequestStore`: the app's own database, or Turso.
 import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
 import type { StatusReport } from "./status.ts";
-import { addRequest, type Db, getInboxItem, getRuntimeHandle } from "./turso.ts";
+import {
+  addRequest,
+  type Db,
+  getInboxItem,
+  getRuntimeHandle,
+  type NewRequest,
+  type RuntimeHandle,
+  type StoredInboxItem,
+} from "./turso.ts";
+
+/** The reads and the one write a request needs, wherever the inbox lives. */
+export interface RequestStore {
+  getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
+  getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
+  /** Adds the request unless the same one is open, or the question it answers is closed: null then. */
+  addRequest(r: NewRequest): Promise<number | null>;
+}
+
+/** The inbox in a Turso database. */
+export const tursoRequests = (db: Db): RequestStore => ({
+  getInboxItem: (project, id) => getInboxItem(db, project, id),
+  getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
+  addRequest: (r) => addRequest(db, r),
+});
 
 export const REQUEST_LIMITS = { answer: 4000, author: 80 } as const;
 
@@ -57,13 +81,13 @@ export interface AnswerRequestInput {
  * item stays open, shown as answered-pending, until the coordinator
  * delivers it and records it with `armada answer`.
  */
-export async function requestAnswer(db: Db, input: AnswerRequestInput): Promise<number> {
+export async function requestAnswer(db: RequestStore, input: AnswerRequestInput): Promise<number> {
   const author = requestAuthor(input.author);
   const text = input.text.replace(/\r\n?/g, "\n").trim();
   if (!text) throw new RequestRefusal("empty-answer", "the answer is empty");
   if (text.length > REQUEST_LIMITS.answer)
     throw new RequestRefusal("answer-too-long", `an answer has at most ${REQUEST_LIMITS.answer} characters`);
-  const question = await getInboxItem(db, input.project, input.question);
+  const question = await db.getInboxItem(input.project, input.question);
   if (
     !question ||
     !["question", "plan"].includes(question.kind) ||
@@ -76,7 +100,7 @@ export async function requestAnswer(db: Db, input: AnswerRequestInput): Promise<
     );
   if (question.resolvedAt)
     throw new RequestRefusal("question-closed", `${question.kind} #${question.id} was already answered or closed`);
-  const id = await addRequest(db, {
+  const id = await db.addRequest({
     project: input.project,
     ticket: question.ticket,
     kind: "answer-request",
@@ -88,7 +112,7 @@ export async function requestAnswer(db: Db, input: AnswerRequestInput): Promise<
   });
   if (id !== null) return id;
   // Nothing was added: tell which guard stopped it.
-  const again = await getInboxItem(db, input.project, question.id);
+  const again = await db.getInboxItem(input.project, question.id);
   if (again?.resolvedAt)
     throw new RequestRefusal("question-closed", `${question.kind} #${question.id} was already answered or closed`);
   throw new RequestRefusal(
@@ -113,7 +137,7 @@ export interface LaunchRequestInput {
  * be on the project's frontier and held by no worker; the profile must be one
  * armada.toml declares. The worker's claim resolves the request.
  */
-export async function requestLaunch(db: Db, input: LaunchRequestInput): Promise<number> {
+export async function requestLaunch(db: RequestStore, input: LaunchRequestInput): Promise<number> {
   const { config, report } = input;
   const author = requestAuthor(input.author);
   const project = config.project.slug;
@@ -122,7 +146,7 @@ export async function requestLaunch(db: Db, input: LaunchRequestInput): Promise<
   const ticket = report.frontier.find((t) => t.id === id);
   if (!ticket) throw new RequestRefusal("not-ready", `${id} is not on the frontier of ${project}: it cannot start yet`);
   // A claim newer than the reading above.
-  const held = await getRuntimeHandle(db, project, id);
+  const held = await db.getRuntimeHandle(project, id);
   if (held && !held.releasedAt)
     throw new RequestRefusal("in-flight", `${id} was claimed by ${held.runtime} (${held.handle})`);
 
@@ -144,7 +168,7 @@ export async function requestLaunch(db: Db, input: LaunchRequestInput): Promise<
         `Routing gives ${routed} (${ticket.route?.why}); ${author} chose ${profile}: brief and claim with --profile ${shellWord(profile)} --reason ${shellWord(`asked from the dashboard by ${author}`)}`,
       );
   }
-  const item = await addRequest(db, {
+  const item = await db.addRequest({
     project,
     ticket: id,
     kind: "launch-request",

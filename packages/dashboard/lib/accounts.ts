@@ -1,6 +1,9 @@
-// Accounts and organizations, with Better Auth. Built from the settings
-// (`auth.ts`), the accounts database (`auth-db.ts`) and an email sender, all
-// injected, so tests run the real thing on a local `file:` database.
+// Accounts and organizations, with Better Auth run by the app on its own
+// database (THE-849: Neon's managed Better Auth has neither device
+// authorization nor API keys, nor the server hooks that keep sign-up closed).
+// Built from the settings (`accounts-settings.ts`), the app's database
+// (`db.ts`) and an email sender, all injected, so tests run the real thing on
+// PGlite.
 //
 // Who gets in: an account is created only for an address listed in
 // ARMADA_AUTH_OWNER_EMAILS or holding a pending invitation, and only an owner
@@ -12,7 +15,6 @@
 // by an organization for headless coordinators. The CLI reaches both through
 // `/api/cli` (`cli-api.ts`), never through the browser's cookie.
 import { apiKey } from "@better-auth/api-key";
-import type { Client } from "@libsql/client";
 import { betterAuth } from "better-auth";
 import { APIError } from "better-auth/api";
 import { nextCookies } from "better-auth/next-js";
@@ -28,7 +30,7 @@ import {
   INVITATION_PATH,
 } from "./accounts-settings";
 import { LOGIN_PATH } from "./auth";
-import { LibsqlDialect } from "./auth-db";
+import { type Database, PgDialect, type Queryable } from "./db";
 
 export const ROLES = ["owner", "admin", "member"] as const;
 export type Role = (typeof ROLES)[number];
@@ -61,7 +63,7 @@ export const consoleSender: EmailSender = {
 };
 
 export interface AccountsDeps {
-  client: Client;
+  client: Database;
   sender: EmailSender;
   now?: () => Date;
 }
@@ -69,31 +71,28 @@ export interface AccountsDeps {
 export const invitationUrl = (baseUrl: string, id: string) =>
   new URL(`${INVITATION_PATH}/${encodeURIComponent(id)}`, baseUrl).toString();
 
-/** SQLite stores Better Auth's dates as ISO strings, or as numbers in older rows. */
-const timeOf = (v: unknown) => (typeof v === "number" ? v : Date.parse(String(v)));
-
 /** Whether this address has an invitation it can still accept. */
-export async function hasPendingInvitation(client: Client, email: string, now: Date): Promise<boolean> {
-  const rs = await client.execute({
-    sql: `SELECT "expiresAt" FROM "invitation" WHERE lower("email") = ? AND "status" = 'pending'`,
-    args: [email.trim().toLowerCase()],
-  });
-  return rs.rows.some((r) => timeOf(r.expiresAt) > now.getTime());
+export async function hasPendingInvitation(client: Queryable, email: string, now: Date): Promise<boolean> {
+  const rs = await client.query(
+    `SELECT 1 FROM "invitation" WHERE lower("email") = $1 AND "status" = 'pending' AND "expiresAt" > $2 LIMIT 1`,
+    [email.trim().toLowerCase(), now],
+  );
+  return rs.rows.length > 0;
 }
 
 /** The deployment's first organization: it owns every project registered without one. */
-export async function firstOrganization(client: Client): Promise<{ id: string; name: string } | null> {
-  const rs = await client.execute(`SELECT "id", "name" FROM "organization" ORDER BY "createdAt", "id" LIMIT 1`);
+export async function firstOrganization(client: Queryable): Promise<{ id: string; name: string } | null> {
+  const rs = await client.query(`SELECT "id", "name" FROM "organization" ORDER BY "createdAt", "id" LIMIT 1`);
   const row = rs.rows[0];
   return row ? { id: String(row.id), name: String(row.name) } : null;
 }
 
 /** The organization a new session starts in: the person's oldest membership. */
-async function firstMembership(client: Client, userId: string): Promise<string | null> {
-  const rs = await client.execute({
-    sql: `SELECT "organizationId" FROM "member" WHERE "userId" = ? ORDER BY "createdAt", "id" LIMIT 1`,
-    args: [userId],
-  });
+async function firstMembership(client: Queryable, userId: string): Promise<string | null> {
+  const rs = await client.query(
+    `SELECT "organizationId" FROM "member" WHERE "userId" = $1 ORDER BY "createdAt", "id" LIMIT 1`,
+    [userId],
+  );
   const id = rs.rows[0]?.organizationId;
   return id === undefined || id === null ? null : String(id);
 }
@@ -107,15 +106,15 @@ export interface ViewerOrganization {
 
 /** The organization a person works in: `active` when they belong to it, else their oldest membership. */
 export async function organizationOf(
-  client: Client,
+  client: Queryable,
   userId: string,
   active: string | null,
 ): Promise<ViewerOrganization | null> {
-  const rs = await client.execute({
-    sql: `SELECT o."id", o."name", o."slug", m."role" FROM "member" m JOIN "organization" o ON o."id" = m."organizationId"
-          WHERE m."userId" = ? ORDER BY (o."id" = ?) DESC, m."createdAt", m."id" LIMIT 1`,
-    args: [userId, active],
-  });
+  const rs = await client.query(
+    `SELECT o."id", o."name", o."slug", m."role" FROM "member" m JOIN "organization" o ON o."id" = m."organizationId"
+     WHERE m."userId" = $1 ORDER BY (o."id" = $2) DESC, m."createdAt", m."id" LIMIT 1`,
+    [userId, active ?? ""],
+  );
   const row = rs.rows[0];
   if (!row) return null;
   const role = String(row.role);
@@ -136,7 +135,7 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
     basePath: AUTH_API_PREFIX,
     secret: settings.secret,
     trustedOrigins: [settings.baseUrl],
-    database: { dialect: new LibsqlDialect(client), type: "sqlite", transaction: true },
+    database: { dialect: new PgDialect(client), type: "postgres", transaction: true },
     telemetry: { enabled: false },
     advanced: {
       cookiePrefix: COOKIE_PREFIX,

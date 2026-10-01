@@ -1,15 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Client } from "@libsql/client";
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
 import { accountsModeOf } from "../lib/accounts-settings.ts";
-import { openAuthDatabase } from "../lib/auth-db.ts";
 import type { Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliIdentity, handleCli } from "../lib/cli-api.ts";
+import type { Database } from "../lib/db.ts";
 import { listEvents, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
 import { EXCHANGES_PER_MINUTE, endWorker, listWorkers, workerState } from "../lib/workers.ts";
+import { tempDatabase } from "./support.ts";
 
 // Synthetic people, projects, tickets and keys, for these tests only.
 const BASE = "http://localhost:4841";
@@ -19,7 +16,7 @@ const PASSWORD = "a synthetic password";
 const ORG_LINEAR = "lin_api_synthetic_org_0841";
 const OWN_LINEAR = "lin_api_synthetic_own_0841";
 const ENV = {
-  ARMADA_AUTH_DATABASE_URL: "file:accounts.db",
+  ARMADA_DATABASE_URL: "pglite:memory",
   ARMADA_AUTH_SECRET: "a synthetic secret for tests, long enough",
   ARMADA_AUTH_URL: BASE,
   ARMADA_AUTH_OWNER_EMAILS: OWNER,
@@ -31,8 +28,7 @@ const start = new Date("2026-09-30T12:00:00Z");
 let now = start;
 const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
 
-let dir = "";
-let client: Client;
+let client: Database;
 let auth: Auth;
 let accounts: CliAccounts;
 const outbox: EmailMessage[] = [];
@@ -62,8 +58,7 @@ beforeAll(async () => {
   console.info = (...a: unknown[]) => void logged.push(a.join(" "));
   console.warn = (...a: unknown[]) => void logged.push(a.join(" "));
   console.error = (...a: unknown[]) => void logged.push(a.join(" "));
-  dir = await mkdtemp(join(tmpdir(), "armada-workers-"));
-  client = await openAuthDatabase({ url: `file:${join(dir, "accounts.db")}`, token: null });
+  client = await tempDatabase();
   const mode = accountsModeOf(ENV);
   if (mode.kind !== "accounts") throw new Error("test settings incomplete");
   auth = createAuth(mode.settings, { client, sender: { send: async (m) => void outbox.push(m) } });
@@ -103,8 +98,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   Object.assign(console, original);
-  client.close();
-  await rm(dir, { recursive: true, force: true });
+  await client.end();
 });
 
 /** One call from a terminal to /api/cli, with the vault on. */
@@ -347,8 +341,8 @@ describe("safety", () => {
     expect((await exchange(`armada_launch_guess-late`, "198.51.100.7")).status).toBe(401);
 
     const stored = JSON.stringify([
-      (await client.execute(`SELECT * FROM "armada_worker"`)).rows,
-      (await client.execute(`SELECT * FROM "armada_secret_event"`)).rows,
+      (await client.query(`SELECT * FROM "armada_worker"`)).rows,
+      (await client.query(`SELECT * FROM "armada_secret_event"`)).rows,
     ]);
     const log = logged.join("\n");
     expect(log).toContain("launch token for widgets ABC-12 used");

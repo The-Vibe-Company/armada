@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, checkInbox, readInbox } from "../src/inbox.ts";
-import { RequestRefusal, requestAnswer } from "../src/requests.ts";
+import { RequestRefusal, requestAnswer, tursoRequests } from "../src/requests.ts";
 import { addInboxItem, type Db, getInboxItem, openInboxItems } from "../src/turso.ts";
 import { claimTicket, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
 import { closeTempTurso, DEMO_TOML, FakeLinear, NOW, tempTurso } from "./support.ts";
@@ -91,21 +91,27 @@ test("Approve uses an answer request, closed together with its plan and attribut
   await reportPlan(ctx);
   const pending = (await inbox(db))[0];
   const request = { project, question: pending?.id ?? 0, text: "approved", author: "Ada", now: NOW };
-  const requestId = await requestAnswer(db, request);
+  const requestId = await requestAnswer(tursoRequests(db), request);
   expect((await inbox(db)).map((item) => item.kind)).toEqual(["plan", "answer-request"]);
-  await expect(requestAnswer(db, request)).rejects.toBeInstanceOf(RequestRefusal);
+  await expect(requestAnswer(tursoRequests(db), request)).rejects.toBeInstanceOf(RequestRefusal);
   await answerItem(ctx, { target: String(requestId), text: "approved" });
   expect(await inbox(db)).toEqual([]);
   expect(linear.bodies.at(-1)).toContain(`plan #${pending?.id}`);
   expect(linear.bodies.at(-1)).toContain("Ada");
-  await expect(requestAnswer(db, request)).rejects.toBeInstanceOf(RequestRefusal);
+  await expect(requestAnswer(tursoRequests(db), request)).rejects.toBeInstanceOf(RequestRefusal);
 });
 
 test.each(["phase", "release", "answer", "note"])("%s closes obsolete plan answer requests", async (mode) => {
   const { db, ctx } = await setup();
   await reportPlan(ctx);
   const pending = (await inbox(db))[0];
-  await requestAnswer(db, { project, question: pending?.id ?? 0, text: "approved", author: "Ada", now: NOW });
+  await requestAnswer(tursoRequests(db), {
+    project,
+    question: pending?.id ?? 0,
+    text: "approved",
+    author: "Ada",
+    now: NOW,
+  });
   if (mode === "release") await releaseTicket(ctx, { ticket: "DEMO-7", reason: "owner cancelled" });
   else if (mode === "phase") await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", message: "approved" });
   else await answerItem(ctx, { target: String(pending?.id), text: "approved", note: mode === "note" });
@@ -130,7 +136,13 @@ test("closing a plan leaves another project's plan and approval request untouche
     body: plan,
     at: NOW,
   });
-  await requestAnswer(db, { project: "gadgets", question: otherPlan, text: "approved", author: "Grace", now: NOW });
+  await requestAnswer(tursoRequests(db), {
+    project: "gadgets",
+    question: otherPlan,
+    text: "approved",
+    author: "Grace",
+    now: NOW,
+  });
   await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", message: "approved" });
   expect(await inbox(db)).toEqual([]);
   expect((await openInboxItems(db, { project: "gadgets", recipient: "coordinator" })).map((item) => item.kind)).toEqual(
