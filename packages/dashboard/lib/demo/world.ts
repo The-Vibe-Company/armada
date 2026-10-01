@@ -580,7 +580,7 @@ export function demoSnapshot(
     }),
   ];
   // The tickets already done under the root, so the project's progress reads as in the mockup.
-  const done = scenario === "fleet" ? (DEMO_PROJECT_FACTS[project.slug]?.done ?? 1) : 1;
+  const done = scenario !== "empty" ? (DEMO_PROJECT_FACTS[project.slug]?.done ?? 1) : 1;
   for (let k = 0; k < done; k++)
     issues.push(
       issue(`${prefix}-${100 + k}`, {
@@ -590,7 +590,7 @@ export function demoSnapshot(
         completedAt: ago(now, 600 + k * 90),
       }),
     );
-  if (scenario === "fleet")
+  if (scenario !== "empty")
     for (const r of READY.filter((t) => t.project === project.slug))
       issues.push(
         issue(r.id, {

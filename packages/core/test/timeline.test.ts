@@ -164,6 +164,23 @@ describe("a session's timeline", () => {
     ]);
   });
 
+  test("a worker that claims again to resume keeps its run's history", () => {
+    const t = timeline(row({ phase: "implementing", since: at("10:10"), lastReport: at("11:10") }), [
+      claimed("10:00"),
+      status("10:10", "implementing"),
+      status("10:20", "implementing"),
+      claimed("11:00"),
+      status("11:10", "implementing"),
+    ]);
+    expect(t.startedAt).toBe(at("10:00"));
+    expect(t.phases.map((s) => [s.phase, s.from])).toEqual([
+      ["planning", at("10:00")],
+      ["implementing", at("10:10")],
+    ]);
+    // The 40 minutes between the last report and the resume are a silence of the same run.
+    expect(t.silences).toEqual([{ from: at("10:20"), to: at("11:00") }]);
+  });
+
   test("a silence going on now starts at the claim at the earliest", () => {
     const t = timeline(
       row({ phase: "planning", since: at("11:00"), silent: true, lastReport: eve("13:00"), lastUpdate: eve("13:00") }),

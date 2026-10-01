@@ -76,23 +76,21 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 /**
  * The reports of the current run, oldest first: comments and events, each
- * report once. The run starts at its latest claim, and after the last release
- * or merge: a status line left on the ticket before (another agent's input, a
- * previous run) is not this session's.
+ * report once. The run ends at a release or a merge, and the next one starts
+ * at its first claim after it: a status line left on the ticket before
+ * (another agent's input, a previous run) is not this session's, and a worker
+ * that claims again to resume keeps its history.
  */
 function marksOf(comments: Comment[], events: HistoryEvent[]): Mark[] {
   let ended = Number.NEGATIVE_INFINITY;
-  let claimed = Number.NEGATIVE_INFINITY;
-  for (const c of comments) {
-    const t = Date.parse(c.createdAt);
-    if (c.status?.phase === "released") ended = Math.max(ended, t);
-    if (c.claim) claimed = Math.max(claimed, t);
-  }
-  for (const e of events) {
-    const t = Date.parse(e.at);
-    if (e.kind === "release" || e.kind === "merge") ended = Math.max(ended, t);
-    if (e.kind === "claim") claimed = Math.max(claimed, t);
-  }
+  for (const c of comments) if (c.status?.phase === "released") ended = Math.max(ended, Date.parse(c.createdAt));
+  for (const e of events) if (e.kind === "release" || e.kind === "merge") ended = Math.max(ended, Date.parse(e.at));
+  // The first claim after the last end, when one is known; else the run starts after the end.
+  const claims = [
+    ...comments.flatMap((c) => (c.claim ? [Date.parse(c.createdAt)] : [])),
+    ...events.flatMap((e) => (e.kind === "claim" ? [Date.parse(e.at)] : [])),
+  ].filter((t) => t > ended);
+  const claimed = claims.length ? Math.min(...claims) : Number.NEGATIVE_INFINITY;
   const inRun = (t: number) => t > ended && t >= claimed;
 
   const fromEvents: Mark[] = events
