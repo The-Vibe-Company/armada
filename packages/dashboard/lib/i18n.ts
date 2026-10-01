@@ -1,8 +1,9 @@
 // Interface strings in English and French. The language is the dashboard's
 // own setting: the viewer's choice (a cookie), else ARMADA_DASHBOARD_LANGUAGE,
 // else English. Tracker content (titles, statuses, questions) is shown as is.
-import type { AgentPhase, RequestRefusalCode, WaitingKind } from "@armada/core/read";
-import type { AgentStatus, Density, Section, StatusReason } from "./fleet-view";
+import type { AgentPhase, ProjectHealth, RequestRefusalCode, WaitingKind } from "@armada/core/read";
+import type { AgentStatus, DecisionKind, Density, Section, StatusReason } from "./fleet-view";
+import type { ProblemKind } from "./overview-view";
 
 export const LANGUAGES = ["en", "fr"] as const;
 export type Language = (typeof LANGUAGES)[number];
@@ -498,6 +499,61 @@ const en = {
     "live-down": "The database cannot be reached: nothing was recorded. Try again in a moment.",
     failed: "The request could not be recorded. Try again in a moment.",
   } satisfies Record<RequestError, string>,
+  overview: {
+    locale: "en-GB",
+    headline: (inFlight: number, decide: number) =>
+      `${inFlight === 1 ? "1 agent" : `${inFlight} agents`} in flight, ${decide} waiting for your decision`,
+    subline: (f: { projects: number; harnesses: number; failing: number; silent: number }) =>
+      `${f.projects === 1 ? "1 project" : `${f.projects} projects`}, each with its coordinator, on ${
+        f.harnesses === 1 ? "1 harness" : `${f.harnesses} harnesses`
+      }. ${f.failing === 1 ? "1 session" : `${f.failing} sessions`} failing, ${f.silent} silent.`,
+    figures: {
+      inFlight: "In flight",
+      decide: "To decide",
+      failing: "Failing",
+      silent: "Silent",
+      coordinators: "Active coordinators",
+    },
+    decideTitle: "Yours to decide",
+    decideEmpty: "Nothing waits for your decision.",
+    kinds: { question: "Question", approval: "Plan to approve", "hand-back": "Ready to merge" } satisfies Record<
+      DecisionKind,
+      string
+    >,
+    approvePlan: "Approve the plan",
+    requestChanges: "Request changes",
+    changesLabel: (ticket: string) => `What should change in the plan of ${ticket}`,
+    changesPlaceholder: "What should change, and why. The coordinator passes it to the worker.",
+    requestMerge: "Request the merge",
+    noPr: "No open pull request is known for this hand-back.",
+    readPlan: "Read the whole plan ↗",
+    sent: (project: string) => `Sent to the ${project} coordinator`,
+    sentBy: (author: string | null, ago: string) => `by ${author ?? "you"}, ${ago}`,
+    problemsTitle: "Problems",
+    problems: {
+      ci: "Red CI",
+      conflict: "Conflict with main",
+      blocked: "Blocked",
+      silent: "Silent",
+      "not-started": "Not started",
+    } satisfies Record<ProblemKind, string>,
+    ciLine: (pr: number | null, check: string | null) =>
+      `${pr ? `PR #${pr} · ` : ""}${check ? `“${check}” fails` : "a check fails"}`,
+    conflictLine: (pr: number | null) => `${pr ? `PR #${pr}` : "The branch"} conflicts with main`,
+    silentLine: (d: string) => `No report for ${d}`,
+    projectsTitle: "Projects",
+    health: { blocked: "Blocked", watch: "Needs watching", "on-track": "On track" } satisfies Record<
+      ProjectHealth,
+      string
+    >,
+    healthKey: "Health",
+    coordinatorKey: "Coordinator",
+    agentsKey: "Agents",
+    prsKey: "PRs",
+    activityKey: "Activity",
+    agents: (inFlight: number, ready: number) => `${inFlight} in flight · ${ready} ready`,
+    prs: (open: number, green: number) => (open === 0 ? "none" : `${open} open · ${green} green`),
+  },
   shell: {
     search: "Search",
     nav: { overview: "Overview", projects: "Projects", agents: "Agents" } satisfies Record<
@@ -1016,6 +1072,55 @@ const fr: Strings = {
     "unknown-project": "Ce projet n'est plus sur le tableau de bord.",
     "live-down": "La base de données est injoignable : rien n'a été enregistré. Réessaie dans un instant.",
     failed: "La demande n'a pas pu être enregistrée. Réessaie dans un instant.",
+  },
+  overview: {
+    locale: "fr-FR",
+    headline: (inFlight, decide) =>
+      `${inFlight} agent${inFlight > 1 ? "s" : ""} en vol, ${decide} ${decide > 1 ? "attendent" : "attend"} ta décision`,
+    subline: (f) =>
+      `${f.projects} projet${f.projects > 1 ? "s" : ""}, ${f.projects > 1 ? "chacun avec son" : "avec son"} coordinateur, sur ${
+        f.harnesses
+      } harness. ${f.failing} session${f.failing > 1 ? "s" : ""} en erreur, ${f.silent} silencieuse${f.silent > 1 ? "s" : ""}.`,
+    figures: {
+      inFlight: "En vol",
+      decide: "À décider",
+      failing: "En erreur",
+      silent: "Silencieux",
+      coordinators: "Coordinateurs actifs",
+    },
+    decideTitle: "À toi de décider",
+    decideEmpty: "Rien n'attend ta décision.",
+    kinds: { question: "Question", approval: "Plan à approuver", "hand-back": "Prêt à fusionner" },
+    approvePlan: "Approuver le plan",
+    requestChanges: "Demander des changements",
+    changesLabel: (ticket) => `Ce qui doit changer dans le plan de ${ticket}`,
+    changesPlaceholder: "Ce qui doit changer, et pourquoi. Le coordinateur le transmet au worker.",
+    requestMerge: "Demander la fusion",
+    noPr: "Aucune pull request ouverte n'est connue pour ce rendu.",
+    readPlan: "Lire tout le plan ↗",
+    sent: (project) => `Transmis au coordinateur ${project}`,
+    sentBy: (author, ago) => `par ${author ?? "toi"}, ${ago}`,
+    problemsTitle: "Problèmes",
+    problems: {
+      ci: "CI rouge",
+      conflict: "Conflit avec main",
+      blocked: "Bloqué",
+      silent: "Silencieux",
+      "not-started": "Pas démarré",
+    },
+    ciLine: (pr, check) => `${pr ? `PR #${pr} · ` : ""}${check ? `« ${check} » échoue` : "un check échoue"}`,
+    conflictLine: (pr) => `${pr ? `PR #${pr}` : "La branche"} en conflit avec main`,
+    silentLine: (d) => `Aucun rapport depuis ${d}`,
+    projectsTitle: "Projets",
+    health: { blocked: "Bloqué", watch: "À surveiller", "on-track": "En bonne voie" },
+    healthKey: "Santé",
+    coordinatorKey: "Coordinateur",
+    agentsKey: "Agents",
+    prsKey: "PRs",
+    activityKey: "Activité",
+    agents: (inFlight, ready) => `${inFlight} en vol · ${ready} prêt${ready > 1 ? "s" : ""}`,
+    prs: (open, green) =>
+      open === 0 ? "aucune" : `${open} ouverte${open > 1 ? "s" : ""} · ${green} verte${green > 1 ? "s" : ""}`,
   },
   shell: {
     search: "Rechercher",

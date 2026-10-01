@@ -16,6 +16,7 @@ import {
   DEMO_COORDINATOR_SEEN,
   DEMO_INBOX,
   DEMO_PROFILES,
+  DEMO_PROJECT_FACTS,
   DEMO_PROJECTS,
   demoEvents,
   projectOfTicket,
@@ -29,6 +30,14 @@ import {
   saveWorkerProfile,
   upsertProject,
 } from "../lib/fleet-store";
+
+/** The harness each demo coordinator runs on, as `armada` records it. */
+const DEMO_HARNESS = {
+  "Conductor Cloud": "conductor-cloud",
+  "Claude Code": "claude-code",
+  Codex: "codex",
+  terminal: "terminal",
+} as const;
 
 const DEFAULT_DIR = resolve(import.meta.dir, "../.demo/armada");
 const configured = databaseUrlOf({ ARMADA_DATABASE_URL: process.env.ARMADA_DEMO_DATABASE_URL });
@@ -77,8 +86,15 @@ async function seed(scenario: string) {
       if (i.kind === "hand-back") await putHandBack(db, item);
       else await addInboxItem(db, { ...item, kind: i.kind, recipient: "coordinator" });
     }
-    for (const [project, minutes] of Object.entries(DEMO_COORDINATOR_SEEN))
-      await recordCoordinatorSeen(db, { project, at: ago(minutes) });
+    for (const [project, minutes] of Object.entries(DEMO_COORDINATOR_SEEN)) {
+      const c = DEMO_PROJECT_FACTS[project]?.coordinator;
+      const harness = c && DEMO_HARNESS[c.harness];
+      await recordCoordinatorSeen(db, {
+        project,
+        at: ago(minutes),
+        facts: c && harness ? { harness, handle: c.where, model: c.model, cliVersion: null } : undefined,
+      });
+    }
   }
   await db.end();
   console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DEMO_DATABASE_URL names" : url}`);
