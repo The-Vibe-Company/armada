@@ -16,6 +16,7 @@ import {
   loadAgentActivity,
   loadInsights,
   loadProject,
+  loadSearchIndex,
   newCache,
   type Scope,
   type Sources,
@@ -397,6 +398,7 @@ describe("speed: a page reads Postgres only (THE-853)", () => {
       expect((await loadProject(w.opts, "widgets", HOME))?.report.inFlight.map((t) => t.id)).toEqual(["WID-2"]);
       expect((await loadAgentActivity(w.opts, HOME, "widgets", "WID-2"))?.live).toBe(true);
       expect((await loadInsights(w.opts, HOME, { range: "7d", project: null }))?.live).toBe(true);
+      expect((await loadSearchIndex(w.opts, HOME)).tickets.map((t) => t.id)).toContain("WID-3");
       expect(await markRepository(db, "acme/widgets")).toEqual(["widgets"]);
       expect((await loadOverview(w.opts)).rows.map((r) => r.id)).toEqual(["WID-2"]);
 
@@ -579,6 +581,86 @@ describe("insights (THE-893)", () => {
     const again = answerJson(
       new Request("http://x/api/fleet/insights", { headers: { "If-None-Match": first.headers.get("etag") ?? "" } }),
       later?.insights,
+    );
+    expect(again.status).toBe(304);
+  });
+});
+
+describe("⌘K's search index (THE-895)", () => {
+  test("every ticket of the last reading but those done over 30 days ago, the pull requests and the captions, for the organization only", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const w = world(db, {
+      readSnapshot: async (config) => {
+        const day = 24 * 3_600_000;
+        const sources = snapshot(config, T0, [
+          issue("WID-2", { title: "Export a report", statusType: "started", agentPhase: "implementing" }),
+          issue("WID-5", {
+            title: "Ship the onboarding checklist",
+            statusType: "completed",
+            completedAt: new Date(T0 - 3 * day).toISOString(),
+            prs: [
+              { number: 12, url: "https://github.com/acme/widgets/pull/12", repo: "acme/widgets", title: "Onboarding" },
+            ],
+          }),
+          issue("WID-6", {
+            title: "Long done",
+            statusType: "completed",
+            completedAt: new Date(T0 - 40 * day).toISOString(),
+          }),
+        ]);
+        return {
+          ...sources,
+          forge: {
+            repo: "acme/widgets",
+            fetchedAt: new Date(T0).toISOString(),
+            prs: [
+              {
+                number: 12,
+                url: "",
+                repo: "acme/widgets",
+                title: "Onboarding",
+                headRef: "feature/wid-5-onboarding",
+                state: "merged",
+              },
+            ],
+            warnings: [],
+          },
+        };
+      },
+    });
+    await w.warm();
+    await saveAttachment(db, {
+      project: "widgets",
+      ticket: "WID-5",
+      input: { kind: "link", url: "https://preview.example.test/wid-5" },
+      caption: "The checklist on a phone",
+      reference: null,
+      author: "ws/5",
+      now: new Date(T0),
+      policy: parseConfig(configTemplate(WIDGETS)).policy,
+    });
+
+    const index = await loadSearchIndex(w.opts, HOME);
+    expect(index.tickets.map((t) => t.id)).toEqual(["WID-1", "WID-2", "WID-5"]);
+    expect(index.tickets.find((t) => t.id === "WID-5")?.branch).toBe("feature/wid-5-onboarding");
+    expect(index.prs).toEqual([
+      expect.objectContaining({ project: "widgets", number: 12, ticket: "WID-5", state: "merged" }),
+    ]);
+    expect(index.attachments).toEqual([
+      expect.objectContaining({ ticket: "WID-5", caption: "The checklist on a phone", kind: "link" }),
+    ]);
+    // Another organization sees none of it.
+    expect(await loadSearchIndex(w.opts, { organization: "org-other", home: "org-home" })).toEqual({
+      tickets: [],
+      prs: [],
+      attachments: [],
+    });
+    // Tagged: the next open of ⌘K gets 304 while nothing changed.
+    const first = answerJson(new Request("http://x/api/fleet/search"), index);
+    const again = answerJson(
+      new Request("http://x/api/fleet/search", { headers: { "If-None-Match": first.headers.get("etag") ?? "" } }),
+      await loadSearchIndex(w.opts, HOME),
     );
     expect(again.status).toBe(304);
   });
