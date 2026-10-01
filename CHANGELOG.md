@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.21](https://github.com/The-Vibe-Company/armada/compare/v0.2.20...v0.2.21) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** a living landing page for signed-out visitors ([#104](https://github.com/The-Vibe-Company/armada/issues/104)) ([79d6c37](https://github.com/The-Vibe-Company/armada/commit/79d6c37c97d72c244ef091b5ad7fde1cbdf4235f))
+
 ## [0.2.20](https://github.com/The-Vibe-Company/armada/compare/v0.2.19...v0.2.20) (2026-10-01)
 
 
