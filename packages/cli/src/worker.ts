@@ -7,6 +7,7 @@ import {
   type ArmadaConfig,
   type Credentials,
   checkRequestedProfile,
+  chooseValidations,
   claimTicket,
   createLinearWriter,
   type Fleet,
@@ -24,6 +25,8 @@ import {
   reportPhase,
   ticketFromBranch,
   updateCredentialStore,
+  type ValidationChoice,
+  ValidationChoiceError,
   type WorkerContext,
   workerSessionVariable,
 } from "@armada/core";
@@ -213,6 +216,19 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
   }
   if (!handle)
     throw new UsageError("--handle is required: the runtime's id for this session, e.g. <workspace>/<session>");
+  let validation: ValidationChoice | null = null;
+  if (a.options.validation !== undefined)
+    try {
+      validation = chooseValidations(config.policy.validations, {
+        ticket: ticket.toUpperCase(),
+        requested: a.options.validation,
+        reason: a.options["validation-reason"] ?? null,
+        command: `armada claim ${ticket.toUpperCase()} --runtime ${runtime} --handle ${handle}`,
+      });
+    } catch (err) {
+      if (err instanceof ValidationChoiceError) throw new UsageError(err.message, err.next);
+      throw err;
+    }
   return withContext(io, config, credentials, a.json, (ctx) =>
     claimTicket(ctx, {
       ticket: ticket.toUpperCase(),
@@ -221,6 +237,7 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
       ...(a.options.branch ? { branch: a.options.branch } : {}),
       profile,
       reason,
+      validation,
     }),
   );
 }

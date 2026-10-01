@@ -20,6 +20,12 @@ repository = "The-Vibe-Company/armada"
 [policy]
 silence_minutes = 15    # no heartbeat: probably stopped; old clients use reports
 quiet_minutes = 45      # alive but no report: a coordinator-only note
+# No merge_approval: the owner asked on 2026-10-01 for every merge to go through without them.
+
+# Kinds of tickets whose work the owner validates first (THE-885): the coordinator judges at launch.
+[[policy.validation]]
+when = "a design ticket: a mockup, a visual direction or the look of a new screen"
+then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
 
 [gates]
 required_checks = ["Lint, typecheck and test"]

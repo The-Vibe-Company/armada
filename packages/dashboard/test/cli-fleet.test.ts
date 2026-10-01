@@ -241,6 +241,20 @@ describe("the fleet through the Armada API", () => {
     expect((await coordinator.inboxItem(question))?.kind).toBe("question");
     expect((await coordinator.ticketItems("WID-7")).map((i) => i.id)).toEqual([question]);
     await coordinator.answer({ text: "SQLite", note: false, ticket: "WID-7", item: null });
+    // The worker shows the owner its work (THE-885): the approval link is the dashboard's.
+    const shown = await w.validate({
+      ticket: "WID-7",
+      kind: "validation",
+      what: "The new card, two directions",
+      reason: null,
+      choices: null,
+      pr: null,
+      attachments: [],
+    });
+    expect(shown.url).toBe(`${BASE}/approve/${shown.validation.id}`);
+    expect((await coordinator.validations({ ticket: "WID-7" })).map((v) => [v.id, v.author])).toEqual([
+      [shown.validation.id, "ws-7/s-1"],
+    ]);
     await w.report({
       ticket: "WID-7",
       phase: "ready-to-merge",
@@ -284,7 +298,7 @@ describe("the fleet through the Armada API", () => {
     const w = fleetOf(signIn);
     expect(await refusal(w.claim(claim("WID-9", "ws-9")))).toEqual([
       403,
-      "Armada refused: a worker session only claims, reports, asks and releases its own ticket (WID-8), not WID-9",
+      "Armada refused: a worker session only claims, reports, asks, validates and releases its own ticket (WID-8), not WID-9",
     ]);
     expect((await refusal(w.inbox(read)))[0]).toBe(403);
     expect((await refusal(w.acquireLease({ name: "merge", holder: "w", ttlMs: 60_000 })))[0]).toBe(403);

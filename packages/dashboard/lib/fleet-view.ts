@@ -8,7 +8,16 @@ export const AGENT_STATUSES = ["waiting", "error", "silent", "running", "done"] 
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
 /** Why an agent has its status; each reason has its own label. */
-export type StatusReason = "question" | "approval" | "ci" | "conflict" | "blocked" | "silent" | "ready" | "phase";
+export type StatusReason =
+  | "question"
+  | "approval"
+  | "validation"
+  | "ci"
+  | "conflict"
+  | "blocked"
+  | "silent"
+  | "ready"
+  | "phase";
 
 export interface AgentState {
   status: AgentStatus;
@@ -19,6 +28,7 @@ export interface AgentState {
 export function agentState(row: Pick<FleetRow, "phase" | "pr" | "silent" | "question" | "flags">): AgentState {
   if (row.question) return { status: "waiting", reason: "question" };
   if (row.phase === "awaiting-approval") return { status: "waiting", reason: "approval" };
+  if (row.phase === "awaiting-validation") return { status: "waiting", reason: "validation" };
   if (row.pr?.ci === "failure" || row.flags.includes("ci-failing")) return { status: "error", reason: "ci" };
   if (row.pr?.mergeable === "CONFLICTING" || row.flags.includes("conflict"))
     return { status: "error", reason: "conflict" };
@@ -140,6 +150,9 @@ export const paths = {
   agent: (ticket: string) => `/agents/${encodeURIComponent(ticket)}`,
   /** The Agents page scrolled to one of its groups. */
   agentGroup: (status: AgentStatus) => `/agents#${status}`,
+  validations: "/validations",
+  /** One validation, the link the CLI prints (THE-885). */
+  validation: (id: number) => `/approve/${id}`,
   design: "/design",
 } as const;
 
@@ -150,6 +163,8 @@ export type Place =
   | { kind: "project"; slug: string }
   | { kind: "agents" }
   | { kind: "agent"; ticket: string }
+  | { kind: "validations" }
+  | { kind: "validation"; id: number }
   | { kind: "organization"; page: "members" | "keys" | "github" | "workers" }
   | { kind: "design" }
   | { kind: "other" };
@@ -161,6 +176,8 @@ export function placeOf(pathname: string): Place {
   if (a === "projects") return b ? { kind: "project", slug: b } : { kind: "projects" };
   if (a === "agents") return b ? { kind: "agent", ticket: b } : { kind: "agents" };
   if (a === "design") return { kind: "design" };
+  if (a === "validations" && !b) return { kind: "validations" };
+  if (a === "approve" && b && /^\d+$/.test(b)) return { kind: "validation", id: Number(b) };
   if (a === "organization") {
     if (!b) return { kind: "organization", page: "members" };
     if (b === "keys" || b === "github" || b === "workers") return { kind: "organization", page: b };
@@ -169,10 +186,11 @@ export function placeOf(pathname: string): Place {
 }
 
 /** The sidebar entry a page belongs to. An agent's page belongs to where it was opened from. */
-export type Section = "overview" | "projects" | "agents" | null;
+export type Section = "overview" | "validations" | "projects" | "agents" | null;
 
 export function sectionOf(place: Place, from: Place | null): Section {
   if (place.kind === "overview") return "overview";
+  if (place.kind === "validations" || place.kind === "validation") return "validations";
   if (place.kind === "projects" || place.kind === "project") return "projects";
   if (place.kind === "agents") return "agents";
   if (place.kind === "agent") {
@@ -185,7 +203,8 @@ export function sectionOf(place: Place, from: Place | null): Section {
 
 /** One step of the breadcrumbs; the last has no link. */
 export type Crumb =
-  | { kind: "overview" | "projects" | "agents" | "organization" | "design"; href: string | null }
+  | { kind: "overview" | "projects" | "agents" | "validations" | "organization" | "design"; href: string | null }
+  | { kind: "validation"; id: number; href: null }
   | { kind: "project"; slug: string; href: string | null }
   | { kind: "agent"; ticket: string; href: null }
   | { kind: "organization-page"; page: "keys" | "github" | "workers"; href: null };
@@ -203,6 +222,13 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
       ];
     case "agents":
       return [{ kind: "agents", href: null }];
+    case "validations":
+      return [{ kind: "validations", href: null }];
+    case "validation":
+      return [
+        { kind: "validations", href: paths.validations },
+        { kind: "validation", id: place.id, href: null },
+      ];
     case "agent": {
       const last: Crumb = { kind: "agent", ticket: place.ticket, href: null };
       if (from?.kind === "project")
@@ -235,6 +261,7 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
  */
 export function escapeTarget(place: Place, fromPath: string | null): string | null {
   if (place.kind === "project") return paths.projects;
+  if (place.kind === "validation") return paths.validations;
   if (place.kind !== "agent") return null;
   const from = fromPath === null ? null : placeOf(fromPath);
   const back =

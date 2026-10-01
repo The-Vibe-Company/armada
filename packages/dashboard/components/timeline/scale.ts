@@ -46,6 +46,7 @@ export function hourMarks(scale: Scale): number[] {
 export const PHASE_COLOR: Record<AgentPhase, string> = {
   planning: "var(--frontier)",
   "awaiting-approval": "var(--accent)",
+  "awaiting-validation": "var(--accent)",
   implementing: "var(--frontier)",
   shipping: "var(--frontier)",
   blocked: "var(--critical)",

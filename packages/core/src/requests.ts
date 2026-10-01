@@ -9,9 +9,13 @@ import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
 import type { FleetStore } from "./live.ts";
 import type { StatusReport } from "./status.ts";
+import { decisionBody, VALIDATION_LIMITS, type ValidationDecision } from "./validations.ts";
 
-/** The reads and the one write a request needs. */
-export type RequestStore = Pick<FleetStore, "getInboxItem" | "getRuntimeHandle" | "addRequest">;
+/** The reads and the writes a request needs. */
+export type RequestStore = Pick<
+  FleetStore,
+  "getInboxItem" | "getRuntimeHandle" | "addRequest" | "getValidation" | "decideValidation"
+>;
 
 export const REQUEST_LIMITS = { answer: 4000, author: 80 } as const;
 
@@ -29,7 +33,10 @@ export type RequestRefusalCode =
   | "launch-waiting"
   | "no-pr"
   | "no-session"
-  | "request-waiting";
+  | "request-waiting"
+  | "no-validation"
+  | "validation-closed"
+  | "no-choice";
 
 export class RequestRefusal extends Error {
   override name = "RequestRefusal";
@@ -237,4 +244,53 @@ export async function requestPlanChanges(
     throw new RequestRefusal("request-waiting", `amendments to plan #${plan.id} already wait for the coordinator`);
   }
   return id;
+}
+
+export interface DecisionInput {
+  project: string;
+  /** The validation decided. */
+  id: number;
+  /** `approve` or `changes` for a merge or a validation; `choice` picks one of the choices it was sent with. */
+  action: "approve" | "changes" | "choice";
+  choice?: string | null;
+  /** The changes to make (required with `changes`), or a note with the decision. */
+  note?: string | null;
+  author: string;
+  now: Date;
+}
+
+/**
+ * The owner decides a validation (THE-885): the decision is kept on it and
+ * reaches the coordinator's inbox as a `decision` item, which wakes `armada
+ * watch`. The coordinator merges, or relays it to the worker. Returns the
+ * inbox item's id.
+ */
+export async function requestDecision(db: RequestStore, input: DecisionInput): Promise<number> {
+  const by = requestAuthor(input.author);
+  const note = (input.note ?? "").replace(/\r\n?/g, "\n").trim() || null;
+  if (note && note.length > VALIDATION_LIMITS.note)
+    throw new RequestRefusal("answer-too-long", `a note has at most ${VALIDATION_LIMITS.note} characters`);
+  const v = await db.getValidation(input.project, input.id);
+  if (!v) throw new RequestRefusal("no-validation", `validation #${input.id} does not exist in ${input.project}`);
+  if (v.decision) throw new RequestRefusal("validation-closed", `validation #${v.id} was already decided`);
+  let decision: Omit<ValidationDecision, "at">;
+  if (v.choices) {
+    const choice = input.choice?.trim() ?? "";
+    if (input.action !== "choice" || !v.choices.includes(choice))
+      throw new RequestRefusal("no-choice", `pick one of: ${v.choices.join(", ")}`);
+    decision = { outcome: "answered", answer: choice, note, by };
+  } else if (input.action === "approve") decision = { outcome: "approved", answer: null, note, by };
+  else if (input.action === "changes") {
+    if (!note) throw new RequestRefusal("empty-answer", "say which changes to make");
+    decision = { outcome: "changes", answer: null, note, by };
+  } else throw new RequestRefusal("no-choice", "approve, or request changes");
+  const done = await db.decideValidation({
+    project: input.project,
+    id: v.id,
+    decision,
+    body: decisionBody(v, decision),
+    at: input.now,
+  });
+  if (!done) throw new RequestRefusal("validation-closed", `validation #${v.id} was already decided`);
+  return done.item;
 }

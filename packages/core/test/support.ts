@@ -139,7 +139,11 @@ export async function answerFleet(
       { status: 403 },
     );
   await store.ensureProject(project, clock.now());
-  const answer = await serveFleet(store, { op, project, caller, input: b.input }, { now: clock.now, cliVersion });
+  const answer = await serveFleet(
+    store,
+    { op, project, caller, input: b.input },
+    { now: clock.now, cliVersion, appUrl: ARMADA_URL },
+  );
   if (answer.status === 304) return new Response(null, { status: 304 });
   return Response.json(answer.body, { status: answer.status });
 }

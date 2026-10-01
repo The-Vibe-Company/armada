@@ -799,6 +799,12 @@ a.sh-item:hover {
   height: 10px;
   border-radius: 2.5px;
 }
+.sh-nav-icon.is-validations::before {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  rotate: 45deg;
+}
 .sh-nav-icon.is-agents::before {
   width: 12px;
   height: 12px;
@@ -2515,4 +2521,227 @@ a.ui-row:hover {
   max-height: 70vh;
   margin-top: 12px;
   object-fit: contain;
+}
+
+/* ------------------------------------------------------------ validations (THE-885) */
+/* What the owner checks: the overview's cards, /validations and the approval link. */
+.vd-card .ui-card-title a:hover,
+.vd-pr-title:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+.vd-card.is-full {
+  gap: 12px;
+  padding: 18px 22px 20px;
+}
+.vd-card.is-full .ui-card-title {
+  font-size: 15px;
+  white-space: normal;
+}
+.vd-clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.vd-reason {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+}
+.vd-pr {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--r);
+  background: var(--sunken);
+  box-shadow: var(--shadow-border);
+}
+.vd-pr-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  color: var(--text);
+}
+.vd-ci {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.vd-files {
+  display: flex;
+  flex-direction: column;
+  margin: 6px 0 0;
+  padding: 6px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+.vd-files li {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 3px 0;
+}
+.vd-files .sc-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vd-preview {
+  align-self: flex-start;
+}
+.vd-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.vd-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.vd-shots.is-compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+.vd-shots li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.vd-shot {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 16 / 10;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  cursor: zoom-in;
+  transition-property: scale;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
+}
+.vd-shot:active {
+  scale: 0.96;
+}
+.vd-shot:focus-visible {
+  outline: 2px solid var(--frontier);
+  outline-offset: 2px;
+}
+.vd-shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  outline: 1px solid oklch(1 0 0 / 0.1);
+  outline-offset: -1px;
+  border-radius: 6px;
+}
+.vd-more {
+  cursor: pointer;
+  box-shadow: var(--shadow-border);
+}
+.vd-caption {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+.vd-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--muted);
+  text-decoration: underline;
+  text-decoration-color: var(--line-2);
+  text-underline-offset: 3px;
+  overflow-wrap: anywhere;
+}
+.vd-link:hover {
+  color: var(--text);
+}
+.vd-decided {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.vd-decided b {
+  font-weight: 500;
+}
+.vd-note {
+  flex-basis: 100%;
+  padding-left: 10px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--text-2);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.vd-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+/* The approval link, opened from a phone as often as a desk: one column, readable at 375 px. */
+.vd-approve {
+  max-width: 760px;
+  padding: 16px 20px 32px;
+}
+.vd-card.is-list {
+  align-self: start;
+}
+/* The shell keeps 720 px for its lists; the approval page alone is read on a phone, without the sidebar. */
+@media (max-width: 719px) {
+  .sh.is-focus {
+    min-width: 0;
+    padding: 0;
+  }
+  .sh.is-focus .sh-side {
+    display: none;
+  }
+  .sh.is-focus .sh-main {
+    border-radius: 0;
+    border: 0;
+  }
+}
+@media (max-width: 640px) {
+  .vd-approve {
+    padding: 12px 12px 28px;
+  }
+  .vd-card.is-full {
+    padding: 16px;
+  }
+  .vd-card.is-full .vd-actions .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+    height: 40px;
+  }
+  .vd-pr-title {
+    white-space: normal;
+  }
 }

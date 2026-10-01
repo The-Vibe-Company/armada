@@ -628,7 +628,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   const answer = await serveFleet(
     fleetStore(a.client),
     { op, project, caller, input: body.input },
-    { now, openPrs, cliVersion: request.headers.get(CLI_VERSION_HEADER) },
+    { now, openPrs, cliVersion: request.headers.get(CLI_VERSION_HEADER), appUrl: a.settings.baseUrl },
   );
   // An unchanged inbox: nothing to send.
   if (answer.status === 304) return new Response(null, { status: 304, headers: NO_STORE });

@@ -16,6 +16,7 @@ import type {
   WorkerProfile,
 } from "../src/live.ts";
 import { unusedLaunchExpired } from "../src/live.ts";
+import type { Validation } from "../src/validations.ts";
 
 interface EventRow extends Omit<EventInput, "at"> {
   id: number;
@@ -28,6 +29,7 @@ interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestPr?: number | null;
   requestQuestion: number | null;
   requestProfile: string | null;
+  requestValidation?: number | null;
 }
 
 /** A launch as the app keeps it (`armada_worker`), with only what the fleet reads of it. */
@@ -46,6 +48,7 @@ export function memoryFleet(): FleetStore & {
   presence: Map<string, { handle: string | null; cliVersion: string | null; at: string }>;
   /** Launches, as the app's `createLaunch` and `exchangeLaunch` write them: tests push and edit them. */
   launches: LaunchRow[];
+  validations: Validation[];
 } {
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
@@ -57,11 +60,16 @@ export function memoryFleet(): FleetStore & {
   const coordinators = new Map<string, CoordinatorPresence>();
   const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
+  const validations: Validation[] = [];
+  const copy = (v: Validation): Validation => structuredClone(v);
 
   const stored = (r: ItemRow): StoredInboxItem => {
-    const { requestQuestion, requestProfile, requestPr, ...rest } = r;
+    const { requestQuestion, requestProfile, requestPr, requestValidation, ...rest } = r;
     return {
       ...rest,
+      ...(r.kind === "decision"
+        ? { request: { question: null, profile: null, validation: requestValidation ?? null } }
+        : {}),
       ...(REQUEST_KINDS.includes(r.kind)
         ? {
             request: {
@@ -99,6 +107,7 @@ export function memoryFleet(): FleetStore & {
     leases,
     presence,
     launches,
+    validations,
 
     async ensureProject(p, at) {
       if (projects.has(p.slug)) return;
@@ -533,6 +542,58 @@ export function memoryFleet(): FleetStore & {
         if (row) row.endedAt = now.toISOString();
       }
       return expired;
+    },
+
+    async addValidation(v) {
+      const at = v.at.toISOString();
+      for (const was of validations)
+        if (
+          was.project === v.project &&
+          !was.decision &&
+          was.kind === v.kind &&
+          ((v.kind === "merge" && was.pr?.number === v.pr?.number) ||
+            (v.kind === "validation" && was.ticket === v.ticket))
+        )
+          was.decision = { outcome: "superseded", answer: null, note: null, by: null, at };
+      const { at: _at, ...rest } = v;
+      const row: Validation = { ...rest, id: validations.length + 1, createdAt: at, decision: null };
+      validations.push(row);
+      return copy(row);
+    },
+    async listValidations(q) {
+      const since = q.decidedSince?.toISOString() ?? "";
+      return validations
+        .filter(
+          (v) =>
+            v.project === q.project &&
+            (q.ticket === undefined || v.ticket === q.ticket) &&
+            (q.pr === undefined || v.pr?.number === q.pr) &&
+            (!v.decision || v.decision.at >= since),
+        )
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id)
+        .map(copy);
+    },
+    async getValidation(project, id) {
+      const v = validations.find((x) => x.project === project && x.id === id);
+      return v ? copy(v) : null;
+    },
+    async decideValidation(d) {
+      const v = validations.find((x) => x.project === d.project && x.id === d.id);
+      if (!v || v.decision) return null;
+      v.decision = { ...d.decision, at: d.at.toISOString() };
+      const item = insert({
+        project: d.project,
+        ticket: v.ticket,
+        kind: "decision",
+        recipient: "coordinator",
+        author: d.decision.by,
+        body: d.body,
+        createdAt: d.at.toISOString(),
+        requestQuestion: null,
+        requestProfile: null,
+        requestValidation: v.id,
+      });
+      return { item };
     },
   };
 }

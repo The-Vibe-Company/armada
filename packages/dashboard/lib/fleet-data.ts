@@ -12,6 +12,7 @@
 import {
   type ActivityEntry,
   type ArmadaConfig,
+  type Attachment,
   agentActivity,
   buildOverview,
   buildStatus,
@@ -22,6 +23,7 @@ import {
   type InboxReadEvent,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
+  type OwnerValidation,
   type PendingLaunch,
   type ProjectConfigReading,
   type ProjectReading,
@@ -32,6 +34,7 @@ import {
   type StatusReport,
   type StatusSources,
   TIMELINE_HOURS,
+  type Validation,
 } from "@armada/core/read";
 import { LATEST_CLI_VERSION } from "./cli-version";
 import { type Database, redactDatabase } from "./db";
@@ -270,20 +273,51 @@ interface LiveProject {
   coordinatorSeenAt: string | null;
   /** The CLI version the coordinator ran at its last inbox read; null when unknown. */
   coordinatorCliVersion: string | null;
+  /** What the owner validates: the open ones and those decided in the last week, with their galleries. */
+  validations: OwnerValidation[];
+}
+
+/** How long a decided validation stays on the Validations page. */
+export const DECIDED_SHOWN_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * The attachments a validation shows: those it names (of its own ticket, in
+ * its order), else every attachment of its ticket, such as a pull request's
+ * screenshots.
+ */
+export function galleryOf(v: Validation, attachments: readonly Attachment[]): Attachment[] {
+  const own = attachments.filter((a) => a.ticket === v.ticket);
+  if (!v.attachments.length) return own;
+  return v.attachments.flatMap((id) => own.filter((a) => a.id === id));
+}
+
+async function readValidations(store: LiveStore, project: string, now: Date) {
+  const validations = await store.listValidations({
+    project,
+    decidedSince: new Date(now.getTime() - DECIDED_SHOWN_MS),
+  });
+  const attachments = await store.ticketsAttachments(project, [...new Set(validations.map((v) => v.ticket))]);
+  return validations.map(
+    (v): OwnerValidation => ({ ...v, title: null, url: null, gallery: galleryOf(v, attachments) }),
+  );
 }
 
 async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
-  const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions] = await Promise.all([
-    store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
-    store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
-    store.openRuntimeHandles(project),
-    store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
-    store.openInboxItems({ project, recipient: "coordinator" }),
-    store.getCoordinatorPresence(project),
-    store.inboxReads(project, now),
-    store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
-  ]);
+  const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions, validations] = await Promise.all(
+    [
+      store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+      store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
+      store.openRuntimeHandles(project),
+      store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
+      store.openInboxItems({ project, recipient: "coordinator" }),
+      store.getCoordinatorPresence(project),
+      store.inboxReads(project, now),
+      store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+      readValidations(store, project, now),
+    ],
+  );
   return {
+    validations,
     events,
     history,
     handles,
@@ -541,6 +575,10 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
             coordinator: l.coordinator,
             inboxReads: l.inboxReads,
             sessions: l.sessions,
+            validations: l.validations.map((v) => {
+              const issue = snap.sources.program.issues.find((i) => i.id === v.ticket);
+              return { ...v, title: issue?.title ?? null, url: issue?.url ?? null };
+            }),
           }
         : null,
       profiles: snap.config.conductor.profiles,

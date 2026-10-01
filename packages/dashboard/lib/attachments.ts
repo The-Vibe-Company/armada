@@ -59,6 +59,17 @@ export async function listTicketAttachments(
   ).rows.map(metadata);
 }
 
+/** The attachments of some tickets of one project, metadata only: what a validation's gallery shows (THE-885). */
+export async function ticketsAttachments(db: Queryable, project: string, tickets: string[]): Promise<Attachment[]> {
+  if (!tickets.length) return [];
+  return (
+    await db.query(
+      `SELECT ${COLUMNS} FROM attachments WHERE project = $1 AND ticket = ANY($2::text[]) ORDER BY created_at, id`,
+      [project, tickets],
+    )
+  ).rows.map(metadata);
+}
+
 export async function readAttachment(
   db: Queryable,
   scope: Scope,

@@ -28,18 +28,19 @@ describe("plan rule", () => {
 describe("phase transitions", () => {
   test("the whole table: forward moves, going back where review sends the work, blocked from anywhere", () => {
     const allowed: Record<LabelPhase, LabelPhase[]> = {
-      planning: ["planning", "awaiting-approval", "implementing", "blocked"],
+      planning: ["planning", "awaiting-approval", "implementing", "awaiting-validation", "blocked"],
       "awaiting-approval": ["awaiting-approval", "planning", "implementing", "blocked"],
-      implementing: ["implementing", "shipping", "blocked"],
-      shipping: ["shipping", "implementing", "ready-to-merge", "blocked"],
+      implementing: ["implementing", "shipping", "awaiting-validation", "blocked"],
+      shipping: ["shipping", "implementing", "ready-to-merge", "awaiting-validation", "blocked"],
       "ready-to-merge": ["ready-to-merge", "shipping", "blocked"],
+      "awaiting-validation": ["awaiting-validation", "planning", "implementing", "shipping", "blocked"],
       blocked: [...LABEL_PHASES],
     };
     for (const from of LABEL_PHASES)
       for (const to of LABEL_PHASES)
         expect([from, to, transitionProblem(from, to) === null]).toEqual([from, to, allowed[from].includes(to)]);
     expect(transitionProblem("implementing", "ready-to-merge")).toBe(
-      "cannot go from implementing to ready-to-merge; from implementing a worker may report: shipping, blocked, implementing (status update)",
+      "cannot go from implementing to ready-to-merge; from implementing a worker may report: shipping, awaiting-validation, blocked, implementing (status update)",
     );
     expect(transitionProblem(null, "planning")).toContain("no worker has claimed it");
   });
