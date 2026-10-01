@@ -6,7 +6,6 @@
 // signed-in coordinator: the worker's first command exchanges it for a
 // session limited to its ticket, so its runtime needs no key at all. It works
 // once, within the hour, which makes a copy left in a transcript useless.
-import { compareVersions } from "./armada-api.ts";
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import {
@@ -17,11 +16,11 @@ import {
   LinearError,
   type LinearRequestOptions,
   type MoreOf,
-  networkReason,
   parseStatusLine,
   readRest,
 } from "./linear.ts";
 import { buildModel } from "./model.ts";
+import { ARMADA_PACKAGE, type NpmCheck } from "./npm.ts";
 import { planRule } from "./phases.ts";
 import {
   checkRequestedProfile,
@@ -36,43 +35,7 @@ import type { AgentPhase, ProgramData, StatusType } from "./types.ts";
 import { chooseValidations, type ValidationChoice, ValidationChoiceError } from "./validations.ts";
 import { Refusal } from "./worker.ts";
 
-/** The npm package the worker runs Armada from. */
-export const ARMADA_PACKAGE = "@the-vibe-company/armada";
-/** npm's record of the package, which lists every published version. */
-export const NPM_REGISTRY_URL = `https://registry.npmjs.org/${ARMADA_PACKAGE.replace("/", "%2f")}`;
-/** How long `armada brief` waits for npm: one request, made beside its Linear reads. */
-export const NPM_CHECK_MS = 3_000;
-
-/**
- * Whether npm serves a version: `missing` names the newest published version
- * below it, if any; `unknown` says why npm could not be asked.
- */
-export type NpmCheck =
-  | { state: "published" }
-  | { state: "missing"; newest: string | null }
-  | { state: "unknown"; reason: string };
-
-/**
- * Asks npm whether `version` of Armada is published, once, within `timeoutMs`.
- * Never throws: offline, the answer is `unknown`.
- */
-export async function checkPublished(version: string, fetch: Fetch, timeoutMs = NPM_CHECK_MS): Promise<NpmCheck> {
-  try {
-    const res = await fetch(NPM_REGISTRY_URL, {
-      // The abbreviated record: versions without their readmes.
-      headers: { accept: "application/vnd.npm.install-v1+json" },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (!res.ok) return { state: "unknown", reason: `npm answered HTTP ${res.status}` };
-    const versions = Object.keys(((await res.json()) as { versions?: Record<string, unknown> }).versions ?? {});
-    if (!versions.length) return { state: "unknown", reason: "npm listed no version" };
-    if (versions.includes(version)) return { state: "published" };
-    const older = versions.filter((v) => !v.includes("-") && compareVersions(v, version) < 0).sort(compareVersions);
-    return { state: "missing", newest: older.at(-1) ?? null };
-  } catch (err) {
-    return { state: "unknown", reason: networkReason(err, timeoutMs) };
-  }
-}
+export { ARMADA_PACKAGE, checkPublished, NPM_CHECK_MS, NPM_REGISTRY_URL, type NpmCheck } from "./npm.ts";
 
 /** Where `armada init` vendors the worker skill. */
 export const WORKER_SKILL_PATH = ".agents/skills/armada-worker/SKILL.md";

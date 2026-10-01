@@ -273,19 +273,34 @@ describe("armada brief", () => {
   });
 
   test("the brief pins a version npm serves: else the newest published one, with a warning; offline it only warns", async () => {
-    const briefWith = async (npm: () => Promise<Response>) => {
+    const briefWith = async (npm: () => Promise<Response>, ready = true) => {
       const b = briefIo();
       const linear = b.io.fetch;
-      b.io.fetch = (url, init) => (url === NPM_REGISTRY_URL ? npm() : (linear?.(url, init) ?? fetch(url)));
+      b.io.fetch = (url, init) => {
+        if (url === NPM_REGISTRY_URL) return npm();
+        if (init.method === "HEAD")
+          return Promise.resolve(new Response(null, { status: url.includes(version) && !ready ? 404 : 200 }));
+        return linear?.(url, init) ?? fetch(url);
+      };
       expect(await run(["brief", "DEMO-13", "--json"], b.io)).toBe(0);
       return JSON.parse(b.out()) as { install: string; fallback: string; prompt: string; warnings: string[] };
     };
     const pkg = "@the-vibe-company/armada";
 
     // A release npm does not serve yet: the newest published version below it, never a prerelease.
-    const behind = await briefWith(async () =>
-      Response.json({ versions: { "0.1.9": {}, "0.2.5": {}, [`${version}-rc.1`]: {} } }),
-    );
+    const metadata = (...versions: string[]) => ({
+      versions: Object.fromEntries(
+        versions.map((version) => [
+          version,
+          {
+            dist: {
+              tarball: `https://registry.npmjs.org/${pkg}/-/armada-${version}.tgz`,
+            },
+          },
+        ]),
+      ),
+    });
+    const behind = await briefWith(async () => Response.json(metadata("0.1.9", "0.2.5", `${version}-rc.1`)));
     expect([behind.install, behind.fallback]).toEqual([
       `npm install -g ${pkg}@0.2.5`,
       `npm exec --yes --package=${pkg}@0.2.5 -- armada`,
@@ -296,6 +311,10 @@ describe("armada brief", () => {
     expect(behind.warnings).toContain(
       `armada ${version} is not on npm yet: this brief pins 0.2.5, the newest published version. The skills of this checkout may describe commands 0.2.5 lacks; publish ${version} (the release pull request) and brief again to launch with it`,
     );
+
+    const delayed = await briefWith(async () => Response.json(metadata(version, "0.2.5")), false);
+    expect(delayed.install).toBe(behind.install);
+    expect(delayed.warnings).toEqual(behind.warnings);
 
     const none = await briefWith(async () => Response.json({ versions: { "99.0.0": {} } }));
     expect(none.install).toBe(`npm install -g ${pkg}@${version}`);

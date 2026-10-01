@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { MINIMUM_CLI_VERSION } from "@armada/core/read";
 import { NextRequest } from "next/server";
-import { version } from "../../cli/package.json" with { type: "json" };
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
 import { accountsGuard } from "../lib/accounts-http.ts";
 import { type AuthSettings, accountsModeOf } from "../lib/accounts-settings.ts";
@@ -201,7 +200,7 @@ describe("without accounts", () => {
     expect(body.next).toContain("ARMADA_AUTH_");
     // Every answer, a refusal too, names the CLIs it is for.
     expect(res.headers.get("x-armada-cli-minimum")).toBe(MINIMUM_CLI_VERSION);
-    expect(res.headers.get("x-armada-cli-latest")).toBe(version);
+    expect(res.headers.get("x-armada-cli-latest")).toBe(MINIMUM_CLI_VERSION);
 
     const passed = (r: Response) => r.headers.get("x-middleware-next") === "1";
     const password = { NODE_ENV: "production", ARMADA_DASHBOARD_PASSWORD: "synthetic password" };
@@ -226,8 +225,8 @@ describe("an outdated CLI", () => {
     const old = await handleCli(request("0.1.22"), ["device", "code"], { accounts: async () => accounts });
     expect(old.status).toBe(426);
     expect(await old.json()).toEqual({
-      error: `Armada 0.1.22 is older than this server expects: npm install -g @the-vibe-company/armada@${version}`,
-      next: `npm install -g @the-vibe-company/armada@${version}`,
+      error: `Armada 0.1.22 is older than this server expects: npm install -g @the-vibe-company/armada@${MINIMUM_CLI_VERSION}`,
+      next: `npm install -g @the-vibe-company/armada@${MINIMUM_CLI_VERSION}`,
     });
     const after = (await client.query(`SELECT count(*)::int AS n FROM "deviceCode"`)).rows[0] as { n: number };
     expect(after.n).toBe(before.n);
@@ -303,7 +302,7 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     expect(old.status).toBe(426);
     expect(await old.json()).toEqual({
       error: `this CLI is older than this server expects (${MINIMUM_CLI_VERSION} or newer)`,
-      next: `npm install -g @the-vibe-company/armada@${version}`,
+      next: `npm install -g @the-vibe-company/armada@${MINIMUM_CLI_VERSION}`,
     });
     const anonymous = await keys({});
     expect(anonymous.res.status).toBe(401);
