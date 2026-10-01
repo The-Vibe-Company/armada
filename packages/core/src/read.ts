@@ -11,6 +11,7 @@ export * from "./credentials.ts";
 export * from "./fleet.ts";
 export * from "./fleet-api.ts";
 export * from "./github.ts";
+export * from "./insights.ts";
 export * from "./linear.ts";
 export * from "./live.ts";
 export * from "./model.ts";
