@@ -100,7 +100,6 @@ const elapsed = (ms: number, day: string) => (ms < MIN ? `${Math.max(0, Math.rou
 
 const en = {
   htmlTitle: "Armada — fleet",
-  brandSub: "fleet",
   stats: { silent: "Silent", redCi: "Red CI" },
   projects: "Projects",
   allProjects: "All projects",
@@ -235,6 +234,7 @@ const en = {
     sendInvite: "Invite",
     invitations: "Pending invitations",
     noInvitations: "No invitation waits.",
+    noInvitationsHint: "An invitation shows here until it is accepted, declined, cancelled or expires.",
     copyLink: "Copy link",
     copied: "Copied",
     cancel: "Cancel",
@@ -263,6 +263,7 @@ const en = {
     apiKeysHint:
       "A key signs a headless coordinator in for this organization, with ARMADA_API_KEY or armada login --api-key. Revoking it signs that coordinator out.",
     noApiKeys: "No API key.",
+    noApiKeysHint: "Create one below for a coordinator that runs without a person at the keyboard.",
     apiKeyName: "Key name, e.g. cloud coordinator",
     createApiKey: "Create a key",
     apiKeyCreated: (name: string) => `Key “${name}” created. Copy it now: it is shown only once.`,
@@ -404,7 +405,7 @@ const en = {
   workers: {
     nav: "Workers",
     lead: "Each worker a coordinator launched with a one-time launch token: who launched it, when its token was used, and whether its session is still open. A worker session only claims, reports, asks and releases its own ticket.",
-    launchedBy: (who: string, when: string) => `launched by ${who}, ${when}`,
+    launchedBy: (who: string) => `launched by ${who}`,
     states: {
       waiting: "token not used yet",
       unused: "token expired unused",
@@ -423,7 +424,8 @@ const en = {
     revokeHint:
       "Revoking ends a worker's session at once: its next command fails, and it gets no more keys and no more access to the fleet's data.",
     onlyAdmins: "Only owners and admins revoke a worker.",
-    none: "No worker launched with a token yet. A signed-in coordinator makes one with armada brief <ticket>.",
+    none: "No worker launched with a token yet.",
+    noneHint: "A signed-in coordinator makes one with armada brief <ticket>.",
     errors: {
       forbidden: "Your role does not allow this.",
       gone: "This worker had already ended.",
@@ -469,25 +471,10 @@ const en = {
   answerPending: (author: string | null, ago: string) => `Answer from ${author ?? "you"} · sent ${ago} ago`,
   waitingForCoordinator: "waiting for the coordinator to deliver it",
   coordinatorAway: "the coordinator is not reading its inbox right now; it will see this at its next read",
-  readyTitle: "Ready to launch",
-  readyEmpty: "No ticket is ready to start.",
-  readyHint: "A launch is a request: the coordinator starts the worker, and its claim closes the request.",
   launch: "Launch",
   launchLabel: (ticket: string) => `Launch ${ticket}`,
   profile: "Profile",
   routed: "routed",
-  routedHint: (why: string) => `Routing picks it: ${why}`,
-  noProfiles: "armada.toml declares no profile: the coordinator launches with its default.",
-  overrideHint: (routed: string) =>
-    `Routing picks ${routed}. The coordinator launches with your choice and records on the ticket that you asked for it.`,
-  requestLaunch: "Request launch",
-  launchPending: (author: string | null, ago: string) => `Launch asked by ${author ?? "you"} · ${ago} ago`,
-  notMarkedReady: "not marked ready",
-  criticalPath: "critical path",
-  unlocks: (n: number) => `unlocks ${n}`,
-  moreUnblocked: (n: number) =>
-    n === 1 ? "1 more unblocked, not marked ready" : `${n} more unblocked, not marked ready`,
-  fewerUnblocked: "Hide the tickets not marked ready",
   needsLive: "Answers and launches go through the database, which cannot be read right now.",
   requestErrors: {
     "no-author": "Say who you are: the request is signed with your name.",
@@ -734,7 +721,9 @@ const en = {
         Card: "Only where the design draws cards (decisions, projects): the rows' padding, hairline and type, in a CardGrid.",
         Columns:
           "An agent's page: its sections on the left, its facts on the right (side), one under the other on a narrow screen. Each column holds Sections and Rows only.",
+        Form: "A form on one line: Input, Select, then its Buttons (primary for the submit, danger to delete or revoke); grow fills a section's width.",
       },
+      forms: { primary: "Invite", plain: "Copy link", danger: "Revoke", disabled: "Sending…" },
     },
   },
   timeline: {
@@ -835,7 +824,6 @@ export type Strings = typeof en;
 
 const fr: Strings = {
   htmlTitle: "Armada — flotte",
-  brandSub: "flotte",
   stats: { silent: "Silencieux", redCi: "CI rouge" },
   projects: "Projets",
   allProjects: "Tous les projets",
@@ -971,6 +959,7 @@ const fr: Strings = {
     sendInvite: "Inviter",
     invitations: "Invitations en attente",
     noInvitations: "Aucune invitation en attente.",
+    noInvitationsHint: "Une invitation reste ici jusqu'à ce qu'elle soit acceptée, refusée, annulée ou expirée.",
     copyLink: "Copier le lien",
     copied: "Copié",
     cancel: "Annuler",
@@ -999,6 +988,7 @@ const fr: Strings = {
     apiKeysHint:
       "Une clé connecte un coordinateur sans navigateur pour cette organisation, avec ARMADA_API_KEY ou armada login --api-key. La révoquer le déconnecte.",
     noApiKeys: "Aucune clé d'API.",
+    noApiKeysHint: "Crées-en une ci-dessous pour un coordinateur qui tourne sans personne au clavier.",
     apiKeyName: "Nom de la clé, par ex. coordinateur cloud",
     createApiKey: "Créer une clé",
     apiKeyCreated: (name) => `Clé « ${name} » créée. Copie-la maintenant : elle n'est montrée qu'une fois.`,
@@ -1137,7 +1127,7 @@ const fr: Strings = {
   workers: {
     nav: "Workers",
     lead: "Chaque worker lancé par un coordinateur avec un jeton de lancement à usage unique : qui l'a lancé, quand son jeton a servi, et si sa session est encore ouverte. Une session de worker ne fait que réclamer, rapporter, demander et rendre son propre ticket.",
-    launchedBy: (who, when) => `lancé par ${who}, ${when}`,
+    launchedBy: (who) => `lancé par ${who}`,
     states: {
       waiting: "jeton pas encore utilisé",
       unused: "jeton expiré sans servir",
@@ -1156,7 +1146,8 @@ const fr: Strings = {
     revokeHint:
       "Révoquer met fin tout de suite à la session d'un worker : sa prochaine commande échoue, et il ne reçoit plus ni clé ni accès aux données de la flotte.",
     onlyAdmins: "Seuls les propriétaires et les admins révoquent un worker.",
-    none: "Aucun worker lancé avec un jeton pour l'instant. Un coordinateur connecté en crée un avec armada brief <ticket>.",
+    none: "Aucun worker lancé avec un jeton pour l'instant.",
+    noneHint: "Un coordinateur connecté en crée un avec armada brief <ticket>.",
     errors: {
       forbidden: "Ton rôle ne le permet pas.",
       gone: "Ce worker était déjà arrêté.",
@@ -1202,24 +1193,10 @@ const fr: Strings = {
   answerPending: (author, ago) => `Réponse de ${author ?? "toi"} · envoyée il y a ${ago}`,
   waitingForCoordinator: "en attente de transmission par le coordinateur",
   coordinatorAway: "le coordinateur ne lit pas sa boîte en ce moment ; il la verra à sa prochaine lecture",
-  readyTitle: "Prêts à lancer",
-  readyEmpty: "Aucun ticket n'est prêt à démarrer.",
-  readyHint: "Un lancement est une demande : le coordinateur démarre le worker, et son claim clôt la demande.",
   launch: "Lancer",
   launchLabel: (ticket) => `Lancer ${ticket}`,
   profile: "Profil",
   routed: "routé",
-  routedHint: (why) => `Choisi par le routage : ${why}`,
-  noProfiles: "armada.toml ne déclare aucun profil : le coordinateur lance avec son défaut.",
-  overrideHint: (routed) =>
-    `Le routage choisit ${routed}. Le coordinateur lance avec ton choix et note sur le ticket que tu l'as demandé.`,
-  requestLaunch: "Demander le lancement",
-  launchPending: (author, ago) => `Lancement demandé par ${author ?? "toi"} · il y a ${ago}`,
-  notMarkedReady: "pas marqué prêt",
-  criticalPath: "chemin critique",
-  unlocks: (n) => `débloque ${n}`,
-  moreUnblocked: (n) => (n === 1 ? "1 autre débloqué, pas marqué prêt" : `${n} autres débloqués, pas marqués prêts`),
-  fewerUnblocked: "Masquer les tickets pas marqués prêts",
   needsLive: "Réponses et lancements passent par la base de données, illisible pour le moment.",
   requestErrors: {
     "no-author": "Dis qui tu es : la demande est signée de ton nom.",
@@ -1455,7 +1432,9 @@ const fr: Strings = {
         Card: "Seulement là où le design dessine des cartes (décisions, projets) : le padding, le filet et le texte des lignes, dans une CardGrid.",
         Columns:
           "La page d'un agent : ses sections à gauche, ses faits à droite (side), l'une sous l'autre sur un écran étroit. Chaque colonne ne tient que des Sections et des Rows.",
+        Form: "Un formulaire sur une ligne : Input, Select, puis ses Button (primary pour envoyer, danger pour supprimer ou révoquer) ; grow prend la largeur d'une section.",
       },
+      forms: { primary: "Inviter", plain: "Copier le lien", danger: "Révoquer", disabled: "Envoi…" },
     },
   },
   timeline: {

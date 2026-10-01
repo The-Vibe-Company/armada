@@ -9,6 +9,7 @@ import type { CoordinatorState, InboxItem } from "@armada/core/read";
 import { useRef, useState } from "react";
 import type { RequestResult } from "@/lib/requests";
 import { type ActionContext, ErrorLine, PendingNote, SignerField, signerOf, useRequest, useSent } from "../Actions";
+import { Button } from "../page";
 
 /** A request waiting for the coordinator: the server's, or the one just sent. */
 type Pending = { author: string | null; at: string };
@@ -22,7 +23,6 @@ export function RequestAction({
   pending: recorded,
   coordinator,
   hint,
-  className,
 }: {
   ctx: ActionContext;
   /** The button: "Ask to release the ticket". */
@@ -37,7 +37,6 @@ export function RequestAction({
   coordinator: CoordinatorState;
   /** What confirming does, shown before the confirm button. */
   hint?: string;
-  className?: string;
 }) {
   const { t } = ctx;
   const [open, setOpen] = useState(false);
@@ -71,9 +70,9 @@ export function RequestAction({
   if (!ctx.live) return null;
   if (!open)
     return (
-      <button ref={opener} type="button" className={`btn is-soft ${className ?? ""}`} onClick={() => setOpen(true)}>
+      <Button ref={opener} type="button" tone="danger" onClick={() => setOpen(true)}>
         {label}
-      </button>
+      </Button>
     );
   const close = () => {
     setOpen(false);

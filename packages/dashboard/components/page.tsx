@@ -8,7 +8,15 @@
 // Server-safe: the organization's pages render these on the server. The parts
 // that need the shell (the header's slot, the density) are in page-client.tsx.
 import Link from "next/link";
-import type { CSSProperties, ReactNode } from "react";
+import type {
+  ButtonHTMLAttributes,
+  CSSProperties,
+  FormHTMLAttributes,
+  InputHTMLAttributes,
+  ReactNode,
+  Ref,
+  SelectHTMLAttributes,
+} from "react";
 
 export { DensityToggle, HeaderActions, PageHeader } from "./page-client";
 
@@ -226,4 +234,33 @@ export function CardHead({
       {side && <span className="ui-card-side">{side}</span>}
     </div>
   );
+}
+
+/**
+ * A form on one line, its fields then its buttons, wrapping on narrow
+ * screens: invite someone, save a key, link an installation. `grow` lets its
+ * fields take the room they are given (a row's right, a section's width).
+ */
+export function Form({ className, grow = false, ...props }: FormHTMLAttributes<HTMLFormElement> & { grow?: boolean }) {
+  return <form {...props} className={cx("ui-form", grow && "is-grow", className)} />;
+}
+
+/** The mockup's buttons: plain on a fill, `primary` light on dark (the submit), `danger` in red text. */
+export function Button({
+  tone,
+  className,
+  type = "submit",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "danger"; ref?: Ref<HTMLButtonElement> }) {
+  return <button {...props} type={type} className={cx("ui-button", tone && `is-${tone}`, className)} />;
+}
+
+/** A text field on the buttons' height; give it a label, visible or `sr-only`. */
+export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+  return <input {...props} className={cx("ui-input", className)} />;
+}
+
+/** A choice on the buttons' height: a role. */
+export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
+  return <select {...props} className={cx("ui-input ui-select", className)} />;
 }

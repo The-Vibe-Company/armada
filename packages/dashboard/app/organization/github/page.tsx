@@ -2,7 +2,23 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { linkGithubInstallation, unlinkGithubInstallation } from "@/app/github-actions";
-import { Notice, Page, Row, RowSide, RowText, Section, SectionBody } from "@/components/page";
+import { OrganizationTabs } from "@/components/OrganizationTabs";
+import {
+  Button,
+  Form,
+  HeaderActions,
+  Notice,
+  Page,
+  Row,
+  RowIcon,
+  RowSide,
+  RowText,
+  RowTime,
+  Section,
+  SectionBody,
+  Toolbar,
+} from "@/components/page";
+import { Dot, EmptyState } from "@/components/ui";
 import { homeOrganization, requireAccounts, requireMember, viewerGithubToken } from "@/lib/accounts-server";
 import { accountsModeOf, GITHUB_INSTALL_PATH, GITHUB_SETUP_PATH } from "@/lib/accounts-settings";
 import {
@@ -72,9 +88,14 @@ export default async function Github({ searchParams }: { searchParams: Params })
 
   const mode = githubAppModeOf(process.env);
   const app = githubApp();
+  const toolbar = (
+    <Toolbar>
+      <OrganizationTabs t={t} page="github" />
+    </Toolbar>
+  );
   if (mode.kind !== "on" || !app)
     return (
-      <Page>
+      <Page toolbar={toolbar}>
         <Section label={g.nav} side={viewer.organization.name}>
           <Notice tone="critical">
             {mode.kind === "invalid"
@@ -103,7 +124,20 @@ export default async function Github({ searchParams }: { searchParams: Params })
   const toLink = reachable?.filter((i) => !isLinked.has(i.id)) ?? [];
 
   return (
-    <Page>
+    <Page toolbar={toolbar}>
+      {info && (
+        <HeaderActions>
+          {manager ? (
+            <a className="ui-button is-primary" href={GITHUB_INSTALL_PATH}>
+              {g.install} →
+            </a>
+          ) : (
+            <a className="ui-button" href={`${info.url}/installations/new`} target="_blank" rel="noreferrer">
+              {g.installElsewhere} ↗
+            </a>
+          )}
+        </HeaderActions>
+      )}
       {error && <Notice tone="critical">{g.errors[error]}</Notice>}
       {done && <Notice tone="done">{g.notices[done]}</Notice>}
 
@@ -111,20 +145,8 @@ export default async function Github({ searchParams }: { searchParams: Params })
         <SectionBody>
           <p>{g.lead}</p>
           {!manager && <p className="faint">{g.onlyAdmins}</p>}
-          {info && manager ? (
-            <>
-              <a className="btn is-primary" href={GITHUB_INSTALL_PATH}>
-                {g.install} →
-              </a>
-              <p className="faint">{g.installHint}</p>
-            </>
-          ) : info ? (
-            <>
-              <a className="link" href={`${info.url}/installations/new`} target="_blank" rel="noreferrer">
-                {g.installElsewhere} →
-              </a>
-              <p className="faint">{g.installElsewhereHint}</p>
-            </>
+          {info ? (
+            <p className="faint">{manager ? g.installHint : g.installElsewhereHint}</p>
           ) : (
             <p className="faint">{g.appUnreachable}</p>
           )}
@@ -133,61 +155,56 @@ export default async function Github({ searchParams }: { searchParams: Params })
       </Section>
 
       <Section label={g.linked} count={linked.length}>
-        {(home !== viewer.organization.id || linked.length === 0) && (
+        {home !== viewer.organization.id && (
           <SectionBody>
-            {home !== viewer.organization.id && <p>{g.linkedHint}</p>}
-            {linked.length === 0 && <p className="faint">{g.noneLinked}</p>}
+            <p>{g.linkedHint}</p>
           </SectionBody>
         )}
+        {linked.length === 0 && <EmptyState compact title={g.noneLinked} />}
         {linked.map((i) => (
           <Row key={i.id}>
-            <RowText
-              title={i.account}
-              line={
-                <>
-                  <span className="mono">{i.id}</span> · {g.linkedBy(i.linkedBy, when(i.linkedAt))}
-                </>
-              }
-            />
+            <RowIcon>
+              <Dot color="var(--done)" />
+            </RowIcon>
+            <RowText title={i.account} line={g.linkedBy(i.linkedBy, when(i.linkedAt))} />
             {manager && (
               <RowSide>
-                <form action={unlinkGithubInstallation}>
+                <Form action={unlinkGithubInstallation}>
                   <input type="hidden" name="installation" value={i.id} />
-                  <button type="submit" className="btn is-danger">
-                    {g.unlink}
-                  </button>
-                </form>
+                  <Button tone="danger">{g.unlink}</Button>
+                </Form>
               </RowSide>
             )}
+            <RowTime>{i.id}</RowTime>
           </Row>
         ))}
       </Section>
 
       {manager && (
         <Section label={g.reachable} count={reachable === null ? undefined : toLink.length}>
-          <SectionBody>
-            {reachable === null ? (
-              <p className="faint">{g.noGithub}</p>
-            ) : (
-              <>
-                <p>{g.reachableHint}</p>
-                {toLink.length === 0 && (
-                  <p className="faint">{reachable.length === 0 ? g.noneReachable : g.allLinked}</p>
-                )}
-              </>
-            )}
-          </SectionBody>
+          {reachable !== null && toLink.length > 0 && (
+            <SectionBody>
+              <p>{g.reachableHint}</p>
+            </SectionBody>
+          )}
+          {reachable === null ? (
+            <EmptyState compact title={g.noGithub} />
+          ) : (
+            toLink.length === 0 && <EmptyState compact title={reachable.length === 0 ? g.noneReachable : g.allLinked} />
+          )}
           {toLink.map((i) => (
             <Row key={i.id}>
-              <RowText title={i.account} line={<span className="mono">{i.id}</span>} />
+              <RowIcon>
+                <Dot color="var(--text-4)" />
+              </RowIcon>
+              <RowText title={i.account} />
               <RowSide>
-                <form action={linkGithubInstallation}>
+                <Form action={linkGithubInstallation}>
                   <input type="hidden" name="installation" value={i.id} />
-                  <button type="submit" className="btn is-primary">
-                    {g.link}
-                  </button>
-                </form>
+                  <Button tone="primary">{g.link}</Button>
+                </Form>
               </RowSide>
+              <RowTime>{i.id}</RowTime>
             </Row>
           ))}
         </Section>

@@ -1,11 +1,13 @@
 "use client";
 
-// Creates an organization API key and shows it once, with a button to copy
-// it: Armada keeps only its hash, so a key not copied now is lost.
+// Creates an organization API key and shows it once, in a card with a button
+// to copy it: Armada keeps only its hash, so a key not copied now is lost.
 import { useActionState } from "react";
 import { type ApiKeyState, createApiKey } from "@/app/auth-actions";
 import { CopyLink } from "@/components/CopyLink";
 import { type Language, STRINGS } from "@/lib/i18n";
+import { Button, Card, CardHead, Form, Input, Notice } from "./page";
+import { Dot } from "./ui";
 
 export function ApiKeyForm({ lang }: { lang: Language }) {
   const t = STRINGS[lang].org;
@@ -13,28 +15,26 @@ export function ApiKeyForm({ lang }: { lang: Language }) {
   return (
     <>
       {state && "key" in state && (
-        <div className="secret-once" role="status">
-          <p className="login-notice">{t.apiKeyCreated(state.name)}</p>
-          <code className="mono">{state.key}</code>
-          <span className="row-actions">
+        <Card className="ui-secret">
+          <CardHead icon={<Dot color="var(--done)" />} label={t.apiKeyCreated(state.name)} color="var(--text)" />
+          <code className="mono ui-secret-value" role="status">
+            {state.key}
+          </code>
+          <span>
             <CopyLink url={state.key} label={t.copyKey} done={t.copied} />
           </span>
-        </div>
+        </Card>
       )}
-      {state && "error" in state && (
-        <p className="login-error" role="alert">
-          {t.errors[state.error]}
-        </p>
-      )}
-      <form action={action} className="invite-form">
+      {state && "error" in state && <Notice tone="critical">{t.errors[state.error]}</Notice>}
+      <Form action={action} grow>
         <label className="sr-only" htmlFor="api-key-name">
           {t.apiKeyName}
         </label>
-        <input id="api-key-name" name="name" required maxLength={32} placeholder={t.apiKeyName} autoComplete="off" />
-        <button type="submit" className="btn is-primary" disabled={pending}>
+        <Input id="api-key-name" name="name" required maxLength={32} placeholder={t.apiKeyName} autoComplete="off" />
+        <Button tone="primary" disabled={pending}>
           {t.createApiKey}
-        </button>
-      </form>
+        </Button>
+      </Form>
     </>
   );
 }

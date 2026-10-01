@@ -621,7 +621,6 @@ function Agent({
                 pending={openRequest(project, "release-request", (i) => i.ticket === row.id)}
                 coordinator={coordinator?.state ?? "unknown"}
                 hint={a.releaseHint}
-                className="sc-release"
               />
             </SectionBody>
           </>
