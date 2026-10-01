@@ -2,6 +2,7 @@
 // it. Linear is written first and is the record; the fleet's live data gets
 // the detail afterwards, through Armada, and any failure there becomes a
 // warning, never a failure.
+import { ArmadaApiError } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
@@ -83,9 +84,12 @@ export async function live<T>(
       }),
     ]);
   } catch (err) {
-    warnings.push(
-      `Armada: could not ${what} (${err instanceof Error ? err.message : String(err)}); Linear is up to date`,
-    );
+    // An outdated CLI says so once, whatever it tried.
+    const warning =
+      err instanceof ArmadaApiError && err.upgrade
+        ? err.message
+        : `Armada: could not ${what} (${err instanceof Error ? err.message : String(err)}); Linear is up to date`;
+    if (!warnings.includes(warning)) warnings.push(warning);
     return null;
   } finally {
     clearTimeout(timer);

@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { MINIMUM_CLI_VERSION } from "@armada/core/read";
 import { NextRequest } from "next/server";
+import { version } from "../../cli/package.json" with { type: "json" };
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
 import { accountsGuard } from "../lib/accounts-http.ts";
 import { type AuthSettings, accountsModeOf } from "../lib/accounts-settings.ts";
@@ -197,6 +199,9 @@ describe("without accounts", () => {
     const body = (await res.json()) as { error: string; next: string };
     expect(body.error).toContain("no accounts");
     expect(body.next).toContain("ARMADA_AUTH_");
+    // Every answer, a refusal too, names the CLIs it is for.
+    expect(res.headers.get("x-armada-cli-minimum")).toBe(MINIMUM_CLI_VERSION);
+    expect(res.headers.get("x-armada-cli-latest")).toBe(version);
 
     const passed = (r: Response) => r.headers.get("x-middleware-next") === "1";
     const password = { NODE_ENV: "production", ARMADA_DASHBOARD_PASSWORD: "synthetic password" };
@@ -273,6 +278,13 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
       { vault: () => vaultModeOf({ ARMADA_SECRETS_KEY: "short" }) },
     );
     expect(invalid.status).toBe(503);
+    // A CLI from before 0.2.0 still asks for the retired database's token, without a version: it is told to upgrade.
+    const old = await cli("POST", "credentials", { token: memberToken, body: { turso: null } }, deps);
+    expect(old.status).toBe(426);
+    expect(await old.json()).toEqual({
+      error: `this CLI is older than this server expects (${MINIMUM_CLI_VERSION} or newer)`,
+      next: `npm install -g @the-vibe-company/armada@${version}`,
+    });
     const anonymous = await keys({});
     expect(anonymous.res.status).toBe(401);
     expect(anonymous.body.next).toBe("armada login");

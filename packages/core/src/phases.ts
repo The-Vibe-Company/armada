@@ -14,7 +14,7 @@ export const TRANSITIONS: Record<LabelPhase, readonly LabelPhase[]> = {
   implementing: ["shipping"],
   // Review or CI can send the work back to implementation.
   shipping: ["implementing", "ready-to-merge"],
-  // The coordinator may ask for a rebase or a fix after the hand-back.
+  // The coordinator may ask to bring the default branch in, or for a fix, after the hand-back.
   "ready-to-merge": ["shipping"],
   // Unblocked work resumes where it stood; ready-to-merge still passes the gate.
   blocked: ["planning", "awaiting-approval", "implementing", "shipping", "ready-to-merge"],
@@ -61,7 +61,10 @@ export function handBackProblems({ pr, repository, sha, requiredChecks }: HandBa
     problems.push(`pull request #${pr.number} is in ${pr.repo}, not in the project repository ${repository}`);
   if (pr.state && pr.state !== "open") problems.push(`pull request #${pr.number} is ${pr.state}, not open`);
   if (pr.draft) problems.push(`pull request #${pr.number} is a draft; mark it ready for review`);
-  if (pr.mergeable === "CONFLICTING") problems.push(`pull request #${pr.number} conflicts with its base; rebase it`);
+  if (pr.mergeable === "CONFLICTING")
+    problems.push(
+      `pull request #${pr.number} conflicts with its base; bring the base branch in (rebase, or merge it into your branch)`,
+    );
   if (!pr.headSha) problems.push(`the head of pull request #${pr.number} could not be read from GitHub`);
   else if (sha && FULL_SHA.test(sha) && pr.headSha !== sha)
     problems.push(`${sha} is not the head of pull request #${pr.number} (head is ${pr.headSha}); push, then report`);

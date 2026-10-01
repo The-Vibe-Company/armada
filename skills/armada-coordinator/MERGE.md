@@ -1,13 +1,13 @@
 # Merging a pull request
 
-Run `armada merge <pr>` (add `--dry-run` to see the checklist only). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker session to archive. When a refusal names a rule, fix the cause (usually: ask the worker to rebase and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
+Run `armada merge <pr>` (add `--dry-run` to see the checklist only). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker session to archive. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
 
 ## Before
 
 1. The worker has handed back: `Agent phase` is `ready-to-merge` and you have the full 40-character head SHA it reported.
 2. `gh pr view <n> --json headRefOid,mergeStateStatus,isDraft,title` shows that SHA, `CLEAN`, not a draft, and a Commitizen title.
 3. `gh pr checks <n>` shows every required check passing.
-4. The head contains the current default branch: `git merge-base --is-ancestor origin/<default> <sha>`. If not, ask the worker to rebase.
+4. The head contains the current default branch: `git merge-base --is-ancestor origin/<default> <sha>`. If not, ask the worker to bring the default branch in (rebase, or merge it into their branch; never force-push a branch someone else pushed to).
 5. Semantic check: search the default branch for callers of anything the pull request deletes or renames.
 
 ## Merge

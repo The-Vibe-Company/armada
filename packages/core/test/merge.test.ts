@@ -216,7 +216,7 @@ describe("the checklist refuses, naming the rule", () => {
       (s) => {
         s.forge.comparison = { baseSha: BASE, status: "DIVERGED", behindBy: 2, aheadBy: 1 };
       },
-      "the head lacks 2 commits of main; ask the worker to rebase, or declare [gates] local_commands",
+      "the head lacks 2 commits of main; ask the worker to bring main in, or declare [gates] local_commands",
     ],
   ];
   for (const [name, arrange, problem] of cases)

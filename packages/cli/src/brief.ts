@@ -1,12 +1,13 @@
 // `armada brief <ticket>`: the launch prompt and settings for a new worker.
 // Prints variable names and whether this shell has them, never their values.
 // Signed in to Armada, it asks for a one-time launch token for the ticket and
-// puts it in the prompt: the worker's runtime then needs no key.
+// puts it in the prompt: the worker's runtime then needs no key. Only
+// `--prompt` prints that token; elsewhere it is hidden, so it never lands in
+// the coordinator's transcript.
 import {
   ArmadaApiError,
   type ArmadaConfig,
   armadaAddress,
-  armadaApi,
   type Brief,
   BriefError,
   type BriefLaunch,
@@ -18,6 +19,7 @@ import {
   ProfileError,
   STORED_KEYS,
 } from "@armada/core";
+import { apiOf } from "./api.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
@@ -25,6 +27,17 @@ export interface BriefArgs {
   rest: string[];
   options: Record<string, string>;
   json: boolean;
+}
+
+/** How a launch token shows outside `--prompt`. */
+export const HIDDEN_LAUNCH_TOKEN = "armada_launch_••••";
+
+/** The brief with its launch token hidden, for the human view and --json. */
+export function hideLaunchToken(b: Brief): Brief {
+  const token = b.launch?.command.match(/--launch-token (\S+)/)?.[1];
+  if (!b.launch || !token) return b;
+  const hide = (text: string) => text.replaceAll(token, HIDDEN_LAUNCH_TOKEN);
+  return { ...b, prompt: hide(b.prompt), launch: { ...b.launch, command: hide(b.launch.command) } };
 }
 
 export function renderBrief(b: Brief): string {
@@ -39,7 +52,7 @@ export function renderBrief(b: Brief): string {
     ...(b.routing ? [`Chosen by:   ${b.routing.why}`] : []),
     `Repository:  ${b.repository.url}`,
     `Branch:      ${b.ticket.branch ?? "none suggested by Linear"} (the worker renames its workspace branch to it)`,
-    `Launch:      ${b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`}`,
+    `Launch:      ${b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key\n             (shown as ${HIDDEN_LAUNCH_TOKEN} here; \`armada brief ${b.ticket.id} --prompt\` prints it)` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`}`,
     "",
     "Environment to pass (values are never printed):",
     ...b.environment.map((v) => {
@@ -73,7 +86,7 @@ function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
       };
     const url = credentials.armadaApi.url;
     try {
-      const t = await armadaApi({ url, ...(io.fetch ? { fetch: io.fetch } : {}) }).launchToken(signIn, {
+      const t = await apiOf(io, url).launchToken(signIn, {
         project: config.project.slug,
         ticket,
       });
@@ -134,7 +147,8 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
     return 0;
   }
   const next = await rearmFor(io, project, { inFlight, open: null });
-  if (a.json) io.stdout(`${JSON.stringify({ ...b, watch: next }, null, 2)}\n`);
-  else io.stdout(`${renderBrief(b)}\n\n----- once launched -----\n${next.line}\n`);
+  const shown = hideLaunchToken(b);
+  if (a.json) io.stdout(`${JSON.stringify({ ...shown, watch: next }, null, 2)}\n`);
+  else io.stdout(`${renderBrief(shown)}\n\n----- once launched -----\n${next.line}\n`);
   return 0;
 }

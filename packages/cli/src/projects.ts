@@ -1,14 +1,8 @@
 // `armada status --all`: the status of every project of the organization's
 // registry on Armada, each read with the armada.toml on its repository's
 // default branch.
-import {
-  type ArmadaProject,
-  armadaApi,
-  LINEAR_KEY,
-  loadStatus,
-  readProjectConfig,
-  type StatusReport,
-} from "@armada/core";
+import { type ArmadaProject, LINEAR_KEY, loadStatus, readProjectConfig, type StatusReport } from "@armada/core";
+import { apiOf } from "./api.ts";
 import { loadCredentials } from "./auth.ts";
 import { type Io, missingKey } from "./io.ts";
 import { requireSignIn } from "./login.ts";
@@ -38,7 +32,7 @@ export async function statusAll(io: Io, json: boolean): Promise<number> {
   const signIn = requireSignIn(credentials);
   const linearApiKey = credentials.linearApiKey;
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
-  const api = armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+  const api = apiOf(io, credentials.armadaApi.url);
   const records: ArmadaProject[] = await api.projects(signIn);
 
   const projects = await Promise.all(

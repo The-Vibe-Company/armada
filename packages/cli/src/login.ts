@@ -11,7 +11,6 @@ import {
   type ArmadaSignIn,
   apiBaseUrl,
   armadaAddress,
-  armadaApi,
   type CredentialSource,
   type Credentials,
   DEFAULT_ARMADA_API_URL,
@@ -27,6 +26,7 @@ import {
   waitForApproval,
   workerSessionVariable,
 } from "@armada/core";
+import { apiOf } from "./api.ts";
 import { loadCredentials, type Machine } from "./auth.ts";
 import { type Io, UsageError } from "./io.ts";
 
@@ -39,8 +39,6 @@ export const hostOf = (url: string) => {
 };
 
 const RETIRED = Object.fromEntries(RETIRED_VARIABLES.map((v) => [v, null]));
-
-const apiOf = (io: Io, url: string) => armadaApi({ url, ...(io.fetch ? { fetch: io.fetch } : {}) });
 
 /** The Armada the stored sign-in belongs to; its token is sent to no other. */
 const storedAt = (machine: Machine) =>

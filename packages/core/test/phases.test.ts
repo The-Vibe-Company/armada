@@ -62,7 +62,7 @@ describe("hand-back gate", () => {
     expect(gate({ pr: pr({ state: "merged" }) })).toEqual(["pull request #9 is merged, not open"]);
     expect(gate({ pr: pr({ draft: true, mergeable: "CONFLICTING" }) })).toEqual([
       "pull request #9 is a draft; mark it ready for review",
-      "pull request #9 conflicts with its base; rebase it",
+      "pull request #9 conflicts with its base; bring the base branch in (rebase, or merge it into your branch)",
     ]);
     expect(gate({ pr: pr({ repo: "acme/other" }) })).toEqual([
       "pull request #9 is in acme/other, not in the project repository acme/widgets",

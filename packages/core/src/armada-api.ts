@@ -97,9 +97,53 @@ export type DevicePoll =
   | { state: "denied" }
   | { state: "expired" };
 
+/** The CLI's npm package, as the upgrade line names it. */
+export const CLI_PACKAGE = "@the-vibe-company/armada";
+/** Sent on every call: the version of the CLI that calls. */
+export const CLI_VERSION_HEADER = "x-armada-cli-version";
+/** On every answer of /api/cli: the oldest CLI that reads it right, and the latest one. */
+export const CLI_MINIMUM_HEADER = "x-armada-cli-minimum";
+export const CLI_LATEST_HEADER = "x-armada-cli-latest";
+/**
+ * The oldest CLI that reads every answer of /api/cli right. Raise it with a
+ * breaking change to an answer: an older CLI is then told to upgrade instead
+ * of failing on a shape it does not know.
+ */
+export const MINIMUM_CLI_VERSION = "0.2.0";
+
+/** Compares two x.y.z versions by number; a pre-release suffix is ignored. */
+export function compareVersions(a: string, b: string): number {
+  const parts = (v: string) =>
+    v
+      .split(/[-+]/)[0]
+      ?.split(".")
+      .map((n) => Number.parseInt(n, 10) || 0) ?? [];
+  const [x, y] = [parts(a), parts(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d) return Math.sign(d);
+  }
+  return 0;
+}
+
+/** The command that installs `version` of the CLI. */
+export const installCommand = (version: string) => `npm install -g ${CLI_PACKAGE}@${version}`;
+
+/** The one line an outdated CLI prints. */
+export const upgradeLine = (version: string, install: string) =>
+  `Armada ${version} is older than this server expects: ${installCommand(install)}`;
+
+/** What a server said of the CLIs it serves, from the headers of its last answer. */
+export interface ServerCli {
+  minimum: string;
+  latest: string | null;
+}
+
 /**
  * A refusal or failure of the Armada API. `signedOut` means the credential is
- * missing, expired or revoked; `next` is the step the server or the CLI names.
+ * missing, expired or revoked; `next` is the step the server or the CLI names;
+ * `upgrade` is the CLI version to install when this one is older than the
+ * server expects (the message is then the upgrade line).
  */
 export class ArmadaApiError extends Error {
   constructor(
@@ -108,6 +152,7 @@ export class ArmadaApiError extends Error {
     readonly signedOut = false,
     /** The HTTP status of a refusal; null when Armada did not answer. */
     readonly status: number | null = null,
+    readonly upgrade: string | null = null,
   ) {
     super(message);
   }
@@ -145,6 +190,8 @@ export interface ArmadaApiOptions {
   url: string;
   fetch?: Fetch;
   timeoutMs?: number;
+  /** This CLI's version: sent on every call, and compared with the oldest the server expects. */
+  version?: string;
 }
 
 export function armadaApi(opts: ArmadaApiOptions) {
@@ -152,6 +199,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
   const doFetch = opts.fetch ?? fetch;
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
   const host = base.host;
+  let serverCli: ServerCli | null = null;
 
   async function call(
     method: string,
@@ -164,6 +212,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
     if (init.signIn?.kind === "session" || init.signIn?.kind === "worker")
       headers.Authorization = `Bearer ${init.signIn.token}`;
     if (init.signIn?.kind === "api-key") headers["x-api-key"] = init.signIn.key;
+    if (opts.version) headers[CLI_VERSION_HEADER] = opts.version;
     const res = await doFetch(new URL(`api/cli/${path}`, base).toString(), {
       method,
       headers,
@@ -175,6 +224,14 @@ export function armadaApi(opts: ArmadaApiOptions) {
         "the same command again once it answers, or check ARMADA_API_URL",
       );
     });
+    // Whatever it answered, an older CLI than the server expects cannot trust its reading of it.
+    const minimum = res.headers.get(CLI_MINIMUM_HEADER);
+    const latest = res.headers.get(CLI_LATEST_HEADER) || null;
+    if (minimum) serverCli = { minimum, latest };
+    if (opts.version && minimum && compareVersions(opts.version, minimum) < 0) {
+      const install = latest ?? minimum;
+      throw new ArmadaApiError(upgradeLine(opts.version, install), null, false, res.status, install);
+    }
     // Not modified: no body to read (an unchanged inbox).
     if (res.status === 304) return { status: 304, body: {} };
     const body = (await res.json().catch(() => null)) as unknown;
@@ -194,6 +251,9 @@ export function armadaApi(opts: ArmadaApiOptions) {
   };
 
   return {
+    /** What the server said of the CLIs it serves, from its last answer; null before one, or from an older server. */
+    serverCli: () => serverCli,
+
     /** Starts `armada login`: a code for the person to confirm in the browser. */
     async startDeviceLogin(): Promise<DeviceCode> {
       const { status, body } = await call("POST", "device/code");
