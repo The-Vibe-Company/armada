@@ -131,6 +131,18 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
     try {
       const config = parseConfig(configText, CONFIG_FILE);
       checks.push(ok("config", `${CONFIG_FILE} is valid (project ${config.project.slug})`));
+      const extra = config.brief.extra;
+      if (extra)
+        checks.push(
+          (await view.readFile(extra)) === null
+            ? bad(
+                "brief-extra",
+                "warning",
+                `[brief] extra names ${extra}, which is missing: briefs go out without the project conventions`,
+                `add ${extra}, or fix the path in ${CONFIG_FILE}`,
+              )
+            : ok("brief-extra", `${extra} goes into every brief as the project conventions`),
+        );
     } catch (err) {
       if (!(err instanceof ConfigError)) throw err;
       checks.push(bad("config", "error", err.message, `fix the keys listed above in ${CONFIG_FILE}`));
