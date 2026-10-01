@@ -1,14 +1,14 @@
 // The main interactions of the dashboard, measured in Chrome with a slower CPU
 // (THE-892; `bun run perf inp <url>`, on the `large` demo world): Playwright
 // drives the page, the Event Timing API gives each interaction's time from
-// input to next paint, as INP counts it. Each one runs three times and the
-// slowest counts.
+// input to next paint, as INP counts it. Each one runs five times and the
+// median counts: one run that meets a poll's re-render or a GC is noise.
 import { type Browser, chromium, type Page } from "playwright-core";
 import type { Interaction } from "./perf";
 
 /** The agent of the `large` world with hundreds of activity entries. */
 const LONG_AGENT = "WID-400";
-const RUNS = 3;
+const RUNS = 5;
 /** The pages it opens. */
 export const INP_PAGES = ["/agents", `/agents/${LONG_AGENT}`, "/"];
 
@@ -59,14 +59,14 @@ async function measure(page: Page, act: () => Promise<void>): Promise<number> {
   );
 }
 
-async function worst(page: Page, act: () => Promise<void>, reset?: () => Promise<void>): Promise<number> {
-  let ms = 0;
+async function typical(page: Page, act: () => Promise<void>, reset?: () => Promise<void>): Promise<number> {
+  const runs: number[] = [];
   for (let k = 0; k < RUNS; k++) {
-    ms = Math.max(ms, await measure(page, act));
+    runs.push(await measure(page, act));
     if (reset) await reset();
     await page.waitForTimeout(500);
   }
-  return ms;
+  return runs.sort((a, b) => a - b)[Math.floor(RUNS / 2)] as number;
 }
 
 export async function measureInteractions(base: string, cookie: string, slowdown: number): Promise<Interaction[]> {
@@ -81,7 +81,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     const rows = await agents.locator("a[data-row]").count();
     out.push({
       name: `Open the ⌘K palette (/agents, ${rows} rows)`,
-      ms: await worst(
+      ms: await typical(
         agents,
         async () => {
           await agents.keyboard.press("Control+k");
@@ -95,7 +95,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     });
     out.push({
       name: "Filter the agents by harness",
-      ms: await worst(
+      ms: await typical(
         agents,
         async () => {
           await agents.locator('a[role="tab"][href="/agents?harness=claude-code"]').click();
@@ -114,7 +114,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     const tab = (to: string) => agent.locator(`a[role="tab"][href="/agents/${LONG_AGENT}${to}"]`);
     out.push({
       name: "Switch an agent's tab (to Files)",
-      ms: await worst(
+      ms: await typical(
         agent,
         async () => {
           await tab("?tab=files").click();
@@ -128,7 +128,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     });
     out.push({
       name: `Switch an agent's tab (back to its ${entries}-row activity)`,
-      ms: await worst(
+      ms: await typical(
         agent,
         async () => {
           await tab("").click();

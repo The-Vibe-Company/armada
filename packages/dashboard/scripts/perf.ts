@@ -156,7 +156,7 @@ export function checkPages(results: PageResult[], budgets: Budget[]): Breach[] {
 
 export interface Interaction {
   name: string;
-  /** The longest event of the interaction, ms (Event Timing: input to next paint); 0 under 16 ms. */
+  /** The interaction's longest event, ms (Event Timing: input to next paint), median of its runs; 0 under 16 ms. */
   ms: number;
 }
 
@@ -240,7 +240,7 @@ export function markdown(report: Report): string {
     lines.push(
       `**Interactions** (input to next paint, CPU ${inp.slowdown}× slower; budget ${inp.maxMs} ms)`,
       "",
-      "| Interaction | Longest |",
+      "| Interaction | Median of 5 |",
       "|---|---|",
     );
     for (const i of inp.interactions) lines.push(`| ${i.name} | ${i.ms ? `${i.ms} ms` : "< 16 ms"} |`);
