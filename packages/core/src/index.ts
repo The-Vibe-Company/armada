@@ -22,6 +22,7 @@ export * from "./routing.ts";
 export * from "./setup.ts";
 export * from "./skills.ts";
 export * from "./status.ts";
+export * from "./timeline.ts";
 export * from "./types.ts";
 export * from "./watch.ts";
 export * from "./worker.ts";
