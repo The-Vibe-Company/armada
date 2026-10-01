@@ -56,6 +56,7 @@ export interface SessionTimeline {
   startedAt: string;
   phases: PhaseSegment[];
   reports: string[];
+  heartbeats?: string[];
   /** The one going on now has no end (`to` null): the body stays the same from one poll to the next. */
   silences: { from: string; to: string | null }[];
   prOpenedAt: string | null;
@@ -115,7 +116,10 @@ function marksOf(comments: Comment[], events: HistoryEvent[]): Mark[] {
 }
 
 export function sessionTimeline(input: {
-  ticket: Pick<InFlightTicket, "phase" | "since" | "lastReport" | "lastUpdate" | "silent" | "statusLine" | "pr">;
+  ticket: Pick<
+    InFlightTicket,
+    "phase" | "since" | "lastReport" | "lastHeartbeat" | "lastUpdate" | "silent" | "statusLine" | "pr"
+  >;
   history: TimelineHistory;
   silentAfterMinutes: number;
   now: Date;
@@ -155,25 +159,37 @@ export function sessionTimeline(input: {
     })
     .filter((s) => (s.to === null ? true : Date.parse(s.to) > windowStart));
 
-  // Silences: the gaps between reports, while the phase was the worker's to move.
+  // Old clients keep report-based silence until their first heartbeat.
   const times = marks.map((m) => m.at);
+  const heartbeats = (input.history?.events ?? [])
+    .filter((event) => event.kind === "heartbeat")
+    .map((event) => Date.parse(event.at))
+    .filter((at) => at >= runStart && at <= now);
+  const firstHeartbeat = Math.min(...heartbeats);
+  const life = [...new Set([...times.filter((at) => at <= firstHeartbeat), ...heartbeats])].sort(
+    (first, second) => first - second,
+  );
   const phaseAt = (t: number) => all.findLast((s) => s.from <= t)?.phase ?? all[0]?.phase ?? ticket.phase;
   const quiet = (phase: AgentPhase) => !NEEDS_HUMAN.includes(phase) && phase !== "merged";
   const silences: SessionTimeline["silences"] = [];
-  for (let k = 1; k < times.length; k++) {
-    const a = times[k - 1] as number;
-    const b = times[k] as number;
+  for (let k = 1; k < life.length; k++) {
+    const a = life[k - 1] as number;
+    const b = life[k] as number;
     if (b - a > input.silentAfterMinutes * MIN && b > windowStart && quiet(phaseAt(a)))
       silences.push({ from: iso(a), to: iso(b) });
   }
   // The silence going on now is the row's own: from its last report, as the `silent` flag counts it, within the run.
   if (ticket.silent)
-    silences.push({ from: iso(Math.max(Date.parse(ticket.lastReport ?? ticket.lastUpdate), runStart)), to: null });
+    silences.push({
+      from: iso(Math.max(Date.parse(ticket.lastHeartbeat ?? ticket.lastReport ?? ticket.lastUpdate), runStart)),
+      to: null,
+    });
 
   return {
     startedAt: iso(runStart),
     phases,
     reports: [...new Set(times.filter((t) => t >= windowStart && t <= now))].map(iso),
+    heartbeats: heartbeats.filter((at) => at >= windowStart).map(iso),
     silences,
     prOpenedAt: ticket.pr?.createdAt ?? null,
   };

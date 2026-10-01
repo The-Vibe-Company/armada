@@ -32,7 +32,7 @@ export interface ProjectRecord extends ProjectInput {
 }
 
 /** `inbox`: the coordinator read its inbox; it carries no ticket. */
-export type EventKind = "claim" | "report" | "release" | "merge" | "inbox";
+export type EventKind = "claim" | "report" | "heartbeat" | "release" | "merge" | "inbox";
 
 export interface EventInput {
   project: string;
@@ -68,6 +68,19 @@ export interface RuntimeHandle {
   releasedAt: string | null;
   /** Conductor profile the claim named, null when it named none. */
   profile: string | null;
+  lastHeartbeatAt?: string | null;
+  workerSessionId?: string | null;
+}
+
+export interface HeartbeatRecord {
+  ticket: string;
+  handle: string;
+  claimedAt?: string | null;
+}
+
+export interface HeartbeatResult {
+  active: boolean;
+  claimedAt: string | null;
 }
 
 export interface WorkerProfile {
@@ -225,6 +238,10 @@ export interface FleetStore {
   listProjects(): Promise<ProjectRecord[]>;
 
   recordEvent(e: EventInput): Promise<void>;
+  recordHeartbeat(
+    input: HeartbeatRecord & { project: string; workerSessionId?: string | null; at: Date },
+  ): Promise<HeartbeatResult>;
+  heartbeatTimes(project: string): Promise<Record<string, string>>;
   /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
   lastEventTimes(project: string): Promise<Record<string, string>>;
   /** The newest event of every ticket of a project; with `since`, only tickets with an event since then. */
@@ -246,6 +263,7 @@ export interface FleetStore {
     runtime: string;
     handle: string;
     branch: string | null;
+    workerSessionId?: string | null;
     at: Date;
   }): Promise<void>;
   /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
@@ -312,6 +330,7 @@ export interface ClaimRecord {
   /** The same session claimed again: its profile and the launch requests stay as they are. */
   resuming: boolean;
   profile: WorkerProfile | null;
+  workerSessionId?: string | null;
 }
 
 /** A claim: the session holding the ticket, its profile, the event; the launch the owner asked for is done. */
@@ -322,6 +341,7 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
     runtime: c.runtime,
     handle: c.handle,
     branch: c.branch,
+    workerSessionId: c.workerSessionId,
     at,
   });
   // A new claim replaces the profile of an earlier one; a resume keeps it.
@@ -545,7 +565,7 @@ const MIN = 60_000;
  * claimed (both read from the fleet, they clear on their own); `version`: a
  * newer Armada is out (`armada watch` only, never stored).
  */
-export type InboxEntryKind = InboxKind | "silent" | "not-started" | "version";
+export type InboxEntryKind = InboxKind | "silent" | "quiet" | "not-started" | "version";
 
 export interface InboxEntry {
   /**
@@ -597,6 +617,7 @@ export interface InboxReadOptions {
   coordinator?: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  quietAfterMinutes?: number;
   /** `policy.not_started_minutes`; its default when absent. */
   notStartedMinutes?: number;
   now: Date;
@@ -624,10 +645,11 @@ export const notStartedLaunches = (launches: readonly PendingLaunch[], now: Date
 /**
  * What waits for the coordinator, oldest first: open questions, requests and
  * hand-backs, workers launched that never claimed (`not-started`), and silent workers. A worker is silent when it holds a ticket
- * (open runtime handle), its newest event is older than the silence threshold,
+ * (open runtime handle), its last heartbeat is older than the silence threshold
+ * (its newest report for old clients),
  * and its phase does not wait on someone else (awaiting-approval, blocked,
  * ready-to-merge). An answer given after its newest event means it owes a
- * report: silence then counts from the answer, whatever the phase. Events and
+ * report: old-client silence then counts from the answer, whatever the phase. Events and
  * answers are read only since the oldest open claim (each claim records an
  * event), so the read stays bounded by the work in flight, not the history.
  */
@@ -678,15 +700,21 @@ async function readInboxAndFlight(
     const owesReport = !!answer && answer > reported;
     if (!owesReport && NEEDS_HUMAN.includes(e?.phase as AgentPhase)) continue;
     const last = owesReport ? answer : reported;
+    const alive = h.lastHeartbeatAt ?? last;
+    const silence = now - Date.parse(alive);
     const quiet = now - Date.parse(last);
-    if (quiet <= o.silentAfterMinutes * MIN) continue;
+    const silent = silence > o.silentAfterMinutes * MIN;
+    if (!silent && (!h.lastHeartbeatAt || quiet <= (o.quietAfterMinutes ?? CONFIG_DEFAULTS.quietAfterMinutes) * MIN))
+      continue;
     entries.push({
       id: null,
-      kind: "silent",
+      kind: silent ? "silent" : "quiet",
       ticket: h.ticket,
       author: h.handle,
-      body: `no report for ${Math.floor(quiet / MIN)} min${owesReport ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`,
-      createdAt: last,
+      body: silent
+        ? `no ${h.lastHeartbeatAt ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${owesReport && !h.lastHeartbeatAt ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
+        : `${h.ticket} has been working ${Math.floor(quiet / MIN)} min without a report (heartbeats are arriving, phase ${e?.phase ?? "unknown"})`,
+      createdAt: silent ? alive : last,
       new: false,
     });
   }
@@ -715,6 +743,7 @@ export interface InboxQuery {
   facts?: CoordinatorFacts;
   coordinator: string | null;
   silentAfterMinutes: number;
+  quietAfterMinutes?: number;
   /** `policy.not_started_minutes`; Armada uses its default for an older CLI that does not send it. */
   notStartedMinutes?: number;
   /**
@@ -786,6 +815,7 @@ export async function serveInbox(
     project,
     coordinator: q.coordinator,
     silentAfterMinutes: q.silentAfterMinutes,
+    quietAfterMinutes: q.quietAfterMinutes,
     ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
     now,
   });
@@ -823,6 +853,8 @@ export interface Fleet {
   register(): Promise<void>;
   /** Time of the newest event of every ticket (`armada status`). */
   lastEventTimes(): Promise<Record<string, string>>;
+  heartbeatTimes(): Promise<Record<string, string>>;
+  heartbeat(input: HeartbeatRecord): Promise<HeartbeatResult>;
   /** Launches no claim followed yet, within the last day (`armada status`). */
   pendingLaunches(): Promise<PendingLaunch[]>;
   claim(c: ClaimRecord): Promise<InboxItem[]>;

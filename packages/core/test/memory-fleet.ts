@@ -133,14 +133,20 @@ export function memoryFleet(): FleetStore & {
     async lastEventTimes(project) {
       const out: Record<string, string> = {};
       for (const e of events)
-        if (e.project === project && e.ticket && (!out[e.ticket] || e.at > (out[e.ticket] ?? ""))) out[e.ticket] = e.at;
+        if (
+          e.kind !== "heartbeat" &&
+          e.project === project &&
+          e.ticket &&
+          (!out[e.ticket] || e.at > (out[e.ticket] ?? ""))
+        )
+          out[e.ticket] = e.at;
       return out;
     },
     async latestEvents(project, opts = {}) {
       const since = opts.since?.toISOString() ?? "";
       const out: Record<string, EventRow> = {};
       for (const e of events) {
-        if (e.project !== project || !e.ticket || e.at < since) continue;
+        if (e.kind === "heartbeat" || e.project !== project || !e.ticket || e.at < since) continue;
         const was = out[e.ticket];
         if (!was || e.at > was.at || (e.at === was.at && e.id > was.id)) out[e.ticket] = e;
       }
@@ -233,7 +239,11 @@ export function memoryFleet(): FleetStore & {
     },
     async saveRuntimeHandle(h) {
       const was = handles.get(key(h.project, h.ticket));
-      const same = was && was.handle === h.handle && !was.releasedAt;
+      const same =
+        was &&
+        was.handle === h.handle &&
+        !was.releasedAt &&
+        (was.workerSessionId ?? null) === (h.workerSessionId ?? null);
       if (!same) {
         const previous = sessions.find(
           (session) => session.project === h.project && session.ticket === h.ticket && !session.releasedAt,
@@ -262,7 +272,45 @@ export function memoryFleet(): FleetStore & {
         branch: h.branch,
         claimedAt: same ? was.claimedAt : h.at.toISOString(),
         releasedAt: null,
+        lastHeartbeatAt: same && was.workerSessionId === h.workerSessionId ? was.lastHeartbeatAt : null,
+        workerSessionId: h.workerSessionId,
       });
+    },
+    async heartbeatTimes(project) {
+      return Object.fromEntries(
+        [...handles.values()]
+          .filter((handle) => handle.project === project && !handle.releasedAt && handle.lastHeartbeatAt)
+          .map((handle) => [handle.ticket, handle.lastHeartbeatAt as string]),
+      );
+    },
+    async recordHeartbeat(input) {
+      const handle = handles.get(key(input.project, input.ticket));
+      if (
+        !handle ||
+        handle.releasedAt ||
+        handle.handle !== input.handle ||
+        (input.claimedAt && input.claimedAt !== handle.claimedAt) ||
+        (handle.workerSessionId ?? null) !== (input.workerSessionId ?? null)
+      )
+        return { active: false, claimedAt: null };
+      handle.lastHeartbeatAt = input.at.toISOString();
+      const session = sessions.find(
+        (session) =>
+          session.project === input.project &&
+          session.ticket === input.ticket &&
+          session.handle === input.handle &&
+          session.claimedAt === handle.claimedAt &&
+          !session.releasedAt,
+      );
+      if (session) session.lastHeartbeatAt = handle.lastHeartbeatAt;
+      await this.recordEvent({
+        project: input.project,
+        ticket: input.ticket,
+        handle: input.handle,
+        kind: "heartbeat",
+        at: input.at,
+      });
+      return { active: true, claimedAt: handle.claimedAt };
     },
     async releaseRuntimeHandle(project, ticket, at) {
       for (const session of sessions)

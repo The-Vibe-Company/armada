@@ -13,6 +13,8 @@ Armada never calls a runtime. This guide tells a coordinator running inside Clau
 
 ## Launch
 
+The brief starts a heartbeat immediately after claim. Run the heartbeat command in the subagent's **background Bash** (`run_in_background: true`), with `--parent "$PPID"` and its claim's `--handle`; do not use `--background`, `nohup` or `setsid` here. A subagent's background Bash dies with the subagent, which is the intended behaviour: detaching it could falsely keep a finished subagent alive while the coordinator's process still runs. It also stops when Armada ends its session (release, merge, revoke). If a runtime cannot keep any background Bash, report the fallback on the ticket and keep today's manual reports at least every 15 minutes. Report actual progress at meaningful steps even when heartbeats run.
+
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
 2. Run `armada brief ABC-12`, right before the launch. A matching label rule wins. If it prints **Choose a profile**, read the ticket and parent, match the profiles' `when` rules by most files/work and rerun with `--profile <name> --reason "<why>"`. Mixed front-end/back-end work: choose the larger part and say why. Use those flags also for a label-route override and keep them on every subsequent `--prompt` call. Its `Runtime:` line must say `claude-code`: the profile has `runtime = "claude-code"` in `armada.toml`. Read the profile (model), the `Launch:` line and the warnings, and resolve every warning first. The profile's effort is not applied by the Agent tool; a worker that needs a set effort goes to Conductor.
    - `Launch: one-time token in the prompt` is the normal case. `Launch: no launch token (…)` says why: usually `armada login`, then brief again.

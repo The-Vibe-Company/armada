@@ -361,6 +361,30 @@ const SessionRow = memo(function SessionRow({
               />
             );
           })}
+          {(tl.heartbeats ?? []).map((at, index, beats) => {
+            const next = beats[index + 1];
+            const from = Math.max(scale.start, Date.parse(at));
+            const to = Math.min(scale.end, next ? Date.parse(next) : scale.end);
+            if (
+              to < scale.start ||
+              from > scale.end ||
+              to <= from ||
+              tl.silences.some((gap) => Date.parse(gap.from) <= from && (gap.to === null || Date.parse(gap.to) >= to))
+            )
+              return null;
+            return (
+              <line
+                key={`heartbeat-${at}`}
+                x1={pc(scale.x(from))}
+                x2={pc(scale.x(to))}
+                y1={MID + 10}
+                y2={MID + 10}
+                stroke={color}
+                strokeWidth="2"
+                strokeLinecap="round"
+              />
+            );
+          })}
           {tl.reports.map((at) =>
             Date.parse(at) < scale.start ? null : (
               <circle

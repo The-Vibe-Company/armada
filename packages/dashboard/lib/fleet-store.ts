@@ -11,6 +11,8 @@ import type {
   CoordinatorSeen,
   EventInput,
   FleetStore,
+  HeartbeatRecord,
+  HeartbeatResult,
   HistoryEvent,
   InboxItem,
   InboxKind,
@@ -175,7 +177,7 @@ export async function recordEvent(db: Queryable, e: EventInput): Promise<void> {
 /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
 export async function lastEventTimes(db: Queryable, project: string): Promise<Record<string, string>> {
   const rs = await db.query(
-    "SELECT ticket, max(created_at) AS at FROM events WHERE project = $1 AND ticket <> '' GROUP BY ticket",
+    "SELECT ticket, max(created_at) AS at FROM events WHERE project = $1 AND ticket <> '' AND kind <> 'heartbeat' GROUP BY ticket",
     [project],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
@@ -189,7 +191,7 @@ export async function latestEvents(
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
     `SELECT DISTINCT ON (ticket) ticket, kind, phase, message, runtime, handle, pr_url, created_at
-     FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> ''
+     FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind <> 'heartbeat'
      ORDER BY ticket, created_at DESC, id DESC`,
     [project, opts.since ?? new Date(0)],
   );
@@ -237,7 +239,7 @@ export async function ticketEvents(db: Queryable, project: string, ticket: strin
 export async function recentEvents(db: Queryable, project: string, since: Date): Promise<HistoryEvent[]> {
   const rs = await db.query(
     `SELECT ticket, kind, phase, message, created_at FROM events
-     WHERE project = $1 AND created_at >= $2 AND kind IN ('claim', 'report', 'release', 'merge')
+     WHERE project = $1 AND created_at >= $2 AND kind IN ('claim', 'report', 'heartbeat', 'release', 'merge')
      ORDER BY created_at, id`,
     [project, since],
   );
@@ -399,23 +401,37 @@ export async function getWorkerProfile(db: Queryable, project: string, ticket: s
 /** Records the session now holding a ticket; a new claim replaces a released one, the same session keeps its claim time. */
 export async function saveRuntimeHandle(
   db: Queryable,
-  h: { project: string; ticket: string; runtime: string; handle: string; branch: string | null; at: Date },
+  h: {
+    project: string;
+    ticket: string;
+    runtime: string;
+    handle: string;
+    branch: string | null;
+    workerSessionId?: string | null;
+    at: Date;
+  },
 ): Promise<void> {
   await db.query(
     `WITH previous_sessions AS (
-       UPDATE fleet_sessions SET released_at = $6 WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND handle <> $4
+       UPDATE fleet_sessions SET released_at = $6 WHERE project = $1 AND ticket = $2 AND released_at IS NULL
+         AND (handle <> $4 OR EXISTS (SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = $2 AND h.worker_session_id IS DISTINCT FROM $7::text))
      ), current_handle AS (
-       INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NULL)
+       INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at, worker_session_id)
+     VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)
      ON CONFLICT (project, ticket) DO UPDATE SET
        claimed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
+                         AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
                          THEN runtime_handles.claimed_at ELSE excluded.claimed_at END,
+       heartbeat_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
+                         AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
+                         THEN runtime_handles.heartbeat_at ELSE NULL END,
+       worker_session_id = excluded.worker_session_id,
        runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch, released_at = NULL
        RETURNING project, ticket, runtime, handle, branch, claimed_at
      ) INSERT INTO fleet_sessions (project, ticket, runtime, handle, branch, claimed_at)
      SELECT project, ticket, runtime, handle, branch, claimed_at FROM current_handle
      ON CONFLICT (project, ticket, handle, claimed_at) DO UPDATE SET branch = excluded.branch`,
-    [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at],
+    [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at, h.workerSessionId ?? null],
   );
 }
 
@@ -434,7 +450,7 @@ export async function releaseRuntimeHandle(db: Database, project: string, ticket
   });
 }
 
-const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, p.profile
+const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, p.profile
   FROM runtime_handles h LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket`;
 
 const handleOf = (r: Row): RuntimeHandle => ({
@@ -446,7 +462,41 @@ const handleOf = (r: Row): RuntimeHandle => ({
   claimedAt: isoAt(r.claimed_at),
   releasedAt: iso(r.released_at),
   profile: text(r.profile),
+  ...(r.heartbeat_at == null ? {} : { lastHeartbeatAt: isoAt(r.heartbeat_at) }),
+  ...(r.worker_session_id == null ? {} : { workerSessionId: String(r.worker_session_id) }),
 });
+
+export async function recordHeartbeat(
+  db: Queryable,
+  input: HeartbeatRecord & { project: string; workerSessionId?: string | null; at: Date },
+): Promise<HeartbeatResult> {
+  const result = await db.query(
+    `WITH current_session AS (
+       UPDATE runtime_handles SET heartbeat_at = GREATEST(heartbeat_at, $6)
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND released_at IS NULL
+         AND ($4::timestamptz IS NULL OR claimed_at = $4)
+         AND worker_session_id IS NOT DISTINCT FROM $5::text
+       RETURNING project, ticket, handle, claimed_at, runtime
+     ), session_liveness AS (
+       UPDATE fleet_sessions s SET heartbeat_at = GREATEST(s.heartbeat_at, $6)
+       FROM current_session h WHERE s.project = h.project AND s.ticket = h.ticket
+         AND s.handle = h.handle AND s.claimed_at = h.claimed_at AND s.released_at IS NULL
+     ), heartbeat_event AS (
+       INSERT INTO events (project, ticket, kind, runtime, handle, created_at)
+       SELECT project, ticket, 'heartbeat', runtime, handle, $6 FROM current_session
+     ) SELECT claimed_at FROM current_session`,
+    [input.project, input.ticket, input.handle, input.claimedAt ?? null, input.workerSessionId ?? null, input.at],
+  );
+  return { active: result.rows.length > 0, claimedAt: result.rows[0] ? isoAt(result.rows[0].claimed_at) : null };
+}
+
+export async function heartbeatTimes(db: Queryable, project: string): Promise<Record<string, string>> {
+  const result = await db.query(
+    "SELECT ticket, heartbeat_at FROM runtime_handles WHERE project = $1 AND released_at IS NULL AND heartbeat_at IS NOT NULL",
+    [project],
+  );
+  return Object.fromEntries(result.rows.map((row) => [String(row.ticket), isoAt(row.heartbeat_at)]));
+}
 
 /** Sessions still holding a ticket of the project (not released), by ticket id. */
 export async function openRuntimeHandles(db: Queryable, project: string): Promise<RuntimeHandle[]> {
@@ -841,6 +891,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
   recordEvent: (e) => recordEvent(db, e),
+  recordHeartbeat: (input) => recordHeartbeat(db, input),
+  heartbeatTimes: (project) => heartbeatTimes(db, project),
   lastEventTimes: (project) => lastEventTimes(db, project),
   latestEvents: (project, opts) => latestEvents(db, project, opts),
   recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),

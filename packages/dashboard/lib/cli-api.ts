@@ -608,7 +608,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
         `this worker session is for the project ${w.project}, not ${project.slug}`,
         "the coordinator does it",
       );
-    caller = { kind: "worker", ticket: w.ticket };
+    caller = { kind: "worker", ticket: w.ticket, sessionId: w.id };
   }
   const home = async () => (await firstOrganization(a.client))?.id ?? null;
   if (!(await holdProject(a.client, project, organization.id, home, now())))

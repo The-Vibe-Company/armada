@@ -43,6 +43,23 @@ const timeline = (ticket: Row, comments: Comment[], events: HistoryEvent[] = [])
   sessionTimeline({ ticket, history: { comments, events }, silentAfterMinutes: 15, now: NOW });
 
 describe("a session's timeline", () => {
+  test("heartbeats keep the session line alive without adding report dots or advancing phases", () => {
+    const events = [
+      event("11:00", "claim", "implementing"),
+      ...["11:05", "11:10", "11:15", "11:20", "11:25", "11:30", "11:35", "11:40", "11:45", "11:50", "11:55"].map(
+        (time) => event(time, "heartbeat", null),
+      ),
+    ];
+    const active = timeline(
+      row({ since: at("11:00"), lastReport: at("11:00"), lastHeartbeat: at("11:55") }),
+      [],
+      events,
+    );
+    expect(active.reports).toEqual([at("11:00")]);
+    expect(active.heartbeats).toHaveLength(11);
+    expect(active.silences).toEqual([]);
+    expect(active.phases).toEqual([{ phase: "implementing", from: at("11:00"), to: null, summary: null }]);
+  });
   test("phases from status comments and events, each report once, the row's phase last", () => {
     const t = timeline(
       row({

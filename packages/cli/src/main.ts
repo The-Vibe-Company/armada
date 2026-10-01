@@ -8,7 +8,7 @@ import { run } from "./cli.ts";
 import type { Exec } from "./io.ts";
 import { UsageError } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
-import { spawnInherited } from "./spawn.ts";
+import { spawnInherited, startBackground } from "./spawn.ts";
 
 function gitBranch(): string | null {
   try {
@@ -102,6 +102,13 @@ const exec: Exec = (command, args, { cwd }) =>
     child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
   });
 
+let stopped = false;
+if (process.argv.includes("heartbeat") && !process.argv.includes("--background"))
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const)
+    process.on(signal, () => {
+      stopped = true;
+    });
+
 const code = await run(process.argv.slice(2), {
   machineName: hostname(),
   ttyName: process.stdin.isTTY
@@ -147,6 +154,12 @@ const code = await run(process.argv.slice(2), {
   readStdin,
   exec,
   spawn: spawnInherited,
+  startBackground,
+  stopped: () => stopped,
+  backgroundReady: (ready) => {
+    if (process.connected) process.send?.({ ready });
+  },
   openUrl,
 });
 process.exitCode = code;
+if (process.connected) process.disconnect?.();

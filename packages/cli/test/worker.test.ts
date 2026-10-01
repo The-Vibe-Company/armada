@@ -220,7 +220,12 @@ describe("armada claim, report and release", () => {
     expect(await run(["status", "--json"], w.io)).toBe(0);
     const lane = JSON.parse(w.out()).inFlight.find((t: { id: string }) => t.id === "DEMO-11");
     expect([lane.lastReport, lane.silent]).toEqual(["2026-03-04T09:55:00.000Z", false]);
-    expect(w.armada.calls.map((c) => c.path)).toEqual(["fleet/coordinator", "fleet/events/latest", "fleet/launches"]);
+    expect(w.armada.calls.map((c) => c.path)).toEqual([
+      "fleet/coordinator",
+      "fleet/events/latest",
+      "fleet/launches",
+      "fleet/heartbeats/latest",
+    ]);
   });
 
   test("armada status lists the workers launched that never claimed, under their own heading", async () => {
