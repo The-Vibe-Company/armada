@@ -279,8 +279,10 @@ export async function buildDoctor(io: Io, armadaVersion: string): Promise<Doctor
   const upgrade = (err: unknown) => (err instanceof ArmadaApiError && err.upgrade ? err : null);
   let outdated: ArmadaApiError | null = null;
   let loaded: Awaited<ReturnType<typeof loadCredentials>>;
+  const config = await projectConfig(root);
   try {
-    loaded = await loadCredentials(io);
+    // The project's own Linear key, when it keeps one, is the one its labels are checked with.
+    loaded = await loadCredentials(io, config ? { project: config.project.slug } : {});
   } catch (err) {
     outdated = upgrade(err);
     if (!outdated) throw err;
@@ -288,7 +290,6 @@ export async function buildDoctor(io: Io, armadaVersion: string): Promise<Doctor
   }
   const { machine, credentials } = loaded;
   const api = apiOf(io, credentials.armadaApi.url, armadaVersion);
-  const config = await projectConfig(root);
   let signIn: Check[] = [];
   try {
     signIn = await signInChecks(credentials, api);

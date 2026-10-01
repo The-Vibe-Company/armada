@@ -466,6 +466,8 @@ export interface ArmadaCall {
 export interface FakeVault {
   off?: boolean;
   linear: { apiKey: string; scope: "own" | "organization" } | null;
+  /** The projects that keep their own Linear key (THE-859), by slug. */
+  projects?: Record<string, string>;
   now: () => Date;
   warnings?: string[];
 }
@@ -632,7 +634,10 @@ export function fakeArmada(
     }
     if (route === "GET projects") {
       if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
-      return Response.json({ projects: await store.listProjects() });
+      const own = o.vault?.projects ?? {};
+      return Response.json({
+        projects: (await store.listProjects()).map((p) => ({ ...p, ownLinearKey: p.slug in own })),
+      });
     }
     if (route === "POST launch-tokens") {
       if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
@@ -719,10 +724,12 @@ export function fakeArmada(
         return Response.json({ error: "this Armada keeps no keys", next: "armada auth login" }, { status: 503 });
       if (!person && !worker)
         return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
+      const project = (body.purpose as { project?: string } | undefined)?.project;
+      const own = project ? v.projects?.[project] : undefined;
       return Response.json({
         schemaVersion: 1,
         organization: { id: "org-1", name: "Acme", slug: "acme" },
-        linear: v.linear,
+        linear: own ? { apiKey: own, scope: "project" } : v.linear,
         warnings: v.warnings ?? [],
       });
     }

@@ -120,6 +120,8 @@ export interface ArmadaProject {
   name: string;
   repository: string;
   programRoot: string;
+  /** Whether the project keeps its own Linear key (THE-859): `POST credentials` for it gives that one. */
+  ownLinearKey?: boolean;
 }
 
 /** A code as the person reads it: WDJB-MJHT. */
@@ -370,7 +372,15 @@ export function armadaApi(opts: ArmadaApiOptions) {
         typeof p.name === "string" &&
         typeof p.repository === "string" &&
         typeof p.programRoot === "string"
-          ? [{ slug: p.slug, name: p.name, repository: p.repository, programRoot: p.programRoot }]
+          ? [
+              {
+                slug: p.slug,
+                name: p.name,
+                repository: p.repository,
+                programRoot: p.programRoot,
+                ...(p.ownLinearKey === true ? { ownLinearKey: true } : {}),
+              },
+            ]
           : [],
       );
     },

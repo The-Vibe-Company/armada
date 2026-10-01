@@ -14,8 +14,8 @@ import {
   formatDotenvValue,
   type ListedSecret,
   projectOf,
-  SECRET_NAME,
   type SecretScope,
+  secretNameRefusal,
   writePrivateFile,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
@@ -56,8 +56,9 @@ function onlyOf(v: string | undefined): string[] | null {
     .split(",")
     .map((n) => n.trim())
     .filter(Boolean);
-  if (!names.length || !names.every((n) => SECRET_NAME.test(n)))
-    throw new UsageError(`--only takes secret names separated by commas, ${NAME_HINT}`);
+  if (!names.length) throw new UsageError(`--only takes secret names separated by commas, ${NAME_HINT}`);
+  const refusal = names.map(secretNameRefusal).find(Boolean);
+  if (refusal) throw new UsageError(`--only: ${refusal}`);
   return [...new Set(names)];
 }
 
@@ -70,7 +71,8 @@ function nameOf(rest: string[], sub: string): string {
       sub === "set" ? "armada secrets set <NAME>, then type the value at the hidden prompt" : null,
     );
   if (!name) throw new UsageError(`secrets ${sub} needs a secret name, ${NAME_HINT}`);
-  if (!SECRET_NAME.test(name)) throw new UsageError(`a secret name is in ${NAME_HINT}`);
+  const refusal = secretNameRefusal(name);
+  if (refusal) throw new UsageError(refusal);
   return name;
 }
 
@@ -205,12 +207,19 @@ export async function secretsCommand(
   const release = await api.releaseSecrets(signIn, project, onlyOf(args.options.only));
   for (const w of release.warnings) io.stderr(`! Armada: ${w}\n`);
   if (release.missing.length) io.stderr(`! Not set for ${p}: ${release.missing.join(", ")}\n`);
+  // A dotenv line holds no line break: such a value (a PEM key) goes through `armada run` only.
+  const written = release.secrets.filter((s) => !/[\r\n\0]/.test(s.value));
+  const skipped = release.secrets.filter((s) => !written.includes(s));
+  if (skipped.length)
+    io.stderr(
+      `! Not written: ${skipped.map((s) => s.name).join(", ")}, whose value spans several lines; \`armada run -- <command>\` hands ${skipped.length === 1 ? "it" : "them"} over\n`,
+    );
   const lines = [
     `# The secrets for workers of ${p}, written by \`armada secrets export\`. Never commit this file.`,
-    ...release.secrets.map((s) => `${s.name}=${formatDotenvValue(s.name, s.value)}`),
+    ...written.map((s) => `${s.name}=${formatDotenvValue(s.name, s.value)}`),
   ];
   await writePrivateFile(path, `${lines.join("\n")}\n`);
-  const names = release.secrets.map((s) => s.name);
+  const names = written.map((s) => s.name);
   io.stdout(
     `Wrote ${names.length} secret${names.length === 1 ? "" : "s"} of ${p} to ${relative(io.cwd, path) || path} (mode 0600)${names.length ? `: ${names.join(", ")}` : ""}.\n`,
   );

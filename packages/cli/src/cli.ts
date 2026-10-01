@@ -434,14 +434,20 @@ export async function run(argv: string[], io: Io): Promise<number> {
     if (args.command === "secrets" || args.command === "run") {
       const { path, text } = await findConfig(io, args.config, args.command);
       const config = parseConfig(text, path);
-      // The worker session of this ticket when the machine holds one, else this terminal's sign-in.
+      // Fetching: the worker session of this ticket when the machine holds one, else this terminal's
+      // sign-in. Setting is the coordinator's, never a worker session's, even on a machine that holds one.
+      const sets = args.command === "secrets" && ["set", "unset"].includes(args.rest[0] ?? "");
       const { credentials } = await loadCredentials(io, {
         armada: false,
-        worker: {
-          command: args.command,
-          project: config.project.slug,
-          ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
-        },
+        ...(sets
+          ? {}
+          : {
+              worker: {
+                command: args.command,
+                project: config.project.slug,
+                ticket: (stored: string[]) => currentTicket(io, config, args.options.ticket, stored),
+              },
+            }),
       });
       return await (args.command === "run" ? runCommand : secretsCommand)(io, config, credentials, args);
     }

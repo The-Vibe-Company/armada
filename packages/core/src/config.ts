@@ -137,6 +137,16 @@ const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const ISSUE_ID = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 /** A secret for workers: an environment variable name in upper snake case, as Armada keeps it (THE-859). */
 export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** Keys Armada itself reads: named and typed on the Keys page, never secrets for workers. */
+const RESERVED_SECRET_NAMES = ["LINEAR_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"];
+
+/** Why `name` cannot be a secret for workers; null when it can. Quotes the name only when it is a name. */
+export function secretNameRefusal(name: string): string | null {
+  if (!SECRET_NAME.test(name)) return "a secret name is in upper snake case, e.g. OPENAI_API_KEY";
+  if (RESERVED_SECRET_NAMES.includes(name) || name.startsWith("ARMADA_"))
+    return `${name} is a key Armada itself uses: it is set on the Keys page as such, not as a secret for workers`;
+  return null;
+}
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 
 type Table = Record<string, unknown>;
@@ -347,9 +357,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   let secretNames: string[] = [];
   if (secretsT.names !== undefined) {
     const v = secretsT.names;
-    if (Array.isArray(v) && v.every((n) => typeof n === "string" && SECRET_NAME.test(n.trim())))
+    if (Array.isArray(v) && v.every((n) => typeof n === "string" && !secretNameRefusal(n.trim())))
       secretNames = [...new Set(v.map((n: string) => n.trim()))];
-    else problems.push(`"secrets.names" must be a list of secret names in upper snake case, e.g. ["OPENAI_API_KEY"]`);
+    else
+      problems.push(
+        `"secrets.names" must be a list of secret names in upper snake case, e.g. ["OPENAI_API_KEY"], none of Armada's own keys`,
+      );
   }
 
   let requiredChecks: string[] = [];

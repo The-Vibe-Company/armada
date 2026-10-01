@@ -1,6 +1,6 @@
 // `armada status --all`: the status of every project of the organization's
 // registry on Armada, each read with the armada.toml on its repository's
-// default branch.
+// default branch, and with its own Linear key when it keeps one (THE-859).
 import { type ArmadaProject, LINEAR_KEY, loadStatus, readProjectConfig, type StatusReport } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { loadCredentials } from "./auth.ts";
@@ -46,8 +46,13 @@ export async function statusAll(io: Io, json: boolean): Promise<number> {
         });
         warning = read.warning;
         const config = read.config;
+        // A project that keeps its own Linear key (another workspace) is read with it; the environment's still wins.
+        const own =
+          p.ownLinearKey && !io.env.LINEAR_API_KEY?.trim()
+            ? (await api.credentials(signIn, { project: p.slug })).linear?.apiKey
+            : undefined;
         const report = await loadStatus(config, {
-          linearApiKey,
+          linearApiKey: own ?? linearApiKey,
           githubToken: credentials.githubToken,
           ...(io.fetch ? { fetch: io.fetch } : {}),
           ...(io.now ? { now: io.now } : {}),

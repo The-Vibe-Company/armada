@@ -77,9 +77,10 @@ describe("armada.toml", () => {
       `${DEMO_TOML}\n[secrets]\nnames = ["OPENAI_API_KEY", " TEST_DATABASE_URL ", "OPENAI_API_KEY"]\n`,
     );
     expect(named.secrets.names).toEqual(["OPENAI_API_KEY", "TEST_DATABASE_URL"]);
+    expect(problemsOf(`${DEMO_TOML}\n[secrets]\nnames = ["GITHUB_TOKEN"]\n`)).toHaveLength(1);
     expect(problemsOf(`${DEMO_TOML}\n[secrets]\nnames = ["openai_api_key"]\nvalues = 1\n`)).toEqual([
       'unknown key "secrets.values"',
-      '"secrets.names" must be a list of secret names in upper snake case, e.g. ["OPENAI_API_KEY"]',
+      '"secrets.names" must be a list of secret names in upper snake case, e.g. ["OPENAI_API_KEY"], none of Armada\'s own keys',
     ]);
   });
 

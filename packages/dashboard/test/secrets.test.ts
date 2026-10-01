@@ -262,6 +262,14 @@ describe("a project's Linear key", () => {
       scope: "own",
     });
     expect(await keys({}, { token: ownerToken })).toEqual({ apiKey: VALUES.linearOwn, scope: "own" });
+    // `armada status --all` learns which projects keep their own, and asks for those.
+    const listed = await handleCli(
+      new Request(`${BASE}/api/cli/projects`, { headers: { authorization: `Bearer ${ownerToken}` } }),
+      ["projects"],
+      { accounts: async () => accounts, vault: () => vaultMode, now: () => now },
+    );
+    const projects = ((await listed.json()) as { projects: { slug: string; ownLinearKey: boolean }[] }).projects;
+    expect(projects.map((p) => `${p.slug} ${p.ownLinearKey}`)).toEqual(["widgets true"]);
     // The worker of widgets, launched by the owner: the project's key, not its launcher's own.
     expect(
       await keys({ purpose: { command: "report", project: "widgets", ticket: "ABC-7" } }, { token: worker }),

@@ -39,6 +39,7 @@ import {
   deleteSecret,
   isWorkerSecretName,
   listWorkerSecrets,
+  projectsWithLinearKey,
   recordEvent,
   SECRETS_KEY_VARIABLE,
   setSecret,
@@ -679,10 +680,17 @@ async function projects(a: CliAccounts, request: Request, now: Date): Promise<Re
   const organization = identity.organization;
   if (!organization) return noOrganization(a);
   const own = await projectsOf(a.client, organization.id);
+  const keyed = await projectsWithLinearKey(a.client, organization.id);
   return Response.json(
     {
       schemaVersion: 1,
-      projects: own.map(({ slug, name, repository, programRoot }) => ({ slug, name, repository, programRoot })),
+      projects: own.map(({ slug, name, repository, programRoot }) => ({
+        slug,
+        name,
+        repository,
+        programRoot,
+        ownLinearKey: keyed.has(slug),
+      })),
     },
     { headers: NO_STORE },
   );

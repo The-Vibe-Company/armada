@@ -285,6 +285,13 @@ describe("each project's keys and secrets (THE-859)", () => {
     expect((await read("gadgets", "u-mia")).values["linear-api-key"]).toBe("lin_api_synthetic_mia");
     expect((await read("gadgets", null)).values["linear-api-key"]).toBe("lin_api_synthetic_org");
     expect((await read("widgets", null)).values["linear-api-key"]).toBe("lin_api_synthetic_widgets");
+    // A project's key that no longer opens leaves the project with none, never another workspace's.
+    await client.query(
+      `UPDATE "armada_secret" SET "sealed" = $1 WHERE "project" = 'widgets' AND "name" = 'linear-api-key'`,
+      [sealSecret(a, { organization: "org-1", project: "gadgets", user: "", name: "linear-api-key" }, "moved")],
+    );
+    const broken = await read("widgets", "u-mia");
+    expect([broken.values["linear-api-key"], broken.problems.length]).toEqual([undefined, 1]);
     // Neither a project's GitHub token nor a person's own key per project.
     expect(targetRefusal({ organization: "org-1", project: "widgets", user: null, name: "github-token" })).toContain(
       "organization's only",
@@ -336,6 +343,14 @@ describe("each project's keys and secrets (THE-859)", () => {
     });
     expect(some.values).toEqual({ SENTRY_DSN: "synthetic-org-sentry" });
 
+    // The project's own that no longer opens is not replaced by the organization's.
+    await set("gadgets", "OPENAI_API_KEY", "synthetic-gadgets-openai");
+    await client.query(
+      `UPDATE "armada_secret" SET "sealed" = 'tampered' WHERE "project" = 'gadgets' AND "name" = 'OPENAI_API_KEY'`,
+    );
+    const gadgets = await readWorkerSecrets(client, a, { organization: "org-1", project: "gadgets", names: null });
+    expect([Object.keys(gadgets.values).sort(), gadgets.problems.length]).toEqual([["GADGETS_ONLY", "SENTRY_DSN"], 1]);
+
     const listed = await listWorkerSecrets(client, { organization: "org-1", project: "widgets" });
     expect(listed.map((s) => `${s.name} ${s.scope}${s.overridden ? " overridden" : ""}`)).toEqual([
       "OPENAI_API_KEY project",
@@ -351,7 +366,7 @@ describe("each project's keys and secrets (THE-859)", () => {
       "set TEST_DATABASE_URL for the project widgets",
       "set OPENAI_API_KEY for the project widgets",
     ]);
-    expect((await listEvents(client, "org-1")).length).toBe(5);
+    expect((await listEvents(client, "org-1")).length).toBe(6);
     await client.end();
   });
 });

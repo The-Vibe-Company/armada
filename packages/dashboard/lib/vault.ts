@@ -12,6 +12,7 @@
 // `armada_secret_event`, never with a value; so is every worker launched with a
 // launch token (`workers.ts`).
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { secretNameRefusal } from "@armada/core/read";
 import type { Env } from "./accounts-settings";
 import { type Database, isoAt, type Queryable, transaction } from "./db";
 
@@ -76,20 +77,11 @@ export const SECRET_KINDS: Record<SecretName, SecretKind> = {
 };
 
 /**
- * A secret for workers (THE-859): an environment variable name, upper snake
- * case. Never one Armada reads itself: those stay named and typed above.
+ * Why `name` cannot be a secret for workers (THE-859); null when it can. The
+ * rule is core's, shared with the CLI: upper snake case, never a key Armada
+ * reads itself (those stay named and typed above).
  */
-export const WORKER_SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
-const RESERVED_NAMES = ["LINEAR_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"];
-
-/** Why `name` cannot be a secret for workers; null when it can. Names it, never a value. */
-export function workerSecretRefusal(name: string): string | null {
-  if (!WORKER_SECRET_NAME.test(name))
-    return `"${name.slice(0, 64)}" is not a secret name: upper snake case, e.g. OPENAI_API_KEY`;
-  if (RESERVED_NAMES.includes(name) || name.startsWith("ARMADA_"))
-    return `${name} is a key Armada itself uses: it is set on the Keys page as such, not as a secret for workers`;
-  return null;
-}
+export const workerSecretRefusal = secretNameRefusal;
 
 export const isWorkerSecretName = (v: unknown): v is string => typeof v === "string" && !workerSecretRefusal(v);
 
@@ -325,6 +317,8 @@ export async function readSecrets(
       problems.push(
         `${err instanceof Error ? err.message : String(err)}${row.project ? ` (project ${row.project})` : ""}`,
       );
+      // A project's key that does not open is not replaced by another workspace's: none is handed out.
+      if (row.project) delete values[name];
     }
   }
   return {
@@ -333,6 +327,32 @@ export async function readSecrets(
     fromProject,
     problems,
   };
+}
+
+/**
+ * The opened value of one project's own key (not the organization's, not a
+ * person's): the dashboard's reads of that project. Null when it keeps none.
+ */
+export async function readProjectKey(
+  client: Queryable,
+  vault: VaultKey,
+  { organization, project, name }: { organization: string; project: string; name: SecretName },
+): Promise<string | null> {
+  const rs = await client.query(
+    `SELECT "sealed" FROM "armada_secret" WHERE "organizationId" = $1 AND "project" = $2 AND "userId" = '' AND "name" = $3`,
+    [organization, project, name],
+  );
+  const row = rs.rows[0];
+  return row ? openSecret(vault, { organization, project, user: "", name }, String(row.sealed)) : null;
+}
+
+/** The projects of an organization that keep their own Linear key. */
+export async function projectsWithLinearKey(client: Queryable, organization: string): Promise<Set<string>> {
+  const rs = await client.query(
+    `SELECT "project" FROM "armada_secret" WHERE "organizationId" = $1 AND "project" <> '' AND "userId" = '' AND "name" = 'linear-api-key'`,
+    [organization],
+  );
+  return new Set(rs.rows.map((r) => String(r.project)));
 }
 
 /** A worker secret as `armada secrets` lists it: where it is set, who set it and when. Never its value. */
@@ -397,6 +417,11 @@ export async function readWorkerSecrets(
       scopes[name] = slot.project ? "project" : "organization";
     } catch (err) {
       problems.push(err instanceof Error ? err.message : String(err));
+      // The project's own does not open: the organization's of the same name is not handed out in its place.
+      if (slot.project) {
+        delete values[name];
+        delete scopes[name];
+      }
     }
   }
   return { values, scopes, problems };

@@ -9,6 +9,7 @@ import type { Database } from "./db";
 import type { Scope } from "./fleet-data";
 import {
   type Actor,
+  readProjectKey,
   readSecrets,
   readWorkerSecrets,
   recordEvent,
@@ -189,18 +190,18 @@ export async function projectLinearKey(
   organization: string,
   project: string,
 ): Promise<string | null> {
-  const { values, fromProject, problems } = await readSecrets(deps.client, deps.vault, {
-    organization,
-    user: null,
-    project,
-  });
-  for (const w of problems) {
+  try {
+    return await readProjectKey(deps.client, deps.vault, { organization, project, name: "linear-api-key" });
+  } catch (err) {
+    // Once per problem and process; the project is then not read, rather than read with another workspace's key.
+    const w = `${err instanceof Error ? err.message : String(err)} (project ${project})`;
     const key = `${organization}\n${w}`;
-    if (LOGGED.has(key)) continue;
-    LOGGED.add(key);
-    console.error(`armada dashboard: organization ${organization}: ${w}`);
+    if (!LOGGED.has(key)) {
+      LOGGED.add(key);
+      console.error(`armada dashboard: organization ${organization}: ${w}`);
+    }
+    throw err;
   }
-  return fromProject.includes("linear-api-key") ? (values["linear-api-key"] ?? null) : null;
 }
 
 /** The keys one fleet is read with, and whether ARMADA_REPOSITORIES may stand in for its registry. */

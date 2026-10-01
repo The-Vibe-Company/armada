@@ -6,16 +6,16 @@ import { spawn } from "node:child_process";
 import { constants } from "node:os";
 import type { Spawn } from "./io.ts";
 
-// Ctrl-C reaches the child from the terminal already: Armada only stays alive for it.
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
 export const spawnInherited: Spawn = (command, args, { cwd, env }) =>
   new Promise((done, fail) => {
     const child = spawn(command, args, { cwd, env, stdio: "inherit" });
-    // A signal sent to Armada alone is passed on; the terminal's Ctrl-C reached the child already.
+    // A signal sent to Armada is passed on, except a terminal's Ctrl-C, which reached the child already.
+    const fromTerminal = process.stdin.isTTY === true;
     const handlers = SIGNALS.map((signal) => {
       const handler = () => {
-        if (signal !== "SIGINT") child.kill(signal);
+        if (signal !== "SIGINT" || !fromTerminal) child.kill(signal);
       };
       process.on(signal, handler);
       return [signal, handler] as const;

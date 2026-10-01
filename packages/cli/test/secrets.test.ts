@@ -156,10 +156,17 @@ describe("a worker gets its own project's secrets only", () => {
     expect(s.asked()).toEqual([]);
   });
 
-  test("it sets nothing: Armada refuses a worker session", async () => {
+  test("setting never goes out with a worker session: the coordinator's own sign-in on the same machine sets", async () => {
     const s = await setup({ as: "worker", env: { NEW: NEW_VALUE } });
-    expect(await run(["secrets", "set", "NEW_KEY", "--from-env", "NEW"], s.io)).toBe(1);
-    expect(s.printed().stderr).toContain("a worker session sets no secret");
+    expect(await run(["secrets", "set", "NEW_KEY", "--from-env", "NEW"], s.io)).toBe(2);
+    expect(s.printed().stderr).toContain("not signed in to Armada");
+    // A coordinator sharing the machine (local subagents): its key sets, though a worker session is stored.
+    s.io.env.ARMADA_API_KEY = API_KEY;
+    expect(await run(["secrets", "set", "NEW_KEY", "--from-env", "NEW"], s.io)).toBe(0);
+    expect(s.asked()).toEqual(["secrets/set api-key"]);
+    // Fetching still goes through the worker session of the ticket.
+    expect(await run(["run", "--", "make"], s.io)).toBe(3);
+    expect(s.asked().at(-1)).toBe("secrets/release worker");
   });
 });
 
@@ -199,6 +206,9 @@ describe("armada secrets: the coordinator sets, lists and unsets them; the value
     expect(s.printed().stderr).toContain("a secret name is in upper snake case");
     expect(await run(["secrets", "set", "OPENAI_API_KEY"], s.io)).toBe(2);
     expect(s.printed().stderr).toContain("Next: --value-stdin to read it from standard input, or --from-env <VAR>");
+    // A key Armada uses itself is refused here, before Armada is asked.
+    expect(await run(["run", "--only", "OPENAI_API_KEY,GITHUB_TOKEN", "--", "make"], s.io)).toBe(2);
+    expect(s.printed().stderr).toContain("--only: GITHUB_TOKEN is a key Armada itself uses");
     expect(await run(["secrets", "set", "X_KEY", "--from-env", "NOT_THERE"], s.io)).toBe(2);
     expect(s.printed().stderr).toContain("NOT_THERE is not set in this environment, so X_KEY was not set");
     expect(s.asked()).toEqual([]);
@@ -267,5 +277,15 @@ describe("armada secrets export: a dotenv file only its owner reads, and git ign
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect(parseDotenv(await readFile(path, "utf8")).values).toEqual({ OPENAI_API_KEY: OPENAI, SENTRY_DSN: SENTRY });
     expect(s.asked()).toEqual(["secrets/release worker"]);
+
+    // A value on several lines cannot be a dotenv line: it is left out, named, and `run` hands it over.
+    s.armada.secrets.get("widgets")?.set("PEM_KEY", "-----BEGIN CANARY-----\nline\n-----END CANARY-----");
+    expect(await run(["secrets", "export", "--file", ".env.local"], s.io)).toBe(0);
+    const printed = s.printed();
+    expect(printed.stderr).toBe(
+      "! Not written: PEM_KEY, whose value spans several lines; `armada run -- <command>` hands it over\n",
+    );
+    expect(printed.stdout).toContain("Wrote 2 secrets of widgets");
+    expect(await readFile(path, "utf8")).not.toContain("CANARY-----");
   });
 });
