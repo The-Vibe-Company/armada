@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.5](https://github.com/The-Vibe-Company/armada/compare/v0.2.4...v0.2.5) (2026-10-01)
+
+
+### Features
+
+* **cli:** launch workers as local Claude Code subagents ([#62](https://github.com/The-Vibe-Company/armada/issues/62)) ([5228e0c](https://github.com/The-Vibe-Company/armada/commit/5228e0c0872103b94d1c3f0fc2bfb299bca37a96))
+* **cli:** merge green pull requests while main keeps moving with armada merge --wait and --no-ticket ([#69](https://github.com/The-Vibe-Company/armada/issues/69)) ([0739516](https://github.com/The-Vibe-Company/armada/commit/07395167d0ec5e4cf90a6cc039c3796a5319323b))
+
 ## [0.2.4](https://github.com/The-Vibe-Company/armada/compare/v0.2.3...v0.2.4) (2026-10-01)
 
 
