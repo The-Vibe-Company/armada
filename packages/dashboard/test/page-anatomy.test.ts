@@ -112,7 +112,8 @@ function sources(dir: string): string[] {
 describe("globals.css", () => {
   // No leftover style (THE-871): each class it styles is written in a source
   // file, as a word of a string. State modifiers (`is-…`) are composed at
-  // runtime (`is-${tone}`), so only their base class is checked.
+  // runtime (`is-${tone}`), so only their base class is checked. The strings
+  // of lib/i18n.ts are prose, not classes: a word there ("notes") proves nothing.
   test("styles no class that nothing renders", () => {
     const css = readFileSync(join(ROOT, "app/globals.css"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -120,7 +121,8 @@ describe("globals.css", () => {
     const classes = new Set([...css.matchAll(/(?<![\w-])\.([a-zA-Z][\w-]*)/g)].map((m) => m[1] ?? ""));
     const words = new Set<string>();
     const prefixes: string[] = [];
-    for (const file of ["app", "components", "lib"].flatMap((d) => sources(join(ROOT, d)))) {
+    const files = ["app", "components", "lib"].flatMap((d) => sources(join(ROOT, d)));
+    for (const file of files.filter((f) => rel(f) !== "lib/i18n.ts")) {
       for (const m of readFileSync(file, "utf8").matchAll(/"([^"\n]*)"|'([^'\n]*)'|`([^`]*)`/g)) {
         const text = m[1] ?? m[2] ?? m[3] ?? "";
         for (const word of text.split(/[\s{}$()]+/)) if (word) words.add(word);

@@ -281,13 +281,7 @@ button {
   font-size: 12.5px;
   margin: 0;
 }
-.flag {
-  color: var(--text-2);
-}
-.flag.is-severe {
-  color: var(--critical);
-  font-weight: 500;
-}
+
 /* An inbox item the coordinator has not acted on for policy.coordinator_minutes. */
 .late {
   color: var(--accent);
@@ -309,31 +303,8 @@ button {
   padding-left: 10px;
   border-left: 2px solid var(--accent);
 }
-.notes {
-  font-size: 12px;
-  color: var(--text-3);
-}
-.notes summary {
-  cursor: pointer;
-  width: fit-content;
-}
-.notes summary:hover {
-  color: var(--text-2);
-}
-.notes ul {
-  margin: 6px 0 0;
-  padding-left: 16px;
-  display: grid;
-  gap: 4px;
-}
 
-/* ------------------------------------------------------------ requests: answer and launch */
-.block-hint {
-  margin-left: auto;
-  font-size: 12px;
-  color: var(--faint);
-  text-align: right;
-}
+/* ------------------------------------------------------------ requests: answer */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -465,8 +436,7 @@ button.chip:hover {
   color: var(--muted);
   background: var(--panel-3);
 }
-.composer,
-.launch-panel {
+.composer {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -562,103 +532,12 @@ button.chip:hover {
   overflow-wrap: anywhere;
 }
 
-.ready-row {
-  flex-wrap: wrap;
-}
-.ready-row.is-open {
-  background: var(--hover);
-}
-.ready-row a:hover {
-  text-decoration: underline;
-  text-decoration-color: var(--line-strong);
-  text-underline-offset: 3px;
-}
-.ready-meta {
-  display: inline-flex;
-  gap: 10px;
-}
-.ready-act {
-  flex: none;
-  max-width: 340px;
-}
-.launch-panel {
-  flex-basis: 100%;
-  margin: 4px 0 8px;
-  background: var(--card);
-}
-.profiles {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  border: 0;
-}
-.profile-opt {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 8px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--line-2);
-  cursor: pointer;
-  transition:
-    border-color 0.15s,
-    background 0.15s;
-}
-.profile-opt:hover {
-  border-color: var(--faint);
-}
-.profile-opt.is-on {
-  border-color: var(--frontier);
-  background: var(--frontier-dim);
-}
-.profile-opt input {
-  position: absolute;
-  opacity: 0;
-  pointer-events: none;
-}
-.profile-opt:has(input:focus-visible) {
-  outline: 2px solid var(--frontier);
-  outline-offset: 2px;
-}
-.profile-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 500;
-}
-.profile-spec {
-  font-size: 11.5px;
-  color: var(--muted);
-}
-.badge {
-  font-size: 10.5px;
-  font-weight: 500;
-  padding: 0 6px;
-  border-radius: 999px;
-  color: var(--frontier);
-  border: 1px solid var(--frontier);
-}
-.ready-more {
-  font-size: 12.5px;
-}
-
 @media (max-width: 640px) {
   .refresh-text {
     display: none;
   }
-  .block-hint,
   .kbd {
     display: none;
-  }
-  .ready-row {
-    grid-template-columns: minmax(0, 1fr);
-    padding: 12px 16px;
-  }
-  .ready-act {
-    justify-self: start;
   }
 }
 @media (prefers-reduced-motion: reduce) {

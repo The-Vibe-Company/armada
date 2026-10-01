@@ -1,18 +1,17 @@
 "use client";
 
-// The owner's two actions on the overview: answer a worker's question, and
-// ask for a ready ticket to be launched. Each only drops a request in the
-// coordinator's inbox (a server action); the coordinator carries it out, and
-// the request shows as pending until it does. The screen changes on the
+// The owner's requests: answering a worker's question, and what every
+// request form shares (the signer, the pending note, the step taken on the
+// click), which the project page's launch uses too. Each only drops a request
+// in the coordinator's inbox (a server action); the coordinator carries it
+// out, and the request shows as pending until it does. The screen changes on the
 // click, before the server answers (THE-853); a refusal puts the form back
 // with the reason.
-import type { CoordinatorState, PendingAnswer, ProfileSummary, ReadyTicket } from "@armada/core/read";
+import type { CoordinatorState, PendingAnswer } from "@armada/core/read";
 import { type FormEvent, type KeyboardEvent, useId, useRef, useState, useTransition } from "react";
-import { answerQuestion, launchTicket } from "@/app/actions";
+import { answerQuestion } from "@/app/actions";
 import type { RequestError, Strings } from "@/lib/i18n";
 import type { RequestResult } from "@/lib/requests";
-import { Row, RowIcon, RowId, RowSide, RowText, Section, SectionBody } from "./page";
-import { Dot, Tag } from "./ui";
 
 /** The viewer's name, which signs every request of the page. */
 export interface Signer {
@@ -314,210 +313,5 @@ export function QuestionBlock({
         )
       )}
     </div>
-  );
-}
-
-// ------------------------------------------------------------ launch
-
-export function ReadyBlock({
-  ctx,
-  ready,
-  profiles,
-  names,
-  coordinators,
-}: {
-  ctx: ActionContext;
-  ready: ReadyTicket[];
-  profiles: Map<string, ProfileSummary[]>;
-  names: Map<string, string>;
-  coordinators: Map<string, CoordinatorState>;
-}) {
-  const { t } = ctx;
-  const [all, setAll] = useState(false);
-  const marked = ready.filter((r) => r.readyForAgent || r.launch);
-  const others = ready.filter((r) => !r.readyForAgent && !r.launch);
-  const shown = all ? [...marked, ...others] : marked;
-  return (
-    <Section label={t.readyTitle} count={marked.length} side={<span className="block-hint">{t.readyHint}</span>}>
-      {!ctx.live && ready.length > 0 && (
-        <SectionBody>
-          <p>{t.needsLive}</p>
-        </SectionBody>
-      )}
-      {shown.length === 0 && others.length === 0 ? (
-        <SectionBody>
-          <p>{t.readyEmpty}</p>
-        </SectionBody>
-      ) : (
-        <>
-          {shown.map((r) => (
-            <ReadyRow
-              key={`${r.project}-${r.id}`}
-              ctx={ctx}
-              r={r}
-              profiles={profiles.get(r.project) ?? []}
-              projectName={names.get(r.project) ?? r.project}
-              coordinator={coordinators.get(r.project) ?? "unknown"}
-            />
-          ))}
-          {others.length > 0 && (
-            <SectionBody>
-              <button type="button" className="link ready-more" onClick={() => setAll(!all)} aria-expanded={all}>
-                {all ? t.fewerUnblocked : t.moreUnblocked(others.length)}
-              </button>
-            </SectionBody>
-          )}
-        </>
-      )}
-    </Section>
-  );
-}
-
-function ReadyRow({
-  ctx,
-  r,
-  profiles,
-  projectName,
-  coordinator,
-}: {
-  ctx: ActionContext;
-  r: ReadyTicket;
-  profiles: ProfileSummary[];
-  projectName: string;
-  coordinator: CoordinatorState;
-}) {
-  const { t } = ctx;
-  const routed = r.route?.profile ?? null;
-  const [open, setOpen] = useState(false);
-  const [profile, setProfile] = useState(routed ?? profiles[0]?.name ?? "");
-  type Launch = { author: string; at: string; profile: string | null };
-  const [sent, markSent, unmark] = useSent<Launch>(ctx.version);
-  const opener = useRef<HTMLButtonElement>(null);
-  const shown = useRef<Launch | null>(null);
-  const panel = useId();
-  const req = useRequest(launchTicket, {
-    start: (form) => {
-      shown.current = { author: signerOf(ctx.signer, form), at: new Date().toISOString(), profile: profile || null };
-      markSent(shown.current);
-      setOpen(false);
-    },
-    done: () => {
-      if (shown.current) markSent(shown.current);
-      ctx.refresh();
-    },
-    undo: () => {
-      unmark();
-      setOpen(true);
-    },
-  });
-  const pending = r.launch ?? sent;
-  const close = () => {
-    setOpen(false);
-    req.clear();
-    requestAnimationFrame(() => opener.current?.focus());
-  };
-
-  return (
-    <Row className={`ready-row ${open ? "is-open" : ""} ${pending ? "is-pending" : ""}`}>
-      <RowIcon>
-        <Dot color={r.onCriticalPath ? "var(--critical)" : "var(--text-4)"} />
-      </RowIcon>
-      <RowId>{r.id}</RowId>
-      <RowText
-        title={
-          <a href={r.url} target="_blank" rel="noreferrer">
-            {r.title}
-          </a>
-        }
-        line={
-          <span className="ready-meta">
-            {r.spec && <span>{r.spec}</span>}
-            {r.onCriticalPath && <span className="flag is-severe">{t.criticalPath}</span>}
-            {r.unlocks.length > 0 && <span title={r.unlocks.join(", ")}>{t.unlocks(r.unlocks.length)}</span>}
-            {!r.readyForAgent && <span>{t.notMarkedReady}</span>}
-          </span>
-        }
-      />
-      <RowSide roomy>
-        <Tag>{projectName}</Tag>
-        {routed && !pending && (
-          <span className="mono" title={t.routedHint(r.route?.why ?? "")}>
-            → {routed}
-          </span>
-        )}
-      </RowSide>
-      <div className="ready-act">
-        {pending ? (
-          <PendingNote
-            label={t.launchPending(pending.author, t.duration(since(ctx.now, pending.at)))}
-            detail={pending.profile ?? t.waitingForCoordinator}
-            away={coordinator === "active" ? null : t.coordinatorAway}
-          />
-        ) : (
-          ctx.live &&
-          !open && (
-            <button
-              ref={opener}
-              type="button"
-              className="btn is-soft"
-              aria-expanded={false}
-              aria-controls={panel}
-              aria-label={t.launchLabel(r.id)}
-              onClick={() => setOpen(true)}
-            >
-              {t.launch}
-              <span aria-hidden>→</span>
-            </button>
-          )
-        )}
-      </div>
-      {open && !pending && (
-        <form id={panel} className="launch-panel" onSubmit={req.submit}>
-          <input type="hidden" name="project" value={r.project} />
-          <input type="hidden" name="ticket" value={r.id} />
-          {profiles.length ? (
-            <fieldset className="profiles">
-              <legend className="sr-only">{t.profile}</legend>
-              {profiles.map((p) => (
-                <label key={p.name} className={`profile-opt ${profile === p.name ? "is-on" : ""}`}>
-                  <input
-                    type="radio"
-                    name="profile"
-                    value={p.name}
-                    checked={profile === p.name}
-                    onChange={() => setProfile(p.name)}
-                  />
-                  <span className="profile-name">
-                    {p.name}
-                    {p.name === routed && (
-                      <span className="badge" title={t.routedHint(r.route?.why ?? "")}>
-                        {t.routed}
-                      </span>
-                    )}
-                  </span>
-                  <span className="profile-spec mono">
-                    {p.agent} · {p.model} · {p.effort}
-                  </span>
-                </label>
-              ))}
-            </fieldset>
-          ) : (
-            <p className="calm">{t.noProfiles}</p>
-          )}
-          {routed && profile && profile !== routed && <p className="calm">{t.overrideHint(routed)}</p>}
-          <ErrorLine t={t} code={req.error} />
-          <div className="composer-foot">
-            <SignerField t={t} signer={ctx.signer} />
-            <span className="spacer" />
-            <button type="button" className="btn is-ghost" onClick={close}>
-              {t.cancel}
-            </button>
-            <button type="submit" className="btn is-primary" disabled={req.busy}>
-              {req.busy ? t.sending : t.requestLaunch}
-            </button>
-          </div>
-        </form>
-      )}
-    </Row>
   );
 }
