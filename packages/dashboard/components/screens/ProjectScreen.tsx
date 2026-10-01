@@ -14,6 +14,7 @@ import {
   type Blocker,
   coordinatorHarness,
   coordinatorLink,
+  launchProfileLabel,
   type PrState,
   prCounts,
   progressPercent,
@@ -392,7 +393,7 @@ function LaunchRow({ ticket: r }: { ticket: ReadyTicket }) {
                 onClick={needsName && !naming ? () => setNaming(true) : undefined}
               >
                 {req.busy ? t.sending : t.launch}
-                {profile && <span className="mono pj-profile">{profile}</span>}
+                <span className="mono pj-profile">{launchProfileLabel(r, t.projectPages.coordinatorChoice)}</span>
               </button>
             </form>
           )

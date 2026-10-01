@@ -2,8 +2,18 @@
 // overview the shell polls. Pure: health and progress are core's
 // (`ProjectOverview.health`, `.progress`), never recomputed here; these only
 // pick a project's rows, pull requests and blockers out of the overview.
-import type { FleetOverview, FleetRow, ProjectOverview, WaitingItem, WaitingPullRequest } from "@armada/core/read";
+import type {
+  FleetOverview,
+  FleetRow,
+  ProjectOverview,
+  ReadyTicket,
+  WaitingItem,
+  WaitingPullRequest,
+} from "@armada/core/read";
 import { type AgentState, agentState, type Harness, harnessOf } from "./fleet-view";
+
+export const launchProfileLabel = (ticket: Pick<ReadyTicket, "route">, coordinatorChoice: string): string =>
+  ticket.route?.profile ?? coordinatorChoice;
 
 /** Done out of total, as a whole percent; null when the project's progress is unknown. */
 export function progressPercent(progress: ProjectOverview["progress"]): number | null {

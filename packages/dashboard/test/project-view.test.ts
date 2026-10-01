@@ -13,6 +13,7 @@ import {
   coordinatorHarness,
   coordinatorLink,
   lastActivity,
+  launchProfileLabel,
   prCounts,
   progressPercent,
   projectBlockers,
@@ -22,6 +23,13 @@ import {
 
 const NOW = new Date("2026-10-01T13:42:00Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
+
+test("ready labels show the routed profile or defer to the coordinator in the viewer's language", () => {
+  const ticket = { route: { profile: "backend", why: 'rule 1 (label "api")' } };
+  expect(launchProfileLabel(ticket, "chosen by the coordinator")).toBe("backend");
+  expect(launchProfileLabel({ route: null }, "chosen by the coordinator")).toBe("chosen by the coordinator");
+  expect(launchProfileLabel({ route: null }, "choisi par le coordinateur")).toBe("choisi par le coordinateur");
+});
 
 /** The demo fleet as `demo:seed` leaves it: owners, inbox, and each coordinator's reads and facts. */
 function demoOverview() {

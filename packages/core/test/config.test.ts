@@ -128,9 +128,30 @@ describe("armada.toml", () => {
     expect(conductor).toEqual({
       defaultProfile: "opus",
       profiles: {
-        opus: { runtime: "conductor", agent: "claude", model: "opus-5-5-1m", effort: "high", fastMode: false },
-        codex: { runtime: "conductor", agent: "codex", model: "gpt-6.1-sol", effort: "high", fastMode: false },
-        debug: { runtime: "conductor", agent: "codex", model: "gpt-6.1-sol", effort: "xhigh", fastMode: false },
+        opus: {
+          runtime: "conductor",
+          agent: "claude",
+          model: "opus-5-5-1m",
+          effort: "high",
+          fastMode: false,
+          when: "front end: dashboard pages, components, styles, design, UI copy",
+        },
+        codex: {
+          runtime: "conductor",
+          agent: "codex",
+          model: "gpt-6.1-sol",
+          effort: "high",
+          fastMode: false,
+          when: "back end: CLI, core rules, API, database, migrations, tests, docs",
+        },
+        debug: {
+          runtime: "conductor",
+          agent: "codex",
+          model: "gpt-6.1-sol",
+          effort: "xhigh",
+          fastMode: false,
+          when: "a bug to diagnose",
+        },
       },
       routing: [
         { labels: ["web"], profile: "opus" },
@@ -150,6 +171,19 @@ describe("armada.toml", () => {
       '"conductor.default_profile" is "fast", but there is no [conductor.profiles.fast]',
       'unknown key "conductor.profiles.opus.modle"',
     ]);
+  });
+
+  test("profile when rules are optional nonempty strings and replace the need for a routing default", () => {
+    const base = `${DEMO_TOML}\n[conductor.profiles.backend]\nagent = "codex"\nmodel = "m"\neffort = "high"\n`;
+    expect(parseConfig(`${base}when = " CLI, core rules and API "\n`).conductor.profiles.backend?.when).toBe(
+      "CLI, core rules and API",
+    );
+    for (const value of ['"  "', "true", "12"])
+      expect(() => parseConfig(`${base}when = ${value}\n`)).toThrow("conductor.profiles.backend.when");
+    expect(
+      parseConfig(`${base}when = "back end"\n[[conductor.routing]]\nlabels = ["api"]\nprofile = "backend"\n`).conductor
+        .defaultProfile,
+    ).toBeNull();
   });
 
   test("a profile runs on conductor or claude-code, and a claude-code profile runs claude", () => {

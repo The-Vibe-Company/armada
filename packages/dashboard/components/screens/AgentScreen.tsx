@@ -523,6 +523,7 @@ function Agent({
               </Fact>
               <Fact k={t.shell.profile}>
                 <span className="mono">{session?.profile ?? row.profile ?? "—"}</span>
+                {row.profileReason && <span> · {row.profileReason}</span>}
               </Fact>
               <Fact k={a.model}>
                 <span className="mono">

@@ -7,6 +7,7 @@ import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
+import { renderStatus } from "../src/render.ts";
 
 function fakeIo(
   files: Record<string, string>,
@@ -28,6 +29,14 @@ function fakeIo(
 }
 
 describe("armada status", () => {
+  test("human status shows the recorded profile and reason", async () => {
+    const { io, out } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
+    expect(await run(["status", "--json"], io)).toBe(0);
+    const report = JSON.parse(out());
+    report.inFlight[0].profile = "backend";
+    report.inFlight[0].profileReason = "mostly CLI and core rules";
+    expect(renderStatus(report)).toContain("Profile: backend — mostly CLI and core rules");
+  });
   test("--json prints the report found from the nearest armada.toml", async () => {
     const { io, out } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
     expect(await run(["status", "--json"], io)).toBe(0);

@@ -199,7 +199,8 @@ function claimLine(o: {
   const p = o.profile;
   if (!p) return line;
   const settings = `agent ${p.profile.agent}, model ${p.profile.model}, effort ${p.profile.effort}${p.profile.fastMode ? ", fast mode" : ""}`;
-  return `${line} · profile: ${p.name}\nProfile: ${p.name} (${settings}), chosen by ${p.why}`;
+  const why = p.why.startsWith("Chosen by the coordinator:") ? p.why : `chosen by ${p.why}`;
+  return `${line} · profile: ${p.name}\nProfile: ${p.name} (${settings}), ${why}${p.reason ? `\nProfile reason: ${p.reason}` : ""}`;
 }
 
 // ------------------------------------------------------------------ claim
@@ -214,7 +215,7 @@ export interface ClaimInput {
   branch?: string | null;
   /** Conductor profile the worker runs on; recorded in the claim. */
   profile?: string | null;
-  /** Why `profile` differs from the ticket's routed profile; required then. */
+  /** Why the coordinator chose or overrode the profile; required for semantic choices and routing overrides. */
   reason?: string | null;
 }
 

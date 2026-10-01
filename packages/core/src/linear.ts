@@ -96,12 +96,19 @@ export function parseClaim(body: string, at: string, author: string | null): Age
     const v = line.match(new RegExp(`(?:${k})[*_\`]*\\s*:\\s*([^·|]+)`, "i"))?.[1];
     return (v && trimMarks(v)) || null;
   };
+  const profileReason = body
+    .split("\n")
+    .map(unescapeMarkdown)
+    .find((entry) => entry.startsWith("Profile reason: "))
+    ?.slice("Profile reason: ".length)
+    .trim();
   return {
     runtime: field("runtime"),
     session: field("session"),
     branch: field("branch|branche"),
     startedAt: field("started|démarré|demarre"),
     profile: field("profile"),
+    ...(profileReason ? { profileReason } : {}),
     at,
     author,
   };

@@ -113,7 +113,8 @@ const COMMAND_HELP: Record<string, string> = {
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
-                    default_profile; --profile overrides it, with --reason when it differs.
+                    profiles' when rules ask the coordinator to choose with --profile and
+                    --reason. Only projects without when fall back to default_profile.
                     Signed in to Armada, the prompt starts with a one-time launch token, so
                     the worker needs no key. --prompt prints only the prompt, for \`--message-file -\`
 `,

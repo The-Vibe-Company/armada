@@ -134,6 +134,24 @@ describe("claim", () => {
       expect(linear.writes).toEqual([]);
     });
 
+    test("semantic choices require a reason and record it in the claim and existing live profile", async () => {
+      const live = tempFleet();
+      const { linear, ctx } = setup({ config: routed, live });
+      linear.add("DEMO-7");
+      const claim = { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1", profile: "codex" };
+      expect(await refusal(claimTicket(ctx, claim))).toContain('--profile <name> --reason "<why>"');
+      expect(linear.writes).toEqual([]);
+      const reason = "Mostly CLI and core rules; one dashboard label (back end)";
+      await claimTicket(ctx, { ...claim, reason: `  ${reason}\n` });
+      expect(linear.get("DEMO-7").comments[0]?.claim).toMatchObject({ profile: "codex", profileReason: reason });
+      expect(linear.bodies[0]).toContain(`Chosen by the coordinator: ${reason}`);
+      expect(await live.store.getWorkerProfile("widgets", "DEMO-7")).toMatchObject({
+        name: "codex",
+        reason,
+        routed: null,
+      });
+    });
+
     test("the claim comment and the live data record the profile, and an override's reason", async () => {
       const live = tempFleet();
       const db = live.store;
@@ -145,7 +163,7 @@ describe("claim", () => {
       const [comment] = linear.get("DEMO-7").comments;
       expect(comment?.claim).toMatchObject({ session: "ws-1", startedAt: NOW.toISOString(), profile: "codex" });
       expect(linear.bodies[0]).toBe(
-        `Agent status: planning — claimed by Conductor (ws-1)\n\nAgent claim — runtime: Conductor · session: ws-1 · branch: feature/demo-7-do-the-thing · started: ${NOW.toISOString()} · profile: codex\nProfile: codex (agent codex, model gpt-6.1-sol, effort high), chosen by --profile, instead of "opus" from rule 1 of [[conductor.routing]] (label "web"): ${reason}`,
+        `Agent status: planning — claimed by Conductor (ws-1)\n\nAgent claim — runtime: Conductor · session: ws-1 · branch: feature/demo-7-do-the-thing · started: ${NOW.toISOString()} · profile: codex\nProfile: codex (agent codex, model gpt-6.1-sol, effort high), chosen by --profile, instead of "opus" from rule 1 of [[conductor.routing]] (label "web"): ${reason}\nProfile reason: ${reason}`,
       );
       expect(await db.getRuntimeHandle("widgets", "DEMO-7")).toMatchObject({ handle: "ws-1", profile: "codex" });
       expect(await db.getWorkerProfile("widgets", "DEMO-7")).toMatchObject({ name: "codex", routed: "opus", reason });
