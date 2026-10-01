@@ -1124,6 +1124,9 @@ a.sh-item:hover {
   color: var(--text-3);
   white-space: nowrap;
 }
+.sh-palette-item[aria-selected="true"] .sh-palette-detail {
+  color: var(--text-2);
+}
 .sh-palette-key {
   width: 30px;
   flex: none;

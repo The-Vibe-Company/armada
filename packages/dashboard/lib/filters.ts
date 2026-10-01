@@ -91,6 +91,8 @@ export const listOfPath = (pathname: string): FilterList | null =>
   FILTER_LISTS.find((l) => LISTS[l].path === pathname) ?? null;
 
 const TOKEN = /^[\w.-]{1,64}$/;
+/** A profile is armada.toml's name for it, spaces and all; no control character. */
+const PROFILE = /^[^\p{Cc}]{1,64}$/u;
 const MAX_Q = 100;
 
 /** Anything with `get`: URLSearchParams, Next's ReadonlyURLSearchParams. */
@@ -102,9 +104,9 @@ export interface Params {
 export function parseFilters(list: FilterList, params: Params): ListFilters {
   const rule: ListRule = LISTS[list];
   const has = (f: FilterField) => rule.fields.includes(f);
-  const token = (name: string) => {
+  const token = (name: string, shape = TOKEN) => {
     const v = params.get(name)?.trim() ?? "";
-    return TOKEN.test(v) ? v : null;
+    return shape.test(v) ? v : null;
   };
   const harness = params.get("harness");
   const state = params.get("state");
@@ -113,7 +115,7 @@ export function parseFilters(list: FilterList, params: Params): ListFilters {
     project: has("project") ? token("project") : null,
     harness: has("harness") && (HARNESSES as readonly string[]).includes(harness ?? "") ? (harness as Harness) : null,
     state: has("state") && state && rule.states.includes(state) ? state : null,
-    profile: has("profile") ? token("profile") : null,
+    profile: has("profile") ? token("profile", PROFILE) : null,
     mine: has("mine") && params.get("mine") === "1",
     q: has("q") ? (params.get("q") ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_Q) : "",
     sort: has("sort") && sort && (rule.sorts as readonly string[]).includes(sort) ? (sort as SortKey) : null,

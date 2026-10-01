@@ -34,18 +34,23 @@ import { stateLabel } from "./labels";
 
 // ------------------------------------------------------------ the index
 
-/** The index this tab holds, and its tag: the next open asks only whether it changed. */
-let held: { tag: string | null; index: SearchIndex } | null = null;
+/**
+ * The index this tab holds, whose organization it is, and its tag: the next
+ * open asks only whether it changed. Another organization's is never shown.
+ */
+let held: { scope: string; tag: string | null; index: SearchIndex } | null = null;
 
-function useSearchIndex(): { index: SearchIndex | null; loading: boolean } {
-  const [index, setIndex] = useState<SearchIndex | null>(held?.index ?? null);
-  const [loading, setLoading] = useState(held === null);
+function useSearchIndex(scope: string): { index: SearchIndex | null; loading: boolean } {
+  const mine = held?.scope === scope ? held : null;
+  const [index, setIndex] = useState<SearchIndex | null>(mine?.index ?? null);
+  const [loading, setLoading] = useState(mine === null);
   useEffect(() => {
     let live = true;
-    fetch("/api/fleet/search", { cache: "no-store", headers: held?.tag ? { "If-None-Match": held.tag } : {} })
+    const known = held?.scope === scope ? held : null;
+    fetch("/api/fleet/search", { cache: "no-store", headers: known?.tag ? { "If-None-Match": known.tag } : {} })
       .then(async (res) => {
         if (res.status === 304 || !res.ok) return;
-        held = { tag: res.headers.get("etag"), index: (await res.json()) as SearchIndex };
+        held = { scope, tag: res.headers.get("etag"), index: (await res.json()) as SearchIndex };
         if (live) setIndex(held.index);
       })
       .catch(() => {})
@@ -53,7 +58,7 @@ function useSearchIndex(): { index: SearchIndex | null; loading: boolean } {
     return () => {
       live = false;
     };
-  }, []);
+  }, [scope]);
   return { index, loading };
 }
 
@@ -74,7 +79,7 @@ export function Palette({ onClose }: { onClose: () => void }) {
   const { t, lang, density, setLanguage, setDensity, account } = useShell();
   const { overview, failed } = useFleet();
   const router = useRouter();
-  const { index, loading } = useSearchIndex();
+  const { index, loading } = useSearchIndex(account?.organization.id ?? "");
   const [query, setQuery] = useState("");
   const [at, setAt] = useState(0);
   const [recent, setRecent] = useState<string[]>([]);
@@ -97,13 +102,14 @@ export function Palette({ onClose }: { onClose: () => void }) {
   const active = Math.min(at, Math.max(0, flat.length - 1));
   const phases = useMemo(() => new Map(overview.rows.map((r) => [`agent:${r.project}:${r.id}`, r.phase])), [overview]);
 
-  useEffect(() => {
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    input.current?.focus();
-    return () => {
+  // Where the focus was when ⌘K opened, read before any effect moves it: it goes back there on close.
+  const [opener] = useState(() => (document.activeElement instanceof HTMLElement ? document.activeElement : null));
+  useEffect(
+    () => () => {
       if (opener?.isConnected) opener.focus();
-    };
-  }, []);
+    },
+    [opener],
+  );
 
   // The chosen option stays in sight.
   useEffect(() => {

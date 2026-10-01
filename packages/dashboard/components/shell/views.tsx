@@ -47,9 +47,10 @@ export function ViewsProvider({ initial, children }: { initial: SavedView[] | nu
   const local = initial === null;
   const [views, setViews] = useState<SavedView[]>(initial ?? []);
   // The browser's views, once it is the browser: the server's HTML had none.
+  // A new render from the server (another organization, a refresh) brings the person's views there.
   useEffect(() => {
-    if (local) setViews(readLocal());
-  }, [local]);
+    setViews(initial ?? readLocal());
+  }, [initial]);
 
   const save = useCallback(
     async (input: Omit<SavedView, "id">): Promise<ViewError | null> => {

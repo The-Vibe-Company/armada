@@ -91,6 +91,10 @@ describe("filters in the address", () => {
     expect(parsed).toEqual({ ...NO_FILTERS, q: "x".repeat(100) });
     expect(parseFilters("agents", new URLSearchParams("state=on-track&harness=boat")).state).toBeNull();
     expect(parseFilters("projects", new URLSearchParams("state=on-track")).state).toBe("on-track");
+    // A profile is named as armada.toml names it.
+    const spaced = f({ profile: "opus 4" });
+    expect(parseFilters("agents", new URLSearchParams(filterQuery(spaced)))).toEqual(spaced);
+    expect(parseFilters("agents", new URLSearchParams("profile=a%0Ab")).profile).toBeNull();
     expect(listOfPath("/agents")).toBe("agents");
     expect(listOfPath("/agents/WID-1")).toBeNull();
   });
