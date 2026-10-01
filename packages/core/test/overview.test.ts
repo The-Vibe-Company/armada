@@ -35,6 +35,7 @@ const report = (slug: string, inFlight: InFlightTicket[]): StatusReport => ({
   programRoot: { id: "R-1", title: "Root", url: "u" },
   sources: { linear: { fetchedAt: NOW.toISOString() }, github: { fetchedAt: null, error: null } },
   silentAfterMinutes: 15,
+  coordinatorMinutes: 10,
   inFlight,
   frontier: [],
   pullRequests: [],
@@ -134,6 +135,39 @@ describe("fleet overview", () => {
     expect(o.projects.map((p) => [p.slug, p.coordinator.state, p.inFlight, p.waiting])).toEqual([
       ["widgets", "active", 4, 3],
       ["gadgets", "idle", 1, 1],
+    ]);
+  });
+
+  test("an item open in the coordinator's inbox longer than policy.coordinator_minutes waits for the coordinator", () => {
+    const tickets = [
+      ticket("W-1", { phase: "blocked" }),
+      ticket("W-2", { phase: "ready-to-merge" }),
+      ticket("W-3", { phase: "awaiting-approval" }),
+    ];
+    const inbox = [
+      item({ ticket: "W-1", body: "Which table?", createdAt: at("09:31") }),
+      item({ ticket: "W-2", kind: "hand-back", body: "PR #4 green", createdAt: at("09:55") }),
+      // An answer the owner gave from the dashboard, not delivered yet: the plan still waits.
+      item({ ticket: "W-3", kind: "plan", body: "Plan", createdAt: at("09:40") }),
+      item({ ticket: "W-3", kind: "answer-request", body: "approved", createdAt: at("09:58") }),
+    ];
+    const waits = (coordinatorMinutes?: number) => {
+      const r = reading("widgets", tickets, { inbox, coordinatorSeenAt: at("09:20") });
+      if (r.report && coordinatorMinutes) r.report = { ...r.report, coordinatorMinutes };
+      return buildOverview({ projects: [r], live: { state: "ok", error: null }, now: NOW }).waiting.map((w) => [
+        w.ticket,
+        w.coordinatorSince,
+      ]);
+    };
+    expect(waits()).toEqual([
+      ["W-1", at("09:31")],
+      ["W-3", at("09:40")],
+      ["W-2", null],
+    ]);
+    expect(waits(25)).toEqual([
+      ["W-1", at("09:31")],
+      ["W-3", null],
+      ["W-2", null],
     ]);
   });
 

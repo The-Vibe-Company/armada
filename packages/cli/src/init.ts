@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type ArmadaConfig,
+  CLAUDE_SETTINGS,
   CONFIG_FILE,
   ConfigError,
   configTemplate,
@@ -32,6 +33,19 @@ export interface InitOptions {
   programRoot: string | null;
   name: string | null;
   slug: string | null;
+  /** Add the Claude Code stop hook: null asks on a terminal, and says yes without one. */
+  stopHook: boolean | null;
+}
+
+const STOP_HOOK_QUESTION =
+  "Add the Claude Code stop hook to this repository's .claude/settings.json? A coordinator then cannot end its turn while workers are in flight and no armada watch runs; your user settings are not touched. [Y/n] ";
+
+/** Whether to add the stop hook: the option, else the person's answer, else yes. */
+async function wantsStopHook(io: Io, opts: InitOptions): Promise<boolean> {
+  if (opts.stopHook !== null) return opts.stopHook;
+  if (!io.interactive || !io.prompt) return true;
+  const answer = (await io.prompt(STOP_HOOK_QUESTION, { hidden: false }))?.trim().toLowerCase();
+  return answer === undefined ? false : answer === "" || answer.startsWith("y");
 }
 
 export const initBranch = (version: string) => `armada/init-${version}`;
@@ -114,6 +128,12 @@ function prText(plan: SetupPlan, version: string) {
     ...plan.writes.map((w) => `- write \`${w.path}\``),
     ...plan.links.map((l) => `- link \`${l.path}\` → \`${l.target}\``),
     ...plan.removes.map((p) => `- remove \`${p}\``),
+    ...(plan.stopHook
+      ? [
+          "",
+          `The Claude Code stop hook in \`${CLAUDE_SETTINGS}\` keeps a coordinator from ending its turn while workers are in flight and no \`armada watch\` runs. It blocks only in the checkout where \`armada watch\` ran, never a worker's session, and \`ARMADA_STOP_HOOK=off\` turns it off.`,
+        ]
+      : []),
     "",
     "Once merged, `armada doctor` passes on the default branch.",
     "",
@@ -150,7 +170,10 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
     await sh(exec, root, "git", ["worktree", "add", "--quiet", "--detach", checkout, baseSha]);
     const { config, text, source } = await resolveConfig(exec, root, checkout, opts);
     const view = fsRepoView(checkout);
-    const plan = await planSetup(view, { armadaVersion: opts.armadaVersion, configText: text });
+    let plan = await planSetup(view, { armadaVersion: opts.armadaVersion, configText: text });
+    // Asked only when the hook is missing: a declined hook is left out of this pull request.
+    if (plan.stopHook && !(await wantsStopHook(io, opts)))
+      plan = await planSetup(view, { armadaVersion: opts.armadaVersion, configText: text, stopHook: false });
     const log = (line: string) => io.stdout(`${line}\n`);
     log(`Armada ${opts.armadaVersion} · ${config.github.repository} · ${config.tracker.programRoot}`);
     if (source !== "default branch" && source !== "new")
@@ -226,6 +249,10 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
       }
       if (plan.installed.length) log(`Installs: ${plan.installed.join(", ")}`);
       if (plan.updated.length) log(`Updates: ${plan.updated.join(", ")}`);
+      if (plan.stopHook)
+        log(
+          `Adds the Claude Code stop hook to ${CLAUDE_SETTINGS}: this repository's settings, not your user settings.`,
+        );
     }
 
     // 3. The project registry, on Armada.

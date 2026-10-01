@@ -189,6 +189,11 @@ describe("armada doctor and armada init", () => {
       title: `chore(armada): set up Armada ${VERSION}`,
     });
     expect(first.out).toContain(`Opened pull request ${pr.url}\n`);
+    // Without a terminal to ask, the stop hook is added, to the repository's settings only.
+    expect(first.out).toContain(
+      "Adds the Claude Code stop hook to .claude/settings.json: this repository's settings, not your user settings.\n",
+    );
+    expect(pr.body).toContain("`ARMADA_STOP_HOOK=off` turns it off");
     expect(f.linear.labels.filter((l) => l.isGroup).map((l) => l.name)).toEqual(["Agent phase", "Agent runtime"]);
     expect(first.out).toContain("Registered project widgets on Armada; armada status --all lists it.\n");
     expect(await f.registry.listProjects()).toMatchObject([
@@ -208,6 +213,7 @@ describe("armada doctor and armada init", () => {
     f.merge(pr);
     const after = await f.armada("doctor");
     expect(after.out).toContain('  ok       signed in to armada.example.test as the API key "coordinator" of Acme\n');
+    expect(after.out).toContain("  ok       .claude/settings.json has Armada's stop hook");
     expect(after.out).toEndWith("Everything Armada needs is in place.\n");
     expect(after.code).toBe(0);
 
@@ -236,5 +242,37 @@ describe("armada doctor and armada init", () => {
     expect(f.gh.prs).toHaveLength(2);
     expect(f.gh.prs[1]).toMatchObject({ title: `chore(armada): update the Armada setup to ${VERSION}`, state: "open" });
     expect(update.out).toContain("Updates: armada-worker\n");
+  });
+
+  test("init asks before adding the stop hook; a no leaves it out and doctor says what it is for", async () => {
+    const f = await fixture();
+    const asked: string[] = [];
+    let answer = "n";
+    f.io.interactive = true;
+    f.io.prompt = async (question) => {
+      asked.push(question);
+      return question.startsWith("Add the Claude Code stop hook") ? answer : "";
+    };
+    const declined = await f.armada("init", "--program-root", "DEMO-1");
+    expect(declined.code).toBe(0);
+    expect(asked.filter((q) => q.includes("stop hook"))).toEqual([
+      "Add the Claude Code stop hook to this repository's .claude/settings.json? A coordinator then cannot end its turn while workers are in flight and no armada watch runs; your user settings are not touched. [Y/n] ",
+    ]);
+    expect(declined.out).not.toContain("stop hook");
+    const pr = f.gh.prs[0] as FakePr;
+    f.merge(pr);
+    const doctor = await f.armada("doctor");
+    expect(doctor.code).toBe(0);
+    expect(doctor.out).toContain(
+      "  warning  .claude/settings.json has no Armada stop hook, so a Claude Code coordinator can stop watching its fleet without noticing\n",
+    );
+
+    // --no-stop-hook does not ask; an empty answer is the default, yes.
+    asked.length = 0;
+    expect((await f.armada("init", "--no-stop-hook")).out).toContain("no pull request to open");
+    expect(asked.filter((q) => q.includes("stop hook"))).toEqual([]);
+    answer = "";
+    const accepted = await f.armada("init");
+    expect(accepted.out).toContain("Adds the Claude Code stop hook to .claude/settings.json");
   });
 });

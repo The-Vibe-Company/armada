@@ -24,6 +24,7 @@ import { merge } from "./merge.ts";
 import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError } from "./repo.ts";
+import { hookStop, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusEvents } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
@@ -37,10 +38,12 @@ const COMMAND_HELP: Record<string, string> = {
   doctor: `  doctor            What this repository lacks to be run by Armada, with the fix for each,
                     and whether this terminal is signed in to Armada
 `,
-  init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>]
+  init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook]
                     Open one pull request that installs or updates it all, create the
                     missing Linear labels and register the project. The options are for
-                    a repository without armada.toml (Linear issue at the program root)
+                    a repository without armada.toml (Linear issue at the program root).
+                    It asks before adding the Claude Code stop hook to the repository's
+                    .claude/settings.json (yes without a terminal); --no-stop-hook skips it
 `,
   claim: `  claim <ticket> --runtime <name> --handle <id> [--branch <name>]
         [--profile <name> [--reason <why>]]
@@ -66,8 +69,15 @@ const COMMAND_HELP: Record<string, string> = {
   inbox: `  inbox [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
                     oldest first; records that the coordinator is at work. --wait returns
-                    when a new item arrives or after --timeout (default 300 s). Needs a
-                    sign-in to Armada
+                    when a new item arrives or after --timeout (default 300 s); \`armada watch\`
+                    is the way to keep listening. Needs a sign-in to Armada
+`,
+  watch: `  watch             Coordinator: run in the background while workers are in flight. Waits
+                    until something needs you (a question, plan, request, hand-back or silent
+                    worker you have not seen), prints it and exits; exits "nothing to watch"
+                    when no worker is in flight and nothing is open. Armada being down or a
+                    command time limit does not end it: it keeps asking. One per project on
+                    this machine. Needs a sign-in to Armada
 `,
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: record an answer already delivered in the worker's
@@ -92,6 +102,11 @@ const COMMAND_HELP: Record<string, string> = {
                     Signed in to Armada, the prompt starts with a one-time launch token, so
                     the worker needs no key. --prompt prints only the prompt, for \`--message-file -\`
 `,
+  hook: `  hook stop         Claude Code's Stop hook, installed by \`armada init\`: a coordinator
+                    cannot end its turn while workers are in flight and no \`armada watch\`
+                    runs for the project in this checkout. Reads only local files;
+                    ARMADA_STOP_HOOK=off turns it off
+`,
   login: `  login             Sign this terminal in to Armada: confirm the code it shows in the browser
   login --api-key   Sign a headless coordinator in with an organization API key, read from a
                     hidden prompt or standard input (ARMADA_API_KEY in the environment also works)
@@ -111,7 +126,18 @@ const COMMAND_HELP: Record<string, string> = {
 
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "merge"]);
-const CONFIG_OPTION = new Set(["status", "claim", "report", "release", "ask", "inbox", "answer", "merge", "brief"]);
+const CONFIG_OPTION = new Set([
+  "status",
+  "claim",
+  "report",
+  "release",
+  "ask",
+  "inbox",
+  "watch",
+  "answer",
+  "merge",
+  "brief",
+]);
 const JSON_OPTION = new Set([...CONFIG_OPTION, "doctor", "auth", "whoami"]);
 const TICKET_HELP = `  --ticket <id>     Ticket for report, release and ask (default ARMADA_TICKET, then the git
                     branch) and for merge (default: the ticket the PR branch names)
@@ -137,14 +163,15 @@ Keys (the environment first, then Armada when signed in, then the file):
 
 The fleet's live data (claims, reports, the inbox, the merge lock, the project
 registry) is reached through Armada with the sign-in: no database key is needed.
-init, inbox and status --all need a sign-in; elsewhere, signed out, live activity
-is not recorded and Linear stays the record.
+init, inbox, watch and status --all need a sign-in; elsewhere, signed out, live
+activity is not recorded and Linear stays the record.
 
 Files:
   $XDG_CONFIG_HOME/armada (default ~/.config/armada)
     credentials        KEY=value lines, mode 0600, written by \`armada auth login\` and
                        \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
     config.toml        personal defaults: language, [dashboard] url, [api] url
+    watch/<project>.*  the project's watch: its lock, what you were shown, who is in flight
 `;
 
 /** The help of one command, or null for a command Armada does not know. */
@@ -197,7 +224,7 @@ const VALUE_OPTIONS = [
   "api-url",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note", "api-key"];
+const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note", "api-key", "no-stop-hook"];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch", "profile", "reason"],
@@ -206,7 +233,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
   answer: ["note", "message", "message-file"],
-  init: ["program-root", "name", "slug"],
+  init: ["program-root", "name", "slug", "no-stop-hook"],
   merge: ["ticket", "dry-run", "no-lock"],
   brief: ["profile", "reason", "prompt"],
   login: ["api-key", "launch-token", "api-url"],
@@ -362,6 +389,12 @@ export async function run(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, scope ? { worker: scope } : {});
       return await worker(io, config, credentials, args);
     }
+    if (args.command === "watch") {
+      const { path, text } = await findConfig(io, args.config, "watch");
+      const { credentials } = await loadCredentials(io);
+      return await watch(io, parseConfig(text, path), credentials, args, path);
+    }
+    if (args.command === "hook") return await hookStop(io, args.rest, (at) => findConfig(at, null, "hook"));
     if (args.command === "merge") {
       const { path, text } = await findConfig(io, args.config, "merge");
       const { credentials } = await loadCredentials(io);
@@ -387,6 +420,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
         programRoot: args.options["program-root"] ?? null,
         name: args.options.name ?? null,
         slug: args.options.slug ?? null,
+        stopHook: args.options["no-stop-hook"] === "true" ? false : null,
       });
     }
     if (args.command === "login" || args.command === "logout" || args.command === "whoami") {

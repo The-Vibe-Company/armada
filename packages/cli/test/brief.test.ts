@@ -135,6 +135,8 @@ describe("armada brief", () => {
     // The fleet's live data is reached through Armada: no database variable to pass.
     expect(text).not.toContain("ARMADA_TURSO");
     expect(text).toContain("ARMADA_TICKET=DEMO-13");
+    // The last line is for the coordinator: once launched, a worker is in flight.
+    expect(text).toEndWith("\n----- once launched -----\n1 worker in flight (DEMO-13) — keep watching: armada watch\n");
 
     const prompt = text.slice(text.indexOf("# DEMO-13 — Show a sign-in page"));
     const at = [
@@ -164,10 +166,12 @@ describe("armada brief", () => {
     const p = briefIo();
     expect(await run(["brief", "DEMO-13", "--prompt", ...override], p.io)).toBe(0);
     expect(p.out().startsWith("# DEMO-13 — Show a sign-in page\n")).toBe(true);
+    expect(p.out()).not.toContain("keep watching");
 
     const j = briefIo();
     expect(await run(["brief", "DEMO-13", "--json", ...override], j.io)).toBe(0);
     const brief = JSON.parse(j.out());
+    expect(brief.watch.line).toBe("1 worker in flight (DEMO-13) — keep watching: armada watch");
     expect(brief.profile).toEqual({
       name: "codex",
       agent: "codex",

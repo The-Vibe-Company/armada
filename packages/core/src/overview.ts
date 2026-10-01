@@ -2,7 +2,7 @@
 // dashboard's Fleet view (one per ticket in flight, across projects) and the
 // list of what waits for the owner. Pure: the dashboard reads the sources,
 // calls `buildOverview` and renders the result as is.
-import type { ConductorProfile } from "./config.ts";
+import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
 import type { InboxItem } from "./live.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
 import type { AgentPhase } from "./types.ts";
@@ -55,6 +55,11 @@ export interface WaitingItem {
   item: number | null;
   /** For a question or plan: the owner's answer waiting for the coordinator to deliver it. */
   answer: PendingAnswer | null;
+  /**
+   * Set when an item has been open in the coordinator's inbox for longer than
+   * `policy.coordinator_minutes`: since when it waits for the coordinator.
+   */
+  coordinatorSince: string | null;
 }
 
 /** An answer sent from the dashboard that the coordinator has not delivered yet. */
@@ -172,10 +177,20 @@ export function buildOverview(input: {
         launches.set(r.ticket, { id: r.id, author: r.author, at: r.createdAt, profile: r.request?.profile ?? null });
     }
 
+    // The oldest item of each ticket open in the coordinator's inbox for too long: the coordinator is not answering.
+    const lateAfter = (p.report?.coordinatorMinutes ?? CONFIG_DEFAULTS.coordinatorMinutes) * MIN;
+    const late = new Map<string | null, string>();
+    for (const i of inbox)
+      if (now - Date.parse(i.createdAt) > lateAfter) {
+        const held = late.get(i.ticket);
+        if (!held || i.createdAt < held) late.set(i.ticket, i.createdAt);
+      }
+
     // One waiting item per ticket: its most urgent reason. Project-wide items stay separate.
     const perTicket = new Map<string, WaitingItem>();
     let projectWide = 0;
-    const offer = (item: WaitingItem) => {
+    const offer = (offered: WaitingItem) => {
+      const item = { ...offered, coordinatorSince: late.get(offered.ticket) ?? null };
       if (!item.ticket) {
         projectWide++;
         waiting.push(item);
@@ -201,6 +216,7 @@ export function buildOverview(input: {
         since: item.createdAt,
         item: answerable ? item.id : null,
         answer: answerable ? (answers.get(item.id) ?? null) : null,
+        coordinatorSince: null,
       });
     }
     for (const t of tickets) {
@@ -217,6 +233,7 @@ export function buildOverview(input: {
         since: kind === "silent" ? (t.lastReport ?? t.lastUpdate) : t.since,
         item: null,
         answer: null,
+        coordinatorSince: null,
       });
     }
     waiting.push(...perTicket.values());

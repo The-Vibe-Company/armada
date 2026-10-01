@@ -46,6 +46,8 @@ export interface ArmadaConfig {
   policy: {
     /** A working agent with no report for longer than this shows as silent. */
     silentAfterMinutes: number;
+    /** An open item older than this in the coordinator's inbox shows "waiting for the coordinator" on the dashboard. */
+    coordinatorMinutes: number;
   };
   conductor: {
     /** Profile `armada brief` uses without `--profile`; null when none is declared. */
@@ -88,6 +90,7 @@ export const CONFIG_DEFAULTS = {
   runtimeGroup: "Agent runtime",
   runtimes: ["Claude Code", "Codex", "Conductor"],
   silentAfterMinutes: 15,
+  coordinatorMinutes: 10,
 } as const;
 
 export class ConfigError extends Error {
@@ -181,7 +184,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
-    ["policy", policyT, ["silence_minutes", "silent_after_minutes"]],
+    ["policy", policyT, ["silence_minutes", "silent_after_minutes", "coordinator_minutes"]],
     ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
@@ -257,6 +260,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     if (typeof v === "number" && Number.isFinite(v) && v > 0) silentAfterMinutes = v;
     else problems.push(`"policy.${silenceKey}" must be a positive number`);
   }
+  let coordinatorMinutes: number = CONFIG_DEFAULTS.coordinatorMinutes;
+  if (policyT.coordinator_minutes !== undefined) {
+    const v = policyT.coordinator_minutes;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) coordinatorMinutes = v;
+    else problems.push(`"policy.coordinator_minutes" must be a positive number`);
+  }
 
   let requiredChecks: string[] = [];
   if (gatesT.required_checks !== undefined) {
@@ -296,7 +305,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
     gates: { requiredChecks, localCommands },
-    policy: { silentAfterMinutes },
+    policy: { silentAfterMinutes, coordinatorMinutes },
     conductor: { defaultProfile, profiles, routing },
   };
   if (problems.length) throw new ConfigError(source, problems);
@@ -332,6 +341,7 @@ repository = ${q(p.repository)}
 
 [policy]
 silence_minutes = 15     # a worker with no report for longer than this shows as silent
+coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
 
 # How \`armada brief\` launches workers on Conductor. Every value is passed explicitly;
 # \`conductor model\` lists each agent's model ids and effort levels.

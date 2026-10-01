@@ -8,8 +8,14 @@ import {
   machinePaths,
   parsePersonalConfig,
   readCredentialStore,
+  readWatchState,
+  releaseWatchLock,
+  runningWatch,
   storeIsExposed,
+  takeWatchLock,
   updateCredentialStore,
+  updateWatchState,
+  watchFiles,
 } from "../src/machine.ts";
 
 const dirs: string[] = [];
@@ -78,4 +84,40 @@ test("config.toml is created once from a commented template and parsed with the 
     return null;
   })();
   expect(problems).toEqual(['unknown key "stray"', 'unknown key "api.token"', '"api.url" must be a non-empty string']);
+});
+
+test("one watch per project: a live lock is refused, a stale one taken over, the state kept between runs", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no paths");
+  const live = new Set([101]);
+  const alive = (pid: number) => live.has(pid);
+
+  expect(await readWatchState(paths, "widgets")).toBeNull();
+  expect(await takeWatchLock(paths, "widgets", 101, alive)).toEqual({ taken: true });
+  expect(await takeWatchLock(paths, "widgets", 202, alive)).toEqual({ taken: false, pid: 101 });
+  // Another project has its own lock.
+  expect(await takeWatchLock(paths, "gears", 202, alive)).toEqual({ taken: true });
+  expect(await runningWatch(paths, "widgets", alive)).toBe(101);
+
+  // The first watch was killed without giving its lock back.
+  live.delete(101);
+  expect(await runningWatch(paths, "widgets", alive)).toBeNull();
+  expect(await takeWatchLock(paths, "widgets", 303, alive)).toEqual({ taken: true });
+  await releaseWatchLock(paths, "widgets", 101);
+  expect((await readFile(watchFiles(paths, "widgets").lock, "utf8")).trim()).toBe("303");
+  await releaseWatchLock(paths, "widgets", 303);
+  expect(await runningWatch(paths, "widgets", alive)).toBeNull();
+
+  await updateWatchState(paths, "widgets", { root: "/work/widgets", inFlight: ["DEMO-2"] });
+  await updateWatchState(paths, "widgets", { seen: ["#4"] });
+  expect(await readWatchState(paths, "widgets")).toEqual({
+    root: "/work/widgets",
+    seen: ["#4"],
+    inFlight: ["DEMO-2"],
+    readAt: null,
+    stopped: null,
+  });
+  expect((await stat(watchFiles(paths, "widgets").state)).mode & 0o777).toBe(0o600);
+  await writeFile(watchFiles(paths, "widgets").state, "not json");
+  expect(await readWatchState(paths, "widgets")).toBeNull();
 });

@@ -7,11 +7,14 @@ import {
   askCoordinator,
   type Credentials,
   checkInbox,
+  type InboxEntry,
   type InboxReport,
+  type Rearm,
   Refusal,
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
+import { coordinatorHandle, rearmFor, remember, shown } from "./watch.ts";
 import { currentTicket, liveFleet, readMessage, type WorkerArgs, withContext } from "./worker.ts";
 
 /** Default for `armada inbox --wait`: short enough for an agent's command time limit. */
@@ -55,35 +58,39 @@ function waitSeconds(raw: string | undefined): number {
   return n;
 }
 
-export function renderInbox(r: InboxReport): string {
-  const out: string[] = [];
-  if (!r.items.length) out.push(`Inbox of ${r.project}: nothing waits for you.`);
-  else {
-    out.push(`Inbox of ${r.project} (${r.items.length}), oldest first:`);
-    for (const e of r.items) {
-      const head = [
-        e.id === null ? e.kind : `#${e.id} ${e.kind}`,
-        e.ticket,
-        e.author && `from ${e.author}`,
-        e.request?.question && `answers #${e.request.question}`,
-        e.request?.profile && `profile ${e.request.profile}`,
-        e.createdAt,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      out.push(`${e.new ? "* " : "  "}${head}`, ...e.body.split("\n").map((l) => (l ? `    ${l}` : "")));
-    }
-    if (r.items.some((e) => e.kind === "question" || e.kind === "plan"))
-      out.push(
-        'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
-      );
-    if (r.items.some((e) => e.kind === "answer-request" || e.kind === "launch-request"))
-      out.push(
-        'Dashboard requests: deliver an answer-request, then armada answer <id> "<answer>"; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>".',
-      );
+/** The entries of an inbox, oldest first, with what to do about them; new ones marked *. */
+export function renderEntries(project: string, items: InboxEntry[]): string[] {
+  if (!items.length) return [`Inbox of ${project}: nothing waits for you.`];
+  const out = [`Inbox of ${project} (${items.length}), oldest first:`];
+  for (const e of items) {
+    const head = [
+      e.id === null ? e.kind : `#${e.id} ${e.kind}`,
+      e.ticket,
+      e.author && `from ${e.author}`,
+      e.request?.question && `answers #${e.request.question}`,
+      e.request?.profile && `profile ${e.request.profile}`,
+      e.createdAt,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    out.push(`${e.new ? "* " : "  "}${head}`, ...e.body.split("\n").map((l) => (l ? `    ${l}` : "")));
   }
+  if (items.some((e) => e.kind === "question" || e.kind === "plan"))
+    out.push(
+      'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+    );
+  if (items.some((e) => e.kind === "answer-request" || e.kind === "launch-request"))
+    out.push(
+      'Dashboard requests: deliver an answer-request, then armada answer <id> "<answer>"; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>".',
+    );
+  return out;
+}
+
+export function renderInbox(r: InboxReport, next: Rearm): string {
+  const out = renderEntries(r.project, r.items);
   if (r.wait?.timedOut) out.push(`No new item within ${r.wait.timeoutSeconds} s.`);
   else if (r.wait) out.push("New items are marked *.");
+  out.push(next.line);
   return `${out.join("\n")}\n`;
 }
 
@@ -97,20 +104,22 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   const { fleet, warning } = liveFleet(io, config, credentials);
   if (!fleet)
     throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
-  const workspace = io.env.CONDUCTOR_WORKSPACE_ID?.trim();
-  const session = io.env.CONDUCTOR_SESSION_ID?.trim();
-  const coordinator =
-    io.env.ARMADA_COORDINATOR_HANDLE?.trim() || (workspace && session ? `${workspace}/${session}` : null);
   const report = await checkInbox(fleet, {
     project: config.project.slug,
-    coordinator,
+    coordinator: coordinatorHandle(io),
     silentAfterMinutes: config.policy.silentAfterMinutes,
     now: io.now ?? (() => new Date()),
     ...(wait
       ? { wait: { timeoutMs, sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))) } }
       : {}),
   });
-  io.stdout(a.json ? `${JSON.stringify(report, null, 2)}\n` : renderInbox(report));
+  await remember(io, report.project, shown(io, report.items, report.inFlight));
+  const next = await rearmFor(io, report.project, {
+    inFlight: report.inFlight,
+    open: report.items.length,
+    act: report.items.length > 0,
+  });
+  io.stdout(a.json ? `${JSON.stringify({ ...report, watch: next }, null, 2)}\n` : renderInbox(report, next));
   for (const w of report.warnings) io.stderr(`armada: warning: ${w}\n`);
   return 0;
 }

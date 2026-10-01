@@ -238,6 +238,7 @@ Tell these workers in flight what landed on main (rebase, shared files, new chec
   DEMO-16  shipping  runtime unknown  Reset a forgotten password
   DEMO-11  implementing  Claude Code · ws-11  Send a sign-in link by email
 No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.
+2 workers in flight (DEMO-11, DEMO-16) — keep watching: armada watch
 `);
   expect(f.err()).not.toContain("warning");
   expect(f.linear.get("DEMO-18").statusType).toBe("completed");

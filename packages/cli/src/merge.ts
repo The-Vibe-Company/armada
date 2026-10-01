@@ -26,6 +26,7 @@ import {
   type TestMergeResult,
 } from "@armada/core";
 import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
+import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
 /** A GitHub 5xx or a network failure, as gh reports them. */
@@ -213,7 +214,18 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
   });
-  io.stdout(a.json ? `${JSON.stringify(o, null, 2)}\n` : render(o));
+  // The workers still in flight, for the re-arm line: read after a merge, the last known ones for a dry run.
+  const project = config.project.slug;
+  const coordinator = coordinatorHandle(io);
+  const inFlight = o.merged
+    ? o.workers
+        .filter((w) => !coordinator || w.handle !== coordinator)
+        .map((w) => w.ticket)
+        .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
+    : ((await watchOf(io, project)).state?.inFlight ?? null);
+  if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
+  const next = await rearmFor(io, project, { inFlight, open: null });
+  io.stdout(a.json ? `${JSON.stringify({ ...o, watch: next }, null, 2)}\n` : `${render(o)}${next.line}\n`);
   for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
   if (o.merged) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
   return 0;

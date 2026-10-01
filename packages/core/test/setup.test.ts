@@ -53,6 +53,7 @@ describe("repository checks", () => {
       config: "error",
       ...Object.fromEntries(skills.map((s) => [`skill:${s}`, "error"])),
       conductor: "error",
+      "stop-hook": "warning",
       gitignore: "warning",
     });
     for (const c of problems(checks)) expect(c.fix).toBeTruthy();
@@ -78,7 +79,7 @@ describe("repository checks", () => {
     });
     // Nothing left to do: running the plan again changes nothing.
     const again = await planSetup(repo.view, { armadaVersion: VERSION, configText: DEMO_TOML });
-    expect(again).toEqual({ writes: [], removes: [], links: [], installed: [], updated: [] });
+    expect(again).toEqual({ writes: [], removes: [], links: [], installed: [], updated: [], stopHook: false });
   });
 
   test("an outdated skill is a warning, and the plan replaces only that skill and its lock entry", async () => {
@@ -125,6 +126,58 @@ describe("repository checks", () => {
       "node_modules/\n\n# Local agent run artifacts (ship-pr-dev)\nplans/ship-pr-dev/\n",
     );
     expect(problems(await checkRepository(repo.view, VERSION))).toEqual([]);
+  });
+
+  test("the stop hook joins the repository's Claude settings, keeps theirs, and is opt-in", async () => {
+    const theirs = {
+      permissions: { allow: ["Bash(bun test:*)"] },
+      hooks: { Stop: [{ hooks: [{ type: "command", command: "make notify" }] }], PreToolUse: [] },
+    };
+    const repo = memoryRepo({ "armada.toml": DEMO_TOML, ".claude/settings.json": JSON.stringify(theirs) });
+
+    const without = await planSetup(repo.view, { armadaVersion: VERSION, configText: null, stopHook: false });
+    expect([without.stopHook, without.writes.some((w) => w.path === ".claude/settings.json")]).toEqual([false, false]);
+    repo.apply(without);
+    expect(problems(await checkRepository(repo.view, VERSION)).map((c) => [c.id, c.fix])).toEqual([
+      [
+        "stop-hook",
+        "run `armada init` and accept the stop hook (this repository's settings only, never your user settings)",
+      ],
+    ]);
+
+    const plan = await planSetup(repo.view, { armadaVersion: VERSION, configText: null });
+    expect(plan.stopHook).toBe(true);
+    expect(plan.writes.map((w) => w.path)).toEqual([".claude/settings.json"]);
+    repo.apply(plan);
+    expect(JSON.parse(repo.files.get(".claude/settings.json") ?? "")).toEqual({
+      ...theirs,
+      hooks: {
+        ...theirs.hooks,
+        Stop: [
+          ...theirs.hooks.Stop,
+          {
+            hooks: [
+              {
+                type: "command",
+                command: "command -v armada >/dev/null 2>&1 || exit 0; armada hook stop",
+                timeout: 10,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const checks = await checkRepository(repo.view, VERSION);
+    expect(problems(checks)).toEqual([]);
+    expect(checks.find((c) => c.id === "stop-hook")?.message).toContain("ARMADA_STOP_HOOK=off turns it off");
+    // Installed once: a second run leaves it.
+    expect((await planSetup(repo.view, { armadaVersion: VERSION, configText: null })).stopHook).toBe(false);
+
+    repo.files.set(".claude/settings.json", "{ not json");
+    expect(problems(await checkRepository(repo.view, VERSION)).map((c) => [c.id, c.message])).toEqual([
+      ["stop-hook", "Claude Code stop hook not checked: .claude/settings.json is not valid JSON"],
+    ]);
+    await expect(planSetup(repo.view, { armadaVersion: VERSION, configText: null })).rejects.toThrow(SetupError);
   });
 
   test("a routing rule naming an unknown profile is a doctor error", async () => {

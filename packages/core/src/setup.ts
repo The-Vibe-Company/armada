@@ -10,6 +10,14 @@ export const AGENTS_SKILLS_DIR = ".agents/skills";
 export const CLAUDE_SKILLS_DIR = ".claude/skills";
 export const SKILLS_LOCK_FILE = "skills-lock.json";
 export const CONDUCTOR_SETTINGS = ".conductor/settings.toml";
+/** Claude Code's project settings, shared by every session in the repository. */
+export const CLAUDE_SETTINGS = ".claude/settings.json";
+/**
+ * The Claude Code stop hook: a coordinator cannot end its turn while workers
+ * are in flight and no `armada watch` runs. A session without a global
+ * `armada` (a worker using npm exec) is left alone.
+ */
+export const STOP_HOOK_COMMAND = "command -v armada >/dev/null 2>&1 || exit 0; armada hook stop";
 export const GITIGNORE = ".gitignore";
 /** ship-pr-dev writes its run artifacts here and refuses to start unless git ignores them. */
 export const SHIP_ARTIFACTS = "plans/ship-pr-dev/";
@@ -214,6 +222,8 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
       checks.push(bad("conductor", "error", err.message, `fix ${CONDUCTOR_SETTINGS}`));
     }
 
+  checks.push(await stopHookCheck(view));
+
   checks.push(
     ignoresShipArtifacts(await view.readFile(GITIGNORE))
       ? ok("gitignore", `${GITIGNORE} ignores ${SHIP_ARTIFACTS}`)
@@ -225,6 +235,70 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
         ),
   );
   return checks;
+}
+
+// ------------------------------------------------------------------ the Claude Code stop hook
+
+type Json = Record<string, unknown>;
+const isObject = (v: unknown): v is Json => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Claude Code's settings as an object; null when absent. Throws SetupError when it is not a JSON object. */
+function claudeSettings(text: string | null): Json | null {
+  if (text === null) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    throw new SetupError(`${CLAUDE_SETTINGS} is not valid JSON`);
+  }
+  if (!isObject(raw)) throw new SetupError(`${CLAUDE_SETTINGS} is not a JSON object`);
+  return raw;
+}
+
+/** True when the settings run `armada hook stop` on Stop, in any form. */
+export function hasStopHook(settings: Json | null): boolean {
+  const stop = isObject(settings?.hooks) ? (settings.hooks as Json).Stop : undefined;
+  if (!Array.isArray(stop)) return false;
+  return stop.some(
+    (group) =>
+      isObject(group) &&
+      Array.isArray(group.hooks) &&
+      group.hooks.some((h) => isObject(h) && typeof h.command === "string" && h.command.includes("armada hook stop")),
+  );
+}
+
+/** The settings text with Armada's stop hook added next to any other hook. Throws SetupError on a layout it cannot extend. */
+export function withStopHook(text: string | null): string {
+  const settings = claudeSettings(text) ?? {};
+  if (hasStopHook(settings)) return text ?? "";
+  const hooks = settings.hooks ?? {};
+  if (!isObject(hooks)) throw new SetupError(`${CLAUDE_SETTINGS} has a "hooks" value that is not an object`);
+  const stop = hooks.Stop ?? [];
+  if (!Array.isArray(stop)) throw new SetupError(`${CLAUDE_SETTINGS} has a "hooks.Stop" value that is not a list`);
+  const entry = { hooks: [{ type: "command", command: STOP_HOOK_COMMAND, timeout: 10 }] };
+  return `${JSON.stringify({ ...settings, hooks: { ...hooks, Stop: [...stop, entry] } }, null, 2)}\n`;
+}
+
+async function stopHookCheck(view: RepoView): Promise<Check> {
+  const id = "stop-hook";
+  let settings: Json | null;
+  try {
+    settings = claudeSettings(await view.readFile(CLAUDE_SETTINGS));
+  } catch (err) {
+    if (!(err instanceof SetupError)) throw err;
+    return bad(id, "warning", `Claude Code stop hook not checked: ${err.message}`, `fix ${CLAUDE_SETTINGS}`);
+  }
+  return hasStopHook(settings)
+    ? ok(
+        id,
+        `${CLAUDE_SETTINGS} has Armada's stop hook: a Claude Code coordinator cannot end its turn while workers are in flight and no armada watch runs (ARMADA_STOP_HOOK=off turns it off)`,
+      )
+    : bad(
+        id,
+        "warning",
+        `${CLAUDE_SETTINGS} has no Armada stop hook, so a Claude Code coordinator can stop watching its fleet without noticing`,
+        "run `armada init` and accept the stop hook (this repository's settings only, never your user settings)",
+      );
 }
 
 // ------------------------------------------------------------------ plan
@@ -239,12 +313,16 @@ export interface SetupPlan {
   /** Skills added by this plan, and skills replaced by a newer version. */
   installed: string[];
   updated: string[];
+  /** The plan adds the Claude Code stop hook to the repository's Claude settings. */
+  stopHook: boolean;
 }
 
 export interface PlanOptions {
   armadaVersion: string;
   /** armada.toml to add when the repository has none; null keeps it absent. */
   configText: string | null;
+  /** Add the Claude Code stop hook to the repository's Claude settings (default true). */
+  stopHook?: boolean;
 }
 
 /** Command a fresh Conductor workspace runs, guessed from the lockfile. */
@@ -321,7 +399,7 @@ export function lockText(lock: SkillsLock | null, armadaVersion: string): string
  * must edit cannot be read safely.
  */
 export async function planSetup(view: RepoView, opts: PlanOptions): Promise<SetupPlan> {
-  const plan: SetupPlan = { writes: [], removes: [], links: [], installed: [], updated: [] };
+  const plan: SetupPlan = { writes: [], removes: [], links: [], installed: [], updated: [], stopHook: false };
 
   if (opts.configText !== null && (await view.readFile(CONFIG_FILE)) === null)
     plan.writes.push({ path: CONFIG_FILE, content: opts.configText });
@@ -349,6 +427,15 @@ export async function planSetup(view: RepoView, opts: PlanOptions): Promise<Setu
     plan.writes.push({ path: CONDUCTOR_SETTINGS, content: conductorSettings(await guessSetupCommand(view)) });
   else if (!conductorSetup(settings))
     plan.writes.push({ path: CONDUCTOR_SETTINGS, content: withSetup(settings, await guessSetupCommand(view)) });
+
+  if (opts.stopHook ?? true) {
+    const before = await view.readFile(CLAUDE_SETTINGS);
+    const after = withStopHook(before);
+    if (after !== (before ?? "")) {
+      plan.writes.push({ path: CLAUDE_SETTINGS, content: after });
+      plan.stopHook = true;
+    }
+  }
 
   const gitignore = await view.readFile(GITIGNORE);
   if (!ignoresShipArtifacts(gitignore)) {

@@ -28,7 +28,7 @@ describe("armada.toml", () => {
       },
       github: { repository: "acme/widgets" },
       gates: { requiredChecks: [], localCommands: [] },
-      policy: { silentAfterMinutes: 15 },
+      policy: { silentAfterMinutes: 15, coordinatorMinutes: 10 },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
     });
   });
