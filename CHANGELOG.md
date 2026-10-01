@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.19](https://github.com/The-Vibe-Company/armada/compare/v0.2.18...v0.2.19) (2026-10-01)
+
+
+### Features
+
+* **attachments:** let agents privately attach screenshots and links ([#103](https://github.com/The-Vibe-Company/armada/issues/103)) ([d03b5cc](https://github.com/The-Vibe-Company/armada/commit/d03b5cce8750758c22e4736f3f3cd25733c94b86))
+
+
+### Bug Fixes
+
+* **cli:** mint worker launches only when printing prompts ([#101](https://github.com/The-Vibe-Company/armada/issues/101)) ([fa0bdfc](https://github.com/The-Vibe-Company/armada/commit/fa0bdfcdef511fdd34d4430beb2f71dfa8003c7c))
+
 ## [0.2.18](https://github.com/The-Vibe-Company/armada/compare/v0.2.17...v0.2.18) (2026-10-01)
 
 

@@ -14,6 +14,7 @@ You are a worker. You own exactly one ticket, named in your launch brief. You tu
 - **The ticket is the source of truth.** Read it, its parent spec and the hand-back comments of its merged blockers in full before planning.
 - Work only in your own branch and worktree. Never touch another agent's checkout, and stop only the processes you started.
 - Never print, commit or log a secret.
+- For every visible change, capture screenshots under a gitignored directory, then `armada attach <ticket> <files|https-urls>... --caption "<what to check>"`. Link the returned private dashboard URLs in the pull request description. Never commit screenshots to show a change. PNG, JPEG, WebP and GIF images are limited to 2 MB each; only the project's organization members may open them. `--for <item>` associates evidence with an owner's validation reference when one exists.
 - **The project's secrets** (an LLM provider key, a test database URL) come from Armada, never from your launch environment; `armada secrets` lists their names. Use them, in this order: `armada run -- <command>` for tests, builds and dev servers (they go in that command's environment only); `armada secrets export --file <path>` for a tool that reads a dotenv file, at a path git ignores (e.g. `.env.local`). Never run `armada secrets get`, and never echo, `env` or `printenv` a value: your command output is your transcript. A secret you need and do not have: ask the coordinator for it by name.
 
 ## Steps

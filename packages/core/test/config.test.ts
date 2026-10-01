@@ -29,6 +29,9 @@ describe("armada.toml", () => {
       github: { repository: "acme/widgets" },
       gates: { requiredChecks: [], localCommands: [] },
       policy: {
+        attachmentsPerTicket: 20,
+        attachmentsProjectMb: 200,
+        attachmentsRetentionDays: 30,
         silentAfterMinutes: 15,
         coordinatorMinutes: 10,
         notStartedMinutes: 10,

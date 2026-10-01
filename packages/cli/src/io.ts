@@ -32,6 +32,7 @@ export interface Io {
   cwd: string;
   env: Record<string, string | undefined>;
   readFile: (path: string) => Promise<string | null>;
+  readBinaryFile?: (path: string, maxBytes: number) => Promise<Uint8Array | null>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   /** Token from the GitHub CLI (`gh auth token`), or null. */
