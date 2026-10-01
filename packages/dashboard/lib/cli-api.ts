@@ -11,8 +11,23 @@
 // only claims, reports, asks and releases its own ticket. Both proxy gates let /api/cli through: each
 // route checks its own credential, and while the deployment has no accounts
 // every route refuses with the next step instead of a password prompt.
-// Everything is injected so tests run it on PGlite.
-import { type FleetCaller, parseProject, serveFleet } from "@armada/core/read";
+// Every answer names the oldest CLI that reads it right and the latest one, so
+// an outdated CLI tells its person to upgrade. Everything is injected so tests
+// run it on PGlite.
+import {
+  CLI_LATEST_HEADER,
+  CLI_MINIMUM_HEADER,
+  CLI_VERSION_HEADER,
+  compareVersions,
+  type FleetCaller,
+  installCommand,
+  MINIMUM_CLI_VERSION,
+  parseProject,
+  serveFleet,
+  upgradeLine,
+  versionToInstall,
+} from "@armada/core/read";
+import cliPackage from "../../cli/package.json" with { type: "json" };
 import { type Auth, firstOrganization, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
 import { type Holder, releaseCredentials } from "./broker";
@@ -34,6 +49,9 @@ import {
   workerActor,
   workerSession,
 } from "./workers";
+
+/** The CLI released from this commit, what an outdated CLI is told to install; never below the minimum. */
+const LATEST_CLI_VERSION = versionToInstall(MINIMUM_CLI_VERSION, cliPackage.version);
 
 export interface CliAccounts {
   auth: Auth;
@@ -228,9 +246,17 @@ async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, n
   if (vault instanceof Response) return vault;
   const identity = await identify(a, credentialOf(request), now);
   if (identity instanceof Response) return identity;
+  const body = await jsonBody(request);
+  // A CLI from before 0.2.0 sends no version but still asks for the retired fleet database's
+  // token, and reads no version header: its refusal names the upgrade itself.
+  if (!request.headers.get(CLI_VERSION_HEADER) && "turso" in body)
+    return refuse(
+      426,
+      `this CLI is older than this server expects (${MINIMUM_CLI_VERSION} or newer)`,
+      installCommand(LATEST_CLI_VERSION),
+    );
   const holder = holderOf(identity);
   if (!holder) return noOrganization(a);
-  const body = await jsonBody(request);
   const purpose = purposeOf(body);
   if (identity.via === "worker") {
     const scope = workerScope(identity.launch, purpose);
@@ -534,8 +560,24 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
-/** Answers one request under /api/cli; `path` is what follows the prefix, e.g. ["session"]. */
+/**
+ * Answers one request under /api/cli; `path` is what follows the prefix, e.g.
+ * ["session"]. Every answer names the oldest CLI that reads it right and the
+ * latest one, which the CLI compares with its own version.
+ */
 export async function handleCli(request: Request, path: string[], deps: CliApiDeps): Promise<Response> {
+  const res = await answerCli(request, path, deps);
+  const headers = new Headers(res.headers);
+  headers.set(CLI_MINIMUM_HEADER, MINIMUM_CLI_VERSION);
+  headers.set(CLI_LATEST_HEADER, LATEST_CLI_VERSION);
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+async function answerCli(request: Request, path: string[], deps: CliApiDeps): Promise<Response> {
+  // An outdated CLI is refused before anything runs: no write happens that it could not read back.
+  const version = request.headers.get(CLI_VERSION_HEADER);
+  if (version && compareVersions(version, MINIMUM_CLI_VERSION) < 0)
+    return refuse(426, upgradeLine(version, LATEST_CLI_VERSION), installCommand(LATEST_CLI_VERSION));
   const now = deps.now?.() ?? new Date();
   let a: CliAccounts | null;
   try {

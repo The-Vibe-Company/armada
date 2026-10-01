@@ -382,7 +382,7 @@ describe("armada brief with a launch token", () => {
     return { ...b, armada };
   }
 
-  test("signed in, the prompt signs the worker in first, and says it needs no key", async () => {
+  test("signed in, the prompt signs the worker in first, and says it needs no key; only --prompt shows the token", async () => {
     const b = await signedIn();
     expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
     const text = b.out();
@@ -391,13 +391,26 @@ describe("armada brief with a launch token", () => {
       ticket: "DEMO-13",
     });
     expect(text).toContain(
-      "Launch:      one-time token in the prompt, valid until 2026-03-04 11:00 UTC: the worker needs no key\n",
+      "Launch:      one-time token in the prompt, valid until 2026-03-04 11:00 UTC: the worker needs no key\n             (shown as armada_launch_•••• here; `armada brief DEMO-13 --prompt` prints it)\n",
     );
     expect(text).toMatch(/ {2}LINEAR_API_KEY +optional /);
     const prompt = text.slice(text.indexOf("# DEMO-13"));
     expect(prompt).toContain(
-      `\nnpm install -g @the-vibe-company/armada@${version}\narmada login --launch-token armada_launch_CANARY_1 --api-url ${ARMADA_URL}\narmada claim DEMO-13 --runtime conductor`,
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada login --launch-token armada_launch_•••• --api-url ${ARMADA_URL}\narmada claim DEMO-13 --runtime conductor`,
     );
+    expect(text).not.toContain("armada_launch_CANARY");
+
+    // Each run reads Linear afresh: a new terminal for each.
+    const j = await signedIn();
+    expect(await run(["brief", "DEMO-13", "--json"], j.io)).toBe(0);
+    const json = JSON.parse(j.out()) as { prompt: string; launch: { command: string } };
+    expect(json.launch.command).toBe(`armada login --launch-token armada_launch_•••• --api-url ${ARMADA_URL}`);
+    expect(json.prompt).toContain("armada login --launch-token armada_launch_•••• --api-url");
+    expect(JSON.stringify(json)).not.toContain("armada_launch_CANARY");
+
+    const p = await signedIn();
+    expect(await run(["brief", "DEMO-13", "--prompt"], p.io)).toBe(0);
+    expect(p.out()).toContain(`armada login --launch-token armada_launch_CANARY_1 --api-url ${ARMADA_URL}\n`);
     expect(prompt).toContain("No key is needed in this workspace");
     expect(prompt).not.toContain("The coordinator set `LINEAR_API_KEY`");
     for (const secret of Object.values(SECRETS)) expect(text).not.toContain(secret);

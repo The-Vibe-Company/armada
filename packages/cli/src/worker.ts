@@ -5,7 +5,6 @@
 // sessions on Armada.
 import {
   type ArmadaConfig,
-  armadaApi,
   type Credentials,
   checkRequestedProfile,
   claimTicket,
@@ -27,6 +26,7 @@ import {
   type WorkerContext,
   workerSessionVariable,
 } from "@armada/core";
+import { apiOf } from "./api.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
 
 /**
@@ -46,7 +46,7 @@ export function liveFleet(
       warning: "not signed in to Armada (armada login); live activity is not recorded, Linear is",
     };
   try {
-    const api = armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+    const api = apiOf(io, credentials.armadaApi.url);
     return { fleet: fleetClient({ api, signIn, project: projectOf(config) }), warning: null };
   } catch (err) {
     return {
@@ -265,7 +265,7 @@ export async function endWorkerSessions(
 ): Promise<void> {
   const signIn = credentials.armadaSignIn;
   if (!signIn) return;
-  const api = armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+  const api = apiOf(io, credentials.armadaApi.url);
   try {
     if (signIn.kind === "worker") {
       const paths = machinePaths(io.env);

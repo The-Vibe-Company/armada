@@ -5,6 +5,7 @@ description: Runtime guide for running Armada workers on Conductor Cloud. Use wh
 
 Armada never calls a runtime. This guide tells the coordinator how to launch, message, check and stop a worker with the `conductor` command line tool, and what to record in Armada afterwards. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
 
+- On a Mac, the app ships the CLI at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, which is not on PATH. `armada doctor` looks for it and prints the fix: a link from a directory already on PATH (`ln -s "/Applications/Conductor.app/Contents/Resources/bin/conductor" ~/.local/bin/conductor`), or a PATH line for your shell profile.
 - Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication, 4 server error.
 - On exit code 3, `conductor auth whoami` checks the token the CLI uses (it exits 0 when the token works). Do not rely on `conductor auth status`: it only looks for a macOS Keychain entry and fails on Linux ("Keychain storage is only supported on macOS"). In a Conductor Cloud workspace the CLI reads `CONDUCTOR_API_KEY` from the environment and needs no login; on a Mac, `conductor auth login` stores a token in the Keychain.
 - A worker is one workspace with one session. Its Armada handle is `<workspaceId>/<sessionId>`; the worker's claim comment carries it, so `armada status` and the ticket always lead back to the session.
@@ -15,7 +16,7 @@ Armada never calls a runtime. This guide tells the coordinator how to launch, me
 
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
 2. Run `armada brief ABC-12` (with `--profile <name> --reason "<why>"` when you override the routed profile), right before the launch. Read the profile (agent, model, effort, fast mode), the `Launch:` line and the warnings. Resolve every warning first: an open blocker, a ticket already in flight.
-   - `Launch: one-time token in the prompt` is the normal case: the worker signs in to Armada with it and fetches its own keys. Its workspace receives no key at all.
+   - `Launch: one-time token in the prompt` is the normal case: the worker signs in to Armada with it and fetches its own keys. Its workspace receives no key at all. This view and `--json` show the token as `armada_launch_••••`; only `--prompt` prints it.
    - `Launch: no launch token (…)` says why. Not signed in: `armada login` (a headless coordinator sets `ARMADA_API_KEY`), then brief again; `armada doctor` checks the sign-in. Launch with keys (step 4, second block) only on an Armada that keeps no keys yet (no accounts or no vault: a self-hosted one, CI, or before the owner's switch to the Keys page).
 3. Write the prompt to a file only you can read, and add what only you know (the boundary with a parallel worker, a decision not yet on the ticket). The token in it works once, within the hour: brief again when that hour has passed before the launch.
 

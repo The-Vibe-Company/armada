@@ -8,7 +8,7 @@
 import {
   ArmadaApiError,
   type ArmadaKeys,
-  armadaApi,
+  type ArmadaKeysAnswer,
   type CredentialSource,
   type CredentialStore,
   type Credentials,
@@ -27,6 +27,7 @@ import {
   storeIsExposed,
   updateCredentialStore,
 } from "@armada/core";
+import { apiOf } from "./api.ts";
 import { type Io, UsageError } from "./io.ts";
 
 export interface Machine {
@@ -56,20 +57,20 @@ const wantsArmada = (env: Io["env"]) => !env.LINEAR_API_KEY?.trim();
  * unreachable or refusing: a warning, and the command goes on with the keys
  * of this machine. Armada keeping no keys (503) is not worth a warning: the
  * terminal then works as before. A worker cut off, ended, or out of its
- * ticket stops here, whatever keys the machine has.
+ * ticket stops here, whatever keys the machine has, and so does a CLI older
+ * than Armada expects, with the one line that upgrades it.
  */
 async function fromArmada(io: Io, credentials: Credentials, purpose: KeysPurpose | null): Promise<ArmadaKeys | null> {
   const signIn = credentials.armadaSignIn;
   if (!signIn) return null;
-  let answer: Awaited<ReturnType<ReturnType<typeof armadaApi>["credentials"]>>;
+  let answer: ArmadaKeysAnswer;
   try {
-    answer = await armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) }).credentials(
-      signIn,
-      purpose,
-    );
+    answer = await apiOf(io, credentials.armadaApi.url).credentials(signIn, purpose);
   } catch (err) {
     if (!(err instanceof ArmadaApiError)) throw err;
     if ((err.signedOut || err.status === 403) && signIn.kind === "worker") throw err;
+    // Older than the server expects: its one upgrade line, rather than a run on a reading it cannot trust.
+    if (err.upgrade) throw err;
     if (err.status === 503) return null;
     io.stderr(`! Armada gave no keys (${err.message}); using this machine's${err.next ? `. Next: ${err.next}` : ""}\n`);
     return null;

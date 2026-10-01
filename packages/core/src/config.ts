@@ -39,7 +39,7 @@ export interface ArmadaConfig {
     /**
      * Shell commands `armada merge` runs on a test merge of a head that lacks
      * commits of its base branch (e.g. install, then lint and test). Empty:
-     * such a head is refused until the worker rebases.
+     * such a head is refused until the worker brings the base branch in.
      */
     localCommands: string[];
   };

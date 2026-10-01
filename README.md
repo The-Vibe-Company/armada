@@ -54,10 +54,12 @@ armada init --program-root ABC-1       # one pull request that adds it all
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;
 - this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
+- this CLI is as recent as that Armada expects (signed in only): every answer of the Armada API names the oldest CLI that reads it right and the latest one, and a CLI older than the oldest prints one line on any command, `Armada <version> is older than this server expects: npm install -g @the-vibe-company/armada@<latest>`;
 - no key is left in the credentials file that Armada now gives this terminal (`armada auth logout` removes them, the sign-in stays);
-- the Linear label groups `Agent phase` and `Agent runtime` exist with every value (needs a Linear key, from Armada or `LINEAR_API_KEY`).
+- the Linear label groups `Agent phase` and `Agent runtime` exist with every value (needs a Linear key, from Armada or `LINEAR_API_KEY`);
+- with Conductor profiles in `armada.toml`, the `conductor` command is found: on PATH, or inside the macOS app at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, with the fix that puts it on PATH.
 
-Each problem is an error or a warning, with its fix. A missing skill is an error: workers cannot run without it. A skill that differs from this Armada version, a missing ignore line, a missing sign-in or a leftover key is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
+Each problem is an error or a warning, with its fix. A missing skill, or a CLI older than Armada expects, is an error: workers cannot run without it. A skill that differs from this Armada version, a missing ignore line, a missing sign-in or a leftover key is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
 
 `armada init` fixes everything doctor reports in one go:
 
@@ -82,7 +84,7 @@ armada brief ABC-12 --profile codex --reason "a back-end bug behind a web label"
 - The prompt names the ticket and its Linear branch, starts by installing the coordinator's Armada version (`npm install -g`, with an `npm exec` fallback), signing in with `armada login --launch-token <token>` and running `armada claim` with the handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
 - **Plan rule.** A "Plan" section says in one line whether the worker waits for approval: "post your plan with `armada report implementing --plan-file -` and go on" when plans are pre-approved, "post your plan with `armada report awaiting-approval --plan-file -` and wait for approval" otherwise. `[policy] plans` decides (`approve` by default, or `pre-approved`); a ticket labelled `plan-approved` (`policy.pre_approved_label`) is pre-approved, and one labelled `needs-plan-approval` (`policy.approval_label`) waits for approval, which wins when a ticket has both. The settings show the rule and where it comes from (`Plans:`), and `--json` carries it as `plans`.
 - **Project conventions.** `[brief] extra = "<path>"` names a file of the repository (relative to `armada.toml`) that every prompt ends with, under "Project conventions": the checks to run, the generated files to refresh, how to bring main in. A missing file is a brief warning, and `armada doctor` checks it.
-- **Workers need no key.** When the coordinator is signed in to an Armada that keeps the organization's keys, the brief asks it for a launch token: one ticket, used once, valid one hour. The worker exchanges it for a session limited to its ticket's `claim`, `report`, `ask` and `release`, and Armada gives each of those commands its keys. The `Launch:` line says whether the prompt carries one, and when there is none, why (not signed in, or an Armada without accounts or keys). Make the brief right before the launch; the token is the only secret a prompt ever holds, useless once used. Merging or releasing the ticket ends the worker's session, and Organization > Workers on the dashboard revokes one.
+- **Workers need no key.** When the coordinator is signed in to an Armada that keeps the organization's keys, the brief asks it for a launch token: one ticket, used once, valid one hour. The worker exchanges it for a session limited to its ticket's `claim`, `report`, `ask` and `release`, and Armada gives each of those commands its keys. The `Launch:` line says whether the prompt carries one, and when there is none, why (not signed in, or an Armada without accounts or keys). Only `--prompt` prints the token; the full brief and `--json` show it as `armada_launch_••••`, so it stays out of the coordinator's transcript. Make the brief right before the launch; the token is the only secret a prompt ever holds, useless once used. Merging or releasing the ticket ends the worker's session, and Organization > Workers on the dashboard revokes one.
 - The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables: `ARMADA_TICKET=<ticket>`, and, only without a launch token, `LINEAR_API_KEY` (required). Each shows whether this shell has it. No value is ever printed.
 - A profile with `runtime = "claude-code"` routes the launch to the `armada-runtime-claude-code` skill: the `Runtime:` line names the skill, the claim runs `--runtime claude-code` with the subagent's name as its handle (the ticket id in lowercase), and the prompt first makes the worker check it runs in its own worktree. The Agent tool applies no effort; the brief says so.
 - The profile follows the ticket's Linear labels: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored), else `conductor.default_profile`, else the only profile. The settings say which rule chose it.
@@ -122,7 +124,7 @@ armada watch                   # coordinator, in the background: returns when so
 armada inbox --wait            # returns when a new item arrives, or after --timeout (default 300 s)
 armada answer 12 "SQLite, for the first slice."                 # after delivering it in the worker's session
 armada answer 13 "approved"                                   # a plan, after delivering approval
-armada answer --note ABC-12 "main moved: rebase before you ship"  # an unsolicited message, same path
+armada answer --note ABC-12 "main moved: bring it in before you ship"  # an unsolicited message, same path
 ```
 
 - `ask` reports the `blocked` phase with `Agent status: blocked — question: <first line>` (the rest and the numbered options below it) and adds a `question` item to the coordinator's inbox on Armada. The worker then stops and waits for the answer in its session, and reports the phase it resumes. It finds the ticket like `report`.
@@ -368,7 +370,7 @@ repository = "acme/widgets"      # owner/name (required)
 
 [gates]
 required_checks = ["test"]       # CI checks that must be green before a hand-back or a merge (default: every check)
-local_commands = ["npm ci", "npm test"]  # run by `armada merge` on a test merge of a head behind its base (default: none, rebase instead)
+local_commands = ["npm ci", "npm test"]  # run by `armada merge` on a test merge of a head behind its base (default: none: the worker brings the base branch in instead)
 
 [policy]
 silence_minutes = 15             # a worker with no report for longer is flagged silent (default 15)
