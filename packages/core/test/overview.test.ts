@@ -218,7 +218,7 @@ describe("fleet overview", () => {
         ],
         coordinatorSeenAt: null,
       }),
-      profiles: { opus: { agent: "claude", model: "opus-5-5", effort: "high", fastMode: false } },
+      profiles: { opus: { runtime: "conductor", agent: "claude", model: "opus-5-5", effort: "high", fastMode: false } },
     };
     widgets.report?.frontier.push(frontier("W-8"), frontier("W-9"));
     const o = buildOverview({ projects: [widgets], live: { state: "ok", error: null }, now: NOW });

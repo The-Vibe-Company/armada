@@ -33,7 +33,12 @@ describe("loadStatus", () => {
       since: "2026-03-04T09:10:00.000Z",
       lastUpdate: "2026-03-04T09:50:00.000Z",
       lastReport: "2026-03-04T09:10:00.000Z",
-      statusLine: { summary: "plan approved, writing the email sender" },
+      // The status comment carries the plan: one line here, the full plan one click away.
+      statusLine: {
+        summary: "plan approved, writing the email sender",
+        url: "https://linear.app/acme/issue/DEMO-11#comment-c11b0000",
+        plan: true,
+      },
     });
     expect(r.frontier.map((t) => [t.id, t.readyForAgent, t.unlocks])).toEqual([
       ["DEMO-13", true, ["DEMO-14"]],

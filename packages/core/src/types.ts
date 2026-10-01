@@ -88,8 +88,11 @@ export interface Comment {
   author: string | null;
   createdAt: string;
   excerpt: string;
-  /** Parsed first line "Agent status: <phase> — <summary>", if present. */
-  status: { phase: AgentPhase; summary: string } | null;
+  /**
+   * Parsed first line "Agent status: <phase> — <summary>", if present; `plan`
+   * when the comment carries a plan block (`armada report --plan`).
+   */
+  status: { phase: AgentPhase; summary: string; plan?: true } | null;
   /** Parsed "Agent claim — runtime: … · session: … · branch: … · started: …". */
   claim: AgentClaim | null;
 }

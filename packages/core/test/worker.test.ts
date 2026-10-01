@@ -108,6 +108,14 @@ describe("claim", () => {
     expect(linear.get("DEMO-7").comments).toHaveLength(1);
   });
 
+  test("a Claude Code subagent claims with --runtime claude-code and its name as the handle", async () => {
+    const { linear, ctx } = setup();
+    linear.add("DEMO-7");
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "claude-code", handle: "demo-7" });
+    expect(labelsOf(linear, "DEMO-7")).toEqual(["planning", "Claude Code"]);
+    expect(linear.get("DEMO-7").comments[0]?.claim).toMatchObject({ runtime: "Claude Code", session: "demo-7" });
+  });
+
   describe("with a profile", () => {
     // The template's routing: web → opus, api → codex, Bug → debug.
     const routed = parseConfig(

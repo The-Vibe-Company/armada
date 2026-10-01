@@ -28,7 +28,14 @@ describe("armada.toml", () => {
       },
       github: { repository: "acme/widgets" },
       gates: { requiredChecks: [], localCommands: [] },
-      policy: { silentAfterMinutes: 15, coordinatorMinutes: 10 },
+      policy: {
+        silentAfterMinutes: 15,
+        coordinatorMinutes: 10,
+        plans: "approve",
+        preApprovedLabel: "plan-approved",
+        approvalLabel: "needs-plan-approval",
+      },
+      brief: { extra: null },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
     });
   });
@@ -64,6 +71,30 @@ describe("armada.toml", () => {
     expect(problemsOf(text)).toEqual(['unknown key "tracker.redy_label"']);
   });
 
+  test("the plan policy, its two labels and the brief's conventions file", () => {
+    const text = DEMO_TOML.concat(
+      '\n[policy]\nplans = "pre-approved"\npre_approved_label = "Go"\napproval_label = "Review plan"\n[brief]\nextra = "docs/workers.md"\n',
+    );
+    const config = parseConfig(text);
+    expect(config.policy).toMatchObject({
+      plans: "pre-approved",
+      preApprovedLabel: "Go",
+      approvalLabel: "Review plan",
+    });
+    expect(config.brief).toEqual({ extra: "docs/workers.md" });
+    expect(
+      problemsOf(
+        DEMO_TOML.concat(
+          '\n[policy]\nplans = "yes"\npre_approved_label = "Plan OK"\napproval_label = "plan-ok"\n[brief]\nextra = "../notes.md"\n',
+        ),
+      ),
+    ).toEqual([
+      '"policy.plans" must be "approve" or "pre-approved"',
+      '"policy.pre_approved_label" and "policy.approval_label" must name different labels',
+      '"brief.extra" is "../notes.md", expected a path inside the repository, relative to armada.toml',
+    ]);
+  });
+
   test("the template init writes is a valid file for the project it names", () => {
     const text = configTemplate({
       name: "Widgets",
@@ -71,15 +102,18 @@ describe("armada.toml", () => {
       programRoot: "DEMO-1",
       repository: "acme/widgets",
     });
+    // The plan policy and the conventions file are written commented, with their defaults.
+    expect(text).toMatch(/\[policy\][^[]*\n# plans = "approve"[^[]*\n# approval_label = "needs-plan-approval"/);
+    expect(text).toContain("[brief]\n# extra = ");
     const { conductor, ...rest } = parseConfig(text);
     const { conductor: _none, ...demo } = parseConfig(DEMO_TOML);
     expect(rest).toEqual(demo);
     expect(conductor).toEqual({
       defaultProfile: "opus",
       profiles: {
-        opus: { agent: "claude", model: "opus-5-5-1m", effort: "high", fastMode: false },
-        codex: { agent: "codex", model: "gpt-6.1-sol", effort: "high", fastMode: false },
-        debug: { agent: "codex", model: "gpt-6.1-sol", effort: "xhigh", fastMode: false },
+        opus: { runtime: "conductor", agent: "claude", model: "opus-5-5-1m", effort: "high", fastMode: false },
+        codex: { runtime: "conductor", agent: "codex", model: "gpt-6.1-sol", effort: "high", fastMode: false },
+        debug: { runtime: "conductor", agent: "codex", model: "gpt-6.1-sol", effort: "xhigh", fastMode: false },
       },
       routing: [
         { labels: ["web"], profile: "opus" },
@@ -98,6 +132,26 @@ describe("armada.toml", () => {
       'missing required key "conductor.profiles.opus.effort"',
       '"conductor.default_profile" is "fast", but there is no [conductor.profiles.fast]',
       'unknown key "conductor.profiles.opus.modle"',
+    ]);
+  });
+
+  test("a profile runs on conductor or claude-code, and a claude-code profile runs claude", () => {
+    const local =
+      '\n[conductor.profiles.local]\nruntime = "claude-code"\nagent = "claude"\nmodel = "opus"\neffort = "high"\n';
+    expect(parseConfig(DEMO_TOML.concat(local)).conductor.profiles.local).toEqual({
+      runtime: "claude-code",
+      agent: "claude",
+      model: "opus",
+      effort: "high",
+      fastMode: false,
+    });
+    const text = DEMO_TOML.concat(
+      '\n[conductor.profiles.local]\nruntime = "claude-code"\nagent = "codex"\nmodel = "opus"\neffort = "high"\n',
+      '[conductor.profiles.cloud]\nruntime = "cloud"\nagent = "claude"\nmodel = "opus"\neffort = "high"\n',
+    );
+    expect(problemsOf(text)).toEqual([
+      '"conductor.profiles.local.agent" must be "claude" with runtime = "claude-code"',
+      '"conductor.profiles.cloud.runtime" must be one of "conductor", "claude-code"',
     ]);
   });
 

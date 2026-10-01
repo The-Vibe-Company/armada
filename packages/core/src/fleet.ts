@@ -52,7 +52,8 @@ export interface Lane {
   lastUpdate: string;
   /** Latest report by the worker: live event, `Agent status:` comment or claim. Null when it never reported. */
   lastReport: string | null;
-  statusLine: { summary: string; at: string; author: string | null; url: string } | null;
+  /** `plan`: the status comment carries the worker's plan, at `url`. */
+  statusLine: { summary: string; at: string; author: string | null; url: string; plan: boolean } | null;
   pr: PullRequest | null;
   openBlockers: string[];
   flags: LaneFlag[];
@@ -234,13 +235,14 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     lastReport,
     statusLine:
       fresh?.message && phaseSource === "live"
-        ? { summary: fresh.message, at: fresh.at, author: null, url: issue.url }
+        ? { summary: fresh.message, at: fresh.at, author: null, url: issue.url, plan: false }
         : withStatus?.status
           ? {
               summary: withStatus.status.summary,
               at: withStatus.createdAt,
               author: withStatus.author,
               url: commentUrl(issue, withStatus),
+              plan: !!withStatus.status.plan,
             }
           : null,
     pr,

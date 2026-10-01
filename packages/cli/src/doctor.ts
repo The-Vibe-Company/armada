@@ -207,10 +207,10 @@ async function versionOf(io: Io, command: string): Promise<string | null> {
  * Whether the `conductor` command the runtime guide launches workers with is
  * found: on PATH, or only inside the macOS app, where the fix is a link from a
  * directory already on PATH (no sudo), else a PATH line, else a link in
- * /usr/local/bin. Only for a project that declares Conductor profiles.
+ * /usr/local/bin. Only for a project with a profile that runs on Conductor.
  */
 async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Check[]> {
-  if (!io.exec || !config || !Object.keys(config.conductor.profiles).length) return [];
+  if (!io.exec || !Object.values(config?.conductor.profiles ?? {}).some((p) => p.runtime === "conductor")) return [];
   const onPath = await versionOf(io, "conductor");
   if (onPath !== null)
     return [

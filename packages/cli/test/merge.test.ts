@@ -234,7 +234,7 @@ https://github.com/acme/widgets/pull/9
 https://linear.app/acme/issue/DEMO-18
 Hints for you to judge (not blocking):
   - \`shareList\`, removed from src/lists.ts, still appears on main in src/share.ts
-Tell these workers in flight what landed on main (rebase, shared files, new checks):
+Tell these workers in flight what landed on main (bring it in, shared files, new checks):
   DEMO-16  shipping  runtime unknown  Reset a forgotten password
   DEMO-11  implementing  Claude Code · ws-11  Send a sign-in link by email
 No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.

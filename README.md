@@ -50,14 +50,14 @@ armada init --program-root ABC-1       # one pull request that adds it all
 `armada doctor` checks, in the repository you are in:
 
 - `armada.toml` exists and is valid;
-- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
+- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`, `armada-runtime-claude-code`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;
 - this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
 - this CLI is as recent as that Armada expects (signed in only): every answer of the Armada API names the oldest CLI that reads it right and the latest one, and a CLI older than the oldest prints one line on any command, `Armada <version> is older than this server expects: npm install -g @the-vibe-company/armada@<latest>`;
 - no key is left in the credentials file that Armada now gives this terminal (`armada auth logout` removes them, the sign-in stays);
 - the Linear label groups `Agent phase` and `Agent runtime` exist with every value (needs a Linear key, from Armada or `LINEAR_API_KEY`);
-- with `[conductor.profiles]` in `armada.toml`, the `conductor` command is found: on PATH, or inside the macOS app at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, with the fix that puts it on PATH.
+- with Conductor profiles in `armada.toml`, the `conductor` command is found: on PATH, or inside the macOS app at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, with the fix that puts it on PATH.
 
 Each problem is an error or a warning, with its fix. A missing skill, or a CLI older than Armada expects, is an error: workers cannot run without it. A skill that differs from this Armada version, a missing ignore line, a missing sign-in or a leftover key is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
 
@@ -73,7 +73,7 @@ On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the nam
 
 ## Launch a worker (coordinators)
 
-Armada prepares a launch; it never starts a runtime itself. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands. [`docs/runbook.md`](docs/runbook.md) says how to start a coordinator on a laptop or in Conductor Cloud, what the owner sets up once, and how one coordinator hands over to the next.
+Armada prepares a launch; it never starts a runtime itself. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands; the `armada-runtime-claude-code` skill launches a worker as a background subagent of a coordinator running in Claude Code, in its own git worktree (it dies with the coordinator's session, so long runs go to Conductor). [`docs/runbook.md`](docs/runbook.md) says how to start a coordinator on a laptop or in Conductor Cloud, what the owner sets up once, and how one coordinator hands over to the next.
 
 ```sh
 armada brief ABC-12                    # launch settings, then the worker's prompt
@@ -82,8 +82,11 @@ armada brief ABC-12 --profile codex --reason "a back-end bug behind a web label"
 ```
 
 - The prompt names the ticket and its Linear branch, starts by installing the coordinator's Armada version (`npm install -g`, with an `npm exec` fallback), signing in with `armada login --launch-token <token>` and running `armada claim` with the handle `$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID`, and carries the blockers with their hand-back notes, the comments already on the ticket and the workers in flight.
+- **Plan rule.** A "Plan" section says in one line whether the worker waits for approval: "post your plan with `armada report implementing --plan-file -` and go on" when plans are pre-approved, "post your plan with `armada report awaiting-approval --plan-file -` and wait for approval" otherwise. `[policy] plans` decides (`approve` by default, or `pre-approved`); a ticket labelled `plan-approved` (`policy.pre_approved_label`) is pre-approved, and one labelled `needs-plan-approval` (`policy.approval_label`) waits for approval, which wins when a ticket has both. The settings show the rule and where it comes from (`Plans:`), and `--json` carries it as `plans`.
+- **Project conventions.** `[brief] extra = "<path>"` names a file of the repository (relative to `armada.toml`) that every prompt ends with, under "Project conventions": the checks to run, the generated files to refresh, how to bring main in. A missing file is a brief warning, and `armada doctor` checks it.
 - **Workers need no key.** When the coordinator is signed in to an Armada that keeps the organization's keys, the brief asks it for a launch token: one ticket, used once, valid one hour. The worker exchanges it for a session limited to its ticket's `claim`, `report`, `ask` and `release`, and Armada gives each of those commands its keys. The `Launch:` line says whether the prompt carries one, and when there is none, why (not signed in, or an Armada without accounts or keys). Only `--prompt` prints the token; the full brief and `--json` show it as `armada_launch_••••`, so it stays out of the coordinator's transcript. Make the brief right before the launch; the token is the only secret a prompt ever holds, useless once used. Merging or releasing the ticket ends the worker's session, and Organization > Workers on the dashboard revokes one.
 - The settings give the profile's agent, model and effort from `[conductor]` in `armada.toml`, and the environment variables: `ARMADA_TICKET=<ticket>`, and, only without a launch token, `LINEAR_API_KEY` (required). Each shows whether this shell has it. No value is ever printed.
+- A profile with `runtime = "claude-code"` routes the launch to the `armada-runtime-claude-code` skill: the `Runtime:` line names the skill, the claim runs `--runtime claude-code` with the subagent's name as its handle (the ticket id in lowercase), and the prompt first makes the worker check it runs in its own worktree. The Agent tool applies no effort; the brief says so.
 - The profile follows the ticket's Linear labels: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored), else `conductor.default_profile`, else the only profile. The settings say which rule chose it.
 - `--profile` overrides that choice. When `armada.toml` has routing rules and the profile differs from the routed one, `--reason` is required. The reason travels into the claim command, so the claim comment records the profile and why. An unknown profile exits 2.
 
@@ -94,7 +97,7 @@ A worker writes to the tracker only through three commands. They set the labels 
 ```sh
 armada login --launch-token <token>        # the first line of the launch message: no key needed after it
 armada claim ABC-12 --runtime conductor --handle <workspace>/<session>
-armada report awaiting-approval --message-file plan.md     # first line = summary
+armada report awaiting-approval --plan-file plan.md        # the plan as its own block, one-line status
 armada report implementing --message "plan approved, writing the parser"
 armada report implementing --message "parser done, wiring the CLI"   # same phase = status update
 armada report shipping --message "PR open" --pr 34
@@ -105,6 +108,7 @@ armada release --reason "wrong ticket"
 - `claim` re-reads the ticket and refuses it when another worker holds it; if two claims race, the older comment wins and the other withdraws. It assigns the ticket to the Linear key's user, moves it to the team's first started state, sets the `planning` phase label and the runtime label (matched by name, so `conductor` finds `Conductor`), and posts an `Agent claim — runtime · session · branch · started` line. The handle is kept in that comment and on Armada, so a coordinator finds the session either way. Claiming again with the same handle repairs labels and state. It reads every comment and label of the ticket, however many.
 - `report <phase>` accepts: planning → awaiting-approval or implementing; awaiting-approval → planning or implementing; implementing → shipping; shipping → implementing or ready-to-merge; ready-to-merge → shipping; blocked from anywhere and back to any phase; the current phase again as a status update. Anything else exits 1 with the reason. The output lists what waits in the worker's inbox.
 - `report`, `ask` and `answer` accept `--message-file -` to read standard input to EOF, including a pipe or a shell heredoc. For example: `printf 'line one\nline two' | bun run armada report implementing --ticket ABC-12 --message-file -`. An explicitly empty or whitespace-only message file or stdin exits 2 before any tracker or database write, with a retry naming `--message` or a non-empty pipe. A `ready-to-merge` report may still omit the message option.
+- `--plan <text>` or `--plan-file <path|->` posts the plan as its own `## Plan` block under the status line. `--message` becomes optional: its first line is the status, else the plan's first line (cut at 100 characters). `armada status` then shows that one line and `plan: <comment url>`, and the dashboard's status line gets a "plan ↗" link. Only one of `--message-file -` and `--plan-file -` can read standard input.
 - `claim` and `report` read the ticket back and print where it stands, for example `Now: In Progress · phase implementing · runtime Conductor · profile none`, so a worker can check it without opening Linear. `--json` carries the same as `state`.
 - `ready-to-merge` is refused unless the pull request is open in the project repository, `--sha` is the full 40-character SHA of its head, and every check in `[gates] required_checks` is green on that head (with none declared: at least one check, all green). It needs a GitHub token.
 - `release` removes the phase and runtime labels, keeps the configured ready label so the ticket can be taken again, moves the ticket back to the team's first unstarted state and posts `Agent status: released — <reason>`.
@@ -124,7 +128,7 @@ armada answer --note ABC-12 "main moved: bring it in before you ship"  # an unso
 ```
 
 - `ask` reports the `blocked` phase with `Agent status: blocked — question: <first line>` (the rest and the numbered options below it) and adds a `question` item to the coordinator's inbox on Armada. The worker then stops and waits for the answer in its session, and reports the phase it resumes. It finds the ticket like `report`.
-- `report awaiting-approval` adds a `plan` item with the full message and worker handle to the coordinator's inbox. Same-phase heartbeats neither duplicate nor reopen it. Answering it, recording a note, leaving the phase or releasing the ticket closes the plan and any pending approval request. For a pre-approved plan, post the plan with `report implementing` instead: no approval item is needed.
+- `report awaiting-approval` adds a `plan` item with the full message (and the `--plan` block) and worker handle to the coordinator's inbox. Same-phase heartbeats neither duplicate nor reopen it. Answering it, recording a note, leaving the phase or releasing the ticket closes the plan and any pending approval request. For a pre-approved plan (the brief's "Plan" line says which), post the plan with `report implementing --plan-file -` instead: no approval item is needed.
 - `inbox` lists the coordinator's open items (questions, plans, requests, hand-backs) and silent workers, oldest first. A worker is silent when it holds a ticket, its newest event is older than `policy.silence_minutes`, and its phase does not wait on someone else. It reads Armada only (a sign-in, no Linear key) and records that the coordinator is at work, for the dashboard. `--wait` asks Armada every 15 s until `--timeout`; Armada answers "not modified" (HTTP 304, no body) while the inbox holds the same entries, so a waiting coordinator costs one short request per ask and holds nothing open. It marks the items that were not there before with `*`; loop on it.
 - `watch` is how a coordinator keeps listening, run in the background while a worker is in flight. It asks Armada like `inbox --wait` (every 15 s, every 60 s when no worker is in flight, 304 while nothing changed) with no time limit of its own, and exits as soon as something needs the coordinator that it has not been shown yet by `inbox` or `watch` on this machine: it prints the inbox, new items marked `*`. It exits with "nothing to watch" when no worker is in flight and nothing is open. Armada unreachable or answering 5xx only prints a warning and it keeps going, waiting longer each time; a refusal (signed out) ends it. One watch per project and machine: a second one says the first is running. Its state (a lock, the entries shown, the tickets in flight at the last read, the checkout it ran in) lives in `~/.config/armada/watch/`, no secret.
 - The last line of `inbox`, `watch`, `merge` and `brief` (not `brief --prompt`) says whether to start watching again, for example `2 workers in flight (ABC-1, ABC-2) — keep watching: armada watch`; with `--json`, the same is the `watch` field.
@@ -364,6 +368,13 @@ local_commands = ["npm ci", "npm test"]  # run by `armada merge` on a test merge
 
 [policy]
 silence_minutes = 15             # a worker with no report for longer is flagged silent (default 15)
+coordinator_minutes = 10         # an inbox item open longer shows "waiting for the coordinator" (default 10)
+plans = "approve"                # or "pre-approved": workers post their plan and go on (default "approve")
+pre_approved_label = "plan-approved"     # a ticket with this label is pre-approved (default)
+approval_label = "needs-plan-approval"   # a ticket with this label waits for approval; wins over the other (default)
+
+[brief]
+extra = "docs/worker-conventions.md"     # every brief ends with this file under "Project conventions" (default: none)
 
 [conductor]
 default_profile = "opus"         # for tickets no routing rule matches (required with routing)
@@ -373,6 +384,7 @@ agent = "claude"
 model = "opus-5-5-1m"
 effort = "high"
 # fast_mode = true               # optional, default false
+# runtime = "conductor"          # or "claude-code": a subagent of a Claude Code coordinator (agent = "claude", model = "opus")
 
 [conductor.profiles.codex]
 agent = "codex"

@@ -203,6 +203,20 @@ describe("repository checks", () => {
     ]);
   });
 
+  test("the [brief] extra file is checked: a missing one is a warning", async () => {
+    const repo = await setUpRepo({ "armada.toml": `${DEMO_TOML}\n[brief]\nextra = "docs/workers.md"\n` });
+    expect(problems(await checkRepository(repo.view, VERSION))).toEqual([
+      {
+        id: "brief-extra",
+        level: "warning",
+        message: "[brief] extra names docs/workers.md, which is missing: briefs go out without the project conventions",
+        fix: "add docs/workers.md, or fix the path in armada.toml",
+      },
+    ]);
+    repo.files.set("docs/workers.md", "Run make check.\n");
+    expect(levels(await checkRepository(repo.view, VERSION))["brief-extra"]).toBe("ok");
+  });
+
   test("a .claude/skills that links to .agents/skills as a whole counts as linked", async () => {
     const repo = await setUpRepo();
     for (const s of BUNDLED_SKILLS) repo.links.delete(`.claude/skills/${s.name}`);

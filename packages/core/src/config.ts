@@ -48,6 +48,16 @@ export interface ArmadaConfig {
     silentAfterMinutes: number;
     /** An open item older than this in the coordinator's inbox shows "waiting for the coordinator" on the dashboard. */
     coordinatorMinutes: number;
+    /** Whether a worker's plan waits for the coordinator's approval (`approve`) or not (`pre-approved`). */
+    plans: PlanPolicy;
+    /** A ticket carrying this label has its plan pre-approved, whatever `plans` says. */
+    preApprovedLabel: string;
+    /** A ticket carrying this label waits for approval, whatever `plans` says; it wins over `preApprovedLabel`. */
+    approvalLabel: string;
+  };
+  brief: {
+    /** Repository path, relative to armada.toml, of a file every brief carries under "Project conventions"; null when unset. */
+    extra: string | null;
   };
   conductor: {
     /** Profile `armada brief` uses without `--profile`; null when none is declared. */
@@ -58,6 +68,9 @@ export interface ArmadaConfig {
     routing: RoutingRule[];
   };
 }
+
+export const PLAN_POLICIES = ["approve", "pre-approved"] as const;
+export type PlanPolicy = (typeof PLAN_POLICIES)[number];
 
 /** How routing compares label names: case, spaces and punctuation ignored, letters (with their marks) of any script kept. */
 export const routingLabelKey = (name: string) =>
@@ -72,13 +85,19 @@ export interface RoutingRule {
   profile: string;
 }
 
-/** How a worker is launched on Conductor: every value is passed explicitly, never left to Conductor's defaults. */
+/** Where a profile's workers run, each with its runtime guide skill (`armada-runtime-<runtime>`). */
+export const PROFILE_RUNTIMES = ["conductor", "claude-code"] as const;
+export type ProfileRuntime = (typeof PROFILE_RUNTIMES)[number];
+
+/** How a worker is launched: every value is passed explicitly, never left to the runtime's defaults. */
 export interface ConductorProfile {
-  /** Conductor agent type, e.g. claude or codex (`conductor model` lists them). */
+  /** `conductor`: a Conductor workspace; `claude-code`: a subagent of the coordinator's Claude Code session. */
+  runtime: ProfileRuntime;
+  /** Conductor agent type, e.g. claude or codex (`conductor model` lists them); always claude for claude-code. */
   agent: string;
-  /** Model id for that agent, e.g. opus-5-5-1m. */
+  /** Model id for that agent, e.g. opus-5-5-1m; for claude-code, what the Agent tool's `model` takes, e.g. opus. */
   model: string;
-  /** Effort (thinking) level, e.g. high. */
+  /** Effort (thinking) level, e.g. high. Recorded only for claude-code: the Agent tool takes none. */
   effort: string;
   fastMode: boolean;
 }
@@ -91,6 +110,9 @@ export const CONFIG_DEFAULTS = {
   runtimes: ["Claude Code", "Codex", "Conductor"],
   silentAfterMinutes: 15,
   coordinatorMinutes: 10,
+  plans: "approve",
+  preApprovedLabel: "plan-approved",
+  approvalLabel: "needs-plan-approval",
 } as const;
 
 export class ConfigError extends Error {
@@ -169,6 +191,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const gates = raw.gates === undefined ? {} : raw.gates;
   if (!isTable(gates)) problems.push(`"gates" must be a table`);
   const gatesT = isTable(gates) ? gates : {};
+  const brief = raw.brief === undefined ? {} : raw.brief;
+  if (!isTable(brief)) problems.push(`"brief" must be a table`);
+  const briefT = isTable(brief) ? brief : {};
   const conductor = raw.conductor === undefined ? {} : raw.conductor;
   if (!isTable(conductor)) problems.push(`"conductor" must be a table`);
   const conductorT = isTable(conductor) ? conductor : {};
@@ -184,7 +209,19 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
-    ["policy", policyT, ["silence_minutes", "silent_after_minutes", "coordinator_minutes"]],
+    [
+      "policy",
+      policyT,
+      [
+        "silence_minutes",
+        "silent_after_minutes",
+        "coordinator_minutes",
+        "plans",
+        "pre_approved_label",
+        "approval_label",
+      ],
+    ],
+    ["brief", briefT, ["extra"]],
     ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
@@ -198,10 +235,16 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       problems.push(`"${path}" is not a usable profile name`);
       continue;
     }
-    known.push([path, p, ["agent", "model", "effort", "fast_mode"]]);
+    known.push([path, p, ["runtime", "agent", "model", "effort", "fast_mode"]]);
     if (p.fast_mode !== undefined && typeof p.fast_mode !== "boolean")
       problems.push(`"${path}.fast_mode" must be true or false`);
+    const runtime = p.runtime ?? "conductor";
+    if (!PROFILE_RUNTIMES.includes(runtime as ProfileRuntime))
+      problems.push(`"${path}.runtime" must be one of ${PROFILE_RUNTIMES.map((r) => `"${r}"`).join(", ")}`);
+    if (runtime === "claude-code" && p.agent !== undefined && p.agent !== "claude")
+      problems.push(`"${path}.agent" must be "claude" with runtime = "claude-code"`);
     profiles[name] = {
+      runtime: PROFILE_RUNTIMES.includes(runtime as ProfileRuntime) ? (runtime as ProfileRuntime) : "conductor",
       agent: str(p, path, "agent"),
       model: str(p, path, "model"),
       effort: str(p, path, "effort"),
@@ -267,6 +310,26 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"policy.coordinator_minutes" must be a positive number`);
   }
 
+  let plans: PlanPolicy = CONFIG_DEFAULTS.plans;
+  if (policyT.plans !== undefined) {
+    const v = policyT.plans;
+    if (typeof v === "string" && (PLAN_POLICIES as readonly string[]).includes(v.trim()))
+      plans = v.trim() as PlanPolicy;
+    else problems.push(`"policy.plans" must be ${PLAN_POLICIES.map((p) => `"${p}"`).join(" or ")}`);
+  }
+  const preApprovedLabel = str(policyT, "policy", "pre_approved_label", { default: CONFIG_DEFAULTS.preApprovedLabel });
+  const approvalLabel = str(policyT, "policy", "approval_label", { default: CONFIG_DEFAULTS.approvalLabel });
+  if (preApprovedLabel && approvalLabel && routingLabelKey(preApprovedLabel) === routingLabelKey(approvalLabel))
+    problems.push(`"policy.pre_approved_label" and "policy.approval_label" must name different labels`);
+
+  let extra: string | null = null;
+  if (briefT.extra !== undefined) {
+    const v = str(briefT, "brief", "extra");
+    if (v && (v.startsWith("/") || v.split(/[\\/]/).includes("..")))
+      problems.push(`"brief.extra" is "${v}", expected a path inside the repository, relative to ${CONFIG_FILE}`);
+    else if (v) extra = v;
+  }
+
   let requiredChecks: string[] = [];
   if (gatesT.required_checks !== undefined) {
     const v = gatesT.required_checks;
@@ -305,7 +368,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
     gates: { requiredChecks, localCommands },
-    policy: { silentAfterMinutes, coordinatorMinutes },
+    policy: { silentAfterMinutes, coordinatorMinutes, plans, preApprovedLabel, approvalLabel },
+    brief: { extra },
     conductor: { defaultProfile, profiles, routing },
   };
   if (problems.length) throw new ConfigError(source, problems);
@@ -342,6 +406,12 @@ repository = ${q(p.repository)}
 [policy]
 silence_minutes = 15     # a worker with no report for longer than this shows as silent
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
+# plans = "approve"       # or "pre-approved": workers post their plan and go on without waiting
+# pre_approved_label = "plan-approved"      # a ticket with this label skips the approval
+# approval_label = "needs-plan-approval"    # a ticket with this label waits for it; wins over the other
+
+[brief]
+# extra = "docs/worker-conventions.md"  # a file every worker brief carries under "Project conventions"
 
 # How \`armada brief\` launches workers on Conductor. Every value is passed explicitly;
 # \`conductor model\` lists each agent's model ids and effort levels.
@@ -362,6 +432,15 @@ effort = "high"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "xhigh"
+
+# A worker run as a subagent of a coordinator's Claude Code session, in its own
+# worktree (the armada-runtime-claude-code skill). It dies with that session, so
+# long runs belong on Conductor. \`model\` is what the Agent tool takes; it applies no effort.
+# [conductor.profiles.local]
+# runtime = "claude-code"
+# agent = "claude"
+# model = "opus"
+# effort = "high"
 
 # Which profile a ticket gets from its Linear labels: the first rule with a label
 # the ticket carries wins, in file order. \`armada brief --profile\` overrides it.

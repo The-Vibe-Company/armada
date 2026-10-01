@@ -17,3 +17,12 @@ test("the bundle carries every file under skills/, byte for byte", async () => {
   );
   expect(bundled).toEqual(onDisk);
 });
+
+test("every runtime guide has the sections the coordinator and armada merge point at", () => {
+  const guides = BUNDLED_SKILLS.filter((s) => s.name.startsWith("armada-runtime-"));
+  expect(guides.map((s) => s.name)).toEqual(["armada-runtime-claude-code", "armada-runtime-conductor"]);
+  for (const guide of guides) {
+    const headings = (guide.files.find((f) => f.path === "SKILL.md")?.content ?? "").match(/^## .+$/gm);
+    expect(headings?.slice(0, 4)).toEqual(["## Launch", "## Message", "## Status", "## Stop and archive"]);
+  }
+});

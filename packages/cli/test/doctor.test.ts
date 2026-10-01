@@ -206,7 +206,7 @@ effort = "high"
     return (await t.doctor()).find((c) => c.id === "conductor-cli");
   };
 
-  test("on PATH, it is ok; a project without Conductor profiles is not checked", async () => {
+  test("on PATH, it is ok; a project without a profile on Conductor is not checked", async () => {
     expect(await conductor(["conductor"])).toEqual({
       id: "conductor-cli",
       level: "ok",
@@ -214,6 +214,7 @@ effort = "high"
       fix: null,
     });
     expect(await conductor([], {}, TOML.slice(0, TOML.indexOf("[conductor")))).toBeUndefined();
+    expect(await conductor([], {}, TOML.replace('agent = "claude"', 'runtime = "claude-code"'))).toBeUndefined();
     // A conductor that refuses --version is there all the same.
     const refusing: Exec = async (command) => {
       if (command !== "conductor") throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: "ENOENT" });

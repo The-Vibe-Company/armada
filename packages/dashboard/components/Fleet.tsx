@@ -633,6 +633,11 @@ function CrewRow({
         ) : (
           r.statusLine && (
             <p className="crew-status" title={r.statusLine.summary}>
+              {r.statusLine.plan && (
+                <a className="crew-plan" href={r.statusLine.url} target="_blank" rel="noreferrer">
+                  {t.plan} ↗
+                </a>
+              )}
               {r.statusLine.summary}
             </p>
           )
