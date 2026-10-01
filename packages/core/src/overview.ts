@@ -166,7 +166,8 @@ export interface ProjectReading {
  * pending requests and coordinator {harness, handle, model, cliVersion, startedAt,
  * seenAt, inboxSeenAt, inboxReads}. `seenAt` is command activity, not an inbox read.
  * `sessions` retains per-launch profile/agent/model/effort, claimedAt, releasedAt and
- * lastReport; each row points to its active session. PR files/totals may be null for
+ * lastReport; each row points to its active session. Ready tickets carry their labels (the
+ * ready label left out) and open PRs their head branch. PR files/totals may be null for
  * legacy snapshots; completeness flags identify capped lists. Missing facts are never inferred.
  */
 export interface FleetOverview {
