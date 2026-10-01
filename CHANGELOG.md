@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.14](https://github.com/The-Vibe-Company/armada/compare/v0.2.13...v0.2.14) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** show the fleet's last hours on a live timeline ([#88](https://github.com/The-Vibe-Company/armada/issues/88)) ([1e6da14](https://github.com/The-Vibe-Company/armada/commit/1e6da14542be854269e8616e0abbd190208842f7))
+
 ## [0.2.13](https://github.com/The-Vibe-Company/armada/compare/v0.2.12...v0.2.13) (2026-10-01)
 
 
