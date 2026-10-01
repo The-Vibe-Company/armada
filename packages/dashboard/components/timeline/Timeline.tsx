@@ -7,9 +7,10 @@
 // its silences). It opens on the last 3 hours, now on the right, and scrolls
 // back to 24 (THE-880): trackpad, shift and wheel, or a drag; the names and
 // the "ago" column stay put. Each row is one SVG in percent of the 24 h track,
-// drawn from what core gives it (`FleetRow.timeline`, `coordinator.inboxTrack`):
-// no rule is decided here. Rows redraw every `STEP_MS` and on a new overview only.
-import type { FleetRow, ProjectOverview } from "@armada/core/read";
+// drawn from what core gives it (`FleetTimeline`, from /api/fleet/timeline,
+// read while the section is on screen and the overview changed): no rule is
+// decided here. Rows redraw every `STEP_MS` and on a new history only.
+import type { CoordinatorTrack, FleetRow, FleetTimeline, ProjectOverview, SessionTimeline } from "@armada/core/read";
 import { type CSSProperties, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentState, HARNESS_NAME, HARNESSES, type Harness, harnessCounts, harnessOf, paths } from "@/lib/fleet-view";
 import type { Language, Strings } from "@/lib/i18n";
@@ -72,6 +73,7 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
   const scale = useMemo(() => scaleOf(end), [end]);
   const marks = useMemo(() => (mounted ? hourMarks(scale) : []), [mounted, scale]);
   const { ref: scroller, atNow, toNow } = useTimeScroll();
+  const history = useTimelineHistory(box, overview.generatedAt);
   const clock = useMemo(() => (mounted ? clockOf(lang) : null), [mounted, lang]);
 
   useEffect(() => {
@@ -173,9 +175,25 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
                       <span className="ui-count">{own.length}</span>
                     </span>
                   </Row>
-                  <CoordinatorRow project={p} scale={scale} marks={marks} t={t} clock={clock} now={now} />
+                  <CoordinatorRow
+                    project={p}
+                    track={history.coordinators.get(p.slug) ?? null}
+                    scale={scale}
+                    marks={marks}
+                    t={t}
+                    clock={clock}
+                    now={now}
+                  />
                   {own.map((r) => (
-                    <SessionRow key={r.id} row={r} scale={scale} marks={marks} t={t} clock={clock} />
+                    <SessionRow
+                      key={r.id}
+                      row={r}
+                      tl={history.rows.get(`${r.project}/${r.id}`) ?? null}
+                      scale={scale}
+                      marks={marks}
+                      t={t}
+                      clock={clock}
+                    />
                   ))}
                 </div>
               );
@@ -259,11 +277,22 @@ interface RowProps {
   clock: Clock | null;
 }
 
-const SessionRow = memo(function SessionRow({ row: r, scale, marks, t, clock }: RowProps & { row: FleetRow }) {
+/** Until its history arrives, a row draws its labels and an empty track. */
+const NO_HISTORY: SessionTimeline = { startedAt: "", phases: [], reports: [], silences: [], prOpenedAt: null };
+const NO_TRACK: CoordinatorTrack = { reads: [], idle: [] };
+
+const SessionRow = memo(function SessionRow({
+  row: r,
+  tl: history,
+  scale,
+  marks,
+  t,
+  clock,
+}: RowProps & { row: FleetRow; tl: SessionTimeline | null }) {
   const state = agentState(r);
   const label = stateLabel(t, state, r.phase);
   const color = toneColor(state.status);
-  const tl = r.timeline;
+  const tl = history ?? NO_HISTORY;
   const last = tl.phases.length - 1;
   const { pr } = r;
   const opened = tl.prOpenedAt;
@@ -370,13 +399,15 @@ const SessionRow = memo(function SessionRow({ row: r, scale, marks, t, clock }: 
 /** A coordinator's row: a faint line while it runs, a steady line while it watches its inbox, dashed while idle. */
 function CoordinatorRow({
   project: p,
+  track,
   scale,
   marks,
   t,
   clock,
   now,
-}: RowProps & { project: ProjectOverview; now: number }) {
+}: RowProps & { project: ProjectOverview; track: CoordinatorTrack | null; now: number }) {
   const c = p.coordinator;
+  const inbox = track ?? NO_TRACK;
   const color = c.state === "active" ? "var(--done)" : c.state === "idle" ? "var(--active)" : "var(--text-3)";
   const seen = c.seenAt ? Date.parse(c.seenAt) : null;
   const started = c.startedAt ? Date.parse(c.startedAt) : seen;
@@ -399,7 +430,7 @@ function CoordinatorRow({
           {run && (
             <rect className="tl-coord-line" x={pc(run.x)} y="18.5" width={pc(run.width)} height="1" fill={watch} />
           )}
-          {c.inboxTrack.idle.map((g) => {
+          {inbox.idle.map((g) => {
             const b = spanBox(g.from, g.to, scale);
             if (!b) return null;
             return (
@@ -435,7 +466,7 @@ function CoordinatorRow({
               strokeDasharray="4 4"
             />
           )}
-          {c.inboxTrack.reads.map((r) => {
+          {inbox.reads.map((r) => {
             if (Date.parse(r.to) < scale.start) return null;
             const x = scale.x(r.from);
             const tip = tipOf(clock, (k) => ({
@@ -485,6 +516,61 @@ function CoordinatorRow({
   );
 }
 
+/** The timeline's history, keyed `project/ticket` for rows and by project for coordinators. */
+interface History {
+  rows: Map<string, SessionTimeline>;
+  coordinators: Map<string, CoordinatorTrack>;
+}
+
+const historyOf = (t: FleetTimeline): History => ({
+  rows: new Map(t.rows.map((r) => [`${r.project}/${r.id}`, r.timeline])),
+  coordinators: new Map(t.coordinators.map((c) => [c.project, c.inboxTrack])),
+});
+
+/**
+ * Reads the timeline's history while the section is on screen, again each
+ * time the overview changes (a report, an inbox read), with its ETag: the
+ * server answers 304 while nothing moved. Off screen, nothing is read.
+ */
+function useTimelineHistory(el: HTMLElement | null, overviewAt: string): History {
+  const [history, setHistory] = useState<History>(() => historyOf({ rows: [], coordinators: [] }));
+  const [visible, setVisible] = useState(false);
+  const tag = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!el) return;
+    const seen = new IntersectionObserver(([entry]) => setVisible(!!entry?.isIntersecting), { rootMargin: "200px" });
+    seen.observe(el);
+    return () => seen.disconnect();
+  }, [el]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new overview is the signal to read the history again
+  useEffect(() => {
+    if (!visible) return;
+    let live = true;
+    void (async () => {
+      try {
+        const res = await fetch("/api/fleet/timeline", {
+          cache: "no-store",
+          headers: tag.current ? { "If-None-Match": tag.current } : {},
+        });
+        if (!live || res.status === 304 || !res.ok) return;
+        const next = (await res.json()) as FleetTimeline;
+        if (!live) return;
+        tag.current = res.headers.get("etag");
+        setHistory(historyOf(next));
+      } catch {
+        // The overview's poll says when the dashboard is offline; the rows keep the history they had.
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [visible, overviewAt]);
+
+  return history;
+}
+
 /** A drag this far is a scroll, not a click on a row. */
 const DRAG_PX = 4;
 
@@ -504,6 +590,7 @@ function useTimeScroll() {
     if (!el) return;
     const scroll = () => setAtNow(el.scrollLeft >= -2);
     const down = (e: PointerEvent) => {
+      swallow.current = false;
       if (e.pointerType !== "mouse" || e.button !== 0) return;
       drag.current = { x: e.clientX, left: el.scrollLeft, id: e.pointerId, moved: false };
     };
@@ -526,8 +613,14 @@ function useTimeScroll() {
       if (!d.moved) return;
       el.classList.remove("is-dragging");
       if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      // The click that may follow this release, in the same turn of the event loop, opens nothing.
       swallow.current = true;
+      setTimeout(() => {
+        swallow.current = false;
+      }, 0);
     };
+    // Rows are links: the browser's own link drag would cancel the scroll.
+    const nativeDrag = (e: DragEvent) => e.preventDefault();
     // The click that ends a drag opens nothing.
     const click = (e: MouseEvent) => {
       if (!swallow.current) return;
@@ -536,6 +629,7 @@ function useTimeScroll() {
       e.stopPropagation();
     };
     el.addEventListener("scroll", scroll, { passive: true });
+    el.addEventListener("dragstart", nativeDrag);
     el.addEventListener("pointerdown", down);
     el.addEventListener("pointermove", move);
     el.addEventListener("pointerup", up);
@@ -543,6 +637,7 @@ function useTimeScroll() {
     el.addEventListener("click", click, true);
     return () => {
       el.removeEventListener("scroll", scroll);
+      el.removeEventListener("dragstart", nativeDrag);
       el.removeEventListener("pointerdown", down);
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", up);

@@ -73,7 +73,6 @@ const project = (slug: string, over: Partial<ProjectOverview> = {}): ProjectOver
       seenAt: at(2),
       cliVersion: null,
       updateAvailable: false,
-      inboxTrack: { reads: [], idle: [] },
     },
     ...over,
   }) as ProjectOverview;
@@ -113,7 +112,6 @@ const overview = {
         seenAt: at(30),
         cliVersion: null,
         updateAvailable: false,
-        inboxTrack: { reads: [], idle: [] },
       },
     }),
   ],

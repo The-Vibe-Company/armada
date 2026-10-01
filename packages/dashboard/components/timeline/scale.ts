@@ -1,7 +1,7 @@
 // The live timeline's geometry (THE-868, THE-880): where a time falls on a
 // row, the hour marks, each phase's color. Pure, so the drawing stays a plain
-// map of what core gives each row (`FleetRow.timeline`) onto x positions.
-import { type AgentPhase, type FleetRow, TIMELINE_HOURS } from "@armada/core/read";
+// map of what core gives each row (`SessionTimeline`) onto x positions.
+import { type AgentPhase, type SessionTimeline, TIMELINE_HOURS } from "@armada/core/read";
 
 /** The hours the view shows at once; the rest of the rows' `TIMELINE_HOURS` is a scroll away. */
 export const VISIBLE_HOURS = 3;
@@ -55,10 +55,7 @@ export const PHASE_COLOR: Record<AgentPhase, string> = {
 };
 
 /** A phase segment's place on the row; null when it ended before the track. */
-export function segmentBox(
-  s: FleetRow["timeline"]["phases"][number],
-  scale: Scale,
-): { x: number; width: number } | null {
+export function segmentBox(s: SessionTimeline["phases"][number], scale: Scale): { x: number; width: number } | null {
   const to = s.to === null ? scale.end : Date.parse(s.to);
   if (to <= scale.start) return null;
   const x = scale.x(s.from);

@@ -140,6 +140,8 @@ interface DemoTicket {
    * claim (input for it, not a claim): they are not part of this session.
    */
   notes?: number[];
+  /** Minutes between two reports while it works; 12 by default. */
+  every?: number;
 }
 
 const f = (path: string, additions: number, deletions: number): DemoFile => ({ path, additions, deletions });
@@ -412,9 +414,40 @@ export const DEMO_COORDINATOR_SEEN: Record<string, number> = Object.fromEntries(
   Object.entries(DEMO_PROJECT_FACTS).map(([slug, p]) => [slug, p.coordinator.seen]),
 );
 
-export type Scenario = "fleet" | "empty";
+/**
+ * `fleet` is the mockup's world; `busy` adds twenty sessions that ran the
+ * whole day, a report every 2 minutes, to try the live timeline at 30
+ * sessions over 24 hours (THE-880); `empty` has none.
+ */
+export type Scenario = "fleet" | "busy" | "empty";
 
-export const demoTickets = (scenario: Scenario) => (scenario === "empty" ? [] : TICKETS);
+const BUSY: DemoTicket[] = Array.from({ length: 20 }, (_, k) => {
+  const project = DEMO_PROJECTS[k % DEMO_PROJECTS.length] as ProjectInput;
+  const prefix = project.programRoot.split("-")[0];
+  return {
+    id: `${prefix}-${300 + k}`,
+    project: project.slug,
+    title: `Busy session ${k + 1}`,
+    phase: "implementing",
+    runtime: ["Conductor", "Claude Code", "Codex"][k % 3] as string,
+    agent: `Busy worker ${k + 1}`,
+    handle: `ws-busy/ses-${k + 1}`,
+    profile: "opus",
+    claimed: 1440 - k * 7,
+    phaseSince: 1300 - k * 7,
+    lastReport: 1 + (k % 3),
+    summary: "Working through the day",
+    files: [],
+    every: 2,
+  };
+});
+
+export const demoTickets = (scenario: Scenario) =>
+  scenario === "empty" ? [] : scenario === "busy" ? [...TICKETS, ...BUSY] : TICKETS;
+
+/** The scenario a mode names (`ARMADA_DASHBOARD_DEMO`, `demo:seed`); the mockup's world by default. */
+export const scenarioOf = (mode: string | undefined): Scenario =>
+  mode === "empty" || mode === "busy" ? mode : "fleet";
 
 const ago = (now: Date, minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
 
@@ -520,7 +553,7 @@ export function demoReports(t: DemoTicket): DemoReport[] {
   const quiet = (m: number) => !!t.quiet && m < t.quiet[0] && m > t.quiet[1];
   for (const p of phases) {
     const once = p.phase === "awaiting-approval" || p.phase === "blocked" || p.phase === "ready-to-merge";
-    for (let m = p.from; m > p.to; m -= once ? Number.POSITIVE_INFINITY : 12)
+    for (let m = p.from; m > p.to; m -= once ? Number.POSITIVE_INFINITY : (t.every ?? 12))
       if (!quiet(m) && m !== t.claimed) reports.push({ ago: m, phase: p.phase, summary: AT_WORK[p.phase] });
   }
   const last = reports.at(-1);

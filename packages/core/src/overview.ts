@@ -107,8 +107,17 @@ export interface FleetRow extends InFlightTicket {
   pipeline: Pipeline;
   /** Set when the row is in the waiting list. */
   waiting: WaitingKind | null;
-  /** Its last `TIMELINE_HOURS`, for the overview's live timeline. */
-  timeline: SessionTimeline;
+}
+
+/**
+ * The overview's live timeline (THE-868, THE-880): each row's last
+ * `TIMELINE_HOURS` and each coordinator's inbox reads. It weighs more than
+ * the rest of the overview (a day of reports per session), so the dashboard
+ * serves it on its own route, read only while the timeline is on screen.
+ */
+export interface FleetTimeline {
+  rows: { project: string; id: string; timeline: SessionTimeline }[];
+  coordinators: { project: string; inboxTrack: CoordinatorTrack }[];
 }
 
 export type CoordinatorState = "active" | "idle" | "unknown";
@@ -133,8 +142,6 @@ export interface ProjectOverview {
     seenAt: string | null;
     cliVersion: string | null;
     updateAvailable: boolean;
-    /** Its inbox reads over the last `TIMELINE_HOURS`, as stretches of watching and idle gaps. */
-    inboxTrack: CoordinatorTrack;
   } & Partial<Omit<CoordinatorPresence, "seenAt">>;
   inFlight: number;
   waiting: number;
@@ -177,11 +184,11 @@ export interface ProjectReading {
 /**
  * Dashboard contract: projects expose owner, leaf-ticket progress, health, open PR facts,
  * pending requests and coordinator {harness, handle, model, cliVersion, startedAt,
- * seenAt, inboxSeenAt, inboxTrack}. `seenAt` is command activity, not an inbox read.
+ * seenAt, inboxSeenAt}. `seenAt` is command activity, not an inbox read.
  * `sessions` retains per-launch profile/agent/model/effort, claimedAt, releasedAt and
- * lastReport; each row points to its active session and carries its `timeline` (phases, report
- * times, silences, PR opening over the last 24 h, from the snapshot's status comments and
- * Armada's events; summaries cut short). Ready tickets carry their labels (the ready label
+ * lastReport; each row points to its active session. `timeline` carries each row's history
+ * (phases, report times, silences, PR opening over the last 24 h, from the snapshot's status
+ * comments and Armada's events; summaries cut short) and each coordinator's inbox reads. Ready tickets carry their labels (the ready label
  * left out) and open PRs their head branch. PR files/totals may be null for
  * legacy snapshots; completeness flags identify capped lists. Missing facts are never inferred.
  */
@@ -196,6 +203,8 @@ export interface FleetOverview {
   rows: FleetRow[];
   /** Tickets ready to start, per project in frontier order (best first). */
   ready: ReadyTicket[];
+  /** Left out of the dashboard's live poll, which serves it on its own route. */
+  timeline?: FleetTimeline;
 }
 
 const MIN = 60_000;
@@ -245,6 +254,7 @@ export function buildOverview(input: {
   const rows: FleetRow[] = [];
   const waiting: WaitingItem[] = [];
   const projects: ProjectOverview[] = [];
+  const timeline: FleetTimeline = { rows: [], coordinators: [] };
   const ready: ReadyTicket[] = [];
   const sessions: SessionRecord[] = [];
 
@@ -357,6 +367,10 @@ export function buildOverview(input: {
           : null,
         pipeline: pipeline(t),
         waiting: perTicket.get(t.id)?.kind ?? null,
+      });
+      timeline.rows.push({
+        project: p.slug,
+        id: t.id,
         timeline: sessionTimeline({
           ticket: t,
           history: history.get(t.id) ?? { comments: [], events: [] },
@@ -373,6 +387,10 @@ export function buildOverview(input: {
     const threshold = (p.report?.silentAfterMinutes ?? 15) * MIN;
     const state: CoordinatorState =
       seenAt === null ? "unknown" : now - Date.parse(seenAt) <= threshold ? "active" : "idle";
+    timeline.coordinators.push({
+      project: p.slug,
+      inboxTrack: coordinatorTrack({ reads: p.live?.inboxReads ?? [], silentAfterMinutes, now: input.now }),
+    });
     projects.push({
       owner: p.owner ?? null,
       progress: p.report?.progress ?? null,
@@ -398,11 +416,6 @@ export function buildOverview(input: {
         seenAt,
         cliVersion,
         updateAvailable: cliVersion !== null && newerRelease(cliVersion, input.latestCli) !== null,
-        inboxTrack: coordinatorTrack({
-          reads: p.live?.inboxReads ?? [],
-          silentAfterMinutes: p.report?.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes,
-          now: input.now,
-        }),
       },
       inFlight: tickets.length,
       waiting: perTicket.size + projectWide,
@@ -436,5 +449,6 @@ export function buildOverview(input: {
     waiting,
     rows,
     ready,
+    timeline,
   };
 }

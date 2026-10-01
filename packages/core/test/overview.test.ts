@@ -268,8 +268,8 @@ describe("fleet overview", () => {
       seenAt: null,
       cliVersion: null,
       updateAvailable: false,
-      inboxTrack: { reads: [], idle: [] },
     });
+    expect(o.timeline?.coordinators).toEqual([{ project: "widgets", inboxTrack: { reads: [], idle: [] } }]);
   });
 
   test("each row carries its timeline, drawn from its own comments and events only", () => {
@@ -297,7 +297,7 @@ describe("fleet overview", () => {
       },
     };
     const o = buildOverview({ projects: [widgets], live: { state: "ok", error: null }, now: NOW });
-    const w1 = o.rows.find((r) => r.id === "W-1")?.timeline;
+    const w1 = o.timeline?.rows.find((r) => r.id === "W-1")?.timeline;
     expect(w1?.phases.map((s) => [s.phase, s.from, s.to])).toEqual([
       ["planning", at("09:00"), at("09:30")],
       ["implementing", at("09:30"), null],
