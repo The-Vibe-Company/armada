@@ -14,10 +14,11 @@ export const CONDUCTOR_SETTINGS = ".conductor/settings.toml";
 export const CLAUDE_SETTINGS = ".claude/settings.json";
 /**
  * The Claude Code stop hook: a coordinator cannot end its turn while workers
- * are in flight and no `armada watch` runs. A session without a global
- * `armada` (a worker using npm exec) is left alone.
+ * are in flight and no `armada watch` runs. It blocks only through the JSON it
+ * prints; any failure (no global `armada`, an older one without `hook`) exits
+ * 0, since Claude Code would read an exit code of 2 as a block.
  */
-export const STOP_HOOK_COMMAND = "command -v armada >/dev/null 2>&1 || exit 0; armada hook stop";
+export const STOP_HOOK_COMMAND = "armada hook stop 2>/dev/null || true";
 export const GITIGNORE = ".gitignore";
 /** ship-pr-dev writes its run artifacts here and refuses to start unless git ignores them. */
 export const SHIP_ARTIFACTS = "plans/ship-pr-dev/";

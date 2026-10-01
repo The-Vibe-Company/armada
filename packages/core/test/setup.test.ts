@@ -159,7 +159,7 @@ describe("repository checks", () => {
             hooks: [
               {
                 type: "command",
-                command: "command -v armada >/dev/null 2>&1 || exit 0; armada hook stop",
+                command: "armada hook stop 2>/dev/null || true",
                 timeout: 10,
               },
             ],
