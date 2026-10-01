@@ -490,6 +490,42 @@ describe("armada brief with a launch token", () => {
     expect(b.armada.calls.filter((call) => call.path === "launch-tokens")).toHaveLength(1);
   });
 
+  test("[[policy.validation]] rules: the coordinator judges each launch; the refusal gives the command to copy and mints nothing", async () => {
+    const toml = `${TOML}\n[[policy.validation]]\nwhen = "a design ticket: a mockup or the look of a new screen"\nthen = "attach the design, ask the owner to validate it on Armada, and stop until they decide"\n`;
+    const b = await signedIn({}, toml);
+    expect(await run(["brief", "DEMO-13", "--prompt"], b.io)).toBe(2);
+    expect(b.err()).toBe(
+      [
+        "armada: armada.toml has [[policy.validation]] rules: judge whether DEMO-13 is one of them",
+        "  1. when a design ticket: a mockup or the look of a new screen",
+        "     then attach the design, ask the owner to validate it on Armada, and stop until they decide",
+        "Most tickets are none: armada brief DEMO-13 --prompt --validation none",
+        "One applies: armada brief DEMO-13 --prompt --validation <n> --validation-reason '<why this ticket is one>'",
+        "Next: armada brief DEMO-13 --prompt --validation none",
+        "",
+      ].join("\n"),
+    );
+    expect(b.armada.launches.size).toBe(0);
+
+    // The common case: one flag, no reason, no block in the prompt.
+    const none = await signedIn({}, toml);
+    expect(await run(["brief", "DEMO-13", "--prompt", "--validation", "none"], none.io)).toBe(0);
+    expect(none.out()).not.toContain("## Owner validation");
+
+    // A rule applies: the prompt tells the worker in one block, and its claim records the judgement.
+    const design = await signedIn({}, toml);
+    expect(
+      await run(
+        ["brief", "DEMO-13", "--prompt", "--validation", "1", "--validation-reason", "a mockup of the card"],
+        design.io,
+      ),
+    ).toBe(0);
+    expect(design.out()).toContain(
+      "## Owner validation\n\nThis ticket needs the owner's validation: attach the design, ask the owner to validate it on Armada, and stop until they decide.\n",
+    );
+    expect(design.out()).toContain(" --validation 1 --validation-reason 'a mockup of the card'\n");
+  });
+
   test("human and JSON briefs mint nothing and leave watch state unchanged", async () => {
     for (const flags of [[], ["--json"]]) {
       const brief = await signedIn();

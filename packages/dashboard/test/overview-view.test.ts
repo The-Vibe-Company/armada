@@ -10,8 +10,8 @@ import type {
 } from "@armada/core/read";
 import {
   coordinatorAlerts,
-  decidedValidations,
   decideCount,
+  decidedValidations,
   decisionCards,
   excerpt,
   handBackPr,
