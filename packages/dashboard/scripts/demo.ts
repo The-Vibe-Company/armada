@@ -18,7 +18,9 @@ import {
   DEMO_PROFILES,
   DEMO_PROJECT_FACTS,
   DEMO_PROJECTS,
+  demoCoordinatorFacts,
   demoEvents,
+  demoInboxReads,
   projectOfTicket,
 } from "../lib/demo/world";
 import {
@@ -30,14 +32,6 @@ import {
   saveWorkerProfile,
   upsertProject,
 } from "../lib/fleet-store";
-
-/** How a coordinator records its harness (`armada watch`), from the demo's names. */
-const HARNESS_OF = {
-  "Conductor Cloud": "conductor-cloud",
-  "Claude Code": "claude-code",
-  Codex: "codex",
-  terminal: "terminal",
-} as const;
 
 const DEFAULT_DIR = resolve(import.meta.dir, "../.demo/armada");
 const configured = databaseUrlOf({ ARMADA_DATABASE_URL: process.env.ARMADA_DEMO_DATABASE_URL });
@@ -53,7 +47,8 @@ async function seed(scenario: string) {
     await mkdir(DEFAULT_DIR, { recursive: true });
   }
   const db = await openDatabase(url);
-  for (const p of DEMO_PROJECTS) await upsertProject(db, p, ago(60 * 24));
+  for (const p of DEMO_PROJECTS)
+    await upsertProject(db, { ...p, owner: DEMO_PROJECT_FACTS[p.slug]?.owner ?? null }, ago(60 * 24));
   const s = scenario === "empty" ? "empty" : "fleet";
   for (const e of demoEvents(s)) {
     const base = { project: e.project, ticket: e.ticket };
@@ -92,15 +87,11 @@ async function seed(scenario: string) {
       if (i.kind === "hand-back") await putHandBack(db, item);
       else await addInboxItem(db, { ...item, kind: i.kind, recipient: "coordinator" });
     }
-    for (const [project, minutes] of Object.entries(DEMO_COORDINATOR_SEEN)) {
-      const c = DEMO_PROJECT_FACTS[project]?.coordinator;
-      const facts = c && {
-        harness: HARNESS_OF[c.harness],
-        handle: c.where,
-        model: c.model,
-        cliVersion: null,
-      };
-      await recordCoordinatorSeen(db, { project, at: ago(minutes), ...(facts ? { facts } : {}) });
+    // Every inbox read since the coordinator started, oldest first, with what its commands say of it.
+    for (const project of Object.keys(DEMO_COORDINATOR_SEEN)) {
+      const facts = demoCoordinatorFacts(project) ?? undefined;
+      for (const minutes of demoInboxReads(project).reverse())
+        await recordCoordinatorSeen(db, { project, facts, at: ago(minutes) });
     }
   }
   await db.end();

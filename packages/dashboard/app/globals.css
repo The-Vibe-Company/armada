@@ -2026,6 +2026,101 @@ a.ui-row:hover {
   background: color-mix(in srgb, var(--done) 35%, transparent);
 }
 
+/* ------------------------------------- projects and a project (THE-870) */
+.pj-ring {
+  display: inline-block;
+  flex: none;
+  border-radius: 50%;
+  background: conic-gradient(var(--done) var(--p), var(--track) 0);
+  -webkit-mask: radial-gradient(circle, transparent 0 42%, #000 46%);
+  mask: radial-gradient(circle, transparent 0 42%, #000 46%);
+}
+.ui-row.pj-row .ui-row-title {
+  flex: none;
+  max-width: 60%;
+}
+.pj-percent {
+  width: 40px;
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.pj-health {
+  font-weight: 500;
+}
+.pj-owner,
+.pj-agents,
+.pj-sent,
+.pj-labels {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.pj-owner-name {
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pj-bars {
+  display: inline-flex;
+  gap: 2px;
+}
+.pj-bar {
+  width: 4px;
+  height: 12px;
+  border-radius: 2px;
+}
+.pj-lead {
+  color: var(--text-2);
+  font-weight: 400;
+  white-space: normal;
+}
+.pj-progress {
+  display: inline-block;
+  width: 90px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
+}
+.pj-progress > span {
+  display: block;
+  height: 100%;
+}
+.ui-row-title a:hover {
+  text-decoration: underline;
+}
+.pj-sent {
+  color: var(--frontier);
+}
+.pj-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.pj-launch-button:hover:not(:disabled) {
+  background: var(--done);
+  color: var(--bg);
+}
+.pj-profile {
+  font-size: 11px;
+  opacity: 0.6;
+}
+.pj-name-input {
+  height: 28px;
+  width: 140px;
+  padding: 0 9px;
+  border-radius: var(--r);
+  border: 1px solid var(--line-strong);
+  background: var(--sunken);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
 /* ---------------------------------------------------- component sheet */
 .ds-items {
   display: flex;
@@ -2214,16 +2309,16 @@ a.ui-row:hover {
   padding-top: 10px;
   padding-bottom: 10px;
 }
-.sc-activity .ui-row-icon {
+.ui-row.sc-activity .ui-row-icon {
   margin-top: 4px;
 }
-.sc-activity .ui-row-text {
+.ui-row.sc-activity .ui-row-text {
   flex-direction: column;
   align-items: flex-start;
   gap: 3px;
   white-space: normal;
 }
-.sc-activity .ui-row-line {
+.ui-row.sc-activity .ui-row-line {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   display: -webkit-box;
