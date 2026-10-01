@@ -13,6 +13,6 @@
       "@/*": ["./*"]
     }
   },
-  "include": ["app", "components", "lib", "scripts", "test", "next.config.ts", "proxy.ts"],
+  "include": ["app", "components", "lib", "scripts", "test", "next.config.ts", "proxy.ts", "../core/src/text.d.ts"],
   "exclude": ["node_modules", ".next"]
 }

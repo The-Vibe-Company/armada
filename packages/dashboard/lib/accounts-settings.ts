@@ -41,6 +41,27 @@ export const GITHUB_PATH = "/organization/github";
 export const GITHUB_INSTALL_PATH = "/organization/github/install";
 /** Where GitHub's return to the Setup URL (GITHUB_PATH) is handled: the installation is linked, then the GitHub page shows. */
 export const GITHUB_SETUP_PATH = "/organization/github/setup";
+/**
+ * The public landing (THE-887): static, it reads no fleet data. The proxy shows
+ * it on `/` to a viewer without a session, and lets it and its assets through.
+ */
+export const LANDING_PATH = "/landing";
+type PageRequest = { method: string; nextUrl: { pathname: string; searchParams: URLSearchParams } };
+const isRead = (request: PageRequest) => ["GET", "HEAD"].includes(request.method);
+/** A read of the landing or one of its files: anything else under it goes through the gate. */
+export const isLanding = (request: PageRequest) =>
+  isRead(request) &&
+  (request.nextUrl.pathname === LANDING_PATH || request.nextUrl.pathname.startsWith(`${LANDING_PATH}/`));
+/** Query parameters a shared link carries (`?utm_source=`, `?ref=`): they do not turn `/` into an app page. */
+const SHARED_LINK = /^(utm_[a-z]+|ref|source|fbclid|gclid)$/;
+/**
+ * A read of `/`, where a viewer without a session is shown the landing: bare,
+ * or with a shared link's parameters only. `/?project=…` is the app's.
+ */
+export const isFront = (request: PageRequest) =>
+  isRead(request) &&
+  request.nextUrl.pathname === "/" &&
+  [...request.nextUrl.searchParams.keys()].every((k) => SHARED_LINK.test(k));
 /** Where a person confirms the code `armada login` shows. */
 export const DEVICE_PATH = "/device";
 /** The routes the Armada CLI calls: sign-in from the terminal, whoami, sign-out. */

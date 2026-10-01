@@ -58,7 +58,8 @@ const pc = (n: number) => `${n.toFixed(3)}%`;
 
 /** The timeline of the projects shown: every one, or the one the overview is filtered on. */
 export function LiveTimeline({ project = null }: { project?: string | null }) {
-  const { overview } = useFleet();
+  // A showcase (the landing's replica, THE-887) gives the history; the shell's reads it from the server.
+  const { overview, timeline: given } = useFleet();
   const { t, lang } = useShell();
   const now = useNow();
   const [harness, setHarness] = useState<Harness | "all">("all");
@@ -73,7 +74,8 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
   const scale = useMemo(() => scaleOf(end), [end]);
   const marks = useMemo(() => (mounted ? hourMarks(scale) : []), [mounted, scale]);
   const { ref: scroller, atNow, toNow } = useTimeScroll();
-  const history = useTimelineHistory(box, overview.generatedAt);
+  const read = useTimelineHistory(given ? null : box, overview.generatedAt);
+  const history = useMemo(() => (given ? historyOf(given) : read), [given, read]);
   const clock = useMemo(() => (mounted ? clockOf(lang) : null), [mounted, lang]);
 
   useEffect(() => {
@@ -554,7 +556,8 @@ const historyOf = (t: FleetTimeline): History => ({
 /**
  * Reads the timeline's history while the section is on screen, again each
  * time the overview changes (a report, an inbox read), with its ETag: the
- * server answers 304 while nothing moved. Off screen, nothing is read.
+ * server answers 304 while nothing moved. Off screen, or without an element
+ * (a history given to the timeline), nothing is read.
  */
 function useTimelineHistory(el: HTMLElement | null, overviewAt: string): History {
   const [history, setHistory] = useState<History>(() => historyOf({ rows: [], coordinators: [] }));

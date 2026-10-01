@@ -1,7 +1,8 @@
 // The gate in front of the whole dashboard (Next.js "proxy", formerly
 // middleware). Every page, route and server action goes through it; only the
 // build's static files, the icons and the web manifest do not, since they carry
-// no fleet data (the sign-in pages show the icon too).
+// no fleet data (the sign-in pages show the icon too), and robots.txt, which
+// says only the landing is public.
 // Once the accounts variables are set, it checks the Better Auth session in
 // full (signed cookie cache, then the accounts database), not just the
 // cookie's presence. With none of them set, the shared-password gate (THE-834)
@@ -37,6 +38,6 @@ export function proxy(request: NextRequest) {
 export const config = {
   // _next/webpack-hmr is the development-only hot reload socket.
   matcher: [
-    "/((?!_next/static/|_next/webpack-hmr|icon\\.svg$|icon\\.png$|apple-icon\\.png$|icon-192\\.png$|icon-512\\.png$|manifest\\.webmanifest$|favicon\\.ico$).*)",
+    "/((?!_next/static/|_next/webpack-hmr|icon\\.svg$|icon\\.png$|apple-icon\\.png$|icon-192\\.png$|icon-512\\.png$|manifest\\.webmanifest$|robots\\.txt$|favicon\\.ico$).*)",
   ],
 };

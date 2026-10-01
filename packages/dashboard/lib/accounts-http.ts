@@ -3,7 +3,15 @@
 // `auth-http.ts` applies before). It takes the environment and the session
 // lookup as arguments so tests drive it without a server or a database.
 import { type NextRequest, NextResponse } from "next/server";
-import { AUTH_API_PREFIX, isCliApi, isWebhook } from "./accounts-settings";
+import {
+  AUTH_API_PREFIX,
+  COOKIE_PREFIX,
+  isCliApi,
+  isFront,
+  isLanding,
+  isWebhook,
+  LANDING_PATH,
+} from "./accounts-settings";
 import { type Env, LOGIN_PATH } from "./auth";
 import { isLanguage, LANGUAGE_COOKIE, type Language, STRINGS } from "./i18n";
 
@@ -25,6 +33,25 @@ function wantsData(request: NextRequest): boolean {
   );
 }
 
+/**
+ * Whether the request carries a Better Auth session cookie at all (`armada.session_token`,
+ * `__Secure-` prefixed over HTTPS). Without one there is no session to look up.
+ */
+export function hasSessionCookie(request: NextRequest): boolean {
+  const name = `${COOKIE_PREFIX}.session_token`;
+  return request.cookies.getAll().some((c) => c.name === name || c.name === `__Secure-${name}`);
+}
+
+/**
+ * The landing, shown on the viewer's own URL (`/`). `Vary: Cookie`, so no
+ * shared cache in front of the app serves it to a member, whose `/` is the overview.
+ */
+export function landing(request: NextRequest): NextResponse {
+  const response = NextResponse.rewrite(new URL(LANDING_PATH, request.url));
+  response.headers.set("Vary", "Cookie");
+  return response;
+}
+
 const isAuthApi = (pathname: string) => pathname === AUTH_API_PREFIX || pathname.startsWith(`${AUTH_API_PREFIX}/`);
 
 /**
@@ -36,6 +63,10 @@ export async function accountsGuard(request: NextRequest, { env, session }: Acco
   const { pathname, search } = request.nextUrl;
   // The CLI's routes carry a token or an API key, the webhooks a signature, never a cookie; each checks its own.
   if (isCliApi(pathname) || isWebhook(pathname)) return NextResponse.next();
+  // The landing reads no fleet data. A visitor without a session cookie gets it
+  // on `/` without a session lookup, so it shows even while the database is down.
+  if (isLanding(request)) return NextResponse.next();
+  if (isFront(request) && !hasSessionCookie(request)) return landing(request);
   const state = await session(request);
   if (state === "unavailable") return unavailable(wantsData(request), languageOf(request, env));
   // Better Auth's own routes (sign-in, OAuth callback, email verification) check what they need themselves.
@@ -46,6 +77,7 @@ export async function accountsGuard(request: NextRequest, { env, session }: Acco
       ? NextResponse.redirect(new URL("/", request.url), 303)
       : NextResponse.next();
   if (signedIn) return NextResponse.next();
+  if (isFront(request)) return landing(request);
   if (wantsData(request))
     return NextResponse.json(
       { error: "unauthorized" },

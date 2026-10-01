@@ -30,6 +30,7 @@ function loginPost(password: string, opts: { next?: string; ip?: string; origin?
 }
 
 const passed = (res: Response) => res.headers.get("x-middleware-next") === "1";
+const rewrittenTo = (res: Response) => new URL(res.headers.get("x-middleware-rewrite") ?? "", BASE).pathname;
 const sessionFrom = (res: Response) => /armada-session=([^;]*)/.exec(res.headers.get("set-cookie") ?? "")?.[1];
 
 describe("the proxy without a session", () => {
@@ -41,6 +42,18 @@ describe("the proxy without a session", () => {
     const location = new URL(res.headers.get("location") ?? "");
     expect(location.pathname).toBe("/login");
     expect(location.searchParams.get("next")).toBe("/?project=widgets");
+  });
+
+  test("shows the landing on / and lets the landing and its assets through", () => {
+    for (const method of ["GET", "HEAD"]) expect(rewrittenTo(guard(request("/", { method }), deps))).toBe("/landing");
+    // A shared link's parameters keep the landing; the app's own (`?project=`) ask for the password.
+    expect(rewrittenTo(guard(request("/?utm_source=news&ref=hn"), deps))).toBe("/landing");
+    expect(passed(guard(request("/landing"), deps))).toBe(true);
+    expect(passed(guard(request("/landing/fleet.json"), deps))).toBe(true);
+    // Only reads of / and the landing: every other page still asks for the password, and a write is refused.
+    expect(guard(request("/agents"), deps).status).toBe(307);
+    expect(guard(request("/landingx"), deps).status).toBe(307);
+    expect(guard(request("/landing", { method: "POST", headers: { "next-action": "7f00aa" } }), deps).status).toBe(401);
   });
 
   test("answers 401 to the polling route and to a server action, with no data", async () => {
