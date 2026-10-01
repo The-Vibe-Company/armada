@@ -33,6 +33,7 @@ import {
   routeProfile,
 } from "./routing.ts";
 import type { AgentPhase, ProgramData, StatusType } from "./types.ts";
+import { chooseValidations, type ValidationChoice, ValidationChoiceError } from "./validations.ts";
 import { Refusal } from "./worker.ts";
 
 /** The npm package the worker runs Armada from. */
@@ -161,6 +162,8 @@ export interface Brief {
   parallel: BriefWorker[];
   /** Whether the worker waits for approval of its plan, and why (`[policy] plans` or a ticket label). */
   plans: { rule: PlanPolicy; why: string };
+  /** The `[[policy.validation]]` rules the coordinator judged apply (THE-885); null when the project has none. */
+  validation: ValidationChoice | null;
   /** `[brief] extra`: the file every brief carries under "Project conventions"; null when unset or unreadable. */
   conventions: { path: string; text: string } | null;
   /** The first message of the worker's session. */
@@ -338,12 +341,21 @@ export interface BuildBriefInput {
   noLaunch?: string | null;
   /** The `[brief] extra` file as read from the repository; `text` is null when it could not be read. */
   conventions?: { path: string; text: string | null } | null;
+  /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
+  validation?: ValidationChoice | null;
   now: Date;
 }
 
 /** Thrown for a profile that does not exist or cannot be chosen (a usage mistake). */
 export class BriefError extends Error {
   override name = "BriefError";
+  constructor(
+    message: string,
+    /** The command to run instead, when there is one to copy. */
+    readonly next: string | null = null,
+  ) {
+    super(message);
+  }
 }
 
 export function buildBrief(input: BuildBriefInput): Brief {
@@ -405,6 +417,12 @@ export function buildBrief(input: BuildBriefInput): Brief {
     branch ? ` --branch ${branch}` : "",
     choice ? ` --profile ${shellWord(choice.name)}` : "",
     choice?.reason ? ` --reason ${shellWord(choice.reason)}` : "",
+    ...(input.validation?.rules.length
+      ? [
+          ` --validation ${input.validation.rules.map((r) => r.index).join(",")}`,
+          input.validation.reason ? ` --validation-reason ${shellWord(input.validation.reason)}` : "",
+        ]
+      : []),
   ].join("");
   const has = (name: string) => !!input.env[name]?.trim();
   const launch = input.launch ?? null;
@@ -469,6 +487,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
     notes: ticket.notes.slice(0, MAX_NOTES),
     parallel,
     plans: planRule(config, ticket.labels),
+    validation: input.validation ?? null,
     conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
     warnings,
   };
@@ -600,6 +619,16 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       : `Plans need the coordinator's approval for ${t.id} (${b.plans.why}): post your plan with \`armada report awaiting-approval --plan-file -\` and wait for approval.`,
     "",
   );
+  const validation = b.validation?.rules ?? [];
+  if (validation.length)
+    out.push(
+      "## Owner validation",
+      "",
+      `This ticket needs the owner's validation: ${validation.map((r) => r.show.replace(/[.\s]+$/, "")).join("; ")}.`,
+      "",
+      `The coordinator judged it so${b.validation?.reason ? `: ${b.validation.reason}` : ""}. Submit your work with \`armada validate "<what to check>" --attach <files|urls>\`: your phase becomes \`awaiting-validation\`, the owner sees it on Armada's Validations page, and you stop until the coordinator relays their decision. On "Request changes", revise and submit again.`,
+      "",
+    );
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
     out.push("Stay out of their areas. If you must change the same files, say so in a report before you do.", "");
@@ -644,6 +673,8 @@ export interface LoadBriefOptions {
   npm?: (version: string) => Promise<NpmCheck>;
   /** The `[brief] extra` file, read by the caller from the repository. */
   conventions?: { path: string; text: string | null } | null;
+  /** `--validation` (none, or rule numbers) and `--validation-reason`; `command` is the coordinator's, for the refusal. */
+  validation?: { requested: string | null; reason: string | null; command: string };
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -701,6 +732,19 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     if (err instanceof ProfileError) throw new BriefError(err.message);
     throw err;
   }
+  // Judged before a launch token is made: a refused brief launches nobody.
+  let validation: ValidationChoice | null;
+  try {
+    validation = chooseValidations(config.policy.validations ?? [], {
+      ticket: ticket.id,
+      requested: opts.validation?.requested ?? null,
+      reason: opts.validation?.reason ?? null,
+      command: opts.validation?.command ?? `armada brief ${ticket.id}`,
+    });
+  } catch (err) {
+    if (err instanceof ValidationChoiceError) throw new BriefError(`${err.message}`, err.next);
+    throw err;
+  }
   const launch = await launchForBrief(ticket, opts.prompt === true ? opts.launch : undefined);
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
@@ -718,6 +762,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     launch: made,
     noLaunch: missed?.reason ?? null,
     conventions: opts.conventions ?? null,
+    validation,
     now: now(),
   });
   return opts.prompt ? brief : { ...brief, launchHint };

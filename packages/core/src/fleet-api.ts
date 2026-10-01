@@ -26,20 +26,31 @@ import {
   type ReportRecord,
   recordAnswer,
   recordClaim,
+  recordDone,
   recordMerge,
   recordQuestion,
   recordRelease,
   recordReport,
+  recordValidation,
   type StoredInboxItem,
   serveInbox,
+  type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
 import { isLabelPhase } from "./phases.ts";
 import { RequestRefusal, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
-import type { LabelPhase } from "./types.ts";
+import type { CiState, LabelPhase } from "./types.ts";
+import {
+  approvalUrl,
+  VALIDATION_KINDS,
+  VALIDATION_LIMITS,
+  type Validation,
+  type ValidationKind,
+  type ValidationPr,
+} from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
-export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat"] as const;
+export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat", "validate"] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
@@ -56,6 +67,8 @@ export const FLEET_OPS = [
   "inbox/resolve",
   "answer",
   "merge",
+  "validations",
+  "done",
   "lease/acquire",
   "lease/renew",
   "lease/release",
@@ -188,6 +201,8 @@ const NOT_MODIFIED = Symbol("not modified");
 
 export interface ServeFleetDeps {
   now: () => Date;
+  /** The dashboard's address, for the approval links (THE-885); a relative link without it. */
+  appUrl?: string | null;
   /** The caller's CLI version (`x-armada-cli-version`): the coordinator's presence keeps it. */
   cliVersion?: string | null;
 }
@@ -220,7 +235,7 @@ export async function serveFleet(
       if (ticket !== caller.ticket)
         return refuse(
           403,
-          `a worker session only claims, reports, asks and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
+          `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
           "the coordinator does it",
         );
     }
@@ -368,10 +383,37 @@ export async function serveFleet(
               url: text(b, "url", URL_MAX),
               mergeCommit: shaOf(b, "mergeCommit"),
               headSha,
+              decision: optText(b, "decision", BODY_MAX),
             },
             at,
           );
         }
+        case "validate": {
+          const input = validationOf(b);
+          if (caller.kind === "worker" && input.kind !== "validation")
+            throw new Invalid("a worker session only asks the owner to validate its work (kind validation)");
+          const validation = await recordValidation(
+            store,
+            slug,
+            {
+              ...input,
+              // A worker shows its own work: the pull request card and the reason are the coordinator's to give.
+              ...(caller.kind === "worker" ? { pr: null, reason: null } : {}),
+              worker: caller.kind === "worker",
+              author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
+            },
+            at,
+          );
+          return { validation, url: approvalUrl(deps.appUrl ?? null, validation.id) };
+        }
+        case "validations":
+          return store.listValidations({
+            project: slug,
+            ...(b.ticket == null ? {} : { ticket: ticketOf(b) }),
+            ...(b.pr == null ? {} : { pr: idOf(b, "pr") }),
+          });
+        case "done":
+          return recordDone(store, slug, { ticket: ticketOf(b), message: text(b, "message", BODY_MAX) }, at);
         case "lease/acquire":
         case "lease/renew": {
           const ttl = b.ttlMs;
@@ -398,6 +440,95 @@ export async function serveFleet(
       return refuse(400, `fleet ${op}: ${err.message}`, "update the CLI: npm install -g @the-vibe-company/armada");
     throw err;
   }
+}
+
+const CI_STATES: readonly CiState[] = ["success", "failure", "pending", "none"];
+
+function httpsOrNull(b: Body, key: string): string | null {
+  const v = optText(b, key, URL_MAX);
+  if (v === null) return null;
+  try {
+    if (new URL(v).protocol === "https:") return v;
+  } catch {}
+  throw new Invalid(`${key} must be an HTTPS URL`);
+}
+
+function countOrNull(b: Body, key: string): number | null {
+  const v = b[key];
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) throw new Invalid(`${key} must be a count`);
+  return v;
+}
+
+function validationPrOf(v: unknown): ValidationPr | null {
+  if (v === null || v === undefined) return null;
+  const p = objectOf(v);
+  const headSha = shaOf(p, "headSha");
+  if (!headSha) throw new Invalid("pr.headSha is required");
+  const files = p.files;
+  if (files !== null && files !== undefined && (!Array.isArray(files) || files.length > 300))
+    throw new Invalid("pr.files must be a list of at most 300 files");
+  const ci = p.ci ?? null;
+  if (ci !== null && !CI_STATES.includes(ci as CiState)) throw new Invalid("pr.ci must be a CI state");
+  return {
+    number: idOf(p, "number"),
+    url:
+      httpsOrNull(p, "url") ??
+      (() => {
+        throw new Invalid("pr.url is required");
+      })(),
+    title: text(p, "title", LINE_MAX),
+    headSha,
+    files: Array.isArray(files)
+      ? files.map((f) => {
+          const file = objectOf(f);
+          return {
+            path: text(file, "path", LINE_MAX),
+            additions: countOrNull(file, "additions") ?? 0,
+            deletions: countOrNull(file, "deletions") ?? 0,
+          };
+        })
+      : null,
+    additions: countOrNull(p, "additions"),
+    deletions: countOrNull(p, "deletions"),
+    ci: ci as CiState | null,
+    preview: httpsOrNull(p, "preview"),
+  };
+}
+
+function validationOf(b: Body): ValidationRecord {
+  const kind = b.kind;
+  if (!VALIDATION_KINDS.includes(kind as ValidationKind))
+    throw new Invalid("kind must be merge, validation or question");
+  const L = VALIDATION_LIMITS;
+  const choices = b.choices;
+  if (
+    choices !== null &&
+    choices !== undefined &&
+    (!Array.isArray(choices) ||
+      choices.length < 1 ||
+      choices.length > L.choices ||
+      !choices.every((c) => typeof c === "string" && c.trim() && c.length <= L.choice))
+  )
+    throw new Invalid(`choices must be 1 to ${L.choices} choices of at most ${L.choice} characters`);
+  const attachments = b.attachments ?? [];
+  if (
+    !Array.isArray(attachments) ||
+    attachments.length > L.attachments ||
+    !attachments.every((a) => typeof a === "string" && /^[\w-]{1,64}$/.test(a))
+  )
+    throw new Invalid(`attachments must be at most ${L.attachments} attachment ids`);
+  const pr = validationPrOf(b.pr);
+  if (kind === "merge" && !pr) throw new Invalid("a merge approval names its pull request");
+  return {
+    ticket: ticketOf(b),
+    kind: kind as ValidationKind,
+    what: text(b, "what", L.what),
+    reason: optText(b, "reason", L.reason),
+    choices: Array.isArray(choices) ? choices.map((c: string) => c.trim()) : null,
+    pr,
+    attachments: attachments as string[],
+  };
 }
 
 // ------------------------------------------------------------------ the CLI's half
@@ -432,6 +563,9 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     answer: (a: AnswerRecord) => call<string>("answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
     merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
+    validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
+    validations: (q) => call<Validation[]>("validations", q),
+    done: (d) => call<MergeRecorded>("done", d),
     acquireLease: (l) => call<LeaseResult>("lease/acquire", l),
     renewLease: (l) => call<boolean>("lease/renew", l),
     releaseLease: (l) => call<null>("lease/release", l).then(() => undefined),

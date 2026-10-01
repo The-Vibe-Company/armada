@@ -25,7 +25,7 @@ import {
   sectionOf,
 } from "@/lib/fleet-view";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
-import { decideCount } from "@/lib/overview-view";
+import { decideCount, pendingValidations } from "@/lib/overview-view";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
 import { Dot, harnessColor, Kbd, ProjectChip } from "../ui";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
@@ -157,11 +157,13 @@ function Frame({ children }: { children: ReactNode }) {
   }, [palette, menu, place, fromPath, router, rows, select]);
 
   const section = sectionOf(place, from);
-  const listPage = place.kind === "overview" || place.kind === "agents" || place.kind === "projects";
-  const detailPage = place.kind === "agent" || place.kind === "project";
+  const listPage =
+    place.kind === "overview" || place.kind === "agents" || place.kind === "projects" || place.kind === "validations";
+  const detailPage = place.kind === "agent" || place.kind === "project" || place.kind === "validation";
 
   return (
-    <div className="sh">
+    // The approval link is opened from a phone as often as a desk: on a narrow screen it takes the whole width.
+    <div className={place.kind === "validation" ? "sh is-focus" : "sh"}>
       <Sidebar section={section} place={place} menu={menu} setMenu={setMenu} onSearch={() => setPalette(true)} />
       <main className="sh-main" data-density={density}>
         <HeaderSlotProvider>
@@ -197,7 +199,10 @@ function crumbLabel(t: Strings, c: Crumb, names: Map<string, string>) {
     case "overview":
     case "projects":
     case "agents":
+    case "validations":
       return t.shell.nav[c.kind];
+    case "validation":
+      return `#${c.id}`;
     case "project":
       return names.get(c.slug) ?? c.slug;
     case "agent":
@@ -258,8 +263,10 @@ function Sidebar({
   const { overview } = useFleet();
   const counts = harnessCounts(overview.rows);
   const decisions = decideCount(overview);
+  const checks = pendingValidations(overview).length;
   const nav: { key: NonNullable<Section>; href: string; count: number; hot: boolean }[] = [
     { key: "overview", href: paths.overview, count: decisions, hot: decisions > 0 },
+    { key: "validations", href: paths.validations, count: checks, hot: checks > 0 },
     { key: "projects", href: paths.projects, count: overview.projects.length, hot: false },
     { key: "agents", href: paths.agents(), count: overview.rows.length, hot: false },
   ];

@@ -10,6 +10,7 @@ import type { Fleet, InboxItem } from "./live.ts";
 import { handBackProblems, transitionProblem } from "./phases.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
+import { type ValidationChoice, validationClaimLine } from "./validations.ts";
 
 /**
  * The command was understood but the tracker state forbids it (exit code 1).
@@ -104,7 +105,7 @@ export const projectOf = (config: ArmadaConfig) => ({
   programRoot: config.tracker.programRoot,
 });
 
-async function readOpenTicket(ctx: WorkerContext, id: string): Promise<Ticket> {
+export async function readOpenTicket(ctx: WorkerContext, id: string): Promise<Ticket> {
   const ticket = await ctx.linear.readTicket(id);
   if (!ticket)
     throw new Refusal(`ticket ${id} not found in Linear`, "armada status, to see the tickets of the program");
@@ -217,6 +218,8 @@ export interface ClaimInput {
   profile?: string | null;
   /** Why the coordinator chose or overrode the profile; required for semantic choices and routing overrides. */
   reason?: string | null;
+  /** The `[[policy.validation]]` rules the coordinator judged apply (THE-885), recorded in the claim. */
+  validation?: ValidationChoice | null;
 }
 
 /**
@@ -281,7 +284,8 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
         throw err;
       }
     const started = ctx.now().toISOString();
-    const body = `Agent status: planning — claimed by ${runtime.name} (${input.handle})\n\n${claimLine({ runtime: runtime.name, handle: input.handle, branch, started, profile })}`;
+    const validation = validationClaimLine(input.validation ?? null);
+    const body = `Agent status: planning — claimed by ${runtime.name} (${input.handle})\n\n${claimLine({ runtime: runtime.name, handle: input.handle, branch, started, profile })}${validation ? `\n${validation}` : ""}`;
     const mine = await linear.comment(ticket.uuid, body);
     // Linear has no compare-and-swap: read back and let the oldest claim win.
     const after = await linear.readTicket(ticket.id);

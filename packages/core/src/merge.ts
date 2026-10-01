@@ -9,6 +9,7 @@ import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
 import type { Fleet, Lease, RuntimeHandle } from "./live.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
+import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
 // ------------------------------------------------------------------ adapters
@@ -34,6 +35,8 @@ export interface MergeForge {
   commit(sha: string): Promise<CommitShape | null>;
   /** GitHub's "update branch": merges the base into the head with a merge commit, only if the head is still `sha`. */
   updateBranch(number: number, sha: string): Promise<MergeAttempt>;
+  /** The preview deployment of a commit, for the owner to try; null when none (THE-885). */
+  preview?(sha: string): Promise<string | null>;
 }
 
 export type TestMergeResult = { ok: true } | { ok: false; step: string; output: string };
@@ -88,6 +91,8 @@ export interface MergeContext {
   progress?: (line: string) => void;
   /** True when the repository has the skill `name` installed; only an installed runtime guide is named. */
   installedSkill: (name: string) => Promise<boolean>;
+  /** The dashboard's address, for the owner's approval links; null when unknown. */
+  appUrl?: string | null;
 }
 
 export interface MergeInput {
@@ -102,6 +107,12 @@ export interface MergeInput {
   noLock?: boolean;
   /** Bring the head up to date with its base and wait for its checks, up to `timeoutMs`, before merging. */
   wait?: { timeoutMs: number } | null;
+  /**
+   * The coordinator's judgement of `[policy] merge_approval` (THE-885): why it
+   * merges on its own, required when the project has the rule and the owner
+   * approved nothing; with `askOwner`, why the owner must see it.
+   */
+  reason?: string | null;
 }
 
 export interface WorkerToTell {
@@ -201,7 +212,15 @@ const stateLine = (pull: MergePull) =>
  * --no-ticket, the first head read) with `updates` merge commits that only
  * bring in the base; `why` says what disproved it.
  */
-export type Lineage = { from: string; updates: number; why: null } | { from: string; updates: null; why: string };
+export type Lineage =
+  | {
+      from: string;
+      updates: number;
+      why: null;
+      /** The commits walked, the head first and `from` last: each is `from` with only the base merged in. */
+      chain?: string[];
+    }
+  | { from: string; updates: null; why: string };
 
 export interface ChecklistInput {
   pull: MergePull;
@@ -561,8 +580,10 @@ async function lineageOf(ctx: MergeContext, pull: MergePull, from: string, run: 
   try {
     const lineage = await (async (): Promise<Lineage> => {
       let sha = pull.headSha;
+      const chain: string[] = [];
       for (let updates = 0; ; updates++) {
-        if (sha === from) return { from, updates, why: null };
+        chain.push(sha);
+        if (sha === from) return { from, updates, why: null, chain };
         if (updates >= MAX_UPDATES) return fail(`more than ${MAX_UPDATES} merge commits stand on it`);
         const commit = await ctx.forge.commit(sha);
         const [first, second] = commit?.parents ?? [];
@@ -662,6 +683,10 @@ interface Checked {
   lines: string[];
   hints: string[];
   warnings: string[];
+  /** How the merge was decided (THE-885), for the ticket and the dashboard; null with --no-ticket. */
+  decided?: string | null;
+  /** The commits the head stands for: itself, and those it is with only the base merged in. */
+  chain?: string[];
 }
 
 /** Every checklist rule, the base-branch rule (with a test merge when allowed) and the hints. */
@@ -718,7 +743,8 @@ async function checklist(ctx: MergeContext, input: MergeInput, run: Run): Promis
     `Checklist passed for ${label(pull, ticket)}: ${head}, ${pull.mergeStateStatus}, checks green, no open review thread.`,
     ...l.notes,
   );
-  return { pull, ticket, sha: pull.headSha, updatedFrom, baseSha: cmp?.baseSha ?? null, lines, hints, warnings };
+  const chain = [pull.headSha, ...(l.lineage?.why === null ? (l.lineage.chain ?? [l.lineage.from]) : [])];
+  return { pull, ticket, sha: pull.headSha, updatedFrom, baseSha: cmp?.baseSha ?? null, lines, hints, warnings, chain };
 }
 
 const indent = (text: string) =>
@@ -769,6 +795,159 @@ async function recheck(ctx: MergeContext, input: MergeInput, run: Run, c: Checke
       `#${pull.number} changed while it was checked; nothing was merged:\n${problems.map((p) => `  - ${p}`).join("\n")}${updatedNote(run, pull)}`,
       `armada merge ${pull.number} again`,
     );
+}
+
+/**
+ * How this merge is decided (THE-885). A pull request the owner was asked
+ * about merges only once they approved that exact head (or that head with only
+ * the base merged in); otherwise, with `[policy] merge_approval`, the
+ * coordinator says why it merges on its own (`--reason`). A dry run only says
+ * where it stands.
+ */
+async function ownerDecision(
+  ctx: MergeContext,
+  input: MergeInput,
+  c: Checked,
+  dryRun: boolean,
+): Promise<{ lines: string[]; decided: string | null }> {
+  const n = c.pull.number;
+  // The rule judges a ticket's merge; a pull request no ticket owns (a release) is still held by an approval asked for it.
+  const rule = c.ticket ? (ctx.config.policy.mergeApproval ?? null) : null;
+  const reason = input.reason?.replace(/\s+/g, " ").trim() || null;
+  const lines = rule ? [`Merge rule (armada.toml [policy] merge_approval): "${rule}"`] : [];
+  let approval: MergeApproval = { state: "none" };
+  let unreadable: string | null = null;
+  const { fleet, warning } = await ctx.fleet();
+  try {
+    if (fleet) approval = mergeApproval(await fleet.validations({ pr: n }), n, { sha: c.sha, sameAs: c.chain ?? [] });
+    else unreadable = warning ?? "not signed in to Armada";
+  } catch (err) {
+    unreadable = err instanceof Error ? err.message : String(err);
+  }
+  const link = (v: Validation) => approvalUrl(ctx.appUrl ?? null, v.id);
+  const judge = `armada merge ${n} --reason "<why it may merge on its own>", or armada merge ${n} --ask-owner --reason "<why the owner must see it>"`;
+  let problem: string | null = null;
+  let next = "";
+  let decided: string | null = null;
+  if (unreadable && rule) {
+    // An approval the owner gave or refused cannot be checked: never merge past it.
+    problem = `the owner's approvals of #${n} could not be read (${unreadable})`;
+    next = `armada merge ${n} again once Armada answers`;
+  } else if (approval.state === "approved") decided = decidedLine(approval.decision);
+  else if (approval.state === "pending") {
+    problem = `the owner has not decided on the merge of #${n} yet (asked ${approval.validation.createdAt}): ${link(approval.validation)}`;
+    next = "armada inbox --wait: the owner's decision arrives there";
+  } else if (approval.state === "changes") {
+    const d = approval.validation.decision;
+    problem = `the owner requested changes on #${n}${d?.note ? `: ${d.note}` : ""}`;
+    next = c.ticket
+      ? `armada answer --note ${c.ticket.id} "<the owner's changes>", once you told its worker; then armada merge ${n} --ask-owner again on its next hand-back`
+      : `armada merge ${n} --ask-owner --reason "<why>" once the changes are made`;
+  } else if (approval.state === "stale") {
+    problem = `the owner approved #${n} at ${approval.validation.pr?.headSha}, but its head is now ${c.sha}: a new head needs a new approval`;
+    next = `armada merge ${n} --ask-owner --reason "<why the owner must see it>"`;
+  } else if (rule && !reason) {
+    problem = `the merge rule asks you to judge #${n}: look at its files and what users will see, and record why`;
+    next = judge;
+  } else if (c.ticket)
+    decided = rule
+      ? `merged on its own (rule: ${rule})${reason ? `: ${reason}` : ""}`
+      : `merged on its own (no merge rule)${reason ? `: ${reason}` : ""}`;
+  // Signed out with no rule, nothing could have been asked from here: no warning.
+  if (unreadable && !rule && fleet)
+    c.warnings.push(
+      `the owner's approvals of #${n} could not be read (${unreadable}); none is required without a merge rule`,
+    );
+  if (problem) {
+    if (dryRun) return { lines: [...lines, `Not mergeable yet: ${problem}`, `Next: ${next}`], decided: null };
+    throw new Refusal(`#${n}${c.ticket ? ` (${c.ticket.id})` : ""} cannot be merged: ${problem}`, next);
+  }
+  return { lines: decided ? [...lines, `Decided: ${decided}.`] : lines, decided };
+}
+
+/**
+ * Asks the owner to approve a merge (THE-885, `armada merge <pr> --ask-owner
+ * --reason`): records the pull request as GitHub shows it now (title, files,
+ * CI, the preview of its head) for the owner's Validations page, posts the
+ * approval link on the ticket and merges nothing. `armada merge` then waits
+ * for the owner's approval of that exact head.
+ */
+export async function askOwnerToMerge(
+  ctx: MergeContext,
+  input: { pr: number; ticket?: string | null; reason: string },
+): Promise<MergeOutcome> {
+  const reason = input.reason.replace(/\s+/g, " ").trim();
+  if (!reason)
+    throw new Refusal(
+      "say why the owner must see this merge",
+      `armada merge ${input.pr} --ask-owner --reason "<what in it the owner checks>"`,
+    );
+  const { fleet, warning } = await ctx.fleet();
+  if (!fleet)
+    throw new Refusal(
+      `asking the owner needs Armada (${warning ?? "not signed in"}); nothing was asked`,
+      "armada login, then the same command again",
+    );
+  const pull = await readSettled(ctx, input.pr);
+  if (pull.state !== "open")
+    throw new Refusal(`#${pull.number} is ${pull.state}: there is nothing to approve`, `gh pr view ${pull.number}`);
+  const ticket = await readTicketFor(ctx, pull, { pr: input.pr, ticket: input.ticket ?? null });
+  if (!ticket)
+    throw new Refusal(`#${pull.number} names no ticket`, `armada merge ${pull.number} --ticket <id> --ask-owner`);
+  const warnings = [...ticket.warnings];
+  let preview: string | null = null;
+  try {
+    preview = (await ctx.forge.preview?.(pull.headSha)) ?? null;
+  } catch (err) {
+    warnings.push(`no preview link: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const { url } = await fleet.validate({
+    ticket: ticket.id,
+    kind: "merge",
+    what: pull.title || `Pull request #${pull.number}`,
+    reason,
+    choices: null,
+    pr: {
+      number: pull.number,
+      url: pull.url,
+      title: pull.title,
+      headSha: pull.headSha,
+      files: pull.files ?? null,
+      additions: pull.additions ?? null,
+      deletions: pull.deletions ?? null,
+      ci: pull.ci ?? null,
+      preview,
+    },
+    attachments: [],
+  });
+  await ctx.linear.comment(
+    ticket.uuid,
+    `Owner approval asked for the merge of PR #${pull.number} at ${pull.headSha}: ${reason}\n\n${url}`,
+  );
+  const rule = ctx.config.policy.mergeApproval;
+  return {
+    merged: false,
+    pr: {
+      number: pull.number,
+      url: pull.url,
+      title: pull.title,
+      base: pull.baseRef,
+      headSha: pull.headSha,
+      mergeCommit: null,
+    },
+    ticket: { id: ticket.id, url: ticket.url },
+    lines: [
+      ...(rule ? [`Merge rule (armada.toml [policy] merge_approval): "${rule}"`] : []),
+      `Asked the owner to approve the merge of #${pull.number} at ${pull.headSha}${preview ? ` (preview ${preview})` : ""}: ${reason}`,
+      `Approval link, posted on ${ticket.id}: ${url}`,
+      `The owner's decision arrives in your inbox; once approved, armada merge ${pull.number}. A new head needs a new approval.`,
+    ],
+    hints: [],
+    workers: [],
+    workersListed: false,
+    archive: null,
+    warnings,
+  };
 }
 
 /** Merges pinned to `sha`, retrying GitHub 5xx after re-reading the state; then reads MERGED back. */
@@ -864,7 +1043,7 @@ async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull,
     ticket.uuid,
     `Agent status: merged — PR #${merged.number} squash-merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}, head ${merged.headSha}${
       c.updatedFrom ? `, the handed-back ${c.updatedFrom} updated with ${merged.baseRef}` : ""
-    }${unlocked ? ", merged without lock (--no-lock)" : ""}`,
+    }${unlocked ? ", merged without lock (--no-lock)" : ""}${c.decided ? `; ${c.decided}` : ""}`,
   );
   return [
     `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent and ready labels removed, merged status posted.`,
@@ -935,7 +1114,8 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
   const run: Run = { pin: null, updated: new Map(), lineages: new Map() };
   if (input.dryRun) {
     const c = await checklist(ctx, input, run);
-    return outcome(c, false, null, c.lines.concat("Dry run: nothing was merged."), [], null);
+    const owner = await ownerDecision(ctx, input, c, true);
+    return outcome(c, false, null, [...c.lines, ...owner.lines, "Dry run: nothing was merged."], [], null);
   }
   if (!input.wait) return locked(ctx, input, run);
   // Before touching the branch or waiting: a merge that will need the lock and cannot have it is refused now.
@@ -969,6 +1149,9 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
   const body = async (renew: () => Promise<boolean>) => {
     const c = await checklist(ctx, input, run);
     c.warnings.unshift(...early);
+    const owner = await ownerDecision(ctx, input, c, false);
+    c.lines.push(...owner.lines);
+    c.decided = owner.decided;
     await recheck(ctx, input, run, c);
     if (!(await renew()))
       throw new Refusal(
@@ -1033,6 +1216,7 @@ async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: st
           url: merged.url,
           mergeCommit: merged.mergeCommit,
           headSha: merged.headSha,
+          decision: c.decided ?? null,
         }),
       )
     : null;

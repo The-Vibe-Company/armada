@@ -3,7 +3,7 @@
 // and each project's card. Pure: they read the overview the shell polls, and
 // never recompute what core decides (health, progress, what waits, since when
 // an item waits for the coordinator).
-import type { CoordinatorState, FleetOverview, InboxItem, WaitingItem } from "@armada/core/read";
+import type { CoordinatorState, FleetOverview, InboxItem, OwnerValidation, WaitingItem } from "@armada/core/read";
 import { agentState, type DecisionKind, decisionsOf, harnessOf } from "./fleet-view";
 import { lastActivity, prCounts, progressPercent } from "./project-view";
 
@@ -12,7 +12,7 @@ export type Decision = WaitingItem & { kind: DecisionKind };
 
 export interface OverviewFigures {
   inFlight: number;
-  /** Questions, plans, hand-backs and stopped coordinators: the sidebar's count. */
+  /** What waits for the owner's check, and stopped coordinators: the sidebar's count. */
   decide: number;
   failing: number;
   silent: number;
@@ -22,7 +22,9 @@ export interface OverviewFigures {
   harnesses: number;
 }
 
-export function overviewFigures(o: Pick<FleetOverview, "rows" | "waiting" | "projects">): OverviewFigures {
+export function overviewFigures(
+  o: Pick<FleetOverview, "rows" | "waiting" | "projects"> & Partial<Pick<FleetOverview, "validations">>,
+): OverviewFigures {
   const states = o.rows.map((r) => agentState(r).status);
   return {
     inFlight: o.rows.length,
@@ -66,11 +68,35 @@ export function coordinatorAlerts(o: Pick<FleetOverview, "projects" | "waiting">
   return alerts.sort((a, b) => a.since.localeCompare(b.since));
 }
 
-/** What the owner has to decide: the questions, plans and hand-backs, and the coordinators to bring back. */
-export const decideCount = (o: Pick<FleetOverview, "projects" | "waiting">) =>
-  decisionsOf(o).length + coordinatorAlerts(o).length;
+/**
+ * What waits for the owner's check (THE-885): merges to approve, work to
+ * validate, questions the coordinator escalated, oldest first. An overview
+ * from before validations existed has none.
+ */
+export const pendingValidations = (o: Partial<Pick<FleetOverview, "validations">>): OwnerValidation[] =>
+  (o.validations ?? []).filter((v) => !v.decision);
 
-/** The decisions the owner makes, oldest first. */
+/** What the owner decided this week, newest first. */
+export const decidedValidations = (o: Partial<Pick<FleetOverview, "validations">>): OwnerValidation[] =>
+  (o.validations ?? []).filter((v) => v.decision);
+
+/** What the owner has to decide: what waits for their check, and the coordinators to bring back. */
+export const decideCount = (
+  o: Pick<FleetOverview, "projects" | "waiting"> & Partial<Pick<FleetOverview, "validations">>,
+) => pendingValidations(o).length + coordinatorAlerts(o).length;
+
+/**
+ * What the coordinator handles, in one line on the overview: the workers'
+ * questions, plans and hand-backs, how many and since when the oldest waits.
+ * Null when nothing waits for it.
+ */
+export function withCoordinator(o: Pick<FleetOverview, "waiting">): { count: number; since: string } | null {
+  const items = decisionsOf(o);
+  if (!items.length) return null;
+  return { count: items.length, since: items.map((w) => w.since).sort()[0] as string };
+}
+
+/** The decisions an agent's page offers, oldest first: a question to answer, a plan to approve. */
 export const decisionCards = (o: Pick<FleetOverview, "waiting">): Decision[] =>
   [...decisionsOf(o)].sort((a, b) => a.since.localeCompare(b.since));
 

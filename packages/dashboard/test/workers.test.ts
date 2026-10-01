@@ -274,7 +274,7 @@ describe("a worker session acts on its own ticket only", () => {
       const r = await keysFor(session, { command, project: "widgets", ticket: "ABC-20" });
       expect(r.status).toBe(403);
       expect(r.body.error).toBe(
-        `a worker session only claim, report, ask and release on its own ticket, not \`armada ${command}\``,
+        `a worker session only claim, report, ask, validate and release on its own ticket, not \`armada ${command}\``,
       );
     }
     expect((await keysFor(session, null)).status).toBe(403);

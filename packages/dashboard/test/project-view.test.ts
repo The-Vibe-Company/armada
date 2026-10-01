@@ -98,7 +98,7 @@ describe("the Projects list", () => {
       },
       {
         name: "Gadgets",
-        percent: 60,
+        percent: 55,
         owner: "Hugo Bernard",
         health: "blocked",
         prs: { open: 1, green: 0 },

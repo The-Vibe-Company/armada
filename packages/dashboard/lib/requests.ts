@@ -3,10 +3,11 @@
 // project, after core checks it against the project as the viewer sees it. A
 // project outside the viewer's organization is unknown here.
 import {
+  type DecisionInput,
   RequestRefusal,
   requestAnswer,
+  requestDecision,
   requestLaunch,
-  requestMerge,
   requestPlanChanges,
   requestRelease,
 } from "@armada/core/read";
@@ -82,21 +83,6 @@ export function submitLaunch(opts: LoadOptions, scope: Scope | null, form: Launc
   );
 }
 
-export function submitMerge(
-  opts: LoadOptions,
-  scope: Scope | null,
-  form: { project: string; pr: number; author: string },
-): Promise<RequestResult> {
-  return withProject(opts, scope, form.project, ({ store, report }) =>
-    requestMerge(store, {
-      ...form,
-      now: opts.now(),
-      openPrs: (report.pullRequests ?? []).map((pr) => pr.number),
-      ticket: report.pullRequests?.find((pr) => pr.number === form.pr)?.ticket?.id ?? null,
-    }),
-  );
-}
-
 export function submitRelease(
   opts: LoadOptions,
   scope: Scope | null,
@@ -107,4 +93,16 @@ export function submitRelease(
 
 export function submitPlanChanges(opts: LoadOptions, scope: Scope | null, form: AnswerForm): Promise<RequestResult> {
   return withProject(opts, scope, form.project, ({ store }) => requestPlanChanges(store, { ...form, now: opts.now() }));
+}
+
+/**
+ * The owner decides a validation (THE-885): the project must be one the
+ * viewer's organization holds, and the validation one of that project.
+ */
+export function submitDecision(
+  opts: LoadOptions,
+  scope: Scope | null,
+  form: Omit<DecisionInput, "now">,
+): Promise<RequestResult> {
+  return withProject(opts, scope, form.project, ({ store }) => requestDecision(store, { ...form, now: opts.now() }));
 }

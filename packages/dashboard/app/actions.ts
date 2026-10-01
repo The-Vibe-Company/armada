@@ -13,8 +13,8 @@ import { AUTHOR_COOKIE } from "@/lib/i18n";
 import {
   type RequestResult,
   submitAnswer,
+  submitDecision,
   submitLaunch,
-  submitMerge,
   submitPlanChanges,
   submitRelease,
 } from "@/lib/requests";
@@ -63,16 +63,6 @@ export async function launchTicket(form: FormData): Promise<RequestResult> {
   });
 }
 
-export async function mergePullRequest(form: FormData): Promise<RequestResult> {
-  const access = await requireFleetAccess();
-  const { opts, scope } = await fleetOf(access);
-  return submitMerge(opts, scope, {
-    project: text(form, "project"),
-    pr: Number(text(form, "pr")),
-    author: await author(access, form),
-  });
-}
-
 export async function releaseTicket(form: FormData): Promise<RequestResult> {
   const access = await requireFleetAccess();
   const { opts, scope } = await fleetOf(access);
@@ -93,6 +83,25 @@ export async function changePlan(form: FormData): Promise<RequestResult> {
     project: text(form, "project"),
     question,
     text: text(form, "text"),
+    author: await author(access, form),
+  });
+}
+
+/** The owner's decision on a validation (THE-885): Approve, Request changes, or one of its choices. */
+export async function decideValidation(form: FormData): Promise<RequestResult> {
+  const access = await requireFleetAccess();
+  const id = Number(text(form, "validation"));
+  if (!Number.isSafeInteger(id) || id <= 0) return { ok: false, code: "no-validation", message: "no validation id" };
+  const action = text(form, "action");
+  if (action !== "approve" && action !== "changes" && action !== "choice")
+    return { ok: false, code: "no-choice", message: "approve, request changes or pick a choice" };
+  const { opts, scope } = await fleetOf(access);
+  return submitDecision(opts, scope, {
+    project: text(form, "project"),
+    id,
+    action,
+    choice: text(form, "choice") || null,
+    note: text(form, "note") || null,
     author: await author(access, form),
   });
 }

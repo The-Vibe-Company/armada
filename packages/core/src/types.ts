@@ -14,6 +14,8 @@ export const LABEL_PHASES = [
   "shipping",
   "blocked",
   "ready-to-merge",
+  // The owner checks what the worker submitted with \`armada validate\` (THE-885).
+  "awaiting-validation",
 ] as const;
 
 export type LabelPhase = (typeof LABEL_PHASES)[number];

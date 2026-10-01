@@ -22,7 +22,7 @@ export const WORKER_IDLE_MS = 72 * 60 * 60 * 1000;
 /** Exchange attempts per address per minute. */
 export const EXCHANGES_PER_MINUTE = 10;
 /** What a worker session may do, on its own ticket only. */
-export const WORKER_COMMANDS = ["claim", "report", "ask", "release"] as const;
+export const WORKER_COMMANDS = ["claim", "report", "ask", "validate", "release"] as const;
 export type WorkerCommand = (typeof WORKER_COMMANDS)[number];
 export const isWorkerCommand = (v: unknown): v is WorkerCommand => WORKER_COMMANDS.includes(v as WorkerCommand);
 

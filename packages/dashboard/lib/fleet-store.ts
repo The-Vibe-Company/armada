@@ -7,6 +7,7 @@
 // `cli-api.ts`). Losing this data loses live detail, never progress: Linear
 // stays the record.
 import type {
+  Attachment,
   CoordinatorPresence,
   CoordinatorSeen,
   EventInput,
@@ -28,9 +29,14 @@ import type {
   RuntimeHandle,
   SessionRecord,
   StoredInboxItem,
+  Validation,
+  ValidationDecision,
+  ValidationKind,
+  ValidationOutcome,
   WorkerProfile,
 } from "@armada/core/read";
 import { REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
+import { ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
 import { endWorker } from "./workers";
 
@@ -515,7 +521,7 @@ export async function getRuntimeHandle(db: Queryable, project: string, ticket: s
 // ------------------------------------------------------------------ inbox
 
 const INBOX_COLUMNS = `id, project, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
-  request_question, request_profile, request_pr`;
+  request_question, request_profile, request_pr, request_validation`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
   id: Number(r.id),
@@ -532,6 +538,15 @@ const inboxRow = (r: Row): StoredInboxItem => ({
           question: r.request_question === null ? null : Number(r.request_question),
           profile: text(r.request_profile),
           ...(r.request_pr == null ? {} : { pr: Number(r.request_pr) }),
+        },
+      }
+    : {}),
+  ...(r.kind === "decision"
+    ? {
+        request: {
+          question: null,
+          profile: null,
+          validation: r.request_validation == null ? null : Number(r.request_validation),
         },
       }
     : {}),
@@ -923,7 +938,123 @@ export const fleetStore = (db: Database): FleetStore => ({
   releaseLease: (l) => releaseLease(db, l),
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
   expireUnusedLaunches: (project, now) => expireUnusedLaunches(db, project, now),
+  addValidation: (v) => addValidation(db, v),
+  listValidations: (q) => listValidations(db, q),
+  getValidation: (project, id) => getValidation(db, project, id),
+  decideValidation: (d) => decideValidation(db, d),
 });
+
+// ------------------------------------------------------------------ validations (THE-885)
+
+const VALIDATION_COLUMNS = `id, project, ticket, kind, what, reason, choices, pr, attachments, author, created_at,
+  decided_at, outcome, answer, note, decided_by`;
+
+const json = <T>(v: unknown): T | null => (v == null ? null : typeof v === "string" ? (JSON.parse(v) as T) : (v as T));
+
+export const validationRow = (r: Row): Validation => ({
+  id: Number(r.id),
+  project: String(r.project),
+  ticket: String(r.ticket),
+  kind: String(r.kind) as ValidationKind,
+  what: String(r.what),
+  reason: text(r.reason),
+  choices: json<string[]>(r.choices),
+  pr: json<Validation["pr"]>(r.pr),
+  attachments: json<string[]>(r.attachments) ?? [],
+  author: text(r.author),
+  createdAt: isoAt(r.created_at),
+  decision: r.decided_at
+    ? {
+        outcome: String(r.outcome) as ValidationOutcome,
+        answer: text(r.answer),
+        note: text(r.note),
+        by: text(r.decided_by),
+        at: isoAt(r.decided_at),
+      }
+    : null,
+});
+
+/** Adds a validation; the open one it repeats is superseded in the same transaction. */
+export async function addValidation(db: Database, v: Parameters<FleetStore["addValidation"]>[0]): Promise<Validation> {
+  return transaction(db, async (tx) => {
+    // One submission at a time per project: the supersede and the insert never race into the unique indexes.
+    await tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`validations:${v.project}`]);
+    if (v.kind === "merge" && v.pr)
+      await tx.query(
+        `UPDATE validations SET decided_at = $3, outcome = 'superseded'
+         WHERE project = $1 AND kind = 'merge' AND pr_number = $2 AND decided_at IS NULL`,
+        [v.project, v.pr.number, v.at],
+      );
+    else if (v.kind === "validation")
+      await tx.query(
+        `UPDATE validations SET decided_at = $3, outcome = 'superseded'
+         WHERE project = $1 AND kind = 'validation' AND ticket = $2 AND decided_at IS NULL`,
+        [v.project, v.ticket, v.at],
+      );
+    const rs = await tx.query(
+      `INSERT INTO validations (project, ticket, kind, what, reason, choices, pr, pr_number, attachments, author, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10, $11) RETURNING ${VALIDATION_COLUMNS}`,
+      [
+        v.project,
+        v.ticket,
+        v.kind,
+        v.what,
+        v.reason,
+        v.choices ? JSON.stringify(v.choices) : null,
+        v.pr ? JSON.stringify(v.pr) : null,
+        v.pr?.number ?? null,
+        JSON.stringify(v.attachments),
+        v.author,
+        v.at,
+      ],
+    );
+    return validationRow(rs.rows[0] ?? {});
+  });
+}
+
+export async function listValidations(
+  db: Queryable,
+  q: { project: string; ticket?: string; pr?: number; decidedSince?: Date },
+): Promise<Validation[]> {
+  const rs = await db.query(
+    `SELECT ${VALIDATION_COLUMNS} FROM validations
+     WHERE project = $1 AND ($2::text IS NULL OR ticket = $2) AND ($3::bigint IS NULL OR pr_number = $3)
+       AND (decided_at IS NULL OR $4::timestamptz IS NULL OR decided_at >= $4)
+     ORDER BY decided_at IS NULL DESC, created_at DESC, id DESC LIMIT 200`,
+    [q.project, q.ticket ?? null, q.pr ?? null, q.decidedSince ?? null],
+  );
+  return rs.rows.map(validationRow);
+}
+
+export async function getValidation(db: Queryable, project: string, id: number): Promise<Validation | null> {
+  const rs = await db.query(`SELECT ${VALIDATION_COLUMNS} FROM validations WHERE project = $1 AND id = $2`, [
+    project,
+    id,
+  ]);
+  return rs.rows[0] ? validationRow(rs.rows[0]) : null;
+}
+
+/** The owner's decision and its inbox item for the coordinator, in one transaction; null when already decided. */
+export async function decideValidation(
+  db: Database,
+  d: { project: string; id: number; decision: Omit<ValidationDecision, "at">; body: string; at: Date },
+): Promise<{ item: number } | null> {
+  return transaction(db, async (tx) => {
+    const rs = await tx.query<{ ticket: unknown }>(
+      `UPDATE validations SET decided_at = $3, outcome = $4, answer = $5, note = $6, decided_by = $7
+       WHERE project = $1 AND id = $2 AND decided_at IS NULL RETURNING ticket`,
+      [d.project, d.id, d.at, d.decision.outcome, d.decision.answer, d.decision.note, d.decision.by],
+    );
+    const ticket = rs.rows[0]?.ticket;
+    if (ticket === undefined) return null;
+    const item = await tx.query<{ id: unknown }>(
+      `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_validation)
+       VALUES ($1, $2, 'decision', 'coordinator', $3, $4, $5, $6) RETURNING id`,
+      [d.project, String(ticket), d.decision.by, d.body, d.at, d.id],
+    );
+    return { item: Number(item.rows[0]?.id) };
+  });
+}
 
 // ------------------------------------------------------------------ what the dashboard reads
 
@@ -942,6 +1073,9 @@ export interface LiveStore extends RequestStore {
   coordinatorPresence(project: string): Promise<{ seenAt: string; cliVersion: string | null } | null>;
   /** What an agent's page shows of its ticket's history. */
   ticketHistory(project: string, ticket: string): Promise<TicketHistory>;
+  listValidations(q: { project: string; ticket?: string; pr?: number; decidedSince?: Date }): Promise<Validation[]>;
+  /** The attachments of some tickets, metadata only: the galleries of their validations. */
+  ticketsAttachments(project: string, tickets: string[]): Promise<Attachment[]>;
 }
 
 /** A ticket's history in the app's database: its events, inbox items and launches. */
@@ -951,7 +1085,7 @@ export interface TicketHistory {
   launches: { at: string; by: string }[];
 }
 
-export const liveStore = (db: Queryable): LiveStore => ({
+export const liveStore = (db: Database): LiveStore => ({
   getCoordinatorPresence: (project) => getCoordinatorPresence(db, project),
   inboxReads: (project, now) => inboxReads(db, project, now),
   listSessions: (project, opts) => listSessions(db, project, opts),
@@ -974,4 +1108,8 @@ export const liveStore = (db: Queryable): LiveStore => ({
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addRequest: (r) => addRequest(db, r),
+  listValidations: (q) => listValidations(db, q),
+  getValidation: (project, id) => getValidation(db, project, id),
+  decideValidation: (d) => decideValidation(db, d),
+  ticketsAttachments: (project, tickets) => ticketsAttachments(db, project, tickets),
 });

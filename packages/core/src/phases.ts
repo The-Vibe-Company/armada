@@ -9,16 +9,18 @@ import { LABEL_PHASES } from "./types.ts";
  * `blocked`, and reporting the current phase again is a status update.
  */
 export const TRANSITIONS: Record<LabelPhase, readonly LabelPhase[]> = {
-  planning: ["awaiting-approval", "implementing"],
+  planning: ["awaiting-approval", "implementing", "awaiting-validation"],
   // A rejected plan goes back to planning.
   "awaiting-approval": ["planning", "implementing"],
-  implementing: ["shipping"],
+  implementing: ["shipping", "awaiting-validation"],
   // Review or CI can send the work back to implementation.
-  shipping: ["implementing", "ready-to-merge"],
+  shipping: ["implementing", "ready-to-merge", "awaiting-validation"],
   // The coordinator may ask to bring the default branch in, or for a fix, after the hand-back.
   "ready-to-merge": ["shipping"],
+  // The owner's decision on what `armada validate` submitted: revise it, or go on.
+  "awaiting-validation": ["planning", "implementing", "shipping"],
   // Unblocked work resumes where it stood; ready-to-merge still passes the gate.
-  blocked: ["planning", "awaiting-approval", "implementing", "shipping", "ready-to-merge"],
+  blocked: ["planning", "awaiting-approval", "implementing", "shipping", "ready-to-merge", "awaiting-validation"],
 };
 
 export const isLabelPhase = (v: string): v is LabelPhase => (LABEL_PHASES as readonly string[]).includes(v);

@@ -8,12 +8,14 @@ import { dirname, join } from "node:path";
 import {
   AGENTS_SKILLS_DIR,
   type ArmadaConfig,
+  askOwnerToMerge,
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
   fetchCommit,
   fetchComparison,
   fetchMergePull,
+  fetchPreview,
   fetchPullDiff,
   LINEAR_KEY,
   type LocalRepo,
@@ -204,6 +206,15 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
   const noTicket = !!a.options["no-ticket"];
   if (noTicket && a.options.ticket) throw new UsageError("--no-ticket and --ticket cannot go together");
   const wait = !!a.options.wait;
+  const askOwner = a.options["ask-owner"] === "true";
+  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"]))
+    throw new UsageError("--ask-owner only asks the owner: it goes with --reason (and --ticket), nothing else");
+  if (askOwner && !a.options.reason?.trim())
+    throw new UsageError(
+      `--ask-owner needs --reason: armada merge ${number} --ask-owner --reason "<why the owner must see it>"`,
+    );
+  if (noTicket && a.options.reason !== undefined)
+    throw new UsageError("--reason judges a ticket's merge; --no-ticket has none");
   if (wait && a.options["dry-run"]) throw new UsageError("--wait and --dry-run cannot go together");
   if (!wait && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
   const timeoutMs = a.options.timeout === undefined ? MERGE_WAIT_DEFAULT_MS : waitMinutes(a.options.timeout) * 60_000;
@@ -229,7 +240,9 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       merge: ghMerge(exec, repoDir, config.github.repository),
       commit: (sha) => fetchCommit({ ...gh, sha }),
       updateBranch: ghUpdateBranch(exec, repoDir, config.github.repository),
+      preview: (sha) => fetchPreview({ ...gh, sha }),
     },
+    appUrl: credentials.armadaSignIn ? credentials.armadaApi.url : null,
     repo: gitRepo(exec, repoDir),
     // Signed in, the merge lock is required: two coordinators merge one after the other.
     lockRequired: !!credentials.armadaSignIn,
@@ -251,6 +264,21 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       return false;
     },
   };
+  if (askOwner) {
+    const asked = await askOwnerToMerge(ctx, {
+      pr: number,
+      ticket: a.options.ticket ?? null,
+      reason: a.options.reason ?? "",
+    });
+    const project = config.project.slug;
+    const next = await rearmFor(io, project, {
+      inFlight: (await watchOf(io, project)).state?.inFlight ?? null,
+      open: null,
+    });
+    io.stdout(a.json ? `${JSON.stringify({ ...asked, watch: next }, null, 2)}\n` : `${render(asked)}${next.line}\n`);
+    for (const w of asked.warnings) io.stderr(`armada: warning: ${w}\n`);
+    return 0;
+  }
   const o = await mergePullRequest(ctx, {
     pr: number,
     ticket: a.options.ticket ?? null,
@@ -258,6 +286,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     wait: wait ? { timeoutMs } : null,
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
+    reason: a.options.reason ?? null,
   });
   // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
   const project = config.project.slug;

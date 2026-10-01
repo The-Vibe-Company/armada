@@ -1,16 +1,15 @@
 "use client";
 
-// One decision of the overview (THE-867) as a card: a question and its
-// choices, a plan to approve or amend, a hand-back to merge. Every button is a
-// request in the coordinator's inbox (answerQuestion, changePlan,
-// mergePullRequest), never an action: the card shows "sent to the
-// coordinator" on the click, and puts the buttons back with the reason when
-// the request is refused.
+// A worker's decision on its agent's page (THE-869): a question and its
+// choices, a plan to approve or amend, a hand-back. These are the
+// coordinator's to handle (THE-885); the owner may still answer a question or
+// a plan, as a request in the coordinator's inbox (answerQuestion, changePlan),
+// never an action: it shows "sent to the coordinator" on the click, and puts
+// the buttons back with the reason when the request is refused. A hand-back
+// has no button: the coordinator merges, on its own or after asking the owner.
 import type { CoordinatorState } from "@armada/core/read";
-import Link from "next/link";
 import { type KeyboardEvent, useRef, useState } from "react";
-import { answerQuestion, changePlan, mergePullRequest } from "@/app/actions";
-import { paths } from "@/lib/fleet-view";
+import { answerQuestion, changePlan } from "@/app/actions";
 import { type Decision, excerpt, orderOptions, type SentRequest } from "@/lib/overview-view";
 import {
   type ActionContext,
@@ -23,8 +22,6 @@ import {
   useRequest,
   useSent,
 } from "../Actions";
-import { Card, CardHead, CardMeta, CardTitle } from "../page";
-import { Dot, Tag } from "../ui";
 
 /** What an approval says on the ticket: tracker comments are in English. */
 const APPROVED = "Approved.";
@@ -40,7 +37,6 @@ const KIND_COLOR: Record<Decision["kind"], string> = {
 /** Sends the request the clicked button names. */
 function send(form: FormData) {
   const action = form.get("action");
-  if (action === "merge") return mergePullRequest(form);
   if (action === "changes") return changePlan(form);
   if (action === "approve") form.set("text", APPROVED);
   return answerQuestion(form);
@@ -55,43 +51,6 @@ interface DecisionProps {
   pr: number | null;
   /** What the owner already asked, as the server holds it. */
   sent: SentRequest | null;
-}
-
-export function DecisionCard(props: DecisionProps) {
-  const { ctx, w, projectName } = props;
-  const { t, now } = ctx;
-  const color = KIND_COLOR[w.kind];
-  const age = Math.max(0, now - Date.parse(w.since));
-  return (
-    <Card>
-      <CardHead
-        icon={<Dot color={color} />}
-        label={t.overview.kinds[w.kind]}
-        color={color}
-        side={<span title={w.since}>{t.ago(age)}</span>}
-      />
-      <CardTitle>
-        {w.ticket ? (
-          <Link href={paths.agent(w.ticket)} prefetch>
-            {w.title ?? w.ticket}
-          </Link>
-        ) : (
-          (w.title ?? projectName)
-        )}
-      </CardTitle>
-      <CardMeta>
-        <Tag>{projectName}</Tag>
-        {w.ticket && <span className="mono">{w.ticket}</span>}
-        {w.author && <span>{w.author}</span>}
-        {w.coordinatorSince && (
-          <span className="late">
-            {t.coordinatorLate(t.duration(Math.max(0, now - Date.parse(w.coordinatorSince))))}
-          </span>
-        )}
-      </CardMeta>
-      <DecisionActions {...props} />
-    </Card>
-  );
 }
 
 /**
@@ -117,12 +76,7 @@ export function DecisionActions({
   const req = useRequest(send, {
     start: (form) => {
       const action = form.get("action");
-      const body =
-        action === "merge"
-          ? t.overview.requestMerge
-          : action === "approve"
-            ? APPROVED
-            : String(form.get("text") ?? "").trim();
+      const body = action === "approve" ? APPROVED : String(form.get("text") ?? "").trim();
       shown.current = { body, author: signerOf(ctx.signer, form), at: new Date(now).toISOString() };
       markSent(shown.current);
       setAmending(false);
@@ -136,7 +90,7 @@ export function DecisionActions({
     undo: () => unmark(),
   });
   const pending = held ?? sent;
-  const canAct = ctx.live && !pending && (w.kind === "hand-back" ? pr !== null : w.item !== null);
+  const canAct = ctx.live && !pending && w.kind !== "hand-back" && w.item !== null;
 
   const { text, options } =
     w.kind === "question" ? splitQuestion(w.detail ?? "") : { text: w.detail ?? "", options: [] };
@@ -259,17 +213,10 @@ export function DecisionActions({
                     </button>
                   </>
                 )}
-                {w.kind === "hand-back" && (
-                  <button type="submit" name="action" value="merge" className="btn is-primary" disabled={req.busy}>
-                    {t.overview.requestMerge}
-                  </button>
-                )}
               </div>
             </form>
-          ) : !ctx.live ? (
-            <p className="calm">{t.needsLive}</p>
           ) : (
-            w.kind === "hand-back" && pr === null && <p className="calm">{t.overview.noPr}</p>
+            !ctx.live && w.kind !== "hand-back" && <p className="calm">{t.needsLive}</p>
           )}
         </>
       )}

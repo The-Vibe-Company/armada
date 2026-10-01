@@ -4,6 +4,7 @@ import { parseConfig } from "../src/config.ts";
 import type { CommitShape, Comparison, MergePull } from "../src/github.ts";
 import type { Fleet } from "../src/live.ts";
 import {
+  askOwnerToMerge,
   type LocalRepo,
   type MergeAttempt,
   type MergeContext,
@@ -12,6 +13,7 @@ import {
   type TestMergeResult,
   withLease,
 } from "../src/merge.ts";
+import { requestDecision } from "../src/requests.ts";
 import { Refusal } from "../src/worker.ts";
 import { DEMO_TOML, FakeLinear, LABELS, NOW, tempFleet } from "./support.ts";
 
@@ -72,6 +74,8 @@ class FakeForge implements MergeForge {
   async diff() {
     return this.diffText;
   }
+  /** The preview deployment of a head; none by default. */
+  preview?: (sha: string) => Promise<string | null>;
   /** Commits GitHub knows, by SHA. */
   commits = new Map<string, CommitShape>();
   /** Commits on the base branch: compared with it, they are BEHIND. */
@@ -343,7 +347,7 @@ describe("armada merge", () => {
     expect(t.prs.map((p) => p.url)).toEqual(["https://github.com/acme/widgets/pull/9"]);
     expect(t.comments[0]?.status).toEqual({
       phase: "merged",
-      summary: `PR #9 squash-merged into main as ${SQUASH}, head ${HEAD}`,
+      summary: `PR #9 squash-merged into main as ${SQUASH}, head ${HEAD}; merged on its own (no merge rule)`,
     });
     expect(out.workers).toEqual([
       { ticket: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code", handle: "ws-2" },
@@ -468,7 +472,9 @@ describe("armada merge", () => {
 
     const out = await mergePullRequest(s.ctx, { pr: 9, noLock: true });
     expect(out.merged).toBe(true);
-    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(", merged without lock (--no-lock)");
+    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(
+      ", merged without lock (--no-lock); merged on its own (no merge rule)",
+    );
     expect(out.warnings[0]).toBe(
       "merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now",
     );
@@ -536,6 +542,128 @@ function clocked(s: ReturnType<typeof setup>, tick: (slept: number) => Promise<v
 const green = (s: ReturnType<typeof setup>) =>
   Object.assign(s.forge.pr, { mergeStateStatus: "CLEAN", checks: [{ name: "test", state: "success" }] });
 
+describe("the owner's merge approval (THE-885)", () => {
+  const RULE = '\n[policy]\nmerge_approval = "merge on your own, except front-end changes"\n';
+  const approve = (live: ReturnType<typeof tempFleet>, id: number, action: "approve" | "changes" = "approve") =>
+    requestDecision(live.store, {
+      project: "widgets",
+      id,
+      action,
+      note: action === "changes" ? "The toggle is unreadable" : null,
+      author: "Ada",
+      now: NOW,
+    });
+
+  test("with a rule, the coordinator says why it merges on its own, and the ticket records it", async () => {
+    const live = tempFleet();
+    const s = setup({ live, toml: `${GATES}${RULE}` });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
+      `#9 (DEMO-7) cannot be merged: the merge rule asks you to judge #9: look at its files and what users will see, and record why\nNext: armada merge 9 --reason "<why it may merge on its own>", or armada merge 9 --ask-owner --reason "<why the owner must see it>"`,
+    );
+    expect(s.forge.merges).toEqual([]);
+    const out = await mergePullRequest(s.ctx, { pr: 9, reason: "CLI only" });
+    expect(out.lines).toContain(
+      'Merge rule (armada.toml [policy] merge_approval): "merge on your own, except front-end changes"',
+    );
+    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(
+      "; merged on its own (rule: merge on your own, except front-end changes): CLI only",
+    );
+    expect(live.store.events.at(-1)?.message).toEndWith(
+      "; merged on its own (rule: merge on your own, except front-end changes): CLI only",
+    );
+  });
+
+  test("--ask-owner holds the pull request for the owner; merge waits for their approval of that exact head", async () => {
+    const live = tempFleet();
+    const s = setup({ live, toml: `${GATES}${RULE}` });
+    s.ctx.appUrl = "https://armada.example.test";
+    s.forge.pr = pull({
+      files: [{ path: "web/Toggle.tsx", additions: 12, deletions: 3 }],
+      additions: 12,
+      deletions: 3,
+    });
+    s.forge.preview = async (sha) => `https://preview-${sha.slice(0, 7)}.example.app`;
+    const asked = await askOwnerToMerge(s.ctx, { pr: 9, reason: "touches components/Toggle" });
+    expect(asked.merged).toBe(false);
+    expect(asked.lines).toContain("Approval link, posted on DEMO-7: https://armada.example.test/approve/1");
+    expect(s.forge.merges).toEqual([]);
+    expect(live.store.validations).toMatchObject([
+      {
+        id: 1,
+        ticket: "DEMO-7",
+        kind: "merge",
+        reason: "touches components/Toggle",
+        pr: {
+          number: 9,
+          headSha: HEAD,
+          files: [{ path: "web/Toggle.tsx", additions: 12, deletions: 3 }],
+          ci: "success",
+          preview: "https://preview-0123456.example.app",
+        },
+        decision: null,
+      },
+    ]);
+    expect(s.linear.writes).toEqual([
+      `comment DEMO-7 Owner approval asked for the merge of PR #9 at ${HEAD}: touches components/Toggle`,
+    ]);
+    expect(s.linear.get("DEMO-7").comments[0]?.excerpt).toContain("https://armada.example.test/approve/1");
+
+    // Before the owner decides, and after they ask for changes, nothing merges, even with a reason.
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, reason: "CLI only" }))).toStartWith(
+      "#9 (DEMO-7) cannot be merged: the owner has not decided on the merge of #9 yet (asked 2026-03-04T10:00:00.000Z): https://armada.example.test/approve/1",
+    );
+    await approve(live, 1, "changes");
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toStartWith(
+      "#9 (DEMO-7) cannot be merged: the owner requested changes on #9: The toggle is unreadable",
+    );
+
+    // Asked again and approved: the merge records who approved, and when.
+    await askOwnerToMerge(s.ctx, { pr: 9, reason: "touches components/Toggle" });
+    await approve(live, 2);
+    await mergePullRequest(s.ctx, { pr: 9 });
+    expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith("; approved by Ada at 2026-03-04 10:00 UTC");
+    // The owner's decisions reached the coordinator's inbox; the merge resolved those still open.
+    expect(live.store.items.filter((i) => i.kind === "decision").map((i) => i.resolution)).toEqual([
+      "merged",
+      "merged",
+    ]);
+  });
+
+  test("unreadable approvals refuse a merge the rule covers; an approval asked holds a pull request no ticket owns too", async () => {
+    const down = setup({
+      live: tempFleet({ fail: (op) => (op === "validations" ? new Error("connection reset") : null) }),
+      toml: `${GATES}${RULE}`,
+    });
+    expect(await refusal(mergePullRequest(down.ctx, { pr: 9, reason: "CLI only" }))).toBe(
+      "#9 (DEMO-7) cannot be merged: the owner's approvals of #9 could not be read (Armada (armada.example.test) unreachable: connection reset)\nNext: armada merge 9 again once Armada answers",
+    );
+    expect(down.forge.merges).toEqual([]);
+
+    const live = tempFleet();
+    const s = setup({ live });
+    await askOwnerToMerge(s.ctx, { pr: 9, reason: "a release that changes the landing" });
+    s.forge.pr.headRef = "release-please--branches--main";
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toStartWith(
+      "#9 cannot be merged: the owner has not decided on the merge of #9 yet",
+    );
+  });
+
+  test("a new head needs a new approval", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    await askOwnerToMerge(s.ctx, { pr: 9, reason: "touches the settings page" });
+    await approve(live, 1);
+    // The worker pushes again and hands back the new head.
+    s.forge.pr.headSha = BASE;
+    s.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #9, head ${BASE}, CI green`, "2026-03-04T09:30:00Z");
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
+      `#9 (DEMO-7) cannot be merged: the owner approved #9 at ${HEAD}, but its head is now ${BASE}: a new head needs a new approval\nNext: armada merge 9 --ask-owner --reason "<why the owner must see it>"`,
+    );
+    expect(s.forge.merges).toEqual([]);
+  });
+});
+
 describe("armada merge --wait", () => {
   const WAIT = { timeoutMs: 30 * 60_000 };
   const behind = (s: ReturnType<typeof setup>) => {
@@ -570,7 +698,7 @@ describe("armada merge --wait", () => {
       `Checklist passed for #9 (DEMO-7): handed back at ${HEAD}, now ${UPDATED} with only main merged in (1 merge commit), CLEAN, checks green, no open review thread.`,
     );
     expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toBe(
-      `PR #9 squash-merged into main as ${SQUASH}, head ${UPDATED}, the handed-back ${HEAD} updated with main`,
+      `PR #9 squash-merged into main as ${SQUASH}, head ${UPDATED}, the handed-back ${HEAD} updated with main; merged on its own (no merge rule)`,
     );
     expect(live.store.leases.size).toBe(0);
   });

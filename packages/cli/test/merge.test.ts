@@ -255,6 +255,7 @@ test("armada merge test-merges a head behind main, merges it pinned to its SHA a
     f.out(),
   ).toBe(`Checklist passed for #9 (DEMO-18): handed back at ${f.head}, CLEAN, checks green, no open review thread.
 Head lacks 1 commit(s) of main; the test merge passed every local command.
+Decided: merged on its own (no merge rule).
 Merged #9 into main as ${SQUASH} (head ${f.head}).
 DEMO-18: moved to Done, agent and ready labels removed, merged status posted.
 https://github.com/acme/widgets/pull/9
@@ -275,6 +276,7 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
   expect(f.armada.calls.map((c) => c.path)).toEqual([
     "fleet/coordinator",
     "fleet/lease/acquire",
+    "fleet/validations",
     "fleet/lease/renew",
     "fleet/merge",
     "fleet/lease/release",

@@ -8,6 +8,7 @@ import {
   type StatusSources,
 } from "@armada/core/read";
 import { issue } from "../../core/test/support.ts";
+import { saveAttachment } from "../lib/attachments.ts";
 import type { Database } from "../lib/db.ts";
 import {
   type LoadOptions,
@@ -20,6 +21,7 @@ import {
 } from "../lib/fleet-data.ts";
 import {
   addInboxItem,
+  addValidation,
   assignUnownedProjects,
   fleetStore,
   liveStore,
@@ -29,7 +31,7 @@ import {
   upsertProject,
 } from "../lib/fleet-store.ts";
 import { answerJson, answerOverview, answerTimeline } from "../lib/live-http.ts";
-import { submitAnswer as answer, submitLaunch as launchReq } from "../lib/requests.ts";
+import { submitAnswer as answer, submitLaunch as launchReq, submitDecision } from "../lib/requests.ts";
 import { markRepository } from "../lib/snapshots.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
@@ -688,5 +690,95 @@ describe("requests from the dashboard", () => {
       ok: false,
       code: "live-down",
     });
+  });
+});
+
+describe("what the owner validates (THE-885)", () => {
+  test("shows on the owner's overview with its screenshots; the decision acts on that project and organization only", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    await assignUnownedProjects(db, "org-home");
+    const w = world(db);
+    await w.warm();
+    const shot = await saveAttachment(db, {
+      project: "widgets",
+      ticket: "WID-2",
+      input: { kind: "link", url: "https://preview.example.test/wid-2" },
+      caption: "The new card",
+      reference: null,
+      author: "ws/2",
+      now: new Date(T0),
+      policy: parseConfig(configTemplate({ ...WIDGETS, programRoot: "WID-1" })).policy,
+    });
+    const pr = {
+      number: 12,
+      url: "https://github.com/acme/widgets/pull/12",
+      title: "feat(web): the new card",
+      headSha: "c".repeat(40),
+      files: [{ path: "web/Card.tsx", additions: 40, deletions: 2 }],
+      additions: 40,
+      deletions: 2,
+      ci: "success" as const,
+      preview: "https://preview.example.test/wid-2",
+    };
+    const merge = await addValidation(db, {
+      project: "widgets",
+      ticket: "WID-2",
+      kind: "merge",
+      what: pr.title,
+      reason: "touches web/Card.tsx",
+      choices: null,
+      pr,
+      attachments: [],
+      author: "coordinator",
+      at: new Date(T0),
+    });
+    // The owner's overview: the merge, its ticket's title and its screenshots and links; the workers' items are not cards.
+    const shown = await loadOverview(w.opts);
+    expect(shown.validations).toEqual([
+      expect.objectContaining({
+        id: merge.id,
+        title: "Export a report",
+        pr,
+        decision: null,
+        gallery: [expect.objectContaining({ id: shot.id, caption: "The new card" })],
+      }),
+    ]);
+    const other: Scope = { organization: "org-other", home: "org-home" };
+    expect((await loadOverview(w.opts, other)).validations).toEqual([]);
+
+    const decide = { project: "widgets", id: merge.id, action: "approve" as const, author: "Ada" };
+    // Another organization cannot decide it, nor can a validation be decided through another project.
+    expect(await submitDecision(w.opts, other, decide)).toMatchObject({ ok: false, code: "unknown-project" });
+    expect(await submitDecision(w.opts, HOME, { ...decide, id: merge.id + 1 })).toMatchObject({
+      ok: false,
+      code: "no-validation",
+    });
+    expect(await submitDecision(w.opts, HOME, { ...decide, action: "changes" })).toMatchObject({
+      ok: false,
+      code: "empty-answer",
+    });
+    const done = await submitDecision(w.opts, HOME, decide);
+    expect(done).toMatchObject({ ok: true });
+    expect(await submitDecision(w.opts, HOME, decide)).toMatchObject({ ok: false, code: "validation-closed" });
+
+    // The decision is kept on the validation and waits in the coordinator's inbox.
+    const after = await loadOverview(w.opts);
+    expect(after.validations[0]?.decision).toMatchObject({ outcome: "approved", by: "Ada" });
+    const items = await liveStore(db).openInboxItems({ project: "widgets", recipient: "coordinator" });
+    expect(items).toEqual([
+      expect.objectContaining({
+        id: done.ok ? done.id : 0,
+        kind: "decision",
+        request: { question: null, profile: null, validation: merge.id },
+      }),
+    ]);
+
+    // Asked again on a new head: the open one is superseded, never two open for one pull request.
+    const store = fleetStore(db);
+    const asked = { ...merge, at: new Date(T0 + 1_000) };
+    const first = await store.addValidation(asked);
+    await store.addValidation({ ...asked, at: new Date(T0 + 2_000) });
+    expect((await store.getValidation("widgets", first.id))?.decision?.outcome).toBe("superseded");
   });
 });
