@@ -22,8 +22,8 @@ export const DEMO_PROJECTS: ProjectInput[] = [
 ];
 
 /**
- * What THE-865 records about a project and its coordinator, in the shapes its
- * ticket describes; the overview does not carry them yet. Minutes are minutes ago.
+ * What THE-865 records about a project and its coordinator: `demo:seed` writes
+ * the owner and the coordinator's inbox reads with its facts. Minutes are minutes ago.
  */
 export interface DemoProjectFacts {
   /** Who registered the project. */
@@ -82,6 +82,20 @@ export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
   },
 };
 
+const HARNESS_FACT = {
+  "Conductor Cloud": "conductor-cloud",
+  "Claude Code": "claude-code",
+  Codex: "codex",
+  terminal: "terminal",
+} as const satisfies Record<DemoProjectFacts["coordinator"]["harness"], CoordinatorFacts["harness"]>;
+
+/** What a demo coordinator's commands tell Armada about it, as `armada inbox` records it. */
+export function demoCoordinatorFacts(project: string): CoordinatorFacts | null {
+  const c = DEMO_PROJECT_FACTS[project]?.coordinator;
+  if (!c) return null;
+  return { harness: HARNESS_FACT[c.harness], handle: c.where, model: c.model, cliVersion: null };
+}
+
 /** The minutes ago of a coordinator's inbox reads, newest first: one every 15 minutes since it started. */
 export function demoInboxReads(project: string): number[] {
   const c = DEMO_PROJECT_FACTS[project]?.coordinator;
@@ -89,19 +103,6 @@ export function demoInboxReads(project: string): number[] {
   const reads: number[] = [];
   for (let m = c.seen; m < c.since; m += 15) reads.push(m);
   return reads;
-}
-
-const HARNESS_FACT: Record<DemoProjectFacts["coordinator"]["harness"], CoordinatorFacts["harness"]> = {
-  "Conductor Cloud": "conductor-cloud",
-  "Claude Code": "claude-code",
-  Codex: "codex",
-  terminal: "terminal",
-};
-
-/** What a demo coordinator's commands record about it, as THE-865 keeps it. */
-export function demoCoordinatorFacts(project: string): CoordinatorFacts | undefined {
-  const c = DEMO_PROJECT_FACTS[project]?.coordinator;
-  return c && { harness: HARNESS_FACT[c.harness], handle: c.where, model: c.model, cliVersion: null };
 }
 
 /** A changed file of a pull request, as THE-865's forge read gives it. */

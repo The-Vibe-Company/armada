@@ -173,7 +173,8 @@ export interface ProjectReading {
  * `sessions` retains per-launch profile/agent/model/effort, claimedAt, releasedAt and
  * lastReport; each row points to its active session and carries its `timeline` (phases, report
  * times, silences, PR opening over the last 8 h, from the snapshot's status comments and
- * Armada's events; summaries cut short). PR files/totals may be null for
+ * Armada's events; summaries cut short). Ready tickets carry their labels (the ready label
+ * left out) and open PRs their head branch. PR files/totals may be null for
  * legacy snapshots; completeness flags identify capped lists. Missing facts are never inferred.
  */
 export interface FleetOverview {

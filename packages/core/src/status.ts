@@ -64,12 +64,16 @@ export interface FrontierTicket extends TicketRef {
   unlocks: string[];
   /** The profile `[[conductor.routing]]` gives it from its labels, and why; null when armada.toml declares none. */
   route: { profile: string; why: string } | null;
+  /** Its labels, without the ready label. */
+  labels: string[];
 }
 
 export interface WaitingPullRequest extends PrRef {
   headSha: string | null;
   updatedAt: string | null;
   failingChecks: string[];
+  /** The head branch; null when GitHub did not give it. */
+  branch: string | null;
   ticket: { id: string; phase: AgentPhase | null } | null;
 }
 
@@ -225,6 +229,7 @@ export function buildStatus({
         onCriticalPath: c.onCriticalPath,
         unlocks: c.unlocksAll,
         route: routeOf(config, c.issue.labels),
+        labels: c.issue.labels.filter((l) => l !== config.tracker.readyLabel),
       })),
     pullRequests: forge
       ? waitingPullRequests(m, forge.prs).map(({ pr, ticket }) => ({
@@ -232,6 +237,7 @@ export function buildStatus({
           headSha: pr.headSha ?? null,
           updatedAt: pr.updatedAt ?? null,
           failingChecks: (pr.checks ?? []).filter((c) => c.state === "failure").map((c) => c.name),
+          branch: pr.headRef ?? null,
           ticket: ticket ? { id: ticket.id, phase: phaseOf.get(ticket.id) ?? ticket.agentPhase } : null,
         }))
       : null,

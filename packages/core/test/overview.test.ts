@@ -201,6 +201,7 @@ describe("fleet overview", () => {
       onCriticalPath: false,
       unlocks: [],
       route: { profile: "opus", why: "conductor.default_profile" },
+      labels: [],
     });
     const question = item({ ticket: "W-1", body: "Which table?" });
     const widgets: ProjectReading = {
