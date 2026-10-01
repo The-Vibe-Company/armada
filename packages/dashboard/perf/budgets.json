@@ -1,6 +1,6 @@
 {
   "lighthouse": {
-    "pages": ["/landing", "/", "/agents", "/agents/WID-12", "/projects", "/validations", "/insights"],
+    "pages": ["/landing", "/", "/agents", "/agents/WID-12", "/projects", "/validations", "/insights", "/activity"],
     "runs": {
       "mobile": 3,
       "desktop": 1

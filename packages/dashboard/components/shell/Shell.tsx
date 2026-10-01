@@ -33,6 +33,9 @@ import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
 import { Logo, SearchIcon } from "./Logo";
+import { Notifier } from "./Notifier";
+import { NotifyMenu } from "./NotifyMenu";
+import { VisitProvider } from "./visit";
 
 // ⌘K and its index load apart from every page, as soon as the browser is idle (THE-892).
 const loadPalette = () => import("./Palette").then((m) => m.Palette);
@@ -67,7 +70,9 @@ export function Shell({
       canLogOut={canLogOut}
       initialAuthor={initialAuthor}
     >
-      <Frame>{children}</Frame>
+      <VisitProvider>
+        <Frame>{children}</Frame>
+      </VisitProvider>
     </FleetProvider>
   );
 }
@@ -161,7 +166,11 @@ function Frame({ children }: { children: ReactNode }) {
 
   const section = sectionOf(place, from);
   const listPage =
-    place.kind === "overview" || place.kind === "agents" || place.kind === "projects" || place.kind === "validations";
+    place.kind === "overview" ||
+    place.kind === "agents" ||
+    place.kind === "projects" ||
+    place.kind === "validations" ||
+    place.kind === "activity";
   const detailPage = place.kind === "agent" || place.kind === "project" || place.kind === "validation";
   const crumbs = crumbsOf(place, from);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
@@ -201,6 +210,7 @@ function Frame({ children }: { children: ReactNode }) {
       </main>
       {palette && Palette && <Palette onClose={() => setPalette(false)} />}
       <Announcer />
+      <Notifier />
     </div>
   );
 }
@@ -212,6 +222,7 @@ function crumbLabel(t: Strings, c: Crumb, names: Map<string, string>) {
     case "agents":
     case "validations":
     case "insights":
+    case "activity":
       return t.shell.nav[c.kind];
     case "validation":
       return `#${c.id}`;
@@ -280,6 +291,7 @@ function Sidebar({
     { key: "projects", href: paths.projects, count: overview.projects.length, hot: false },
     { key: "agents", href: paths.agents(), count: overview.rows.length, hot: false },
     { key: "insights", href: paths.insights, count: null, hot: false },
+    { key: "activity", href: paths.activity, count: null, hot: false },
   ];
   return (
     <aside className="sh-side" aria-label={t.a11y.sidebar}>
@@ -302,8 +314,8 @@ function Sidebar({
           <Link
             key={n.key}
             href={n.href}
-            // Insights renders on the server from Postgres: opened on demand, not on every page's load.
-            prefetch={n.key !== "insights"}
+            // Insights and Activity render on the server from Postgres: opened on demand, not on every page's load.
+            prefetch={n.key !== "insights" && n.key !== "activity"}
             className="sh-nav-item"
             aria-current={section === n.key ? "page" : undefined}
             title={t.shell.nav[n.key]}
@@ -476,6 +488,7 @@ function OrgMenu({ open, setOpen, label }: { open: boolean; setOpen: (open: bool
               ))}
             </fieldset>
           </div>
+          <NotifyMenu />
           {account && (
             <>
               <div className="sh-menu-sep" />

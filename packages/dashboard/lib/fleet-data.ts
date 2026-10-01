@@ -19,6 +19,10 @@ import {
   buildStatus,
   CONFIG_DEFAULTS,
   type CoordinatorPresence,
+  type FeedCursor,
+  type FeedEntry,
+  type FeedKind,
+  type FeedWho,
   type FleetInsights,
   type FleetOverview,
   type HistoryEvent,
@@ -36,9 +40,11 @@ import {
   RANGE_DAYS,
   type RuntimeHandle,
   type SessionRecord,
+  type SinceSummary,
   type SourcesRefresh,
   type StatusReport,
   type StatusSources,
+  sinceSummary,
   TIMELINE_HOURS,
   type Validation,
 } from "@armada/core/read";
@@ -641,22 +647,14 @@ export async function loadInsights(
   q: { range: InsightRange; project: string | null },
 ): Promise<InsightsReading | null> {
   const now = opts.now();
-  const opened = await openLive(opts, scope);
-  const read = await readEntries(opened, opts, projectsOf(opts, scope).map(keyOf));
-  const shown = projectsOf(opts, scope).flatMap((p) => {
-    const snap = read.entries.get(keyOf(p))?.snapshot;
-    // As the overview: live data is read by the registry's slug, never by one only armada.toml names.
-    const slug = snap ? (!p.slug || p.slug === snap.config.project.slug ? snap.config.project.slug : null) : p.slug;
-    return slug ? [{ slug, name: snap?.config.project.name ?? p.name ?? slug, snap: snap ?? null }] : [];
-  });
+  const { store, shown } = await shownProjects(opts, scope);
   if (q.project !== null && !shown.some((p) => p.slug === q.project)) return null;
   const chosen = shown.filter((p) => q.project === null || p.slug === q.project);
   const since = new Date(now.getTime() - 2 * RANGE_DAYS[q.range] * 24 * 3_600_000);
   const cache = opts.cache.insights;
-  let live = opened.store !== null && !read.failed;
+  let live = store !== null;
   const records: ProjectInsightRecords[] = [];
-  if (opened.store && live) {
-    const store = opened.store;
+  if (store) {
     try {
       records.push(
         ...(await withTimeout(
@@ -713,4 +711,139 @@ export async function loadInsights(
     tickets,
     live,
   };
+}
+
+// ------------------------------------------------------------------ since the owner last looked (THE-894)
+
+/** The projects the scope sees, by the registry's slug, with their last reading of Linear when there is one. */
+async function shownProjects(opts: LoadOptions, scope: Scope | null) {
+  const opened = await openLive(opts, scope);
+  const read = await readEntries(opened, opts, projectsOf(opts, scope).map(keyOf));
+  const shown = projectsOf(opts, scope).flatMap((p) => {
+    const snap = read.entries.get(keyOf(p))?.snapshot;
+    // As the overview: live data is read by the registry's slug, never by one only armada.toml names.
+    const slug = snap ? (!p.slug || p.slug === snap.config.project.slug ? snap.config.project.slug : null) : p.slug;
+    return slug ? [{ slug, name: snap?.config.project.name ?? p.name ?? slug, snap: snap ?? null }] : [];
+  });
+  return { store: read.failed ? null : opened.store, shown };
+}
+
+/** How many entries a page of the Activity feed shows. */
+export const FEED_PAGE = 100;
+
+/** What the Activity page's address asks for. */
+export interface ActivityQuery {
+  project: string | null;
+  ticket: string | null;
+  kind: FeedKind | null;
+  who: FeedWho | null;
+  before: FeedCursor | null;
+}
+
+export interface ActivityReading {
+  entries: FeedEntry[];
+  /** Where the next, older page starts; null on the last one. */
+  next: FeedCursor | null;
+  projects: { slug: string; name: string }[];
+  /** The people the "who" filter offers. */
+  people: string[];
+  /** Each ticket's title from the project's last reading of Linear, by `<project>/<ticket>`. */
+  titles: Record<string, string>;
+  /** False when the live data could not be read: the feed is unknown, not empty. */
+  live: boolean;
+}
+
+/**
+ * One page of the Activity feed of the scope's projects, or of one: Postgres
+ * only. Null when `project` is not one the scope may see.
+ */
+export async function loadActivity(
+  opts: LoadOptions,
+  scope: Scope | null,
+  q: ActivityQuery,
+  limit = FEED_PAGE,
+): Promise<ActivityReading | null> {
+  const now = opts.now();
+  const { store, shown } = await shownProjects(opts, scope);
+  if (q.project !== null && !shown.some((p) => p.slug === q.project)) return null;
+  const projects = q.project === null ? shown.map((p) => p.slug) : [q.project];
+  const reading: ActivityReading = {
+    entries: [],
+    next: null,
+    projects: shown.map((p) => ({ slug: p.slug, name: p.name })),
+    people: [],
+    titles: {},
+    live: store !== null,
+  };
+  if (!store) return reading;
+  try {
+    const [entries, people] = await withTimeout(
+      Promise.all([
+        store.feedPage({
+          projects,
+          before: q.before,
+          ticket: q.ticket,
+          kinds: q.kind ? [q.kind] : null,
+          who: q.who,
+          limit: limit + 1,
+          now,
+        }),
+        store.feedPeople(
+          shown.map((p) => p.slug),
+          now,
+        ),
+      ]),
+      opts.liveTimeoutMs ?? 4000,
+      "reading the activity",
+    );
+    reading.entries = entries.slice(0, limit);
+    const last = reading.entries.at(-1);
+    reading.next = entries.length > limit && last ? { at: last.at, key: last.key } : null;
+    reading.people = people;
+  } catch (err) {
+    liveError(err);
+    reading.live = false;
+    return reading;
+  }
+  for (const p of shown) {
+    const wanted = new Set(reading.entries.filter((e) => e.project === p.slug && e.ticket).map((e) => e.ticket));
+    for (const i of p.snap?.sources.program.issues ?? [])
+      if (wanted.has(i.id)) reading.titles[`${p.slug}/${i.id}`] = i.title;
+  }
+  return reading;
+}
+
+/**
+ * What happened in the scope's projects since `since`, for the overview's
+ * "since you were away": from the end of their previous visit to when they
+ * came back. Postgres only. Null when the live data cannot be read.
+ */
+export async function loadCatchup(
+  opts: LoadOptions,
+  scope: Scope | null,
+  window: { since: Date; until: Date },
+): Promise<SinceSummary | null> {
+  const now = opts.now();
+  const { store, shown } = await shownProjects(opts, scope);
+  if (!store) return null;
+  try {
+    const records = await withTimeout(
+      Promise.all(
+        shown.map((p) =>
+          store.catchupRecords(
+            p.slug,
+            window,
+            p.snap?.config.policy.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes,
+            now,
+          ),
+        ),
+      ),
+      opts.liveTimeoutMs ?? 4000,
+      "reading what happened",
+    );
+    return sinceSummary({ since: window.since.toISOString(), until: window.until.toISOString(), now, records });
+  } catch (err) {
+    liveError(err);
+    return null;
+  }
 }

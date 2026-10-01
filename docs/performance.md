@@ -8,7 +8,7 @@ They live in `packages/dashboard/perf/budgets.json`.
 
 | What | Budget | Measured on |
 |---|---|---|
-| Lighthouse performance | 95 or more, mobile and desktop | `/landing`, `/`, `/agents`, `/agents/WID-12`, `/projects`, `/validations`, `/insights` (the `fleet` demo world) |
+| Lighthouse performance | 95 or more, mobile and desktop | `/landing`, `/`, `/agents`, `/agents/WID-12`, `/projects`, `/validations`, `/insights`, `/activity` (the `fleet` demo world) |
 | Lighthouse accessibility | 100 | the same pages (axe checks every page in its own job, THE-891) |
 | Lighthouse best practices | 95 or more | the same pages |
 | Cumulative Layout Shift | 0, as Lighthouse shows it (three decimals) | the same pages |
