@@ -22,6 +22,7 @@ import { doctor } from "./doctor.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
+import { launch } from "./launch.ts";
 import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
 import { recordPresence } from "./presence.ts";
@@ -115,7 +116,11 @@ const COMMAND_HELP: Record<string, string> = {
                     --no-ticket: a pull request no ticket owns (armada init, a release);
                     nothing is written to Linear.
 `,
-  brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt]
+  launch: `  launch revoke <ticket>
+                    Cancel the newest pending launch through Armada, including a worker
+                    signed in but not claimed. A claimed launch needs armada release instead
+`,
+  brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
@@ -123,6 +128,8 @@ const COMMAND_HELP: Record<string, string> = {
                     --reason. Only projects without when fall back to default_profile.
                     Signed in to Armada, the prompt starts with a one-time launch token, so
                     the worker needs no key. --prompt prints only the prompt, for \`--message-file -\`
+                    Human and --json views mint nothing. --prompt --profile-line also
+                    prints the profile and its reason on stderr, leaving stdout unchanged
 `,
   secrets: `  secrets           The project's secrets for workers: names, project or organization,
                     who set each and when; never a value. Needs a sign-in to Armada
@@ -182,6 +189,7 @@ const CONFIG_OPTION = new Set([
   "answer",
   "merge",
   "brief",
+  "launch",
 ]);
 const JSON_OPTION = new Set([
   ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach"),
@@ -290,6 +298,7 @@ const FLAG_OPTIONS = [
   "no-lock",
   "no-ticket",
   "prompt",
+  "profile-line",
   "wait",
   "note",
   "api-key",
@@ -308,7 +317,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout"],
-  brief: ["profile", "reason", "prompt"],
+  brief: ["profile", "reason", "prompt", "profile-line"],
   login: ["api-key", "launch-token", "api-url"],
   secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
   run: ["ticket", "only"],
@@ -533,8 +542,14 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { path, text } = await findConfig(io, args.config, "brief");
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
-      await recordPresence(io, config, credentials);
+      if (args.options.prompt === "true") await recordPresence(io, config, credentials);
       return await brief(io, config, credentials, args, version, path);
+    }
+    if (args.command === "launch") {
+      const { path, text } = await findConfig(io, args.config, "launch");
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await launch(io, config, credentials, args);
     }
     if (args.command === "status") {
       noExtra(args.rest);

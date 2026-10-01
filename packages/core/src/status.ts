@@ -4,7 +4,7 @@ import type { ArmadaConfig } from "./config.ts";
 import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
-import { notStartedBody, notStartedLaunches, type PendingLaunch } from "./live.ts";
+import { followedLaunches, notStartedBody, notStartedLaunches, type PendingLaunch } from "./live.ts";
 import { buildModel, isDone } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
 import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest } from "./types.ts";
@@ -103,6 +103,7 @@ export interface StatusReport {
   inFlight: InFlightTicket[];
   /** Workers launched that have not claimed their ticket; empty when Armada's live data was not read. */
   notStarted: NotStartedLaunch[];
+  pendingLaunches?: PendingLaunch[];
   /** Ready to start: the frontier, ranked. `readyForAgent` marks tickets that carry the ready label. */
   frontier: FrontierTicket[];
   /** Open pull requests of the repository; null when GitHub could not be read. */
@@ -216,6 +217,7 @@ export function buildStatus({
       openBlockers: l.openBlockers,
       flags: l.flags,
     })),
+    pendingLaunches: followedLaunches(launches, now),
     notStarted: notStartedLaunches(launches, now, config.policy.notStartedMinutes).map((l) => {
       const issue = issues.find((i) => i.id === l.ticket);
       return { ...l, title: issue?.title ?? null, url: issue?.url ?? null, detail: notStartedBody(l, now) };

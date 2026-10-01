@@ -15,6 +15,7 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
+import { unusedLaunchExpired } from "../src/live.ts";
 
 interface EventRow extends Omit<EventInput, "at"> {
   id: number;
@@ -462,7 +463,28 @@ export function memoryFleet(): FleetStore & {
             ),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
-        .map(({ ticket, launchedAt, tokenUsedAt, handle }) => ({ ticket, launchedAt, tokenUsedAt, handle }));
+        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, handle }) => ({
+          ticket,
+          launchedAt,
+          tokenUsedAt,
+          tokenExpiresAt,
+          handle,
+        }));
+    },
+
+    async expireUnusedLaunches(project, now) {
+      const pending = await this.pendingLaunches(project, new Date(0));
+      const expired = pending.filter((launch) => unusedLaunchExpired(launch, now));
+      for (const launch of expired) {
+        const row = launches.find(
+          (candidate) =>
+            candidate.project === project &&
+            candidate.ticket === launch.ticket &&
+            candidate.launchedAt === launch.launchedAt,
+        );
+        if (row) row.endedAt = now.toISOString();
+      }
+      return expired;
     },
   };
 }

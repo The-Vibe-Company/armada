@@ -50,7 +50,7 @@ test.each([
   { command: ["inbox", "--json"] },
   { command: ["watch", "--json"] },
   { command: ["merge", "9", "--dry-run"] },
-  { command: ["brief", "DEMO-7", "--json"] },
+  { command: ["brief", "DEMO-7", "--prompt"] },
 ])("$command records coordinator command facts", async ({ command }) => {
   const key = "synthetic-key";
   const armada = fakeArmada({ keys: { [key]: "coordinator" } });

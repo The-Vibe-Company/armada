@@ -188,12 +188,25 @@ export interface PendingLaunch {
   launchedAt: string;
   /** When the worker signed in with the launch token; null while it never did. */
   tokenUsedAt: string | null;
+  tokenExpiresAt?: string;
   /** The worker's runtime session, as its sign-in named it; null when unknown. */
   handle: string | null;
 }
 
 /** A launch with no claim for longer than this is no longer followed: the coordinator was told long before. */
 export const LAUNCH_WINDOW_MS = 24 * 60 * 60_000;
+export const UNUSED_LAUNCH_GRACE_MS = 60 * 60_000;
+
+export const unusedLaunchExpired = (launch: PendingLaunch, now: Date) =>
+  !launch.tokenUsedAt &&
+  now.getTime() >
+    (launch.tokenExpiresAt ? Date.parse(launch.tokenExpiresAt) : Date.parse(launch.launchedAt) + 60 * 60_000) +
+      UNUSED_LAUNCH_GRACE_MS;
+
+export const followedLaunches = (launches: readonly PendingLaunch[], now: Date) =>
+  launches.filter(
+    (launch) => now.getTime() - Date.parse(launch.launchedAt) <= LAUNCH_WINDOW_MS && !unusedLaunchExpired(launch, now),
+  );
 
 // ------------------------------------------------------------------ the store
 
@@ -284,6 +297,7 @@ export interface FleetStore {
    * releases the old claim first.
    */
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
+  expireUnusedLaunches(project: string, now: Date): Promise<PendingLaunch[]>;
 }
 
 // ------------------------------------------------------------------ what each command records
@@ -573,7 +587,9 @@ export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> 
       : `#${e.id}`
     : e.version
       ? `version:${e.version}`
-      : `${e.kind}:${e.ticket}`;
+      : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+        ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+        : `${e.kind}:${e.ticket}`;
 
 export interface InboxReadOptions {
   project: string;
@@ -598,12 +614,12 @@ export function notStartedBody(l: PendingLaunch, now: Date): string {
   const why = l.tokenUsedAt
     ? `the worker signed in with its launch token at ${hhmm(l.tokenUsedAt)}, then stopped before \`armada claim\``
     : "its launch token was never used: the worker never reached its `armada login` line (an install that failed, a prompt cut short)";
-  return `launched ${minutes} min ago and never claimed; ${why}${l.handle ? ` (session ${l.handle})` : ""}. Check its session with the runtime guide's status section; launch it again with armada brief, or revoke the launch on the dashboard's Workers page`;
+  return `launched ${minutes} min ago and never claimed; ${why}${l.handle ? ` (session ${l.handle})` : ""}. Check its session with the runtime guide's status section; launch it again with armada brief ${l.ticket} --prompt, or revoke it with armada launch revoke ${l.ticket}`;
 }
 
 /** The pending launches with no claim for longer than `minutes`: the workers that never started. */
 export const notStartedLaunches = (launches: readonly PendingLaunch[], now: Date, minutes: number) =>
-  launches.filter((l) => now.getTime() - Date.parse(l.launchedAt) > minutes * MIN);
+  followedLaunches(launches, now).filter((l) => now.getTime() - Date.parse(l.launchedAt) > minutes * MIN);
 
 /**
  * What waits for the coordinator, oldest first: open questions, requests and
@@ -677,7 +693,8 @@ async function readInboxAndFlight(
   // A worker launched is in flight from its launch, so a watch started then waits for its claim;
   // once it shows as not started, its entry carries it until the coordinator acts.
   const late = notStartedLaunches(launches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes);
-  for (const l of launches) if (!late.includes(l) && !inFlight.includes(l.ticket)) inFlight.push(l.ticket);
+  for (const l of followedLaunches(launches, o.now))
+    if (!late.includes(l) && !inFlight.includes(l.ticket)) inFlight.push(l.ticket);
   for (const l of late)
     entries.push({
       id: null,
@@ -751,6 +768,7 @@ export async function serveInbox(
   cliVersion: string | null = null,
 ): Promise<InboxRead | null> {
   const warnings: string[] = [];
+  const expired = await store.expireUnusedLaunches(project, now);
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
   try {
     await store.recordCoordinatorSeen({
@@ -771,6 +789,17 @@ export async function serveInbox(
     ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
     now,
   });
+  for (const launch of expired)
+    items.push({
+      id: null,
+      kind: "not-started",
+      ticket: launch.ticket,
+      author: launch.handle,
+      body: `not started (token expired): the unused launch of ${launch.ticket} at ${launch.launchedAt} has cleared; launch it again with armada brief ${launch.ticket} --prompt`,
+      createdAt: launch.launchedAt,
+      new: false,
+    });
+  items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   const etag = inboxTag(items, inFlight);
   return q.etag === etag ? null : { items, inFlight, etag, warnings };
 }

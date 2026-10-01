@@ -42,6 +42,7 @@ const TONE: Record<WorkerState, [Tone, string]> = {
   active: ["running", "var(--frontier)"],
   idle: ["silent", "var(--active)"],
   unused: ["neutral", "var(--text-4)"],
+  expired: ["neutral", "var(--text-4)"],
   released: ["neutral", "var(--text-4)"],
   merged: ["done", "var(--done)"],
   revoked: ["error", "var(--critical)"],

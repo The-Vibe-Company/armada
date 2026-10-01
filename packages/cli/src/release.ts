@@ -16,7 +16,7 @@ import { heard } from "./api.ts";
 import type { Io } from "./io.ts";
 
 /** The commands a coordinator runs, which carry the notice. */
-export const NOTICE_COMMANDS = new Set(["status", "inbox", "watch", "brief", "merge", "doctor"]);
+export const NOTICE_COMMANDS = new Set(["status", "inbox", "watch", "brief", "launch", "merge", "doctor"]);
 
 /**
  * The release newer than `running` this run heard of; null for a worker (its
