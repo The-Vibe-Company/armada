@@ -24,7 +24,7 @@ import {
   parseProject,
   serveFleet,
 } from "@armada/core/read";
-import { version as LATEST_CLI_VERSION } from "../../cli/package.json" with { type: "json" };
+import cliPackage from "../../cli/package.json" with { type: "json" };
 import { type Auth, firstOrganization, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
 import { type Holder, releaseCredentials } from "./broker";
@@ -46,6 +46,9 @@ import {
   workerActor,
   workerSession,
 } from "./workers";
+
+/** The CLI released from this commit: what an outdated CLI is told to install. */
+const LATEST_CLI_VERSION = cliPackage.version;
 
 export interface CliAccounts {
   auth: Auth;
