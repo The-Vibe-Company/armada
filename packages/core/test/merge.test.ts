@@ -74,6 +74,8 @@ class FakeForge implements MergeForge {
   async diff() {
     return this.diffText;
   }
+  /** The preview deployment of a head; none by default. */
+  preview?: (sha: string) => Promise<string | null>;
   /** Commits GitHub knows, by SHA. */
   commits = new Map<string, CommitShape>();
   /** Commits on the base branch: compared with it, they are BEHIND. */
