@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.20](https://github.com/The-Vibe-Company/armada/compare/v0.1.19...v0.1.20) (2026-10-01)
+
+
+### Bug Fixes
+
+* **neon:** end .mcp.json with a newline ([#49](https://github.com/The-Vibe-Company/armada/issues/49)) ([6f88fb4](https://github.com/The-Vibe-Company/armada/commit/6f88fb4774eb15214c092fc84b48002ab6163836))
+
 ## [0.1.19](https://github.com/The-Vibe-Company/armada/compare/v0.1.18...v0.1.19) (2026-09-30)
 
 
