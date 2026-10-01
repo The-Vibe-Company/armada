@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { icons, pngInfo, sourceHash } from "../scripts/icons";
 
 const ROOT = join(import.meta.dir, "..");
@@ -28,11 +27,11 @@ describe("the browser's icons (THE-881)", () => {
   });
 
   test("pass the gate, which still holds every page and route", async () => {
-    // Importing proxy.ts would load the accounts for every test file of the run; its matcher is a literal Next reads as such.
+    // Neither proxy.ts nor Next's matcher helper is imported: each loads server modules for every later
+    // test file of the run. The matcher is one literal pattern, which Next anchors at both ends.
     const source = await readFile(join(ROOT, "proxy.ts"), "utf8");
-    const config = { matcher: JSON.parse(/matcher: \[\s*("(?:[^"\\]|\\.)*")/.exec(source)?.[1] ?? "null") as string };
-    const passes = (path: string) =>
-      !unstable_doesMiddlewareMatch({ config, url: `https://fleet.example.test${path}` });
+    const matcher = JSON.parse(/matcher: \[\s*("(?:[^"\\]|\\.)*")/.exec(source)?.[1] ?? "null") as string;
+    const passes = (path: string) => !new RegExp(`^${matcher}$`).test(path);
     const open = [
       "/icon.svg",
       "/icon.png",
