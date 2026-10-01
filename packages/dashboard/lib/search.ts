@@ -504,6 +504,7 @@ function pages(ctx: SearchContext): SearchItem[] {
     ["projects", paths.projects, t.shell.nav.projects],
     ["agents", paths.agents(), t.shell.nav.agents],
     ["insights", paths.insights, t.shell.nav.insights],
+    ["activity", paths.activity, t.shell.nav.activity],
     ...(ctx.organization
       ? ([
           ["organization", "/organization", t.org.nav],

@@ -642,9 +642,32 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    // What happened since the owner last looked (THE-894): each person's
+    // visits per organization (a cookie's id under the shared-password gate),
+    // the summary they dismissed and their notification settings; and the
+    // Activity feed's reads, each source by project and time.
+    version: 15,
+    statements: [
+      `CREATE TABLE fleet_viewers (
+        viewer text NOT NULL,
+        organization text NOT NULL,
+        seen_at timestamptz NOT NULL,
+        since timestamptz,
+        back_at timestamptz,
+        dismissed_since timestamptz,
+        notify jsonb,
+        PRIMARY KEY (viewer, organization)
+      )`,
+      "CREATE INDEX events_feed ON events (project, created_at) WHERE kind IN ('claim', 'report', 'release', 'merge')",
+      "CREATE INDEX inbox_by_time ON inbox_items (project, created_at)",
+      "CREATE INDEX validations_by_time ON validations (project, created_at)",
+      `CREATE INDEX "armada_worker_revoked_idx" ON "armada_worker" ("project", "endedAt") WHERE "endReason" = 'revoked'`,
+    ],
+  },
+  {
     // ⌘K over everything and saved views (THE-895): the captions ⌘K finds, read by time; each
     // person's named filters, per organization, one name once.
-    version: 15,
+    version: 16,
     statements: [
       "CREATE INDEX attachments_recent ON attachments (project, created_at) WHERE caption IS NOT NULL",
       `CREATE TABLE saved_views (

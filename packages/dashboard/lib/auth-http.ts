@@ -120,7 +120,7 @@ function see(base: URL, path: string): Response {
  * Same check as Next.js applies to server actions: a form posted from another
  * site carries an Origin whose host is not this one.
  */
-function sameOrigin(request: Request): boolean {
+export function sameOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
   if (!origin) return true;
   const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? new URL(request.url).host;

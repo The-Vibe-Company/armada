@@ -5,9 +5,11 @@
 // and the rules a saved view is kept under. The FilterBar
 // (components/FilterBar.tsx) writes the URL; the pages read it.
 //
-// A new list (THE-894's /activity) adds one entry to `LISTS`, with the
-// states and sorts it understands, a `filter…` function next to the others,
-// and renders `<FilterBar list="…" />` in its toolbar.
+// A new list adds one entry to `LISTS`, with the states and sorts it
+// understands, a `filter…` function next to the others, and renders
+// `<FilterBar list="…" />` in its toolbar. A list that reads its own address
+// (THE-894's /activity, a server-rendered GET form) gives its canonical query
+// in `OWN_ADDRESS` instead: its views are saved and pinned the same way.
 import {
   type AgentPhase,
   type FleetOverview,
@@ -17,6 +19,7 @@ import {
   type ProjectHealth,
   type ProjectOverview,
 } from "@armada/core/read";
+import { activityHref, activityQuery } from "./activity-view";
 import { AGENT_STATUSES, agentState, decisionsOf, HARNESSES, type Harness, harnessOf } from "./fleet-view";
 import { pendingValidations } from "./overview-view";
 import { coordinatorHarness, lastActivity } from "./project-view";
@@ -80,9 +83,20 @@ export const LISTS = {
     states: VALIDATION_STATES,
     sorts: ["age", "report"],
   },
+  // Its filters are its own (project, ticket, kind, who): see `OWN_ADDRESS`.
+  activity: { path: "/activity", fields: [], states: [], sorts: [] },
 } as const satisfies Record<string, ListRule>;
 
 export type FilterList = keyof typeof LISTS;
+/** The lists the FilterBar draws; the others read their address themselves. */
+export type BarList = Exclude<FilterList, "activity">;
+
+/** The canonical query of a list that reads its own address, without a page cursor. */
+const OWN_ADDRESS: Partial<Record<FilterList, (query: string) => string>> = {
+  activity: (query) =>
+    activityHref({ ...activityQuery(Object.fromEntries(new URLSearchParams(query))), before: null }).split("?")[1] ??
+    "",
+};
 export const FILTER_LISTS = Object.keys(LISTS) as FilterList[];
 export const isFilterList = (v: unknown): v is FilterList => typeof v === "string" && v in LISTS;
 
@@ -141,8 +155,11 @@ export function filterHref(list: FilterList, f: ListFilters): string {
 }
 
 /** A query string made canonical for the list: parse, then serialize. */
-export const canonicalQuery = (list: FilterList, query: string): string =>
-  filterQuery(parseFilters(list, new URLSearchParams(query.replace(/^\?/, ""))));
+export function canonicalQuery(list: FilterList, query: string): string {
+  const q = query.replace(/^\?/, "");
+  const own = OWN_ADDRESS[list];
+  return own ? own(q) : filterQuery(parseFilters(list, new URLSearchParams(q)));
+}
 
 export const hasFilters = (f: ListFilters): boolean => filterQuery(f) !== "";
 

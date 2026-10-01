@@ -13,7 +13,9 @@ import type { Database } from "../lib/db.ts";
 import {
   type LoadOptions,
   loadOverview as load,
+  loadActivity,
   loadAgentActivity,
+  loadCatchup,
   loadInsights,
   loadProject,
   loadSearchIndex,
@@ -399,6 +401,9 @@ describe("speed: a page reads Postgres only (THE-853)", () => {
       expect((await loadAgentActivity(w.opts, HOME, "widgets", "WID-2"))?.live).toBe(true);
       expect((await loadInsights(w.opts, HOME, { range: "7d", project: null }))?.live).toBe(true);
       expect((await loadSearchIndex(w.opts, HOME)).tickets.map((t) => t.id)).toContain("WID-3");
+      const everything = { project: null, ticket: null, kind: null, who: null, before: null };
+      expect((await loadActivity(w.opts, HOME, everything))?.live).toBe(true);
+      expect(await loadCatchup(w.opts, HOME, { since: w.at(-3_600_000), until: w.at(0) })).not.toBeNull();
       expect(await markRepository(db, "acme/widgets")).toEqual(["widgets"]);
       expect((await loadOverview(w.opts)).rows.map((r) => r.id)).toEqual(["WID-2"]);
 
@@ -663,6 +668,69 @@ describe("⌘K's search index (THE-895)", () => {
       await loadSearchIndex(w.opts, HOME),
     );
     expect(again.status).toBe(304);
+  });
+});
+
+describe("since the owner last looked (THE-894)", () => {
+  const everything = { project: null, ticket: null, kind: null, who: null, before: null };
+
+  test("the activity of the scope's projects only, a page at a time, with each ticket's title", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    await w.warm();
+    const base = { project: "widgets", ticket: "WID-2" };
+    await recordEvent(db, { ...base, kind: "claim", phase: "planning", at: w.at(-3 * 3_600_000) });
+    await recordEvent(db, { ...base, kind: "report", phase: "implementing", at: w.at(-2 * 3_600_000) });
+    await recordEvent(db, { ...base, kind: "merge", phase: "merged", at: w.at(-3_600_000) });
+
+    const first = await loadActivity(w.opts, HOME, everything, 2);
+    expect(first?.entries.map((e) => e.kind)).toEqual(["merge", "report"]);
+    expect(first?.titles["widgets/WID-2"]).toBe("Export a report");
+    expect(first?.projects).toEqual([{ slug: "widgets", name: "Widgets" }]);
+    const next = first?.next ?? null;
+    expect(next).not.toBeNull();
+    const second = await loadActivity(w.opts, HOME, { ...everything, before: next }, 2);
+    expect(second?.entries.map((e) => e.kind)).toEqual(["claim"]);
+    expect(second?.next).toBeNull();
+    expect((await loadActivity(w.opts, HOME, { ...everything, kind: "merge" }))?.entries).toHaveLength(1);
+
+    // Another organization, or a project nobody registered: nothing.
+    const other = { organization: "org-other", home: "org-home" };
+    expect(await loadActivity(w.opts, other, { ...everything, project: "widgets" })).toBeNull();
+    expect((await loadActivity(w.opts, other, everything))?.entries).toEqual([]);
+    expect(await loadActivity(w.opts, HOME, { ...everything, project: "nope" })).toBeNull();
+  });
+
+  test("what happened since a visit, with each project's silence threshold", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    await w.warm();
+    const base = { project: "widgets", ticket: "WID-2" };
+    await saveRuntimeHandle(db, {
+      ...base,
+      runtime: "Conductor",
+      handle: "ws/2",
+      branch: null,
+      at: w.at(-2 * 3_600_000),
+    });
+    await recordEvent(db, { ...base, kind: "claim", phase: "planning", at: w.at(-2 * 3_600_000) });
+    await recordEvent(db, {
+      project: "widgets",
+      ticket: "WID-5",
+      kind: "merge",
+      phase: "merged",
+      at: w.at(-1_800_000),
+    });
+
+    const away = { since: w.at(-3 * 3_600_000), until: w.at(0) };
+    const s = await loadCatchup(w.opts, HOME, away);
+    expect(s?.merged).toEqual([{ project: "widgets", ticket: "WID-5" }]);
+    expect(s?.started).toEqual([{ project: "widgets", ticket: "WID-2" }]);
+    // Silent two hours, past the template's threshold.
+    expect(s?.stuck).toEqual([{ project: "widgets", ticket: "WID-2", reason: "silent", minutes: 120, ongoing: true }]);
+    expect((await loadCatchup(w.opts, { organization: "org-other", home: "org-home" }, away))?.quiet).toBe(true);
   });
 });
 

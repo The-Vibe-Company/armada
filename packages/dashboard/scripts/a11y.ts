@@ -176,6 +176,8 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
     "/validations?state=pending&q=e",
     `/approve/${validation}`,
     "/insights",
+    "/activity",
+    "/activity?kind=merge",
     "/design",
   ];
   return [

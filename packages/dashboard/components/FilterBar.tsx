@@ -11,6 +11,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewError } from "@/lib/filters";
 import {
+  type BarList,
   type FilterField,
   type FilterList,
   filterHref,
@@ -31,7 +32,7 @@ import { useViews } from "./shell/views";
 const TYPE_MS = 250;
 
 /** The list's filters, read from the address, and how to change them. */
-export function useListFilters(list: FilterList) {
+export function useListFilters(list: BarList) {
   const params = useSearchParams();
   const router = useRouter();
   const filters = useMemo(() => parseFilters(list, params), [list, params]);
@@ -50,7 +51,7 @@ export function FilterBar({
   list,
   omit = [],
 }: {
-  list: FilterList;
+  list: BarList;
   /** Fields the page already shows another way (the Agents page's harness tabs). */
   omit?: FilterField[];
 }) {
@@ -211,7 +212,7 @@ function StateFilter({
   value,
   onPick,
 }: {
-  list: FilterList;
+  list: BarList;
   value: string | null;
   onPick: (state: string | null) => void;
 }) {
@@ -255,7 +256,26 @@ function StateFilter({
 }
 
 /** Clear the filters, and save them as a view under a name. */
-function Actions({ list, filters, onClear }: { list: FilterList; filters: ListFilters; onClear: () => void }) {
+function Actions({ list, filters, onClear }: { list: BarList; filters: ListFilters; onClear: () => void }) {
+  const { t } = useShell();
+  return (
+    <>
+      {hasFilters(filters) && (
+        <Button type="button" tone="danger" onClick={onClear}>
+          {t.filters.clear}
+        </Button>
+      )}
+      <SaveView list={list} query={filterQuery(filters)} />
+    </>
+  );
+}
+
+/**
+ * "Save view": names the list's filters (`query`, canonical) and pins them in
+ * the sidebar. Shown on the list's own page, once a filter is set; /activity
+ * (THE-894) uses it with its own address.
+ */
+export function SaveView({ list, query }: { list: FilterList; query: string }) {
   const { t } = useShell();
   const { save } = useViews();
   const pathname = usePathname();
@@ -265,9 +285,6 @@ function Actions({ list, filters, onClear }: { list: FilterList; filters: ListFi
   const [saved, setSaved] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
   const opener = useRef<HTMLButtonElement>(null);
-  const any = hasFilters(filters);
-  // The page this bar sits on is the list's own: a view of it opens it again.
-  const onList = pathname === LISTS[list].path;
 
   useEffect(() => {
     if (naming) field.current?.focus();
@@ -281,7 +298,7 @@ function Actions({ list, filters, onClear }: { list: FilterList; filters: ListFi
           e.preventDefault();
           const name = String(new FormData(e.currentTarget).get("name") ?? "");
           setBusy(true);
-          const problem = await save({ name, list, query: filterQuery(filters) });
+          const problem = await save({ name, list, query });
           setBusy(false);
           setError(problem);
           if (problem) return field.current?.focus();
@@ -326,17 +343,14 @@ function Actions({ list, filters, onClear }: { list: FilterList; filters: ListFi
         )}
       </Form>
     );
+  // The page this sits on is the list's own: a view of it opens it again.
+  const shown = pathname === LISTS[list].path && query !== "";
   return (
     <>
       <span className="sr-only" role="status">
         {saved ? t.views.saved(saved) : ""}
       </span>
-      {any && (
-        <Button type="button" tone="danger" onClick={onClear}>
-          {t.filters.clear}
-        </Button>
-      )}
-      {onList && any && (
+      {shown && (
         <Button
           ref={opener}
           type="button"

@@ -199,4 +199,15 @@ describe("saved views", () => {
     expect(isCurrentView(view, "/agents", "state=error")).toBe(false);
     expect(isCurrentView(view, "/projects", "state=error&sort=age")).toBe(false);
   });
+
+  test("/activity (THE-894) keeps its own address: a view of it is canonical, without the page cursor", () => {
+    expect(checkView({ name: "Merges", list: "activity", query: "who=coordinator&kind=merge&bogus=1" })).toEqual({
+      ok: true,
+      view: { name: "Merges", list: "activity", query: "kind=merge&who=coordinator" },
+    });
+    const view = { list: "activity" as const, query: "project=widgets&ticket=WID-2" };
+    expect(viewHref(view)).toBe("/activity?project=widgets&ticket=WID-2");
+    expect(isCurrentView(view, "/activity", "ticket=wid-2&project=widgets")).toBe(true);
+    expect(listOfPath("/activity")).toBe("activity");
+  });
 });

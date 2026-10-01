@@ -288,6 +288,7 @@ describe("⌘K's ranking", () => {
     expect(top("dark mode")?.key).toBe("attachment:att-1");
     expect(keys("email on a phone")).toContain("validation:widgets:3");
     expect(top("insights")?.href).toBe("/insights");
+    expect(top("activity")?.href).toBe("/activity");
     const fr = searchItems(overview, index, { ...ctx, t: STRINGS.fr, lang: "fr" });
     expect(flatten(search(fr, "tendances"))[0]?.href).toBe("/insights");
   });
