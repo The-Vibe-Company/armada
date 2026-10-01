@@ -63,8 +63,10 @@
   --r-btn: 9px;
   --r-md: 12px;
   --r-lg: 14px;
-  --font-sans: var(--font-geist-sans), "Geist", ui-sans-serif, sans-serif;
-  --font-mono: var(--font-geist-mono), "Geist Mono", ui-monospace, monospace;
+  /* The full font first: its unicode-range leaves out every character of the
+     preloaded Latin cut, which stays the first available font (THE-889). */
+  --font-sans: var(--font-geist-sans-full), var(--font-geist-sans), "Geist", ui-sans-serif, sans-serif;
+  --font-mono: var(--font-geist-mono-full), var(--font-geist-mono), "Geist Mono", ui-monospace, monospace;
   --sidebar: 216px;
   --rail: 56px;
 
