@@ -33,6 +33,8 @@ export interface PrRef {
   /** null when the forge was not read. */
   ci: CiState | null;
   mergeable: string | null;
+  /** When the pull request opened; null when the forge did not say. */
+  createdAt?: string | null;
 }
 
 export interface InFlightTicket extends TicketRef {
@@ -172,6 +174,7 @@ export function buildStatus({
     draft: p.draft ?? null,
     ci: p.ci ?? null,
     mergeable: p.mergeable ?? null,
+    createdAt: p.createdAt ?? null,
   });
 
   return {

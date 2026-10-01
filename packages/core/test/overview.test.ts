@@ -272,6 +272,39 @@ describe("fleet overview", () => {
     });
   });
 
+  test("each row carries its timeline, drawn from its own comments and events only", () => {
+    const widgets: ProjectReading = {
+      ...reading("widgets", [ticket("W-1", { since: at("09:30") }), ticket("W-2")], {
+        inbox: [],
+        coordinatorSeenAt: null,
+      }),
+      history: {
+        comments: [
+          {
+            id: "c1",
+            issueId: "W-1",
+            author: "Worker",
+            createdAt: at("09:00"),
+            excerpt: "",
+            status: { phase: "planning", summary: "reading" },
+            claim: null,
+          },
+        ],
+        events: [
+          { ticket: "W-1", kind: "report", phase: "implementing", message: "started", at: at("09:30") },
+          { ticket: "W-2", kind: "report", phase: "implementing", message: "other", at: at("09:40") },
+        ],
+      },
+    };
+    const o = buildOverview({ projects: [widgets], live: { state: "ok", error: null }, now: NOW });
+    const w1 = o.rows.find((r) => r.id === "W-1")?.timeline;
+    expect(w1?.phases.map((s) => [s.phase, s.from, s.to])).toEqual([
+      ["planning", at("09:00"), at("09:30")],
+      ["implementing", at("09:30"), null],
+    ]);
+    expect(w1?.reports).toEqual([at("09:00"), at("09:30")]);
+  });
+
   test("the pipeline places each phase on its step and marks what needs someone", () => {
     const pr = (ci: "success" | "failure" | "pending" | null, mergeable: string | null = "MERGEABLE") => ({
       number: 1,

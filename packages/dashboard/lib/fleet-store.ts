@@ -11,6 +11,7 @@ import type {
   CoordinatorSeen,
   EventInput,
   FleetStore,
+  HistoryEvent,
   InboxItem,
   InboxKind,
   InboxReadEvent,
@@ -224,6 +225,26 @@ export async function ticketEvents(db: Queryable, project: string, ticket: strin
     runtime: text(r.runtime),
     handle: text(r.handle),
     prUrl: text(r.pr_url),
+    at: isoAt(r.created_at),
+  }));
+}
+
+/**
+ * The worker events of a project since `since` (claims, reports, releases,
+ * merges), oldest first: the history the overview's live timeline draws.
+ */
+export async function recentEvents(db: Queryable, project: string, since: Date): Promise<HistoryEvent[]> {
+  const rs = await db.query(
+    `SELECT ticket, kind, phase, message, created_at FROM events
+     WHERE project = $1 AND created_at >= $2 AND kind IN ('claim', 'report', 'release', 'merge')
+     ORDER BY created_at, id`,
+    [project, since],
+  );
+  return rs.rows.map((r) => ({
+    ticket: String(r.ticket),
+    kind: String(r.kind),
+    phase: text(r.phase),
+    message: text(r.message),
     at: isoAt(r.created_at),
   }));
 }
@@ -815,6 +836,7 @@ export interface LiveStore extends RequestStore {
   listProjects(): Promise<ProjectRecord[]>;
   assignUnownedProjects(organization: string, now: Date): Promise<number>;
   latestEvents(project: string, opts: { since: Date }): Promise<Record<string, LatestEvent>>;
+  recentEvents(project: string, since: Date): Promise<HistoryEvent[]>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
   openInboxItems(q: { project: string; recipient: InboxRecipient }): Promise<InboxItem[]>;
@@ -837,6 +859,7 @@ export const liveStore = (db: Queryable): LiveStore => ({
   listProjects: () => listProjects(db),
   assignUnownedProjects: (organization, now) => assignUnownedProjects(db, organization, now),
   latestEvents: (project, opts) => latestEvents(db, project, opts),
+  recentEvents: (project, since) => recentEvents(db, project, since),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
   openInboxItems: (q) => openInboxItems(db, q),
