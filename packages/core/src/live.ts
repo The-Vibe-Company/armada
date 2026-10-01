@@ -500,9 +500,19 @@ export interface InboxEntry {
   request?: { question: number | null; profile: string | null };
 }
 
-/** How an entry is told apart between two reads: `#12`, `silent:<ticket>` or `not-started:<ticket>`. */
-export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket">) =>
-  e.id === null ? `${e.kind}:${e.ticket}` : `#${e.id}`;
+/** Items a worker's report rewrites in place: a hand-back on a new head, a plan. */
+const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan"];
+
+const digest = (text: string) => createHash("sha256").update(text).digest("base64url").slice(0, 12);
+
+/**
+ * How an entry is told apart between two reads: `#12`, `silent:<ticket>` or
+ * `not-started:<ticket>`. A hand-back or a plan rewritten in place keeps its
+ * id, so its key carries a digest of its text too (a hand-back's names its
+ * head SHA): handed back again on a new head, it is new to the coordinator.
+ */
+export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body">) =>
+  e.id === null ? `${e.kind}:${e.ticket}` : REWRITTEN.includes(e.kind) ? `#${e.id}@${digest(e.body)}` : `#${e.id}`;
 
 export interface InboxReadOptions {
   project: string;
@@ -661,7 +671,7 @@ export const PRESENCE_EVERY_MS = MIN;
  * and which tickets are in flight.
  */
 export function inboxTag(
-  items: Pick<InboxEntry, "id" | "kind" | "ticket">[],
+  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body">[],
   inFlight: readonly string[] = [],
 ): string {
   const keys = [...items.map(entryKey), ...inFlight.map((t) => `flight:${t}`)].sort().join("\n");
