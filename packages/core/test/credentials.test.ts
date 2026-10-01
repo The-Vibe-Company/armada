@@ -17,54 +17,32 @@ test("GitHub falls back from GITHUB_TOKEN to GH_TOKEN to the gh login, which is 
   expect(resolveCredentials({ env: {} }).githubToken).toBeNull();
 });
 
-test("the environment beats the credentials file, which beats config.toml for the Turso URL", () => {
-  const store = { LINEAR_API_KEY: "stored-linear", ARMADA_TURSO_URL: "libsql://stored", ARMADA_TURSO_TOKEN: " " };
-  const personal = { ...EMPTY_PERSONAL_CONFIG, turso: { url: "libsql://personal" } };
-
-  const c = resolveCredentials({ env: { LINEAR_API_KEY: " env-linear " }, store, personal });
-  expect(c).toMatchObject({ linearApiKey: "env-linear", tursoUrl: "libsql://stored", tursoToken: null });
-  expect(c.sources).toMatchObject({
-    linearApiKey: { kind: "env", variable: "LINEAR_API_KEY" },
-    tursoUrl: { kind: "store" },
-    tursoToken: null,
-  });
-
-  const fromStore = resolveCredentials({ env: {}, store, personal });
-  expect([fromStore.linearApiKey, fromStore.sources.linearApiKey]).toEqual(["stored-linear", { kind: "store" }]);
-
-  const fromConfig = resolveCredentials({ env: {}, store: {}, personal });
-  expect([fromConfig.tursoUrl, fromConfig.sources.tursoUrl]).toEqual([
-    "libsql://personal",
-    { kind: "config", key: "turso.url" },
-  ]);
-});
-
-test("Armada's keys come between the environment and the credentials file; its Turso URL and token only as a pair", () => {
-  const armada = {
-    linearApiKey: { value: "lin-armada", detail: "your own key" },
-    turso: { url: "libsql://fleet.example.test", token: "t-armada", detail: "a token made for this terminal" },
+test("the Linear key: the environment, then Armada, then the credentials file; retired keys are never read", () => {
+  const store = {
+    LINEAR_API_KEY: "lin-file",
+    ARMADA_TURSO_URL: "libsql://retired.example.test",
+    ARMADA_TURSO_TOKEN: "retired-token",
   };
-  const store = { LINEAR_API_KEY: "lin-file", ARMADA_TURSO_URL: "file:local.db", ARMADA_TURSO_TOKEN: "t-file" };
-  const signedIn = resolveCredentials({ env: {}, store, armada });
-  expect([signedIn.linearApiKey, signedIn.tursoUrl, signedIn.tursoToken]).toEqual([
-    "lin-armada",
-    "libsql://fleet.example.test",
-    "t-armada",
-  ]);
-  expect(signedIn.sources.linearApiKey).toEqual({ kind: "armada", detail: "your own key" });
+  const armada = { linearApiKey: { value: "lin-armada", detail: "your own key" } };
 
-  const env = resolveCredentials({ env: { LINEAR_API_KEY: "lin-env" }, store, armada });
-  expect(env.sources.linearApiKey).toEqual({ kind: "env", variable: "LINEAR_API_KEY" });
-  // The environment names a database: Armada's token for another one is not mixed in.
-  const own = resolveCredentials({ env: { ARMADA_TURSO_URL: "file:env.db" }, store, armada });
-  expect([own.tursoUrl, own.tursoToken, own.sources.tursoToken]).toEqual(["file:env.db", "t-file", { kind: "store" }]);
-  // Armada with no Turso access: the file's.
-  expect(resolveCredentials({ env: {}, store, armada: { ...armada, turso: null } }).tursoToken).toBe("t-file");
+  const env = resolveCredentials({ env: { LINEAR_API_KEY: " lin-env " }, store, armada });
+  expect([env.linearApiKey, env.sources.linearApiKey]).toEqual([
+    "lin-env",
+    { kind: "env", variable: "LINEAR_API_KEY" },
+  ]);
+  const signedIn = resolveCredentials({ env: {}, store, armada });
+  expect([signedIn.linearApiKey, signedIn.sources.linearApiKey]).toEqual([
+    "lin-armada",
+    { kind: "armada", detail: "your own key" },
+  ]);
+  const fromStore = resolveCredentials({ env: {}, store });
+  expect([fromStore.linearApiKey, fromStore.sources.linearApiKey]).toEqual(["lin-file", { kind: "store" }]);
+  expect(JSON.stringify(fromStore)).not.toContain("retired");
 });
 
 test("a missing key is reported by the variable to set, never by a value", () => {
-  const c = resolveCredentials({ env: { ARMADA_TURSO_URL: "libsql://x" } });
-  expect(missingKeys(c).map((k) => k.variable)).toEqual(["LINEAR_API_KEY", "ARMADA_TURSO_TOKEN"]);
+  const c = resolveCredentials({ env: {} });
+  expect(missingKeys(c).map((k) => k.variable)).toEqual(["LINEAR_API_KEY"]);
   const message = missingKeyMessage(STORED_KEYS[0] ?? expect.unreachable());
   expect(message).toStartWith("LINEAR_API_KEY is not set.");
   expect(message).toContain("armada auth login");

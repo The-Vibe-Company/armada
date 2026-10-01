@@ -38,7 +38,7 @@ export interface Lane {
   phase: AgentPhase;
   /**
    * label = the phase label (source of truth); status-line and inferred are
-   * fallbacks; live = a Turso report newer than the tracker read.
+   * fallbacks; live = a live report newer than the tracker read.
    */
   phaseSource: "label" | "status-line" | "inferred" | "live";
   runtime: string | null;
@@ -50,7 +50,7 @@ export interface Lane {
   since: string;
   /** Latest sign of life: ticket edit, comment, PR update or start. */
   lastUpdate: string;
-  /** Latest report by the worker: Turso event, `Agent status:` comment or claim. Null when it never reported. */
+  /** Latest report by the worker: live event, `Agent status:` comment or claim. Null when it never reported. */
   lastReport: string | null;
   statusLine: { summary: string; at: string; author: string | null; url: string } | null;
   pr: PullRequest | null;
@@ -94,7 +94,7 @@ function inferPhase(pr: PullRequest | null, comments: Comment[]): AgentPhase {
   return "planning";
 }
 
-/** A worker event read from Turso (claim, report or release). */
+/** A worker event read from the fleet's live data (claim, report or release). */
 export interface LiveEvent {
   kind: string;
   phase: string | null;
@@ -107,10 +107,10 @@ export interface LiveEvent {
 export interface LaneOptions {
   now: number;
   silentAfterMinutes: number;
-  /** Newest Turso event per ticket id, when Turso was read. */
+  /** Newest live event per ticket id, when the live data was read. */
   lastEvents?: Record<string, string>;
   /**
-   * Live news from Turso. The tracker is read less often than Turso, so an
+   * Live news from the fleet's live data. The tracker is read less often, so an
    * event newer than `after` (when the tracker read started) says more than
    * the tracker does: its phase wins, and a claim puts the ticket in flight.
    */
@@ -129,7 +129,7 @@ const ENDS_WORK = ["release", "merge"];
 const livePhase = (e: LiveEvent): AgentPhase | null =>
   e.kind === "release" ? "released" : (LABEL_PHASES.find((p) => p === e.phase) ?? null);
 
-/** The Turso event of a ticket that happened after the tracker read, if any. */
+/** The live event of a ticket that happened after the tracker read, if any. */
 export function freshEvent(issueId: string, opts: Pick<LaneOptions, "live">): LiveEvent | null {
   const e = opts.live?.events[issueId];
   return e && opts.live && e.at > opts.live.after ? e : null;

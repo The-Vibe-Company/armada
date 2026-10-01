@@ -2,12 +2,13 @@
 // registry, events, the runtime session holding each ticket and the profile
 // its claim named, the coordinators' inboxes with the dashboard's requests,
 // leases, and when each coordinator last read its inbox. Every row carries its
-// project slug. The same operations as core's Turso adapter (`turso.ts`), with
-// the same results, so the dashboard reads the fleet here today and the CLI's
-// calls through the app (THE-850) write it here next. Losing this data loses
-// live detail, never progress: Linear stays the record.
+// project slug. `fleetStore` is core's `FleetStore` on it: the dashboard reads
+// the fleet here, and the CLI writes it through the Armada API (THE-850,
+// `cli-api.ts`). Losing this data loses live detail, never progress: Linear
+// stays the record.
 import type {
   EventInput,
+  FleetStore,
   InboxItem,
   InboxKind,
   InboxRecipient,
@@ -46,6 +47,33 @@ export async function ensureProject(db: Queryable, p: ProjectInput, now: Date = 
      VALUES ($1, $2, $3, $4, $5, $5) ON CONFLICT (slug) DO NOTHING`,
     [p.slug, p.name, p.repository, p.programRoot, now],
   );
+}
+
+/**
+ * Makes sure `organization` holds the project a terminal names: registered for
+ * it on first contact, or given to it when it has no organization yet. False
+ * when another organization holds it. Reads only, once the project is held.
+ */
+export async function holdProject(
+  db: Queryable,
+  p: ProjectInput,
+  organization: string,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const owner = async () =>
+    (await db.query("SELECT organization_id FROM projects WHERE slug = $1", [p.slug])).rows[0] as Row | undefined;
+  const held = await owner();
+  if (held && held.organization_id !== null) return String(held.organization_id) === organization;
+  await db.query(
+    `INSERT INTO projects (slug, name, repository, program_root, created_at, updated_at, organization_id, organization_assigned_at)
+     VALUES ($1, $2, $3, $4, $5, $5, $6, $5)
+     ON CONFLICT (slug) DO UPDATE SET organization_id = excluded.organization_id,
+       organization_assigned_at = excluded.organization_assigned_at
+     WHERE projects.organization_id IS NULL`,
+    [p.slug, p.name, p.repository, p.programRoot, now, organization],
+  );
+  // Whoever got there first holds it.
+  return text((await owner())?.organization_id) === organization;
 }
 
 /** Every registered project, by slug, with the organization it belongs to. */
@@ -522,6 +550,41 @@ export async function renewLease(
 export async function releaseLease(db: Queryable, l: { project: string; name: string; holder: string }) {
   await db.query("DELETE FROM leases WHERE project = $1 AND name = $2 AND holder = $3", [l.project, l.name, l.holder]);
 }
+
+// ------------------------------------------------------------------ the store
+
+/** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
+export const fleetStore = (db: Database): FleetStore => ({
+  ensureProject: (p, at) => ensureProject(db, p, at),
+  upsertProject: (p, at) => upsertProject(db, p, at),
+  listProjects: () => listProjects(db),
+  recordEvent: (e) => recordEvent(db, e),
+  lastEventTimes: (project) => lastEventTimes(db, project),
+  latestEvents: (project, opts) => latestEvents(db, project, opts),
+  recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),
+  lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
+  saveWorkerProfile: (w) => saveWorkerProfile(db, w),
+  getWorkerProfile: (project, ticket) => getWorkerProfile(db, project, ticket),
+  saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
+  releaseRuntimeHandle: (project, ticket, at) => releaseRuntimeHandle(db, project, ticket, at),
+  openRuntimeHandles: (project) => openRuntimeHandles(db, project),
+  getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
+  addInboxItem: (item) => addInboxItem(db, item),
+  addRequest: (r) => addRequest(db, r),
+  putPlan: (item) => putPlan(db, item),
+  putHandBack: (item) => putHandBack(db, item),
+  openInboxItems: (q) => openInboxItems(db, q),
+  getInboxItem: (project, id) => getInboxItem(db, project, id),
+  resolveInboxItem: (q) => resolveInboxItem(db, q),
+  lastAnsweredAt: (project) => lastAnsweredAt(db, project),
+  resolveInboxItems: (q) => resolveInboxItems(db, q),
+  resolveAnswerRequests: (q) => resolveAnswerRequests(db, q),
+  resolvePlans: (q) => resolvePlans(db, q),
+  acquireLease: (l) => acquireLease(db, l),
+  getLease: (project, name) => getLease(db, project, name),
+  renewLease: (l) => renewLease(db, l),
+  releaseLease: (l) => releaseLease(db, l),
+});
 
 // ------------------------------------------------------------------ what the dashboard reads
 

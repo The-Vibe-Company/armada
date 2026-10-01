@@ -1,8 +1,10 @@
 // The Armada API the CLI calls, under /api/cli: signing in from a terminal
 // (Better Auth's device authorization), who is signed in, signing out, the
-// organization's keys from the vault (`POST credentials`, THE-840), and the
+// organization's Linear key from the vault (`POST credentials`, THE-840), the
 // workers' launch tokens (THE-841: `launch-tokens`, `launch-tokens/exchange`,
-// `workers/end`). A terminal holds a session token from `armada login` (sent
+// `workers/end`), and the fleet's live data (THE-850: `fleet/<operation>`,
+// run by core's `serveFleet` on `fleet-store.ts`; `projects`). No terminal
+// ever holds a database key. A terminal holds a session token from `armada login` (sent
 // as `Authorization: Bearer`), an organization API key (`x-api-key`), or a
 // worker session from `armada login --launch-token` (a bearer token too, told
 // apart by its prefix); it never holds the browser's cookie. A worker session
@@ -10,10 +12,12 @@
 // route checks its own credential, and while the deployment has no accounts
 // every route refuses with the next step instead of a password prompt.
 // Everything is injected so tests run it on PGlite.
+import { type FleetCaller, parseProject, serveFleet } from "@armada/core/read";
 import { type Auth, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
-import { type Fetch, type HeldTurso, type Holder, releaseCredentials } from "./broker";
+import { type Holder, releaseCredentials } from "./broker";
 import type { Database, Queryable } from "./db";
+import { fleetStore, holdProject, listProjects } from "./fleet-store";
 import { SECRETS_KEY_VARIABLE, type VaultKey, type VaultMode } from "./vault";
 import {
   createLaunch,
@@ -42,9 +46,9 @@ export interface CliApiDeps {
   accounts: () => Promise<CliAccounts | null>;
   /** The vault's master key; off, `POST credentials` answers 503 and the CLI keeps its local keys. */
   vault?: () => VaultMode;
-  /** Reaches the Turso Platform API. */
-  fetch?: Fetch;
   now?: () => Date;
+  /** How a waiting inbox read waits between two looks. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Who a terminal is signed in as. Carries no secret. */
@@ -221,15 +225,6 @@ function holderOf(identity: CliIdentity & { launch?: Worker }): Holder | null {
   return { actor: { kind: "session", id: user.id, label }, organization: org, user: user.id };
 }
 
-/** The Turso token the terminal holds, as it describes it (never the token itself). */
-function heldOf(body: Record<string, unknown>): HeldTurso | null {
-  const t = body.turso as Record<string, unknown> | null | undefined;
-  if (!t || typeof t !== "object") return null;
-  return typeof t.revision === "string" && typeof t.expiresAt === "string"
-    ? { revision: t.revision.slice(0, 64), expiresAt: t.expiresAt.slice(0, 40) }
-    : null;
-}
-
 async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, now: Date): Promise<Response> {
   const vault = vaultKeyOf(deps, "it hands out no key");
   if (vault instanceof Response) return vault;
@@ -246,16 +241,12 @@ async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, n
       return refuse(403, scope, "the coordinator does it");
     }
   } else if (purpose.ticket) holder.ticket = purpose.ticket;
-  const answer = await releaseCredentials(
-    { client: a.client, vault, now: () => now, ...(deps.fetch ? { fetch: deps.fetch } : {}) },
-    holder,
-    heldOf(body),
-  );
+  const answer = await releaseCredentials({ client: a.client, vault, now: () => now }, holder);
   if (!answer.ok) return refuse(429, "too many requests for keys in a minute", "the same command again in a minute");
   const r = answer.release;
   // Names what went out, never a value.
   console.info(
-    `armada dashboard: keys released to ${holder.actor.label} (${holder.organization.slug}): linear ${r.linear?.scope ?? "none"}, turso ${r.turso?.kind ?? "none"}`,
+    `armada dashboard: keys released to ${holder.actor.label} (${holder.organization.slug}): linear ${r.linear?.scope ?? "none"}`,
   );
   return Response.json(r, { headers: NO_STORE });
 }
@@ -443,6 +434,71 @@ async function endWorkers(a: CliAccounts, request: Request, now: Date): Promise<
   return Response.json({ ended: ended.length }, { headers: NO_STORE });
 }
 
+const UPDATE_CLI = "update the CLI: npm install -g @the-vibe-company/armada";
+
+/**
+ * `POST fleet/<operation>`: one operation on the fleet's live data, for the
+ * project the request names. The caller's organization holds the project (it
+ * is registered for it on first contact); a worker session acts on its own
+ * project and ticket only (`serveFleet` checks the ticket).
+ */
+async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiDeps): Promise<Response> {
+  const now = deps.now ?? (() => new Date());
+  const identity = await identify(a, credentialOf(request), now());
+  if (identity instanceof Response) return identity;
+  const organization = identity.organization;
+  if (!organization) return noOrganization(a);
+  const body = await jsonBody(request);
+  const project = parseProject(body.project);
+  if (!project)
+    return refuse(400, "a fleet request names its project: slug, name, repository and program root", UPDATE_CLI);
+  let caller: FleetCaller = { kind: "organization" };
+  if (identity.via === "worker") {
+    const w = identity.launch;
+    if (!w) return workerRefusal(null);
+    if (project.slug !== w.project)
+      return refuse(
+        403,
+        `this worker session is for the project ${w.project}, not ${project.slug}`,
+        "the coordinator does it",
+      );
+    caller = { kind: "worker", ticket: w.ticket };
+  }
+  if (!(await holdProject(a.client, project, organization.id, now())))
+    return refuse(
+      403,
+      `the project ${project.slug} belongs to another organization`,
+      `another slug in armada.toml ([project] slug), or sign in to the organization of ${project.slug}`,
+    );
+  const answer = await serveFleet(
+    fleetStore(a.client),
+    { op, project, caller, input: body.input },
+    { now, sleep: deps.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))) },
+  );
+  if (answer.status !== 200)
+    console.info(
+      `armada dashboard: fleet ${op} refused (${answer.status}) for ${project.slug}: ${String(answer.body.error)}`,
+    );
+  return Response.json(answer.body, { status: answer.status, headers: NO_STORE });
+}
+
+/** `GET projects`: the projects of the caller's organization (`armada status --all`). */
+async function projects(a: CliAccounts, request: Request, now: Date): Promise<Response> {
+  const identity = await identify(a, credentialOf(request), now);
+  if (identity instanceof Response) return identity;
+  if (identity.via === "worker") return refuse(403, `${WORKER_SCOPE}: it lists no project`, "the coordinator does it");
+  const organization = identity.organization;
+  if (!organization) return noOrganization(a);
+  const own = (await listProjects(a.client)).filter((p) => p.organization === organization.id);
+  return Response.json(
+    {
+      schemaVersion: 1,
+      projects: own.map(({ slug, name, repository, programRoot }) => ({ slug, name, repository, programRoot })),
+    },
+    { headers: NO_STORE },
+  );
+}
+
 /**
  * Hands a device-authorization call to Better Auth's own route, so its checks
  * and rate limit apply, with the CLI's client id. Cookies never go back: the
@@ -519,6 +575,9 @@ export async function handleCli(request: Request, path: string[], deps: CliApiDe
   if (route === "POST launch-tokens") return launch(a, request, deps, now);
   if (route === "POST launch-tokens/exchange") return exchange(a, request, now);
   if (route === "POST workers/end") return endWorkers(a, request, now);
+  if (route === "GET projects") return projects(a, request, now);
+  if (request.method === "POST" && path[0] === "fleet" && path.length > 1)
+    return fleet(a, request, path.slice(1).join("/"), deps);
   if (route === "DELETE session") {
     const credential = credentialOf(request);
     if (credential?.kind === "api-key")

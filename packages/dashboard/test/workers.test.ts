@@ -139,7 +139,7 @@ const exchange = (token: string, from?: string) =>
 
 /** A worker command asking for its keys: `purpose` is what the CLI sends. */
 const keysFor = (token: string, purpose: { command: string; project: string; ticket: string } | null) =>
-  cli("POST", "credentials", { token, body: { turso: null, purpose } });
+  cli("POST", "credentials", { token, body: { purpose } });
 
 describe("launch tokens: one ticket, once, within the hour", () => {
   test("a signed-in coordinator gets a token; the worker exchanges it once for a session on that ticket, with the launcher's keys", async () => {

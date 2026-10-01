@@ -3,30 +3,16 @@
 // The coordinator reads the inbox (`armada inbox`), delivers the answer in the
 // worker's session through the runtime guide, then records it (`armada answer`).
 // Armada never calls a runtime: these commands only record.
-import { NEEDS_HUMAN } from "./fleet.ts";
 import {
-  addInboxItem,
-  type Db,
-  ensureProject,
-  getInboxItem,
-  getRuntimeHandle,
+  entryKey,
+  type Fleet,
+  INBOX_WAIT_MAX_MS,
+  type InboxEntry,
   type InboxKind,
-  lastAnsweredAt,
-  latestEvents,
-  openInboxItems,
-  openRuntimeHandles,
-  recordCoordinatorSeen,
-  redact,
-  resolveAnswerRequests,
-  resolveInboxItem,
-  resolveInboxItems,
-  resolvePlans,
   type StoredInboxItem,
-} from "./turso.ts";
+} from "./live.ts";
 import type { AgentPhase } from "./types.ts";
-import { live, type Outcome, projectOf, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
-
-const MIN = 60_000;
+import { live, type Outcome, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
 
 // ------------------------------------------------------------------ ask
 
@@ -48,8 +34,8 @@ export function questionBody(question: string, options: readonly string[] = []):
 /**
  * A worker asks the coordinator: the phase goes to blocked with an
  * `Agent status: blocked — question: …` comment (Linear, the record), then the
- * question is added to the coordinator's inbox (Turso). `item` is its id, or
- * null when Turso did not record it.
+ * question is added to the coordinator's inbox, through Armada. `item` is its
+ * id, or null when it could not be recorded.
  */
 export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promise<Outcome & { item: number | null }> {
   if (!input.question.trim())
@@ -59,19 +45,9 @@ export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promi
     );
   const body = questionBody(input.question, input.options);
   const out = await reportPhase(ctx, { ticket: input.ticket, phase: "blocked", message: `question: ${body}` });
-  const project = ctx.config.project.slug;
-  const item = await live(ctx, out.warnings, "put the question in the coordinator's inbox", async (db) => {
-    const held = await getRuntimeHandle(db, project, out.ticket);
-    return addInboxItem(db, {
-      project,
-      ticket: out.ticket,
-      kind: "question",
-      recipient: "coordinator",
-      author: held && !held.releasedAt ? held.handle : null,
-      body,
-      at: ctx.now(),
-    });
-  });
+  const item = await live(ctx, out.warnings, "put the question in the coordinator's inbox", (fleet) =>
+    fleet.ask({ ticket: out.ticket, body }),
+  );
   const lines = [
     ...out.lines,
     item === null
@@ -83,24 +59,6 @@ export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promi
 }
 
 // ------------------------------------------------------------------ inbox
-
-export type InboxEntryKind = InboxKind | "silent";
-
-export interface InboxEntry {
-  /** Inbox item id for `armada answer`; null for a silent worker (it clears when the worker reports). */
-  id: number | null;
-  kind: InboxEntryKind;
-  ticket: string | null;
-  /** Runtime handle of the worker that asked, or of the silent worker. */
-  author: string | null;
-  body: string;
-  /** When the item was added; for a silent worker, its last report. */
-  createdAt: string;
-  /** Appeared while `armada inbox --wait` was waiting. */
-  new: boolean;
-  /** Dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
-  request?: { question: number | null; profile: string | null };
-}
 
 export interface InboxReport {
   project: string;
@@ -119,113 +77,43 @@ export interface InboxOptions {
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
   now: () => Date;
+  /** Wait this long at most for a new item; each call to Armada waits `INBOX_WAIT_MAX_MS` at most. */
+  waitMs?: number;
 }
-
-const entryKey = (e: InboxEntry) => (e.id === null ? `silent:${e.ticket}` : `#${e.id}`);
 
 /**
- * What waits for the coordinator, oldest first: open questions, requests and
- * hand-backs, and silent workers. A worker is silent when it holds a ticket
- * (open runtime handle), its newest event is older than the silence threshold,
- * and its phase does not wait on someone else (awaiting-approval, blocked,
- * ready-to-merge). An answer given after its newest event means it owes a
- * report: silence then counts from the answer, whatever the phase. Read from
- * Turso only, so it is cheap enough to poll.
+ * Reads the coordinator's inbox through Armada, which records the
+ * coordinator's presence for the dashboard. With `waitMs`, it returns as soon
+ * as an item that was not there at the previous read appears (marked `new`),
+ * or at the timeout: Armada holds each call open (a long poll) and the CLI
+ * calls again until its own timeout.
  */
-export async function readInbox(db: Db, o: InboxOptions): Promise<InboxEntry[]> {
-  const now = o.now().getTime();
-  const [items, handles, events, answered] = await Promise.all([
-    openInboxItems(db, { project: o.project, recipient: "coordinator" }),
-    openRuntimeHandles(db, o.project),
-    latestEvents(db, o.project),
-    lastAnsweredAt(db, o.project),
-  ]);
-  const entries: InboxEntry[] = items.map((i) => ({
-    id: i.id,
-    kind: i.kind,
-    ticket: i.ticket,
-    author: i.author,
-    body: i.body,
-    createdAt: i.createdAt,
-    new: false,
-    ...(i.request ? { request: i.request } : {}),
-  }));
-  const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
-  for (const h of handles) {
-    if (o.coordinator && h.handle === o.coordinator) continue;
-    const e = events[h.ticket];
-    if (e && (e.kind === "release" || e.kind === "merge")) continue;
-    if (asking.has(h.ticket)) continue;
-    const reported = e?.at ?? h.claimedAt;
-    const answer = answered[h.ticket];
-    const owesReport = !!answer && answer > reported;
-    if (!owesReport && NEEDS_HUMAN.includes(e?.phase as AgentPhase)) continue;
-    const last = owesReport ? answer : reported;
-    const quiet = now - Date.parse(last);
-    if (quiet <= o.silentAfterMinutes * MIN) continue;
-    entries.push({
-      id: null,
-      kind: "silent",
-      ticket: h.ticket,
-      author: h.handle,
-      body: `no report for ${Math.floor(quiet / MIN)} min${owesReport ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`,
-      createdAt: last,
-      new: false,
-    });
-  }
-  return entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0));
-}
-
-export interface WaitOptions {
-  sleep: (ms: number) => Promise<void>;
-  timeoutMs: number;
-  /** How often Turso is read while waiting. */
-  pollMs?: number;
-}
-
-/** While waiting, the coordinator's presence is refreshed at most this often. */
-export const PRESENCE_EVERY_MS = MIN;
-export const INBOX_POLL_MS = 5_000;
-
-/**
- * Reads the inbox and records the coordinator's presence for the dashboard.
- * With `wait`, it returns as soon as an item that was not there at the
- * previous read appears (marked `new`), or at the timeout.
- */
-export async function checkInbox(db: Db, o: InboxOptions & { wait?: WaitOptions }): Promise<InboxReport> {
+export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxReport> {
   const started = o.now();
-  const warnings: string[] = [];
-  // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
-  const seen = (at: Date) =>
-    recordCoordinatorSeen(db, { project: o.project, handle: o.coordinator ?? null, at }).catch((err: unknown) => {
-      const w = `could not record the coordinator's presence (${redact(err)})`;
-      if (!warnings.includes(w)) warnings.push(w);
-    });
-  await seen(started);
-  let items = await readInbox(db, o);
+  const query = { coordinator: o.coordinator ?? null, silentAfterMinutes: o.silentAfterMinutes };
+  const first = await fleet.inbox({ ...query, known: null, waitMs: 0 });
+  const warnings = [...first.warnings];
+  let items = first.items;
   const report = (timedOut: boolean | null): InboxReport => ({
     project: o.project,
     generatedAt: o.now().toISOString(),
     items,
-    wait: o.wait && timedOut !== null ? { timeoutSeconds: Math.round(o.wait.timeoutMs / 1000), timedOut } : null,
-    warnings,
+    wait:
+      o.waitMs !== undefined && timedOut !== null ? { timeoutSeconds: Math.round(o.waitMs / 1000), timedOut } : null,
+    warnings: [...new Set(warnings)],
   });
-  if (!o.wait) return report(null);
-  const { sleep, timeoutMs, pollMs = INBOX_POLL_MS } = o.wait;
-  let known = new Set(items.map(entryKey));
-  let lastSeen = started.getTime();
+  if (o.waitMs === undefined) return report(null);
   for (;;) {
-    const left = timeoutMs - (o.now().getTime() - started.getTime());
+    const left = o.waitMs - (o.now().getTime() - started.getTime());
     if (left <= 0) return report(true);
-    await sleep(Math.min(pollMs, left));
-    const at = o.now();
-    if (at.getTime() - lastSeen >= PRESENCE_EVERY_MS) {
-      await seen(at);
-      lastSeen = at.getTime();
-    }
-    items = (await readInbox(db, o)).map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
+    const read = await fleet.inbox({
+      ...query,
+      known: items.map(entryKey),
+      waitMs: Math.min(left, INBOX_WAIT_MAX_MS),
+    });
+    warnings.push(...read.warnings);
+    items = read.items;
     if (items.some((e) => e.new)) return report(false);
-    known = new Set(items.map(entryKey));
   }
 }
 
@@ -254,7 +142,7 @@ const ANSWERABLE: InboxKind[] = ["question", "plan", "request", "answer-request"
 /**
  * Records a coordinator's answer or note. It never calls a runtime: deliver it
  * in the worker's session with the runtime guide first. An answer resolves the
- * question or plan in Turso and posts `Agent status: <phase> — answer: …` on the ticket;
+ * question or plan in the inbox and posts `Agent status: <phase> — answer: …` on the ticket;
  * the worker's phase stays as it is until the worker reports the one it resumes.
  * An answer-request from the dashboard resolves with its question or plan, and the
  * comment names who asked. A launch-request answered here is declined: the
@@ -281,7 +169,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   let ticketId: string | null = null;
   if (idMatch) {
     itemId = Number(idMatch[1]);
-    item = await live(ctx, warnings, `read inbox item #${itemId}`, (db) => getInboxItem(db, project, itemId ?? 0));
+    item = await live(ctx, warnings, `read inbox item #${itemId}`, (fleet) => fleet.inboxItem(itemId ?? 0));
     if (input.note && item?.kind !== "plan")
       throw new Refusal(
         "a note goes to a ticket or a plan, not to another inbox item",
@@ -310,8 +198,8 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   } else {
     ticketId = input.target.trim().toUpperCase();
     if (!input.note) {
-      const open = await live(ctx, warnings, `read the open questions of ${ticketId}`, (db) =>
-        openInboxItems(db, { project, recipient: "coordinator", ticket: ticketId ?? "" }),
+      const open = await live(ctx, warnings, `read the open questions of ${ticketId}`, (fleet) =>
+        fleet.ticketItems(ticketId ?? ""),
       );
       if (open && !open.some((i) => i.kind === "question" || i.kind === "plan"))
         throw new Refusal(
@@ -328,9 +216,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   const answered =
     question === null
       ? item
-      : await live(ctx, warnings, `read the item answered by #${item?.id}`, (db) =>
-          getInboxItem(db, project, question),
-        );
+      : await live(ctx, warnings, `read the item answered by #${item?.id}`, (fleet) => fleet.inboxItem(question));
   const answerKind = answered?.kind === "plan" ? "plan" : "question";
   let url = "";
   if (ticketId) {
@@ -357,55 +243,23 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     }
   }
 
-  const at = ctx.now();
-  const recorded = await live(ctx, warnings, `record the ${input.note ? "note" : "answer"}`, async (db) => {
-    await ensureProject(db, projectOf(config), at);
-    if (input.note) {
-      if (ticketId) await resolvePlans(db, { project, ticket: ticketId, resolution: text, at });
-      const id = await addInboxItem(db, {
-        project,
-        ticket: ticketId,
-        kind: "note",
-        recipient: "worker",
-        author: "coordinator",
-        body: text,
-        at,
-      });
-      await resolveInboxItem(db, { project, id, resolution: "delivered through the runtime", at });
-      return `Note #${id} recorded.`;
-    }
-    if (item?.kind === "answer-request") {
-      await resolveInboxItem(db, { project, id: item.id, resolution: text, at });
-      const closed = question !== null && (await resolveInboxItem(db, { project, id: question, resolution: text, at }));
-      return `Dashboard request #${item.id} delivered${closed ? `; ${answerKind} #${question} resolved` : ""}.`;
-    }
-    if (itemId !== null) {
-      const done = await resolveInboxItem(db, { project, id: itemId, resolution: text, at });
-      // An answer the owner typed on the dashboard for this question is now moot.
-      if (item?.kind === "question" || item?.kind === "plan")
-        await resolveAnswerRequests(db, { project, question: itemId, resolution: text, at });
-      return done ? `Inbox item #${itemId} resolved.` : `Inbox item #${itemId} was already resolved.`;
-    }
-    const n = await resolveInboxItems(db, { project, ticket: ticketId ?? "", kind: "question", resolution: text, at });
-    const plans = await resolvePlans(db, { project, ticket: ticketId ?? "", resolution: text, at });
-    await resolveInboxItems(db, { project, ticket: ticketId ?? "", kind: "answer-request", resolution: text, at });
-    return `${n} open question${n === 1 ? "" : "s"}${plans ? ` and ${plans} plan${plans === 1 ? "" : "s"}` : ""} of ${ticketId} resolved.`;
-  });
+  const recorded = await live(ctx, warnings, `record the ${input.note ? "note" : "answer"}`, (fleet) =>
+    fleet.answer({ text, note: !!input.note, ticket: ticketId, item: itemId }),
+  );
   if (recorded) lines.push(recorded);
   if (!input.note) lines.push("The worker resumes once it reports its phase again.");
   return { ticket: ticketId ?? `#${itemId}`, url, lines, warnings: [...new Set(warnings)], inbox: null };
 }
 
-/** A launch the coordinator will not carry out: closed in Turso with the reason, nothing posted on the ticket. */
+/** A launch the coordinator will not carry out: closed in the inbox with the reason, nothing posted on the ticket. */
 async function declineLaunch(
   ctx: WorkerContext,
   item: StoredInboxItem,
   reason: string,
   warnings: string[],
 ): Promise<Outcome> {
-  const project = ctx.config.project.slug;
-  const done = await live(ctx, warnings, `decline launch request #${item.id}`, (db) =>
-    resolveInboxItem(db, { project, id: item.id, resolution: `declined: ${reason}`, at: ctx.now() }),
+  const done = await live(ctx, warnings, `decline launch request #${item.id}`, (fleet) =>
+    fleet.resolve({ id: item.id, resolution: `declined: ${reason}` }),
   );
   const lines =
     done === null

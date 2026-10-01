@@ -130,7 +130,7 @@ function languageOf(request: NextRequest, env: Env): Language {
   return pick(request.cookies.get(LANGUAGE_COOKIE)?.value) ?? pick(env.ARMADA_DASHBOARD_LANGUAGE) ?? "en";
 }
 
-/** Fails closed: nothing from Linear, GitHub or Turso, only the variable to set. */
+/** Fails closed: nothing from Linear, GitHub or the fleet's live data, only the variable to set. */
 function unconfigured(gate: Extract<Gate, { kind: "unconfigured" }>, data: boolean, lang: Language): NextResponse {
   const t = STRINGS[lang].gate;
   const message = gate.reason === "missing" ? t.unconfigured(PASSWORD_VARIABLE) : t.offInProduction(PASSWORD_VARIABLE);

@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { GITHUB_GRAPHQL, LINEAR_ENDPOINT } from "../../core/src/index.ts";
-import { upsertProject } from "../../core/src/turso.ts";
-import { closeTempTurso, DEMO_TOML, NOW, recordedFetch, tempTurso } from "../../core/test/support.ts";
+import { memoryFleet } from "../../core/test/memory-fleet.ts";
+import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
 
 function fakeIo(
@@ -157,26 +157,27 @@ describe("armada help", () => {
 });
 
 describe("armada status --all", () => {
-  afterEach(closeTempTurso);
+  const KEY = "armada_key_CANARY_registry";
 
-  test("lists every registered project, each read with the armada.toml of its default branch", async () => {
-    const registry = await tempTurso();
-    await upsertProject(registry.db, {
-      slug: "widgets",
-      name: "Widgets",
-      repository: "acme/widgets",
-      programRoot: "DEMO-1",
-    });
-    await upsertProject(registry.db, {
-      slug: "gadgets",
-      name: "Gadgets",
-      repository: "acme/gadgets",
-      programRoot: "GADG-1",
-    });
-    const { io, out } = fakeIo({}, { LINEAR_API_KEY: "k", GITHUB_TOKEN: "t", ARMADA_TURSO_URL: registry.url });
+  test("lists every project of the organization on Armada, each read with the armada.toml of its default branch", async () => {
+    const store = memoryFleet();
+    await store.upsertProject(
+      { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "DEMO-1" },
+      NOW,
+    );
+    await store.upsertProject(
+      { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GADG-1" },
+      NOW,
+    );
+    const armada = fakeArmada({ keys: { [KEY]: "registry" }, store });
+    const { io, out, err } = fakeIo(
+      {},
+      { LINEAR_API_KEY: "k", GITHUB_TOKEN: "t", ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY },
+    );
     const recorded = recordedFetch().fetch;
     const configs: Record<string, string | null> = { "acme/widgets": DEMO_TOML, "acme/gadgets": null };
     io.fetch = async (url, init) => {
+      if (url.startsWith(`${ARMADA_URL}/`)) return armada.fetch(url, init);
       const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
       if (url === GITHUB_GRAPHQL && body.query.includes("query ArmadaConfig")) {
         const text = configs[`${body.variables.owner}/${body.variables.name}`] ?? null;
@@ -187,6 +188,7 @@ describe("armada status --all", () => {
       return recorded(url, init);
     };
     expect(await run(["status", "--all", "--json"], io)).toBe(1);
+    expect(armada.calls.map((c) => [c.method, c.path, c.apiKey])).toEqual([["GET", "projects", KEY]]);
     const all = JSON.parse(out());
     expect(
       all.projects.map((p: { slug: string; error: string | null; configWarning: string | null }) => [
@@ -203,5 +205,25 @@ describe("armada status --all", () => {
       ["widgets", null, null],
     ]);
     expect(all.projects[1].report.inFlight.map((t: { id: string }) => t.id)).toEqual(["DEMO-18", "DEMO-16", "DEMO-11"]);
+    expect(out() + err()).not.toContain(KEY);
+  });
+
+  test("an organization with no project yet says how to register one", async () => {
+    const armada = fakeArmada({ keys: { [KEY]: "registry" } });
+    const { io, out } = fakeIo({}, { LINEAR_API_KEY: "k", ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY });
+    io.fetch = armada.fetch;
+    expect(await run(["status", "--all"], io)).toBe(0);
+    expect(out()).toBe("No project is registered yet. Run `armada init` in a repository to register it.\n");
+  });
+
+  test("not signed in, it refuses and names armada login", async () => {
+    const { io, err } = fakeIo({}, { LINEAR_API_KEY: "k" });
+    io.fetch = async () => {
+      throw new Error("no request expected");
+    };
+    expect(await run(["status", "--all"], io)).toBe(2);
+    expect(err()).toBe(
+      "armada: not signed in to Armada (armada.thevibecompany.co). A person signs in with `armada login`; a headless coordinator sets ARMADA_API_KEY to an organization API key\nNext: armada login\n",
+    );
   });
 });

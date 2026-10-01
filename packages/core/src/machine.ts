@@ -100,7 +100,6 @@ export async function updateCredentialStore(
 export interface PersonalConfig {
   /** Owner's language (BCP 47 tag), or null. */
   language: string | null;
-  turso: { url: string | null };
   dashboard: { url: string | null };
   /** The Armada API, for a self-hosted Armada; the built-in address otherwise. */
   api: { url: string | null };
@@ -108,7 +107,6 @@ export interface PersonalConfig {
 
 export const EMPTY_PERSONAL_CONFIG: PersonalConfig = {
   language: null,
-  turso: { url: null },
   dashboard: { url: null },
   api: { url: null },
 };
@@ -126,7 +124,7 @@ export function parsePersonalConfig(text: string, source = "config.toml"): Perso
     throw new ConfigError(source, [`not valid TOML${where}`]);
   }
   const problems: string[] = [];
-  const known: Record<string, string[]> = { turso: ["url"], dashboard: ["url"], api: ["url"] };
+  const known: Record<string, string[]> = { dashboard: ["url"], api: ["url"] };
   for (const [key, v] of Object.entries(raw)) {
     if (key === "language") continue;
     const keys = known[key];
@@ -149,7 +147,6 @@ export function parsePersonalConfig(text: string, source = "config.toml"): Perso
   const table = (key: string): Table => (isTable(raw[key]) ? (raw[key] as Table) : {});
   const config: PersonalConfig = {
     language: str(raw.language, "language"),
-    turso: { url: str(table("turso").url, "turso.url") },
     dashboard: { url: str(table("dashboard").url, "dashboard.url") },
     api: { url: str(table("api").url, "api.url") },
   };
@@ -174,9 +171,6 @@ export const PERSONAL_CONFIG_TEMPLATE = `# Armada personal defaults for this mac
 
 # Your language for Armada's messages (BCP 47 tag).
 # language = "en"
-
-# [turso]
-# url = "libsql://<database>-<organization>.turso.io"
 
 # [dashboard]
 # url = "https://<your-armada-dashboard>"

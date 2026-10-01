@@ -1,6 +1,6 @@
 // `armada init`: opens one pull request that gives a repository everything
 // `armada doctor` checks, creates the missing tracker labels and registers the
-// project. The files are built on a fresh checkout of the default branch, in a
+// project on Armada (the sign-in's organization). The files are built on a fresh checkout of the default branch, in a
 // temporary worktree, so the person's own checkout is never touched. Running it
 // again rebuilds the same branch and updates the same pull request.
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -10,23 +10,21 @@ import {
   type ArmadaConfig,
   CONFIG_FILE,
   ConfigError,
-  type Credentials,
   configTemplate,
   createMissingLabels,
   LINEAR_KEY,
-  openTurso,
   parseConfig,
   planIsEmpty,
   planSetup,
   readLabels,
   type SetupPlan,
-  STORED_KEYS,
   slugify,
-  upsertProject,
 } from "@armada/core";
 import { authLogin, loadCredentials } from "./auth.ts";
 import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
+import { requireSignIn } from "./login.ts";
 import { applyPlan, CommandError, fsRepoView, gitRoot, requireExec, sh } from "./repo.ts";
+import { liveFleet } from "./worker.ts";
 
 export interface InitOptions {
   armadaVersion: string;
@@ -126,19 +124,17 @@ function prText(plan: SetupPlan, version: string) {
 
 export async function init(io: Io, opts: InitOptions): Promise<number> {
   const exec = requireExec(io);
-  const tursoKey = STORED_KEYS.find((k) => k.name === "tursoUrl") ?? LINEAR_KEY;
-  const required = (c: Credentials) => [c.linearApiKey ? null : LINEAR_KEY, c.tursoUrl ? null : tursoKey];
-  // Ask for missing keys on a terminal. Without one, go on when the keys init
-  // needs are set: a Turso token is optional (a local file database has none).
-  if (io.interactive || required((await loadCredentials(io)).credentials).some(Boolean)) {
+  const first = (await loadCredentials(io)).credentials;
+  // The project is registered on Armada, for the organization this terminal signs in to.
+  requireSignIn(first);
+  // Ask for missing keys on a terminal. Without one, go on when the Linear key is set.
+  if (io.interactive || !first.linearApiKey) {
     const login = await authLogin(io);
     if (login !== 0) return login;
   }
   const { credentials } = await loadCredentials(io);
-  const missing = required(credentials).find(Boolean);
-  if (missing) throw missingKey(missing);
-  const linearApiKey = credentials.linearApiKey ?? "";
-  const tursoUrl = credentials.tursoUrl ?? "";
+  if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
+  const linearApiKey = credentials.linearApiKey;
 
   const root = await gitRoot(exec, io.cwd);
   if (!root)
@@ -232,20 +228,11 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
       if (plan.updated.length) log(`Updates: ${plan.updated.join(", ")}`);
     }
 
-    // 3. The project registry.
-    const db = await openTurso({ url: tursoUrl, token: credentials.tursoToken });
-    try {
-      const project = {
-        slug: config.project.slug,
-        name: config.project.name,
-        repository: config.github.repository,
-        programRoot: config.tracker.programRoot,
-      };
-      await upsertProject(db, project, io.now?.() ?? new Date());
-    } finally {
-      db.close();
-    }
-    log(`Registered project ${config.project.slug}; armada status --all lists it.`);
+    // 3. The project registry, on Armada.
+    const { fleet, warning } = liveFleet(io, config, credentials);
+    if (!fleet) throw new UsageError(`the project could not be registered: ${warning}`, "armada whoami");
+    await fleet.register();
+    log(`Registered project ${config.project.slug} on Armada; armada status --all lists it.`);
     return 0;
   } finally {
     await exec("git", ["worktree", "remove", "--force", checkout], { cwd: root }).catch(() => null);

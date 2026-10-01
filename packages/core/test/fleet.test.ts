@@ -149,7 +149,7 @@ describe("lanes", () => {
     expect(l.since).toBe("2026-03-04T09:30:00Z");
   });
 
-  test("a Turso report newer than the tracker read wins the phase, the time in phase and the status", () => {
+  test("a live report newer than the tracker read wins the phase, the time in phase and the status", () => {
     const i = issue("P-2", { statusType: "started", agentPhase: "implementing", assignee: "Worker" });
     const announced = comment("P-2", "2026-03-04T09:00:00Z", { status: { phase: "implementing", summary: "coding" } });
     const report = { kind: "report", phase: "shipping", message: "PR open", at: "2026-03-04T09:58:00Z" };

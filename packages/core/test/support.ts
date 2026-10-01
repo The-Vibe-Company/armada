@@ -1,18 +1,18 @@
 // Test support: a fake `fetch` that replays recorded Linear and GitHub
-// responses (no network), and a builder for normalized issues.
+// responses (no network), a builder for normalized issues, a fake Linear
+// writer, and a fake Armada API with the fleet's live data in memory.
 
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { ArmadaIdentity } from "../src/armada-api.ts";
-import { parseConfig } from "../src/config.ts";
+import { type ArmadaIdentity, type ArmadaSignIn, armadaApi } from "../src/armada-api.ts";
+import { type ArmadaConfig, parseConfig } from "../src/config.ts";
+import { type FleetCaller, fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
 import { agentLabels, type Fetch, LINEAR_ENDPOINT, normalizeComment, parsePullRequestUrl } from "../src/linear.ts";
 import type { LinearWriter, Ticket, TicketChange, TicketLabel, WorkflowState } from "../src/linear-write.ts";
-import { type Db, openTurso } from "../src/turso.ts";
+import type { Fleet, FleetStore, ProjectInput } from "../src/live.ts";
 import { type Comment, type Issue, LABEL_PHASES } from "../src/types.ts";
 import githubPulls from "./fixtures/github-pulls.json";
 import linearProgram from "./fixtures/linear-program.json";
+import { memoryFleet } from "./memory-fleet.ts";
 
 export const NOW = new Date("2026-03-04T10:00:00.000Z");
 
@@ -87,26 +87,85 @@ export function issue(id: string, over: Partial<Issue> = {}): Issue {
   };
 }
 
-const tempDirs: string[] = [];
-const openDbs: Db[] = [];
+// ------------------------------------------------------------------ the fleet behind a fake Armada
 
-export function trackDb(db: Db): Db {
-  openDbs.push(db);
-  return db;
+/** A clock that starts at NOW and moves only when something sleeps on it. */
+export function fakeClock(start: Date = NOW) {
+  let t = start.getTime();
+  return {
+    now: () => new Date(t),
+    sleep: async (ms: number) => {
+      t += ms;
+    },
+    advance: (ms: number) => {
+      t += ms;
+    },
+  };
 }
 
-/** A fresh local libSQL file: the same client and SQL as a remote Turso database. */
-export async function tempTurso(): Promise<{ url: string; db: Db }> {
-  const dir = await mkdtemp(join(tmpdir(), "armada-turso-"));
-  tempDirs.push(dir);
-  const url = `file:${join(dir, "armada.db")}`;
-  return { url, db: trackDb(await openTurso({ url })) };
+type Clock = ReturnType<typeof fakeClock>;
+
+/**
+ * Answers `POST fleet/<op>` the way the app does: registers the project the
+ * request names, then runs `serveFleet` on `store` with `clock`.
+ */
+export async function answerFleet(
+  store: FleetStore,
+  clock: Pick<Clock, "now" | "sleep">,
+  op: string,
+  body: unknown,
+  caller: FleetCaller & { project?: string },
+): Promise<Response> {
+  const b = (body ?? {}) as { project?: unknown; input?: unknown };
+  const project = parseProject(b.project);
+  if (!project)
+    return Response.json({ error: "a fleet request names its project", next: "update the CLI" }, { status: 400 });
+  if (caller.kind === "worker" && caller.project !== project.slug)
+    return Response.json(
+      { error: `this worker session is for the project ${caller.project}`, next: "the coordinator does it" },
+      { status: 403 },
+    );
+  await store.ensureProject(project, clock.now());
+  const answer = await serveFleet(store, { op, project, caller, input: b.input }, clock);
+  return Response.json(answer.body, { status: answer.status });
 }
 
-/** Closes every database opened by the helpers above and removes their files. */
-export async function closeTempTurso(): Promise<void> {
-  for (const db of openDbs.splice(0)) db.close();
-  for (const dir of tempDirs.splice(0)) await rm(dir, { recursive: true, force: true });
+/** The project of the demo armada.toml, as every fleet request names it. */
+export const DEMO_PROJECT: ProjectInput = {
+  slug: "widgets",
+  name: "Widgets",
+  repository: "acme/widgets",
+  programRoot: "DEMO-1",
+};
+
+export const projectInputOf = (config: ArmadaConfig): ProjectInput => ({
+  slug: config.project.slug,
+  name: config.project.name,
+  repository: config.github.repository,
+  programRoot: config.tracker.programRoot,
+});
+
+/**
+ * The fleet's live data in memory, behind the fake Armada API: `store` to
+ * look at, `fleet` the client a command gets (signed in for the whole
+ * organization unless `caller` is a worker), `clock` the server's clock.
+ */
+export function tempFleet(
+  o: { project?: ProjectInput; caller?: FleetCaller; clock?: Clock; store?: ReturnType<typeof memoryFleet> } = {},
+) {
+  const store = o.store ?? memoryFleet();
+  const clock = o.clock ?? fakeClock();
+  const project = o.project ?? DEMO_PROJECT;
+  const calls: string[] = [];
+  const caller = o.caller ?? { kind: "organization" };
+  const fetch: Fetch = async (url, init) => {
+    const op = url.slice(`${ARMADA_URL}/api/cli/fleet/`.length);
+    calls.push(op);
+    return answerFleet(store, clock, op, JSON.parse(String(init.body)), { ...caller, project: project.slug });
+  };
+  const signIn: ArmadaSignIn = { kind: "api-key", key: "armada_key_TEST" };
+  const fleet: Fleet = fleetClient({ api: armadaApi({ url: ARMADA_URL, fetch }), signIn, project });
+  return { store, fleet, clock, calls };
 }
 
 // ------------------------------------------------------------------ fake Linear writer
@@ -371,19 +430,12 @@ export interface ArmadaCall {
 
 /**
  * The organization's keys the fake Armada hands out on `POST credentials`.
- * `turso: "mint"` makes a numbered token for `tursoUrl` that expires after 4
- * hours of `now`, kept while more than an hour is left and `revision` has not
- * changed; `"stored"` hands out a stored database token; `null` gives none.
  * `off` plays an Armada without a vault (503).
  */
 export interface FakeVault {
   off?: boolean;
   linear: { apiKey: string; scope: "own" | "organization" } | null;
-  turso: "mint" | "stored" | null;
-  tursoUrl: string;
-  revision: string;
   now: () => Date;
-  minted: number;
   warnings?: string[];
 }
 
@@ -398,8 +450,19 @@ export interface FakeVault {
  * dashboard.
  */
 export function fakeArmada(
-  o: { polls?: string[]; token?: string; keys?: Record<string, string>; accounts?: boolean; vault?: FakeVault } = {},
+  o: {
+    polls?: string[];
+    token?: string;
+    keys?: Record<string, string>;
+    accounts?: boolean;
+    vault?: FakeVault;
+    /** The fleet's live data behind `fleet/*`; a fresh one by default. */
+    store?: FleetStore;
+    clock?: Clock;
+  } = {},
 ) {
+  const store = o.store ?? memoryFleet();
+  const clock = o.clock ?? fakeClock();
   const token = o.token ?? "session-token-1";
   const polls = [...(o.polls ?? ["pending", "approve"])];
   const sessions = new Set<string>();
@@ -449,6 +512,21 @@ export function fakeArmada(
     if (worker?.ended)
       return Response.json({ error: worker.ended, next: "report it to the coordinator" }, { status: 401 });
     const person = (bearer && sessions.has(bearer)) || (call.apiKey && keys.has(call.apiKey));
+    if (call.method === "POST" && call.path.startsWith("fleet/")) {
+      if (!person && !worker)
+        return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
+      return answerFleet(
+        store,
+        clock,
+        call.path.slice("fleet/".length),
+        call.body,
+        worker ? { kind: "worker", ticket: worker.ticket, project: worker.project } : { kind: "organization" },
+      );
+    }
+    if (route === "GET projects") {
+      if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
+      return Response.json({ projects: await store.listProjects() });
+    }
     if (route === "POST launch-tokens") {
       if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
       if (o.vault?.off || !o.vault)
@@ -534,30 +612,10 @@ export function fakeArmada(
         return Response.json({ error: "this Armada keeps no keys", next: "armada auth login" }, { status: 503 });
       if (!person && !worker)
         return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
-      const held = (call.body as { turso: { revision: string; expiresAt: string } | null }).turso;
-      const now = v.now().getTime();
-      let turso: unknown = null;
-      if (v.turso === "stored")
-        turso = { kind: "stored", url: v.tursoUrl, token: "stored-db-token", expiresAt: null, revision: v.revision };
-      else if (v.turso === "mint") {
-        if (held && held.revision === v.revision && Date.parse(held.expiresAt) - now > 3_600_000)
-          turso = { kind: "kept", expiresAt: held.expiresAt, revision: v.revision };
-        else {
-          v.minted++;
-          turso = {
-            kind: "minted",
-            url: v.tursoUrl,
-            token: `minted-turso-token-${v.minted}`,
-            expiresAt: new Date(now + 4 * 3_600_000).toISOString(),
-            revision: v.revision,
-          };
-        }
-      }
       return Response.json({
         schemaVersion: 1,
         organization: { id: "org-1", name: "Acme", slug: "acme" },
         linear: v.linear,
-        turso,
         warnings: v.warnings ?? [],
       });
     }
@@ -567,5 +625,5 @@ export function fakeArmada(
     }
     return Response.json({ error: "not found" }, { status: 404 });
   };
-  return { fetch, calls, sessions, keys, launches, workers, end };
+  return { fetch, calls, sessions, keys, launches, workers, end, store, clock };
 }

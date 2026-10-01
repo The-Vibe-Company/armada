@@ -5,7 +5,7 @@ test("reads shell-style assignments; the last duplicate wins; broken lines are r
   const text = [
     "# Armada keys",
     "LINEAR_API_KEY=lin_api_one",
-    "export ARMADA_TURSO_URL=libsql://db.example.io # the database",
+    "export ARMADA_API_URL=https://armada.example.test # the database",
     "",
     "QUOTED='a b $c'",
     'DOUBLE="say \\"hi\\" \\$HOME"',
@@ -17,21 +17,21 @@ test("reads shell-style assignments; the last duplicate wins; broken lines are r
   expect(parseDotenv(text)).toEqual({
     values: {
       LINEAR_API_KEY: "lin_api_two",
-      ARMADA_TURSO_URL: "libsql://db.example.io",
+      ARMADA_API_URL: "https://armada.example.test",
       QUOTED: "a b $c",
       DOUBLE: 'say "hi" $HOME',
       JOINED: "it's",
     },
     invalidLines: [9, 10],
-    assigned: ["LINEAR_API_KEY", "ARMADA_TURSO_URL", "QUOTED", "DOUBLE", "JOINED", "OPEN"],
+    assigned: ["LINEAR_API_KEY", "ARMADA_API_URL", "QUOTED", "DOUBLE", "JOINED", "OPEN"],
   });
 });
 
 test("updates keep comments, unknown keys and export, drop later duplicates, and append new keys", () => {
   const before =
-    "# mine\nexport LINEAR_API_KEY=old # from Linear\nOTHER=kept\n\nLINEAR_API_KEY=older\nARMADA_TURSO_TOKEN='broken\n";
-  const after = updateDotenv(before, { LINEAR_API_KEY: "new", ARMADA_TURSO_TOKEN: null, ARMADA_TURSO_URL: "u" });
-  expect(after).toBe("# mine\nexport LINEAR_API_KEY=new # from Linear\nOTHER=kept\n\nARMADA_TURSO_URL=u\n");
+    "# mine\nexport LINEAR_API_KEY=old # from Linear\nOTHER=kept\n\nLINEAR_API_KEY=older\nARMADA_API_KEY='broken\n";
+  const after = updateDotenv(before, { LINEAR_API_KEY: "new", ARMADA_API_KEY: null, ARMADA_API_URL: "u" });
+  expect(after).toBe("# mine\nexport LINEAR_API_KEY=new # from Linear\nOTHER=kept\n\nARMADA_API_URL=u\n");
   expect(updateDotenv("", { A: "1" })).toBe("A=1\n");
 });
 

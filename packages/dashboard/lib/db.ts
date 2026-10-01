@@ -145,8 +145,8 @@ export class PgDialect implements Dialect {
  * in one transaction that first takes an advisory lock, so two servers
  * starting together apply it once. Never edit an applied version: add one.
  *
- * Version 1 is everything the app had on libSQL and Turso, moved to one
- * Postgres database (THE-849):
+ * Version 1 is everything the app had before THE-849, moved to one Postgres
+ * database:
  * - what Better Auth 1.7 needs for email and password, GitHub, organizations,
  *   database rate limiting, device authorization (`armada login`) and the
  *   organizations' API keys;
@@ -448,6 +448,12 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
         PRIMARY KEY ("organizationId", "installationId")
       )`,
     ],
+  },
+  {
+    // Terminals reach the fleet's data through the Armada API (THE-850): the
+    // vault no longer keeps database access for them, so what it kept goes.
+    version: 3,
+    statements: [`DELETE FROM "armada_secret" WHERE "name" LIKE 'turso-%'`],
   },
 ];
 

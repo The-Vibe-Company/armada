@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
@@ -24,15 +25,10 @@ afterEach(async () => {
 async function runtime(env: Record<string, string> = {}) {
   const home = await mkdtemp(join(tmpdir(), "armada-launch-"));
   dirs.push(home);
+  const store = memoryFleet();
   const armada = fakeArmada({
-    vault: {
-      linear: { apiKey: LINEAR, scope: "own" },
-      turso: null,
-      tursoUrl: "",
-      revision: "r",
-      now: () => NOW,
-      minted: 0,
-    },
+    store,
+    vault: { linear: { apiKey: LINEAR, scope: "own" }, now: () => NOW },
   });
   armada.launches.set(LAUNCH, { project: "widgets", ticket: "DEMO-7", used: false });
   const linear = new FakeLinear();
@@ -58,6 +54,7 @@ async function runtime(env: Record<string, string> = {}) {
   return {
     io,
     armada,
+    store,
     linear,
     keys,
     credentials: join(home, "armada", "credentials"),
@@ -100,6 +97,13 @@ describe("a worker signed in with its launch token", () => {
 
     expect(await run(["release", "--reason", "handing back"], r.io)).toBe(0);
     expect(r.printed()).toContain("Signed out of Armada: the worker session of DEMO-7 has ended.\n");
+    // No database variable anywhere: the worker session recorded every step on Armada.
+    expect(r.store.events.map((e) => [e.ticket, e.kind])).toEqual([
+      ["DEMO-7", "claim"],
+      ["DEMO-7", "report"],
+      ["DEMO-7", "release"],
+    ]);
+    expect((await r.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
     expect(r.armada.workers.get(WORKER)?.ended).toBe("the ticket was released");
     expect(await readFile(r.credentials, "utf8")).toBe("");
   });
@@ -158,7 +162,7 @@ describe("the coordinator's merge and release end the ticket's worker sessions",
     );
     const coordinator: Io = {
       ...r.io,
-      env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, LINEAR_API_KEY: "k", ARMADA_TURSO_URL: "" },
+      env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, LINEAR_API_KEY: "k" },
     };
     r.printed();
     expect(await run(["release", "--ticket", "DEMO-7", "--reason", "stuck"], coordinator)).toBe(0);

@@ -14,6 +14,7 @@ import {
   checkRepository,
   LINEAR_KEY,
   parseConfig,
+  RETIRED_VARIABLES,
   readLabels,
   STORED_KEYS,
 } from "@armada/core";
@@ -86,12 +87,25 @@ async function signInChecks(io: Io, credentials: Credentials): Promise<Check[]> 
 /** Keys still in the credentials file while Armada gives this terminal the same ones: no longer needed. */
 function keyFileChecks(machine: Machine, credentials: Credentials): Check[] {
   const store = machine.store;
-  if (!store?.exists || !credentials.armadaSignIn) return [];
+  if (!store?.exists) return [];
+  const retired = RETIRED_VARIABLES.filter((v) => store.assigned.includes(v));
+  const checks: Check[] = retired.length
+    ? [
+        {
+          id: "retired-keys",
+          level: "warning",
+          message: `${store.path} still holds ${retired.join(", ")}, which this version never reads: the CLI reaches the fleet's data through Armada`,
+          fix: `\`armada login\` removes ${retired.length === 1 ? "it" : "them"} as it signs this terminal in; or delete ${retired.length === 1 ? "its line" : "their lines"} from ${store.path}`,
+        },
+      ]
+    : [];
+  if (!credentials.armadaSignIn) return checks;
   const unneeded = STORED_KEYS.filter(
     (k) => store.values[k.variable]?.trim() && credentials.sources[k.name]?.kind === "armada",
   ).map((k) => k.variable);
-  if (!unneeded.length) return [];
+  if (!unneeded.length) return checks;
   return [
+    ...checks,
     {
       id: "local-keys",
       level: "warning",

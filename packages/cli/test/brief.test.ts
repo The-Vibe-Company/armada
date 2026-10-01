@@ -90,8 +90,6 @@ const BRIEF_RESPONSE = {
 // Planted where a careless brief could leak them: the environment it inspects.
 const SECRETS = {
   LINEAR_API_KEY: "lin_api_SECRET_value_1",
-  ARMADA_TURSO_TOKEN: "turso_SECRET_value_2",
-  ARMADA_TURSO_URL: "libsql://SECRET-db-3.turso.io",
 };
 
 function briefIo(
@@ -134,7 +132,8 @@ describe("armada brief", () => {
     );
     expect(text).toContain("Branch:      feature/demo-13-show-a-sign-in-page");
     expect(text).toMatch(/ {2}LINEAR_API_KEY +required {2}set in this shell /);
-    expect(text).toMatch(/ {2}ARMADA_TURSO_URL +optional {2}NOT set in this shell /);
+    // The fleet's live data is reached through Armada: no database variable to pass.
+    expect(text).not.toContain("ARMADA_TURSO");
     expect(text).toContain("ARMADA_TICKET=DEMO-13");
 
     const prompt = text.slice(text.indexOf("# DEMO-13 — Show a sign-in page"));
@@ -186,12 +185,7 @@ describe("armada brief", () => {
     // The worker's claim records the override and its reason.
     expect(brief.claimCommand).toEndWith(` --profile codex --reason 'it'\\''s a session bug'`);
     expect(brief.prompt).toBe(p.out());
-    expect(brief.environment.map((v: { name: string }) => v.name)).toEqual([
-      "LINEAR_API_KEY",
-      "ARMADA_TURSO_URL",
-      "ARMADA_TURSO_TOKEN",
-      "ARMADA_TICKET",
-    ]);
+    expect(brief.environment.map((v: { name: string }) => v.name)).toEqual(["LINEAR_API_KEY", "ARMADA_TICKET"]);
   });
 
   test("no secret value from the environment appears in any output", async () => {
@@ -297,7 +291,7 @@ describe("armada brief with a launch token", () => {
     );
     const armada = fakeArmada({
       token: "CANARY_coordinator_session",
-      vault: { linear: null, turso: null, tursoUrl: "", revision: "r", now: () => NOW, minted: 0, ...vault },
+      vault: { linear: null, now: () => NOW, ...vault },
     });
     armada.sessions.add("CANARY_coordinator_session");
     const b = briefIo({ ...SECRETS, XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL });

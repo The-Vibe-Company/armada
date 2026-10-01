@@ -1,24 +1,41 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { recordEvent, saveRuntimeHandle } from "@armada/core";
+import { describe, expect, test } from "bun:test";
+import type { Fetch } from "@armada/core";
+import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
-  closeTempTurso,
+  ARMADA_URL,
   DEMO_TOML,
   FakeLinear,
+  fakeArmada,
+  fakeClock,
   NOW,
   pullResponse,
   recordedFetch,
-  tempTurso,
 } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
 
-afterEach(closeTempTurso);
-
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
+const KEY = "armada_key_CANARY_fleet";
+/** A terminal signed in to the fake Armada with an organization API key; no database variable anywhere. */
+const SIGNED_IN = { ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY };
 
-function worker(env: Record<string, string> = {}) {
+/**
+ * A worker's terminal: the fake Armada behind `${ARMADA_URL}/api/cli/`, and
+ * `rest` (GitHub by default) for every other address. No config home: the
+ * real one is never read.
+ */
+function worker(
+  env: Record<string, string> = {},
+  o: { store?: ReturnType<typeof memoryFleet>; clock?: ReturnType<typeof fakeClock> } = {},
+) {
+  const store = o.store ?? memoryFleet();
+  const armada = fakeArmada({ keys: { [KEY]: "fleet" }, store, ...(o.clock ? { clock: o.clock } : {}) });
   const linear = new FakeLinear();
   const out: string[] = [];
   const err: string[] = [];
+  const net: { rest: Fetch } = {
+    rest: async () =>
+      Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "FAILURE" }] })),
+  };
   const io: Io = {
     cwd: "/work/widgets",
     env: { LINEAR_API_KEY: "k", GITHUB_TOKEN: "t", ...env },
@@ -26,8 +43,7 @@ function worker(env: Record<string, string> = {}) {
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
-    fetch: async () =>
-      Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "FAILURE" }] })),
+    fetch: (url, init) => (url.startsWith(`${ARMADA_URL}/`) ? armada.fetch(url, init) : net.rest(url, init)),
     now: () => NOW,
     gitBranch: () => "feature/demo-7-do-the-thing",
     linearWriter: () => linear,
@@ -36,13 +52,12 @@ function worker(env: Record<string, string> = {}) {
     out.length = 0;
     err.length = 0;
   };
-  return { io, linear, out: () => out.join(""), err: () => err.join(""), reset };
+  return { io, linear, armada, store, net, out: () => out.join(""), err: () => err.join(""), reset };
 }
 
 describe("armada claim, report and release", () => {
-  test("a worker claims, reports on its branch and releases; Turso gets every event", async () => {
-    const { url, db } = await tempTurso();
-    const w = worker({ ARMADA_TURSO_URL: url });
+  test("a signed-in worker claims, reports on its branch and releases; Armada records every event", async () => {
+    const w = worker(SIGNED_IN);
     w.linear.add("DEMO-7");
     expect(await run(["claim", "demo-7", "--runtime", "conductor", "--handle", "ws-1/s-1"], w.io)).toBe(0);
     expect(w.out()).toBe(
@@ -58,8 +73,22 @@ describe("armada claim, report and release", () => {
 
     w.reset();
     expect(await run(["release", "--reason", "wrong ticket"], w.io)).toBe(0);
-    const kinds = await db.execute("SELECT kind FROM events WHERE ticket = 'DEMO-7' ORDER BY id");
-    expect(kinds.rows.map((r) => r.kind)).toEqual(["claim", "report", "release"]);
+    expect(w.err()).toBe("");
+    expect(w.store.events.map((e) => [e.project, e.ticket, e.kind])).toEqual([
+      ["widgets", "DEMO-7", "claim"],
+      ["widgets", "DEMO-7", "report"],
+      ["widgets", "DEMO-7", "release"],
+    ]);
+    expect(await w.store.listProjects()).toMatchObject([
+      { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "DEMO-1" },
+    ]);
+    // Every fleet call carried the API key, and the key never reached another address.
+    const fleet = w.armada.calls.filter((c) => c.path.startsWith("fleet/"));
+    expect(fleet.map((c) => [c.path, c.apiKey])).toEqual([
+      ["fleet/claim", KEY],
+      ["fleet/report", KEY],
+      ["fleet/release", KEY],
+    ]);
   });
 
   test("refusals exit 1 with the reason: invalid transition, short SHA, red CI", async () => {
@@ -67,8 +96,9 @@ describe("armada claim, report and release", () => {
     w.linear.add("DEMO-7");
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.err()).toBe(
-      "armada: warning: Turso is not configured (ARMADA_TURSO_URL); live activity is not recorded\n",
+      "armada: warning: not signed in to Armada (armada login); live activity is not recorded, Linear is\n",
     );
+    expect(w.armada.calls).toEqual([]);
 
     w.reset();
     expect(await run(["report", "ready-to-merge", "--sha", HEAD, "--pr", "9"], w.io)).toBe(1);
@@ -109,7 +139,7 @@ describe("armada claim, report and release", () => {
     w.linear.add("DEMO-7", {
       labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
     });
-    w.io.fetch = async () =>
+    w.net.rest = async () =>
       Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
     expect(await run(["report", "ready-to-merge", "--pr", "9", "--sha", HEAD], w.io)).toBe(0);
     expect(w.linear.bodies).toEqual([`Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`]);
@@ -126,27 +156,45 @@ describe("armada claim, report and release", () => {
     }
   });
 
-  test("an unreachable Turso only warns; Linear is still written", async () => {
-    const w = worker({ ARMADA_TURSO_URL: "file:/nonexistent-armada-dir/sub/armada.db" });
+  test("an unreachable Armada only warns; Linear is still written", async () => {
+    const w = worker(SIGNED_IN);
+    w.io.fetch = async (url, init) => {
+      if (url.startsWith(`${ARMADA_URL}/`)) throw new TypeError("fetch failed");
+      return w.net.rest(url, init);
+    };
     w.linear.add("DEMO-7");
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
-    expect(w.err()).toMatch(/^armada: warning: Turso unavailable \(.+\); live activity is not recorded, Linear is\n$/);
+    expect(w.err()).toMatch(
+      /^armada: warning: Armada: could not record the claim \(Armada \(armada\.example\.test\) unreachable: .+\); Linear is up to date\n$/,
+    );
   });
 
-  test("armada status measures silence from the last Turso event", async () => {
-    const { url, db } = await tempTurso();
-    await recordEvent(db, {
+  test("a revoked API key only warns; Linear is still written", async () => {
+    const w = worker({ ...SIGNED_IN, ARMADA_API_KEY: "armada_key_CANARY_revoked" });
+    w.linear.add("DEMO-7");
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
+    expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
+    expect(w.err()).toBe(
+      "armada: warning: Armada: could not record the claim (not signed in to Armada); Linear is up to date\n",
+    );
+    expect(w.err()).not.toContain("CANARY");
+    expect(w.store.events).toEqual([]);
+  });
+
+  test("armada status measures silence from the last live event on Armada", async () => {
+    const w = worker(SIGNED_IN);
+    await w.store.recordEvent({
       project: "widgets",
       ticket: "DEMO-11",
       kind: "report",
       at: new Date("2026-03-04T09:55:00Z"),
     });
-    const w = worker({ ARMADA_TURSO_URL: url });
-    w.io.fetch = recordedFetch().fetch;
+    w.net.rest = recordedFetch().fetch;
     expect(await run(["status", "--json"], w.io)).toBe(0);
     const lane = JSON.parse(w.out()).inFlight.find((t: { id: string }) => t.id === "DEMO-11");
     expect([lane.lastReport, lane.silent]).toEqual(["2026-03-04T09:55:00.000Z", false]);
+    expect(w.armada.calls.map((c) => c.path)).toEqual(["fleet/events/latest"]);
   });
 });
 
@@ -168,11 +216,10 @@ describe("armada ask, inbox and answer", () => {
     ["session only", { CONDUCTOR_SESSION_ID: "s-1" }, null],
     ["blank session", { CONDUCTOR_WORKSPACE_ID: "ws-1", CONDUCTOR_SESSION_ID: " " }, null],
   ])("inbox identity: %s", async (_name, env, coordinator) => {
-    const { url, db } = await tempTurso();
-    const cli = worker({ ARMADA_TURSO_URL: url, ...env });
+    const cli = worker({ ...SIGNED_IN, ...env });
     const handles = ["ws-1/s-1", "ws-1/s-2"];
     for (const [index, handle] of handles.entries())
-      await saveRuntimeHandle(db, {
+      await cli.store.saveRuntimeHandle({
         project: "widgets",
         ticket: `DEMO-${index + 1}`,
         runtime: "Conductor",
@@ -186,13 +233,11 @@ describe("armada ask, inbox and answer", () => {
       handles.filter((handle) => handle !== coordinator),
     );
     expect(cli.err()).toBe("");
-    const seen = await db.execute("SELECT handle FROM events WHERE kind = 'inbox'");
-    expect(seen.rows.map((row) => row.handle)).toEqual([coordinator]);
+    expect(cli.store.presence.get("widgets")).toEqual({ handle: coordinator, at: NOW.toISOString() });
   });
 
   test("a worker asks, the coordinator reads its inbox and records the answer, the worker resumes", async () => {
-    const { url } = await tempTurso();
-    const w = worker({ ARMADA_TURSO_URL: url });
+    const w = worker(SIGNED_IN);
     w.linear.add("DEMO-7");
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1/s-1"], w.io)).toBe(0);
     expect(await run(["report", "implementing", "--message", "plan approved"], w.io)).toBe(0);
@@ -204,7 +249,8 @@ describe("armada ask, inbox and answer", () => {
     );
 
     w.reset();
-    const coordinator = { ...w.io, env: { ARMADA_TURSO_URL: url }, gitBranch: () => "main" };
+    // The coordinator's terminal: signed in, no Linear key (the inbox needs none).
+    const coordinator = { ...w.io, env: SIGNED_IN, gitBranch: () => "main" };
     expect(await run(["inbox"], coordinator)).toBe(0);
     expect(w.out()).toBe(
       [
@@ -225,6 +271,7 @@ describe("armada ask, inbox and answer", () => {
     expect(w.out()).toBe(
       "Answer posted on DEMO-7 (blocked).\nInbox item #1 resolved.\nThe worker resumes once it reports its phase again.\nhttps://linear.app/acme/issue/DEMO-7\n",
     );
+    expect(w.store.items[0]).toMatchObject({ kind: "question", resolution: "SQLite, for the first slice." });
 
     w.reset();
     expect(await run(["inbox", "--json"], coordinator)).toBe(0);
@@ -233,13 +280,58 @@ describe("armada ask, inbox and answer", () => {
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["Conductor", "implementing"]);
   });
 
-  test("usage mistakes exit 2", async () => {
+  test("inbox --wait polls Armada until a new item arrives, or until its timeout", async () => {
+    // The server's clock moves only while a long poll waits; the CLI reads the same clock.
+    const clock = fakeClock();
+    const w = worker(SIGNED_IN, { clock });
+    w.io.now = clock.now;
+    expect(await run(["inbox", "--wait", "--timeout", "60"], w.io)).toBe(0);
+    expect(w.out()).toBe("Inbox of widgets: nothing waits for you.\nNo new item within 60 s.\n");
+    // One read, then long polls of at most 25 s each until the 60 s are up.
+    expect(w.armada.calls.map((c) => (c.body as { input: { waitMs: number } }).input.waitMs)).toEqual([
+      0, 25_000, 25_000, 10_000,
+    ]);
+    expect(clock.now().toISOString()).toBe(new Date(NOW.getTime() + 60_000).toISOString());
+
+    // A question asked while the coordinator waits ends the wait, marked new.
+    const asking = fakeClock();
+    const store = memoryFleet();
+    const w2 = worker(SIGNED_IN, {
+      store,
+      clock: {
+        ...asking,
+        sleep: async (ms) => {
+          asking.advance(ms);
+          if (!store.items.some((i) => i.ticket === "DEMO-9"))
+            await store.addInboxItem({
+              project: "widgets",
+              ticket: "DEMO-9",
+              kind: "question",
+              recipient: "coordinator",
+              author: "ws-9/s-9",
+              body: "Which queue?",
+              at: asking.now(),
+            });
+        },
+      },
+    });
+    w2.io.now = asking.now;
+    expect(await run(["inbox", "--wait", "--json"], w2.io)).toBe(0);
+    const report = JSON.parse(w2.out());
+    expect(report.items.map((e: { ticket: string; new: boolean }) => [e.ticket, e.new])).toEqual([["DEMO-9", true]]);
+    expect(report.wait).toEqual({ timeoutSeconds: 300, timedOut: false });
+  });
+
+  test("usage mistakes exit 2; the inbox needs a sign-in", async () => {
     const w = worker();
     expect(await run(["ask"], w.io)).toBe(2);
     expect(w.err()).toContain("ask needs a question");
     w.reset();
     expect(await run(["inbox"], w.io)).toBe(2);
-    expect(w.err()).toBe("armada: the inbox lives in Turso: set ARMADA_TURSO_URL\nNext: armada auth login\n");
+    expect(w.err()).toBe(
+      "armada: not signed in to Armada (armada.thevibecompany.co). A person signs in with `armada login`; a headless coordinator sets ARMADA_API_KEY to an organization API key\nNext: armada login\n",
+    );
+    expect(w.armada.calls).toEqual([]);
     w.reset();
     expect(await run(["inbox", "--timeout", "30"], w.io)).toBe(2);
     expect(w.err()).toBe("armada: --timeout applies to --wait\nNext: armada inbox --help\n");

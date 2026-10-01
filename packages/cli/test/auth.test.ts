@@ -7,10 +7,8 @@ import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 import { echo, emptyLine, feedLine } from "../src/line.ts";
 
-// Canary values: no output may ever contain them.
+// Canary value: no output may ever contain it.
 const LINEAR = "lin_api_CANARY_linear";
-const TURSO_TOKEN = "CANARY_turso_token";
-const TURSO_URL = "libsql://canary-db.example.io";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -56,7 +54,7 @@ async function machine(env: Record<string, string> = {}) {
     /** Everything printed so far; asserts no canary leaked. */
     printed: () => {
       const text = output();
-      for (const secret of [LINEAR, TURSO_TOKEN, TURSO_URL]) expect(text).not.toContain(secret);
+      expect(text).not.toContain(LINEAR);
       return text;
     },
     reset: () => {
@@ -68,22 +66,16 @@ async function machine(env: Record<string, string> = {}) {
 }
 
 describe("armada auth login", () => {
-  test("asks only for missing keys, tokens hidden, stores them 0600, and asks nothing the second time", async () => {
+  test("asks only for the missing Linear key, hidden, stores it 0600, and asks nothing the second time", async () => {
     const m = await machine();
-    Object.assign(m.answers, { LINEAR_API_KEY: LINEAR, ARMADA_TURSO_URL: TURSO_URL, ARMADA_TURSO_TOKEN: TURSO_TOKEN });
+    m.answers.LINEAR_API_KEY = LINEAR;
 
     expect(await run(["auth", "login"], m.io)).toBe(0);
-    expect(m.asked.map((a) => [a.question.split(/[ :]/)[0], a.hidden])).toEqual([
-      ["LINEAR_API_KEY", true],
-      ["ARMADA_TURSO_URL", false],
-      ["ARMADA_TURSO_TOKEN", true],
-    ]);
-    expect(await readFile(m.credentials, "utf8")).toBe(
-      `LINEAR_API_KEY=${LINEAR}\nARMADA_TURSO_URL=${TURSO_URL}\nARMADA_TURSO_TOKEN=${TURSO_TOKEN}\n`,
-    );
+    expect(m.asked.map((a) => [a.question.split(/[ :]/)[0], a.hidden])).toEqual([["LINEAR_API_KEY", true]]);
+    expect(await readFile(m.credentials, "utf8")).toBe(`LINEAR_API_KEY=${LINEAR}\n`);
     expect((await stat(m.credentials)).mode & 0o777).toBe(0o600);
     expect((await stat(m.config)).isFile()).toBe(true);
-    expect(m.printed()).toContain("Saved LINEAR_API_KEY, ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN in");
+    expect(m.printed()).toContain("Saved LINEAR_API_KEY in");
 
     m.reset();
     expect(await run(["auth", "login"], m.io)).toBe(0);
@@ -91,34 +83,39 @@ describe("armada auth login", () => {
     expect(m.printed()).toContain("Every Armada key is already set");
   });
 
-  test("a key set in the environment or already stored is not asked, and the file keeps its other lines", async () => {
-    const m = await machine({ ARMADA_TURSO_URL: TURSO_URL });
-    await mkdir(dirname(m.credentials), { recursive: true });
-    await writeFile(m.credentials, "# written by hand\nOTHER_TOOL=keep\nLINEAR_API_KEY=lin_api_old\n");
-    m.answers.ARMADA_TURSO_TOKEN = TURSO_TOKEN;
+  test("a key set in the environment is not asked, and the file keeps its other lines", async () => {
+    const env = await machine({ LINEAR_API_KEY: LINEAR });
+    expect(await run(["auth", "login"], env.io)).toBe(0);
+    expect(env.asked).toEqual([]);
+    expect(env.printed()).toContain("Every Armada key is already set");
+    expect(await stat(env.credentials).catch(() => null)).toBeNull();
 
+    const m = await machine();
+    await mkdir(dirname(m.credentials), { recursive: true });
+    await writeFile(m.credentials, "# written by hand\nOTHER_TOOL=keep\n");
+    m.answers.LINEAR_API_KEY = LINEAR;
     expect(await run(["auth", "login"], m.io)).toBe(0);
-    expect(m.asked.map((a) => a.question.split(/[ :]/)[0])).toEqual(["ARMADA_TURSO_TOKEN"]);
+    expect(m.asked.map((a) => a.question.split(/[ :]/)[0])).toEqual(["LINEAR_API_KEY"]);
     expect(await readFile(m.credentials, "utf8")).toBe(
-      `# written by hand\nOTHER_TOOL=keep\nLINEAR_API_KEY=lin_api_old\nARMADA_TURSO_TOKEN=${TURSO_TOKEN}\n`,
+      `# written by hand\nOTHER_TOOL=keep\nLINEAR_API_KEY=${LINEAR}\n`,
     );
     m.printed();
   });
 
-  test("without a terminal it asks nothing, writes nothing and names the variables to set", async () => {
+  test("without a terminal it asks nothing, writes nothing and names the variable to set", async () => {
     const m = await machine();
     m.io.interactive = false;
     expect(await run(["auth", "login"], m.io)).toBe(2);
     expect(m.asked).toEqual([]);
     expect(m.err()).toContain("auth login needs an interactive terminal");
-    for (const v of ["LINEAR_API_KEY", "ARMADA_TURSO_URL", "ARMADA_TURSO_TOKEN"]) expect(m.err()).toContain(`  ${v}`);
+    expect(m.err()).toContain("  LINEAR_API_KEY  Linear API key:");
+    expect(m.err()).not.toContain("TURSO");
     expect(await stat(m.credentials).catch(() => null)).toBeNull();
   });
 
   test("cancelling a prompt saves nothing", async () => {
     const m = await machine();
-    m.answers.LINEAR_API_KEY = LINEAR;
-    m.answers.ARMADA_TURSO_URL = null;
+    m.answers.LINEAR_API_KEY = null;
     expect(await run(["auth", "login"], m.io)).toBe(130);
     expect(await stat(m.credentials).catch(() => null)).toBeNull();
     m.printed();
@@ -128,18 +125,17 @@ describe("armada auth login", () => {
 describe("armada auth status", () => {
   test("says where each key comes from, the environment first, and never prints a value", async () => {
     const m = await machine({ LINEAR_API_KEY: LINEAR });
-    m.answers.ARMADA_TURSO_URL = TURSO_URL;
-    await run(["auth", "login"], m.io);
+    await mkdir(dirname(m.credentials), { recursive: true });
+    await writeFile(m.credentials, "LINEAR_API_KEY=lin_api_CANARY_stored\n");
     await chmod(m.credentials, 0o644);
-    await writeFile(m.config, "", { flag: "a" });
-    m.reset();
+    await writeFile(m.config, "");
 
     expect(await run(["auth", "status"], m.io)).toBe(0);
-    expect(m.printed()).toBe(`Armada keys
-  LINEAR_API_KEY      set      environment (LINEAR_API_KEY)
-  ARMADA_TURSO_URL    set      credentials file
-  ARMADA_TURSO_TOKEN  missing  set ARMADA_TURSO_TOKEN or run \`armada auth login\`
-  GITHUB_TOKEN        missing  set GITHUB_TOKEN or run \`gh auth login\`
+    const text = m.printed();
+    expect(text).not.toContain("lin_api_CANARY_stored");
+    expect(text).toBe(`Armada keys
+  LINEAR_API_KEY  set      environment (LINEAR_API_KEY)
+  GITHUB_TOKEN    missing  set GITHUB_TOKEN or run \`gh auth login\`
 
 Credentials file  ${m.credentials} (mode 0644)
 Personal config   ${m.config}
@@ -155,29 +151,27 @@ Armada sign-in
     const status = JSON.parse(m.printed());
     expect(status.keys.map((k: { variable: string; present: boolean }) => [k.variable, k.present])).toEqual([
       ["LINEAR_API_KEY", true],
-      ["ARMADA_TURSO_URL", true],
-      ["ARMADA_TURSO_TOKEN", false],
       ["GITHUB_TOKEN", false],
     ]);
   });
 });
 
 describe("armada auth logout", () => {
-  test("removes Armada's keys, keeps every other line, and says which ones the environment still sets", async () => {
+  test("removes Armada's keys and the retired fleet database keys, keeps every other line, and says which ones the environment still sets", async () => {
     const m = await machine({ LINEAR_API_KEY: "lin_api_env" });
-    Object.assign(m.answers, { ARMADA_TURSO_URL: TURSO_URL, ARMADA_TURSO_TOKEN: TURSO_TOKEN });
-    await run(["auth", "login"], m.io);
+    // Keys earlier versions kept for the fleet database: never read, and removed with the rest.
+    const retired =
+      "ARMADA_TURSO_URL=libsql://CANARY-db.example.io\nARMADA_TURSO_TOKEN=CANARY_db_token\nARMADA_TURSO_LEASE=CANARY_lease\n";
+    await mkdir(dirname(m.credentials), { recursive: true });
     // A malformed key line still holds a secret: logout removes it too.
-    await writeFile(
-      m.credentials,
-      `# mine\nOTHER_TOOL=keep\n${await readFile(m.credentials, "utf8")}LINEAR_API_KEY='${LINEAR}\n`,
-    );
-    m.reset();
+    await writeFile(m.credentials, `# mine\nOTHER_TOOL=keep\n${retired}LINEAR_API_KEY='${LINEAR}\n`);
 
     expect(await run(["auth", "logout"], m.io)).toBe(0);
     expect(await readFile(m.credentials, "utf8")).toBe("# mine\nOTHER_TOOL=keep\n");
-    expect(m.printed()).toBe(
-      `Removed LINEAR_API_KEY, ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN from ${m.credentials}.\nStill set in the environment, and still used: LINEAR_API_KEY. Unset them to stop using them.\n`,
+    const text = m.printed();
+    expect(text).not.toContain("CANARY");
+    expect(text).toBe(
+      `Removed LINEAR_API_KEY, ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN, ARMADA_TURSO_LEASE from ${m.credentials}.\nStill set in the environment, and still used: LINEAR_API_KEY. Unset them to stop using them.\n`,
     );
   });
 });

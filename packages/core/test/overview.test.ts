@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type { InboxItem } from "../src/live.ts";
 import { buildOverview, type ProjectReading, pipeline } from "../src/overview.ts";
 import type { InFlightTicket, StatusReport } from "../src/status.ts";
-import type { InboxItem } from "../src/turso.ts";
 
 const NOW = new Date("2026-03-04T10:00:00Z");
 const at = (t: string) => `2026-03-04T${t}:00.000Z`;
@@ -185,7 +185,7 @@ describe("fleet overview", () => {
     expect(o.projects[0]?.profiles).toEqual([{ name: "opus", agent: "claude", model: "opus-5-5", effort: "high" }]);
   });
 
-  test("without Turso the waiting list comes from the tracker and the coordinator is unknown", () => {
+  test("without the live data the waiting list comes from the tracker and the coordinator is unknown", () => {
     const o = buildOverview({
       projects: [reading("widgets", [ticket("W-1", { phase: "ready-to-merge" })], null)],
       live: { state: "unreachable", error: "timeout" },

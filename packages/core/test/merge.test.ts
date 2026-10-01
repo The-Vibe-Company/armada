@@ -1,6 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
 import type { Comparison, MergePull } from "../src/github.ts";
+import type { Fleet } from "../src/live.ts";
 import {
   type LocalRepo,
   type MergeAttempt,
@@ -10,19 +12,8 @@ import {
   type TestMergeResult,
   withLease,
 } from "../src/merge.ts";
-import {
-  acquireLease,
-  addInboxItem,
-  type Db,
-  getRuntimeHandle,
-  openInboxItems,
-  renewLease,
-  saveRuntimeHandle,
-} from "../src/turso.ts";
 import { Refusal } from "../src/worker.ts";
-import { closeTempTurso, DEMO_TOML, FakeLinear, LABELS, NOW, tempTurso } from "./support.ts";
-
-afterEach(closeTempTurso);
+import { DEMO_TOML, FakeLinear, LABELS, NOW, tempFleet } from "./support.ts";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const BASE = "fedcba9876543210fedcba9876543210fedcba98";
@@ -104,7 +95,7 @@ const label = (id: string) => {
   return l;
 };
 
-function setup(o: { turso?: Db | null; toml?: string; holder?: string; tursoDown?: boolean } = {}) {
+function setup(o: { live?: ReturnType<typeof tempFleet> | null; toml?: string; holder?: string; down?: boolean } = {}) {
   const config = parseConfig(`${DEMO_TOML}${o.toml ?? GATES}`);
   const linear = new FakeLinear();
   const forge = new FakeForge();
@@ -127,11 +118,11 @@ function setup(o: { turso?: Db | null; toml?: string; holder?: string; tursoDown
     linear,
     forge,
     repo,
-    turso: async () =>
-      o.turso
-        ? { db: o.turso, warning: null }
-        : { db: null, warning: o.tursoDown ? "Turso unavailable (connection refused)" : "Turso is not configured" },
-    tursoConfigured: !!o.turso || !!o.tursoDown,
+    fleet: async () =>
+      o.live
+        ? { fleet: o.live.fleet, warning: null }
+        : { fleet: null, warning: o.down ? "Armada unreachable (connection refused)" : "not signed in to Armada" },
+    lockRequired: !!o.live || !!o.down,
     inFlight: async () => [
       { id: "DEMO-7", title: "Share a list", phase: "ready-to-merge", runtime: "Conductor" },
       { id: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code" },
@@ -277,9 +268,10 @@ describe("armada merge", () => {
   });
 
   test("merges pinned to the handed-back SHA, closes the ticket and lists who to tell", async () => {
-    const { db } = await tempTurso();
-    const s = setup({ turso: db });
-    await saveRuntimeHandle(db, {
+    const live = tempFleet();
+    const db = live.store;
+    const s = setup({ live });
+    await db.saveRuntimeHandle({
       project: "widgets",
       ticket: "DEMO-7",
       runtime: "Conductor",
@@ -287,7 +279,7 @@ describe("armada merge", () => {
       branch: null,
       at: NOW,
     });
-    await saveRuntimeHandle(db, {
+    await db.saveRuntimeHandle({
       project: "widgets",
       ticket: "DEMO-8",
       runtime: "Claude Code",
@@ -295,7 +287,7 @@ describe("armada merge", () => {
       branch: null,
       at: NOW,
     });
-    await addInboxItem(db, {
+    await db.addInboxItem({
       project: "widgets",
       ticket: "DEMO-7",
       kind: "hand-back",
@@ -320,10 +312,9 @@ describe("armada merge", () => {
     ]);
     expect(out.archive).toEqual({ runtime: "Conductor", handle: "ws-1/s-1", guide: "armada-runtime-conductor" });
     expect(out.warnings).toEqual([]);
-    expect(await openInboxItems(db, { project: "widgets", recipient: "coordinator" })).toEqual([]);
-    expect((await getRuntimeHandle(db, "widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
-    const events = await db.execute("SELECT kind, head_sha FROM events WHERE ticket = 'DEMO-7'");
-    expect(events.rows.map((r) => [r.kind, r.head_sha])).toEqual([["merge", HEAD]]);
+    expect(await db.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([]);
+    expect((await db.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    expect(db.events.filter((e) => e.ticket === "DEMO-7").map((e) => [e.kind, e.headSha])).toEqual([["merge", HEAD]]);
   });
 
   test("a GitHub 5xx is retried only after re-reading an unchanged open pull request", async () => {
@@ -394,13 +385,14 @@ describe("armada merge", () => {
   });
 
   test("a merge lock lost during the checklist stops before merging", async () => {
-    const { db } = await tempTurso();
-    const s = setup({ turso: db });
+    const live = tempFleet();
+    const db = live.store;
+    const s = setup({ live });
     s.forge.onCompare = async () => {
-      await db.execute("UPDATE leases SET holder = 'coordinator-b'");
+      for (const l of db.leases.values()) l.holder = "coordinator-b";
     };
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      "the merge lock could not be renewed (it expired and another coordinator took it, or Turso did not answer); nothing was merged\nNext: armada merge 9 again",
+      "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged\nNext: armada merge 9 again",
     );
     expect(s.forge.merges).toEqual([]);
   });
@@ -429,10 +421,10 @@ describe("armada merge", () => {
     expect(s.linear.writes).toEqual([]);
   });
 
-  test("Turso configured but down refuses the merge; --no-lock merges and says so on the ticket", async () => {
-    const s = setup({ tursoDown: true });
+  test("signed in but Armada down refuses the merge; --no-lock merges and says so on the ticket", async () => {
+    const s = setup({ down: true });
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toBe(
-      "the merge lock needs Turso, which is unavailable (Turso unavailable (connection refused)); nothing was merged\nNext: armada merge 9 again once Turso answers, or armada merge 9 --no-lock if you are sure no other coordinator merges in widgets now",
+      "the merge lock needs Armada, which is unavailable (Armada unreachable (connection refused)); nothing was merged\nNext: armada merge 9 again once Armada answers, or armada merge 9 --no-lock if you are sure no other coordinator merges in widgets now",
     );
     expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
 
@@ -444,19 +436,20 @@ describe("armada merge", () => {
     );
   });
 
-  test("without Turso configured, the merge runs unlocked with a warning", async () => {
+  test("not signed in to Armada, the merge runs unlocked with a warning", async () => {
     const s = setup();
     const out = await mergePullRequest(s.ctx, { pr: 9 });
     expect(out.merged).toBe(true);
     expect(out.warnings[0]).toBe(
-      "Turso is not configured; the merge lock was not taken, so make sure no other coordinator merges in widgets now",
+      "not signed in to Armada; the merge lock was not taken, so make sure no other coordinator merges in widgets now",
     );
   });
 
   test("two coordinators merging at once merge one after the other", async () => {
-    const { db } = await tempTurso();
-    const a = setup({ turso: db, holder: "coordinator-a" });
-    const b = setup({ turso: db, holder: "coordinator-b" });
+    // Two terminals, one Armada: each takes the lock through the API.
+    const one = tempFleet();
+    const a = setup({ live: one, holder: "coordinator-a" });
+    const b = setup({ live: tempFleet({ store: one.store, clock: one.clock }), holder: "coordinator-b" });
     b.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
     b.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #10, head ${HEAD}, CI green`, "2026-03-04T09:30:00Z");
     const timeline: string[] = [];
@@ -492,34 +485,48 @@ describe("armada merge", () => {
 
 describe("merge lease", () => {
   test("an expired lease is taken over and its old holder can no longer renew it", async () => {
-    const { db } = await tempTurso();
-    const key = { project: "widgets", name: "merge", ttlMs: 60_000 };
-    expect(await acquireLease(db, { ...key, holder: "a", at: NOW })).toEqual({ acquired: true });
-    const later = new Date(NOW.getTime() + 30_000);
-    expect(await acquireLease(db, { ...key, holder: "b", at: later })).toMatchObject({
+    const a = tempFleet();
+    const b = tempFleet({ store: a.store, clock: a.clock });
+    const key = { name: "merge", ttlMs: 60_000 };
+    expect(await a.fleet.acquireLease({ ...key, holder: "a" })).toEqual({ acquired: true });
+    a.clock.advance(30_000);
+    expect(await b.fleet.acquireLease({ ...key, holder: "b" })).toMatchObject({
       acquired: false,
-      held: { holder: "a" },
+      held: { holder: "a", expiresAt: "2026-03-04T10:01:00.000Z" },
     });
-    const expired = new Date(NOW.getTime() + 61_000);
-    expect(await acquireLease(db, { ...key, holder: "b", at: expired })).toEqual({ acquired: true });
-    expect(await renewLease(db, { ...key, holder: "a", at: expired })).toBe(false);
+    a.clock.advance(31_000);
+    expect(await b.fleet.acquireLease({ ...key, holder: "b" })).toEqual({ acquired: true });
+    expect(await a.fleet.renewLease({ ...key, holder: "a" })).toBe(false);
+  });
+
+  test("Armada refuses a lease longer than an hour", async () => {
+    const { fleet } = tempFleet();
+    const err = await fleet.acquireLease({ name: "merge", holder: "a", ttlMs: 2 * 3_600_000 }).catch((e) => e);
+    expect(err).toBeInstanceOf(ArmadaApiError);
+    expect([err.status, err.message]).toEqual([
+      400,
+      "Armada refused: fleet lease/acquire: ttlMs must be between 1 s and 60 min",
+    ]);
   });
 
   test("a waiter gives up after the wait limit, naming the holder", async () => {
-    const { db } = await tempTurso();
-    await acquireLease(db, { project: "widgets", name: "merge", holder: "a", ttlMs: 60_000, at: NOW });
-    const o = { project: "widgets", name: "merge", holder: "b", ttlMs: 60_000, now: () => NOW };
+    const { fleet } = tempFleet();
+    await fleet.acquireLease({ name: "merge", holder: "a", ttlMs: 60_000 });
+    const o = { project: "widgets", name: "merge", holder: "b", ttlMs: 60_000 };
     const message = await refusal(
-      withLease(db, { ...o, sleep: async () => {}, pollMs: 10, maxWaitMs: 30 }, async () => "ran"),
+      withLease(fleet, { ...o, sleep: async () => {}, pollMs: 10, maxWaitMs: 30 }, async () => "ran"),
     );
     expect(message).toBe(
       "the merge lock of widgets is still held by a (until 2026-03-04T10:01:00.000Z)\nNext: the same armada merge again once that coordinator is done",
     );
   });
 
-  test("a Turso that never answers refuses the lock instead of hanging", async () => {
-    const hung = { execute: () => new Promise(() => {}) } as unknown as Db;
-    const o = { project: "widgets", name: "merge", holder: "a", ttlMs: 60_000, now: () => NOW, timeoutMs: 0 };
+  test("an Armada that never answers refuses the lock instead of hanging", async () => {
+    const hung = {
+      acquireLease: () => new Promise(() => {}),
+      releaseLease: () => new Promise(() => {}),
+    } as unknown as Fleet;
+    const o = { project: "widgets", name: "merge", holder: "a", ttlMs: 60_000, timeoutMs: 0 };
     let ran = false;
     const message = await refusal(
       withLease(hung, { ...o, sleep: async () => {} }, async () => {
@@ -527,7 +534,7 @@ describe("merge lease", () => {
       }),
     );
     expect([message, ran]).toEqual([
-      "Turso did not answer within 0 s to take the merge lock; nothing was merged\nNext: the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
+      "Armada did not answer within 0 s to take the merge lock; nothing was merged\nNext: the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
       false,
     ]);
   });

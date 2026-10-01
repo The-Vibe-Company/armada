@@ -217,33 +217,15 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
   // Synthetic keys, for these tests only.
   const ORG_LINEAR = "lin_api_synthetic_org_0001";
   const OWN_LINEAR = "lin_api_synthetic_own_0002";
-  const PLATFORM = "synthetic-platform-token-0003";
-  const PLATFORM_NEW = "synthetic-platform-token-0004";
-  const STORED = "synthetic-database-token-0005";
   const vaultMode = vaultModeOf({ ARMADA_SECRETS_KEY: Buffer.alloc(32, 3).toString("base64") });
   const vault = (vaultMode.kind === "on" ? vaultMode.key : null) as VaultKey;
   const start = new Date("2026-09-30T12:00:00Z");
   let now = start;
   const at = (minutes: number) => new Date(start.getTime() + minutes * 60_000);
 
-  /** The Turso Platform API, faked: every token it makes is numbered. */
-  const turso: { url: string; token: string }[] = [];
-  let tursoDown = false;
-  const tursoFetch = async (url: string, init?: RequestInit) => {
-    const auth = new Headers(init?.headers).get("authorization") ?? "";
-    turso.push({ url, token: auth.replace(/^Bearer /, "") });
-    if (tursoDown) return Response.json({ error: "token is invalid" }, { status: 401 });
-    if (url.includes("/auth/tokens")) return Response.json({ jwt: `synthetic-minted-${turso.length}` });
-    return Response.json({ database: { Name: "fleet", Hostname: "fleet-acme.turso.io" } });
-  };
-  const deps = { vault: () => vaultMode, fetch: tursoFetch, now: () => now };
-  const keys = async (init: { token?: string; key?: string; held?: unknown }) => {
-    const res = await cli(
-      "POST",
-      "credentials",
-      { token: init.token, key: init.key, body: { turso: init.held ?? null } },
-      deps,
-    );
+  const deps = { vault: () => vaultMode, now: () => now };
+  const keys = async (init: { token?: string; key?: string }) => {
+    const res = await cli("POST", "credentials", { token: init.token, key: init.key, body: {} }, deps);
     return { res, body: (await res.json()) as Release & { error?: string; next?: string } };
   };
   const set = (name: SecretName, value: string, user: string | null = null) =>
@@ -297,7 +279,12 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     // Nothing set yet: an answer with no key, recorded all the same.
     const empty = await keys({ token: memberToken });
     expect(empty.res.status).toBe(200);
-    expect(empty.body).toMatchObject({ linear: null, turso: null, organization: { id: orgId, slug: "acme" } });
+    expect(empty.body).toEqual({
+      schemaVersion: 1,
+      organization: { id: orgId, name: "Acme", slug: "acme" },
+      linear: null,
+      warnings: [],
+    });
   });
 
   test("the Linear key is the person's own when set, else the organization's; an API key gets the organization's", async () => {
@@ -317,123 +304,27 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     expect((await keys({ token: memberToken })).body.linear?.scope).toBe("organization");
   });
 
-  test("a Turso token is made for the terminal, expires in hours, is kept while fresh and renewed near its end or when the keys change", async () => {
-    await set("turso-platform-token", PLATFORM);
-    await set("turso-organization", "acme");
-    await set("turso-database", "fleet");
-    turso.length = 0;
-
-    const first = await keys({ token: memberToken });
-    expect(first.res.headers.get("cache-control")).toBe("no-store");
-    const t = first.body.turso;
-    expect(t).toMatchObject({ kind: "minted", url: "libsql://fleet-acme.turso.io", token: "synthetic-minted-1" });
-    if (t?.kind !== "minted") throw new Error("not minted");
-    expect(t.expiresAt).toBe(at(4 * 60).toISOString());
-    // The token is made with an expiry, through the Platform token, for this database only.
-    const mint = turso.find((c) => c.url.includes("/auth/tokens"));
-    expect(mint?.url).toBe(
-      "https://api.turso.tech/v1/organizations/acme/databases/fleet/auth/tokens?expiration=4h&authorization=full-access",
-    );
-    expect(mint?.token).toBe(PLATFORM);
-
-    const held = { revision: t.revision, expiresAt: t.expiresAt };
-    now = at(60);
-    turso.length = 0;
-    expect((await keys({ token: memberToken, held })).body.turso).toEqual({
-      kind: "kept",
-      expiresAt: t.expiresAt,
-      revision: t.revision,
-    });
-    expect(turso).toEqual([]);
-    // Less than an hour left: a new one.
-    now = at(3 * 60 + 30);
-    const renewed = (await keys({ token: memberToken, held })).body.turso;
-    expect(renewed?.kind).toBe("minted");
-    // A claimed expiry beyond what Armada hands out is not one of its tokens.
-    now = at(4 * 60);
-    expect(
-      (await keys({ token: memberToken, held: { revision: t.revision, expiresAt: at(60 * 24).toISOString() } })).body
-        .turso?.kind,
-    ).toBe("minted");
-
-    // Replacing a Turso key takes effect on the next call, even for a fresh token.
-    if (renewed?.kind !== "minted") throw new Error("not minted");
-    now = at(4 * 60 + 1);
-    await set("turso-platform-token", PLATFORM_NEW);
-    turso.length = 0;
-    const replaced = (
-      await keys({ token: memberToken, held: { revision: renewed.revision, expiresAt: renewed.expiresAt } })
-    ).body.turso;
-    expect(replaced?.kind).toBe("minted");
-    expect(replaced?.revision).not.toBe(renewed.revision);
-    expect(turso.every((c) => c.token === PLATFORM_NEW)).toBe(true);
-  });
-
-  test("Turso refusing the Platform token hands out no Turso access and says why, without the token", async () => {
-    tursoDown = true;
-    const { body } = await keys({ token: memberToken });
-    tursoDown = false;
-    expect(body.turso).toBeNull();
-    expect(body.linear?.apiKey).toBe(ORG_LINEAR);
-    expect(body.warnings.join(" ")).toContain("HTTP 401");
-    expect(body.warnings.join(" ")).not.toContain(PLATFORM_NEW);
-  });
-
-  test("without a Platform token, the stored database token is handed out and the audit list says so", async () => {
-    for (const name of ["turso-platform-token", "turso-organization", "turso-database"] as const)
-      await deleteSecret(client, {
-        organization: orgId,
-        user: null,
-        name,
-        actor: { kind: "person", id: "owner", label: "Olive Owner" },
-        now,
-      });
-    await set("turso-url", "libsql://fleet-acme.turso.io");
-    await set("turso-database-token", STORED);
-    const { body } = await keys({ key: apiKey });
-    expect(body.turso).toMatchObject({
-      kind: "stored",
-      url: "libsql://fleet-acme.turso.io",
-      token: STORED,
-      expiresAt: null,
-    });
-    const [latest] = await listEvents(client, orgId, 1);
-    expect(latest).toMatchObject({
-      action: "release",
-      keys: ["linear-api-key", "turso-database-token"],
-      actor: { kind: "api-key", label: 'API key "vault coordinator"' },
-    });
-    expect(latest?.detail).toContain("no Turso Platform API token");
-  });
-
   test("every call is in the audit list, who and which key, and no value is ever logged or recorded", async () => {
     const events = await listEvents(client, orgId, 200);
     const releases = events.filter((e) => e.action === "release");
-    expect(releases.some((e) => e.actor.label === "Mia Member <member@example.test>" && e.keys.includes("turso"))).toBe(
-      true,
-    );
-    expect(releases.some((e) => e.detail.includes("Turso token kept"))).toBe(true);
+    expect(
+      releases.some((e) => e.actor.label === "Mia Member <member@example.test>" && e.keys.includes("linear-api-key")),
+    ).toBe(true);
+    expect(releases.some((e) => e.actor.label === 'API key "vault coordinator"')).toBe(true);
     const everything = [
       JSON.stringify((await client.query(`SELECT * FROM "armada_secret_event"`)).rows),
       ...logged,
     ].join("\n");
-    for (const value of [ORG_LINEAR, OWN_LINEAR, PLATFORM, PLATFORM_NEW, STORED, "synthetic-minted-"])
-      expect(everything).not.toContain(value);
+    for (const value of [ORG_LINEAR, OWN_LINEAR]) expect(everything).not.toContain(value);
     expect(logged.some((l) => l.includes("keys released to"))).toBe(true);
   });
 
-  test("the dashboard reads with the organization's Linear and GitHub keys, never a person's own, and asks Turso nothing", async () => {
+  test("the dashboard reads with the organization's Linear and GitHub keys, never a person's own", async () => {
     now = at(8 * 60);
-    await set("turso-platform-token", PLATFORM);
-    await set("turso-organization", "acme");
-    await set("turso-database", "fleet");
     await set("github-token", "synthetic-github-token-0006");
     await set("linear-api-key", OWN_LINEAR, memberId);
-    turso.length = 0;
     const own = await organizationKeys({ client, vault }, orgId);
     expect(own).toEqual({ linearApiKey: ORG_LINEAR, githubToken: "synthetic-github-token-0006", warnings: [] });
-    // The fleet's live data is in the app's database: no Turso token is made for the dashboard.
-    expect(turso).toEqual([]);
   });
 
   test("only the first organization, and the shared-password gate, fall back to the deployment's keys", () => {

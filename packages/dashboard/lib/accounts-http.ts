@@ -61,7 +61,7 @@ function languageOf(request: NextRequest, env: Env): Language {
   return pick(request.cookies.get(LANGUAGE_COOKIE)?.value) ?? pick(env.ARMADA_DASHBOARD_LANGUAGE) ?? "en";
 }
 
-/** Fails closed: nothing from Linear, GitHub or Turso while sessions cannot be checked. */
+/** Fails closed: nothing from Linear, GitHub or the fleet's live data while sessions cannot be checked. */
 function unavailable(data: boolean, lang: Language): NextResponse {
   const t = STRINGS[lang].auth;
   return locked(data, lang, t.unavailableTitle, t.unavailable);

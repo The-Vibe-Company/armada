@@ -66,7 +66,8 @@ const COMMAND_HELP: Record<string, string> = {
   inbox: `  inbox [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
                     oldest first; records that the coordinator is at work. --wait returns
-                    when a new item arrives or after --timeout (default 300 s). Needs Turso
+                    when a new item arrives or after --timeout (default 300 s). Needs a
+                    sign-in to Armada
 `,
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: record an answer already delivered in the worker's
@@ -80,8 +81,8 @@ const COMMAND_HELP: Record<string, string> = {
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
                     lock, close the ticket and list the workers to tell. Never deletes
-                    the branch. --dry-run only runs the checklist. Refused when Turso is
-                    configured but down; --no-lock then merges without the lock.
+                    the branch. --dry-run only runs the checklist. Signed in to Armada,
+                    refused while Armada is down; --no-lock then merges without the lock.
 `,
   brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt]
                     A new worker's launch prompt, the Conductor profile (agent, model,
@@ -129,20 +130,21 @@ ${TICKET_HELP}  -h, --help        Show this help; \`armada <command> --help\` sh
 Keys (the environment first, then Armada when signed in, then the file):
   LINEAR_API_KEY       Linear API key (required by status, init, brief, claim, report,
                        release, ask and answer)
-  ARMADA_TURSO_URL     Turso database URL (required by init, inbox and status --all;
-                       optional elsewhere; a file: URL works locally)
-  ARMADA_TURSO_TOKEN   Turso database token
   GITHUB_TOKEN         GitHub token; falls back to GH_TOKEN, then \`gh auth token\`
                        (merge also runs gh and git, with gh's own login)
   ARMADA_API_KEY       Organization API key: signs a headless coordinator in to Armada
   ARMADA_API_URL       The Armada to sign in to (default https://armada.thevibecompany.co)
 
+The fleet's live data (claims, reports, the inbox, the merge lock, the project
+registry) is reached through Armada with the sign-in: no database key is needed.
+init, inbox and status --all need a sign-in; elsewhere, signed out, live activity
+is not recorded and Linear stays the record.
+
 Files:
   $XDG_CONFIG_HOME/armada (default ~/.config/armada)
     credentials        KEY=value lines, mode 0600, written by \`armada auth login\` and
-                       \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY; the
-                       Turso token Armada made for this terminal: ARMADA_TURSO_LEASE)
-    config.toml        personal defaults: language, [turso] url, [dashboard] url, [api] url
+                       \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
+    config.toml        personal defaults: language, [dashboard] url, [api] url
 `;
 
 /** The help of one command, or null for a command Armada does not know. */
@@ -281,7 +283,7 @@ async function status(io: Io, args: Args): Promise<number> {
   const { credentials } = await loadCredentials(io);
   const { linearApiKey, githubToken } = credentials;
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
-  const events = statusEvents(config, credentials);
+  const events = statusEvents(io, config, credentials);
   const report = await loadStatus(config, {
     linearApiKey,
     githubToken,
