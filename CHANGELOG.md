@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/The-Vibe-Company/armada/compare/v0.2.3...v0.2.4) (2026-10-01)
+
+
+### Features
+
+* **cli:** put project conventions and the plan rule in every brief ([#63](https://github.com/The-Vibe-Company/armada/issues/63)) ([5c356fa](https://github.com/The-Vibe-Company/armada/commit/5c356fab4681f837b307c0aee3e1e90afe41027c))
+
 ## [0.2.3](https://github.com/The-Vibe-Company/armada/compare/v0.2.2...v0.2.3) (2026-10-01)
 
 
