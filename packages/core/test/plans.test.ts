@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, checkInbox } from "../src/inbox.ts";
+import { parseStatusLine } from "../src/linear.ts";
 import { type Fleet, type FleetStore, readInbox } from "../src/live.ts";
 import { RequestRefusal, requestAnswer } from "../src/requests.ts";
 import { claimTicket, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
@@ -41,6 +42,27 @@ test("a plan reaches the coordinator with its full text and handle, once per app
   expect(await inbox(db)).toEqual([]);
   await reportPlan(ctx);
   expect((await inbox(db))[0]?.id).not.toBe(pending?.id);
+});
+
+test("--plan posts the plan as its own block under a one-line status; awaiting-approval still sends it in full", async () => {
+  const { db, ctx, linear } = await setup();
+  const long = `## Plan\n\n- ${"Parse every widget field and reject the malformed ones ".repeat(3)}\n- Test it.`;
+  await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", plan: long });
+  const summary = `${"Parse every widget field and reject the malformed ones ".repeat(2).slice(0, 99).trimEnd()}…`;
+  expect(linear.bodies.at(-1)).toBe(`Agent status: implementing — ${summary}\n\n## Plan\n\n${long}`);
+  expect(parseStatusLine(linear.bodies.at(-1) ?? "")).toEqual({ phase: "implementing", summary, plan: true });
+  expect(await inbox(db)).toEqual([]);
+
+  const { db: db2, ctx: ctx2, linear: linear2 } = await setup();
+  await reportPhase(ctx2, {
+    ticket: "DEMO-7",
+    phase: "awaiting-approval",
+    message: "Plan: parser first\nThe tests come from the issue.",
+    plan,
+  });
+  const block = `The tests come from the issue.\n\n## Plan\n\n${plan}`;
+  expect(linear2.bodies.at(-1)).toBe(`Agent status: awaiting-approval — Plan: parser first\n\n${block}`);
+  expect(await inbox(db2)).toEqual([expect.objectContaining({ kind: "plan", body: `Plan: parser first\n\n${block}` })]);
 });
 
 test("inbox --wait wakes when a worker posts a plan", async () => {

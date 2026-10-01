@@ -1,5 +1,6 @@
 // The worker phase machine and the hand-back gate. Pure: the commands read
 // the ticket and the pull request, these rules decide.
+import { type ArmadaConfig, type PlanPolicy, routingLabelKey } from "./config.ts";
 import type { CiState, LabelPhase, PullRequest } from "./types.ts";
 import { LABEL_PHASES } from "./types.ts";
 
@@ -28,6 +29,16 @@ export function transitionProblem(from: LabelPhase | null, to: LabelPhase): stri
   if (from === to || to === "blocked" || TRANSITIONS[from].includes(to)) return null;
   const allowed = [...TRANSITIONS[from], "blocked", `${from} (status update)`].join(", ");
   return `cannot go from ${from} to ${to}; from ${from} a worker may report: ${allowed}`;
+}
+
+/** Whether a ticket's plan waits for approval, and why: `[policy] plans`, unless a label of the ticket overrides it. */
+export function planRule(config: ArmadaConfig, labels: string[]): { rule: PlanPolicy; why: string } {
+  const { plans, preApprovedLabel, approvalLabel } = config.policy;
+  const has = (name: string) => labels.some((l) => routingLabelKey(l) === routingLabelKey(name));
+  // Asking for approval is the safer rule: it wins when a ticket carries both labels.
+  if (has(approvalLabel)) return { rule: "approve", why: `the ticket's label ${approvalLabel}` };
+  if (has(preApprovedLabel)) return { rule: "pre-approved", why: `the ticket's label ${preApprovedLabel}` };
+  return { rule: plans, why: `armada.toml [policy] plans = "${plans}"` };
 }
 
 export const FULL_SHA = /^[0-9a-f]{40}$/;

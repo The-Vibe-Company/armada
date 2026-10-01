@@ -41,7 +41,8 @@ export interface InFlightTicket extends TicketRef {
   /** Latest report by the worker (live event, status comment or claim); null if it never reported. */
   lastReport: string | null;
   silent: boolean;
-  statusLine: { summary: string; at: string; url: string } | null;
+  /** `plan`: the comment at `url` carries the worker's full plan. */
+  statusLine: { summary: string; at: string; url: string; plan: boolean } | null;
   pr: PrRef | null;
   openBlockers: string[];
   flags: LaneFlag[];
@@ -163,7 +164,9 @@ export function buildStatus({
       lastUpdate: l.lastUpdate,
       lastReport: l.lastReport,
       silent: l.flags.includes("silent"),
-      statusLine: l.statusLine ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url } : null,
+      statusLine: l.statusLine
+        ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
+        : null,
       pr: l.pr ? prRef(l.pr) : null,
       openBlockers: l.openBlockers,
       flags: l.flags,

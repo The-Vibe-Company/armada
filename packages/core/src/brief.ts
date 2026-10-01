@@ -6,7 +6,7 @@
 // signed-in coordinator: the worker's first command exchanges it for a
 // session limited to its ticket, so its runtime needs no key at all. It works
 // once, within the hour, which makes a copy left in a transcript useless.
-import type { ArmadaConfig, ConductorProfile } from "./config.ts";
+import type { ArmadaConfig, ConductorProfile, PlanPolicy } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import {
   type Connection,
@@ -20,6 +20,7 @@ import {
   readRest,
 } from "./linear.ts";
 import { buildModel } from "./model.ts";
+import { planRule } from "./phases.ts";
 import { checkRequestedProfile, chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { AgentPhase, ProgramData, StatusType } from "./types.ts";
 import { Refusal } from "./worker.ts";
@@ -100,6 +101,10 @@ export interface Brief {
   blockers: BriefBlocker[];
   notes: BriefNote[];
   parallel: BriefWorker[];
+  /** Whether the worker waits for approval of its plan, and why (`[policy] plans` or a ticket label). */
+  plans: { rule: PlanPolicy; why: string };
+  /** `[brief] extra`: the file every brief carries under "Project conventions"; null when unset or unreadable. */
+  conventions: { path: string; text: string } | null;
   /** The first message of the worker's session. */
   prompt: string;
   warnings: string[];
@@ -263,6 +268,8 @@ export interface BuildBriefInput {
   launch?: BriefLaunch | null;
   /** Why there is none: the terminal is not signed in, or Armada refused. */
   noLaunch?: string | null;
+  /** The `[brief] extra` file as read from the repository; `text` is null when it could not be read. */
+  conventions?: { path: string; text: string | null } | null;
   now: Date;
 }
 
@@ -349,6 +356,11 @@ export function buildBrief(input: BuildBriefInput): Brief {
     },
   ];
 
+  const extra = input.conventions ?? null;
+  if (extra && extra.text === null)
+    warnings.push(`[brief] extra names ${extra.path}, which could not be read; the brief has no project conventions`);
+  else if (extra && !extra.text?.trim()) warnings.push(`[brief] extra names ${extra.path}, which is empty`);
+
   const brief: Omit<Brief, "prompt"> = {
     ticket: {
       id: ticket.id,
@@ -379,6 +391,8 @@ export function buildBrief(input: BuildBriefInput): Brief {
     blockers: ticket.blockers.map(({ notes, ...b }) => ({ ...b, handBack: handBackNote(notes) })),
     notes: ticket.notes.slice(0, MAX_NOTES),
     parallel,
+    plans: planRule(config, ticket.labels),
+    conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
     warnings,
   };
   if (ticket.notes.length > MAX_NOTES)
@@ -450,6 +464,14 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     );
     for (const n of b.notes) out.push(`### ${byLine(n)}`, "", quote(n.body), "");
   }
+  out.push(
+    "## Plan",
+    "",
+    b.plans.rule === "pre-approved"
+      ? `Plans are pre-approved for ${t.id} (${b.plans.why}): post your plan with \`armada report implementing --plan-file -\` and go on.`
+      : `Plans need the coordinator's approval for ${t.id} (${b.plans.why}): post your plan with \`armada report awaiting-approval --plan-file -\` and wait for approval.`,
+    "",
+  );
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
     out.push("Stay out of their areas. If you must change the same files, say so in a report before you do.", "");
@@ -466,6 +488,8 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       ? `No key is needed in this workspace: once signed in, Armada hands each command the keys it needs, for ${t.id} only. If a command says this worker was cut off from Armada, stop and say so in your reply. Never print, commit or log a token or a key.`
       : `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
   );
+  // The project's own text, as is: it speaks to every worker of the project.
+  if (b.conventions) out.push("", "## Project conventions", "", b.conventions.text.trim());
   return `${out.join("\n")}\n`;
 }
 
@@ -485,6 +509,8 @@ export interface LoadBriefOptions {
    * the prompt then names the keys to pass.
    */
   launch?: (ticket: string) => Promise<BriefLaunch | { reason: string; warn: boolean }>;
+  /** The `[brief] extra` file, read by the caller from the repository. */
+  conventions?: { path: string; text: string | null } | null;
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -522,6 +548,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     ...(opts.stored ? { stored: opts.stored } : {}),
     launch: made,
     noLaunch: missed?.reason ?? null,
+    conventions: opts.conventions ?? null,
     now: now(),
   });
 }
