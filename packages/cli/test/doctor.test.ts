@@ -123,7 +123,7 @@ describe("armada doctor: the sign-in to Armada", () => {
 
   test("database variables of earlier versions left in the credentials file are flagged, signed in or not, never shown", async () => {
     const stored = { ARMADA_TURSO_URL: "libsql://retired.example.test", ARMADA_TURSO_TOKEN: "retired-CANARY" };
-    for (const env of [{}, { ARMADA_API_KEY: KEY }]) {
+    for (const env of [{}, { ARMADA_API_KEY: KEY }] as Record<string, string>[]) {
       const t = await terminal(env, stored);
       const retired = (await t.doctor()).find((c) => c.id === "retired-keys");
       expect(retired).toEqual({
