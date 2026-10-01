@@ -18,7 +18,7 @@ import {
   paths,
 } from "@/lib/fleet-view";
 import { FilterBar, useListFilters } from "../FilterBar";
-import { Button, DensityToggle, Page, Row, RowIcon, RowSide, RowText, Section, Toolbar } from "../page";
+import { Button, DensityToggle, LONG_LIST, Page, Row, RowIcon, RowSide, RowText, Section, Toolbar } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Dot, EmptyState, harnessColor, StatusDot, Tabs } from "../ui";
 import { AgentRow } from "./AgentRow";
@@ -116,6 +116,7 @@ export function AgentsScreen() {
             icon={<StatusDot status={g.status} />}
             label={t.shell.groups[g.status]}
             count={g.rows.length}
+            long={all.length > LONG_LIST}
           >
             {g.rows.map((r) => (
               <AgentRow

@@ -14,11 +14,11 @@
 // times as a table, for a screen reader or a keyboard (THE-891).
 import type { CoordinatorTrack, FleetRow, FleetTimeline, ProjectOverview, SessionTimeline } from "@armada/core/read";
 import Link from "next/link";
-import { type CSSProperties, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentState, HARNESS_NAME, HARNESSES, type Harness, harnessCounts, harnessOf, paths } from "@/lib/fleet-view";
 import type { Language, Strings } from "@/lib/i18n";
 import { coordinatorHarness } from "@/lib/project-view";
-import { Button, Row, Section, SectionBody } from "../page";
+import { Button, LONG_LIST, Row, Section, SectionBody } from "../page";
 import { rowProgress } from "../screens/AgentRow";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
@@ -70,7 +70,8 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
   const [tip, setTip] = useState<(Tip & { x: number; y: number; left: boolean }) | null>(null);
   // Hour marks and tips follow the viewer's clock, which the server does not know: drawn once in the browser.
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  // A transition: the rows redraw in slices an input can cut (THE-892).
+  useEffect(() => startTransition(() => setMounted(true)), []);
   const [box, setBox] = useState<HTMLDivElement | null>(null);
 
   // The scale moves by steps of the clock, not every second: the rows redraw only then.
@@ -179,7 +180,7 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
           tabIndex={0}
           aria-label={t.a11y.timelineScroll}
         >
-          <div className="tl-rows" dir="ltr">
+          <div className={rows.length > LONG_LIST ? "tl-rows is-long" : "tl-rows"} dir="ltr">
             <Row className="tl-head">
               <span className="tl-label faint">{t.timeline.session}</span>
               <span className="tl-track tl-scale">
@@ -700,7 +701,7 @@ function useTimelineHistory(el: HTMLElement | null, overviewAt: string): History
         const next = (await res.json()) as FleetTimeline;
         if (!live) return;
         tag.current = res.headers.get("etag");
-        setHistory(historyOf(next));
+        startTransition(() => setHistory(historyOf(next)));
       } catch {
         // The overview's poll says when the dashboard is offline; the rows keep the history they had.
       }

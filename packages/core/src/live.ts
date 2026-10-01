@@ -10,6 +10,7 @@
 import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
 import { NEEDS_HUMAN } from "./fleet.ts";
+import type { RequestKind } from "./request-kinds.ts";
 import type { AgentPhase, LabelPhase } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
 
@@ -142,15 +143,6 @@ export interface SessionRecord extends RuntimeHandle {
  */
 export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | "decision" | RequestKind;
 export type InboxRecipient = "coordinator" | "worker";
-/** The inbox kinds the dashboard writes. */
-export type RequestKind = "answer-request" | "launch-request" | "merge-request" | "release-request" | "plan-changes";
-export const REQUEST_KINDS: readonly RequestKind[] = [
-  "answer-request",
-  "launch-request",
-  "merge-request",
-  "release-request",
-  "plan-changes",
-];
 
 export interface InboxItem {
   id: number;

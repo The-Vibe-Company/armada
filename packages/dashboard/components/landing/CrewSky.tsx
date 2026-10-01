@@ -106,7 +106,6 @@ export function CrewSky() {
       canvas.height = Math.round(h * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
-    size();
     let time = 0;
     // A phone's narrow canvas: the three projects closer together, the ticket names left out.
     const narrow = () => w < 480;
@@ -233,7 +232,6 @@ export function CrewSky() {
       }
     };
 
-    draw();
     let stop: (() => void) | null = null;
     const unwatch = whileVisible(canvas, (on) => {
       if (still) return;
@@ -247,6 +245,8 @@ export function CrewSky() {
         stop = null;
       }
     });
+    // Sized and drawn first when its section is laid out, as it nears the screen
+    // (THE-892): a ResizeObserver always reports once.
     const ro = new ResizeObserver(() => {
       size();
       draw();

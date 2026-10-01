@@ -5,8 +5,13 @@ import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import type { Strings } from "@/lib/i18n";
-import { Button, Card, CardGrid, CardMeta, CardTitle, Row, RowSide, RowText, SectionBody } from "../page";
+import { Card, CardGrid, CardMeta, CardTitle, Row, RowSide, RowText, SectionBody } from "../page";
 import { RelativeTime } from "../ui";
+
+import { useLazy } from "../use-lazy";
+
+// The full-size viewer loads apart, once the ticket has an image (THE-892).
+const loadViewer = () => import("./AttachmentViewer").then((m) => m.AttachmentViewer);
 
 export function useAttachments(project: string, ticket: string, version: number | string) {
   const [reading, setReading] = useState<{
@@ -16,13 +21,17 @@ export function useAttachments(project: string, ticket: string, version: number 
     failed: boolean;
   } | null>(null);
   const key = `${project}/${ticket}`;
+  // A ticket the server refused (403 without an organization, 404): asking again on every poll changes nothing.
+  const refused = useRef(new Set<string>());
   useEffect(() => {
+    if (refused.current.has(key)) return;
     const controller = new AbortController();
     fetch(`/api/fleet/attachments?${new URLSearchParams({ project, ticket })}`, {
       cache: "no-store",
       signal: controller.signal,
     })
       .then(async (response) => {
+        if (response.status >= 400 && response.status < 500) refused.current.add(key);
         if (!response.ok) throw new Error("attachments unavailable");
         const body = await response.json();
         setReading({ key, version, items: body.attachments, failed: false });
@@ -38,17 +47,8 @@ export function useAttachments(project: string, ticket: string, version: number 
 export function Attachments({ items, failed, t }: { items: Attachment[] | null; failed: boolean; t: Strings }) {
   const requested = useSearchParams().get("attachment");
   const [chosen, setChosen] = useState<string | null>(requested);
-  const dialog = useRef<HTMLDialogElement>(null);
   const selected = items?.find((item) => item.id === chosen && item.kind === "image");
-  const selectedId = selected?.id;
-  useEffect(() => {
-    const element = dialog.current;
-    if (selectedId && element && !element.open) element.showModal();
-    if (!selectedId && element?.open) element.close();
-    return () => {
-      if (element?.open) element.close();
-    };
-  }, [selectedId]);
+  const AttachmentViewer = useLazy(loadViewer, !!items?.some((item) => item.kind === "image"));
   const a = t.shell.agent;
   if (failed || !items || items.length === 0)
     return (
@@ -96,30 +96,7 @@ export function Attachments({ items, failed, t }: { items: Attachment[] | null; 
           </RowSide>
         </Row>
       ))}
-      <dialog
-        ref={dialog}
-        className="attachment-dialog"
-        onCancel={() => setChosen(null)}
-        onClose={() => setChosen(null)}
-        aria-label={selected?.caption ?? a.attachments}
-      >
-        <Button onClick={() => setChosen(null)}>{a.closeAttachment}</Button>
-        {selected && (
-          <>
-            <Image
-              src={`/api/attachments/${selected.id}`}
-              alt={selected.caption ?? a.attachments}
-              width={960}
-              height={720}
-              unoptimized
-            />
-            <p>{selected.caption}</p>
-            <CardMeta>
-              {selected.author} · <RelativeTime at={selected.createdAt} />
-            </CardMeta>
-          </>
-        )}
-      </dialog>
+      {selected && AttachmentViewer && <AttachmentViewer item={selected} onClose={() => setChosen(null)} t={t} />}
     </>
   );
 }

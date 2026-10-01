@@ -22,6 +22,14 @@ export { DensityToggle, HeaderActions, PageHeader } from "./page-client";
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
 
+/**
+ * From how many rows (or cards) a list is long (THE-892): `long` sections and
+ * card grids let the browser skip the style, layout and paint of what is off
+ * screen (`content-visibility`), while every row stays in the page for j/k,
+ * find and screen readers.
+ */
+export const LONG_LIST = 100;
+
 /** A page under the header bar: its toolbar, if it has one, then its sections, full width. */
 export function Page({ toolbar, children }: { toolbar?: ReactNode; children: ReactNode }) {
   return (
@@ -49,7 +57,7 @@ export function Toolbar({ children, end }: { children?: ReactNode; end?: ReactNo
  * A band and what it holds: an icon or a status dot, a label, a count and
  * what goes on its right (a figure, a hint, an action). Rows go straight
  * inside; anything else goes in a `SectionBody`. `id` lets a link open the
- * page on it (`/agents#error`).
+ * page on it (`/agents#error`). `long` for a list over `LONG_LIST` rows.
  */
 export function Section({
   id,
@@ -57,6 +65,7 @@ export function Section({
   label,
   count,
   side,
+  long = false,
   children,
 }: {
   id?: string;
@@ -64,10 +73,11 @@ export function Section({
   label: ReactNode;
   count?: ReactNode;
   side?: ReactNode;
+  long?: boolean;
   children?: ReactNode;
 }) {
   return (
-    <section className="ui-section" id={id}>
+    <section className={cx("ui-section", long && "is-long")} id={id}>
       <div className="ui-section-h">
         {icon && <span className="ui-section-icon">{icon}</span>}
         <h2 className="ui-section-label">{label}</h2>
@@ -194,8 +204,17 @@ export function Notice({
 }
 
 /** Cards side by side, in a section: the overview's decisions and projects. */
-export function CardGrid({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
-  return <div className={cx("ui-cards", wide && "is-wide")}>{children}</div>;
+export function CardGrid({
+  children,
+  wide = false,
+  long = false,
+}: {
+  children: ReactNode;
+  wide?: boolean;
+  /** Over `LONG_LIST` cards. */
+  long?: boolean;
+}) {
+  return <div className={cx("ui-cards", wide && "is-wide", long && "is-long")}>{children}</div>;
 }
 
 /** A card: the rows' padding, hairline and type, with a radius; a link when `href` is set. */

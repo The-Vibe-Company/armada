@@ -703,6 +703,8 @@
   --p: 0;
   position: relative;
   height: 520vh;
+  /* Laid out as it comes near the screen, as the sections below (THE-892). */
+  content-visibility: auto;
 }
 .lp-method-stage {
   position: sticky;
@@ -1306,6 +1308,10 @@
 .lp-section {
   position: relative;
   padding: clamp(96px, 12vw, 150px) var(--lp-pad);
+  /* Below the hero (THE-892): laid out and painted as they come near the
+     screen, not all before the first paint. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 900px;
 }
 .lp-head {
   position: relative;

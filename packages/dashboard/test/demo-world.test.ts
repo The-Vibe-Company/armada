@@ -14,7 +14,7 @@ const NOW = new Date("2026-10-01T13:42:00Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
 
 /** The demo fleet as the dashboard shows it, with the seeded inbox and coordinator reads. */
-function demoOverview() {
+function demoOverview(scenario: "fleet" | "large" = "fleet") {
   const inbox: InboxItem[] = DEMO_INBOX.map((i, k) => ({
     id: k + 1,
     project: i.project,
@@ -28,7 +28,7 @@ function demoOverview() {
   return buildOverview({
     projects: DEMO_PROJECTS.map((p) => {
       const config = parseConfig(configTemplate(p));
-      const { program, forge } = demoSnapshot(p, "fleet", NOW);
+      const { program, forge } = demoSnapshot(p, scenario, NOW);
       const seen = DEMO_COORDINATOR_SEEN[p.slug];
       return {
         slug: p.slug,
@@ -82,6 +82,15 @@ describe("the demo world", () => {
 
   test("keeps the mockup's project colors", () => {
     expect(["widgets", "gadgets", "armada"].map(projectColor)).toEqual(["#7ea6ff", "#ffb547", "#b6f15a"]);
+  });
+
+  test("the large world has lists of hundreds of rows, and one ticket with hours of reports", () => {
+    const o = demoOverview("large");
+    expect(o.rows.length).toBeGreaterThan(250);
+    const first = DEMO_PROJECTS.flatMap((p) => demoSnapshot(p, "large", NOW).program.comments).filter(
+      (c) => c.issueId === "WID-400",
+    );
+    expect(first.length).toBeGreaterThan(300);
   });
 });
 

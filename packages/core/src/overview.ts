@@ -5,13 +5,8 @@
 import { newerRelease } from "./armada-api.ts";
 import type { Attachment } from "./attachments.ts";
 import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
-import {
-  type CoordinatorPresence,
-  type InboxItem,
-  type InboxReadEvent,
-  REQUEST_KINDS,
-  type SessionRecord,
-} from "./live.ts";
+import type { CoordinatorPresence, InboxItem, InboxReadEvent, SessionRecord } from "./live.ts";
+import { REQUEST_KINDS } from "./request-kinds.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
 import {
   type CoordinatorTrack,

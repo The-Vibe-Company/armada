@@ -6,8 +6,8 @@
 // A worker's report is recorded twice, as a live event and as a Linear status
 // comment; a claim too. Each shows once: the live one wins, completed by the
 // comment's facts (the branch, the profile).
-import type { LatestEvent, RequestKind, StoredInboxItem } from "./live.ts";
-import { REQUEST_KINDS } from "./live.ts";
+import type { LatestEvent, StoredInboxItem } from "./live.ts";
+import { REQUEST_KINDS, type RequestKind } from "./request-kinds.ts";
 import type { AgentPhase, Comment } from "./types.ts";
 
 export const ACTIVITY_KINDS = [

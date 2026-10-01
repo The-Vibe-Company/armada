@@ -480,6 +480,12 @@ export interface AgentActivity {
   entries: ActivityEntry[];
 }
 
+/** An agent's activity and its tag, rendered with its page so nothing moves when it arrives (THE-892). */
+export interface TaggedActivity {
+  activity: AgentActivity;
+  tag: string;
+}
+
 /**
  * What happened on one ticket (THE-869): its Linear comments and pull
  * requests from the project's last reading, its events, inbox items and
