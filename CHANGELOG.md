@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.20](https://github.com/The-Vibe-Company/armada/compare/v0.2.19...v0.2.20) (2026-10-01)
+
+
+### Features
+
+* **cli:** keep workers alive with background heartbeats ([#105](https://github.com/The-Vibe-Company/armada/issues/105)) ([02e103f](https://github.com/The-Vibe-Company/armada/commit/02e103f9d59e65d71eed87500d6bdc90c4ae47b7))
+
 ## [0.2.19](https://github.com/The-Vibe-Company/armada/compare/v0.2.18...v0.2.19) (2026-10-01)
 
 
