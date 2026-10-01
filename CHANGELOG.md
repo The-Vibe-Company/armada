@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/The-Vibe-Company/armada/compare/v0.2.0...v0.2.1) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** link the GitHub App to the organization in one click ([#57](https://github.com/The-Vibe-Company/armada/issues/57)) ([391f058](https://github.com/The-Vibe-Company/armada/commit/391f0586cfafc79bf0002af8925c794f6bc1bf1f))
+
 ## [0.2.0](https://github.com/The-Vibe-Company/armada/compare/v0.1.22...v0.2.0) (2026-10-01)
 
 
