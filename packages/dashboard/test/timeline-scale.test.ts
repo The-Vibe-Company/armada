@@ -16,6 +16,8 @@ describe("the live timeline's scale", () => {
   test("marks whole hours of the viewer's clock, every 2 h over 8 h", () => {
     expect(hourMarks(scaleOf(NOW, 2), 2)).toEqual([at(12), at(13)]);
     expect(hourMarks(scaleOf(NOW, 8), 8)).toEqual([at(6), at(8), at(10), at(12)]);
+    // 14:00 is 3 minutes before now: it would sit on the "now" label.
+    expect(hourMarks(scaleOf(at(14, 3), 2), 2)).toEqual([at(13)]);
   });
 
   test("a phase that ended before the span is left out; one that started before is cut at its start", () => {

@@ -29,13 +29,15 @@ export function scaleOf(now: number, span: Span): Scale {
   return { start, end, x };
 }
 
-/** The hour marks of a span, on whole hours of the viewer's clock: every hour, every 2 h over 8 h. */
+/** The hour marks of a span, on whole hours of the viewer's clock: every hour, every 2 h over 8 h, none next to now. */
 export function hourMarks(scale: Scale, span: Span): number[] {
   const every = span > 4 ? 2 : 1;
   const marks: number[] = [];
   const first = new Date(scale.start);
   first.setMinutes(0, 0, 0);
-  for (let t = first.getTime() + HOUR; t < scale.end; t += HOUR)
+  // None right before now, where the "now" label sits.
+  const last = scale.end - (scale.end - scale.start) * 0.06;
+  for (let t = first.getTime() + HOUR; t < last; t += HOUR)
     if (new Date(t).getHours() % every === 0 && t > scale.start) marks.push(t);
   return marks;
 }
