@@ -179,6 +179,7 @@ Try it locally with synthetic data and no key:
 ```sh
 cd packages/dashboard
 bun run demo:seed                     # a local PGlite database (Postgres in the process) with the mockup's Acme world (three projects, ten sessions)
+# bun run demo:seed busy               # the same with twenty more sessions reporting every 2 minutes all day (then ARMADA_DASHBOARD_DEMO=busy)
 ARMADA_DASHBOARD_PASSWORD=off ARMADA_DASHBOARD_DEMO=fleet ARMADA_DATABASE_URL=pglite:.demo/armada bun run dev   # http://localhost:4822
 ```
 

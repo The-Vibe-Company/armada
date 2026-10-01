@@ -525,7 +525,7 @@ const en = {
     sentBy: (author: string | null, ago: string) => `by ${author ?? "you"}, ${ago}`,
     stopped: {
       kind: "Coordinator stopped",
-      title: (project: string) => `The ${project} coordinator stopped answering`,
+      title: (project: string) => `Bring back the ${project} coordinator`,
       waiting: (n: number) => (n === 1 ? "1 item waits for it" : `${n} items wait for it`),
       seen: (d: string | null) => (d === null ? "it never ran a command" : `its last command ${d} ago`),
       what: "Open its session and have it run armada watch again, or start a new coordinator.",
@@ -1242,7 +1242,7 @@ const fr: Strings = {
     sentBy: (author, ago) => `par ${author ?? "toi"}, ${ago}`,
     stopped: {
       kind: "Coordinateur arrêté",
-      title: (project) => `Le coordinateur de ${project} ne répond plus`,
+      title: (project) => `Relance le coordinateur de ${project}`,
       waiting: (n) => (n === 1 ? "1 élément l'attend" : `${n} éléments l'attendent`),
       seen: (d) => (d === null ? "il n'a jamais lancé de commande" : `sa dernière commande remonte à ${d}`),
       what: "Ouvre sa session et fais-lui relancer armada watch, ou démarre un nouveau coordinateur.",
