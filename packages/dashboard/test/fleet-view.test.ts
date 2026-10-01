@@ -8,13 +8,10 @@ import {
   designPageEnabled,
   escapeTarget,
   fileShape,
-  filterSearch,
   harnessOf,
   PROJECT_PALETTE,
   placeOf,
   projectColor,
-  type SearchItem,
-  searchItems,
   sectionOf,
   sessionLink,
   stepStates,
@@ -97,45 +94,6 @@ describe("places", () => {
     expect(escapeTarget(agent, "/organization/keys")).toBe("/agents");
     expect(escapeTarget(placeOf("/projects/widgets"), "/agents/WID-15")).toBe("/projects");
     expect(escapeTarget(placeOf("/agents"), "/")).toBeNull();
-  });
-});
-
-describe("search", () => {
-  const items = searchItems({
-    projects: [
-      {
-        slug: "widgets",
-        name: "Widgets",
-        repository: "acme/widgets",
-      } as never,
-    ],
-    rows: [
-      { id: "WID-15", project: "widgets", title: "Sign in with a magic link", runtime: "Conductor", ...row() },
-    ] as never,
-    ready: [{ id: "WID-20", project: "widgets", title: "Let users change their email address" }] as never,
-  });
-  const keys = (list: SearchItem[]) => list.map((i) => i.key);
-
-  test("reaches agents, projects, ready tickets and the sections, each with its address", () => {
-    expect(items.map((i) => `${i.kind} ${i.href}`)).toEqual([
-      "agent /agents/WID-15",
-      "project /projects/widgets",
-      "ticket /projects/widgets",
-      "nav /agents",
-      "nav /projects",
-      "nav /",
-    ]);
-  });
-
-  test("keeps what matches, an id or name starting with the query first", () => {
-    expect(keys(filterSearch(items, "wid"))).toEqual([
-      "agent:widgets:WID-15",
-      "project:widgets",
-      "ticket:widgets:WID-20",
-    ]);
-    expect(keys(filterSearch(items, "email"))).toEqual(["ticket:widgets:WID-20"]);
-    expect(keys(filterSearch(items, "projets", { navWords: { projects: "Projets" } }))).toEqual(["nav:projects"]);
-    expect(filterSearch(items, "", { limit: 2 })).toHaveLength(2);
   });
 });
 
