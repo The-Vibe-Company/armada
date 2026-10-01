@@ -478,7 +478,8 @@ export interface FakeVault {
  * `accounts: false` plays a deployment still on the shared password. Launch
  * tokens and worker sessions are numbered canaries (`armada_launch_CANARY_1`,
  * `armada_worker_CANARY_1`); `end(ticket, why)` plays a revocation from the
- * dashboard.
+ * dashboard. `secrets` holds the secrets for workers, per project ("" for the
+ * organization's), as `secrets/*` sets and releases them.
  */
 export function fakeArmada(
   o: {
@@ -492,6 +493,8 @@ export function fakeArmada(
     clock?: Clock;
     /** The CLIs this Armada serves, sent on every answer the way the app does; none by default (an older server). */
     cli?: ServerCli;
+    /** Secrets for workers, by project slug ("" for the organization's), then name. */
+    secrets?: Record<string, Record<string, string>>;
   } = {},
 ) {
   const store = o.store ?? memoryFleet();
@@ -503,6 +506,7 @@ export function fakeArmada(
   const calls: ArmadaCall[] = [];
   const launches = new Map<string, { project: string; ticket: string; used: boolean }>();
   const workers = new Map<string, { project: string; ticket: string; ended: string | null }>();
+  const secrets = new Map(Object.entries(o.secrets ?? {}).map(([p, v]) => [p, new Map(Object.entries(v))]));
   const end = (ticket: string, why: string) => {
     for (const w of workers.values()) if (w.ticket === ticket && !w.ended) w.ended = why;
   };
@@ -564,6 +568,67 @@ export function fakeArmada(
         call.body,
         worker ? { kind: "worker", ticket: worker.ticket, project: worker.project } : { kind: "organization" },
       );
+    }
+    if (call.method === "POST" && call.path.startsWith("secrets/")) {
+      if (!person && !worker)
+        return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
+      const op = call.path.slice("secrets/".length);
+      const slug = String((body.project as { slug?: string } | undefined)?.slug ?? "");
+      if (worker && (op === "set" || op === "unset"))
+        return Response.json(
+          { error: "a worker session sets no secret", next: "the coordinator does it" },
+          { status: 403 },
+        );
+      if (worker && slug !== worker.project)
+        return Response.json(
+          {
+            error: `this worker session is for the project ${worker.project}, not ${slug}`,
+            next: "the coordinator does it",
+          },
+          { status: 403 },
+        );
+      const scoped = (p: string) => {
+        const m = secrets.get(p) ?? new Map<string, string>();
+        secrets.set(p, m);
+        return m;
+      };
+      const effective = new Map([...scoped(""), ...scoped(slug)]);
+      if (op === "list")
+        return Response.json({
+          schemaVersion: 1,
+          project: slug,
+          secrets: [
+            ...[...scoped(slug).keys()].map((name) => ({ name, scope: "project", overridden: false })),
+            ...[...scoped("").keys()].map((name) => ({
+              name,
+              scope: "organization",
+              overridden: scoped(slug).has(name),
+            })),
+          ]
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((x) => ({ ...x, setBy: "Ada Example", setAt: "2026-03-05T10:00:00.000Z" })),
+        });
+      if (op === "release") {
+        const names = Array.isArray(body.names) ? (body.names as string[]) : null;
+        const picked = [...effective]
+          .filter(([n]) => !names || names.includes(n))
+          .sort(([a], [b]) => a.localeCompare(b));
+        return Response.json({
+          schemaVersion: 1,
+          project: slug,
+          secrets: picked.map(([name, value]) => ({
+            name,
+            value,
+            scope: scoped(slug).has(name) ? "project" : "organization",
+          })),
+          missing: (names ?? []).filter((n) => !effective.has(n)),
+          warnings: [],
+        });
+      }
+      const where = scoped(body.scope === "organization" ? "" : slug);
+      if (op === "set") where.set(String(body.name), String(body.value));
+      const deleted = op === "unset" ? where.delete(String(body.name)) : false;
+      return Response.json({ schemaVersion: 1, name: body.name, scope: body.scope, project: slug, deleted });
     }
     if (route === "GET projects") {
       if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
@@ -667,5 +732,5 @@ export function fakeArmada(
     }
     return Response.json({ error: "not found" }, { status: 404 });
   };
-  return { fetch, calls, sessions, keys, launches, workers, end, store, clock };
+  return { fetch, calls, sessions, keys, launches, workers, end, store, clock, secrets };
 }

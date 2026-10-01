@@ -83,6 +83,27 @@ async function writePrivate(paths: MachinePaths, path: string, text: string, mod
 }
 
 /**
+ * Writes a file only its owner can read (mode 0600), atomically, in an
+ * existing directory: `armada secrets export` (THE-859). An existing file
+ * is replaced, and ends up 0600 whatever its mode was.
+ */
+export async function writePrivateFile(path: string, text: string): Promise<void> {
+  const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
+  const handle = await open(tmp, "wx", 0o600);
+  try {
+    await handle.writeFile(text, "utf8");
+    await handle.sync();
+    await handle.close();
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  } catch (err) {
+    await handle.close().catch(() => {});
+    await rm(tmp, { force: true });
+    throw err;
+  }
+}
+
+/**
  * Sets (string) or removes (null) keys in the credentials file, keeping every
  * other line and comment. The file ends up 0600 in a 0700 directory.
  */

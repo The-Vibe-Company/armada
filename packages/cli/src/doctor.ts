@@ -2,8 +2,9 @@
 // problem with its fix, whether this terminal is signed in to Armada, so
 // that the briefs it makes give workers a launch token instead of keys,
 // whether this CLI is as recent as Armada expects, and whether the conductor
-// command the runtime guide launches workers with is found. Exit 1 when
-// anything is an error.
+// command the runtime guide launches workers with is found, and which
+// secrets the project expects (`[secrets] names`) are not set in Armada, by
+// name only. Exit 1 when anything is an error.
 import {
   API_KEY_VARIABLE,
   type ArmadaApi,
@@ -19,6 +20,7 @@ import {
   installCommand,
   LINEAR_KEY,
   parseConfig,
+  projectOf,
   RETIRED_VARIABLES,
   readLabels,
   STORED_KEYS,
@@ -243,6 +245,34 @@ async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Che
   ];
 }
 
+/** The secrets the project expects (`[secrets] names` in armada.toml) that Armada does not keep for it. Names only. */
+async function secretChecks(api: ArmadaApi, config: ArmadaConfig | null, credentials: Credentials): Promise<Check[]> {
+  const expected = config?.secrets.names ?? [];
+  if (!config || !expected.length) return [];
+  const signIn = credentials.armadaSignIn;
+  const list = expected.join(", ");
+  const warning = (message: string, fix: string): Check[] => [{ id: "secrets", level: "warning", message, fix }];
+  if (!signIn)
+    return warning(`the project expects the secrets ${list}; not checked: not signed in to Armada`, SIGN_IN_FIX);
+  let set: string[];
+  try {
+    set = (await api.listSecrets(signIn, projectOf(config))).map((s) => s.name);
+  } catch (err) {
+    if (!(err instanceof ArmadaApiError)) throw err;
+    return warning(
+      `the project expects the secrets ${list}; not checked: ${err.message}`,
+      err.next ?? "run doctor again once Armada answers",
+    );
+  }
+  const missing = expected.filter((n) => !set.includes(n));
+  if (!missing.length)
+    return [{ id: "secrets", level: "ok", message: `the secrets the project expects are set: ${list}`, fix: null }];
+  return warning(
+    `the project expects the secrets ${list}; not set in Armada: ${missing.join(", ")}`,
+    "an owner or admin runs `armada secrets set <NAME>` for each (or sets it on the Keys page of Armada)",
+  );
+}
+
 export async function buildDoctor(io: Io, armadaVersion: string): Promise<DoctorReport> {
   const root = (io.exec ? await gitRoot(io.exec, io.cwd) : null) ?? io.cwd;
   // Older than Armada expects, it gets no keys from it: the checks go on with this machine's.
@@ -273,6 +303,7 @@ export async function buildDoctor(io: Io, armadaVersion: string): Promise<Doctor
     ...keyFileChecks(machine, credentials),
     ...(await labelChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
+    ...(await secretChecks(api, config, credentials)),
   ];
   return {
     schemaVersion: 1,

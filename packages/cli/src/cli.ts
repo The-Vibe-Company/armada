@@ -24,6 +24,7 @@ import { merge } from "./merge.ts";
 import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError } from "./repo.ts";
+import { runCommand, secretsCommand } from "./secrets.ts";
 import { hookStop, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusEvents } from "./worker.ts";
 
@@ -112,6 +113,26 @@ const COMMAND_HELP: Record<string, string> = {
                     Signed in to Armada, the prompt starts with a one-time launch token, so
                     the worker needs no key. --prompt prints only the prompt, for \`--message-file -\`
 `,
+  secrets: `  secrets           The project's secrets for workers: names, project or organization,
+                    who set each and when; never a value. Needs a sign-in to Armada
+  secrets set <NAME> [--org] [--value-stdin | --from-env <VAR>]
+                    Coordinator (owner or admin): set one for this project, or with --org
+                    for every project. The value comes from a hidden prompt, standard input
+                    or a variable of this environment, never from the command line
+  secrets unset <NAME> [--org]
+                    Coordinator: unset one; workers no longer get it from their next command
+  secrets export --file <path> [--only <A,B>]
+                    Write them to a dotenv file (mode 0600) for a tool that reads one;
+                    refused for a path git tracks or does not ignore
+  secrets get <NAME>
+                    Print one value, for a person: it is then visible in any transcript.
+                    An agent uses \`armada run\` or \`secrets export\` instead
+`,
+  run: `  run [--only <A,B>] -- <command> [args...]
+                    Run a command with the project's secrets in its environment (they win
+                    over variables of the same name, named on stderr): tests, builds, dev
+                    servers. Nothing is written to disk or printed. Exits with its code
+`,
   hook: `  hook stop         Claude Code's Stop hook, installed by \`armada init\`: a coordinator
                     cannot end its turn while workers are in flight and no \`armada watch\`
                     runs for the project in this checkout. Reads only local files;
@@ -135,9 +156,11 @@ const COMMAND_HELP: Record<string, string> = {
 };
 
 /** Commands that take --ticket, --config and --json. */
-const TICKET_OPTION = new Set(["report", "release", "ask", "merge"]);
+const TICKET_OPTION = new Set(["report", "release", "ask", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
   "status",
+  "secrets",
+  "run",
   "claim",
   "report",
   "release",
@@ -148,7 +171,7 @@ const CONFIG_OPTION = new Set([
   "merge",
   "brief",
 ]);
-const JSON_OPTION = new Set([...CONFIG_OPTION, "doctor", "auth", "whoami"]);
+const JSON_OPTION = new Set([...[...CONFIG_OPTION].filter((c) => c !== "run"), "doctor", "auth", "whoami"]);
 const TICKET_HELP = `  --ticket <id>     Ticket for report, release and ask (default ARMADA_TICKET, then the git
                     branch) and for merge (default: the ticket the PR branch names)
 `;
@@ -212,6 +235,8 @@ interface Args {
   version: boolean;
   /** Options that take a value, other than --config. */
   options: Record<string, string>;
+  /** Everything after `--`, untouched: the command `armada run` runs. Null without `--`. */
+  passthrough: string[] | null;
 }
 
 const VALUE_OPTIONS = [
@@ -234,9 +259,23 @@ const VALUE_OPTIONS = [
   "timeout",
   "launch-token",
   "api-url",
+  "only",
+  "file",
+  "from-env",
 ];
 /** Options without a value, stored as "true". */
-const FLAG_OPTIONS = ["dry-run", "no-lock", "no-ticket", "prompt", "wait", "note", "api-key", "no-stop-hook"];
+const FLAG_OPTIONS = [
+  "dry-run",
+  "no-lock",
+  "no-ticket",
+  "prompt",
+  "wait",
+  "note",
+  "api-key",
+  "no-stop-hook",
+  "org",
+  "value-stdin",
+];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch", "profile", "reason"],
@@ -249,6 +288,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout"],
   brief: ["profile", "reason", "prompt"],
   login: ["api-key", "launch-token", "api-url"],
+  secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
+  run: ["ticket", "only"],
 };
 
 /** The worker commands a worker session signs in, on its own ticket. */
@@ -264,9 +305,14 @@ export function parseArgs(argv: string[]): Args {
     help: false,
     version: false,
     options: {},
+    passthrough: null,
   };
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k];
+    if (a === "--") {
+      args.passthrough = argv.slice(k + 1);
+      break;
+    }
     const named = a?.match(/^--([a-z-]+)(?:=([\s\S]*))?$/);
     const name = named?.[1];
     if (a === "--json") args.json = true;
@@ -319,7 +365,7 @@ export async function findConfig(
 async function status(io: Io, args: Args): Promise<number> {
   const { path, text } = await findConfig(io, args.config, "status");
   const config: ArmadaConfig = parseConfig(text, path);
-  const { credentials } = await loadCredentials(io);
+  const { credentials } = await loadCredentials(io, { project: config.project.slug });
   const { linearApiKey, githubToken } = credentials;
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
   const events = statusEvents(io, config, credentials);
@@ -383,6 +429,22 @@ export async function run(argv: string[], io: Io): Promise<number> {
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
     if (args.all && args.command !== "status") throw new UsageError(`--all does not apply to ${args.command}`);
+    if (args.passthrough && args.command !== "run")
+      throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
+    if (args.command === "secrets" || args.command === "run") {
+      const { path, text } = await findConfig(io, args.config, args.command);
+      const config = parseConfig(text, path);
+      // The worker session of this ticket when the machine holds one, else this terminal's sign-in.
+      const { credentials } = await loadCredentials(io, {
+        armada: false,
+        worker: {
+          command: args.command,
+          project: config.project.slug,
+          ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
+        },
+      });
+      return await (args.command === "run" ? runCommand : secretsCommand)(io, config, credentials, args);
+    }
     const worker = { claim, report, release, ask, inbox, answer }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config, args.command);
@@ -398,24 +460,27 @@ export async function run(argv: string[], io: Io): Promise<number> {
                 : currentTicket(io, config, args.options.ticket, stored),
           }
         : undefined;
-      const { credentials } = await loadCredentials(io, scope ? { worker: scope } : {});
+      const { credentials } = await loadCredentials(io, scope ? { worker: scope } : { project: config.project.slug });
       return await worker(io, config, credentials, args);
     }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch");
-      const { credentials } = await loadCredentials(io);
-      return await watch(io, parseConfig(text, path), credentials, args, path);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await watch(io, config, credentials, args, path);
     }
     if (args.command === "hook") return await hookStop(io, args.rest, (at) => findConfig(at, null, "hook"));
     if (args.command === "merge") {
       const { path, text } = await findConfig(io, args.config, "merge");
-      const { credentials } = await loadCredentials(io);
-      return await merge(io, parseConfig(text, path), credentials, args, path);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await merge(io, config, credentials, args, path);
     }
     if (args.command === "brief") {
       const { path, text } = await findConfig(io, args.config, "brief");
-      const { credentials } = await loadCredentials(io);
-      return await brief(io, parseConfig(text, path), credentials, args, version, path);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await brief(io, config, credentials, args, version, path);
     }
     if (args.command === "status") {
       noExtra(args.rest);
