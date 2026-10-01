@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.26](https://github.com/The-Vibe-Company/armada/compare/v0.2.25...v0.2.26) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** make every page usable with a keyboard and a screen reader ([#118](https://github.com/The-Vibe-Company/armada/issues/118)) ([f01dcb1](https://github.com/The-Vibe-Company/armada/commit/f01dcb11ea7216ad4d1c3dfdfd9dcc19231583f9))
+
 ## [0.2.25](https://github.com/The-Vibe-Company/armada/compare/v0.2.24...v0.2.25) (2026-10-01)
 
 
