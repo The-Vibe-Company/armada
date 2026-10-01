@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.16](https://github.com/The-Vibe-Company/armada/compare/v0.2.15...v0.2.16) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** show the Armada mark as the browser's tab icon ([#94](https://github.com/The-Vibe-Company/armada/issues/94)) ([dc2e74a](https://github.com/The-Vibe-Company/armada/commit/dc2e74a6333a9f15d54f894d44f54d0929aa3a48))
+
 ## [0.2.15](https://github.com/The-Vibe-Company/armada/compare/v0.2.14...v0.2.15) (2026-10-01)
 
 
