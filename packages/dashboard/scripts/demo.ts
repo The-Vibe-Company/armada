@@ -16,8 +16,11 @@ import {
   DEMO_COORDINATOR_SEEN,
   DEMO_INBOX,
   DEMO_PROFILES,
+  DEMO_PROJECT_FACTS,
   DEMO_PROJECTS,
+  demoCoordinatorFacts,
   demoEvents,
+  demoInboxReads,
   projectOfTicket,
 } from "../lib/demo/world";
 import {
@@ -44,7 +47,8 @@ async function seed(scenario: string) {
     await mkdir(DEFAULT_DIR, { recursive: true });
   }
   const db = await openDatabase(url);
-  for (const p of DEMO_PROJECTS) await upsertProject(db, p, ago(60 * 24));
+  for (const p of DEMO_PROJECTS)
+    await upsertProject(db, { ...p, owner: DEMO_PROJECT_FACTS[p.slug]?.owner ?? null }, ago(60 * 24));
   const s = scenario === "empty" ? "empty" : "fleet";
   for (const e of demoEvents(s)) {
     const base = { project: e.project, ticket: e.ticket };
@@ -77,8 +81,12 @@ async function seed(scenario: string) {
       if (i.kind === "hand-back") await putHandBack(db, item);
       else await addInboxItem(db, { ...item, kind: i.kind, recipient: "coordinator" });
     }
-    for (const [project, minutes] of Object.entries(DEMO_COORDINATOR_SEEN))
-      await recordCoordinatorSeen(db, { project, at: ago(minutes) });
+    // Every inbox read since the coordinator started, oldest first, with what its commands say of it.
+    for (const project of Object.keys(DEMO_COORDINATOR_SEEN)) {
+      const facts = demoCoordinatorFacts(project) ?? undefined;
+      for (const minutes of demoInboxReads(project).reverse())
+        await recordCoordinatorSeen(db, { project, facts, at: ago(minutes) });
+    }
   }
   await db.end();
   console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DEMO_DATABASE_URL names" : url}`);

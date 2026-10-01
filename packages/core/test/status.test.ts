@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
-import { loadStatus, readStatusSources, refreshStatusSources } from "../src/status.ts";
-import { DEMO_TOML, demoConfig, NOW, recordedFetch } from "./support.ts";
+import { buildStatus, loadStatus, readStatusSources, refreshStatusSources } from "../src/status.ts";
+import { DEMO_TOML, demoConfig, issue, NOW, recordedFetch } from "./support.ts";
 
 describe("loadStatus", () => {
   test("reports tickets in flight, the frontier and waiting pull requests from Linear and GitHub", async () => {
@@ -52,6 +52,13 @@ describe("loadStatus", () => {
       [9, "DEMO-18", "ready-to-merge", []],
       [10, null, null, []],
     ]);
+    // A project's page shows each pull request's branch.
+    expect(r.pullRequests?.map((p) => p.branch)).toEqual([
+      "feature/demo-11-sign-in-link",
+      "feature/demo-16-reset-password",
+      "feature/demo-18-expire-sessions",
+      "chore/bump-deps",
+    ]);
   });
 
   test("a GitHub failure keeps the tickets and says why pull requests are missing", async () => {
@@ -93,6 +100,32 @@ profile = "codex"
     expect(r.frontier.map((t) => [t.id, t.route])).toEqual([
       ["DEMO-13", { profile: "codex", why: 'rule 1 of [[conductor.routing]] (label "ready-for-agent")' }],
       ["DEMO-15", { profile: "opus", why: "conductor.default_profile (no routing rule matched)" }],
+    ]);
+  });
+});
+
+describe("buildStatus", () => {
+  test("each ready ticket keeps its own labels, without the ready label, for a project's page", () => {
+    const config = demoConfig();
+    const r = buildStatus({
+      config,
+      program: {
+        rootId: "DEMO-1",
+        fetchedAt: NOW.toISOString(),
+        issues: [
+          issue("DEMO-1"),
+          issue("DEMO-2", { parentId: "DEMO-1", labels: [config.tracker.readyLabel, "web", "Bug"] }),
+          issue("DEMO-3", { parentId: "DEMO-1" }),
+        ],
+        comments: [],
+        warnings: [],
+      },
+      forge: null,
+      now: NOW,
+    });
+    expect(r.frontier.map((t) => [t.id, t.labels])).toEqual([
+      ["DEMO-2", ["web", "Bug"]],
+      ["DEMO-3", []],
     ]);
   });
 });

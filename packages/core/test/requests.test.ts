@@ -109,6 +109,7 @@ const frontierTicket = (id: string, route: FrontierTicket["route"]): FrontierTic
   onCriticalPath: false,
   unlocks: [],
   route,
+  labels: [],
 });
 
 const report = (frontier: FrontierTicket[], inFlight: Pick<InFlightTicket, "id">[] = []) =>
