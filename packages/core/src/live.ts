@@ -8,6 +8,7 @@
 // clock. Losing this data loses live detail, never progress: Linear stays the
 // record.
 import { createHash } from "node:crypto";
+import { CONFIG_DEFAULTS } from "./config.ts";
 import { NEEDS_HUMAN } from "./fleet.ts";
 import type { AgentPhase, LabelPhase } from "./types.ts";
 
@@ -133,6 +134,22 @@ export interface Lease {
 
 export type LeaseResult = { acquired: true } | { acquired: false; held: Lease | null };
 
+/**
+ * A launch (the launch token `armada brief` asked for) whose worker has not
+ * claimed the ticket since: the newest launch of its ticket, not ended.
+ */
+export interface PendingLaunch {
+  ticket: string;
+  launchedAt: string;
+  /** When the worker signed in with the launch token; null while it never did. */
+  tokenUsedAt: string | null;
+  /** The worker's runtime session, as its sign-in named it; null when unknown. */
+  handle: string | null;
+}
+
+/** A launch with no claim for longer than this is no longer followed: the coordinator was told long before. */
+export const LAUNCH_WINDOW_MS = 24 * 60 * 60_000;
+
 // ------------------------------------------------------------------ the store
 
 type Item = { project: string; ticket: string; author: string | null; body: string; at: Date };
@@ -210,6 +227,13 @@ export interface FleetStore {
   renewLease(l: { project: string; name: string; holder: string; ttlMs: number; at: Date }): Promise<boolean>;
   /** Gives a lease back; a lease someone else took after ours expired is left alone. */
   releaseLease(l: { project: string; name: string; holder: string }): Promise<void>;
+
+  /**
+   * Launches of the project made since `since`, newest per ticket, that no
+   * claim of their ticket followed and that have not ended (revoked, released,
+   * merged), oldest first.
+   */
+  pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
 }
 
 // ------------------------------------------------------------------ what each command records
@@ -452,17 +476,21 @@ export async function recordMerge(
 
 const MIN = 60_000;
 
-export type InboxEntryKind = InboxKind | "silent";
+/** `silent` and `not-started` are read from the fleet, not stored: they clear on their own. */
+export type InboxEntryKind = InboxKind | "silent" | "not-started";
 
 export interface InboxEntry {
-  /** Inbox item id for `armada answer`; null for a silent worker (it clears when the worker reports). */
+  /**
+   * Inbox item id for `armada answer`; null for a silent worker (it clears
+   * when the worker reports) or a worker not started (it clears on its claim).
+   */
   id: number | null;
   kind: InboxEntryKind;
   ticket: string | null;
-  /** Runtime handle of the worker that asked, or of the silent worker. */
+  /** Runtime handle of the worker that asked, or of the silent or not started worker when known. */
   author: string | null;
   body: string;
-  /** When the item was added; for a silent worker, its last report. */
+  /** When the item was added; for a silent worker, its last report; for a worker not started, its launch. */
   createdAt: string;
   /** Appeared while `armada inbox --wait` was waiting. */
   new: boolean;
@@ -470,8 +498,9 @@ export interface InboxEntry {
   request?: { question: number | null; profile: string | null };
 }
 
-/** How an entry is told apart between two reads: `#12`, or `silent:<ticket>`. */
-export const entryKey = (e: Pick<InboxEntry, "id" | "ticket">) => (e.id === null ? `silent:${e.ticket}` : `#${e.id}`);
+/** How an entry is told apart between two reads: `#12`, `silent:<ticket>` or `not-started:<ticket>`. */
+export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket">) =>
+  e.id === null ? `${e.kind}:${e.ticket}` : `#${e.id}`;
 
 export interface InboxReadOptions {
   project: string;
@@ -479,12 +508,33 @@ export interface InboxReadOptions {
   coordinator?: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  /** `policy.not_started_minutes`; its default when absent. */
+  notStartedMinutes?: number;
   now: Date;
 }
 
+const hhmm = (iso: string) => `${iso.slice(11, 16)} UTC`;
+
+/**
+ * Why a launched worker shows as not started, and what the coordinator does:
+ * a worker that never used its launch token never reached its login line; one
+ * that used it signed in and stopped before its claim.
+ */
+export function notStartedBody(l: PendingLaunch, now: Date): string {
+  const minutes = Math.floor((now.getTime() - Date.parse(l.launchedAt)) / MIN);
+  const why = l.tokenUsedAt
+    ? `the worker signed in with its launch token at ${hhmm(l.tokenUsedAt)}, then stopped before \`armada claim\``
+    : "its launch token was never used: the worker never reached its `armada login` line (an install that failed, a prompt cut short)";
+  return `launched ${minutes} min ago and never claimed; ${why}${l.handle ? ` (session ${l.handle})` : ""}. Check its session with the runtime guide's status section; launch it again with armada brief, or revoke the launch on the dashboard's Workers page`;
+}
+
+/** The pending launches with no claim for longer than `minutes`: the workers that never started. */
+export const notStartedLaunches = (launches: readonly PendingLaunch[], now: Date, minutes: number) =>
+  launches.filter((l) => now.getTime() - Date.parse(l.launchedAt) > minutes * MIN);
+
 /**
  * What waits for the coordinator, oldest first: open questions, requests and
- * hand-backs, and silent workers. A worker is silent when it holds a ticket
+ * hand-backs, workers launched that never claimed (`not-started`), and silent workers. A worker is silent when it holds a ticket
  * (open runtime handle), its newest event is older than the silence threshold,
  * and its phase does not wait on someone else (awaiting-approval, blocked,
  * ready-to-merge). An answer given after its newest event means it owes a
@@ -496,15 +546,20 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
   return (await readInboxAndFlight(store, o)).items;
 }
 
-/** `readInbox`, with the tickets a worker holds (open runtime handle), the coordinator's own excluded. */
+/**
+ * `readInbox`, with the tickets in flight: those a worker holds (open runtime
+ * handle), the coordinator's own excluded, and those a worker was launched on
+ * and has not claimed yet.
+ */
 async function readInboxAndFlight(
   store: FleetStore,
   o: InboxReadOptions,
 ): Promise<{ items: InboxEntry[]; inFlight: string[] }> {
   const now = o.now.getTime();
-  const [items, handles] = await Promise.all([
+  const [items, handles, launches] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
     store.openRuntimeHandles(o.project),
+    store.pendingLaunches(o.project, new Date(now - LAUNCH_WINDOW_MS)),
   ]);
   const oldest = handles.reduce((min, h) => (h.claimedAt < min ? h.claimedAt : min), handles[0]?.claimedAt ?? "");
   const since = new Date(oldest);
@@ -546,6 +601,18 @@ async function readInboxAndFlight(
       new: false,
     });
   }
+  // A worker launched is in flight from its launch: a watch started then keeps watching for its claim.
+  for (const l of launches) if (!inFlight.includes(l.ticket)) inFlight.push(l.ticket);
+  for (const l of notStartedLaunches(launches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes))
+    entries.push({
+      id: null,
+      kind: "not-started",
+      ticket: l.ticket,
+      author: l.handle,
+      body: notStartedBody(l, o.now),
+      createdAt: l.launchedAt,
+      new: false,
+    });
   return {
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
     inFlight: inFlight.sort(),
@@ -555,6 +622,8 @@ async function readInboxAndFlight(
 export interface InboxQuery {
   coordinator: string | null;
   silentAfterMinutes: number;
+  /** `policy.not_started_minutes`; Armada uses its default for an older CLI that does not send it. */
+  notStartedMinutes?: number;
   /**
    * The `etag` of the caller's previous read. When the inbox still has the
    * same entries, Armada answers "not modified" (HTTP 304, no body): a
@@ -568,8 +637,9 @@ export interface InboxRead {
   items: InboxEntry[];
   /**
    * Tickets a worker holds (an open runtime handle), the coordinator's own
-   * excluded: `armada watch` stops when none is left. Absent from an Armada
-   * older than this field.
+   * excluded, and tickets a worker was launched on and has not claimed yet:
+   * `armada watch` stops when none is left. Absent from an Armada older than
+   * this field.
    */
   inFlight?: string[];
   /** Which entries and workers these are (`inboxTag`), for the next read's `etag`. */
@@ -582,11 +652,14 @@ export interface InboxRead {
 export const PRESENCE_EVERY_MS = MIN;
 
 /**
- * Which entries an inbox holds: its items and silent workers, not their
+ * Which entries an inbox holds: its items, silent and not started workers, not their
  * wording (a silent worker's minutes change every minute, its entry does not),
  * and which tickets are in flight.
  */
-export function inboxTag(items: Pick<InboxEntry, "id" | "ticket">[], inFlight: readonly string[] = []): string {
+export function inboxTag(
+  items: Pick<InboxEntry, "id" | "kind" | "ticket">[],
+  inFlight: readonly string[] = [],
+): string {
   const keys = [...items.map(entryKey), ...inFlight.map((t) => `flight:${t}`)].sort().join("\n");
   return `"${createHash("sha256").update(keys).digest("base64url").slice(0, 22)}"`;
 }
@@ -615,6 +688,7 @@ export async function serveInbox(
     project,
     coordinator: q.coordinator,
     silentAfterMinutes: q.silentAfterMinutes,
+    ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
     now,
   });
   const etag = inboxTag(items, inFlight);
@@ -632,6 +706,8 @@ export interface Fleet {
   register(): Promise<void>;
   /** Time of the newest event of every ticket (`armada status`). */
   lastEventTimes(): Promise<Record<string, string>>;
+  /** Launches no claim followed yet, within the last day (`armada status`). */
+  pendingLaunches(): Promise<PendingLaunch[]>;
   claim(c: ClaimRecord): Promise<InboxItem[]>;
   report(r: ReportRecord): Promise<InboxItem[]>;
   ask(q: { ticket: string; body: string }): Promise<number>;

@@ -15,6 +15,7 @@ import type {
   LatestEvent,
   Lease,
   NewRequest,
+  PendingLaunch,
   ProjectInput,
   ProjectRecord,
   RequestStore,
@@ -581,6 +582,35 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
   await db.query("DELETE FROM leases WHERE project = $1 AND name = $2 AND holder = $3", [l.project, l.name, l.holder]);
 }
 
+// ------------------------------------------------------------------ launches
+
+/**
+ * The project's launches since `since` (`armada_worker`, written by
+ * `workers.ts`), newest per ticket, that have not ended and that no claim of
+ * their ticket followed: the workers launched that have not started (THE-872).
+ */
+export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
+  const rs = await db.query(
+    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."runtimeHandle" FROM (
+       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "runtimeHandle", "endedAt"
+       FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
+       ORDER BY "ticket", "createdAt" DESC, "id" DESC
+     ) w
+     WHERE w."endedAt" IS NULL AND NOT EXISTS (
+       SELECT 1 FROM events e
+       WHERE e.project = $1 AND e.ticket = w."ticket" AND e.kind = 'claim' AND e.created_at >= w."createdAt"
+     )
+     ORDER BY w."createdAt", w."ticket"`,
+    [project, since],
+  );
+  return rs.rows.map((r) => ({
+    ticket: String(r.ticket),
+    launchedAt: isoAt(r.createdAt),
+    tokenUsedAt: iso(r.tokenUsedAt),
+    handle: text(r.runtimeHandle),
+  }));
+}
+
 // ------------------------------------------------------------------ the store
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
@@ -614,6 +644,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   getLease: (project, name) => getLease(db, project, name),
   renewLease: (l) => renewLease(db, l),
   releaseLease: (l) => releaseLease(db, l),
+  pendingLaunches: (project, since) => pendingLaunches(db, project, since),
 });
 
 // ------------------------------------------------------------------ what the dashboard reads
@@ -624,6 +655,7 @@ export interface LiveStore extends RequestStore {
   assignUnownedProjects(organization: string, now: Date): Promise<number>;
   latestEvents(project: string, opts: { since: Date }): Promise<Record<string, LatestEvent>>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
+  pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
   openInboxItems(q: { project: string; recipient: InboxRecipient }): Promise<InboxItem[]>;
   lastCoordinatorSeen(project: string): Promise<string | null>;
 }
@@ -633,6 +665,7 @@ export const liveStore = (db: Queryable): LiveStore => ({
   assignUnownedProjects: (organization, now) => assignUnownedProjects(db, organization, now),
   latestEvents: (project, opts) => latestEvents(db, project, opts),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
+  pendingLaunches: (project, since) => pendingLaunches(db, project, since),
   openInboxItems: (q) => openInboxItems(db, q),
   lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
   getInboxItem: (project, id) => getInboxItem(db, project, id),

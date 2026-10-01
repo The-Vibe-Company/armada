@@ -18,6 +18,7 @@ import {
   DEFAULT_ARMADA_API_URL,
   LINEAR_KEY,
   loadBrief,
+  MASKED_LAUNCH_TOKEN,
   ProfileError,
   STORED_KEYS,
 } from "@armada/core";
@@ -32,7 +33,7 @@ export interface BriefArgs {
 }
 
 /** How a launch token shows outside `--prompt`. */
-export const HIDDEN_LAUNCH_TOKEN = "armada_launch_••••";
+export const HIDDEN_LAUNCH_TOKEN = MASKED_LAUNCH_TOKEN;
 
 /**
  * The brief with its launch token hidden, for the human view and --json: the

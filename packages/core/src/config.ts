@@ -48,6 +48,8 @@ export interface ArmadaConfig {
     silentAfterMinutes: number;
     /** An open item older than this in the coordinator's inbox shows "waiting for the coordinator" on the dashboard. */
     coordinatorMinutes: number;
+    /** A launched worker that has not claimed its ticket after this long shows as not started. */
+    notStartedMinutes: number;
     /** Whether a worker's plan waits for the coordinator's approval (`approve`) or not (`pre-approved`). */
     plans: PlanPolicy;
     /** A ticket carrying this label has its plan pre-approved, whatever `plans` says. */
@@ -110,6 +112,7 @@ export const CONFIG_DEFAULTS = {
   runtimes: ["Claude Code", "Codex", "Conductor"],
   silentAfterMinutes: 15,
   coordinatorMinutes: 10,
+  notStartedMinutes: 10,
   plans: "approve",
   preApprovedLabel: "plan-approved",
   approvalLabel: "needs-plan-approval",
@@ -216,6 +219,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "silence_minutes",
         "silent_after_minutes",
         "coordinator_minutes",
+        "not_started_minutes",
         "plans",
         "pre_approved_label",
         "approval_label",
@@ -309,6 +313,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     if (typeof v === "number" && Number.isFinite(v) && v > 0) coordinatorMinutes = v;
     else problems.push(`"policy.coordinator_minutes" must be a positive number`);
   }
+  let notStartedMinutes: number = CONFIG_DEFAULTS.notStartedMinutes;
+  if (policyT.not_started_minutes !== undefined) {
+    const v = policyT.not_started_minutes;
+    if (typeof v === "number" && Number.isFinite(v) && v > 0) notStartedMinutes = v;
+    else problems.push(`"policy.not_started_minutes" must be a positive number`);
+  }
 
   let plans: PlanPolicy = CONFIG_DEFAULTS.plans;
   if (policyT.plans !== undefined) {
@@ -368,7 +378,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
     gates: { requiredChecks, localCommands },
-    policy: { silentAfterMinutes, coordinatorMinutes, plans, preApprovedLabel, approvalLabel },
+    policy: { silentAfterMinutes, coordinatorMinutes, notStartedMinutes, plans, preApprovedLabel, approvalLabel },
     brief: { extra },
     conductor: { defaultProfile, profiles, routing },
   };
@@ -406,6 +416,7 @@ repository = ${q(p.repository)}
 [policy]
 silence_minutes = 15     # a worker with no report for longer than this shows as silent
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
+not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
 # plans = "approve"       # or "pre-approved": workers post their plan and go on without waiting
 # pre_approved_label = "plan-approved"      # a ticket with this label skips the approval
 # approval_label = "needs-plan-approval"    # a ticket with this label waits for it; wins over the other

@@ -511,6 +511,16 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
         ADD COLUMN IF NOT EXISTS github_hook_at timestamptz`,
     ],
   },
+  {
+    // A launch no claim followed shows as not started (THE-872): the
+    // worker's runtime session as its sign-in named it, and a project's
+    // launches of the last day, read on each inbox read.
+    version: 7,
+    statements: [
+      `ALTER TABLE "armada_worker" ADD COLUMN IF NOT EXISTS "runtimeHandle" text`,
+      `CREATE INDEX IF NOT EXISTS "armada_worker_project_idx" ON "armada_worker" ("project", "createdAt")`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

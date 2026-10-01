@@ -21,6 +21,8 @@ import {
   compareVersions,
   type FleetCaller,
   installCommand,
+  isMaskedLaunchToken,
+  MASKED_LAUNCH_TOKEN_REFUSAL,
   MINIMUM_CLI_VERSION,
   parseProject,
   serveFleet,
@@ -374,10 +376,14 @@ function addressOf(request: Request): string {
 
 /** `armada login --launch-token`: the token for a worker session. No credential: the token is one. */
 async function exchange(a: CliAccounts, request: Request, now: Date): Promise<Response> {
-  const token = (await jsonBody(request)).token;
+  const body = await jsonBody(request);
+  const token = body.token;
   if (typeof token !== "string" || !token.trim())
     return refuse(400, "no launch token given", "armada login --launch-token <token>, as the launch message says");
-  const r = await exchangeLaunch(a.client, { token: token.trim(), address: addressOf(request), now });
+  if (isMaskedLaunchToken(token))
+    return refuse(400, MASKED_LAUNCH_TOKEN_REFUSAL.error, MASKED_LAUNCH_TOKEN_REFUSAL.next);
+  const handle = typeof body.handle === "string" ? body.handle : null;
+  const r = await exchangeLaunch(a.client, { token: token.trim(), address: addressOf(request), handle, now });
   if (!r.ok) {
     const w = r.worker;
     // Names the launch, never the token.

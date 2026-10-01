@@ -19,6 +19,7 @@ repository = "The-Vibe-Company/armada"
 
 [policy]
 silence_minutes = 15    # a worker with no report for longer than this shows as silent
+not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
 
 [gates]
 required_checks = ["Lint, typecheck and test"]

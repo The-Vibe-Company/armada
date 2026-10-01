@@ -7,6 +7,7 @@ import type {
   FleetStore,
   InboxItem,
   Lease,
+  PendingLaunch,
   ProjectRecord,
   RuntimeHandle,
   StoredInboxItem,
@@ -25,6 +26,12 @@ interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestProfile: string | null;
 }
 
+/** A launch as the app keeps it (`armada_worker`), with only what the fleet reads of it. */
+export interface LaunchRow extends PendingLaunch {
+  project: string;
+  endedAt: string | null;
+}
+
 const REQUEST_KINDS = ["answer-request", "launch-request"];
 const key = (project: string, ticket: string) => `${project}\n${ticket}`;
 
@@ -33,6 +40,8 @@ export function memoryFleet(): FleetStore & {
   items: ItemRow[];
   leases: Map<string, Lease>;
   presence: Map<string, { handle: string | null; at: string }>;
+  /** Launches, as the app's `createLaunch` and `exchangeLaunch` write them: tests push and edit them. */
+  launches: LaunchRow[];
 } {
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
@@ -41,6 +50,7 @@ export function memoryFleet(): FleetStore & {
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
   const presence = new Map<string, { handle: string | null; at: string }>();
+  const launches: LaunchRow[] = [];
 
   const stored = (r: ItemRow): StoredInboxItem => {
     const { requestQuestion, requestProfile, ...rest } = r;
@@ -74,6 +84,7 @@ export function memoryFleet(): FleetStore & {
     items,
     leases,
     presence,
+    launches,
 
     async ensureProject(p, at) {
       if (projects.has(p.slug)) return;
@@ -319,6 +330,25 @@ export function memoryFleet(): FleetStore & {
     async releaseLease(l) {
       const k = key(l.project, l.name);
       if (leases.get(k)?.holder === l.holder) leases.delete(k);
+    },
+
+    async pendingLaunches(project, since) {
+      const newest = new Map<string, LaunchRow>();
+      for (const l of launches)
+        if (l.project === project && l.launchedAt >= since.toISOString()) {
+          const was = newest.get(l.ticket);
+          if (!was || l.launchedAt > was.launchedAt) newest.set(l.ticket, l);
+        }
+      return [...newest.values()]
+        .filter(
+          (l) =>
+            !l.endedAt &&
+            !events.some(
+              (e) => e.project === project && e.ticket === l.ticket && e.kind === "claim" && e.at >= l.launchedAt,
+            ),
+        )
+        .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
+        .map(({ ticket, launchedAt, tokenUsedAt, handle }) => ({ ticket, launchedAt, tokenUsedAt, handle }));
     },
   };
 }
