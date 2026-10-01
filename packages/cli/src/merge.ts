@@ -11,12 +11,14 @@ import {
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
+  fetchCommit,
   fetchComparison,
   fetchMergePull,
   fetchPullDiff,
   LINEAR_KEY,
   type LocalRepo,
   loadStatus,
+  MERGE_WAIT_DEFAULT_MS,
   type MergeAttempt,
   type MergeContext,
   type MergeForge,
@@ -35,22 +37,37 @@ const TRANSIENT =
 
 const tail = (text: string, lines = 30) => text.trimEnd().split("\n").slice(-lines).join("\n");
 
+/** Runs one `gh` call that changes GitHub; a 5xx or a network failure is transient. */
+async function ghAttempt(exec: Exec, cwd: string, args: string[]): Promise<MergeAttempt> {
+  try {
+    const r = await exec("gh", args, { cwd });
+    const message = tail(`${r.stderr}\n${r.stdout}`.trim(), 5) || `gh exited with ${r.code}`;
+    return { ok: r.code === 0, message, transient: r.code !== 0 && TRANSIENT.test(message) };
+  } catch (err) {
+    return {
+      ok: false,
+      message: `cannot run gh: ${err instanceof Error ? err.message : String(err)}`,
+      transient: false,
+    };
+  }
+}
+
 /** `gh pr merge <n> --squash --match-head-commit <sha>`; never `--delete-branch`, which removes other agents' worktrees. */
 export function ghMerge(exec: Exec, cwd: string, repository: string): MergeForge["merge"] {
-  return async (number, sha): Promise<MergeAttempt> => {
-    const args = ["pr", "merge", String(number), "--repo", repository, "--squash", "--match-head-commit", sha];
-    try {
-      const r = await exec("gh", args, { cwd });
-      const message = tail(`${r.stderr}\n${r.stdout}`.trim(), 5) || `gh exited with ${r.code}`;
-      return { ok: r.code === 0, message, transient: r.code !== 0 && TRANSIENT.test(message) };
-    } catch (err) {
-      return {
-        ok: false,
-        message: `cannot run gh: ${err instanceof Error ? err.message : String(err)}`,
-        transient: false,
-      };
-    }
-  };
+  return (number, sha) =>
+    ghAttempt(exec, cwd, ["pr", "merge", String(number), "--repo", repository, "--squash", "--match-head-commit", sha]);
+}
+
+/**
+ * GitHub's "update branch" through `gh api`: merges the base into the head with
+ * a merge commit (no force-push), refused by GitHub if the head is no longer `sha`.
+ */
+export function ghUpdateBranch(exec: Exec, cwd: string, repository: string): MergeForge["updateBranch"] {
+  return (number, sha) =>
+    ghAttempt(exec, cwd, [
+      ...["api", "--method", "PUT", `repos/${repository}/pulls/${number}/update-branch`],
+      ...["-f", `expected_head_sha=${sha}`],
+    ]);
 }
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -85,6 +102,14 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
         }
       }
       return uses;
+    },
+    async mergeTree({ branch, number, ours, theirs }) {
+      await must(["fetch", "--quiet", "origin", branch, `refs/pull/${number}/head`]);
+      const r = await git(["merge-tree", "--write-tree", "--no-messages", ours, theirs]);
+      // Exit 1 means the merge conflicts.
+      if (r.code === 1) return null;
+      if (r.code !== 0) throw new Error(`git merge-tree failed: ${tail(r.stderr || r.stdout, 5)}`);
+      return r.stdout.split("\n")[0]?.trim() || null;
     },
     async testMerge({ branch, base, head, number, commands }): Promise<TestMergeResult> {
       await must(["fetch", "--quiet", "origin", branch, `refs/pull/${number}/head`]);
@@ -138,8 +163,15 @@ export function prNumber(arg: string | undefined, repository: string): number {
   return pr.number;
 }
 
+/** `--timeout` of `merge --wait`, in minutes. */
+function waitMinutes(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new UsageError(`--timeout must be a number of minutes, got "${raw}"`);
+  return n;
+}
+
 function render(o: MergeOutcome): string {
-  const out = [...o.lines, o.pr.url, o.ticket.url];
+  const out = [...o.lines, o.pr.url, ...(o.ticket ? [o.ticket.url] : [])];
   if (o.hints.length) out.push("Hints for you to judge (not blocking):", ...o.hints.map((h) => `  - ${h}`));
   if (!o.merged) return `${out.join("\n")}\n`;
   if (!o.workers.length) out.push("No other worker is in flight.");
@@ -151,7 +183,7 @@ function render(o: MergeOutcome): string {
       );
   }
   const a = o.archive;
-  if (a) {
+  if (a && o.ticket) {
     const who = `${o.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"})`;
     out.push(
       a.guide
@@ -166,6 +198,12 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
   const [arg, ...extra] = a.rest;
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const number = prNumber(arg, config.github.repository);
+  const noTicket = !!a.options["no-ticket"];
+  if (noTicket && a.options.ticket) throw new UsageError("--no-ticket and --ticket cannot go together");
+  const wait = !!a.options.wait;
+  if (wait && a.options["dry-run"]) throw new UsageError("--wait and --dry-run cannot go together");
+  if (!wait && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
+  const timeoutMs = a.options.timeout === undefined ? MERGE_WAIT_DEFAULT_MS : waitMinutes(a.options.timeout) * 60_000;
   if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   const token = credentials.githubToken;
   if (!token) throw new UsageError("armada merge reads GitHub: set GITHUB_TOKEN", "gh auth login");
@@ -186,6 +224,8 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       compare: (base, head) => fetchComparison({ ...gh, base, head }),
       diff: (n) => fetchPullDiff({ ...gh, number: n }),
       merge: ghMerge(exec, repoDir, config.github.repository),
+      commit: (sha) => fetchCommit({ ...gh, sha }),
+      updateBranch: ghUpdateBranch(exec, repoDir, config.github.repository),
     },
     repo: gitRepo(exec, repoDir),
     // Signed in, the merge lock is required: two coordinators merge one after the other.
@@ -211,6 +251,8 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
   const o = await mergePullRequest(ctx, {
     pr: number,
     ticket: a.options.ticket ?? null,
+    noTicket,
+    wait: wait ? { timeoutMs } : null,
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
   });
@@ -224,12 +266,12 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
         .map((w) => w.ticket)
         .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
     : o.merged && known
-      ? known.filter((t) => t !== o.ticket.id)
+      ? known.filter((t) => t !== o.ticket?.id)
       : known;
   if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
   const next = await rearmFor(io, project, { inFlight, open: null });
   io.stdout(a.json ? `${JSON.stringify({ ...o, watch: next }, null, 2)}\n` : `${render(o)}${next.line}\n`);
   for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
-  if (o.merged) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+  if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
   return 0;
 }

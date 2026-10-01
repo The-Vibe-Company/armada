@@ -90,7 +90,22 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
 
   let merged = false;
   const ghCalls: string[][] = [];
+  // The pull request as GitHub shows it; `gh api … update-branch` merges main into it, as GitHub does.
+  const pr = { head, state: "CLEAN", check: { status: "COMPLETED", conclusion: "SUCCESS" as string | null } };
   const exec: Exec = async (command, args, { cwd }) => {
+    if (command === "gh" && args[0] === "api") {
+      ghCalls.push(args);
+      git("switch", "--quiet", BRANCH);
+      git("merge", "--quiet", "--no-ff", "--no-edit", "main");
+      git("push", "--quiet", "--force", "origin", `${BRANCH}:refs/pull/9/head`);
+      Object.assign(pr, {
+        head: git("rev-parse", "HEAD"),
+        state: "BLOCKED",
+        check: { status: "IN_PROGRESS", conclusion: null },
+      });
+      git("switch", "--quiet", "main");
+      return { code: 0, stdout: '{"message":"Updating pull request branch."}', stderr: "" };
+    }
     if (command === "gh") {
       ghCalls.push(args);
       merged = true;
@@ -111,15 +126,23 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
     }
     if (url === "https://api.github.com/repos/acme/widgets/pulls/9") return new Response(`${diff}\n`);
     if (url !== GITHUB_GRAPHQL) return linearProgram(url, init);
-    const { query } = JSON.parse(String(init.body)) as { query: string };
-    if (/query Compare/.test(query))
-      return Response.json({
-        data: {
-          repository: {
-            ref: { target: { oid: base }, compare: { status: "DIVERGED", aheadBy: 1, behindBy: 1 } },
-          },
-        },
-      });
+    const { query, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
+    if (/query Compare/.test(query)) {
+      const compare =
+        variables.head === base
+          ? { status: "IDENTICAL", aheadBy: 0, behindBy: 0 }
+          : spawnSync("git", ["merge-base", "--is-ancestor", "main", String(variables.head)], { cwd: work, env })
+                .status === 0
+            ? { status: "AHEAD", aheadBy: 2, behindBy: 0 }
+            : { status: "DIVERGED", aheadBy: 1, behindBy: 1 };
+      return Response.json({ data: { repository: { ref: { target: { oid: base }, compare } } } });
+    }
+    if (/query Commit/.test(query)) {
+      const [oid = "", ...parents] = git("rev-list", "--parents", "-n", "1", String(variables.oid)).split(" ");
+      const tree = git("rev-parse", `${oid}^{tree}`);
+      const nodes = parents.map((p) => ({ oid: p }));
+      return Response.json({ data: { repository: { object: { oid, tree: { oid: tree }, parents: { nodes } } } } });
+    }
     return Response.json({
       data: {
         repository: {
@@ -130,9 +153,9 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
             state: merged ? "MERGED" : "OPEN",
             isDraft: false,
             mergeable: "MERGEABLE",
-            mergeStateStatus: merged ? "UNKNOWN" : "CLEAN",
+            mergeStateStatus: merged ? "UNKNOWN" : pr.state,
             headRefName: BRANCH,
-            headRefOid: head,
+            headRefOid: pr.head,
             baseRefName: "main",
             createdAt: "2026-03-04T08:00:00Z",
             updatedAt: "2026-03-04T09:00:00Z",
@@ -146,7 +169,7 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
                     statusCheckRollup: {
                       state: "SUCCESS",
                       contexts: {
-                        nodes: [{ __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" }],
+                        nodes: [{ __typename: "CheckRun", name: "test", ...pr.check }],
                       },
                     },
                   },
@@ -198,13 +221,17 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
     fetch,
     now: () => NOW,
     exec,
-    sleep: async () => {},
+    // Time passing: the checks on the head finish.
+    sleep: async () => {
+      Object.assign(pr, { state: "CLEAN", check: { status: "COMPLETED", conclusion: "SUCCESS" } });
+    },
     linearWriter: () => linear,
   };
   return {
     io,
     git,
     head,
+    pr,
     linear,
     ghCalls,
     armada,
@@ -313,5 +340,34 @@ test("a refused checklist exits 1 and names each failure", async () => {
     "armada: #9 (DEMO-18) cannot be merged:\n  - DEMO-18 has not been handed back: its agent phase is not set, not ready-to-merge\n",
   );
   expect(f.err()).toEndWith("Next: armada inbox --wait, until DEMO-18 is handed back\n");
+  expect(f.ghCalls).toEqual([]);
+});
+
+test("armada merge --wait updates a head behind main on GitHub, proves the update only brings main in, and merges it", async () => {
+  const f = await fixture();
+  expect(await run(["merge", "9", "--wait", "--timeout", "5"], f.io)).toBe(0);
+  expect(f.ghCalls).toEqual([
+    ["api", "--method", "PUT", "repos/acme/widgets/pulls/9/update-branch", "-f", `expected_head_sha=${f.head}`],
+    ["pr", "merge", "9", "--repo", "acme/widgets", "--squash", "--match-head-commit", f.pr.head],
+  ]);
+  expect(f.pr.head).not.toBe(f.head);
+  expect(f.err()).toContain(`armada: Updated the branch of #9 with main (a merge commit on ${f.head.slice(0, 7)}).\n`);
+  expect(f.out()).toContain(
+    `Checklist passed for #9 (DEMO-18): handed back at ${f.head}, now ${f.pr.head} with only main merged in (1 merge commit), CLEAN`,
+  );
+  expect(f.linear.bodies.at(-1)).toContain(`head ${f.pr.head}, the handed-back ${f.head} updated with main`);
+});
+
+test("armada merge refuses flags that do not go together", async () => {
+  const f = await fixture();
+  for (const [args, message] of [
+    [["--no-ticket", "--ticket", "DEMO-18"], "--no-ticket and --ticket cannot go together"],
+    [["--wait", "--dry-run"], "--wait and --dry-run cannot go together"],
+    [["--timeout", "5"], "--timeout applies to --wait"],
+    [["--wait", "--timeout", "soon"], '--timeout must be a number of minutes, got "soon"'],
+  ] as const) {
+    expect(await run(["merge", "9", ...args], f.io)).toBe(2);
+    expect(f.err()).toContain(message);
+  }
   expect(f.ghCalls).toEqual([]);
 });
