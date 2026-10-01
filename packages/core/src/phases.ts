@@ -83,25 +83,45 @@ export function handBackProblems({ pr, repository, sha, requiredChecks }: HandBa
   return problems;
 }
 
+/** One reason the checks on a head are not green: `pending` when time may settle it (running, not reported yet). */
+export interface CheckIssue {
+  text: string;
+  pending: boolean;
+}
+
 /**
  * Why the checks on a head are not green enough to hand back or merge: every
  * required check reported and green on every run, or, with none declared, at
  * least one check and all of them green.
  */
-export function checkProblems(checks: readonly { name: string; state: CiState }[], requiredChecks: readonly string[]) {
-  const problems: string[] = [];
+export function checkIssues(
+  checks: readonly { name: string; state: CiState }[],
+  requiredChecks: readonly string[],
+): CheckIssue[] {
+  const issues: CheckIssue[] = [];
+  const of = (name: string, state: CiState, required: boolean) => ({
+    text: `${required ? "required " : ""}check "${name}" is ${state}`,
+    pending: state !== "failure",
+  });
   if (requiredChecks.length) {
     for (const name of requiredChecks) {
       // A check can report more than once on a head (push and pull_request): every run must be green.
       const runs = checks.filter((c) => c.name === name);
-      const bad = runs.find((c) => c.state !== "success");
-      if (!runs.length) problems.push(`required check "${name}" has not reported on the head yet`);
-      else if (bad) problems.push(`required check "${name}" is ${bad.state}`);
+      const bad = runs.find((c) => c.state === "failure") ?? runs.find((c) => c.state !== "success");
+      if (!runs.length)
+        issues.push({ text: `required check "${name}" has not reported on the head yet`, pending: true });
+      else if (bad) issues.push(of(name, bad.state, true));
     }
   } else if (!checks.length) {
-    problems.push("no CI check has reported on the head yet (or set [gates] required_checks in armada.toml)");
+    issues.push({
+      text: "no CI check has reported on the head yet (or set [gates] required_checks in armada.toml)",
+      pending: true,
+    });
   } else {
-    for (const c of checks) if (c.state !== "success") problems.push(`check "${c.name}" is ${c.state}`);
+    for (const c of checks) if (c.state !== "success") issues.push(of(c.name, c.state, false));
   }
-  return problems;
+  return issues;
 }
+
+export const checkProblems = (checks: readonly { name: string; state: CiState }[], requiredChecks: readonly string[]) =>
+  checkIssues(checks, requiredChecks).map((i) => i.text);
