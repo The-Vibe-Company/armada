@@ -174,7 +174,7 @@ const en = {
   footerRefresh:
     "Refreshes every 5 s while work is in flight, every 30 s otherwise, and pauses while this tab is hidden",
   linearRead: (ago: string) => `Linear read ${ago} ago`,
-  dataRead: (ago: string) => `Linear and GitHub read ${ago} ago`,
+  dataRead: (ms: number) => `Linear and GitHub read ${elapsed(ms, "d")} ago`,
   dataReadHint:
     "The oldest reading of Linear and GitHub on this page. Webhooks refresh it within seconds when they are set up, otherwise every minute while someone looks.",
   readingProject: (name: string) => `${name}: reading Linear and GitHub for the first time…`,
@@ -609,7 +609,7 @@ const fr: Strings = {
   footerRefresh:
     "Se rafraîchit toutes les 5 s quand du travail est en cours, toutes les 30 s sinon, et s'arrête quand l'onglet est caché",
   linearRead: (ago) => `Linear lu il y a ${ago}`,
-  dataRead: (ago) => `Linear et GitHub lus il y a ${ago}`,
+  dataRead: (ms) => `Linear et GitHub lus il y a ${elapsed(ms, "j")}`,
   dataReadHint:
     "La plus ancienne lecture de Linear et GitHub de cette page. Les webhooks la rafraîchissent en quelques secondes s'ils sont configurés, sinon chaque minute tant que quelqu'un regarde.",
   readingProject: (name) => `${name} : première lecture de Linear et GitHub…`,

@@ -382,7 +382,7 @@ function TopBar({
             {oldest !== null && (
               <span className="faint" title={t.dataReadHint}>
                 {" · "}
-                {t.dataRead(t.duration(Math.max(0, now - oldest)))}
+                {t.dataRead(now - oldest)}
               </span>
             )}
           </span>

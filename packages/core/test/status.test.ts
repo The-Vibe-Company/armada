@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
-import { loadStatus } from "../src/status.ts";
+import { loadStatus, readStatusSources, refreshStatusSources } from "../src/status.ts";
 import { DEMO_TOML, demoConfig, NOW, recordedFetch } from "./support.ts";
 
 describe("loadStatus", () => {
@@ -89,5 +89,40 @@ profile = "codex"
       ["DEMO-13", { profile: "codex", why: 'rule 1 of [[conductor.routing]] (label "ready-for-agent")' }],
       ["DEMO-15", { profile: "opus", why: "conductor.default_profile (no routing rule matched)" }],
     ]);
+  });
+});
+
+describe("refreshStatusSources", () => {
+  test("reads only what it is asked: the pull requests alone keep the program as read, without a Linear call", async () => {
+    const config = demoConfig();
+    const previous = await readStatusSources(config, {
+      linearApiKey: "k",
+      githubToken: "g",
+      fetch: recordedFetch().fetch,
+      now: () => NOW,
+    });
+    const { fetch, calls } = recordedFetch();
+    const next = await refreshStatusSources(
+      config,
+      previous,
+      { linearSince: null, forge: true },
+      { linearApiKey: "k", githubToken: "g", fetch, now: () => new Date(NOW.getTime() + 60_000) },
+    );
+    expect(calls.map((c) => c.operation)).toEqual(["Pulls"]);
+    expect(next.program).toBe(previous.program);
+    expect(next.forge?.fetchedAt).toBe(new Date(NOW.getTime() + 60_000).toISOString());
+
+    const none = await refreshStatusSources(
+      config,
+      previous,
+      { linearSince: null, forge: false },
+      {
+        linearApiKey: "k",
+        githubToken: "g",
+        fetch,
+      },
+    );
+    expect(none).toEqual(previous);
+    expect(calls).toHaveLength(1);
   });
 });
