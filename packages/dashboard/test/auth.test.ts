@@ -54,7 +54,9 @@ describe("the proxy without a session", () => {
     }
   });
 
-  test("lets the login page and the login and logout routes through", () => {
+  test("lets the login page, the login and logout routes and the webhooks (signed, not signed in) through", () => {
+    expect(passed(guard(request("/api/webhooks/linear", { method: "POST" }), deps))).toBe(true);
+    expect(passed(guard(request("/api/webhooks/github", { method: "POST" }), deps))).toBe(true);
     expect(passed(guard(request("/login"), deps))).toBe(true);
     expect(passed(guard(request("/api/auth/login", { method: "POST" }), deps))).toBe(true);
     expect(passed(guard(request("/api/auth/logout", { method: "POST" }), deps))).toBe(true);

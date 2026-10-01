@@ -308,7 +308,7 @@ export function dbSnapshots(db: Database, memory: MemorySnapshots): SnapshotStor
       await db.query(
         `UPDATE fleet_snapshots SET error = $2, refreshing_until = NULL,
            linear_dirty = linear_dirty OR $3, forge_dirty = forge_dirty OR $4, full_due = full_due OR $5,
-           touched = ARRAY(SELECT DISTINCT unnest(touched || $6::text[]))
+           touched = ARRAY(SELECT DISTINCT unnest(touched || $6::text[]) ORDER BY 1)
          WHERE key = $1`,
         [key, error, claim.linear, claim.forge, claim.full, claim.touched],
       );
@@ -328,7 +328,7 @@ export async function markIssues(db: Queryable, ids: string[], o: { full?: boole
   if (!ids.length) return [];
   const rs = await db.query<{ key: string }>(
     `UPDATE fleet_snapshots SET linear_dirty = true, full_due = full_due OR $2,
-       touched = ARRAY(SELECT DISTINCT unnest(touched || $1::text[]))
+       touched = ARRAY(SELECT DISTINCT unnest(touched || $1::text[]) ORDER BY 1)
      WHERE issue_ids && $1::text[]
      RETURNING key`,
     [ids, o.full === true],
