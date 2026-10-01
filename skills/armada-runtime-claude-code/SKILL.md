@@ -16,7 +16,7 @@ Armada never calls a runtime. This guide tells a coordinator running inside Clau
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
 2. Run `armada brief ABC-12` (with `--profile <name> --reason "<why>"` when you override the routed profile), right before the launch. Its `Runtime:` line must say `claude-code`: the profile has `runtime = "claude-code"` in `armada.toml`. Read the profile (model), the `Launch:` line and the warnings, and resolve every warning first. The profile's effort is not applied by the Agent tool; a worker that needs a set effort goes to Conductor.
    - `Launch: one-time token in the prompt` is the normal case. `Launch: no launch token (…)` says why: usually `armada login`, then brief again.
-3. Read the prompt: `armada brief ABC-12 --prompt`. The token in it works once, within the hour: brief again when that hour has passed before the launch. Add what only you know (the boundary with a parallel worker, a decision not yet on the ticket) at the end.
+3. Read the prompt: `armada brief ABC-12 --prompt`. **The launch message is that `--prompt` output, and only it**: the human view and `--json` mask the token as `armada_launch_••••`, which signs nobody in. The token in it works once, within the hour: brief again when that hour has passed before the launch. Add what only you know (the boundary with a parallel worker, a decision not yet on the ticket) at the end.
 4. Launch with the Agent tool, every value set:
 
 ```json
@@ -37,7 +37,7 @@ Armada never calls a runtime. This guide tells a coordinator running inside Clau
 - The result gives the `agentId` and an `output_file`: the worker's transcript (JSONL). Keep both. Never read that file whole: it is the entire conversation (Status section).
 - `.claude/worktrees/` appears as untracked in your own checkout: never commit it (add it to `.gitignore`).
 
-5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Claude Code`, and the claim comment reads `session: abc-12` and `profile: <name>`. No claim: read the transcript (Status section). A worker whose launch token was refused needs a new one: brief again and message it only the `armada login --launch-token …` line of the new prompt. A worker cut off from Armada was revoked on the dashboard or left idle for three days: ask the owner before you give it a new token.
+5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Claude Code`, and the claim comment reads `session: abc-12` and `profile: <name>`. No claim after `[policy] not_started_minutes` (ten by default): `armada watch` and `armada inbox` show a `not-started` entry saying whether the worker never used its token or signed in and stopped. Read the transcript (Status section). A worker whose launch token was refused needs a new one: brief again and message it only the `armada login --launch-token …` line of the new `--prompt` output. A worker cut off from Armada was revoked on the dashboard or left idle for three days: ask the owner before you give it a new token.
 
 ## Message
 
