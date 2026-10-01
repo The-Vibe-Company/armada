@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.11](https://github.com/The-Vibe-Company/armada/compare/v0.2.10...v0.2.11) (2026-10-01)
+
+
+### Features
+
+* **core:** record the v4 dashboard's fleet facts and requests ([#78](https://github.com/The-Vibe-Company/armada/issues/78)) ([21235b7](https://github.com/The-Vibe-Company/armada/commit/21235b7e1a605760ccab66a0042f770d7362bbb0))
+
 ## [0.2.10](https://github.com/The-Vibe-Company/armada/compare/v0.2.9...v0.2.10) (2026-10-01)
 
 
