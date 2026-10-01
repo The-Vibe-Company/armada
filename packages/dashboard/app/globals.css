@@ -397,8 +397,12 @@ button {
 button:disabled {
   cursor: default;
 }
+/* The kit's one focus ring (THE-891): every control the keyboard reaches shows it. */
 textarea:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+[tabindex="0"]:focus-visible {
   outline: 2px solid var(--frontier);
   outline-offset: 1px;
 }
@@ -2447,45 +2451,6 @@ a.ui-row:hover {
 .ui-section-body.tl-legend.is-hidden {
   display: none;
 }
-/* The timeline as a table (THE-891): the rows' type, a hairline under each session. */
-.tl-table-wrap {
-  overflow-x: auto;
-}
-.tl-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-.tl-table th,
-.tl-table td {
-  padding: 9px 20px 9px 0;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-  vertical-align: top;
-  font-weight: 400;
-  color: var(--text-2);
-}
-.tl-table th:first-child,
-.tl-table td:first-child {
-  padding-left: 20px;
-}
-.tl-table thead th {
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--text-3);
-}
-.tl-table tbody th {
-  color: var(--text);
-  font-weight: 500;
-}
-.tl-table a:hover {
-  text-decoration: underline;
-}
-.tl-table-phases {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
 .tl-scroll:focus-visible {
   outline: 2px solid var(--frontier);
   outline-offset: -2px;
@@ -3050,4 +3015,42 @@ a.ui-row:hover {
 }
 .ins-overview {
   min-height: 1lh;
+}
+
+/* The timeline as a table (THE-891): the rows' type, a hairline under each session. */
+.tl-table-wrap {
+  overflow-x: auto;
+}
+.tl-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.tl-cell {
+  padding: 9px 20px 9px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.tl-cell:first-child {
+  padding-left: 20px;
+}
+.tl-cell.is-head {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.tl-cell.is-row {
+  color: var(--text);
+  font-weight: 500;
+}
+.tl-table-link:hover {
+  text-decoration: underline;
+}
+.tl-table-phases {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }

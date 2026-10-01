@@ -306,11 +306,21 @@ function TimelineTable({
         <caption className="sr-only">{x.caption}</caption>
         <thead>
           <tr>
-            <th scope="col">{x.project}</th>
-            <th scope="col">{x.session}</th>
-            <th scope="col">{x.status}</th>
-            <th scope="col">{x.phases}</th>
-            <th scope="col">{x.lastReport}</th>
+            <th scope="col" className="tl-cell is-head">
+              {x.project}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.session}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.status}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.phases}
+            </th>
+            <th scope="col" className="tl-cell is-head">
+              {x.lastReport}
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -318,14 +328,14 @@ function TimelineTable({
             const phases = history.rows.get(`${r.project}/${r.id}`)?.phases ?? [];
             return (
               <tr key={`${r.project}/${r.id}`}>
-                <td>{p.name}</td>
-                <th scope="row">
-                  <Link href={paths.agent(r.id)} prefetch>
+                <td className="tl-cell">{p.name}</td>
+                <th scope="row" className="tl-cell is-row">
+                  <Link href={paths.agent(r.id)} prefetch className="tl-table-link">
                     <span className="mono">{r.id}</span> {r.title}
                   </Link>
                 </th>
-                <td>{stateLabel(t, agentState(r), r.phase)}</td>
-                <td>
+                <td className="tl-cell">{stateLabel(t, agentState(r), r.phase)}</td>
+                <td className="tl-cell">
                   {phases.length === 0 || !clock ? (
                     t.shell.phases[r.phase]
                   ) : (
@@ -342,7 +352,7 @@ function TimelineTable({
                     </ol>
                   )}
                 </td>
-                <td>{r.lastReport ? t.ago(Math.max(0, end - Date.parse(r.lastReport))) : "—"}</td>
+                <td className="tl-cell">{r.lastReport ? t.ago(Math.max(0, end - Date.parse(r.lastReport))) : "—"}</td>
               </tr>
             );
           })}

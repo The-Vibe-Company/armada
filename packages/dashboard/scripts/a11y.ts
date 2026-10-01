@@ -143,13 +143,19 @@ interface Target {
 async function targets(seeded: Seeded | null): Promise<Target[]> {
   const who = seeded ? "owner" : "none";
   const cookie = seeded ? header(sessionCookies(seeded.owner)).get("cookie") : null;
-  const res = await fetch(`${BASE}/api/fleet`, { headers: cookie ? { cookie } : {} });
-  if (!res.ok) throw new Error(`${BASE}/api/fleet answered ${res.status}: is the demo dashboard running?`);
-  const fleet = (await res.json()) as {
+  type Fleet = {
     rows: { id: string }[];
     projects: { slug: string }[];
     validations?: { id: number; decision: unknown }[];
   };
+  // A fresh server reads the demo world after its first answer: ask again until it shows.
+  let fleet: Fleet = { rows: [], projects: [] };
+  for (let tries = 0; tries < 30 && !fleet.rows.length; tries++) {
+    if (tries) await Bun.sleep(1_000);
+    const res = await fetch(`${BASE}/api/fleet`, { headers: cookie ? { cookie } : {} });
+    if (!res.ok) throw new Error(`${BASE}/api/fleet answered ${res.status}: is the demo dashboard running?`);
+    fleet = (await res.json()) as Fleet;
+  }
   const agent = fleet.rows[0]?.id;
   const project = fleet.projects[0]?.slug;
   const validation = fleet.validations?.find((v) => !v.decision)?.id;
@@ -164,6 +170,7 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
     `/projects/${project}`,
     "/validations",
     `/approve/${validation}`,
+    "/insights",
     "/design",
   ];
   return [
