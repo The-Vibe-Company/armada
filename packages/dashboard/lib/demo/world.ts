@@ -710,7 +710,7 @@ export function demoSnapshot(
   for (let k = 0; k < done; k++)
     issues.push(
       issue(`${prefix}-${100 + k}`, {
-        title: k === 0 ? "Keep the cart when a session expires" : `Shipped change ${k + 1}`,
+        title: historyTitle(k),
         parentId: specId,
         statusType: "completed",
         completedAt: ago(now, 600 + k * 90),
@@ -809,3 +809,135 @@ export function demoEvents(scenario: Scenario) {
 /** The demo project a ticket id belongs to. */
 export const projectOfTicket = (ticket: string) =>
   DEMO_PROJECTS.find((p) => ticket.toUpperCase().startsWith(`${p.programRoot.split("-")[0]}-`)) ?? null;
+
+// ------------------------------------------------------------------ two weeks of history (THE-893)
+
+const SHIPPED_TITLES = [
+  "Keep the cart when a session expires",
+  "Show the delivery date on the order page",
+  "Retry a failed payment once",
+  "Let a customer change the shipping address",
+  "Send the receipt again from the account page",
+  "Sort orders by date",
+  "Explain why a coupon was refused",
+  "Keep the search filters in the address",
+  "Warn before a stock runs out",
+  "Load the catalog in pages",
+  "Export orders as CSV",
+  "Remember the last payment method",
+];
+
+/** The title of a project's `k`th ticket done under its root: the history below ships them. */
+export const historyTitle = (k: number) =>
+  `${SHIPPED_TITLES[k % SHIPPED_TITLES.length]}${k >= SHIPPED_TITLES.length ? ` (${Math.floor(k / SHIPPED_TITLES.length) + 1})` : ""}`;
+
+/** How many days of history `demo:seed` writes. */
+export const HISTORY_DAYS = 14;
+
+/** One step of a past ticket: what it records, minutes after its claim. */
+export type HistoryStep =
+  | { at: number; kind: "report"; phase: LabelPhase; headSha?: string }
+  | { at: number; kind: "merge"; headSha: string }
+  | { at: number; kind: "plan" | "question" | "hand-back"; until: number }
+  | { at: number; kind: "validation"; until: number; headSha: string };
+
+/** A ticket the fleet shipped in the last two weeks: its claim, its steps and when its worker went quiet. */
+export interface HistoryTicket {
+  project: string;
+  ticket: string;
+  runtime: string;
+  handle: string;
+  profile: "opus" | "codex" | "debug";
+  /** Minutes ago. */
+  claimed: number;
+  steps: HistoryStep[];
+  /** Minutes after the claim between which no heartbeat came: a silence. */
+  quiet: [number, number] | null;
+}
+
+/** A small deterministic generator, so every seed draws the same history. */
+function random(seed: number) {
+  let x = seed >>> 0 || 1;
+  return (lo: number, hi: number) => {
+    x = (Math.imul(x, 1_664_525) + 1_013_904_223) >>> 0;
+    return lo + Math.floor((x / 2 ** 32) * (hi - lo + 1));
+  };
+}
+
+const RUNTIMES = ["Conductor", "Claude Code", "Codex"] as const;
+
+/**
+ * The tickets each demo project shipped over the last `HISTORY_DAYS` days, as
+ * many as it lists done: more each day as the fleet speeds up, opus a little
+ * faster, codex more often handed back again, a coordinator slower on some
+ * days, a few silences. Minutes are relative to now.
+ */
+export function demoHistory(): HistoryTicket[] {
+  const out: HistoryTicket[] = [];
+  for (const [p, project] of DEMO_PROJECTS.entries()) {
+    const n = random(7 + p * 101);
+    const prefix = project.programRoot.split("-")[0];
+    const done = DEMO_PROJECT_FACTS[project.slug]?.done ?? 0;
+    for (let k = 0; k < done; k++) {
+      // Spread over the days, denser towards today: the trend goes up.
+      const day = Math.min(HISTORY_DAYS - 1, Math.floor(HISTORY_DAYS * ((done - k) / done) ** 1.5));
+      const profile = (["opus", "codex", "opus", "debug"] as const)[n(0, 3)] ?? "opus";
+      const slow = profile === "codex" ? 1.4 : profile === "debug" ? 1.2 : 1;
+      const steps: HistoryStep[] = [];
+      let t = n(15, 50);
+      steps.push({ at: t, kind: "report", phase: "awaiting-approval" });
+      const approved = t + n(5, day % 4 === 0 ? 150 : 40);
+      steps.push({ at: t, kind: "plan", until: approved });
+      // One plan in five is sent back and planned again.
+      if (n(0, 4) === 0) {
+        steps.push({ at: approved, kind: "report", phase: "planning" });
+        t = approved + n(15, 40);
+        const again = t + n(5, 30);
+        steps.push({ at: t, kind: "report", phase: "awaiting-approval" }, { at: t, kind: "plan", until: again });
+        t = again;
+      } else t = approved;
+      steps.push({ at: t, kind: "report", phase: "implementing" });
+      const quietFrom = t + 5;
+      const working = Math.round(n(50, 200) * slow);
+      if (n(0, 3) === 0) {
+        const asked = t + Math.round(working / 2);
+        const answered = asked + n(5, 90);
+        steps.push(
+          { at: asked, kind: "report", phase: "blocked" },
+          { at: asked, kind: "question", until: answered },
+          { at: answered, kind: "report", phase: "implementing" },
+        );
+        t = answered + Math.round(working / 2);
+      } else t += working;
+      steps.push({ at: t, kind: "report", phase: "shipping" });
+      t += n(10, 45);
+      let head = `${project.slug.slice(0, 2)}${k}a`;
+      steps.push({ at: t, kind: "report", phase: "ready-to-merge", headSha: head });
+      // Codex is handed back on a new head more often.
+      if (n(0, profile === "codex" ? 1 : 5) === 0) {
+        t += n(10, 40);
+        steps.push({ at: t, kind: "report", phase: "shipping" });
+        t += n(10, 30);
+        head = `${project.slug.slice(0, 2)}${k}b`;
+        steps.push({ at: t, kind: "report", phase: "ready-to-merge", headSha: head });
+      }
+      const merged = t + n(5, day % 5 === 1 ? 240 : 60);
+      steps.push({ at: t, kind: "hand-back", until: merged });
+      // One merge in three is the owner's to approve.
+      if (n(0, 2) === 0) steps.push({ at: t, kind: "validation", until: merged - 2, headSha: head });
+      steps.push({ at: merged, kind: "merge", headSha: head });
+      const minutesAgo = day * 24 * 60 + n(60, 10 * 60);
+      out.push({
+        project: project.slug,
+        ticket: `${prefix}-${100 + k}`,
+        runtime: RUNTIMES[(k + p) % RUNTIMES.length] ?? "Conductor",
+        handle: `ws-h${p}${k}/ses-1`,
+        profile,
+        claimed: minutesAgo + merged,
+        steps: steps.sort((a, b) => a.at - b.at),
+        quiet: n(0, 4) === 0 ? [quietFrom, quietFrom + n(20, 40)] : null,
+      });
+    }
+  }
+  return out;
+}

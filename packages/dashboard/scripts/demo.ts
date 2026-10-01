@@ -25,6 +25,7 @@ import {
   demoCoordinatorFacts,
   demoEvents,
   demoFiles,
+  demoHistory,
   demoInboxReads,
   projectOfTicket,
   scenarioOf,
@@ -36,6 +37,9 @@ import {
   putHandBack,
   recordCoordinatorSeen,
   recordEvent,
+  releaseRuntimeHandle,
+  resolveInboxItem,
+  resolveInboxItems,
   saveRuntimeHandle,
   saveWorkerProfile,
   upsertProject,
@@ -96,6 +100,7 @@ async function seed(scenario: string) {
       else await addInboxItem(db, { ...item, kind: i.kind, recipient: "coordinator" });
     }
     await seedValidations(db);
+    await seedHistory(db);
     // Every inbox read since the coordinator started, oldest first, with what its commands say of it.
     for (const project of Object.keys(DEMO_COORDINATOR_SEEN)) {
       const facts = demoCoordinatorFacts(project) ?? undefined;
@@ -229,6 +234,108 @@ async function seedValidations(db: Awaited<ReturnType<typeof openDatabase>>) {
         at: ago(v.decided.ago),
       });
   }
+}
+
+// ------------------------------------------------------------------ two weeks of history (THE-893)
+
+/** The tickets shipped over the last two weeks, as their workers and coordinator recorded them: what /insights reads. */
+async function seedHistory(db: Awaited<ReturnType<typeof openDatabase>>) {
+  const history = demoHistory();
+  for (const [k, h] of history.entries()) {
+    const base = { project: h.project, ticket: h.ticket };
+    const at = (m: number) => ago(h.claimed - m);
+    await saveRuntimeHandle(db, { ...base, runtime: h.runtime, handle: h.handle, branch: null, at: at(0) });
+    await saveWorkerProfile(db, {
+      ...base,
+      profile: {
+        name: h.profile,
+        ...DEMO_PROFILES[h.profile],
+        fastMode: false,
+        routed: null,
+        reason: null,
+        why: "conductor.default_profile",
+      },
+      at: at(0),
+    });
+    await recordEvent(db, {
+      ...base,
+      kind: "claim",
+      phase: "planning",
+      runtime: h.runtime,
+      handle: h.handle,
+      at: at(0),
+    });
+    // A heartbeat every 5 minutes until the merge, but while the worker was quiet: one insert.
+    const end = h.steps.at(-1)?.at ?? 0;
+    const beats: Date[] = [];
+    for (let m = 5; m < end; m += 5) if (!h.quiet || m < h.quiet[0] || m > h.quiet[1]) beats.push(at(m));
+    await db.query(
+      `INSERT INTO events (project, ticket, kind, runtime, handle, created_at)
+       SELECT $1, $2, 'heartbeat', $3, $4, t FROM unnest($5::timestamptz[]) AS t`,
+      [h.project, h.ticket, h.runtime, h.handle, beats],
+    );
+    for (const s of h.steps) {
+      if (s.kind === "report")
+        await recordEvent(db, { ...base, kind: "report", phase: s.phase, headSha: s.headSha ?? null, at: at(s.at) });
+      else if (s.kind === "merge") {
+        await recordEvent(db, { ...base, kind: "merge", phase: "merged", headSha: s.headSha, at: at(s.at) });
+        await releaseRuntimeHandle(db, h.project, h.ticket, at(s.at));
+      } else if (s.kind === "hand-back") {
+        await putHandBack(db, {
+          ...base,
+          author: null,
+          body: `Agent status: ready-to-merge — ${h.ticket}`,
+          at: at(s.at),
+        });
+        await resolveInboxItems(db, { ...base, kind: "hand-back", resolution: "merged", at: at(s.until) });
+      } else if (s.kind === "validation") {
+        const v = await addValidation(db, {
+          ...base,
+          kind: "merge",
+          what: `Merge ${h.ticket}`,
+          reason: "the owner approves merges of this project",
+          choices: null,
+          pr: {
+            number: 400 + k,
+            url: `https://github.com/acme/${h.project}/pull/${400 + k}`,
+            title: `Merge ${h.ticket}`,
+            headSha: s.headSha,
+            files: null,
+            additions: null,
+            deletions: null,
+            ci: "success",
+            preview: null,
+          },
+          attachments: [],
+          author: "coordinator",
+          at: at(s.at),
+        });
+        await decideValidation(db, {
+          project: h.project,
+          id: v.id,
+          decision: {
+            outcome: "approved",
+            answer: null,
+            note: null,
+            by: DEMO_PROJECT_FACTS[h.project]?.owner ?? "Owner",
+          },
+          body: `approved validation #${v.id}`,
+          at: at(s.until),
+        });
+      } else {
+        const id = await addInboxItem(db, {
+          ...base,
+          kind: s.kind,
+          recipient: "coordinator",
+          author: h.handle,
+          body: s.kind === "plan" ? `Plan for ${h.ticket}` : "Which way should this go?",
+          at: at(s.at),
+        });
+        await resolveInboxItem(db, { project: h.project, id, resolution: "answered", at: at(s.until) });
+      }
+    }
+  }
+  console.log(`Seeded ${history.length} tickets shipped over the last two weeks`);
 }
 
 async function withTicket(ticket: string | undefined, work: (project: string, ticket: string) => Promise<void>) {

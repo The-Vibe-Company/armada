@@ -10,6 +10,7 @@ export * from "./fleet-api.ts";
 export * from "./github.ts";
 export * from "./heartbeat.ts";
 export * from "./inbox.ts";
+export * from "./insights.ts";
 export * from "./labels.ts";
 export * from "./linear.ts";
 export * from "./linear-write.ts";

@@ -14,6 +14,7 @@ import {
   type LoadOptions,
   loadOverview as load,
   loadAgentActivity,
+  loadInsights,
   loadProject,
   newCache,
   type Scope,
@@ -395,6 +396,7 @@ describe("speed: a page reads Postgres only (THE-853)", () => {
       expect(w.background).toHaveLength(1);
       expect((await loadProject(w.opts, "widgets", HOME))?.report.inFlight.map((t) => t.id)).toEqual(["WID-2"]);
       expect((await loadAgentActivity(w.opts, HOME, "widgets", "WID-2"))?.live).toBe(true);
+      expect((await loadInsights(w.opts, HOME, { range: "7d", project: null }))?.live).toBe(true);
       expect(await markRepository(db, "acme/widgets")).toEqual(["widgets"]);
       expect((await loadOverview(w.opts)).rows.map((r) => r.id)).toEqual(["WID-2"]);
 
@@ -538,6 +540,45 @@ describe("an agent's activity (THE-869)", () => {
     const again = answerJson(
       new Request("http://x/api/fleet/activity", { headers: { "If-None-Match": tag } }),
       activity,
+    );
+    expect(again.status).toBe(304);
+  });
+});
+
+describe("insights (THE-893)", () => {
+  test("the scope's projects only, ticket titles from the last reading, records kept a minute, tagged for 304", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    await w.warm();
+    const base = { project: "widgets", ticket: "WID-2" };
+    await recordEvent(db, { ...base, kind: "claim", phase: "planning", at: w.at(-3 * 3_600_000) });
+    await recordEvent(db, { ...base, kind: "merge", phase: "merged", at: w.at(-3_600_000) });
+
+    const reading = await loadInsights(w.opts, HOME, { range: "7d", project: null });
+    expect(reading?.live).toBe(true);
+    expect(reading?.projects).toEqual([{ slug: "widgets", name: "Widgets" }]);
+    expect(reading?.insights.merged.count).toBe(1);
+    expect(reading?.insights.cycle.p50).toBe(2 * 3_600_000);
+    expect(reading?.tickets["widgets/WID-2"]).toMatchObject({ title: "Export a report", inFlight: false });
+
+    // Another organization, or a project nobody registered: nothing.
+    expect(
+      await loadInsights(w.opts, { organization: "org-other", home: "org-home" }, { range: "7d", project: "widgets" }),
+    ).toBeNull();
+    expect(await loadInsights(w.opts, HOME, { range: "7d", project: "nope" })).toBeNull();
+
+    // A merge recorded now shows once the project's records are a minute old.
+    await recordEvent(db, { project: "widgets", ticket: "WID-3", kind: "merge", phase: "merged", at: w.at(0) });
+    expect((await loadInsights(w.opts, HOME, { range: "7d", project: "widgets" }))?.insights.merged.count).toBe(1);
+    w.advance(61_000);
+    const later = await loadInsights(w.opts, HOME, { range: "7d", project: "widgets" });
+    expect(later?.insights.merged.count).toBe(2);
+
+    const first = answerJson(new Request("http://x/api/fleet/insights"), later?.insights);
+    const again = answerJson(
+      new Request("http://x/api/fleet/insights", { headers: { "If-None-Match": first.headers.get("etag") ?? "" } }),
+      later?.insights,
     );
     expect(again.status).toBe(304);
   });

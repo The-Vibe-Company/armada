@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { buildOverview, buildStatus, configTemplate, type InboxItem, parseConfig } from "@armada/core/read";
-import { DEMO_COORDINATOR_SEEN, DEMO_INBOX, DEMO_PROJECTS, demoSnapshot } from "../lib/demo/world.ts";
+import {
+  DEMO_COORDINATOR_SEEN,
+  DEMO_INBOX,
+  DEMO_PROJECTS,
+  demoHistory,
+  demoSnapshot,
+  HISTORY_DAYS,
+} from "../lib/demo/world.ts";
 import { AGENT_STATUSES, agentState, harnessCounts, projectColor } from "../lib/fleet-view.ts";
 
 const NOW = new Date("2026-10-01T13:42:00Z");
@@ -84,5 +91,34 @@ describe("the demo world", () => {
       (c) => c.issueId === "WID-400",
     );
     expect(first.length).toBeGreaterThan(300);
+  });
+});
+
+describe("the demo's two weeks of history (THE-893)", () => {
+  const history = demoHistory();
+  const mergedAgo = (h: (typeof history)[number]) => h.claimed - (h.steps.at(-1)?.at ?? 0);
+  const DAY = 24 * 60;
+
+  test("ships each project's done tickets, the same ones its snapshot lists, the same every seed", () => {
+    expect(demoHistory()).toEqual(history);
+    for (const p of DEMO_PROJECTS) {
+      const done = demoSnapshot(p, "fleet", NOW).program.issues.filter((i) => i.statusType === "completed");
+      expect(history.filter((h) => h.project === p.slug).map((h) => h.ticket)).toEqual(done.map((i) => i.id));
+    }
+    for (const h of history) expect(h.steps.at(-1)?.kind).toBe("merge");
+  });
+
+  test("covers two weeks, more merged in the second, with re-plans, new heads, questions, validations and silences", () => {
+    const days = history.map((h) => Math.floor(mergedAgo(h) / DAY));
+    expect(Math.max(...days)).toBe(HISTORY_DAYS - 1);
+    expect(days.filter((d) => d < 7).length).toBeGreaterThan(days.filter((d) => d >= 7).length);
+    const steps = history.flatMap((h) => h.steps);
+    const handedBack = history.filter(
+      (h) => new Set(h.steps.flatMap((s) => (s.kind === "report" && s.headSha ? [s.headSha] : []))).size > 1,
+    );
+    expect(handedBack.length).toBeGreaterThan(0);
+    for (const kind of ["plan", "question", "hand-back", "validation"] as const)
+      expect(steps.some((s) => s.kind === kind)).toBe(true);
+    expect(history.some((h) => h.quiet)).toBe(true);
   });
 });

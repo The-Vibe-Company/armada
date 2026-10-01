@@ -204,6 +204,7 @@ function crumbLabel(t: Strings, c: Crumb, names: Map<string, string>) {
     case "projects":
     case "agents":
     case "validations":
+    case "insights":
       return t.shell.nav[c.kind];
     case "validation":
       return `#${c.id}`;
@@ -268,11 +269,12 @@ function Sidebar({
   const counts = harnessCounts(overview.rows);
   const decisions = decideCount(overview);
   const checks = pendingValidations(overview).length;
-  const nav: { key: NonNullable<Section>; href: string; count: number; hot: boolean }[] = [
+  const nav: { key: NonNullable<Section>; href: string; count: number | null; hot: boolean }[] = [
     { key: "overview", href: paths.overview, count: decisions, hot: decisions > 0 },
     { key: "validations", href: paths.validations, count: checks, hot: checks > 0 },
     { key: "projects", href: paths.projects, count: overview.projects.length, hot: false },
     { key: "agents", href: paths.agents(), count: overview.rows.length, hot: false },
+    { key: "insights", href: paths.insights, count: null, hot: false },
   ];
   return (
     <aside className="sh-side">
@@ -295,14 +297,15 @@ function Sidebar({
           <Link
             key={n.key}
             href={n.href}
-            prefetch
+            // Insights renders on the server from Postgres: opened on demand, not on every page's load.
+            prefetch={n.key !== "insights"}
             className="sh-nav-item"
             aria-current={section === n.key ? "page" : undefined}
             title={t.shell.nav[n.key]}
           >
             <NavIcon section={n.key} />
             <span className="sh-label sh-nav-label">{t.shell.nav[n.key]}</span>
-            <span className={`sh-count ${n.hot ? "is-hot" : ""}`}>{n.count}</span>
+            {n.count !== null && <span className={`sh-count ${n.hot ? "is-hot" : ""}`}>{n.count}</span>}
           </Link>
         ))}
       </nav>

@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Check, ServerCli } from "@armada/core";
+import { type Check, checkPublished, NPM_REGISTRY_URL, type ServerCli } from "@armada/core";
 import { ARMADA_URL, type FakeVault, fakeArmada, NOW } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
@@ -194,6 +194,40 @@ describe("a newer Armada release", () => {
     expect(JSON.parse(await readFile(join(t.home, "armada", "releases.json"), "utf8"))).toEqual({
       noticed: ["99.1.0"],
     });
+  });
+
+  test("a listed release stays quiet until the server verifies its tarball", async () => {
+    const server = { minimum: "0.0.1", latest: version };
+    const newer = "99.1.0";
+    let ready = false;
+    const refresh = async () => {
+      const answer = await checkPublished(newer, async (url) =>
+        url === NPM_REGISTRY_URL
+          ? Response.json({
+              versions: Object.fromEntries(
+                [newer, version].map((candidate) => [
+                  candidate,
+                  {
+                    dist: { tarball: `https://registry.npmjs.org/armada-${candidate}.tgz` },
+                  },
+                ]),
+              ),
+            })
+          : new Response(null, { status: url.includes(newer) && !ready ? 404 : 200 }),
+      );
+      if (answer.state === "published") server.latest = newer;
+      if (answer.state === "missing" && answer.newest) server.latest = answer.newest;
+    };
+    const terminalIo = await terminal({ ARMADA_API_KEY: KEY }, {}, null, { cli: server });
+    await refresh();
+    await terminalIo.doctor();
+    expect(terminalIo.stderr()).toBe("");
+    ready = true;
+    await refresh();
+    await terminalIo.doctor();
+    expect(terminalIo.stderr()).toBe(notice);
+    await terminalIo.doctor();
+    expect(terminalIo.stderr()).toBe("");
   });
 
   test("a worker is never told: it installs the version its brief names", async () => {

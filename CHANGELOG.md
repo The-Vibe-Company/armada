@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.25](https://github.com/The-Vibe-Company/armada/compare/v0.2.24...v0.2.25) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** show how fast the fleet ships and where tickets wait on /insights ([#115](https://github.com/The-Vibe-Company/armada/issues/115)) ([9ff52cb](https://github.com/The-Vibe-Company/armada/commit/9ff52cbf51551a323893b98dc820fca93d85c4cc))
+
+## [0.2.24](https://github.com/The-Vibe-Company/armada/compare/v0.2.23...v0.2.24) (2026-10-01)
+
+
+### Bug Fixes
+
+* **api:** announce CLI releases only after npm serves their tarballs ([#113](https://github.com/The-Vibe-Company/armada/issues/113)) ([61d5b8d](https://github.com/The-Vibe-Company/armada/commit/61d5b8d9d6f3ae39a06d9c57e764f727937df4ba))
+
 ## [0.2.23](https://github.com/The-Vibe-Company/armada/compare/v0.2.22...v0.2.23) (2026-10-01)
 
 

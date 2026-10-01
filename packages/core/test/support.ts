@@ -59,7 +59,23 @@ export function recordedFetch(
   const calls: Call[] = [];
   const fetch: Fetch = async (url, init) => {
     // npm serves the CLI's own version, unless a test says otherwise.
-    if (url === NPM_REGISTRY_URL) return Response.json(overrides.npm ?? { versions: { [cliPackage.version]: {} } });
+    if (url === NPM_REGISTRY_URL)
+      return Response.json(
+        overrides.npm ?? {
+          versions: {
+            [cliPackage.version]: {
+              dist: {
+                tarball: `https://registry.npmjs.org/@the-vibe-company/armada/-/armada-${cliPackage.version}.tgz`,
+              },
+            },
+          },
+        },
+      );
+    if (
+      url === `https://registry.npmjs.org/@the-vibe-company/armada/-/armada-${cliPackage.version}.tgz` &&
+      init.method === "HEAD"
+    )
+      return new Response(null, { status: 200 });
     const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
     const operation = body.query.match(/query\s+(\w+)/)?.[1] ?? "?";
     const authorization = new Headers(init.headers).get("Authorization");
