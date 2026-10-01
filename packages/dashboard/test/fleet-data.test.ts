@@ -28,7 +28,7 @@ import {
   saveRuntimeHandle,
   upsertProject,
 } from "../lib/fleet-store.ts";
-import { answerJson, answerOverview } from "../lib/live-http.ts";
+import { answerJson, answerOverview, answerTimeline } from "../lib/live-http.ts";
 import { submitAnswer as answer, submitLaunch as launchReq } from "../lib/requests.ts";
 import { markRepository } from "../lib/snapshots.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
@@ -203,7 +203,11 @@ describe("live Fleet reading", () => {
       owner: "Synthetic Owner",
       progress: { done: 0, total: 3 },
       health: "blocked",
-      coordinator: { ...facts, inboxSeenAt: null, startedAt: w.at(0).toISOString(), inboxReads: [] },
+      coordinator: {
+        ...facts,
+        inboxSeenAt: null,
+        startedAt: w.at(0).toISOString(),
+      },
       pullRequests: [
         {
           number: 11,
@@ -247,8 +251,20 @@ describe("live Fleet reading", () => {
     expect(changed.status).toBe(200);
     expect(changed.headers.get("etag")).not.toBe(tag);
     const updated = await changed.json();
-    expect(updated.projects[0].coordinator.inboxReads).toMatchObject([{ at: w.at(3_000).toISOString() }]);
     expect(updated.projects[0].requests).toMatchObject([{ kind: "merge-request", request: { pr: 11 } }]);
+    // The timeline's history is not in the poll: its own route serves it, tagged on its own.
+    expect(updated.timeline).toBeUndefined();
+    const history = answerTimeline(
+      new Request("https://armada.example.test/api/fleet/timeline"),
+      await loadOverview(w.opts),
+    );
+    expect((await history.json()).coordinators).toMatchObject([
+      { project: "widgets", inboxTrack: { reads: [{ from: w.at(3_000).toISOString() }] } },
+    ]);
+    const again = new Request("https://armada.example.test/api/fleet/timeline", {
+      headers: { "if-none-match": history.headers.get("etag") ?? "" },
+    });
+    expect(answerTimeline(again, await loadOverview(w.opts)).status).toBe(304);
     expect(w.reads.snapshots).toBe(1);
   });
 
@@ -289,11 +305,11 @@ describe("live Fleet reading", () => {
     const report = (phase: string, ms: number) =>
       recordEvent(db, { project: "widgets", ticket: "WID-2", kind: "report", phase, message: phase, at: w.at(ms) });
     // Older than the timeline's span: not read on a poll.
-    await report("planning", -10 * 3_600_000);
+    await report("planning", -26 * 3_600_000);
     await report("planning", -3_600_000);
     await report("implementing", -1_800_000);
     const o = await loadOverview(w.opts);
-    const timeline = o.rows[0]?.timeline;
+    const timeline = o.timeline?.rows[0]?.timeline;
     expect(timeline?.reports).toEqual([w.at(-3_600_000).toISOString(), w.at(-1_800_000).toISOString()]);
     expect(timeline?.phases.map((s) => [s.phase, s.from])).toEqual([
       ["planning", w.at(-3_600_000).toISOString()],

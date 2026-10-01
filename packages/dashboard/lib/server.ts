@@ -49,6 +49,7 @@ import {
   repositoryToken,
 } from "./github-app";
 import { isLanguage, type Language } from "./i18n";
+import { withoutTimeline } from "./live-http";
 import { dbSnapshots } from "./snapshots";
 import { vaultModeOf } from "./vault";
 
@@ -265,10 +266,15 @@ export async function refreshMarked(keys: string[]): Promise<void> {
   }
 }
 
-/** The Fleet overview the viewer may read: their organization's projects, or every project under the password gate. */
-export async function getOverview(): Promise<FleetOverview> {
-  const { opts, scope } = await fleetOf();
-  return loadOverview(opts, scope);
+/**
+ * The Fleet overview the viewer may read: their organization's projects, or
+ * every project under the password gate. `timeline` keeps the live
+ * timeline's history, which pages leave out (`withoutTimeline`).
+ */
+export async function getOverview(opts: { timeline?: boolean } = {}): Promise<FleetOverview> {
+  const fleet = await fleetOf();
+  const overview = await loadOverview(fleet.opts, fleet.scope);
+  return opts.timeline ? overview : withoutTimeline(overview);
 }
 
 /**

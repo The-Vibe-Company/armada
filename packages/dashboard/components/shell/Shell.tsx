@@ -14,7 +14,6 @@ import {
   type Crumb,
   crumbsOf,
   type Density,
-  decisionsOf,
   escapeTarget,
   HARNESS_NAME,
   HARNESSES,
@@ -26,6 +25,7 @@ import {
   sectionOf,
 } from "@/lib/fleet-view";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
+import { decideCount } from "@/lib/overview-view";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
 import { Dot, harnessColor, Kbd, ProjectChip } from "../ui";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
@@ -257,7 +257,7 @@ function Sidebar({
   const { t, account } = useShell();
   const { overview } = useFleet();
   const counts = harnessCounts(overview.rows);
-  const decisions = decisionsOf(overview).length;
+  const decisions = decideCount(overview);
   const nav: { key: NonNullable<Section>; href: string; count: number; hot: boolean }[] = [
     { key: "overview", href: paths.overview, count: decisions, hot: decisions > 0 },
     { key: "projects", href: paths.projects, count: overview.projects.length, hot: false },

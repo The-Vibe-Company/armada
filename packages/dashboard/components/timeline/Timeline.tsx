@@ -2,32 +2,25 @@
 
 // The overview's live timeline (THE-868, the mockup's "Flotte en direct"):
 // per project, its coordinator's row (harness, active or idle and since when,
-// a tick per inbox read), then a row per session in flight (its phases, the
-// moment its pull request opened, its reports and its silences) over the last
-// 2, 4 or 8 hours. Each row is one SVG in percent of its width, drawn from
-// what core gives it (`FleetRow.timeline`, `coordinator.inboxReads`): no rule
-// is decided here. Rows redraw every `STEP_MS` and on a new overview only.
-import type { FleetRow, ProjectOverview } from "@armada/core/read";
-import { memo, useEffect, useMemo, useState } from "react";
+// a line while it watches its inbox), then a row per session in flight (its
+// phases from its claim, the moment its pull request opened, its reports and
+// its silences). It opens on the last 3 hours, now on the right, and scrolls
+// back to 24 (THE-880): trackpad, shift and wheel, or a drag; the names and
+// the "ago" column stay put. Each row is one SVG in percent of the 24 h track,
+// drawn from what core gives it (`FleetTimeline`, from /api/fleet/timeline,
+// read while the section is on screen and the overview changed): no rule is
+// decided here. Rows redraw every `STEP_MS` and on a new history only.
+import type { CoordinatorTrack, FleetRow, FleetTimeline, ProjectOverview, SessionTimeline } from "@armada/core/read";
+import { type CSSProperties, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { agentState, HARNESS_NAME, HARNESSES, type Harness, harnessCounts, harnessOf, paths } from "@/lib/fleet-view";
 import type { Language, Strings } from "@/lib/i18n";
 import { coordinatorHarness } from "@/lib/project-view";
-import { Row, RowSide, Section, SectionBody } from "../page";
+import { Button, Row, Section, SectionBody } from "../page";
 import { rowProgress } from "../screens/AgentRow";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
 import { harnessColor, ProjectChip, StatusDot, Tabs, toneColor } from "../ui";
-import {
-  DEFAULT_SPAN,
-  hourMarks,
-  PHASE_COLOR,
-  type Scale,
-  SPANS,
-  type Span,
-  STEP_MS,
-  scaleOf,
-  segmentBox,
-} from "./scale";
+import { hourMarks, PHASE_COLOR, type Scale, STEP_MS, scaleOf, segmentBox, spanBox, ZOOM } from "./scale";
 
 /** What a hovered mark says: its lines, the first in its color. */
 interface Tip {
@@ -68,7 +61,6 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
   const { overview } = useFleet();
   const { t, lang } = useShell();
   const now = useNow();
-  const [span, setSpan] = useState<Span>(DEFAULT_SPAN);
   const [harness, setHarness] = useState<Harness | "all">("all");
   const [tip, setTip] = useState<(Tip & { x: number; y: number; left: boolean }) | null>(null);
   // Hour marks and tips follow the viewer's clock, which the server does not know: drawn once in the browser.
@@ -78,8 +70,10 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
 
   // The scale moves by steps of the clock, not every second: the rows redraw only then.
   const end = Math.floor(now / STEP_MS) * STEP_MS;
-  const scale = useMemo(() => scaleOf(end, span), [end, span]);
-  const marks = useMemo(() => (mounted ? hourMarks(scale, span) : []), [mounted, scale, span]);
+  const scale = useMemo(() => scaleOf(end), [end]);
+  const marks = useMemo(() => (mounted ? hourMarks(scale) : []), [mounted, scale]);
+  const { ref: scroller, atNow, toNow } = useTimeScroll();
+  const history = useTimelineHistory(box, overview.generatedAt);
   const clock = useMemo(() => (mounted ? clockOf(lang) : null), [mounted, lang]);
 
   useEffect(() => {
@@ -138,47 +132,74 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
               })),
             ]}
           />
-          <Tabs
-            size="sm"
-            label={t.timeline.span}
-            value={String(span)}
-            onChange={(v) => setSpan(Number(v) as Span)}
-            items={SPANS.map((h) => ({ key: String(h), label: t.timeline.hours(h) }))}
-          />
+          <Button type="button" onClick={toNow} disabled={atNow} title={t.timeline.backToNow}>
+            {t.timeline.now}
+            <svg className="tl-now-icon" width="12" height="12" viewBox="0 0 16 16" aria-hidden>
+              <path
+                d="M3 8h9M8.5 4.5L12 8l-3.5 3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </Button>
         </>
       }
     >
       <div className="tl" ref={setBox}>
         <Hatch />
-        <Row className="tl-head">
-          <span className="tl-label faint">{t.timeline.session}</span>
-          <span className="tl-track tl-scale">
-            {marks.map((m) => (
-              <span key={m} className="tl-hour" style={{ left: pc(scale.x(m)) }}>
-                {clock?.(m)}
+        {/* Right to left, so the browser opens it on now before any script runs; every row inside reads left to right. */}
+        <div className="tl-scroll" ref={scroller} dir="rtl" style={{ "--tl-zoom": ZOOM } as CSSProperties}>
+          <div className="tl-rows" dir="ltr">
+            <Row className="tl-head">
+              <span className="tl-label faint">{t.timeline.session}</span>
+              <span className="tl-track tl-scale">
+                {marks.map((m) => (
+                  <span key={m} className="tl-hour" style={{ left: pc(scale.x(m)) }}>
+                    {clock?.(m)}
+                  </span>
+                ))}
+                <span className="tl-now">{t.timeline.now}</span>
               </span>
-            ))}
-            <span className="tl-now">{t.timeline.now}</span>
-          </span>
-          <RowSide roomy width={120}>
-            <span />
-          </RowSide>
-        </Row>
-        {projects.map((p) => {
-          const own = rows.filter((r) => r.project === p.slug);
-          return (
-            <div key={p.slug} className="tl-group">
-              <Row className="tl-group-h">
-                <ProjectChip slug={p.slug} name={p.name} />
-                <span className="ui-count">{own.length}</span>
-              </Row>
-              <CoordinatorRow project={p} scale={scale} marks={marks} t={t} clock={clock} now={now} />
-              {own.map((r) => (
-                <SessionRow key={r.id} row={r} scale={scale} marks={marks} t={t} clock={clock} />
-              ))}
-            </div>
-          );
-        })}
+              <span className="tl-side" />
+            </Row>
+            {projects.map((p) => {
+              const own = rows.filter((r) => r.project === p.slug);
+              return (
+                <div key={p.slug} className="tl-group">
+                  <Row className="tl-group-h">
+                    <span className="tl-label">
+                      <ProjectChip slug={p.slug} name={p.name} />
+                      <span className="ui-count">{own.length}</span>
+                    </span>
+                  </Row>
+                  <CoordinatorRow
+                    project={p}
+                    track={history.coordinators.get(p.slug) ?? null}
+                    scale={scale}
+                    marks={marks}
+                    t={t}
+                    clock={clock}
+                    now={now}
+                  />
+                  {own.map((r) => (
+                    <SessionRow
+                      key={r.id}
+                      row={r}
+                      tl={history.rows.get(`${r.project}/${r.id}`) ?? null}
+                      scale={scale}
+                      marks={marks}
+                      t={t}
+                      clock={clock}
+                    />
+                  ))}
+                </div>
+              );
+            })}
+          </div>
+        </div>
         <SectionBody className="tl-legend">
           <span>
             <i className="tl-swatch is-past" />
@@ -203,6 +224,10 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
           <span>
             <i className="tl-swatch is-inbox" />
             {t.timeline.legend.inbox}
+          </span>
+          <span>
+            <i className="tl-swatch is-idle" />
+            {t.timeline.legend.idle}
           </span>
         </SectionBody>
         {tip && (
@@ -252,11 +277,22 @@ interface RowProps {
   clock: Clock | null;
 }
 
-const SessionRow = memo(function SessionRow({ row: r, scale, marks, t, clock }: RowProps & { row: FleetRow }) {
+/** Until its history arrives, a row draws its labels and an empty track. */
+const NO_HISTORY: SessionTimeline = { startedAt: "", phases: [], reports: [], silences: [], prOpenedAt: null };
+const NO_TRACK: CoordinatorTrack = { reads: [], idle: [] };
+
+const SessionRow = memo(function SessionRow({
+  row: r,
+  tl: history,
+  scale,
+  marks,
+  t,
+  clock,
+}: RowProps & { row: FleetRow; tl: SessionTimeline | null }) {
   const state = agentState(r);
   const label = stateLabel(t, state, r.phase);
   const color = toneColor(state.status);
-  const tl = r.timeline;
+  const tl = history ?? NO_HISTORY;
   const last = tl.phases.length - 1;
   const { pr } = r;
   const opened = tl.prOpenedAt;
@@ -304,9 +340,8 @@ const SessionRow = memo(function SessionRow({ row: r, scale, marks, t, clock }: 
           })}
           {tl.silences.map((s) => {
             const to = s.to === null ? scale.end : Date.parse(s.to);
-            const x = scale.x(s.from);
-            const w = scale.x(to) - x;
-            if (w <= 0) return null;
+            const b = spanBox(s.from, to, scale);
+            if (!b) return null;
             const tip = tipOf(clock, () => ({
               lines: [t.timeline.silence(t.duration(to - Date.parse(s.from)))],
               color: "var(--active)",
@@ -315,9 +350,9 @@ const SessionRow = memo(function SessionRow({ row: r, scale, marks, t, clock }: 
               <rect
                 key={`${s.from}-${s.to}`}
                 className="tl-silence"
-                x={pc(x)}
+                x={pc(b.x)}
                 y={MID - 7}
-                width={pc(w)}
+                width={pc(b.width)}
                 height="14"
                 fill="url(#tl-hatch)"
                 {...tip}
@@ -354,30 +389,31 @@ const SessionRow = memo(function SessionRow({ row: r, scale, marks, t, clock }: 
           />
         </svg>
       </span>
-      <RowSide roomy width={120}>
-        <span className="tl-side" style={{ color: r.silent ? "var(--active)" : undefined }}>
-          {lastReport === null ? "—" : t.duration(Math.max(0, lastReport))}
-        </span>
-      </RowSide>
+      <span className="tl-side" style={{ color: r.silent ? "var(--active)" : undefined }}>
+        {lastReport === null ? "—" : t.duration(Math.max(0, lastReport))}
+      </span>
     </Row>
   );
 });
 
-/** A coordinator's row: a line while it works (dashed once idle), a tick per inbox read. */
+/** A coordinator's row: a faint line while it runs, a steady line while it watches its inbox, dashed while idle. */
 function CoordinatorRow({
   project: p,
+  track,
   scale,
   marks,
   t,
   clock,
   now,
-}: RowProps & { project: ProjectOverview; now: number }) {
+}: RowProps & { project: ProjectOverview; track: CoordinatorTrack | null; now: number }) {
   const c = p.coordinator;
+  const inbox = track ?? NO_TRACK;
   const color = c.state === "active" ? "var(--done)" : c.state === "idle" ? "var(--active)" : "var(--text-3)";
   const seen = c.seenAt ? Date.parse(c.seenAt) : null;
   const started = c.startedAt ? Date.parse(c.startedAt) : seen;
   const ms = seen === null ? 0 : Math.max(0, now - seen);
-  const reads = useMemo(() => c.inboxReads.filter((r) => Date.parse(r.at) >= scale.start), [c.inboxReads, scale]);
+  const run = started !== null && seen !== null ? spanBox(started, c.state === "active" ? null : seen, scale) : null;
+  const watch = c.state === "active" ? "var(--done)" : "var(--text-2)";
   return (
     <Row href={paths.project(p.slug)} className="tl-row is-coordinator">
       <span className="tl-label">
@@ -391,16 +427,33 @@ function CoordinatorRow({
       <span className="tl-track is-short">
         <svg className="tl-svg" width="100%" height="38" aria-hidden>
           <Grid marks={marks} scale={scale} />
-          {started !== null && seen !== null && (
-            <rect
-              className="tl-coord-line"
-              x={pc(scale.x(started))}
-              y="18"
-              width={pc(Math.max(0, (c.state === "active" ? 100 : scale.x(seen)) - scale.x(started)))}
-              height="2"
-              fill={c.state === "active" ? "var(--done)" : "var(--text-3)"}
-            />
+          {run && (
+            <rect className="tl-coord-line" x={pc(run.x)} y="18.5" width={pc(run.width)} height="1" fill={watch} />
           )}
+          {inbox.idle.map((g) => {
+            const b = spanBox(g.from, g.to, scale);
+            if (!b) return null;
+            return (
+              <line
+                key={g.from}
+                className="tl-coord-idle"
+                x1={pc(b.x)}
+                x2={pc(b.x + b.width)}
+                y1="19"
+                y2="19"
+                stroke="var(--active)"
+                strokeWidth="2"
+                strokeDasharray="4 4"
+                {...tipOf(clock, (k) => ({
+                  lines: [
+                    t.timeline.idle(t.duration(Date.parse(g.to) - Date.parse(g.from))),
+                    `${k(g.from)} → ${k(g.to)}`,
+                  ],
+                  color: "var(--active)",
+                }))}
+              />
+            );
+          })}
           {c.state === "idle" && seen !== null && (
             <line
               className="tl-coord-idle"
@@ -413,30 +466,191 @@ function CoordinatorRow({
               strokeDasharray="4 4"
             />
           )}
-          {reads.map((r) => (
-            <rect
-              key={r.id}
-              className="tl-read"
-              x={pc(scale.x(r.at))}
-              y="15"
-              width="2"
-              height="8"
-              rx="1"
-              fill={color}
-              {...tipOf(clock, (c) => ({ lines: [t.timeline.inboxRead(c(r.at))], color }))}
-            />
-          ))}
+          {inbox.reads.map((r) => {
+            if (Date.parse(r.to) < scale.start) return null;
+            const x = scale.x(r.from);
+            const tip = tipOf(clock, (k) => ({
+              lines: [
+                r.count === 1 ? t.timeline.inboxRead(k(r.from)) : t.timeline.inboxWatch(r.count, k(r.from), k(r.to)),
+              ],
+              color: watch,
+            }));
+            // A lone read is a tick; reads closer than a minute are one steady line.
+            return r.count === 1 ? (
+              <rect
+                key={r.from}
+                className="tl-read"
+                x={pc(x)}
+                y="15"
+                width="2"
+                height="8"
+                rx="1"
+                fill={watch}
+                {...tip}
+              />
+            ) : (
+              <line
+                key={r.from}
+                className="tl-watch"
+                x1={pc(x)}
+                x2={pc(scale.x(r.to))}
+                y1="19"
+                y2="19"
+                stroke={watch}
+                strokeWidth="2"
+                strokeLinecap="round"
+                {...tip}
+              />
+            );
+          })}
         </svg>
       </span>
-      <RowSide roomy width={120}>
-        <span className="tl-side" style={{ color }}>
-          {c.state === "active"
-            ? t.shell.coordinatorActive(t.ago(ms))
-            : c.state === "idle"
-              ? t.shell.coordinatorIdle(t.duration(ms))
-              : t.shell.coordinatorUnknown}
-        </span>
-      </RowSide>
+      <span className="tl-side" style={{ color }}>
+        {c.state === "active"
+          ? t.shell.coordinatorActive(t.ago(ms))
+          : c.state === "idle"
+            ? t.shell.coordinatorIdle(t.duration(ms))
+            : t.shell.coordinatorUnknown}
+      </span>
     </Row>
   );
+}
+
+/** The timeline's history, keyed `project/ticket` for rows and by project for coordinators. */
+interface History {
+  rows: Map<string, SessionTimeline>;
+  coordinators: Map<string, CoordinatorTrack>;
+}
+
+const historyOf = (t: FleetTimeline): History => ({
+  rows: new Map(t.rows.map((r) => [`${r.project}/${r.id}`, r.timeline])),
+  coordinators: new Map(t.coordinators.map((c) => [c.project, c.inboxTrack])),
+});
+
+/**
+ * Reads the timeline's history while the section is on screen, again each
+ * time the overview changes (a report, an inbox read), with its ETag: the
+ * server answers 304 while nothing moved. Off screen, nothing is read.
+ */
+function useTimelineHistory(el: HTMLElement | null, overviewAt: string): History {
+  const [history, setHistory] = useState<History>(() => historyOf({ rows: [], coordinators: [] }));
+  const [visible, setVisible] = useState(false);
+  const tag = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!el) return;
+    const seen = new IntersectionObserver(([entry]) => setVisible(!!entry?.isIntersecting), { rootMargin: "200px" });
+    seen.observe(el);
+    return () => seen.disconnect();
+  }, [el]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new overview is the signal to read the history again
+  useEffect(() => {
+    if (!visible) return;
+    let live = true;
+    void (async () => {
+      try {
+        const res = await fetch("/api/fleet/timeline", {
+          cache: "no-store",
+          headers: tag.current ? { "If-None-Match": tag.current } : {},
+        });
+        if (!live || res.status === 304 || !res.ok) return;
+        const next = (await res.json()) as FleetTimeline;
+        if (!live) return;
+        tag.current = res.headers.get("etag");
+        setHistory(historyOf(next));
+      } catch {
+        // The overview's poll says when the dashboard is offline; the rows keep the history they had.
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [visible, overviewAt]);
+
+  return history;
+}
+
+/** A drag this far is a scroll, not a click on a row. */
+const DRAG_PX = 4;
+
+/**
+ * The timeline's horizontal scroll: a mouse drag scrolls it (a touch screen
+ * and a trackpad already do), a drag never opens the row it started on, and
+ * `toNow` brings the view back to now. The scroller runs right to left, so
+ * now is at scrollLeft 0 and stays there as the track grows.
+ */
+function useTimeScroll() {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [atNow, setAtNow] = useState(true);
+  const drag = useRef<{ x: number; left: number; id: number; moved: boolean } | null>(null);
+  const swallow = useRef(false);
+
+  useEffect(() => {
+    if (!el) return;
+    const scroll = () => setAtNow(el.scrollLeft >= -2);
+    const down = (e: PointerEvent) => {
+      swallow.current = false;
+      if (e.pointerType !== "mouse" || e.button !== 0) return;
+      drag.current = { x: e.clientX, left: el.scrollLeft, id: e.pointerId, moved: false };
+    };
+    const move = (e: PointerEvent) => {
+      const d = drag.current;
+      if (!d || d.id !== e.pointerId) return;
+      const dx = e.clientX - d.x;
+      if (!d.moved && Math.abs(dx) < DRAG_PX) return;
+      if (!d.moved) {
+        d.moved = true;
+        el.setPointerCapture(e.pointerId);
+        el.classList.add("is-dragging");
+      }
+      el.scrollLeft = d.left - dx;
+    };
+    const up = (e: PointerEvent) => {
+      const d = drag.current;
+      if (!d || d.id !== e.pointerId) return;
+      drag.current = null;
+      if (!d.moved) return;
+      el.classList.remove("is-dragging");
+      if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+      // The click that may follow this release, in the same turn of the event loop, opens nothing.
+      swallow.current = true;
+      setTimeout(() => {
+        swallow.current = false;
+      }, 0);
+    };
+    // Rows are links: the browser's own link drag would cancel the scroll.
+    const nativeDrag = (e: DragEvent) => e.preventDefault();
+    // The click that ends a drag opens nothing.
+    const click = (e: MouseEvent) => {
+      if (!swallow.current) return;
+      swallow.current = false;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    el.addEventListener("scroll", scroll, { passive: true });
+    el.addEventListener("dragstart", nativeDrag);
+    el.addEventListener("pointerdown", down);
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+    el.addEventListener("click", click, true);
+    return () => {
+      el.removeEventListener("scroll", scroll);
+      el.removeEventListener("dragstart", nativeDrag);
+      el.removeEventListener("pointerdown", down);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+      el.removeEventListener("pointercancel", up);
+      el.removeEventListener("click", click, true);
+    };
+  }, [el]);
+
+  const toNow = useCallback(() => {
+    if (!el) return;
+    const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollTo({ left: 0, behavior: still ? "auto" : "smooth" });
+  }, [el]);
+
+  return { ref: setEl, atNow, toNow };
 }

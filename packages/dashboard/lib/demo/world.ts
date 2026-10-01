@@ -38,8 +38,10 @@ export interface DemoProjectFacts {
     model: string | null;
     /** First command after 30 min of silence. */
     since: number;
-    /** Each inbox read, every 15 minutes since it started, the last one `seen` minutes ago. */
+    /** Its inbox reads, every 15 seconds as `armada watch` reads since it started, the last one `seen` minutes ago. */
     seen: number;
+    /** Minutes ago between which it did not read its inbox, for an idle stretch on the timeline. */
+    pause?: [number, number];
   };
 }
 
@@ -54,6 +56,7 @@ export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
       model: "opus-5-5-1m",
       since: 420,
       seen: 2,
+      pause: [250, 205],
     },
   },
   gadgets: {
@@ -61,7 +64,7 @@ export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
     done: 6,
     coordinator: {
       harness: "Claude Code",
-      where: "local · tty s004",
+      where: "hugo-mbp/ttys004",
       profile: "opus",
       model: "opus-5-5-1m",
       since: 300,
@@ -73,7 +76,7 @@ export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
     done: 31,
     coordinator: {
       harness: "Codex",
-      where: "local · tty s011",
+      where: "camille-mbp/ttys011",
       profile: "codex",
       model: "gpt-6.1-sol",
       since: 190,
@@ -96,12 +99,13 @@ export function demoCoordinatorFacts(project: string): CoordinatorFacts | null {
   return { harness: HARNESS_FACT[c.harness], handle: c.where, model: c.model, cliVersion: null };
 }
 
-/** The minutes ago of a coordinator's inbox reads, newest first: one every 15 minutes since it started. */
+/** The minutes ago of a coordinator's inbox reads, newest first: every 15 seconds since it started, but in its pause. */
 export function demoInboxReads(project: string): number[] {
   const c = DEMO_PROJECT_FACTS[project]?.coordinator;
   if (!c) return [];
   const reads: number[] = [];
-  for (let m = c.seen; m < c.since; m += 15) reads.push(m);
+  const paused = (m: number) => !!c.pause && m < c.pause[0] && m > c.pause[1];
+  for (let m = c.seen; m < c.since; m += 0.25) if (!paused(m)) reads.push(m);
   return reads;
 }
 
@@ -131,6 +135,13 @@ interface DemoTicket {
   pr?: { number: number; ci: CiState; mergeable?: "MERGEABLE" | "CONFLICTING"; opened: number };
   /** Minutes ago between which the worker did not report, for a past silence on the timeline. */
   quiet?: [number, number];
+  /**
+   * Minutes ago of status lines other agents left on the ticket before its
+   * claim (input for it, not a claim): they are not part of this session.
+   */
+  notes?: number[];
+  /** Minutes between two reports while it works; 12 by default. */
+  every?: number;
 }
 
 const f = (path: string, additions: number, deletions: number): DemoFile => ({ path, additions, deletions });
@@ -290,6 +301,7 @@ const TICKETS: DemoTicket[] = [
     phaseSince: 31,
     lastReport: 1,
     summary: "Mapping Codex session events onto armada report",
+    notes: [1650, 1340],
     files: [
       f("packages/core/src/harness/codex-local.ts", 156, 0),
       f("packages/core/src/harness/index.ts", 8, 2),
@@ -402,9 +414,40 @@ export const DEMO_COORDINATOR_SEEN: Record<string, number> = Object.fromEntries(
   Object.entries(DEMO_PROJECT_FACTS).map(([slug, p]) => [slug, p.coordinator.seen]),
 );
 
-export type Scenario = "fleet" | "empty";
+/**
+ * `fleet` is the mockup's world; `busy` adds twenty sessions that ran the
+ * whole day, a report every 2 minutes, to try the live timeline at 30
+ * sessions over 24 hours (THE-880); `empty` has none.
+ */
+export type Scenario = "fleet" | "busy" | "empty";
 
-export const demoTickets = (scenario: Scenario) => (scenario === "empty" ? [] : TICKETS);
+const BUSY: DemoTicket[] = Array.from({ length: 20 }, (_, k) => {
+  const project = DEMO_PROJECTS[k % DEMO_PROJECTS.length] as ProjectInput;
+  const prefix = project.programRoot.split("-")[0];
+  return {
+    id: `${prefix}-${300 + k}`,
+    project: project.slug,
+    title: `Busy session ${k + 1}`,
+    phase: "implementing",
+    runtime: ["Conductor", "Claude Code", "Codex"][k % 3] as string,
+    agent: `Busy worker ${k + 1}`,
+    handle: `ws-busy/ses-${k + 1}`,
+    profile: "opus",
+    claimed: 1440 - k * 7,
+    phaseSince: 1300 - k * 7,
+    lastReport: 1 + (k % 3),
+    summary: "Working through the day",
+    files: [],
+    every: 2,
+  };
+});
+
+export const demoTickets = (scenario: Scenario) =>
+  scenario === "empty" ? [] : scenario === "busy" ? [...TICKETS, ...BUSY] : TICKETS;
+
+/** The scenario a mode names (`ARMADA_DASHBOARD_DEMO`, `demo:seed`); the mockup's world by default. */
+export const scenarioOf = (mode: string | undefined): Scenario =>
+  mode === "empty" || mode === "busy" ? mode : "fleet";
 
 const ago = (now: Date, minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
 
@@ -510,7 +553,7 @@ export function demoReports(t: DemoTicket): DemoReport[] {
   const quiet = (m: number) => !!t.quiet && m < t.quiet[0] && m > t.quiet[1];
   for (const p of phases) {
     const once = p.phase === "awaiting-approval" || p.phase === "blocked" || p.phase === "ready-to-merge";
-    for (let m = p.from; m > p.to; m -= once ? Number.POSITIVE_INFINITY : 12)
+    for (let m = p.from; m > p.to; m -= once ? Number.POSITIVE_INFINITY : (t.every ?? 12))
       if (!quiet(m) && m !== t.claimed) reports.push({ ago: m, phase: p.phase, summary: AT_WORK[p.phase] });
   }
   const last = reports.at(-1);
@@ -537,7 +580,7 @@ export function demoSnapshot(
     }),
   ];
   // The tickets already done under the root, so the project's progress reads as in the mockup.
-  const done = scenario === "fleet" ? (DEMO_PROJECT_FACTS[project.slug]?.done ?? 1) : 1;
+  const done = scenario !== "empty" ? (DEMO_PROJECT_FACTS[project.slug]?.done ?? 1) : 1;
   for (let k = 0; k < done; k++)
     issues.push(
       issue(`${prefix}-${100 + k}`, {
@@ -547,7 +590,7 @@ export function demoSnapshot(
         completedAt: ago(now, 600 + k * 90),
       }),
     );
-  if (scenario === "fleet")
+  if (scenario !== "empty")
     for (const r of READY.filter((t) => t.project === project.slug))
       issues.push(
         issue(r.id, {
@@ -578,6 +621,15 @@ export function demoSnapshot(
       }),
     );
     const base = { issueId: t.id, author: t.agent, excerpt: "" };
+    for (const [k, m] of (t.notes ?? []).entries())
+      comments.push({
+        ...base,
+        id: `${t.id}-note-${k}`,
+        author: "Another worker",
+        createdAt: ago(now, m),
+        status: { phase: "planning", summary: "input for this ticket from another campaign (not a claim)" },
+        claim: null,
+      });
     comments.push({
       ...base,
       id: `${t.id}-claim`,

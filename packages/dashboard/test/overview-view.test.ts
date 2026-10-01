@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { FleetOverview, FleetRow, InboxItem, ProjectOverview, ReadyTicket, WaitingItem } from "@armada/core/read";
 import {
+  coordinatorAlerts,
+  decideCount,
   decisionCards,
   excerpt,
   handBackPr,
   orderOptions,
   overviewFigures,
-  problemsOf,
   projectFacts,
   sentRequest,
 } from "../lib/overview-view.ts";
@@ -67,7 +68,12 @@ const project = (slug: string, over: Partial<ProjectOverview> = {}): ProjectOver
     health: "watch",
     pullRequests: [],
     requests: [],
-    coordinator: { state: "active", seenAt: at(2), cliVersion: null, updateAvailable: false, inboxReads: [] },
+    coordinator: {
+      state: "active",
+      seenAt: at(2),
+      cliVersion: null,
+      updateAvailable: false,
+    },
     ...over,
   }) as ProjectOverview;
 
@@ -101,7 +107,12 @@ const overview = {
     project("gadgets", {
       pullRequests: null,
       progress: { done: 0, total: 0 },
-      coordinator: { state: "idle", seenAt: at(30), cliVersion: null, updateAvailable: false, inboxReads: [] },
+      coordinator: {
+        state: "idle",
+        seenAt: at(30),
+        cliVersion: null,
+        updateAvailable: false,
+      },
     }),
   ],
   ready: [
@@ -187,15 +198,30 @@ describe("decisions", () => {
   });
 });
 
-test("problems are the failing and silent agents, then the launches never started; a decision is not one", () => {
-  expect(
-    problemsOf(overview).map((p) => [p.kind, p.ticket, p.pr, p.check, p.since === at(42) || p.since, p.href]),
-  ).toEqual([
-    ["ci", "WID-3", 41, "test", at(30), "/agents/WID-3"],
-    ["conflict", "WID-4", 12, null, at(25), "/agents/WID-4"],
-    ["silent", "WID-5", null, null, true, "/agents/WID-5"],
-    ["not-started", "GAD-9", null, null, at(20), "/projects/gadgets"],
-  ]);
+describe("a coordinator to bring back", () => {
+  test("is one card per project whose coordinator is not active while items wait for it", () => {
+    const { coordinator } = project("widgets");
+    const late = (ticket: string, since: string | null) => wait("question", ticket, 1, { coordinatorSince: since });
+    const o = {
+      projects: [
+        project("widgets", { coordinator: { ...coordinator, state: "idle", seenAt: at(40) } }),
+        project("gadgets", { coordinator: { ...coordinator, state: "unknown", seenAt: null } }),
+        project("gizmos", { coordinator: { ...coordinator, state: "active", seenAt: at(1) } }),
+      ],
+      waiting: [
+        { ...late("WID-1", at(25)), project: "widgets" },
+        { ...late("WID-2", at(35)), project: "widgets" },
+        { ...late("WID-3", null), project: "widgets" },
+        { ...late("GAD-1", null), project: "gadgets" },
+        { ...late("GIZ-1", at(50)), project: "gizmos" },
+      ],
+    };
+    expect(coordinatorAlerts(o)).toEqual([
+      { project: "widgets", state: "idle", seenAt: at(40), waiting: 2, since: at(35) },
+    ]);
+    // The sidebar and the headline count it with the decisions.
+    expect(decideCount(o)).toBe(5 + 1);
+  });
 });
 
 test("a project's card reads its progress, agents, ready tickets, pull requests and last activity", () => {

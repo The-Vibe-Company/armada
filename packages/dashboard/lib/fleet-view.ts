@@ -138,6 +138,8 @@ export const paths = {
   project: (slug: string) => `/projects/${encodeURIComponent(slug)}`,
   agents: (harness?: Harness | null) => (harness ? `/agents?harness=${harness}` : "/agents"),
   agent: (ticket: string) => `/agents/${encodeURIComponent(ticket)}`,
+  /** The Agents page scrolled to one of its groups. */
+  agentGroup: (status: AgentStatus) => `/agents#${status}`,
   design: "/design",
 } as const;
 

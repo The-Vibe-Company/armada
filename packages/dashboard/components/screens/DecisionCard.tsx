@@ -172,7 +172,12 @@ export function DecisionActions({
         />
       ) : (
         <>
-          {body && <p className="wait-detail is-quote">{body}</p>}
+          {/* The quote takes its decision's color: a hand-back is green, like its card. */}
+          {body && (
+            <p className="wait-detail is-quote" style={{ borderLeftColor: KIND_COLOR[w.kind] }}>
+              {body}
+            </p>
+          )}
           {cut && w.url && text.length > PLAN_EXCERPT && (
             <a href={w.url} target="_blank" rel="noreferrer" className="link">
               {t.overview.readPlan}
