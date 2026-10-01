@@ -7,7 +7,10 @@
 // terminal says which token it already holds (its revision and expiry, never
 // the token): it keeps it until it nears expiry or the Turso keys change.
 // Every call is recorded, never with a value. Everything is injected.
-import type { Client } from "@libsql/client";
+//
+// Turso is for the CLI only, until it reaches fleet data through the app
+// (THE-850): the dashboard reads the fleet from its own database (THE-849).
+import type { Database } from "./db";
 import type { Scope } from "./fleet-data";
 import {
   type Actor,
@@ -32,7 +35,7 @@ const TIMEOUT_MS = 10_000;
 export type Fetch = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface BrokerDeps {
-  client: Client;
+  client: Database;
   vault: VaultKey;
   fetch?: Fetch;
   now?: () => Date;
@@ -251,54 +254,31 @@ export async function releaseCredentials(
 
 // ------------------------------------------------------------ to the dashboard
 
-/** The dashboard's own reads of one organization's fleet. */
+/** The dashboard's own reads of one organization's fleet: Linear and GitHub. */
 export interface OrganizationKeys {
   linearApiKey: string | null;
   githubToken: string | null;
-  turso: { url: string; token: string; expiresAt: Date | null } | null;
   warnings: string[];
 }
 
-/** Turso access made for the dashboard, kept per organization in server memory until it nears expiry. */
-export type DashboardTursoCache = Map<string, { revision: string; access: TursoAccess; warnings: string[] }>;
+const LOGGED = new Set<string>();
 
 export async function organizationKeys(
-  deps: BrokerDeps & { cache: DashboardTursoCache },
+  deps: Pick<BrokerDeps, "client" | "vault">,
   organization: string,
 ): Promise<OrganizationKeys> {
-  const now = deps.now?.() ?? new Date();
-  const { values, revision, problems } = await readSecrets(deps.client, deps.vault, { organization, user: null });
-  let held = deps.cache.get(organization);
-  const fresh =
-    held?.revision === revision &&
-    (held.access?.kind !== "minted" || held.access.expiresAt.getTime() - now.getTime() > RENEW_BEFORE_MS);
-  if (!held || !fresh) {
-    const { access, warnings } = hasTurso(values)
-      ? await tursoAccess(values, deps.fetch ?? globalThis.fetch, now)
-      : { access: null, warnings: [] };
-    held = { revision, access, warnings };
-    deps.cache.set(organization, held);
-    for (const w of [...problems, ...warnings]) console.error(`armada dashboard: organization ${organization}: ${w}`);
-    if (access)
-      await recordEvent(deps.client, organization, {
-        at: now.toISOString(),
-        action: "release",
-        keys: [access.kind === "minted" ? "turso" : "turso-database-token"],
-        actor: { kind: "dashboard", id: "", label: "the dashboard" },
-        detail:
-          access.kind === "minted"
-            ? `Turso token made for the dashboard's reads, expires ${hhmm(access.expiresAt)}`
-            : "stored Turso database token used by the dashboard's reads (no Turso Platform API token)",
-      });
+  const { values, problems } = await readSecrets(deps.client, deps.vault, { organization, user: null });
+  // Once per problem and process: the Fleet view polls every few seconds.
+  for (const w of problems) {
+    const key = `${organization}\n${w}`;
+    if (LOGGED.has(key)) continue;
+    LOGGED.add(key);
+    console.error(`armada dashboard: organization ${organization}: ${w}`);
   }
-  const access = held.access;
   return {
     linearApiKey: values["linear-api-key"] ?? null,
     githubToken: values["github-token"] ?? null,
-    turso: access
-      ? { url: access.url, token: access.token, expiresAt: access.kind === "minted" ? access.expiresAt : null }
-      : null,
-    warnings: [...problems, ...held.warnings],
+    warnings: problems,
   };
 }
 
@@ -306,34 +286,27 @@ export async function organizationKeys(
 export interface FleetKeys {
   linearApiKey: string | null;
   githubToken: string | null;
-  turso: { url: string; token: string | null } | null;
   envRepositories: boolean;
 }
 
 /**
- * What an organization's fleet is read with: its own keys, then the
- * deployment's environment. An organization whose Turso database comes from
- * its vault controls its own registry, so it could list any repository there:
- * unless it is the deployment's first organization (which the environment's
- * keys serve), it then gets none of the environment's keys, nor
- * ARMADA_REPOSITORIES, or it would read another organization's fleet with
- * them. Its database's projects are its own (`home` is itself).
+ * What an organization's fleet is read with: its own keys, then, for the
+ * deployment's first organization only, the deployment's environment. Any
+ * other organization gets none of the environment's keys, nor
+ * ARMADA_REPOSITORIES: once terminals register projects through the app, an
+ * organization could name another's repository in its registry and read it
+ * with the deployment's keys. Under the shared-password gate (no scope) the
+ * environment serves every project, as before.
  */
 export function fleetKeysOf(
-  own: OrganizationKeys,
+  own: OrganizationKeys | null,
   env: Omit<FleetKeys, "envRepositories">,
-  organization: string,
   scope: Scope | null,
-): { keys: FleetKeys; scope: Scope | null } {
-  const ownRegistry = own.turso !== null;
-  const inherit = !ownRegistry || scope?.home === organization;
+) {
+  const inherit = !scope || scope.home === scope.organization;
   return {
-    keys: {
-      linearApiKey: own.linearApiKey ?? (inherit ? env.linearApiKey : null),
-      githubToken: own.githubToken ?? (inherit ? env.githubToken : null),
-      turso: own.turso ?? env.turso,
-      envRepositories: inherit,
-    },
-    scope: ownRegistry ? { organization, home: organization } : scope,
-  };
+    linearApiKey: own?.linearApiKey ?? (inherit ? env.linearApiKey : null),
+    githubToken: own?.githubToken ?? (inherit ? env.githubToken : null),
+    envRepositories: inherit,
+  } satisfies FleetKeys;
 }

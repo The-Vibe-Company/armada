@@ -1,15 +1,14 @@
 // Server wiring: the keys (never sent to the browser), the sources behind the
-// Fleet view and the cache kept between polls. With accounts and a vault
-// (THE-840), each organization's fleet is read with that organization's keys
-// from the vault, each missing one from the environment; otherwise every key
-// comes from the environment, as before.
+// Fleet view and the cache kept between polls. The fleet's live data is in the
+// app's database (THE-849). With accounts and a vault (THE-840), each
+// organization's fleet is read with that organization's Linear and GitHub keys
+// from the vault, and only the first organization falls back to the
+// environment's; otherwise every key comes from the environment, as before.
 import "server-only";
-import { createHash } from "node:crypto";
 import {
   CONFIG_FILE,
   type FleetOverview,
   fetchDefaultBranchFile,
-  openTurso,
   parseConfig,
   readProjectConfig,
   readStatusSources,
@@ -18,7 +17,8 @@ import {
 import { after } from "next/server";
 import { type Access, requireFleetAccess, scopeOf } from "./access";
 import { accounts } from "./accounts-server";
-import { type DashboardTursoCache, type FleetKeys, fleetKeysOf, organizationKeys } from "./broker";
+import { appDatabase } from "./app-db";
+import { type FleetKeys, fleetKeysOf, type OrganizationKeys, organizationKeys } from "./broker";
 import { demoSources } from "./demo/sources";
 import {
   type FleetCache,
@@ -29,6 +29,7 @@ import {
   type Scope,
   type Sources,
 } from "./fleet-data";
+import { liveStore } from "./fleet-store";
 import { isLanguage, type Language } from "./i18n";
 import { vaultModeOf } from "./vault";
 
@@ -40,29 +41,18 @@ function repositoriesFromEnv(): ProjectRef[] {
     .map((repository) => ({ repository }));
 }
 
-function envKeys(): FleetKeys {
+function envKeys(): Omit<FleetKeys, "envRepositories"> {
   const keys = resolveCredentials({ env: process.env });
-  return {
-    linearApiKey: keys.linearApiKey,
-    githubToken: keys.githubToken,
-    turso: keys.tursoUrl ? { url: keys.tursoUrl, token: keys.tursoToken } : null,
-    envRepositories: true,
-  };
+  return { linearApiKey: keys.linearApiKey, githubToken: keys.githubToken };
 }
 
 function realSources(keys: FleetKeys): Sources {
-  const { linearApiKey, turso } = keys;
+  const { linearApiKey } = keys;
   return {
-    openLive: async () => (turso ? openTurso(turso) : null),
-    // A fingerprint: a replaced or renewed token reopens the client.
-    ...(turso
-      ? {
-          liveKey: createHash("sha256")
-            .update(`${turso.url}\n${turso.token ?? ""}`)
-            .digest("hex")
-            .slice(0, 16),
-        }
-      : {}),
+    live: async () => {
+      const db = await appDatabase();
+      return db ? liveStore(db) : null;
+    },
     fallbackProjects: keys.envRepositories ? repositoriesFromEnv : () => [],
     readConfig: async (p) => {
       if (p.slug && p.name && p.programRoot)
@@ -95,28 +85,20 @@ const seconds = (value: string | undefined, fallback: number) => {
 
 // One cache per fleet read with its own keys, per server process, kept across
 // requests (and across hot reloads in development): "env", or one per
-// organization once the vault is on. The Turso tokens made for the dashboard
-// are kept here too, until they near expiry.
-const globalCache = globalThis as unknown as {
-  __armadaFleets?: Map<string, FleetCache>;
-  __armadaDashboardTurso?: DashboardTursoCache;
-};
+// organization once the vault is on.
+const globalCache = globalThis as unknown as { __armadaFleets?: Map<string, FleetCache> };
 
 /** The keys of the viewer's fleet: with a vault, the organization's, then the environment's (`fleetKeysOf`). */
 async function keysOf(access: Access): Promise<{ id: string; keys: FleetKeys; scope: Scope | null }> {
   const env = envKeys();
   const scope = scopeOf(access);
+  if (access.kind !== "account") return { id: "env", keys: fleetKeysOf(null, env, scope), scope };
   const vault = vaultModeOf(process.env);
-  if (access.kind !== "account" || vault.kind !== "on") return { id: "env", keys: env, scope };
-  const a = await accounts();
-  if (!a) return { id: "env", keys: env, scope };
-  globalCache.__armadaDashboardTurso ??= new Map();
+  const a = vault.kind === "on" ? await accounts() : null;
   const organization = access.viewer.organization.id;
-  const own = await organizationKeys(
-    { client: a.client, vault: vault.key, cache: globalCache.__armadaDashboardTurso },
-    organization,
-  );
-  return { id: `org:${organization}`, ...fleetKeysOf(own, env, organization, scope) };
+  const own: OrganizationKeys | null =
+    a && vault.kind === "on" ? await organizationKeys({ client: a.client, vault: vault.key }, organization) : null;
+  return { id: `org:${organization}`, keys: fleetKeysOf(own, env, scope), scope };
 }
 
 /** How the viewer's reads and requests reach the sources, and whose projects they see. Checks access first. */

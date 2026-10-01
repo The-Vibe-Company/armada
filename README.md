@@ -144,45 +144,46 @@ armada merge 34             # or the pull request URL; --ticket ABC-12 when the 
 
 ## Watch the fleet (dashboard)
 
-`packages/dashboard` is a Next.js app whose main page is the Fleet of the projects registered in Turso. With accounts, each person sees the projects of their organization; under the shared password, every project.
+`packages/dashboard` is a Next.js app whose main page is the Fleet of the projects registered in its database. With accounts, each person sees the projects of their organization; under the shared password, every project.
 
 - **Waiting for you** comes first, across projects. It lists questions, blocked workers, plans to approve, hand-backs and silent workers, the most urgent first.
 - **At work** has one row per ticket in flight. A row shows the project, the runtime and session, the six-step phase pipeline, time in phase, the last report, the pull request with its CI, and the flags (red CI, conflict, double claim).
 - A filter shows one project. Each project shows whether its coordinator is active, from its last inbox read.
 - **Answer** a question from its line in Waiting for you (an option of the question fills the answer in). **Ready to launch** lists the frontier with a Launch button and a profile picker, the routed profile preselected. Neither reaches a worker: each becomes a request in that project's coordinator inbox, signed with the signed-in person's name and address (with accounts) or with the name the viewer gives (under the shared password; remembered in a cookie, default `ARMADA_DASHBOARD_AUTHOR`), and shows as pending until the coordinator carries it out. The dashboard holds no runtime credential.
-- It stays live without a reload. Linear and GitHub are read at most once a minute per project. Turso is read on every 5-second poll, so a worker's `armada report` shows within seconds.
-- When Turso is unreachable, a banner says so and the view falls back to Linear and GitHub.
+- It stays live without a reload. Linear and GitHub are read at most once a minute per project. The fleet's live data (events, claims, inboxes, coordinator activity) is read from the app's own Postgres database on every 5-second poll, so a recorded report shows within seconds.
+- When that database is unreachable, a banner says so and the view falls back to Linear and GitHub.
 - The interface is in English or French (`ARMADA_DASHBOARD_LANGUAGE`, or the EN/FR switch).
 
 Try it locally with synthetic data and no key:
 
 ```sh
 cd packages/dashboard
-bun run demo:seed                     # a local file: database with two invented projects
-ARMADA_DASHBOARD_PASSWORD=off ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:.demo/armada.db bun run dev   # http://localhost:4822
-bun run demo:report WID-12 shipping "Opened the pull request"                # watch the row change
+bun run demo:seed                     # a local PGlite database (Postgres in the process) with two invented projects
+ARMADA_DASHBOARD_PASSWORD=off ARMADA_DASHBOARD_DEMO=fleet ARMADA_DATABASE_URL=pglite:.demo/armada bun run dev   # http://localhost:4822
 ```
+
+A PGlite database belongs to one process: stop the dashboard before `bun run demo:report WID-12 shipping "Opened the pull request"` and start it again to see the row change, or point both at a Postgres database (the dashboard's `ARMADA_DATABASE_URL` and the script's `ARMADA_DEMO_DATABASE_URL`; the script never writes to the database `ARMADA_DATABASE_URL` or `DATABASE_URL` name).
 
 The same with accounts (email and password work in development only; confirmation links are printed in the server log):
 
 ```sh
-ARMADA_DASHBOARD_DEMO=fleet ARMADA_TURSO_URL=file:.demo/armada.db \
-ARMADA_AUTH_DATABASE_URL=file:.demo/auth.db ARMADA_AUTH_SECRET="$(openssl rand -base64 32)" \
+ARMADA_DASHBOARD_DEMO=fleet ARMADA_DATABASE_URL=pglite:.demo/armada ARMADA_AUTH_SECRET="$(openssl rand -base64 32)" \
 ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com bun run dev
 ```
 
 **Deploy on Vercel.** Create a project from this repository and set these options:
 
 - Root Directory: `packages/dashboard`, with files outside the root directory included (the default). The framework preset is Next.js, and Bun installs the workspace from `bun.lock`.
-- Environment variables: the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), `LINEAR_API_KEY`, `GITHUB_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN`. With accounts and the vault (`ARMADA_SECRETS_KEY`, see [Keys kept in Armada](#keys-kept-in-armada)), the last four move to the Keys page and are only a fallback here. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while Turso is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
+- Functions run in the region `packages/dashboard/vercel.json` names (`fra1`, Frankfurt): keep them next to the database, or change it to your database's region. Every poll makes a few database round trips, so the distance between the two is what the dashboard's speed depends on.
+- The database: one Postgres database holds everything (accounts, organizations, the vault, the workers, the fleet's live data). [Neon](https://neon.com) works well: create a project in the region of the functions (`aws-eu-central-1` for `fra1`) and set its pooled connection string as `ARMADA_DATABASE_URL` (`DATABASE_URL`, which Neon's Vercel integration sets, is read too). A remote database is reached over verified TLS unless its URL says otherwise: a Postgres without TLS on a private network needs `?sslmode=disable`. The schema is applied on first use; `ARMADA_DATABASE_URL=<direct URL> bun run db migrate` (in `packages/dashboard`) applies it beforehand. Accounts are Better Auth run by the app on that database, not Neon's managed auth, which offers neither the device sign-in of `armada login` nor organization API keys, nor a way to keep sign-up by invitation only.
+- Environment variables: `ARMADA_DATABASE_URL`, the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), `LINEAR_API_KEY` and `GITHUB_TOKEN`. With accounts and the vault (`ARMADA_SECRETS_KEY`, see [Keys kept in Armada](#keys-kept-in-armada)), the last two move to the Keys page and are only a fallback here, for the deployment's first organization. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while the database is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
 - The keys stay on the server; the browser only receives the fleet reading.
 
-**Accounts.** People sign in with GitHub (or email and password where enabled) and belong to organizations, with the roles owner, admin and member. Accounts, sessions, organizations and invitations live in a libSQL database of their own, separate from the fleet's Turso database; its schema is applied on first use. Accounts turn on only when every required variable below is set. With none of them set, the shared password applies, unchanged; with some but not all, the dashboard fails closed (503, naming the missing ones) rather than fall back to a password that shows every organization's projects.
+**Accounts.** People sign in with GitHub (or email and password where enabled) and belong to organizations, with the roles owner, admin and member. Accounts, sessions, organizations and invitations live in the app's database (`ARMADA_DATABASE_URL`), with the fleet's data; its schema is applied on first use. Accounts turn on only when every required variable below is set. With none of them set, the shared password applies, unchanged; with some but not all, the dashboard fails closed (503, naming the missing ones) rather than fall back to a password that shows every organization's projects.
 
 | Variable | What |
 | --- | --- |
-| `ARMADA_AUTH_DATABASE_URL` | The accounts database, `libsql://...` (a new Turso database, not the fleet's), or `file:` locally |
-| `ARMADA_AUTH_DATABASE_TOKEN` | Its token (not needed for `file:`) |
+| `ARMADA_DATABASE_URL` | The app's Postgres database (see Deploy on Vercel above); `pglite:<directory>` locally. It alone does not turn accounts on: the shared password reads the fleet from it too |
 | `ARMADA_AUTH_SECRET` | Signs sessions: 32 characters at least, for example `openssl rand -base64 32`. Changing it signs everyone out |
 | `ARMADA_AUTH_URL` | The dashboard's public address, for example `https://armada.example.com`: GitHub's callback and the links in emails |
 | `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET` | A GitHub OAuth app (GitHub > Settings > Developer settings > OAuth Apps) whose callback URL is `<ARMADA_AUTH_URL>/api/auth/callback/github` |
@@ -191,7 +192,7 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 
 - Accounts are by invitation: an account is created only for an owner address or an address with a pending invitation. The first owner to sign in creates the organization; the projects already registered, and those the CLI registers until it signs in, join the deployment's first organization. Organizations cannot be deleted.
 - An owner or admin invites by email from the Organization page (the name in the top bar). No email provider is plugged in yet: messages (invitations, address confirmations) go to the server log, and the Organization page shows each pending invitation's link to copy and send. The invited person signs in with that address and accepts.
-- Sessions are HttpOnly, SameSite=Lax cookies (Secure over https) valid 30 days; a revoked session can last up to five minutes (signed cookie cache). Without its accounts database the dashboard fails closed (503).
+- Sessions are HttpOnly, SameSite=Lax cookies (Secure over https) valid 30 days; a revoked session can last up to five minutes (signed cookie cache). Without its database the dashboard fails closed (503). `ARMADA_AUTH_DATABASE_URL` and `ARMADA_AUTH_DATABASE_TOKEN`, the separate accounts database of earlier versions, are no longer read: a deployment that still has them and no `ARMADA_DATABASE_URL` fails closed and names it.
 - Terminals sign in too (see [Sign in from a terminal](#sign-in-from-a-terminal)): `armada login` shows a code that the person confirms on the dashboard's `/device` page, and owners create API keys for headless coordinators on the Organization page. A key is shown once, belongs to the organization, and revoking it signs out whatever uses it. The CLI calls only `/api/cli/*`; without accounts those routes refuse with the next step.
 
 **Keys kept in Armada.** With accounts, the organization's keys can live in Armada instead of on every machine: an owner or admin enters them once on the Keys page (Organization > Keys), and every signed-in terminal receives what it needs (see [Keys](#keys)). It turns on with one more variable:
@@ -204,12 +205,12 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 - Values are write-only: once saved, a secret is never shown again, only who set it and when. Each value is sealed with AES-256-GCM under its own data key, itself sealed by the master key, and bound to its organization, person and name.
 - A signed-in terminal (a session of `armada login` or an organization API key) calls `POST /api/cli/credentials`. It receives the Linear key (the person's own first) and a Turso database token made for it through the Turso Platform API, which expires after 4 hours and is renewed without asking. Without a Platform token, the stored database token is handed out as is, and the audit list says so. Answers are never cached; a terminal asking more than 30 times a minute is refused for a minute.
 - Every change and every key handed out is in the audit list at the bottom of the Keys page (owners and admins): who, which key, when; never a value.
-- The dashboard reads each organization's fleet with that organization's keys from the vault, each missing one from its environment variables; once they are all on the Keys page, its environment shrinks to the accounts variables and `ARMADA_SECRETS_KEY`. A Turso database given on the Keys page is the organization's own: the projects registered in it belong to that organization, and, unless it is the deployment's first organization, it is read with none of the environment's keys (nor `ARMADA_REPOSITORIES`), since its registry could name any repository.
+- The dashboard reads each organization's fleet with that organization's Linear and GitHub keys from the vault. Only the deployment's first organization falls back to the environment's (and to `ARMADA_REPOSITORIES`): another organization could name any repository in the registry. Once the keys are on the Keys page, the environment shrinks to `ARMADA_DATABASE_URL`, the accounts variables and `ARMADA_SECRETS_KEY`. The Turso keys serve terminals only, until the CLI reaches the fleet through Armada: the dashboard reads the fleet from its own database.
 - Without `ARMADA_SECRETS_KEY` (or under the shared password), nothing changes: the Keys page says how to turn the vault on, the CLI's call answers 503 with that next step, and terminals keep their own keys.
 
 **Switch from the shared password to accounts** (a deployment that runs on `ARMADA_DASHBOARD_PASSWORD` keeps working until the redeploy of step 4; set every variable before it, since a partial set locks the dashboard):
 
-1. Create the accounts database (`turso db create armada-accounts`, then `turso db show armada-accounts --url` and `turso db tokens create armada-accounts`) and set `ARMADA_AUTH_DATABASE_URL` and `ARMADA_AUTH_DATABASE_TOKEN`.
+1. Create the database and set `ARMADA_DATABASE_URL` (see Deploy on Vercel above).
 2. Create a GitHub OAuth app with the callback URL `https://<your dashboard>/api/auth/callback/github`, and set `ARMADA_AUTH_GITHUB_CLIENT_ID` and `ARMADA_AUTH_GITHUB_CLIENT_SECRET`.
 3. Set `ARMADA_AUTH_SECRET`, `ARMADA_AUTH_URL` and `ARMADA_AUTH_OWNER_EMAILS` (at least the address of your GitHub account), for Production and Preview.
 4. Redeploy. The dashboard now asks for an account; sign in with GitHub, create the organization (the registered projects join it) and invite the others.
@@ -359,7 +360,7 @@ See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) 
 - **`armada` CLI** (TypeScript). The coordinator and the workers call it to claim tickets, report progress, ask and answer questions, launch workers and merge.
 - **Skills** vendored into the managed repository by `armada init`: the coordinator loop, the worker protocol and one runtime guide per runtime. They live in [`skills/`](skills).
 - **Linear** holds the plan: specs, tickets, dependencies and agent phases.
-- **Turso** (libSQL) holds live telemetry: events, heartbeats, pending questions and locks. Losing it loses live detail, never progress.
+- **The app's database** (Postgres, e.g. Neon) holds the accounts, the organizations' sealed keys and the fleet's live data read by the dashboard: events, heartbeats, pending questions and locks. The CLI still records its live data in **Turso** (libSQL) until it reaches the fleet through the app. Losing either loses live detail, never progress.
 - **Conductor Cloud** runs the workers in the first version. Other runtimes come later without changing the worker contract.
 - **Dashboard** (Next.js, `packages/dashboard`): the live Fleet view of every project. The program view comes later.
 

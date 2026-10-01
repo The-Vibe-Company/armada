@@ -22,7 +22,7 @@ export interface Signer {
 export interface ActionContext {
   t: Strings;
   signer: Signer;
-  /** Turso is read: requests can be written, and their pending state is visible. */
+  /** The live data is read: requests can be written, and their pending state is visible. */
   live: boolean;
   now: number;
   /** Increases with every overview read; a request just sent shows locally until the server has it. */

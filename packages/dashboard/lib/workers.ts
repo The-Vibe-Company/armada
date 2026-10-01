@@ -6,9 +6,9 @@
 // of its commands renews, and which ends on release, merge or revocation.
 // Only hashes of both tokens are stored. Every launch, exchange and end is in
 // the organization's audit list (`vault.ts`), never with a token. Everything is
-// injected so tests run it on a local database.
+// injected so tests run it on PGlite.
 import { createHash, randomBytes } from "node:crypto";
-import type { Client, Row } from "@libsql/client";
+import { type Database, isoAt, iso as isoOrNull, type Row } from "./db";
 import { type Actor, recordEvent } from "./vault";
 
 /** Every launch token starts with it, so a leaked one is recognisable. */
@@ -99,12 +99,12 @@ function workerOf(r: Row): Worker {
       id: String(r.launchedById),
       label: String(r.launchedByLabel),
     },
-    createdAt: String(r.createdAt),
-    tokenExpiresAt: String(r.tokenExpiresAt),
-    tokenUsedAt: str(r.tokenUsedAt),
-    sessionExpiresAt: str(r.sessionExpiresAt),
-    sessionSeenAt: str(r.sessionSeenAt),
-    endedAt: str(r.endedAt),
+    createdAt: isoAt(r.createdAt),
+    tokenExpiresAt: isoAt(r.tokenExpiresAt),
+    tokenUsedAt: isoOrNull(r.tokenUsedAt),
+    sessionExpiresAt: isoOrNull(r.sessionExpiresAt),
+    sessionSeenAt: isoOrNull(r.sessionSeenAt),
+    endedAt: isoOrNull(r.endedAt),
     endReason: reason === "released" || reason === "merged" || reason === "revoked" ? reason : null,
     endedBy: str(r.endedByLabel),
   };
@@ -114,7 +114,7 @@ function workerOf(r: Row): Worker {
 
 /** Makes a launch token for one ticket. The token is returned once and only its hash is kept. */
 export async function createLaunch(
-  client: Client,
+  client: Database,
   input: { organization: string; project: string; ticket: string; launcher: Launcher; now: Date },
 ): Promise<{ worker: Worker; token: string }> {
   const token = newToken(LAUNCH_TOKEN_PREFIX);
@@ -122,11 +122,11 @@ export async function createLaunch(
   const expires = new Date(input.now.getTime() + LAUNCH_TOKEN_MS).toISOString();
   const id = `wk_${randomBytes(9).toString("base64url")}`;
   const ticket = input.ticket.toUpperCase();
-  await client.execute({
-    sql: `INSERT INTO "armada_worker" ("id", "organizationId", "project", "ticket", "launchedByKind", "launchedById",
-            "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt")
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [
+  await client.query(
+    `INSERT INTO "armada_worker" ("id", "organizationId", "project", "ticket", "launchedByKind", "launchedById",
+       "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [
       id,
       input.organization,
       input.project,
@@ -138,7 +138,7 @@ export async function createLaunch(
       hashOf(token),
       expires,
     ],
-  });
+  );
   await recordEvent(client, input.organization, {
     at,
     action: "launch",
@@ -173,23 +173,20 @@ export type Exchange =
   | { ok: false; reason: ExchangeRefusal; worker: Worker | null };
 
 /** Counts this attempt and says whether the address made too many in the last minute. */
-async function tooManyAttempts(client: Client, address: string, now: Date): Promise<boolean> {
+async function tooManyAttempts(client: Database, address: string, now: Date): Promise<boolean> {
   const at = now.toISOString();
-  await client.batch(
-    [
-      // Old attempts count for nothing: they go.
-      {
-        sql: `DELETE FROM "armada_launch_attempt" WHERE "at" < ?`,
-        args: [new Date(now.getTime() - 3_600_000).toISOString()],
-      },
-      { sql: `INSERT INTO "armada_launch_attempt" ("address", "at") VALUES (?, ?)`, args: [address.slice(0, 64), at] },
-    ],
-    "write",
+  // Old attempts count for nothing: they go.
+  await client.query(`DELETE FROM "armada_launch_attempt" WHERE "at" < $1`, [
+    new Date(now.getTime() - 3_600_000).toISOString(),
+  ]);
+  await client.query(`INSERT INTO "armada_launch_attempt" ("address", "at") VALUES ($1, $2)`, [
+    address.slice(0, 64),
+    at,
+  ]);
+  const rs = await client.query(
+    `SELECT count(*)::int AS n FROM "armada_launch_attempt" WHERE "address" = $1 AND "at" > $2`,
+    [address.slice(0, 64), new Date(now.getTime() - 60_000).toISOString()],
   );
-  const rs = await client.execute({
-    sql: `SELECT count(*) AS n FROM "armada_launch_attempt" WHERE "address" = ? AND "at" > ?`,
-    args: [address.slice(0, 64), new Date(now.getTime() - 60_000).toISOString()],
-  });
   return Number(rs.rows[0]?.n ?? 0) > EXCHANGES_PER_MINUTE;
 }
 
@@ -199,17 +196,14 @@ async function tooManyAttempts(client: Client, address: string, now: Date): Prom
  * with a known token is in the audit list.
  */
 export async function exchangeLaunch(
-  client: Client,
+  client: Database,
   input: { token: string; address: string; now: Date },
 ): Promise<Exchange> {
   const { now } = input;
   if (await tooManyAttempts(client, input.address, now)) return { ok: false, reason: "limited", worker: null };
   if (!input.token.startsWith(LAUNCH_TOKEN_PREFIX) || input.token.length > 200)
     return { ok: false, reason: "unknown", worker: null };
-  const rs = await client.execute({
-    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "tokenHash" = ?`,
-    args: [hashOf(input.token)],
-  });
+  const rs = await client.query(`SELECT ${COLUMNS} FROM "armada_worker" WHERE "tokenHash" = $1`, [hashOf(input.token)]);
   const row = rs.rows[0];
   if (!row) return { ok: false, reason: "unknown", worker: null };
   const found = workerOf(row);
@@ -231,12 +225,12 @@ export async function exchangeLaunch(
   const token = newToken(WORKER_TOKEN_PREFIX);
   const expires = new Date(now.getTime() + WORKER_IDLE_MS).toISOString();
   // One conditional write: of two exchanges racing, one wins.
-  const won = await client.execute({
-    sql: `UPDATE "armada_worker" SET "tokenUsedAt" = ?, "sessionHash" = ?, "sessionExpiresAt" = ?, "sessionSeenAt" = ?
-          WHERE "id" = ? AND "tokenUsedAt" IS NULL AND "endedAt" IS NULL AND "tokenExpiresAt" > ?`,
-    args: [at, hashOf(token), expires, at, found.id, at],
-  });
-  if (won.rowsAffected !== 1) return refuse("used", "used by another exchange at the same time");
+  const won = await client.query(
+    `UPDATE "armada_worker" SET "tokenUsedAt" = $1, "sessionHash" = $2, "sessionExpiresAt" = $3, "sessionSeenAt" = $1
+     WHERE "id" = $4 AND "tokenUsedAt" IS NULL AND "endedAt" IS NULL AND "tokenExpiresAt" > $1`,
+    [at, hashOf(token), expires, found.id],
+  );
+  if (won.rowCount !== 1) return refuse("used", "used by another exchange at the same time");
   const worker: Worker = { ...found, tokenUsedAt: at, sessionExpiresAt: expires, sessionSeenAt: at };
   await recordEvent(client, found.organization, {
     at,
@@ -259,42 +253,39 @@ export const isWorkerToken = (token: string) => token.startsWith(WORKER_TOKEN_PR
  * The worker behind a session token, renewed for another idle period. Not ok
  * when unknown, ended or idle past its time; `worker` then says which, when known.
  */
-export async function workerSession(client: Client, token: string, now: Date): Promise<WorkerLookup> {
-  const rs = await client.execute({
-    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "sessionHash" = ?`,
-    args: [hashOf(token)],
-  });
+export async function workerSession(client: Database, token: string, now: Date): Promise<WorkerLookup> {
+  const rs = await client.query(`SELECT ${COLUMNS} FROM "armada_worker" WHERE "sessionHash" = $1`, [hashOf(token)]);
   const row = rs.rows[0];
   if (!row) return { ok: false, worker: null };
   const worker = workerOf(row);
   if (workerState(worker, now) !== "active") return { ok: false, worker };
   const at = now.toISOString();
   const expires = new Date(now.getTime() + WORKER_IDLE_MS).toISOString();
-  await client.execute({
-    sql: `UPDATE "armada_worker" SET "sessionExpiresAt" = ?, "sessionSeenAt" = ? WHERE "id" = ? AND "endedAt" IS NULL`,
-    args: [expires, at, worker.id],
-  });
+  await client.query(
+    `UPDATE "armada_worker" SET "sessionExpiresAt" = $1, "sessionSeenAt" = $2 WHERE "id" = $3 AND "endedAt" IS NULL`,
+    [expires, at, worker.id],
+  );
   return { ok: true, worker: { ...worker, sessionExpiresAt: expires, sessionSeenAt: at } };
 }
 
 async function end(
-  client: Client,
+  client: Database,
   where: { sql: string; args: (string | null)[] },
   input: { organization: string; reason: EndReason; by: Actor; now: Date },
 ): Promise<Worker[]> {
-  const rs = await client.execute({
-    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = ? AND "endedAt" IS NULL AND ${where.sql}`,
-    args: [input.organization, ...where.args],
-  });
+  const rs = await client.query(
+    `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 AND "endedAt" IS NULL AND ${where.sql}`,
+    [input.organization, ...where.args],
+  );
   const at = input.now.toISOString();
   const ended: Worker[] = [];
   for (const row of rs.rows) {
     const w = workerOf(row);
-    const done = await client.execute({
-      sql: `UPDATE "armada_worker" SET "endedAt" = ?, "endReason" = ?, "endedByLabel" = ? WHERE "id" = ? AND "endedAt" IS NULL`,
-      args: [at, input.reason, input.by.label, w.id],
-    });
-    if (done.rowsAffected !== 1) continue;
+    const done = await client.query(
+      `UPDATE "armada_worker" SET "endedAt" = $1, "endReason" = $2, "endedByLabel" = $3 WHERE "id" = $4 AND "endedAt" IS NULL`,
+      [at, input.reason, input.by.label, w.id],
+    );
+    if (done.rowCount !== 1) continue;
     ended.push({ ...w, endedAt: at, endReason: input.reason, endedBy: input.by.label });
     await recordEvent(client, input.organization, {
       at,
@@ -309,29 +300,29 @@ async function end(
 
 /** Ends one launch of the organization: its session, or its token if still unused. Null when there was none to end. */
 export async function endWorker(
-  client: Client,
+  client: Database,
   input: { organization: string; id: string; reason: EndReason; by: Actor; now: Date },
 ): Promise<Worker | null> {
-  return (await end(client, { sql: `"id" = ?`, args: [input.id] }, input))[0] ?? null;
+  return (await end(client, { sql: `"id" = $2`, args: [input.id] }, input))[0] ?? null;
 }
 
 /** Ends every launch of a ticket: its pull request merged, or the ticket released. */
 export async function endTicketWorkers(
-  client: Client,
+  client: Database,
   input: { organization: string; project: string; ticket: string; reason: EndReason; by: Actor; now: Date },
 ): Promise<Worker[]> {
   return end(
     client,
-    { sql: `"project" = ? AND "ticket" = ?`, args: [input.project, input.ticket.toUpperCase()] },
+    { sql: `"project" = $2 AND "ticket" = $3`, args: [input.project, input.ticket.toUpperCase()] },
     input,
   );
 }
 
 /** The organization's launches, newest first. */
-export async function listWorkers(client: Client, organization: string, limit = 100): Promise<Worker[]> {
-  const rs = await client.execute({
-    sql: `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = ? ORDER BY "createdAt" DESC, "id" LIMIT ?`,
-    args: [organization, limit],
-  });
+export async function listWorkers(client: Database, organization: string, limit = 100): Promise<Worker[]> {
+  const rs = await client.query(
+    `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 ORDER BY "createdAt" DESC, "id" LIMIT $2`,
+    [organization, limit],
+  );
   return rs.rows.map(workerOf);
 }

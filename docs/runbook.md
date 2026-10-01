@@ -17,7 +17,7 @@ One project has one coordinator at a time.
 - **The repository is set up**: `armada doctor` passes, or `armada init` opened its setup pull request and it is merged (`armada.toml`, the skills in `.agents/skills`, `.conductor/settings.toml`, the Linear label groups, the project registered in Turso).
 - **No runtime holds a fleet key.** A signed-in coordinator gets the organization's keys from Armada on each command, and each worker gets a one-time launch token in its launch message: its first command, `armada login --launch-token`, exchanges it for a session limited to its ticket, through which Armada gives it its keys. Conductor's organization environment holds no Armada key: not `LINEAR_API_KEY`, `ARMADA_TURSO_URL` or `ARMADA_TURSO_TOKEN`, and not `ARMADA_API_KEY` either, since every workspace starts with that environment and a worker would then act with the coordinator's rights.
 - **Environment variables stay an override**, for CI and for an Armada without accounts (self-hosting): a key set in the environment wins over Armada's. Until the organization's keys are on the Keys page, keys in Conductor's organization environment keep a fleet running as before (the runtime guide's launch with keys).
-- **The dashboard** (optional) is deployed with the accounts variables and `ARMADA_SECRETS_KEY`, as the README's "Watch the fleet" section describes. It never needs a runtime key.
+- **The dashboard** (optional) is deployed with `ARMADA_DATABASE_URL`, the accounts variables and `ARMADA_SECRETS_KEY`, as the README's "Watch the fleet" section describes. It never needs a runtime key.
 - **The coordination ticket** (optional): when a run has a goal of its own ("run this ticket end to end", "ship this spec"), create a ticket for it. The coordinator claims it, reports on it and hands over through it.
 
 Never paste a key into a prompt, a ticket, a file in the repository or a chat. A launch token is the one exception, made for it: it works once, within the hour, for one ticket.
@@ -30,6 +30,19 @@ For a fleet that ran with the keys in Conductor's organization environment:
 2. Check from a terminal with none of the keys in its environment: `armada login`, then `armada doctor` says `signed in to <Armada> as <you>, <organization>`, `armada auth status` shows each key from `Armada: …`, and `armada brief <ticket>` shows `Launch: one-time token in the prompt`.
 3. Remove `LINEAR_API_KEY`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN` from the settings of Conductor's organization cloud computer. Workspaces started afterwards no longer have them; running ones keep what they started with until they are archived.
 4. Start the next coordinator with its API key (below). On a laptop that kept keys in its credentials file, `armada doctor` warns once Armada gives the same ones: `armada auth logout` removes them and keeps the sign-in.
+
+## Move the app to one Postgres database
+
+Armada's app (the dashboard and the API terminals sign in to) keeps everything in one Postgres database: accounts, organizations, the vault, the workers, and the fleet's live data it shows. Earlier versions kept accounts in a libSQL database of their own and read the fleet from Turso. The move starts on an empty database: nothing is copied, people sign in again.
+
+1. Create a Postgres database in the region of the app's functions. On Neon: a project in `aws-eu-central-1` for the `fra1` region that `packages/dashboard/vercel.json` sets (change one or the other so they match). Keep Neon's managed auth off: the app runs Better Auth itself.
+2. On the deployment, set `ARMADA_DATABASE_URL` to the database's pooled connection string, and remove `ARMADA_AUTH_DATABASE_URL`, `ARMADA_AUTH_DATABASE_TOKEN`, `ARMADA_TURSO_URL` and `ARMADA_TURSO_TOKEN` (the app reads none of them). Keep `ARMADA_AUTH_SECRET`, `ARMADA_AUTH_URL`, `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET`, `ARMADA_AUTH_OWNER_EMAILS` and `ARMADA_SECRETS_KEY`. Set them before the deploy of step 3: a deployment of this version without `ARMADA_DATABASE_URL` fails closed (503) and names it.
+3. Deploy. Optionally apply the schema first, from `packages/dashboard`: `ARMADA_DATABASE_URL=<direct, not pooled, URL> bun run db migrate`; otherwise the first request applies it.
+4. Sign in with GitHub as an owner address and create the organization; invite the others again.
+5. Enter the organization's keys again on Organization > Keys, and create new organization API keys for cloud coordinators: the old database's sessions, API keys and launch tokens do not carry over. Every terminal runs `armada login` again; a cloud coordinator gets its new key as `ARMADA_API_KEY`.
+6. Register each project once, from `packages/dashboard`: `ARMADA_DATABASE_URL=<URL> bun run db register <path to the project's armada.toml>`. It joins the first organization on the next dashboard read.
+
+Until the CLI reaches fleet data through the app, terminals keep recording claims, reports, questions and leases in Turso (the Keys page's Turso access), and the dashboard does not see them: its live view and its answer and launch requests use the app's database.
 
 ## Start a coordinator on a laptop
 

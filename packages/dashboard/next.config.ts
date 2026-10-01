@@ -9,8 +9,9 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const config: NextConfig = {
   // core ships TypeScript sources.
   transpilePackages: ["@armada/core"],
-  // A native module, loaded at run time by core's Turso adapter.
-  serverExternalPackages: ["@libsql/client", "libsql"],
+  // Loaded at run time, not bundled: core's Turso adapter (a native module, for
+  // the CLI only), node-postgres, and PGlite (WebAssembly and its data files).
+  serverExternalPackages: ["@libsql/client", "libsql", "pg", "@electric-sql/pglite"],
   outputFileTracingRoot: root,
   turbopack: { root },
   poweredByHeader: false,

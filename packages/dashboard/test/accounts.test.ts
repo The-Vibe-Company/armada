@@ -1,14 +1,11 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Client } from "@libsql/client";
 import { getMigrations } from "better-auth/db/migration";
 import { NextRequest } from "next/server";
 import { type Auth, createAuth, type EmailMessage, firstOrganization } from "../lib/accounts.ts";
 import { accountsGuard, incompleteAccounts, type SessionState } from "../lib/accounts-http.ts";
 import { type AuthSettings, accountsModeOf, signatureOf } from "../lib/accounts-settings.ts";
-import { AUTH_SCHEMA_VERSION, migrateAuth, openAuthDatabase } from "../lib/auth-db.ts";
+import { type Database, DB_SCHEMA_VERSION, migrateDatabase } from "../lib/db.ts";
+import { scalar, tempDatabase } from "./support.ts";
 
 // Synthetic people and secrets, for these tests only.
 const BASE = "http://localhost:4838";
@@ -17,7 +14,7 @@ const SECRET = "a synthetic secret for tests, long enough";
 const PASSWORD = "a synthetic password";
 
 const ENV = {
-  ARMADA_AUTH_DATABASE_URL: "file:accounts.db",
+  ARMADA_DATABASE_URL: "postgresql://armada@db.example.test/armada",
   ARMADA_AUTH_SECRET: SECRET,
   ARMADA_AUTH_URL: BASE,
   ARMADA_AUTH_GITHUB_CLIENT_ID: "synthetic-client-id",
@@ -40,14 +37,23 @@ describe("which deployment runs on accounts", () => {
       return mode.kind === "incomplete" ? mode.missing : mode.kind;
     };
     expect(missing({ ARMADA_AUTH_URL: BASE })).toEqual([
-      "ARMADA_AUTH_DATABASE_URL",
+      "ARMADA_DATABASE_URL",
       "ARMADA_AUTH_SECRET",
       "ARMADA_AUTH_GITHUB_CLIENT_ID",
     ]);
-    // A remote database needs its token, a secret its length, GitHub both halves.
-    expect(missing({ ...ENV, ARMADA_AUTH_DATABASE_URL: "libsql://accounts.example.test" })).toEqual([
-      "ARMADA_AUTH_DATABASE_TOKEN",
-    ]);
+    // The database Neon's Vercel integration names counts; the retired accounts database does not, and a
+    // deployment still set up with it fails closed; PGlite never runs in production.
+    const neon = { ...ENV, ARMADA_DATABASE_URL: "", DATABASE_URL: "postgres://armada@neon.example.test/armada" };
+    expect(missing(neon)).toBe("accounts");
+    const retired = { ...ENV, ARMADA_DATABASE_URL: "", ARMADA_AUTH_DATABASE_URL: "libsql://accounts.example.test" };
+    expect(missing(retired)).toEqual(["ARMADA_DATABASE_URL"]);
+    expect(missing({ ARMADA_AUTH_DATABASE_URL: "libsql://accounts.example.test" })).toContain("ARMADA_DATABASE_URL");
+    expect(missing({ ...ENV, ARMADA_DATABASE_URL: "pglite:memory" })).toEqual(["ARMADA_DATABASE_URL"]);
+    // The database alone keeps the password gate: it holds the fleet's data too.
+    expect(accountsModeOf({ NODE_ENV: "production", ARMADA_DATABASE_URL: ENV.ARMADA_DATABASE_URL })).toEqual({
+      kind: "off",
+    });
+    // A secret needs its length, GitHub both halves.
     expect(missing({ ...ENV, ARMADA_AUTH_SECRET: "short" })).toEqual(["ARMADA_AUTH_SECRET"]);
     expect(missing({ ...ENV, ARMADA_AUTH_GITHUB_CLIENT_SECRET: "" })).toEqual(["ARMADA_AUTH_GITHUB_CLIENT_SECRET"]);
     // Without GitHub, only development can sign in (with email and password).
@@ -63,17 +69,15 @@ describe("which deployment runs on accounts", () => {
   });
 });
 
-// ------------------------------------------------------------ Better Auth on a local database
+// ------------------------------------------------------------ Better Auth on PGlite
 
-let dir = "";
-let client: Client;
+let client: Database;
 let auth: Auth;
 let settings: AuthSettings;
 const outbox: EmailMessage[] = [];
 
 beforeAll(async () => {
-  dir = await mkdtemp(join(tmpdir(), "armada-accounts-"));
-  client = await openAuthDatabase({ url: `file:${join(dir, "accounts.db")}`, token: null });
+  client = await tempDatabase();
   const mode = accountsModeOf({ ...ENV, NODE_ENV: "test" });
   if (mode.kind !== "accounts") throw new Error("test settings incomplete");
   settings = mode.settings;
@@ -88,8 +92,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  client.close();
-  await rm(dir, { recursive: true, force: true });
+  await client.end();
 });
 
 afterEach(() => {
@@ -134,13 +137,13 @@ const code = async (work: Promise<unknown>) => {
   }
 };
 
-describe("the accounts database", () => {
+describe("the app's database", () => {
   test("the committed migrations are what Better Auth needs, and replaying them changes nothing", async () => {
     const plan = await getMigrations(auth.options);
     expect(plan.toBeCreated).toEqual([]);
     expect(plan.toBeAdded).toEqual([]);
     expect(plan.toBeAddedIndexes).toEqual([]);
-    expect(await migrateAuth(client)).toBe(AUTH_SCHEMA_VERSION);
+    expect(await migrateDatabase(client)).toBe(DB_SCHEMA_VERSION);
   });
 });
 
@@ -149,7 +152,7 @@ describe("accounts and organizations", () => {
     // Better Auth answers a refused sign-up like any other (no address enumeration), but creates nothing.
     await auth.api.signUpEmail({ body: { email: "stranger@example.test", name: "S", password: PASSWORD } });
     expect(outbox).toEqual([]);
-    expect((await client.execute(`SELECT count(*) AS n FROM "user"`)).rows[0]?.n).toBe(0);
+    expect(await scalar(client, `SELECT count(*) FROM "user"`)).toBe(0);
 
     await auth.api.signUpEmail({ body: { email: OWNER, name: "Olive Owner", password: PASSWORD } });
     // No session before the address is confirmed.

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, askCoordinator, readInbox } from "../src/inbox.ts";
-import { RequestRefusal, requestAnswer, requestLaunch } from "../src/requests.ts";
+import { RequestRefusal, requestAnswer, requestLaunch, tursoRequests } from "../src/requests.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "../src/status.ts";
 import { type Db, getInboxItem, saveRuntimeHandle } from "../src/turso.ts";
 import { claimTicket, releaseTicket, type WorkerContext } from "../src/worker.ts";
@@ -60,14 +60,16 @@ describe("answering from the dashboard", () => {
     const question = item ?? 0;
     const ask = { project: P, question, author: "  Ada \n Lovelace ", now: NOW };
 
-    expect(await code(requestAnswer(db, { ...ask, text: "  " }))).toBe("empty-answer");
-    expect(await code(requestAnswer(db, { ...ask, text: "30", author: " " }))).toBe("no-author");
-    expect(await code(requestAnswer(db, { ...ask, text: "x".repeat(4001) }))).toBe("answer-too-long");
-    expect(await code(requestAnswer(db, { ...ask, question: 99, text: "30" }))).toBe("no-question");
-    expect(await code(requestAnswer(db, { ...ask, project: "gadgets", text: "30" }))).toBe("no-question");
+    expect(await code(requestAnswer(tursoRequests(db), { ...ask, text: "  " }))).toBe("empty-answer");
+    expect(await code(requestAnswer(tursoRequests(db), { ...ask, text: "30", author: " " }))).toBe("no-author");
+    expect(await code(requestAnswer(tursoRequests(db), { ...ask, text: "x".repeat(4001) }))).toBe("answer-too-long");
+    expect(await code(requestAnswer(tursoRequests(db), { ...ask, question: 99, text: "30" }))).toBe("no-question");
+    expect(await code(requestAnswer(tursoRequests(db), { ...ask, project: "gadgets", text: "30" }))).toBe(
+      "no-question",
+    );
 
-    const request = await requestAnswer(db, { ...ask, text: "30 minutes.\nShorter annoys people." });
-    expect(await code(requestAnswer(db, { ...ask, text: "15" }))).toBe("answer-waiting");
+    const request = await requestAnswer(tursoRequests(db), { ...ask, text: "30 minutes.\nShorter annoys people." });
+    expect(await code(requestAnswer(tursoRequests(db), { ...ask, text: "15" }))).toBe("answer-waiting");
     expect((await inbox(db)).map((e) => [e.id, e.kind, e.author, e.request])).toEqual([
       [question, "question", "ws/7", undefined],
       [request, "answer-request", "Ada Lovelace", { question, profile: null }],
@@ -79,7 +81,7 @@ describe("answering from the dashboard", () => {
     );
     expect(out.lines).toContain(`Dashboard request #${request} delivered; question #${question} resolved.`);
     expect(await inbox(db)).toEqual([]);
-    expect(await code(requestAnswer(db, { ...ask, text: "15" }))).toBe("question-closed");
+    expect(await code(requestAnswer(tursoRequests(db), { ...ask, text: "15" }))).toBe("question-closed");
   });
 
   test("an answer the coordinator records itself, or a release, closes the owner's pending answer", async () => {
@@ -91,8 +93,8 @@ describe("answering from the dashboard", () => {
     }
     const first = (await askCoordinator(ctx, { ticket: "DEMO-7", question: "A?" })).item ?? 0;
     const second = (await askCoordinator(ctx, { ticket: "DEMO-8", question: "B?" })).item ?? 0;
-    await requestAnswer(db, { project: P, question: first, text: "yes", author: "Ada", now: NOW });
-    await requestAnswer(db, { project: P, question: second, text: "no", author: "Ada", now: NOW });
+    await requestAnswer(tursoRequests(db), { project: P, question: first, text: "yes", author: "Ada", now: NOW });
+    await requestAnswer(tursoRequests(db), { project: P, question: second, text: "no", author: "Ada", now: NOW });
 
     await answerItem(ctx, { target: String(first), text: "yes, decided already" });
     await releaseTicket(ctx, { ticket: "DEMO-8", reason: "not needed" });
@@ -122,9 +124,15 @@ describe("launching from the dashboard", () => {
     const ready = report([frontierTicket("DEMO-9", routed), frontierTicket("DEMO-10", routed)], [{ id: "DEMO-3" }]);
     const launch = { config, report: ready, author: "Ada", now: NOW };
 
-    expect(await code(requestLaunch(db, { ...launch, ticket: "DEMO-3", profile: null }))).toBe("in-flight");
-    expect(await code(requestLaunch(db, { ...launch, ticket: "DEMO-4", profile: null }))).toBe("not-ready");
-    expect(await code(requestLaunch(db, { ...launch, ticket: "DEMO-9", profile: "sonnet" }))).toBe("unknown-profile");
+    expect(await code(requestLaunch(tursoRequests(db), { ...launch, ticket: "DEMO-3", profile: null }))).toBe(
+      "in-flight",
+    );
+    expect(await code(requestLaunch(tursoRequests(db), { ...launch, ticket: "DEMO-4", profile: null }))).toBe(
+      "not-ready",
+    );
+    expect(await code(requestLaunch(tursoRequests(db), { ...launch, ticket: "DEMO-9", profile: "sonnet" }))).toBe(
+      "unknown-profile",
+    );
     await saveRuntimeHandle(db, {
       project: P,
       ticket: "DEMO-10",
@@ -133,10 +141,19 @@ describe("launching from the dashboard", () => {
       branch: null,
       at: NOW,
     });
-    expect(await code(requestLaunch(db, { ...launch, ticket: "DEMO-10", profile: null }))).toBe("in-flight");
+    expect(await code(requestLaunch(tursoRequests(db), { ...launch, ticket: "DEMO-10", profile: null }))).toBe(
+      "in-flight",
+    );
 
-    const id = await requestLaunch(db, { ...launch, author: "Ada O'Neil $(id)", ticket: "demo-9", profile: "codex" });
-    expect(await code(requestLaunch(db, { ...launch, ticket: "DEMO-9", profile: null }))).toBe("launch-waiting");
+    const id = await requestLaunch(tursoRequests(db), {
+      ...launch,
+      author: "Ada O'Neil $(id)",
+      ticket: "demo-9",
+      profile: "codex",
+    });
+    expect(await code(requestLaunch(tursoRequests(db), { ...launch, ticket: "DEMO-9", profile: null }))).toBe(
+      "launch-waiting",
+    );
     expect(await getInboxItem(db, P, id)).toMatchObject({
       kind: "launch-request",
       ticket: "DEMO-9",
@@ -158,7 +175,7 @@ describe("launching from the dashboard", () => {
     const { db } = await tempTurso();
     const { linear, ctx } = setup(db);
     const ready = report([frontierTicket("DEMO-9", { profile: "opus", why: "conductor.default_profile" })]);
-    const id = await requestLaunch(db, {
+    const id = await requestLaunch(tursoRequests(db), {
       config,
       report: ready,
       ticket: "DEMO-9",
@@ -174,7 +191,14 @@ describe("launching from the dashboard", () => {
     expect(await getInboxItem(db, P, id)).toMatchObject({ resolution: "declined: it collides with DEMO-3" });
     // A new request is possible once the old one is closed.
     expect(
-      await requestLaunch(db, { config, report: ready, ticket: "DEMO-9", profile: null, author: "Ada", now: NOW }),
+      await requestLaunch(tursoRequests(db), {
+        config,
+        report: ready,
+        ticket: "DEMO-9",
+        profile: null,
+        author: "Ada",
+        now: NOW,
+      }),
     ).toBeGreaterThan(id);
   });
 });

@@ -1,4 +1,4 @@
-// The organization's keys, kept in the accounts database (THE-840). Each
+// The organization's keys, kept in the app's database (THE-840, THE-849). Each
 // value is sealed with envelope encryption: a fresh 256-bit data key encrypts
 // it with AES-256-GCM, and the master key (ARMADA_SECRETS_KEY, held in the
 // app's environment only, never in a database) wraps that data key. The row's
@@ -9,8 +9,8 @@
 // `armada_secret_event`, never with a value; so is every worker launched with a
 // launch token (`workers.ts`).
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import type { Client } from "@libsql/client";
 import type { Env } from "./accounts-settings";
+import { type Database, isoAt, type Queryable, transaction } from "./db";
 
 export const SECRETS_KEY_VARIABLE = "ARMADA_SECRETS_KEY";
 
@@ -224,15 +224,15 @@ export interface SecretEvent {
 
 /** Lists the organization's keys and the person's own, without any secret value. */
 export async function listSecrets(
-  client: Client,
+  client: Queryable,
   vault: VaultKey | null,
   { organization, user }: { organization: string; user: string },
 ): Promise<SecretInfo[]> {
-  const rs = await client.execute({
-    sql: `SELECT "userId", "name", "sealed", "setByLabel", "updatedAt" FROM "armada_secret"
-          WHERE "organizationId" = ? AND "userId" IN ('', ?) ORDER BY "name", "userId"`,
-    args: [organization, user],
-  });
+  const rs = await client.query(
+    `SELECT "userId", "name", "sealed", "setByLabel", "updatedAt" FROM "armada_secret"
+     WHERE "organizationId" = $1 AND "userId" IN ('', $2) ORDER BY "name", "userId"`,
+    [organization, user],
+  );
   return rs.rows.flatMap((row): SecretInfo[] => {
     const secretName = String(row.name);
     if (!isSecretName(secretName)) return [];
@@ -251,7 +251,7 @@ export async function listSecrets(
         name: secretName,
         own: slot.user !== "",
         setBy: String(row.setByLabel),
-        setAt: String(row.updatedAt),
+        setAt: isoAt(row.updatedAt),
         value,
         readable,
       },
@@ -261,15 +261,15 @@ export async function listSecrets(
 
 /** The opened values of the organization's keys, with the person's own on top. Server only: the broker and the dashboard's reads. */
 export async function readSecrets(
-  client: Client,
+  client: Queryable,
   vault: VaultKey,
   { organization, user }: { organization: string; user: string | null },
 ): Promise<{ values: Partial<Record<SecretName, string>>; own: SecretName[]; revision: string; problems: string[] }> {
-  const rs = await client.execute({
-    sql: `SELECT "userId", "name", "sealed", "updatedAt" FROM "armada_secret"
-          WHERE "organizationId" = ? AND "userId" IN ('', ?) ORDER BY "userId", "name"`,
-    args: [organization, user ?? ""],
-  });
+  const rs = await client.query(
+    `SELECT "userId", "name", "sealed", "updatedAt" FROM "armada_secret"
+     WHERE "organizationId" = $1 AND "userId" IN ('', $2) ORDER BY "userId", "name"`,
+    [organization, user ?? ""],
+  );
   const values: Partial<Record<SecretName, string>> = {};
   const own: SecretName[] = [];
   const problems: string[] = [];
@@ -286,7 +286,7 @@ export async function readSecrets(
     } catch (err) {
       problems.push(err instanceof Error ? err.message : String(err));
     }
-    if (!slot.user && TURSO_SECRETS.includes(secretName)) turso.push(`${secretName}@${String(row.updatedAt)}`);
+    if (!slot.user && TURSO_SECRETS.includes(secretName)) turso.push(`${secretName}@${isoAt(row.updatedAt)}`);
   }
   // Which Turso keys, and when each was set: a token handed out under another revision is replaced.
   const revision = createHash("sha256")
@@ -298,82 +298,71 @@ export async function readSecrets(
 
 /** Sets or replaces one key. `user` null is the organization's; a person's own key only for a personal kind. */
 export async function setSecret(
-  client: Client,
+  client: Database,
   vault: VaultKey,
   input: { organization: string; user: string | null; name: SecretName; value: string; actor: Actor; now: Date },
 ): Promise<void> {
   const slot = { organization: input.organization, user: input.user ?? "", name: input.name };
   if (slot.user && !SECRET_KINDS[input.name].personal) throw new Error(`${input.name} is the organization's only`);
-  const at = input.now.toISOString();
-  await client.batch(
-    [
-      {
-        sql: `INSERT INTO "armada_secret" ("organizationId", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              ON CONFLICT ("organizationId", "userId", "name") DO UPDATE SET
-                "sealed" = excluded."sealed", "setById" = excluded."setById",
-                "setByLabel" = excluded."setByLabel", "updatedAt" = excluded."updatedAt"`,
-        args: [
-          slot.organization,
-          slot.user,
-          slot.name,
-          sealSecret(vault, slot, input.value),
-          input.actor.id,
-          input.actor.label,
-          at,
-          at,
-        ],
-      },
-      eventStatement(input.organization, {
+  const at = input.now;
+  await transaction(client, async (tx) => {
+    await tx.query(
+      `INSERT INTO "armada_secret" ("organizationId", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+       ON CONFLICT ("organizationId", "userId", "name") DO UPDATE SET
+         "sealed" = excluded."sealed", "setById" = excluded."setById",
+         "setByLabel" = excluded."setByLabel", "updatedAt" = excluded."updatedAt"`,
+      [
+        slot.organization,
+        slot.user,
+        slot.name,
+        sealSecret(vault, slot, input.value),
+        input.actor.id,
+        input.actor.label,
         at,
-        action: "set",
-        keys: [input.name],
-        actor: input.actor,
-        detail: slot.user ? "their own key" : "for the organization",
-      }),
-    ],
-    "write",
-  );
+      ],
+    );
+    await recordEvent(tx, input.organization, {
+      at: at.toISOString(),
+      action: "set",
+      keys: [input.name],
+      actor: input.actor,
+      detail: slot.user ? "their own key" : "for the organization",
+    });
+  });
 }
 
 /** Deletes one key; true when there was one. */
 export async function deleteSecret(
-  client: Client,
+  client: Database,
   input: { organization: string; user: string | null; name: SecretName; actor: Actor; now: Date },
 ): Promise<boolean> {
-  const at = input.now.toISOString();
-  const tx = await client.transaction("write");
-  try {
-    const rs = await tx.execute({
-      sql: `DELETE FROM "armada_secret" WHERE "organizationId" = ? AND "userId" = ? AND "name" = ?`,
-      args: [input.organization, input.user ?? "", input.name],
-    });
-    if (rs.rowsAffected > 0)
-      await tx.execute(
-        eventStatement(input.organization, {
-          at,
-          action: "delete",
-          keys: [input.name],
-          actor: input.actor,
-          detail: input.user ? "their own key" : "for the organization",
-        }),
-      );
-    await tx.commit();
-    return rs.rowsAffected > 0;
-  } finally {
-    tx.close();
-  }
+  return transaction(client, async (tx) => {
+    const rs = await tx.query(
+      `DELETE FROM "armada_secret" WHERE "organizationId" = $1 AND "userId" = $2 AND "name" = $3`,
+      [input.organization, input.user ?? "", input.name],
+    );
+    if (rs.rowCount > 0)
+      await recordEvent(tx, input.organization, {
+        at: input.now.toISOString(),
+        action: "delete",
+        keys: [input.name],
+        actor: input.actor,
+        detail: input.user ? "their own key" : "for the organization",
+      });
+    return rs.rowCount > 0;
+  });
 }
 
 // ------------------------------------------------------------ audit
 
-function eventStatement(organization: string, e: Omit<SecretEvent, "id">) {
-  return {
-    sql: `INSERT INTO "armada_secret_event" ("organizationId", "at", "action", "keys", "actorKind", "actorId", "actorLabel", "detail")
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    args: [
+export async function recordEvent(client: Queryable, organization: string, e: Omit<SecretEvent, "id">): Promise<void> {
+  await client.query(
+    `INSERT INTO "armada_secret_event" ("organizationId", "at", "action", "keys", "actorKind", "actorId", "actorLabel", "detail")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [
       organization,
-      e.at,
+      new Date(e.at),
       e.action,
       e.keys.join(","),
       e.actor.kind,
@@ -381,23 +370,19 @@ function eventStatement(organization: string, e: Omit<SecretEvent, "id">) {
       e.actor.label,
       e.detail.slice(0, 500),
     ],
-  };
-}
-
-export async function recordEvent(client: Client, organization: string, event: Omit<SecretEvent, "id">): Promise<void> {
-  await client.execute(eventStatement(organization, event));
+  );
 }
 
 /** The organization's audit list, newest first. */
-export async function listEvents(client: Client, organization: string, limit = 50): Promise<SecretEvent[]> {
-  const rs = await client.execute({
-    sql: `SELECT "id", "at", "action", "keys", "actorKind", "actorId", "actorLabel", "detail" FROM "armada_secret_event"
-          WHERE "organizationId" = ? ORDER BY "id" DESC LIMIT ?`,
-    args: [organization, limit],
-  });
+export async function listEvents(client: Queryable, organization: string, limit = 50): Promise<SecretEvent[]> {
+  const rs = await client.query(
+    `SELECT "id", "at", "action", "keys", "actorKind", "actorId", "actorLabel", "detail" FROM "armada_secret_event"
+     WHERE "organizationId" = $1 ORDER BY "id" DESC LIMIT $2`,
+    [organization, limit],
+  );
   return rs.rows.map((r) => ({
     id: Number(r.id),
-    at: String(r.at),
+    at: isoAt(r.at),
     action: String(r.action) as SecretAction,
     keys: String(r.keys).split(",").filter(Boolean),
     actor: { kind: String(r.actorKind) as Actor["kind"], id: String(r.actorId), label: String(r.actorLabel) },
@@ -406,11 +391,11 @@ export async function listEvents(client: Client, organization: string, limit = 5
 }
 
 /** How many releases went to this actor since `since`: the broker's rate limit, shared by every server instance. */
-export async function releasesSince(client: Client, actor: Actor, since: Date): Promise<number> {
-  const rs = await client.execute({
-    sql: `SELECT count(*) AS n FROM "armada_secret_event"
-          WHERE "actorKind" = ? AND "actorId" = ? AND "action" = 'release' AND "at" > ?`,
-    args: [actor.kind, actor.id, since.toISOString()],
-  });
+export async function releasesSince(client: Queryable, actor: Actor, since: Date): Promise<number> {
+  const rs = await client.query(
+    `SELECT count(*)::int AS n FROM "armada_secret_event"
+     WHERE "actorKind" = $1 AND "actorId" = $2 AND "action" = 'release' AND "at" > $3`,
+    [actor.kind, actor.id, since],
+  );
   return Number(rs.rows[0]?.n ?? 0);
 }
