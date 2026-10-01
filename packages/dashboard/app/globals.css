@@ -825,6 +825,25 @@ a.sh-item:hover {
   border-width: 0 0 1.5px 1.5px;
   border-radius: 0 0 0 2px;
 }
+/* Activity: a feed's lines, the middle one shorter. */
+.sh-nav-icon.is-activity::before,
+.sh-nav-icon.is-activity::after {
+  grid-area: 1 / 1;
+}
+.sh-nav-icon.is-activity::before {
+  width: 12px;
+  height: 10px;
+  border-width: 1.5px 0;
+  border-radius: 0;
+}
+.sh-nav-icon.is-activity::after {
+  content: "";
+  justify-self: start;
+  width: 8px;
+  height: 1.5px;
+  margin-left: 1px;
+  background: currentColor;
+}
 .sh-count {
   margin-left: auto;
   font-size: 11.5px;
@@ -3072,4 +3091,177 @@ a.ui-row:hover {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* ------------------------------------------------------------------ since you were away, activity (THE-894) */
+.ui-section-body.since > p {
+  line-height: 1.6;
+}
+.since-link {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--t-fast) var(--ease-out);
+}
+.since-link:hover {
+  text-decoration-color: currentColor;
+}
+.since-link.is-hot {
+  color: var(--accent);
+}
+.since-all {
+  color: var(--text-3);
+  white-space: nowrap;
+}
+.since-all:hover {
+  color: var(--text-2);
+}
+.since-dismiss {
+  height: 24px;
+}
+.act-filters .ui-input.act-ticket {
+  width: 128px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+}
+.act-filters .ui-input.act-ticket::placeholder {
+  text-transform: none;
+}
+.act-clear {
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.act-clear:hover {
+  color: var(--text-2);
+}
+.act-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* A long page stays cheap: rows off screen are not laid out (as THE-892's lists). */
+.act-list > li {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+}
+.act-subject {
+  color: var(--text-3);
+}
+.act-who {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The last visit: the newer rows above, a quiet accent line, the rest below. */
+.act-new {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 20px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--accent);
+  border-bottom: 1px solid var(--line-soft);
+}
+.act-new::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--accent-dim);
+}
+.ui-section-body.act-pages {
+  flex-direction: row;
+  justify-content: space-between;
+  font-size: 13px;
+}
+.act-page {
+  color: var(--text-2);
+}
+.act-page:hover {
+  color: var(--text);
+}
+.act-page[rel="next"] {
+  margin-left: auto;
+}
+/* The account menu's notification settings. */
+.sh-menu-note {
+  margin: 0;
+  padding: 2px 8px 6px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-3);
+}
+.sh-switch {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--track);
+  cursor: pointer;
+  transition: background-color var(--t-fast) var(--ease-out);
+}
+.sh-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition:
+    translate var(--t-fast) var(--ease-out),
+    background-color var(--t-fast) var(--ease-out);
+}
+.sh-switch[aria-checked="true"] {
+  background: var(--done-dim);
+}
+.sh-switch[aria-checked="true"]::after {
+  translate: 12px 0;
+  background: var(--done);
+}
+.sh-switch:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.sh-quiet {
+  flex-wrap: wrap;
+  padding-bottom: 6px;
+}
+.sh-quiet-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.sh-quiet-times {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  color: var(--text-3);
+}
+.sh-quiet-times input {
+  height: 24px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color-scheme: dark;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sh-switch,
+  .sh-switch::after,
+  .since-link {
+    transition: none;
+  }
 }
