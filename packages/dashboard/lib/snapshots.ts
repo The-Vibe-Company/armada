@@ -70,6 +70,8 @@ export interface ClaimOptions {
   seen?: number;
   /** No refresh when the last one started less than this ago: a burst of webhooks makes one read, not one each. */
   gapMs?: number;
+  /** No refresh when the last one failed less than this ago: an outage does not turn every delivery into a read. */
+  retryMs?: number;
 }
 
 export interface SnapshotStore {
@@ -92,10 +94,15 @@ export interface SnapshotStore {
   fail(key: string, error: string, claim: RefreshClaim): Promise<void>;
 }
 
-const due = (head: SnapshotHead, now: Date, o: ClaimOptions) =>
-  !(head.refreshingUntil && head.refreshingUntil > now) &&
-  !(o.seen !== undefined && head.version !== o.seen && !head.dirty) &&
-  !(o.gapMs && head.attemptedAt && now.getTime() - head.attemptedAt.getTime() < o.gapMs);
+function due(head: SnapshotHead, now: Date, o: ClaimOptions): boolean {
+  const since = head.attemptedAt ? now.getTime() - head.attemptedAt.getTime() : Number.POSITIVE_INFINITY;
+  return (
+    !(head.refreshingUntil && head.refreshingUntil > now) &&
+    !(o.seen !== undefined && head.version !== o.seen && !head.dirty) &&
+    !(o.gapMs && since < o.gapMs) &&
+    !(o.retryMs && head.error && since < o.retryMs)
+  );
+}
 
 // ------------------------------------------------------------ in memory
 
@@ -240,7 +247,8 @@ export function dbSnapshots(db: Database, memory: MemorySnapshots): SnapshotStor
    */
   const keep = (key: string, h: SnapshotHead, snapshot: Snapshot | null): SnapshotEntry => {
     const r = memory.rows.get(key);
-    if (r?.source === "db" && r.version > h.version) return entryOf(r);
+    // Its head came from the database too: its own `dirty`, not the memory store's marks.
+    if (r?.source === "db" && r.version > h.version) return { ...entryOf(r), dirty: r.dirty };
     memory.rows.set(key, Object.assign(r ?? blank(), h, { snapshot, source: "db" as const }));
     return { ...h, snapshot };
   };
@@ -320,11 +328,22 @@ export function dbSnapshots(db: Database, memory: MemorySnapshots): SnapshotStor
       const { head: h, ...marks } = claimed;
       // The reading it starts from: this server's copy when it has that version, else the database's.
       const hit = cached(key, h.version);
-      const entry: SnapshotEntry =
-        hit || h.readAt === null
-          ? { ...h, snapshot: hit }
-          : ((await entries([key])).get(key) ?? { ...h, snapshot: null });
-      return { entry, ...marks, lease };
+      try {
+        const entry: SnapshotEntry =
+          hit || h.readAt === null
+            ? { ...h, snapshot: hit }
+            : ((await entries([key])).get(key) ?? { ...h, snapshot: null });
+        return { entry, ...marks, lease };
+      } catch (err) {
+        // The lease is given back at once rather than held until it expires.
+        await db
+          .query("UPDATE fleet_snapshots SET refreshing_until = NULL WHERE key = $1 AND refreshing_until = $2", [
+            key,
+            lease,
+          ])
+          .catch(() => {});
+        throw err;
+      }
     },
     async save(key, snapshot, claim, { full, now }) {
       const { startedAt, ...body } = snapshot;

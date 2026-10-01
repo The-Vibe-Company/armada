@@ -182,6 +182,10 @@ describe("Linear's webhook", () => {
     await refreshProject(WIDGETS, w.store, w.opts);
     const [entry] = (await w.store.entries(["widgets"])).values();
     expect(entry).toMatchObject({ dirty: true, error: "Linear: HTTP 503" });
+    // During the outage, more deliveries do not read again before the period ends.
+    w.advance(20_000);
+    await refreshProject(WIDGETS, w.store, w.opts, { gapMs: 10_000, retryMs: 600_000 });
+    expect(w.asks).toHaveLength(1);
     w.fail(false);
     await refreshProject(WIDGETS, w.store, w.opts);
     expect(w.asks.map((a) => a.touched)).toEqual([["lin-wid-2"], ["lin-wid-2"]]);

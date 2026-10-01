@@ -178,7 +178,8 @@ export async function refreshProject(
   const key = keyOf(p);
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const claim = await store
-      .claim(key, opts.now(), opts.leaseMs ?? LEASE_MS, pass === 0 ? first : {})
+      // A later pass keeps the burst gap: marks arriving faster than it wait for the next view or delivery.
+      .claim(key, opts.now(), opts.leaseMs ?? LEASE_MS, pass === 0 ? first : { gapMs: first.gapMs })
       .catch((err: unknown) => {
         console.error(`armada dashboard: ${key}: refresh not started: ${redactDatabase(err)}`);
         return null;

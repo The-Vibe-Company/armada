@@ -239,7 +239,11 @@ export async function refreshMarked(keys: string[]): Promise<void> {
         if (signedIn && !organization) return;
         const opts = fleetFor(signedIn && organization ? { organization, home } : null);
         // A burst of deliveries makes one read: the marks of the others wait for it, or for the next view.
-        await refreshProject(p, dbSnapshots(db, opts.cache.snapshots), opts, { gapMs: MARK_GAP_MS });
+        // After a failure, the snapshot period passes first, as for a view.
+        await refreshProject(p, dbSnapshots(db, opts.cache.snapshots), opts, {
+          gapMs: MARK_GAP_MS,
+          retryMs: opts.snapshotMs,
+        });
       }),
     );
   } catch (err) {
