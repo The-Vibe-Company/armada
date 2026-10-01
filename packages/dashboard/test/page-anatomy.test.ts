@@ -83,6 +83,29 @@ describe("the pages before the shell", () => {
     });
 });
 
+describe("the landing", () => {
+  // THE-887: bolder than the shell, in the same type. Its one h1 is the hero's.
+  const landing = [...reach(join(ROOT, "app/landing/page.tsx"))].filter((f) => rel(f).includes("landing"));
+
+  test("is found, with its sections", () => {
+    expect(landing.map(rel)).toContain("components/landing/Hero.tsx");
+  });
+
+  for (const { what, pattern } of FORBIDDEN.filter((f) => !f.what.startsWith("an h1")))
+    test(`renders no ${what}`, () => {
+      expect(landing.filter((f) => pattern.test(readFileSync(f, "utf8"))).map(rel)).toEqual([]);
+    });
+
+  test("sets no font but Geist and Geist Mono", () => {
+    const css = readFileSync(join(ROOT, "app/landing/landing.css"), "utf8");
+    for (const [, family] of css.matchAll(/font-family:\s*([^;]+);/g))
+      expect(["var(--font-sans)", "var(--font-mono)"]).toContain(family?.trim() ?? "");
+    for (const [, font] of css.matchAll(/\bfont:\s*([^;]+);/g)) expect(font).toMatch(/var\(--font-(sans|mono)\)$/);
+    const h1 = landing.filter((f) => /<h1[\s>]/.test(readFileSync(f, "utf8"))).map(rel);
+    expect(h1).toEqual(["components/landing/Hero.tsx"]);
+  });
+});
+
 describe("the type scale", () => {
   test("globals.css sets no font but Geist and Geist Mono", () => {
     const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");

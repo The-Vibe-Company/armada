@@ -294,6 +294,8 @@ describe("the proxy with accounts", () => {
     new NextRequest(`${BASE}${path}`, { method: init.method ?? "GET", headers: new Headers(init.headers) });
   const deps = (state: SessionState) => ({ env: {}, session: async () => state });
   const passed = (res: Response) => res.headers.get("x-middleware-next") === "1";
+  const rewrittenTo = (res: Response) => new URL(res.headers.get("x-middleware-rewrite") ?? "", BASE).pathname;
+  const SESSION = { cookie: "__Secure-armada.session_token=synthetic" };
 
   test("without a session, pages go to sign-in and data answers 401; Better Auth's routes and sign-in pass", async () => {
     const page = await accountsGuard(request("/organization"), deps("none"));
@@ -313,6 +315,23 @@ describe("the proxy with accounts", () => {
       expect(passed(await accountsGuard(request(hook, { method: "POST" }), deps("unavailable")))).toBe(true);
   });
 
+  test("a visitor without a session sees the landing on /, with no session lookup, even while sign-in is down", async () => {
+    const never = {
+      env: {},
+      session: async (): Promise<SessionState> => {
+        throw new Error("looked up");
+      },
+    };
+    expect(rewrittenTo(await accountsGuard(request("/"), never))).toBe("/landing");
+    for (const path of ["/landing", "/landing/opengraph-image"])
+      expect(passed(await accountsGuard(request(path), never))).toBe(true);
+    // A cookie that no longer opens a session: the landing too; a valid one: the overview.
+    expect(rewrittenTo(await accountsGuard(request("/", { headers: SESSION }), deps("none")))).toBe("/landing");
+    expect(passed(await accountsGuard(request("/", { headers: SESSION }), deps("signed-in")))).toBe(true);
+    // Every other page still goes to sign-in.
+    expect((await accountsGuard(request("/agents"), deps("none"))).status).toBe(307);
+  });
+
   test("half-configured accounts serve nothing, not even the password gate, and name what is missing", async () => {
     const missing = ["ARMADA_AUTH_SECRET"];
     const data = incompleteAccounts(request("/api/fleet"), { env: {}, missing });
@@ -327,6 +346,6 @@ describe("the proxy with accounts", () => {
     expect(passed(await accountsGuard(request("/api/fleet"), deps("signed-in")))).toBe(true);
     expect((await accountsGuard(request("/login"), deps("signed-in"))).status).toBe(303);
     for (const path of ["/", "/api/fleet", "/login"])
-      expect((await accountsGuard(request(path), deps("unavailable"))).status).toBe(503);
+      expect((await accountsGuard(request(path, { headers: SESSION }), deps("unavailable"))).status).toBe(503);
   });
 });

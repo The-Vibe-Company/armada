@@ -41,6 +41,15 @@ export const GITHUB_PATH = "/organization/github";
 export const GITHUB_INSTALL_PATH = "/organization/github/install";
 /** Where GitHub's return to the Setup URL (GITHUB_PATH) is handled: the installation is linked, then the GitHub page shows. */
 export const GITHUB_SETUP_PATH = "/organization/github/setup";
+/**
+ * The public landing (THE-887): static, it reads no fleet data. The proxy shows
+ * it on `/` to a viewer without a session, and lets it and its assets through.
+ */
+export const LANDING_PATH = "/landing";
+export const isLanding = (pathname: string) => pathname === LANDING_PATH || pathname.startsWith(`${LANDING_PATH}/`);
+/** The bare `/` of a page load, where a viewer without a session is shown the landing. */
+export const isFront = (request: { method: string; nextUrl: { pathname: string; search: string } }) =>
+  request.nextUrl.pathname === "/" && request.nextUrl.search === "" && ["GET", "HEAD"].includes(request.method);
 /** Where a person confirms the code `armada login` shows. */
 export const DEVICE_PATH = "/device";
 /** The routes the Armada CLI calls: sign-in from the terminal, whoami, sign-out. */
