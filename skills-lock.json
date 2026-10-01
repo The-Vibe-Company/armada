@@ -5,22 +5,29 @@
       "source": "The-Vibe-Company/armada",
       "sourceType": "github",
       "skillPath": "skills/armada-coordinator/SKILL.md",
-      "ref": "v0.1.19",
-      "computedHash": "dcb841fcee39ee2852ef97766eba9cd6a375a598d46b31d4465f88a39861d9e5"
+      "ref": "v0.2.15",
+      "computedHash": "8b2a52d5c3576f7cc737f015abae187467f62916157aa5965b5733da21f1c32f"
+    },
+    "armada-runtime-claude-code": {
+      "source": "The-Vibe-Company/armada",
+      "sourceType": "github",
+      "skillPath": "skills/armada-runtime-claude-code/SKILL.md",
+      "ref": "v0.2.15",
+      "computedHash": "cb1e2831a12856162ebf57fbc02a33dbf574cd068ef9ce5d4f923462a936f692"
     },
     "armada-runtime-conductor": {
       "source": "The-Vibe-Company/armada",
       "sourceType": "github",
       "skillPath": "skills/armada-runtime-conductor/SKILL.md",
-      "ref": "v0.1.19",
-      "computedHash": "a05dc6a64884db55048745541d5ff5bc6594bb7343a8978d58ccc94047405d7e"
+      "ref": "v0.2.15",
+      "computedHash": "cf05ba278fc55c9f745e265083b8d5eb3f4a93c5ff9a0240e62d6a70178a67d5"
     },
     "armada-worker": {
       "source": "The-Vibe-Company/armada",
       "sourceType": "github",
       "skillPath": "skills/armada-worker/SKILL.md",
-      "ref": "v0.1.19",
-      "computedHash": "e695818a82465b16fc5adb2e1c14835c095f6665d44573f6a3544009e6d14507"
+      "ref": "v0.2.15",
+      "computedHash": "a54e0efda3af0c5dfb7f5c6a6310e908640ef1474d629c77666a02c812f32483"
     },
     "neon": {
       "source": "neondatabase/agent-skills",
