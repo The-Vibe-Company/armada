@@ -234,6 +234,48 @@ describe("armada status --all", () => {
     expect(out() + err()).not.toContain(KEY);
   });
 
+  test("a project that keeps its own Linear key is read with it; the others with the organization's", async () => {
+    const store = memoryFleet();
+    await store.upsertProject(
+      { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "DEMO-1" },
+      NOW,
+    );
+    await store.upsertProject(
+      { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GADG-1" },
+      NOW,
+    );
+    const armada = fakeArmada({
+      keys: { [KEY]: "registry" },
+      store,
+      vault: {
+        linear: { apiKey: "lin_CANARY_org", scope: "organization" },
+        projects: { widgets: "lin_CANARY_widgets" },
+        now: () => NOW,
+      },
+    });
+    const { io, out } = fakeIo({}, { GITHUB_TOKEN: "t", ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY });
+    const recorded = recordedFetch().fetch;
+    const roots: string[] = [];
+    io.fetch = async (url, init) => {
+      if (url.startsWith(`${ARMADA_URL}/`)) return armada.fetch(url, init);
+      const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
+      if (url === GITHUB_GRAPHQL && body.query.includes("query ArmadaConfig"))
+        return Response.json({ data: { repository: { object: null } } });
+      const root = body.variables.id;
+      if (url === LINEAR_ENDPOINT && (root === "DEMO-1" || root === "GADG-1"))
+        roots.push(`${root} ${new Headers(init.headers).get("authorization")}`);
+      return recorded(url, init);
+    };
+    await run(["status", "--all", "--json"], io);
+    expect(roots.sort()).toEqual(["DEMO-1 lin_CANARY_widgets", "GADG-1 lin_CANARY_org"]);
+    // The project's key is asked for that project only.
+    expect(armada.calls.filter((c) => c.path === "credentials").map((c) => c.body)).toEqual([
+      {},
+      { purpose: { project: "widgets" } },
+    ]);
+    expect(out()).not.toContain("lin_CANARY");
+  });
+
   test("an organization with no project yet says how to register one", async () => {
     const armada = fakeArmada({ keys: { [KEY]: "registry" } });
     const { io, out } = fakeIo({}, { LINEAR_API_KEY: "k", ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY });

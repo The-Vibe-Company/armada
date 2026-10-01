@@ -67,6 +67,16 @@ async function writePrivate(paths: MachinePaths, path: string, text: string, mod
   // mkdir leaves an existing directory alone; Armada owns this one, so tighten it.
   await chmod(paths.dir, 0o700);
   if (dirname(path) !== paths.dir) await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+  await writePrivateFile(path, text, mode);
+}
+
+/**
+ * Writes a file only its owner can read (mode 0600 by default), atomically,
+ * in an existing directory: the credentials file, and `armada secrets export`
+ * (THE-859). An existing file is replaced, and ends up with `mode` whatever
+ * its mode was.
+ */
+export async function writePrivateFile(path: string, text: string, mode = 0o600): Promise<void> {
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   const handle = await open(tmp, "wx", mode);
   try {

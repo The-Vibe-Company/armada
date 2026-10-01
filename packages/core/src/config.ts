@@ -59,6 +59,14 @@ export interface ArmadaConfig {
     /** Repository path, relative to armada.toml, of a file every brief carries under "Project conventions"; null when unset. */
     extra: string | null;
   };
+  secrets: {
+    /**
+     * Names of the secrets this project's workers expect (THE-859), e.g.
+     * OPENAI_API_KEY: `armada doctor` says which are not set. Names only:
+     * values live in Armada, never here.
+     */
+    names: string[];
+  };
   conductor: {
     /** Profile `armada brief` uses without `--profile`; null when none is declared. */
     defaultProfile: string | null;
@@ -127,6 +135,18 @@ export class ConfigError extends Error {
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const ISSUE_ID = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
+/** A secret for workers: an environment variable name in upper snake case, as Armada keeps it (THE-859). */
+export const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/;
+/** Keys Armada itself reads: named and typed on the Keys page, never secrets for workers. */
+const RESERVED_SECRET_NAMES = ["LINEAR_API_KEY", "GITHUB_TOKEN", "GH_TOKEN"];
+
+/** Why `name` cannot be a secret for workers; null when it can. Quotes the name only when it is a name. */
+export function secretNameRefusal(name: string): string | null {
+  if (!SECRET_NAME.test(name)) return "a secret name is in upper snake case, e.g. OPENAI_API_KEY";
+  if (RESERVED_SECRET_NAMES.includes(name) || name.startsWith("ARMADA_"))
+    return `${name} is a key Armada itself uses: it is set on the Keys page as such, not as a secret for workers`;
+  return null;
+}
 const REPOSITORY = /^[\w.-]+\/[\w.-]+$/;
 
 type Table = Record<string, unknown>;
@@ -194,6 +214,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const brief = raw.brief === undefined ? {} : raw.brief;
   if (!isTable(brief)) problems.push(`"brief" must be a table`);
   const briefT = isTable(brief) ? brief : {};
+  const secrets = raw.secrets === undefined ? {} : raw.secrets;
+  if (!isTable(secrets)) problems.push(`"secrets" must be a table`);
+  const secretsT = isTable(secrets) ? secrets : {};
   const conductor = raw.conductor === undefined ? {} : raw.conductor;
   if (!isTable(conductor)) problems.push(`"conductor" must be a table`);
   const conductorT = isTable(conductor) ? conductor : {};
@@ -222,6 +245,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       ],
     ],
     ["brief", briefT, ["extra"]],
+    ["secrets", secretsT, ["names"]],
     ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
@@ -330,6 +354,17 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else if (v) extra = v;
   }
 
+  let secretNames: string[] = [];
+  if (secretsT.names !== undefined) {
+    const v = secretsT.names;
+    if (Array.isArray(v) && v.every((n) => typeof n === "string" && !secretNameRefusal(n.trim())))
+      secretNames = [...new Set(v.map((n: string) => n.trim()))];
+    else
+      problems.push(
+        `"secrets.names" must be a list of secret names in upper snake case, e.g. ["OPENAI_API_KEY"], none of Armada's own keys`,
+      );
+  }
+
   let requiredChecks: string[] = [];
   if (gatesT.required_checks !== undefined) {
     const v = gatesT.required_checks;
@@ -370,6 +405,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     gates: { requiredChecks, localCommands },
     policy: { silentAfterMinutes, coordinatorMinutes, plans, preApprovedLabel, approvalLabel },
     brief: { extra },
+    secrets: { names: secretNames },
     conductor: { defaultProfile, profiles, routing },
   };
   if (problems.length) throw new ConfigError(source, problems);

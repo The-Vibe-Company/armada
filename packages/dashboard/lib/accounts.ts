@@ -126,6 +126,37 @@ export async function organizationOf(
   };
 }
 
+/**
+ * Records who created an organization API key (THE-859): the key then acts
+ * with the rights its creator still has, checked at each use that needs a
+ * role (`apiKeyCreatorRole`).
+ */
+export async function recordApiKeyCreator(
+  client: Queryable,
+  key: { id: string; organization: string; user: string; now: Date },
+): Promise<void> {
+  await client.query(
+    `INSERT INTO "armada_api_key_creator" ("keyId", "organizationId", "userId", "createdAt") VALUES ($1, $2, $3, $4)
+     ON CONFLICT ("keyId") DO NOTHING`,
+    [key.id, key.organization, key.user, key.now],
+  );
+}
+
+/**
+ * The role an API key's creator holds in the key's organization today; null
+ * when the creator left it, or the key predates this record.
+ */
+export async function apiKeyCreatorRole(client: Queryable, keyId: string, organization: string): Promise<Role | null> {
+  const rs = await client.query(
+    `SELECT m."role" FROM "armada_api_key_creator" c
+     JOIN "member" m ON m."userId" = c."userId" AND m."organizationId" = c."organizationId"
+     WHERE c."keyId" = $1 AND c."organizationId" = $2`,
+    [keyId, organization],
+  );
+  const role = rs.rows[0]?.role;
+  return rs.rows.length ? (isRole(role) ? role : "member") : null;
+}
+
 export function createAuth(settings: AuthSettings, { client, sender, now = () => new Date() }: AccountsDeps) {
   const owner = (email: string) => settings.owners.includes(email.trim().toLowerCase());
   const https = new URL(settings.baseUrl).protocol === "https:";

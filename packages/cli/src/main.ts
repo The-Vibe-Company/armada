@@ -6,6 +6,7 @@ import { isatty } from "node:tty";
 import { run } from "./cli.ts";
 import type { Exec } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
+import { spawnInherited } from "./spawn.ts";
 
 function gitBranch(): string | null {
   try {
@@ -116,6 +117,7 @@ const code = await run(process.argv.slice(2), {
   gitBranch,
   readStdin,
   exec,
+  spawn: spawnInherited,
   openUrl,
 });
 process.exitCode = code;

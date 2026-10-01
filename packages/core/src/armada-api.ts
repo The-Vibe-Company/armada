@@ -2,7 +2,8 @@
 // code confirmed in the browser), who is signed in, signing out, the
 // organization's Linear key handed to a signed-in terminal (THE-840), the
 // workers' one-time launch tokens and sessions (THE-841), the organization's
-// projects, and the fleet's live data (THE-850, `fleet-api.ts`). It is the
+// projects, the fleet's live data (THE-850, `fleet-api.ts`), and each
+// project's secrets for workers (THE-859). It is the
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
 import type { Fetch } from "./linear.ts";
@@ -18,11 +19,14 @@ export type ArmadaSignIn =
   | { kind: "api-key"; key: string }
   | { kind: "worker"; token: string; ticket: string; project: string };
 
-/** What a worker command asks keys for; Armada refuses a worker session anything else. */
+/**
+ * What a command asks keys for: the project's own Linear key wins for it.
+ * Armada refuses a worker session anything but its own ticket's worker commands.
+ */
 export interface KeysPurpose {
-  command: string;
+  command?: string;
   project: string;
-  ticket: string;
+  ticket?: string;
 }
 
 /** A one-time launch token for one ticket, from `POST /api/cli/launch-tokens`. */
@@ -74,8 +78,39 @@ export interface DeviceCode {
 export interface ArmadaKeysAnswer {
   schemaVersion: 1;
   organization: { id: string; name: string; slug: string };
-  linear: { apiKey: string; scope: "own" | "organization" } | null;
+  linear: { apiKey: string; scope: "project" | "own" | "organization" } | null;
   /** What the organization set but Armada could not hand out. Never a value. */
+  warnings: string[];
+}
+
+/** The project a secrets request names, as the fleet's requests do. */
+export interface SecretsProject {
+  slug: string;
+  name: string;
+  repository: string;
+  programRoot: string;
+}
+
+/** Where a secret for workers is set: for one project, or for every project of the organization. */
+export type SecretScope = "project" | "organization";
+
+/** A secret for workers as `armada secrets` lists it. Never its value. */
+export interface ListedSecret {
+  name: string;
+  scope: SecretScope;
+  setBy: string;
+  setAt: string;
+  /** An organization's secret the project sets too: the project's wins. */
+  overridden: boolean;
+}
+
+/** One project's secrets for workers, from `POST /api/cli/secrets/release`. */
+export interface ReleasedSecrets {
+  project: string;
+  secrets: { name: string; value: string; scope: SecretScope }[];
+  /** Names asked for that are not set. */
+  missing: string[];
+  /** Why a secret that is set could not be handed out. Never a value. */
   warnings: string[];
 }
 
@@ -85,6 +120,8 @@ export interface ArmadaProject {
   name: string;
   repository: string;
   programRoot: string;
+  /** Whether the project keeps its own Linear key (THE-859): `POST credentials` for it gives that one. */
+  ownLinearKey?: boolean;
 }
 
 /** A code as the person reads it: WDJB-MJHT. */
@@ -335,10 +372,11 @@ export function armadaApi(opts: ArmadaApiOptions) {
       const warnings = Array.isArray(body.warnings)
         ? body.warnings.filter((w): w is string => typeof w === "string")
         : [];
+      const scope = linear?.scope === "own" || linear?.scope === "project" ? linear.scope : "organization";
       return {
         schemaVersion: 1,
         organization: org as ArmadaKeysAnswer["organization"],
-        linear: linear ? { apiKey: linear.apiKey, scope: linear.scope === "own" ? "own" : "organization" } : null,
+        linear: linear ? { apiKey: linear.apiKey, scope } : null,
         warnings,
       };
     },
@@ -354,7 +392,15 @@ export function armadaApi(opts: ArmadaApiOptions) {
         typeof p.name === "string" &&
         typeof p.repository === "string" &&
         typeof p.programRoot === "string"
-          ? [{ slug: p.slug, name: p.name, repository: p.repository, programRoot: p.programRoot }]
+          ? [
+              {
+                slug: p.slug,
+                name: p.name,
+                repository: p.repository,
+                programRoot: p.programRoot,
+                ...(p.ownLinearKey === true ? { ownLinearKey: true } : {}),
+              },
+            ]
           : [],
       );
     },
@@ -375,6 +421,70 @@ export function armadaApi(opts: ArmadaApiOptions) {
       if (!("result" in answer))
         throw new ArmadaApiError(`Armada (${host}) answered fleet/${op} in a shape this CLI does not know`);
       return answer.result;
+    },
+
+    /** The secrets for workers of `project`: names, where each is set, who set it and when. Never a value. */
+    async listSecrets(signIn: ArmadaSignIn, project: SecretsProject): Promise<ListedSecret[]> {
+      const { status, body } = await call("POST", "secrets/list", { signIn, body: { project } });
+      if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada did not list the secrets");
+      if (!Array.isArray(body.secrets))
+        throw new ArmadaApiError(`Armada (${host}) answered the secrets in a shape this CLI does not know`);
+      return (body.secrets as Record<string, unknown>[]).flatMap((s) =>
+        typeof s.name === "string" && typeof s.setBy === "string" && typeof s.setAt === "string"
+          ? [
+              {
+                name: s.name,
+                scope: s.scope === "organization" ? ("organization" as const) : ("project" as const),
+                setBy: s.setBy,
+                setAt: s.setAt,
+                overridden: s.overridden === true,
+              },
+            ]
+          : [],
+      );
+    },
+
+    /** The values of `project`'s secrets for workers, `names` or every one. Armada records the release. */
+    async releaseSecrets(
+      signIn: ArmadaSignIn,
+      project: SecretsProject,
+      names: string[] | null = null,
+    ): Promise<ReleasedSecrets> {
+      const { status, body } = await call("POST", "secrets/release", { signIn, body: { project, names } });
+      if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada gave no secrets");
+      const secrets = Array.isArray(body.secrets) ? (body.secrets as Record<string, unknown>[]) : null;
+      if (!secrets?.every((s) => typeof s.name === "string" && typeof s.value === "string"))
+        throw new ArmadaApiError(`Armada (${host}) answered the secrets in a shape this CLI does not know`);
+      const strings = (v: unknown) => (Array.isArray(v) ? v.filter((w): w is string => typeof w === "string") : []);
+      return {
+        project: typeof body.project === "string" ? body.project : project.slug,
+        secrets: secrets.map((s) => ({
+          name: String(s.name),
+          value: String(s.value),
+          scope: s.scope === "organization" ? ("organization" as const) : ("project" as const),
+        })),
+        missing: strings(body.missing),
+        warnings: strings(body.warnings),
+      };
+    },
+
+    /** Sets one secret for workers, for `project` or (scope "organization") every project. The value goes in the body only. */
+    async setSecret(
+      signIn: ArmadaSignIn,
+      target: { project: SecretsProject; name: string; value: string; scope: SecretScope },
+    ): Promise<void> {
+      const { status, body } = await call("POST", "secrets/set", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, status === 401 ? null : `Armada did not set ${target.name}`);
+    },
+
+    /** Unsets one secret for workers; false when it was not set there. */
+    async unsetSecret(
+      signIn: ArmadaSignIn,
+      target: { project: SecretsProject; name: string; scope: SecretScope },
+    ): Promise<boolean> {
+      const { status, body } = await call("POST", "secrets/unset", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, status === 401 ? null : `Armada did not unset ${target.name}`);
+      return body.deleted === true;
     },
 
     /** A one-time launch token for a worker on `ticket`, valid one hour; the launch message carries it. */
