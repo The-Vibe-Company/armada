@@ -261,7 +261,7 @@ export function searchItems(overview: Overview, index: SearchIndex | null, ctx: 
           kind: "ticket",
           key: `ticket:${key}`,
           label: x.title,
-          detail: `${x.status} · ${x.id}`,
+          detail: `${t.shell.palette.ticketStates[x.statusType]} · ${x.id}`,
           href: x.url,
           external: true,
           project: x.project,
@@ -269,7 +269,7 @@ export function searchItems(overview: Overview, index: SearchIndex | null, ctx: 
           at: x.updatedAt,
           closed: x.statusType === "completed",
         },
-        [nameOf(x.project), x.branch],
+        [nameOf(x.project), x.branch, x.status],
       ),
     );
   }
@@ -564,8 +564,13 @@ function span(text: string, q: string): number | null {
   return end - (at + 1);
 }
 
-/** How well an item answers a lowercase query; 0 when it does not. Pure and cheap: no allocation on the common path. */
-export function scoreOf(i: SearchItem, q: string, words: readonly string[]): number {
+/**
+ * How well an item answers a lowercase query; 0 when it does not. Letters in
+ * order (`fuzzy`) are matched on the label only, and only when they sit close:
+ * across a ticket's whole text they would find anything. Pure and cheap: no
+ * allocation on the common path.
+ */
+export function scoreOf(i: SearchItem, q: string, words: readonly string[], fuzzy = true): number {
   let s = 0;
   if (i.id !== null && (i.id === q || (i.kind === "pr" && i.id === `#${q}`))) s = 1000;
   else if (i.id !== null && q.length > 1 && (i.id.startsWith(q) || (i.kind === "pr" && i.id.startsWith(`#${q}`))))
@@ -575,12 +580,11 @@ export function scoreOf(i: SearchItem, q: string, words: readonly string[]): num
   else if (i.name.includes(q)) s = 420;
   else if (i.hay.includes(q)) s = 350;
   else if (words.length > 1 && words.every((w) => i.hay.includes(w))) s = 300;
-  else if (q.length > 1) {
-    const inName = span(i.name, q);
-    const found = inName ?? span(i.hay, q);
-    if (found === null) return 0;
-    // Tighter is better; the label beats the rest.
-    s = 100 + Math.round((q.length / found) * 80) + (inName !== null ? 20 : 0);
+  else if (fuzzy && q.length > 2) {
+    const found = span(i.name, q);
+    // Tighter is better: at least one letter of the query in three letters of the label.
+    if (found === null || found > q.length * 3) return 0;
+    s = 100 + Math.round((q.length / found) * 100);
   } else return 0;
   return s + KIND_BONUS[i.kind] - (i.closed ? 15 : 0);
 }
@@ -632,11 +636,13 @@ export function search(
   const q = query.trim().toLowerCase().replace(/\s+/g, " ");
   if (!q) return defaults(items, recent);
   const words = q.split(" ");
+  // An id or a number is typed exactly: its letters scattered in a title are not what was meant.
+  const fuzzy = !ticketIdOf(q) && !/^#?\d+$/.test(q);
   const rank = new Map(recent.map((k, n) => [k, n]));
   const hits: { i: SearchItem; s: number; k: number }[] = [];
   for (let k = 0; k < items.length; k++) {
     const i = items[k] as SearchItem;
-    let s = scoreOf(i, q, words);
+    let s = scoreOf(i, q, words, fuzzy);
     if (!s) continue;
     const r = rank.get(i.key);
     if (r !== undefined) s += 60 - r * 5;

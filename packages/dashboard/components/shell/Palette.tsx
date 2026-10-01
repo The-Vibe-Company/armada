@@ -11,7 +11,7 @@
 // The field is a combobox over a listbox of groups (THE-891's focus rules:
 // the focus stays in the dialog, and goes back where it was when it closes).
 import { useRouter } from "next/navigation";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { decisionCards, sentRequest } from "@/lib/overview-view";
 import {
   EMPTY_INDEX,
@@ -159,10 +159,11 @@ export function Palette({ onClose }: { onClose: () => void }) {
     else router.push(item.href);
   };
 
-  const back = () => {
-    setStep(null);
-    requestAnimationFrame(() => input.current?.focus());
-  };
+  const back = () => setStep(null);
+  // Back from a step, the field has the focus again before the next key.
+  useLayoutEffect(() => {
+    if (!step) input.current?.focus();
+  }, [step]);
 
   /** Tab stays in the dialog: on its field in the list, through its controls in a step. */
   const trap = (e: React.KeyboardEvent) => {
@@ -386,8 +387,9 @@ function StepPanel({ step, onBack }: { step: Step; onBack: () => void }) {
   const p = t.shell.palette;
 
   useEffect(() => {
+    // The step's first control (the answer, the launch), not its back button.
     const first = box.current?.querySelector<HTMLElement>(
-      "button:not(:disabled), textarea, input:not([type='hidden'])",
+      ".sh-palette-step-body :is(button:not(:disabled), textarea, input:not([type='hidden']))",
     );
     (first ?? heading.current)?.focus();
     const rescue = new MutationObserver(() => {
