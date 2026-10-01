@@ -43,6 +43,34 @@ const refusal = (p: Promise<unknown>) =>
 const inbox = (db: FleetStore) => readInbox(db, { project: P, silentAfterMinutes: 15, now: NOW });
 
 describe("ask and answer", () => {
+  test("answering steering requests closes only the request, never approves the plan or acts on Linear", async () => {
+    const live = tempFleet();
+    const { linear, ctx } = setup(live);
+    await live.store.putPlan({ project: P, ticket: "DEMO-7", author: "worker", body: "Original plan", at: NOW });
+    const plan = (await live.store.openInboxItems({ project: P, recipient: "coordinator" }))[0];
+    if (!plan) throw new Error("missing plan");
+    for (const kind of ["merge-request", "release-request", "plan-changes"] as const) {
+      const id = await live.store.addRequest({
+        project: P,
+        ticket: kind === "merge-request" ? null : "DEMO-7",
+        kind,
+        author: "Synthetic Owner",
+        body: "Please handle this request",
+        question: kind === "plan-changes" ? plan.id : null,
+        profile: null,
+        pr: kind === "merge-request" ? 11 : null,
+        at: NOW,
+      });
+      if (id === null) throw new Error("missing request");
+      expect((await answerItem(ctx, { target: `#${id}`, text: "Delivered to the coordinator" })).lines).toContain(
+        `Inbox item #${id} resolved.`,
+      );
+      expect((await live.store.getInboxItem(P, id))?.resolvedAt).toBe(NOW.toISOString());
+    }
+    expect((await live.store.getInboxItem(P, plan.id))?.resolvedAt).toBeNull();
+    expect(linear.writes).toEqual([]);
+  });
+
   test("a question blocks the worker, reaches the inbox and the ticket; the answer closes it in both", async () => {
     const live = tempFleet();
     const db = live.store;
@@ -325,8 +353,7 @@ describe("the coordinator's inbox", () => {
     ]);
     // 15 + 15 + 10 s: every ask unchanged.
     expect(live.statuses).toEqual([200, 304, 304, 304]);
-    // The presence is recorded at most once a minute, with the coordinator's handle.
-    expect(await db.lastCoordinatorSeen(P)).toBe(new Date(NOW.getTime() + 60_000).toISOString());
+    expect(await db.lastCoordinatorSeen(P)).toBe(new Date(NOW.getTime() + 85_000).toISOString());
     expect(db.presence.get(P)?.handle).toBe("ws-coordinator/session");
   });
 

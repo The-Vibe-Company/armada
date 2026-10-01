@@ -23,6 +23,7 @@ import { init } from "./init.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
 import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
+import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
@@ -372,6 +373,7 @@ async function status(io: Io, args: Args): Promise<number> {
   const config: ArmadaConfig = parseConfig(text, path);
   const { credentials } = await loadCredentials(io, { project: config.project.slug });
   const { linearApiKey, githubToken } = credentials;
+  await recordPresence(io, config, credentials);
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
   const events = statusEvents(io, config, credentials);
   const report = await loadStatus(config, {
@@ -484,12 +486,14 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
           }
         : undefined;
       const { credentials } = await loadCredentials(io, scope ? { worker: scope } : { project: config.project.slug });
+      if (command === "inbox") await recordPresence(io, config, credentials);
       return await worker(io, config, credentials, args);
     }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch");
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      await recordPresence(io, config, credentials);
       return await watch(io, config, credentials, args, path);
     }
     if (args.command === "hook") return await hookStop(io, args.rest, (at) => findConfig(at, null, "hook"));
@@ -497,12 +501,14 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { path, text } = await findConfig(io, args.config, "merge");
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      await recordPresence(io, config, credentials);
       return await merge(io, config, credentials, args, path);
     }
     if (args.command === "brief") {
       const { path, text } = await findConfig(io, args.config, "brief");
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      await recordPresence(io, config, credentials);
       return await brief(io, config, credentials, args, version, path);
     }
     if (args.command === "status") {

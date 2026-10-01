@@ -13,6 +13,7 @@ import {
 } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
+import { detectCoordinator } from "../src/presence.ts";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const KEY = "armada_key_CANARY_fleet";
@@ -219,7 +220,7 @@ describe("armada claim, report and release", () => {
     expect(await run(["status", "--json"], w.io)).toBe(0);
     const lane = JSON.parse(w.out()).inFlight.find((t: { id: string }) => t.id === "DEMO-11");
     expect([lane.lastReport, lane.silent]).toEqual(["2026-03-04T09:55:00.000Z", false]);
-    expect(w.armada.calls.map((c) => c.path)).toEqual(["fleet/events/latest"]);
+    expect(w.armada.calls.map((c) => c.path)).toEqual(["fleet/coordinator", "fleet/events/latest"]);
   });
 });
 
@@ -259,7 +260,7 @@ describe("armada ask, inbox and answer", () => {
     );
     expect(cli.err()).toBe("");
     expect(cli.store.presence.get("widgets")).toEqual({
-      handle: coordinator,
+      handle: detectCoordinator(cli.io).handle,
       cliVersion: version,
       at: NOW.toISOString(),
     });
@@ -320,7 +321,9 @@ describe("armada ask, inbox and answer", () => {
       "Inbox of widgets: nothing waits for you.\nNo new item within 60 s.\nNo worker in flight and nothing open — nothing to watch.\n",
     );
     // One read, then an ask every 15 s with the etag of that read: Armada answers 304 each time.
-    const etags = w.armada.calls.map((c) => (c.body as { input: { etag: string | null } }).input.etag);
+    const etags = w.armada.calls
+      .filter((call) => call.path === "fleet/inbox")
+      .map((c) => (c.body as { input: { etag: string | null } }).input.etag);
     expect([etags.length, etags[0], new Set(etags.slice(1)).size]).toEqual([5, null, 1]);
     expect(clock.now().toISOString()).toBe(new Date(NOW.getTime() + 60_000).toISOString());
 

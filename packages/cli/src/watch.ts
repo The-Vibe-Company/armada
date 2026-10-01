@@ -30,6 +30,7 @@ import { version } from "../package.json" with { type: "json" };
 import { renderEntries } from "./inbox.ts";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
+import { detectCoordinator } from "./presence.ts";
 import { pendingRelease, rememberRelease } from "./release.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
@@ -128,6 +129,7 @@ async function watchUntil(
     const report = await watchInbox(fleet, {
       project,
       coordinator: coordinatorHandle(io),
+      facts: detectCoordinator(io),
       silentAfterMinutes: config.policy.silentAfterMinutes,
       seen: before?.seen ?? [],
       now: io.now ?? (() => new Date()),

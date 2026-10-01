@@ -14,6 +14,7 @@ import type { AgentPhase, LabelPhase } from "./types.ts";
 // ------------------------------------------------------------------ records
 
 export interface ProjectInput {
+  owner?: string | null;
   slug: string;
   name: string;
   /** owner/name */
@@ -80,16 +81,59 @@ export interface WorkerProfile {
   why: string;
 }
 
+export interface CoordinatorFacts {
+  harness: "conductor-cloud" | "claude-code" | "codex" | "terminal";
+  handle: string | null;
+  model: string | null;
+  cliVersion: string | null;
+}
+
+export interface CoordinatorPresence extends Omit<CoordinatorFacts, "harness"> {
+  harness: CoordinatorFacts["harness"] | null;
+  startedAt: string;
+  seenAt: string;
+  inboxSeenAt: string | null;
+}
+
+export interface CoordinatorSeen {
+  project: string;
+  handle?: string | null;
+  cliVersion?: string | null;
+  facts?: CoordinatorFacts;
+  inboxRead?: boolean;
+  at: Date;
+}
+
+export interface InboxReadEvent {
+  id: number;
+  at: string;
+  handle: string | null;
+}
+
+export interface SessionRecord extends RuntimeHandle {
+  agent: string | null;
+  model: string | null;
+  effort: string | null;
+  lastReport: { at: string; message: string | null; phase: string | null } | null;
+}
+
 /**
  * `note`: an unsolicited coordinator message to a worker, stored already resolved as a record.
  * `answer-request` and `launch-request`: the owner's requests from the dashboard, which the
  * coordinator carries out (it delivers the answer, or launches the ticket) and then resolves.
  * `request` is an older generic kind, kept readable.
  */
-export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | "answer-request" | "launch-request";
+export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | RequestKind;
 export type InboxRecipient = "coordinator" | "worker";
 /** The inbox kinds the dashboard writes. */
-export type RequestKind = "answer-request" | "launch-request";
+export type RequestKind = "answer-request" | "launch-request" | "merge-request" | "release-request" | "plan-changes";
+export const REQUEST_KINDS: readonly RequestKind[] = [
+  "answer-request",
+  "launch-request",
+  "merge-request",
+  "release-request",
+  "plan-changes",
+];
 
 export interface InboxItem {
   id: number;
@@ -101,7 +145,7 @@ export interface InboxItem {
   body: string;
   createdAt: string;
   /** Set on dashboard requests: the question or plan an answer-request answers, the profile a launch-request asks for. */
-  request?: { question: number | null; profile: string | null };
+  request?: { question: number | null; profile: string | null; pr?: number | null };
 }
 
 /** An inbox item with its resolution: when it was resolved, and the answer or reason. */
@@ -112,7 +156,7 @@ export interface StoredInboxItem extends InboxItem {
 
 export interface NewRequest {
   project: string;
-  ticket: string;
+  ticket: string | null;
   kind: RequestKind;
   author: string;
   body: string;
@@ -120,6 +164,7 @@ export interface NewRequest {
   question: number | null;
   /** launch-request: the profile asked for. */
   profile: string | null;
+  pr?: number | null;
   at: Date;
 }
 
@@ -154,17 +199,12 @@ export interface FleetStore {
   lastEventTimes(project: string): Promise<Record<string, string>>;
   /** The newest event of every ticket of a project; with `since`, only tickets with an event since then. */
   latestEvents(project: string, opts?: { since?: Date }): Promise<Record<string, LatestEvent>>;
-  /**
-   * Records that the coordinator of a project is at work (it read its inbox),
-   * with the version of its CLI when it sent one (kept otherwise).
-   */
-  recordCoordinatorSeen(seen: {
-    project: string;
-    handle?: string | null;
-    cliVersion?: string | null;
-    at: Date;
-  }): Promise<void>;
+  /** Records that the coordinator of a project is at work (it read its inbox). */
+  recordCoordinatorSeen(seen: CoordinatorSeen): Promise<void>;
   lastCoordinatorSeen(project: string): Promise<string | null>;
+  getCoordinatorPresence(project: string): Promise<CoordinatorPresence | null>;
+  inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
+  listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
 
   /** Records the profile of the claim now holding a ticket; null forgets the one of an earlier claim. */
   saveWorkerProfile(w: { project: string; ticket: string; profile: WorkerProfile | null; at: Date }): Promise<void>;
@@ -476,7 +516,7 @@ export interface InboxEntry {
   /** Appeared while `armada inbox --wait` was waiting. */
   new: boolean;
   /** Dashboard requests: the question an answer-request answers, the profile a launch-request asks for. */
-  request?: { question: number | null; profile: string | null };
+  request?: InboxItem["request"];
   /** A `version` entry: the Armada release that is out. */
   version?: string;
 }
@@ -565,6 +605,7 @@ async function readInboxAndFlight(
 }
 
 export interface InboxQuery {
+  facts?: CoordinatorFacts;
   coordinator: string | null;
   silentAfterMinutes: number;
   /**
@@ -590,9 +631,6 @@ export interface InboxRead {
   warnings: string[];
 }
 
-/** The coordinator's presence is recorded at most this often: a waiting coordinator reads every few seconds. */
-export const PRESENCE_EVERY_MS = MIN;
-
 /**
  * Which entries an inbox holds: its items and silent workers, not their
  * wording (a silent worker's minutes change every minute, its entry does not),
@@ -605,7 +643,7 @@ export function inboxTag(items: Pick<InboxEntry, "id" | "ticket">[], inFlight: r
 
 /**
  * One read of the coordinator's inbox, run by Armada with its clock: records
- * the coordinator's presence for the dashboard (at most once a minute), then
+ * the coordinator's presence and inbox-read event for the dashboard, then
  * reads. Null when the entries are still those of `etag`: nothing to send.
  */
 export async function serveInbox(
@@ -619,9 +657,14 @@ export async function serveInbox(
   const warnings: string[] = [];
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
   try {
-    const seen = await store.lastCoordinatorSeen(project);
-    if (!seen || now.getTime() - Date.parse(seen) >= PRESENCE_EVERY_MS)
-      await store.recordCoordinatorSeen({ project, handle: q.coordinator, cliVersion, at: now });
+    await store.recordCoordinatorSeen({
+      project,
+      handle: q.coordinator,
+      facts: q.facts,
+      cliVersion,
+      inboxRead: true,
+      at: now,
+    });
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
@@ -642,6 +685,14 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  coordinator(facts: CoordinatorFacts): Promise<void>;
+  request(input: {
+    kind: "merge-request" | "release-request" | "plan-changes";
+    ticket?: string;
+    pr?: number;
+    question?: number;
+    text?: string;
+  }): Promise<number>;
   /** Registers the project, or updates its name, repository and root (`armada init`). */
   register(): Promise<void>;
   /** Time of the newest event of every ticket (`armada status`). */

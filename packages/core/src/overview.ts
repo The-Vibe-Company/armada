@@ -4,7 +4,13 @@
 // calls `buildOverview` and renders the result as is.
 import { newerRelease } from "./armada-api.ts";
 import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
-import type { InboxItem } from "./live.ts";
+import {
+  type CoordinatorPresence,
+  type InboxItem,
+  type InboxReadEvent,
+  REQUEST_KINDS,
+  type SessionRecord,
+} from "./live.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
 import type { AgentPhase } from "./types.ts";
 
@@ -86,6 +92,7 @@ export interface ProfileSummary {
 }
 
 export interface FleetRow extends InFlightTicket {
+  session: SessionRecord | null;
   project: string;
   /** The oldest open question of this ticket in the coordinator's inbox. */
   question: { id: number; body: string; at: string; author: string | null; answer: PendingAnswer | null } | null;
@@ -97,16 +104,27 @@ export interface FleetRow extends InFlightTicket {
 export type CoordinatorState = "active" | "idle" | "unknown";
 
 export interface ProjectOverview {
+  owner: string | null;
+  progress: { done: number; total: number } | null;
+  health: ProjectHealth | null;
+  pullRequests: StatusReport["pullRequests"];
+  requests: InboxItem[];
   slug: string;
   name: string;
   repository: string;
   programRoot: StatusReport["programRoot"] | null;
   /**
-   * Active when it read its inbox within the project's silence threshold.
+   * Active when a coordinator command ran within the project's silence threshold.
    * `cliVersion`: the CLI it ran at that read (null when unknown);
    * `updateAvailable`: a newer CLI is released than the one it runs.
    */
-  coordinator: { state: CoordinatorState; seenAt: string | null; cliVersion: string | null; updateAvailable: boolean };
+  coordinator: {
+    state: CoordinatorState;
+    seenAt: string | null;
+    cliVersion: string | null;
+    updateAvailable: boolean;
+    inboxReads: InboxReadEvent[];
+  } & Partial<Omit<CoordinatorPresence, "seenAt">>;
   inFlight: number;
   waiting: number;
   sources: StatusReport["sources"] | null;
@@ -121,6 +139,7 @@ export interface ProjectOverview {
 
 /** One project as the dashboard read it. */
 export interface ProjectReading {
+  owner?: string | null;
   slug: string;
   name: string;
   repository: string;
@@ -130,12 +149,28 @@ export interface ProjectReading {
   reading?: boolean;
   warnings?: string[];
   /** Null when the live data was not read. */
-  live: { inbox: InboxItem[]; coordinatorSeenAt: string | null; coordinatorCliVersion?: string | null } | null;
+  live: {
+    inbox: InboxItem[];
+    coordinatorSeenAt: string | null;
+    coordinatorCliVersion?: string | null;
+    coordinator?: CoordinatorPresence | null;
+    inboxReads?: InboxReadEvent[];
+    sessions?: SessionRecord[];
+  } | null;
   /** `[conductor.profiles]` of its armada.toml. */
   profiles?: Record<string, ConductorProfile>;
 }
 
+/**
+ * Dashboard contract: projects expose owner, leaf-ticket progress, health, open PR facts,
+ * pending requests and coordinator {harness, handle, model, cliVersion, startedAt,
+ * seenAt, inboxSeenAt, inboxReads}. `seenAt` is command activity, not an inbox read.
+ * `sessions` retains per-launch profile/agent/model/effort, claimedAt, releasedAt and
+ * lastReport; each row points to its active session. PR files/totals may be null for
+ * legacy snapshots; completeness flags identify capped lists. Missing facts are never inferred.
+ */
 export interface FleetOverview {
+  sessions: SessionRecord[];
   schemaVersion: typeof OVERVIEW_SCHEMA_VERSION;
   generatedAt: string;
   /** The live data: ok, unreachable (the view falls back to Linear and GitHub) or off (not configured). */
@@ -148,6 +183,31 @@ export interface FleetOverview {
 }
 
 const MIN = 60_000;
+export type ProjectHealth = "blocked" | "watch" | "on-track";
+
+export function projectHealth(input: {
+  tickets: Pick<InFlightTicket, "phase" | "silent">[];
+  prs: Pick<PrRefForHealth, "ci" | "mergeability" | "mergeable">[];
+  inbox: Pick<InboxItem, "createdAt">[];
+  coordinator: CoordinatorState;
+  coordinatorMinutes: number;
+  now: Date;
+}): ProjectHealth {
+  const overdue = input.inbox.some(
+    (item) => input.now.getTime() - Date.parse(item.createdAt) > input.coordinatorMinutes * MIN,
+  );
+  if (
+    input.tickets.some((ticket) => ticket.phase === "blocked") ||
+    input.prs.some(
+      (pr) => pr.ci === "failure" || pr.mergeability === "conflicting" || pr.mergeable === "CONFLICTING",
+    ) ||
+    (input.coordinator !== "active" && overdue)
+  )
+    return "blocked";
+  return overdue || input.tickets.some((ticket) => ticket.silent) ? "watch" : "on-track";
+}
+
+type PrRefForHealth = NonNullable<StatusReport["pullRequests"]>[number];
 const rank = (k: WaitingKind | null) => (k ? WAITING_KINDS.indexOf(k) : WAITING_KINDS.length);
 
 function laneWaiting(t: InFlightTicket): WaitingKind | null {
@@ -170,11 +230,13 @@ export function buildOverview(input: {
   const waiting: WaitingItem[] = [];
   const projects: ProjectOverview[] = [];
   const ready: ReadyTicket[] = [];
+  const sessions: SessionRecord[] = [];
 
   for (const p of input.projects) {
     const tickets = p.report?.inFlight ?? [];
     const byId = new Map(tickets.map((t) => [t.id, t]));
     const inbox = (p.live?.inbox ?? []).filter((i) => i.recipient === "coordinator");
+    sessions.push(...(p.live?.sessions ?? []));
     const questions = new Map<string, InboxItem>();
     for (const q of inbox)
       if (q.kind === "question" && q.ticket && !questions.has(q.ticket)) questions.set(q.ticket, q);
@@ -255,6 +317,7 @@ export function buildOverview(input: {
       const q = questions.get(t.id);
       rows.push({
         ...t,
+        session: p.live?.sessions?.find((session) => session.ticket === t.id && session.releasedAt === null) ?? null,
         project: p.slug,
         question: q
           ? { id: q.id, body: q.body, at: q.createdAt, author: q.author, answer: answers.get(q.id) ?? null }
@@ -266,19 +329,37 @@ export function buildOverview(input: {
 
     for (const f of p.report?.frontier ?? []) ready.push({ ...f, project: p.slug, launch: launches.get(f.id) ?? null });
 
-    const seenAt = p.live?.coordinatorSeenAt ?? null;
-    const cliVersion = p.live?.coordinatorCliVersion ?? null;
+    const seenAt = p.live?.coordinator?.seenAt ?? p.live?.coordinatorSeenAt ?? null;
+    const cliVersion = p.live?.coordinator?.cliVersion ?? p.live?.coordinatorCliVersion ?? null;
     const threshold = (p.report?.silentAfterMinutes ?? 15) * MIN;
+    const state: CoordinatorState =
+      seenAt === null ? "unknown" : now - Date.parse(seenAt) <= threshold ? "active" : "idle";
     projects.push({
+      owner: p.owner ?? null,
+      progress: p.report?.progress ?? null,
+      health: p.report
+        ? projectHealth({
+            tickets,
+            prs: p.report.pullRequests ?? [],
+            inbox,
+            coordinator: state,
+            coordinatorMinutes: p.report.coordinatorMinutes,
+            now: input.now,
+          })
+        : null,
+      pullRequests: p.report?.pullRequests ?? null,
+      requests: inbox.filter((item) => REQUEST_KINDS.includes(item.kind as (typeof REQUEST_KINDS)[number])),
       slug: p.slug,
       name: p.name,
       repository: p.repository,
       programRoot: p.report?.programRoot ?? null,
       coordinator: {
-        state: seenAt === null ? "unknown" : now - Date.parse(seenAt) <= threshold ? "active" : "idle",
+        ...p.live?.coordinator,
+        state,
         seenAt,
         cliVersion,
         updateAvailable: cliVersion !== null && newerRelease(cliVersion, input.latestCli) !== null,
+        inboxReads: p.live?.inboxReads ?? [],
       },
       inFlight: tickets.length,
       waiting: perTicket.size + projectWide,
@@ -304,6 +385,7 @@ export function buildOverview(input: {
       a.id.localeCompare(b.id, "en", { numeric: true }),
   );
   return {
+    sessions,
     schemaVersion: OVERVIEW_SCHEMA_VERSION,
     generatedAt: input.now.toISOString(),
     live: input.live,

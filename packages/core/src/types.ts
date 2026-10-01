@@ -22,6 +22,12 @@ export type LabelPhase = (typeof LABEL_PHASES)[number];
 export type AgentPhase = LabelPhase | "released" | "merged";
 
 export interface PullRequest {
+  files?: ChangedFile[] | null;
+  additions?: number | null;
+  deletions?: number | null;
+  filesComplete?: boolean;
+  checksComplete?: boolean;
+  mergeability?: "clean" | "behind" | "conflicting" | "unknown";
   url: string;
   number: number;
   /** owner/name */
@@ -38,6 +44,12 @@ export interface PullRequest {
   createdAt?: string;
   updatedAt?: string;
   mergedAt?: string | null;
+}
+
+export interface ChangedFile {
+  path: string;
+  additions: number;
+  deletions: number;
 }
 
 /** A tracker issue this issue is blocked by, with the state it had when read. */

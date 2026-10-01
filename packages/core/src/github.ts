@@ -49,6 +49,10 @@ type RawContext =
   | { __typename: "StatusContext"; context: string; state: string };
 
 export interface RawPull {
+  additions?: number;
+  deletions?: number;
+  mergeStateStatus?: string;
+  files?: { nodes: { path: string; additions: number; deletions: number }[]; pageInfo: { hasNextPage: boolean } };
   number: number;
   title: string;
   url: string;
@@ -61,7 +65,14 @@ export interface RawPull {
   updatedAt: string;
   mergedAt: string | null;
   commits: {
-    nodes: { commit: { statusCheckRollup: { state: string; contexts: { nodes: RawContext[] } } | null } }[];
+    nodes: {
+      commit: {
+        statusCheckRollup: {
+          state: string;
+          contexts: { nodes: RawContext[]; pageInfo?: { hasNextPage: boolean } };
+        } | null;
+      };
+    }[];
   };
 }
 
@@ -73,13 +84,30 @@ export function normalizePull(raw: RawPull, repo: string): PullRequest {
       : { name: c.context, state: checkState("", c.state) },
   );
   return {
+    files: raw.files?.nodes ?? null,
+    additions: raw.additions ?? null,
+    deletions: raw.deletions ?? null,
+    filesComplete: !!raw.files && !raw.files.pageInfo.hasNextPage,
+    checksComplete: !status || status.contexts.pageInfo?.hasNextPage === false,
+    mergeability:
+      raw.mergeable === "CONFLICTING" || raw.mergeStateStatus === "DIRTY"
+        ? "conflicting"
+        : raw.mergeStateStatus === "BEHIND"
+          ? "behind"
+          : raw.mergeable === "MERGEABLE"
+            ? "clean"
+            : "unknown",
     url: raw.url,
     number: raw.number,
     repo,
     title: raw.title,
     state: raw.state === "OPEN" ? "open" : raw.state === "MERGED" ? "merged" : "closed",
     draft: raw.isDraft,
-    ci: checks ? rollup(checks.map((c) => c.state)) : "none",
+    ci: status?.contexts.pageInfo?.hasNextPage
+      ? checkState("", status.state)
+      : checks
+        ? rollup(checks.map((c) => c.state))
+        : "none",
     checks: checks ?? [],
     mergeable: raw.mergeable,
     headRef: raw.headRefName,
@@ -92,8 +120,9 @@ export function normalizePull(raw: RawPull, repo: string): PullRequest {
 
 const PULL_FIELDS = /* GraphQL */ `
   fragment P on PullRequest {
-    number title url state isDraft mergeable headRefName headRefOid createdAt updatedAt mergedAt
-    commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 50) { nodes {
+    number title url state isDraft mergeable mergeStateStatus headRefName headRefOid createdAt updatedAt mergedAt additions deletions
+    files(first: 100) { nodes { path additions deletions } pageInfo { hasNextPage } }
+    commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 50) { pageInfo { hasNextPage } nodes {
       __typename
       ... on CheckRun { name status conclusion }
       ... on StatusContext { context state }
@@ -172,9 +201,17 @@ export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
     repo: opts.repository,
     fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
     prs: [...repo.open.nodes, ...repo.closed.nodes].map((p) => normalizePull(p, opts.repository)),
-    warnings: repo.open.pageInfo?.hasNextPage
-      ? ["more than 100 open pull requests; the least recently updated are ignored"]
-      : [],
+    warnings: [
+      ...(repo.open.pageInfo?.hasNextPage
+        ? ["more than 100 open pull requests; the least recently updated are ignored"]
+        : []),
+      ...repo.open.nodes.flatMap((pr) => [
+        ...(pr.files?.pageInfo.hasNextPage ? [`PR #${pr.number}: changed files are incomplete (first 100)`] : []),
+        ...(pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts.pageInfo?.hasNextPage
+          ? [`PR #${pr.number}: checks are incomplete (first 50)`]
+          : []),
+      ]),
+    ],
   };
 }
 

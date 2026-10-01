@@ -7,6 +7,7 @@
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
   type ClaimRecord,
@@ -31,6 +32,7 @@ import {
   type WorkerProfile,
 } from "./live.ts";
 import { isLabelPhase } from "./phases.ts";
+import { RequestRefusal, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
 import type { LabelPhase } from "./types.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
@@ -40,6 +42,8 @@ export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release"] as const;
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
   "register",
+  "coordinator",
+  "request",
   "events/latest",
   "inbox",
   "inbox/item",
@@ -57,7 +61,7 @@ export type FleetOp = (typeof FLEET_OPS)[number];
 export const LEASE_TTL_MAX_MS = 60 * 60_000;
 
 /** Who calls: a terminal of the project's organization, or a worker session bound to one ticket. */
-export type FleetCaller = { kind: "organization" } | { kind: "worker"; ticket: string };
+export type FleetCaller = { kind: "organization"; author?: string | null } | { kind: "worker"; ticket: string };
 
 export interface FleetAnswer {
   status: number;
@@ -195,7 +199,7 @@ const CLI_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][\w.-]{1,40})?$/;
 export async function serveFleet(
   store: FleetStore,
   req: { op: string; project: ProjectInput; caller: FleetCaller; input: unknown },
-  deps: ServeFleetDeps,
+  deps: ServeFleetDeps & { openPrs?: readonly number[] },
 ): Promise<FleetAnswer> {
   const { op, project, caller } = req;
   if (!isFleetOp(op))
@@ -251,7 +255,29 @@ export async function serveFleet(
         case "release":
           return recordRelease(store, slug, { ticket: ticketOf(b), reason: text(b, "reason", BODY_MAX) }, at);
         case "register":
-          return store.upsertProject(project, at);
+          return store.upsertProject(
+            { ...project, owner: caller.kind === "organization" ? (caller.author ?? null) : null },
+            at,
+          );
+        case "coordinator":
+          return store.recordCoordinatorSeen({ project: slug, facts: coordinatorFacts(b), inboxRead: false, at });
+        case "request": {
+          const common = {
+            project: slug,
+            author: caller.kind === "organization" ? (caller.author ?? "coordinator") : "",
+            now: at,
+          };
+          if (b.kind === "merge-request")
+            return requestMerge(store, { ...common, pr: idOf(b, "pr"), openPrs: deps.openPrs ?? [] });
+          if (b.kind === "release-request") return requestRelease(store, { ...common, ticket: ticketOf(b) });
+          if (b.kind === "plan-changes")
+            return requestPlanChanges(store, {
+              ...common,
+              question: idOf(b, "question"),
+              text: text(b, "text", BODY_MAX),
+            });
+          throw new Invalid("unknown request kind");
+        }
         case "events/latest":
           return store.lastEventTimes(slug);
         case "inbox": {
@@ -263,6 +289,7 @@ export async function serveFleet(
             slug,
             {
               coordinator: optText(b, "coordinator", LINE_MAX),
+              ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
               silentAfterMinutes: silent,
               etag: optText(b, "etag", 64),
             },
@@ -334,6 +361,7 @@ export async function serveFleet(
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
+    if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
     if (err instanceof Invalid)
       return refuse(400, `fleet ${op}: ${err.message}`, "update the CLI: npm install -g @the-vibe-company/armada");
     throw err;
@@ -354,6 +382,8 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
   const call = async <T>(op: FleetOp, input: object): Promise<T> =>
     (await o.api.fleet(o.signIn, op, { project: o.project, input }, CALL_TIMEOUT_MS)) as T;
   return {
+    coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
+    request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
     claim: (c: ClaimRecord) => call<InboxItem[]>("claim", c),
@@ -370,5 +400,16 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     acquireLease: (l) => call<LeaseResult>("lease/acquire", l),
     renewLease: (l) => call<boolean>("lease/renew", l),
     releaseLease: (l) => call<null>("lease/release", l).then(() => undefined),
+  };
+}
+
+function coordinatorFacts(input: Record<string, unknown>): CoordinatorFacts {
+  if (!["conductor-cloud", "claude-code", "codex", "terminal"].includes(String(input.harness)))
+    throw new Invalid("unknown coordinator harness");
+  return {
+    harness: input.harness as CoordinatorFacts["harness"],
+    handle: optText(input, "handle", LINE_MAX),
+    model: optText(input, "model", LINE_MAX),
+    cliVersion: optText(input, "cliVersion", 80),
   };
 }

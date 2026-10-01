@@ -14,6 +14,7 @@ import {
 } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
+import { detectCoordinator } from "./presence.ts";
 import { coordinatorHandle, rearmFor, remember, shown } from "./watch.ts";
 import { currentTicket, liveFleet, readMessage, type WorkerArgs, withContext } from "./worker.ts";
 
@@ -67,8 +68,9 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
       e.id === null ? e.kind : `#${e.id} ${e.kind}`,
       e.ticket,
       e.author && `from ${e.author}`,
-      e.request?.question && `answers #${e.request.question}`,
+      e.request?.question && `${e.kind === "plan-changes" ? "amends" : "answers"} #${e.request.question}`,
       e.request?.profile && `profile ${e.request.profile}`,
+      e.request?.pr && `PR #${e.request.pr}`,
       e.createdAt,
     ]
       .filter(Boolean)
@@ -79,9 +81,13 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     out.push(
       'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
     );
-  if (items.some((e) => e.kind === "answer-request" || e.kind === "launch-request"))
+  if (
+    items.some((e) =>
+      ["answer-request", "launch-request", "merge-request", "release-request", "plan-changes"].includes(e.kind),
+    )
+  )
     out.push(
-      'Dashboard requests: deliver an answer-request, then armada answer <id> "<answer>"; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>".',
+      'Dashboard requests: deliver an answer-request, then armada answer <id> "<answer>"; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>". Handle or decline merge-request, release-request and plan-changes, then resolve them with armada answer <id> "<result>". Plan changes are not an approval.',
     );
   return out;
 }
@@ -107,6 +113,7 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   const report = await checkInbox(fleet, {
     project: config.project.slug,
     coordinator: coordinatorHandle(io),
+    facts: detectCoordinator(io),
     silentAfterMinutes: config.policy.silentAfterMinutes,
     now: io.now ?? (() => new Date()),
     ...(wait

@@ -27,6 +27,8 @@ export type Spawn = (
 
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
+  machineName?: string;
+  ttyName?: string | null;
   cwd: string;
   env: Record<string, string | undefined>;
   readFile: (path: string) => Promise<string | null>;

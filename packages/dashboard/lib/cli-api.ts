@@ -33,6 +33,7 @@ import { type Holder, releaseCredentials, releaseWorkerSecrets } from "./broker"
 import { LATEST_CLI_VERSION } from "./cli-version";
 import type { Database, Queryable } from "./db";
 import { fleetStore, holdProject, projectsOf } from "./fleet-store";
+import { dbSnapshots, memorySnapshots } from "./snapshots";
 import {
   checkWorkerSecret,
   deleteSecret,
@@ -491,7 +492,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   const project = parseProject(body.project);
   if (!project)
     return refuse(400, "a fleet request names its project: slug, name, repository and program root", UPDATE_CLI);
-  let caller: FleetCaller = { kind: "organization" };
+  let caller: FleetCaller = { kind: "organization", author: identity.user?.name ?? null };
   if (identity.via === "worker") {
     const w = identity.launch;
     if (!w) return workerRefusal(null);
@@ -510,10 +511,18 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       `the project ${project.slug} belongs to another organization`,
       `another slug in armada.toml ([project] slug), or sign in to the organization of ${project.slug}`,
     );
+  let openPrs: number[] | undefined;
+  if (op === "request" && caller.kind === "organization") {
+    const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
+      project.slug,
+    )?.snapshot;
+    if (snapshot?.config.project.slug === project.slug && snapshot.config.github.repository === project.repository)
+      openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
+  }
   const answer = await serveFleet(
     fleetStore(a.client),
     { op, project, caller, input: body.input },
-    { now, cliVersion: request.headers.get(CLI_VERSION_HEADER) },
+    { now, openPrs, cliVersion: request.headers.get(CLI_VERSION_HEADER) },
   );
   // An unchanged inbox: nothing to send.
   if (answer.status === 304) return new Response(null, { status: 304, headers: NO_STORE });

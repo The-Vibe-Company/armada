@@ -13,13 +13,16 @@ import {
   type ArmadaConfig,
   buildOverview,
   buildStatus,
+  type CoordinatorPresence,
   type FleetOverview,
   type InboxItem,
+  type InboxReadEvent,
   type LatestEvent,
   type ProjectConfigReading,
   type ProjectReading,
   type ProjectRecord,
   type RuntimeHandle,
+  type SessionRecord,
   type SourcesRefresh,
   type StatusReport,
   type StatusSources,
@@ -247,6 +250,9 @@ function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: Snap
 }
 
 interface LiveProject {
+  coordinator: CoordinatorPresence | null;
+  inboxReads: InboxReadEvent[];
+  sessions: SessionRecord[];
   events: Record<string, LatestEvent>;
   handles: RuntimeHandle[];
   inbox: InboxItem[];
@@ -256,18 +262,23 @@ interface LiveProject {
 }
 
 async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
-  const [events, handles, inbox, presence] = await Promise.all([
+  const [events, handles, inbox, coordinator, inboxReads, sessions] = await Promise.all([
     store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
     store.openRuntimeHandles(project),
     store.openInboxItems({ project, recipient: "coordinator" }),
-    store.coordinatorPresence(project),
+    store.getCoordinatorPresence(project),
+    store.inboxReads(project, now),
+    store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
   ]);
   return {
     events,
     handles,
     inbox,
-    coordinatorSeenAt: presence?.seenAt ?? null,
-    coordinatorCliVersion: presence?.cliVersion ?? null,
+    coordinatorSeenAt: coordinator?.seenAt ?? null,
+    coordinatorCliVersion: coordinator?.cliVersion ?? null,
+    coordinator,
+    inboxReads,
+    sessions,
   };
 }
 
@@ -401,7 +412,7 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
   // registry agrees: a repository naming another project's slug must not show
   // that project's inbox and events, which may belong to another organization.
   const liveSlug = (p: ProjectRef, snap: Snapshot | null | undefined) =>
-    snap && (!p.slug || p.slug === snap.config.project.slug) ? snap.config.project.slug : null;
+    snap ? (!p.slug || p.slug === snap.config.project.slug ? snap.config.project.slug : null) : (p.slug ?? null);
 
   // Live data for every project, or for none: the database failing midway must
   // not show some rows live under the "unreachable" banner.
@@ -422,7 +433,13 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
 
   const readings = entries.map(({ p, key, entry, refreshing }): ProjectReading => {
     const snap = entry?.snapshot;
-    const base = { slug: snap?.config.project.slug ?? p.slug ?? key, name: snap?.config.project.name ?? p.name ?? key };
+    const base = {
+      slug: snap?.config.project.slug ?? p.slug ?? key,
+      name: snap?.config.project.name ?? p.name ?? key,
+      owner: p.owner ?? null,
+    };
+    const slug = liveSlug(p, snap);
+    const l = slug ? (liveData.get(slug) ?? null) : null;
     if (!snap) {
       // Never read yet: the first reading is under way, unless the last attempt failed.
       const error = entry?.error ?? null;
@@ -432,11 +449,9 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
         report: null,
         error: error ?? (refreshing ? null : "not read"),
         reading: error === null && refreshing,
-        live: null,
+        live: l,
       };
     }
-    const slug = liveSlug(p, snap);
-    const l = slug ? (liveData.get(slug) ?? null) : null;
     const warnings = [
       ...(snap.configWarning ? [snap.configWarning] : []),
       ...(entry?.error ? [`Linear or GitHub could not be read again (${entry.error}); showing the last reading`] : []),
@@ -448,7 +463,14 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
       error: null,
       warnings,
       live: l
-        ? { inbox: l.inbox, coordinatorSeenAt: l.coordinatorSeenAt, coordinatorCliVersion: l.coordinatorCliVersion }
+        ? {
+            inbox: l.inbox,
+            coordinatorSeenAt: l.coordinatorSeenAt,
+            coordinatorCliVersion: l.coordinatorCliVersion,
+            coordinator: l.coordinator,
+            inboxReads: l.inboxReads,
+            sessions: l.sessions,
+          }
         : null,
       profiles: snap.config.conductor.profiles,
     };
