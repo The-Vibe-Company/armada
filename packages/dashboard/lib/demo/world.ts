@@ -1,6 +1,7 @@
-// A synthetic fleet for local trials and screenshots: two invented projects,
-// their Linear programs and pull requests, and the live activity to seed.
-// Times are relative to `now`, so the view always looks current.
+// A synthetic fleet for local trials and screenshots: the dashboard v4
+// mockup's Acme world (design/dashboard-v4), three projects with ten sessions
+// in every state, their Linear programs and pull requests, and the live
+// activity to seed. Times are relative to `now`, so the view always looks current.
 import type {
   CiState,
   Comment,
@@ -14,9 +15,87 @@ import type {
 } from "@armada/core/read";
 
 export const DEMO_PROJECTS: ProjectInput[] = [
-  { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GAD-1" },
   { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "WID-1" },
+  { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GAD-1" },
+  { slug: "armada", name: "Armada", repository: "The-Vibe-Company/armada", programRoot: "THE-812" },
 ];
+
+/**
+ * What THE-865 records about a project and its coordinator, in the shapes its
+ * ticket describes; the overview does not carry them yet. Minutes are minutes ago.
+ */
+export interface DemoProjectFacts {
+  /** Who registered the project. */
+  owner: string;
+  /** Tickets done under the root. */
+  done: number;
+  coordinator: {
+    harness: "Conductor Cloud" | "Claude Code" | "Codex" | "terminal";
+    /** The workspace/session for Conductor, the machine and tty for a local run. */
+    where: string;
+    profile: string;
+    model: string | null;
+    /** First command after 30 min of silence. */
+    since: number;
+    /** Each inbox read, every 15 minutes since it started, the last one `seen` minutes ago. */
+    seen: number;
+  };
+}
+
+export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
+  widgets: {
+    owner: "Léa Martin",
+    done: 14,
+    coordinator: {
+      harness: "Conductor Cloud",
+      where: "ws-0c01/coord",
+      profile: "opus",
+      model: "opus-5-5-1m",
+      since: 420,
+      seen: 2,
+    },
+  },
+  gadgets: {
+    owner: "Hugo Bernard",
+    done: 6,
+    coordinator: {
+      harness: "Claude Code",
+      where: "local · tty s004",
+      profile: "opus",
+      model: "opus-5-5-1m",
+      since: 300,
+      seen: 24,
+    },
+  },
+  armada: {
+    owner: "Camille Roux",
+    done: 31,
+    coordinator: {
+      harness: "Codex",
+      where: "local · tty s011",
+      profile: "codex",
+      model: "gpt-6.1-sol",
+      since: 190,
+      seen: 1,
+    },
+  },
+};
+
+/** The minutes ago of a coordinator's inbox reads, newest first: one every 15 minutes since it started. */
+export function demoInboxReads(project: string): number[] {
+  const c = DEMO_PROJECT_FACTS[project]?.coordinator;
+  if (!c) return [];
+  const reads: number[] = [];
+  for (let m = c.seen; m < c.since; m += 15) reads.push(m);
+  return reads;
+}
+
+/** A changed file of a pull request, as THE-865's forge read gives it. */
+export interface DemoFile {
+  path: string;
+  additions: number;
+  deletions: number;
+}
 
 interface DemoTicket {
   id: string;
@@ -26,13 +105,18 @@ interface DemoTicket {
   runtime: string;
   agent: string;
   handle: string;
+  /** The Conductor profile of armada.toml's template: opus, codex or debug. */
+  profile: "opus" | "codex" | "debug";
   /** Minutes ago. */
   claimed: number;
   phaseSince: number;
   lastReport: number;
   summary: string;
+  files: DemoFile[];
   pr?: { number: number; ci: CiState; mergeable?: "MERGEABLE" | "CONFLICTING"; opened: number };
 }
+
+const f = (path: string, additions: number, deletions: number): DemoFile => ({ path, additions, deletions });
 
 const TICKETS: DemoTicket[] = [
   {
@@ -43,10 +127,17 @@ const TICKETS: DemoTicket[] = [
     runtime: "Conductor",
     agent: "Worker A",
     handle: "ws-4f2a/ses-91",
+    profile: "opus",
     claimed: 95,
     phaseSince: 12,
     lastReport: 12,
     summary: "Asked how long a sign-in link stays valid",
+    files: [
+      f("src/auth/magic-link.ts", 142, 0),
+      f("src/auth/routes.ts", 38, 6),
+      f("src/mail/templates/sign-in.tsx", 64, 0),
+      f("test/auth/magic-link.test.ts", 97, 0),
+    ],
   },
   {
     id: "WID-18",
@@ -56,10 +147,16 @@ const TICKETS: DemoTicket[] = [
     runtime: "Claude Code",
     agent: "Worker B",
     handle: "ws-77c0/ses-12",
+    profile: "opus",
     claimed: 210,
     phaseSince: 6,
     lastReport: 6,
     summary: "Handed back: CI green on the final head",
+    files: [
+      f("src/settings/theme.css", 88, 12),
+      f("src/settings/ThemeToggle.tsx", 54, 0),
+      f("src/settings/page.tsx", 9, 3),
+    ],
     pr: { number: 44, ci: "success", opened: 70 },
   },
   {
@@ -70,10 +167,16 @@ const TICKETS: DemoTicket[] = [
     runtime: "Conductor",
     agent: "Worker C",
     handle: "ws-1b9e/ses-40",
+    profile: "opus",
     claimed: 160,
     phaseSince: 38,
     lastReport: 4,
     summary: "Fixing the rounding test that fails in CI",
+    files: [
+      f("src/orders/total.ts", 22, 9),
+      f("src/orders/OrderPage.tsx", 31, 4),
+      f("test/orders/total.test.ts", 40, 2),
+    ],
     pr: { number: 41, ci: "failure", opened: 38 },
   },
   {
@@ -84,10 +187,16 @@ const TICKETS: DemoTicket[] = [
     runtime: "Claude Code",
     agent: "Worker D",
     handle: "ws-c3d1/ses-08",
+    profile: "opus",
     claimed: 75,
     phaseSince: 52,
     lastReport: 3,
     summary: "Streaming rows instead of building the file in memory",
+    files: [
+      f("src/reports/export-csv.ts", 118, 0),
+      f("src/reports/routes.ts", 14, 1),
+      f("test/reports/export-csv.test.ts", 76, 0),
+    ],
   },
   {
     id: "WID-17",
@@ -97,10 +206,12 @@ const TICKETS: DemoTicket[] = [
     runtime: "Codex",
     agent: "Worker E",
     handle: "ws-90aa/ses-33",
+    profile: "codex",
     claimed: 130,
     phaseSince: 100,
     lastReport: 42,
     summary: "Backoff schedule written, wiring the queue",
+    files: [f("src/webhooks/retry.ts", 67, 0), f("src/webhooks/queue.ts", 21, 8)],
   },
   {
     id: "GAD-5",
@@ -110,10 +221,12 @@ const TICKETS: DemoTicket[] = [
     runtime: "Conductor",
     agent: "Worker F",
     handle: "ws-5e61/ses-02",
+    profile: "codex",
     claimed: 240,
     phaseSince: 25,
     lastReport: 2,
     summary: "Rebasing on main after the catalogue change",
+    files: [f("src/search/query.ts", 45, 61), f("src/search/index.ts", 12, 3), f("src/catalogue/schema.sql", 4, 1)],
     pr: { number: 12, ci: "pending", mergeable: "CONFLICTING", opened: 25 },
   },
   {
@@ -124,10 +237,12 @@ const TICKETS: DemoTicket[] = [
     runtime: "Claude Code",
     agent: "Worker G",
     handle: "ws-d810/ses-17",
+    profile: "opus",
     claimed: 44,
     phaseSince: 18,
     lastReport: 18,
     summary: "Plan posted: parse, validate, then import in one transaction",
+    files: [f("docs/plans/gad-3.md", 48, 0)],
   },
   {
     id: "GAD-6",
@@ -137,12 +252,59 @@ const TICKETS: DemoTicket[] = [
     runtime: "Codex",
     agent: "Worker H",
     handle: "ws-2c47/ses-55",
+    profile: "codex",
     claimed: 6,
     phaseSince: 6,
     lastReport: 4,
     summary: "Reading the spec and the mailer code",
+    files: [],
+  },
+  {
+    id: "THE-862",
+    project: "armada",
+    title: "Add a local Codex harness adapter",
+    phase: "implementing",
+    runtime: "Conductor",
+    agent: "Worker I",
+    handle: "ws-a1c4/ses-03",
+    profile: "opus",
+    claimed: 58,
+    phaseSince: 31,
+    lastReport: 1,
+    summary: "Mapping Codex session events onto armada report",
+    files: [
+      f("packages/core/src/harness/codex-local.ts", 156, 0),
+      f("packages/core/src/harness/index.ts", 8, 2),
+      f("packages/core/test/codex-local.test.ts", 88, 0),
+    ],
+  },
+  {
+    id: "THE-858",
+    project: "armada",
+    title: "Show the harness on every session",
+    phase: "ready-to-merge",
+    runtime: "Conductor",
+    agent: "Worker J",
+    handle: "ws-b20e/ses-77",
+    profile: "opus",
+    claimed: 180,
+    phaseSince: 9,
+    lastReport: 9,
+    summary: "Handed back: PR #317 green, head 7c1e0a4",
+    files: [f("packages/dashboard/components/Fleet.tsx", 36, 4), f("packages/core/src/live.ts", 19, 2)],
+    pr: { number: 317, ci: "success", opened: 52 },
   },
 ];
+
+/** The model and effort each profile of armada.toml's template runs. */
+export const DEMO_PROFILES = {
+  opus: { agent: "claude", model: "opus-5-5-1m", effort: "high" },
+  codex: { agent: "codex", model: "gpt-6.1-sol", effort: "high" },
+  debug: { agent: "codex", model: "gpt-6.1-sol", effort: "xhigh" },
+} as const;
+
+/** The changed files of a demo ticket's work, for THE-865's per-PR facts. */
+export const demoFiles = (ticket: string): DemoFile[] => TICKETS.find((t) => t.id === ticket)?.files ?? [];
 
 /** Tickets ready to start: on the frontier, their labels routed by the armada.toml template (web, api, Bug). */
 const READY: { id: string; project: string; title: string; labels: string[]; blockedBy?: string }[] = [
@@ -168,6 +330,8 @@ const READY: { id: string; project: string; title: string; labels: string[]; blo
     blockedBy: "WID-14",
   },
   { id: "GAD-8", project: "gadgets", title: "Filter the catalogue by size", labels: ["ready-for-agent", "web"] },
+  { id: "THE-864", project: "armada", title: "Spike a boat.dev harness", labels: ["ready-for-agent"] },
+  { id: "THE-866", project: "armada", title: "Filter the fleet by harness", labels: ["ready-for-agent", "web"] },
 ];
 
 export interface DemoInbox {
@@ -190,17 +354,35 @@ export const DEMO_INBOX: DemoInbox[] = [
     ago: 12,
   },
   {
+    project: "gadgets",
+    ticket: "GAD-3",
+    kind: "plan",
+    author: "Worker G",
+    body: "Parse the sheet, validate every row, then import in one transaction.\nRows that fail validation are listed back to the user; nothing is written until all pass.",
+    ago: 18,
+  },
+  {
     project: "widgets",
     ticket: "WID-18",
     kind: "hand-back",
     author: "Worker B",
-    body: "PR #44 ready: head a3f9c2e, CI green",
+    body: "PR #44 is ready: head a3f9c2e, CI green.",
     ago: 6,
+  },
+  {
+    project: "armada",
+    ticket: "THE-858",
+    kind: "hand-back",
+    author: "Worker J",
+    body: "PR #317 is ready: head 7c1e0a4, CI green.",
+    ago: 9,
   },
 ];
 
 /** Minutes ago the coordinator of each project last read its inbox; absent = never. */
-export const DEMO_COORDINATOR_SEEN: Record<string, number> = { widgets: 2 };
+export const DEMO_COORDINATOR_SEEN: Record<string, number> = Object.fromEntries(
+  Object.entries(DEMO_PROJECT_FACTS).map(([slug, p]) => [slug, p.coordinator.seen]),
+);
 
 export type Scenario = "fleet" | "empty";
 
@@ -273,13 +455,18 @@ export function demoSnapshot(
       parentId: project.programRoot,
       statusType: "started",
     }),
-    issue(`${prefix}-4`, {
-      title: "Keep the cart when a session expires",
-      parentId: specId,
-      statusType: "completed",
-      completedAt: ago(now, 600),
-    }),
   ];
+  // The tickets already done under the root, so the project's progress reads as in the mockup.
+  const done = scenario === "fleet" ? (DEMO_PROJECT_FACTS[project.slug]?.done ?? 1) : 1;
+  for (let k = 0; k < done; k++)
+    issues.push(
+      issue(`${prefix}-${100 + k}`, {
+        title: k === 0 ? "Keep the cart when a session expires" : `Shipped change ${k + 1}`,
+        parentId: specId,
+        statusType: "completed",
+        completedAt: ago(now, 600 + k * 90),
+      }),
+    );
   if (scenario === "fleet")
     for (const r of READY.filter((t) => t.project === project.slug))
       issues.push(
@@ -360,6 +547,7 @@ export function demoEvents(scenario: Scenario) {
     ticket: t.id,
     runtime: t.runtime,
     handle: t.handle,
+    profile: t.profile,
     claimed: t.claimed,
     phase: t.phase,
     summary: t.summary,
