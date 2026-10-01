@@ -1,7 +1,7 @@
 import { SpeedInsights } from "@vercel/speed-insights/next";
+import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { Metadata, Viewport } from "next";
-import { GeistMono } from "./fonts";
 import "./globals.css";
 
 // The browser's chrome takes the dashboard's background (`--bg` in globals.css).
