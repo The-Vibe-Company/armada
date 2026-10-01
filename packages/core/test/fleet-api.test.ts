@@ -26,12 +26,12 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
-  test("a worker session claims, reports, asks and releases its own ticket, and nothing else", async () => {
+  test("a worker session claims, reports, asks, validates and releases its own ticket, and nothing else", async () => {
     const { fleet, store } = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7" } });
     expect(await fleet.claim(claim("DEMO-7"))).toEqual([]);
     expect(await fleet.ask({ ticket: "DEMO-7", body: "Which store?" })).toBe(1);
 
-    const scope = "a worker session only claims, reports, asks and releases its own ticket (DEMO-7)";
+    const scope = "a worker session only claims, reports, asks, validates and releases its own ticket (DEMO-7)";
     expect(await refused(fleet.claim(claim("DEMO-8")))).toEqual([
       403,
       `Armada refused: ${scope}, not DEMO-8`,

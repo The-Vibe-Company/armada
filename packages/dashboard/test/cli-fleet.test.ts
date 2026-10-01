@@ -284,7 +284,7 @@ describe("the fleet through the Armada API", () => {
     const w = fleetOf(signIn);
     expect(await refusal(w.claim(claim("WID-9", "ws-9")))).toEqual([
       403,
-      "Armada refused: a worker session only claims, reports, asks and releases its own ticket (WID-8), not WID-9",
+      "Armada refused: a worker session only claims, reports, asks, validates and releases its own ticket (WID-8), not WID-9",
     ]);
     expect((await refusal(w.inbox(read)))[0]).toBe(403);
     expect((await refusal(w.acquireLease({ name: "merge", holder: "w", ttlMs: 60_000 })))[0]).toBe(403);

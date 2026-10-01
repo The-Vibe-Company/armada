@@ -55,7 +55,13 @@ export function hideLaunchToken(b: Brief): Brief {
 
 export function renderBrief(b: Brief): string {
   const p = b.profile;
-  const promptCommand = `armada brief ${b.ticket.id}${p && (b.routing?.source === "requested" || b.routing?.reason) ? ` --profile ${shellWord(p.name)}${b.routing?.reason ? ` --reason ${shellWord(b.routing.reason)}` : ""}` : ""} --prompt`;
+  const v = b.validation;
+  const validationFlags = v
+    ? v.rules.length
+      ? ` --validation ${v.rules.map((r) => r.index).join(",")}${v.reason ? ` --validation-reason ${shellWord(v.reason)}` : ""}`
+      : " --validation none"
+    : "";
+  const promptCommand = `armada brief ${b.ticket.id}${p && (b.routing?.source === "requested" || b.routing?.reason) ? ` --profile ${shellWord(p.name)}${b.routing?.reason ? ` --reason ${shellWord(b.routing.reason)}` : ""}` : ""}${validationFlags} --prompt`;
   const width = Math.max(...b.environment.map((v) => v.name.length + (v.value ? v.value.length + 1 : 0)));
   const out = [
     `Brief for ${b.ticket.id} — ${b.ticket.title} (${b.ticket.status})`,
@@ -65,6 +71,11 @@ export function renderBrief(b: Brief): string {
     `Profile:     ${p ? `${p.name}: agent ${p.agent}, model ${p.model}, effort ${p.effort}${b.runtime === "claude-code" ? " (not applied by the Agent tool)" : ""}${p.fastMode ? ", fast mode" : ""}` : "none declared in armada.toml"}`,
     ...(b.routing ? [`Chosen by:   ${b.routing.why}`] : []),
     `Plans:       ${b.plans.rule === "pre-approved" ? "pre-approved" : "wait for approval"} (${b.plans.why})`,
+    ...(v
+      ? [
+          `Validation:  ${v.rules.length ? `the owner validates: ${v.rules.map((r) => `rule ${r.index} (${r.when})`).join(", ")}${v.reason ? ` — ${v.reason}` : ""}` : "no [[policy.validation]] rule applies"}`,
+        ]
+      : []),
     ...(b.conventions ? [`Conventions: ${b.conventions.path} (under "Project conventions" in the prompt)`] : []),
     `Repository:  ${b.repository.url}`,
     `Branch:      ${b.ticket.branch ?? "none suggested by Linear"} (the worker renames its workspace branch to it)`,
@@ -134,6 +145,19 @@ function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
   };
 }
 
+/** The coordinator's brief command as typed, without its validation flags: what a refusal completes for them to copy. */
+function briefCommand(ticket: string, a: BriefArgs): string {
+  const o = a.options;
+  return [
+    `armada brief ${ticket}`,
+    o.profile ? ` --profile ${shellWord(o.profile)}` : "",
+    o.reason ? ` --reason ${shellWord(o.reason)}` : "",
+    o.prompt === "true" ? " --prompt" : "",
+    o["profile-line"] === "true" ? " --profile-line" : "",
+    a.json ? " --json" : "",
+  ].join("");
+}
+
 export async function brief(
   io: Io,
   config: ArmadaConfig,
@@ -180,11 +204,16 @@ export async function brief(
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
       conventions,
+      validation: {
+        requested: a.options.validation ?? null,
+        reason: a.options["validation-reason"] ?? null,
+        command: briefCommand(ticket.toUpperCase(), a),
+      },
       ...(io.fetch ? { fetch: io.fetch } : {}),
       ...(io.now ? { now: io.now } : {}),
     });
   } catch (err) {
-    if (err instanceof BriefError) throw new UsageError(err.message);
+    if (err instanceof BriefError) throw new UsageError(err.message, err.next ?? undefined);
     throw err;
   }
   if ("selection" in b) {

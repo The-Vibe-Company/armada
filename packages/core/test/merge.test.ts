@@ -343,7 +343,7 @@ describe("armada merge", () => {
     expect(t.prs.map((p) => p.url)).toEqual(["https://github.com/acme/widgets/pull/9"]);
     expect(t.comments[0]?.status).toEqual({
       phase: "merged",
-      summary: `PR #9 squash-merged into main as ${SQUASH}, head ${HEAD}`,
+      summary: `PR #9 squash-merged into main as ${SQUASH}, head ${HEAD}; merged on its own (no merge rule)`,
     });
     expect(out.workers).toEqual([
       { ticket: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code", handle: "ws-2" },
@@ -468,7 +468,7 @@ describe("armada merge", () => {
 
     const out = await mergePullRequest(s.ctx, { pr: 9, noLock: true });
     expect(out.merged).toBe(true);
-    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(", merged without lock (--no-lock)");
+    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(", merged without lock (--no-lock); merged on its own (no merge rule)");
     expect(out.warnings[0]).toBe(
       "merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now",
     );
@@ -570,7 +570,7 @@ describe("armada merge --wait", () => {
       `Checklist passed for #9 (DEMO-7): handed back at ${HEAD}, now ${UPDATED} with only main merged in (1 merge commit), CLEAN, checks green, no open review thread.`,
     );
     expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toBe(
-      `PR #9 squash-merged into main as ${SQUASH}, head ${UPDATED}, the handed-back ${HEAD} updated with main`,
+      `PR #9 squash-merged into main as ${SQUASH}, head ${UPDATED}, the handed-back ${HEAD} updated with main; merged on its own (no merge rule)`,
     );
     expect(live.store.leases.size).toBe(0);
   });

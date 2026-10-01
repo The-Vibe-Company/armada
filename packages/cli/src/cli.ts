@@ -31,6 +31,7 @@ import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
+import { askOwner, done, validate } from "./validate.ts";
 import { hookStop, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
 
@@ -58,16 +59,18 @@ const COMMAND_HELP: Record<string, string> = {
                     .claude/settings.json (yes without a terminal); --no-stop-hook skips it
 `,
   claim: `  claim <ticket> --runtime <name> --handle <id> [--branch <name>]
-        [--profile <name> [--reason <why>]]
+        [--profile <name> [--reason <why>]] [--validation <n,...> --validation-reason <why>]
                     Claim a ticket for this worker: In Progress, phase planning, runtime
                     label and an Agent claim comment; refused if another worker holds it.
                     --profile records the Conductor profile; one other than the ticket's
-                    routed profile needs --reason. Prints the ticket's state afterwards
+                    routed profile needs --reason. --validation records the owner-validation
+                    rules the coordinator judged apply. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
         [--plan <text> | --plan-file <path|->]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
-                    blocked, ready-to-merge); the same phase again is a status update.
+                    blocked, ready-to-merge, awaiting-validation); the same phase again is a
+                    status update; armada validate is how a worker enters awaiting-validation.
                     --plan posts the plan as its own block under a one-line status (the
                     message's first line, else the plan's); awaiting-approval sends it to
                     the coordinator's inbox.
@@ -81,6 +84,22 @@ const COMMAND_HELP: Record<string, string> = {
                     Worker: ask the coordinator. The phase becomes blocked, the question
                     goes on the ticket and in the coordinator's inbox. Then stop and wait
                     for the answer in your session, and report the phase you resume
+`,
+  validate: `  validate [<ticket>] "<what to check>" [--attach <file|url>]... [--caption <text>]
+        [--choices "<a> | <b>"]
+                    Ask the owner to validate on Armada's Validations page, with the
+                    attachments (images up to 2 MB, HTTPS links). Prints the approval link.
+                    Worker: its own ticket; the phase becomes awaiting-validation: stop until
+                    the coordinator relays the owner's decision. Coordinator: any ticket.
+                    The owner's buttons are Approve and Request changes, or the --choices
+`,
+  "ask-owner": `  ask-owner <ticket> "<question>" --choices "<a> | <b>"
+                    Coordinator: escalate a question or a plan to the owner, with its
+                    choices. Prints the approval link; the owner's pick arrives in the inbox
+`,
+  done: `  done <ticket>     Coordinator: close a ticket whose newest validation the owner approved,
+                    with no pull request (a design ticket): the design and the owner's note
+                    are posted on it, it moves to Done, agent labels removed, session ended
 `,
   inbox: `  inbox [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
@@ -103,6 +122,7 @@ const COMMAND_HELP: Record<string, string> = {
                     Coordinator: record a delivered note; an open plan is resolved
 `,
   merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
+        [--reason <why>] [--ask-owner --reason <why>]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
@@ -115,12 +135,18 @@ const COMMAND_HELP: Record<string, string> = {
                     is the hand-back with only the base merged in counts as the hand-back.
                     --no-ticket: a pull request no ticket owns (armada init, a release);
                     nothing is written to Linear.
+                    With [policy] merge_approval, judge each pull request: --reason "<why>"
+                    merges on its own; --ask-owner --reason "<why>" merges nothing, asks the
+                    owner (PR, files, CI, preview, screenshots) and prints the approval link.
+                    A pull request the owner was asked about merges only once they approved
+                    that exact head (or it with only the base merged in).
 `,
   launch: `  launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
 `,
   brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
+        [--validation none | --validation <n,...> --validation-reason <why>]
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
@@ -129,7 +155,9 @@ const COMMAND_HELP: Record<string, string> = {
                     Signed in to Armada, the prompt starts with a one-time launch token, so
                     the worker needs no key. --prompt prints only the prompt, for \`--message-file -\`
                     Human and --json views mint nothing. --prompt --profile-line also
-                    prints the profile and its reason on stderr, leaving stdout unchanged
+                    prints the profile and its reason on stderr, leaving stdout unchanged.
+                    With [[policy.validation]] rules, judge which apply: --validation none,
+                    or their numbers and why; the prompt then tells the worker what to show
 `,
   secrets: `  secrets           The project's secrets for workers: names, project or organization,
                     who set each and when; never a value. Needs a sign-in to Armada
@@ -174,7 +202,7 @@ const COMMAND_HELP: Record<string, string> = {
 };
 
 /** Commands that take --ticket, --config and --json. */
-const TICKET_OPTION = new Set(["report", "release", "ask", "merge", "secrets", "run"]);
+const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
   "attach",
   "status",
@@ -184,6 +212,9 @@ const CONFIG_OPTION = new Set([
   "report",
   "release",
   "ask",
+  "validate",
+  "ask-owner",
+  "done",
   "inbox",
   "watch",
   "answer",
@@ -291,6 +322,10 @@ const VALUE_OPTIONS = [
   "from-env",
   "caption",
   "for",
+  "attach",
+  "choices",
+  "validation",
+  "validation-reason",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
@@ -305,26 +340,29 @@ const FLAG_OPTIONS = [
   "no-stop-hook",
   "org",
   "value-stdin",
+  "ask-owner",
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   attach: ["caption", "for"],
-  claim: ["runtime", "handle", "branch", "profile", "reason"],
+  claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
   report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook"],
-  merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout"],
-  brief: ["profile", "reason", "prompt", "profile-line"],
+  merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
+  brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
+  "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
   secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
   run: ["ticket", "only"],
 };
 
 /** The worker commands a worker session signs in, on its own ticket. */
-const WORKER_COMMANDS = new Set(["claim", "report", "release", "ask"]);
+const WORKER_COMMANDS = new Set(["claim", "report", "release", "ask", "validate"]);
 
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -355,6 +393,8 @@ export function parseArgs(argv: string[]): Args {
       const v = named?.[2] ?? argv[++k];
       if (v === undefined) throw new UsageError(`--${name} needs a value`);
       if (name === "config") args.config = v;
+      // `--attach` repeats: one value per line.
+      else if (name === "attach" && args.options.attach !== undefined) args.options.attach += `\n${v}`;
       else args.options[name] = v;
     } else if (a?.startsWith("-"))
       // Never the value: `--api-key=<key>` must not print the key.
@@ -504,7 +544,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       });
       return await attachCommand(io, config, credentials, args);
     }
-    const worker = { claim, report, release, ask, inbox, answer }[args.command];
+    const worker = { claim, report, release, ask, inbox, answer, validate, "ask-owner": askOwner, done }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config, args.command);
       const config = parseConfig(text, path);
@@ -514,7 +554,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
             command,
             project: config.project.slug,
             ticket: (stored: string[]) =>
-              command === "claim"
+              command === "claim" || (command === "validate" && args.rest.length === 2)
                 ? (args.rest[0]?.toUpperCase() ?? null)
                 : currentTicket(io, config, args.options.ticket, stored),
           }
