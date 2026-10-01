@@ -1,17 +1,17 @@
-// `armada status --all`: the status of every project in the registry, each
-// read with the armada.toml on its repository's default branch.
+// `armada status --all`: the status of every project of the organization's
+// registry on Armada, each read with the armada.toml on its repository's
+// default branch.
 import {
+  type ArmadaProject,
+  armadaApi,
   LINEAR_KEY,
-  listProjects,
   loadStatus,
-  openTurso,
-  type ProjectRecord,
   readProjectConfig,
-  STORED_KEYS,
   type StatusReport,
 } from "@armada/core";
 import { loadCredentials } from "./auth.ts";
 import { type Io, missingKey } from "./io.ts";
+import { requireSignIn } from "./login.ts";
 import { renderStatus } from "./render.ts";
 
 export interface ProjectStatus {
@@ -34,18 +34,12 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 export async function statusAll(io: Io, json: boolean): Promise<number> {
   const { credentials } = await loadCredentials(io);
+  // The registry is on Armada, which may also give the Linear key: the sign-in comes first.
+  const signIn = requireSignIn(credentials);
   const linearApiKey = credentials.linearApiKey;
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
-  const tursoKey = STORED_KEYS.find((k) => k.name === "tursoUrl");
-  if (!credentials.tursoUrl && tursoKey) throw missingKey(tursoKey);
-
-  const db = await openTurso({ url: credentials.tursoUrl ?? "", token: credentials.tursoToken });
-  let records: ProjectRecord[];
-  try {
-    records = await listProjects(db);
-  } finally {
-    db.close();
-  }
+  const api = armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+  const records: ArmadaProject[] = await api.projects(signIn);
 
   const projects = await Promise.all(
     records.map(async (p): Promise<ProjectStatus> => {

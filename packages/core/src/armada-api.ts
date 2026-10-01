@@ -1,7 +1,8 @@
 // The Armada API, as the CLI sees it: signing in from a terminal (a device
 // code confirmed in the browser), who is signed in, signing out, the
-// organization's keys handed to a signed-in terminal (THE-840), and the
-// workers' one-time launch tokens and sessions (THE-841). It is the
+// organization's Linear key handed to a signed-in terminal (THE-840), the
+// workers' one-time launch tokens and sessions (THE-841), the organization's
+// projects, and the fleet's live data (THE-850, `fleet-api.ts`). It is the
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
 import type { Fetch } from "./linear.ts";
@@ -66,29 +67,24 @@ export interface DeviceCode {
 }
 
 /**
- * The organization's keys, from `POST /api/cli/credentials`. The Linear key is
- * the person's own when they set one. The Turso token is made for this
- * terminal and expires on its own ("minted"); "kept" means the one the
- * terminal holds is still good; "stored" is the organization's database token,
- * handed out as is when Armada has no Turso Platform API token.
+ * The organization's keys, from `POST /api/cli/credentials`: the Linear key,
+ * the person's own when they set one. The fleet's data is never handed out: it
+ * is reached through the API (`fleet`).
  */
 export interface ArmadaKeysAnswer {
   schemaVersion: 1;
   organization: { id: string; name: string; slug: string };
   linear: { apiKey: string; scope: "own" | "organization" } | null;
-  turso:
-    | { kind: "minted"; url: string; token: string; expiresAt: string; revision: string }
-    | { kind: "kept"; expiresAt: string; revision: string }
-    | { kind: "stored"; url: string; token: string; expiresAt: null; revision: string }
-    | null;
   /** What the organization set but Armada could not hand out. Never a value. */
   warnings: string[];
 }
 
-/** Which Turso token the terminal holds: its revision and expiry, never the token. */
-export interface HeldTursoToken {
-  revision: string;
-  expiresAt: string;
+/** A project of the caller's organization, from `GET /api/cli/projects`. */
+export interface ArmadaProject {
+  slug: string;
+  name: string;
+  repository: string;
+  programRoot: string;
 }
 
 /** A code as the person reads it: WDJB-MJHT. */
@@ -160,8 +156,9 @@ export function armadaApi(opts: ArmadaApiOptions) {
   async function call(
     method: string,
     path: string,
-    init: { body?: object; signIn?: ArmadaSignIn } = {},
+    init: { body?: object; signIn?: ArmadaSignIn; timeoutMs?: number } = {},
   ): Promise<{ status: number; body: Record<string, unknown> }> {
+    const limit = init.timeoutMs ?? timeoutMs;
     const headers: Record<string, string> = { Accept: "application/json" };
     if (init.body) headers["Content-Type"] = "application/json";
     if (init.signIn?.kind === "session" || init.signIn?.kind === "worker")
@@ -171,13 +168,15 @@ export function armadaApi(opts: ArmadaApiOptions) {
       method,
       headers,
       ...(init.body ? { body: JSON.stringify(init.body) } : {}),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(limit),
     }).catch((err: unknown) => {
       throw new ArmadaApiError(
-        `Armada (${host}) unreachable: ${networkReason(err, timeoutMs)}`,
+        `Armada (${host}) unreachable: ${networkReason(err, limit)}`,
         "the same command again once it answers, or check ARMADA_API_URL",
       );
     });
+    // Not modified: no body to read (an unchanged inbox).
+    if (res.status === 304) return { status: 304, body: {} };
     const body = (await res.json().catch(() => null)) as unknown;
     if (typeof body !== "object" || body === null || Array.isArray(body))
       throw new ArmadaApiError(
@@ -239,37 +238,58 @@ export function armadaApi(opts: ArmadaApiOptions) {
       return body as unknown as ArmadaIdentity;
     },
 
-    /**
-     * The organization's keys for `signIn`. `held` names the Turso token the
-     * terminal already holds, so Armada can say "keep it" instead of making
-     * another. Answers 503 when that Armada keeps no keys.
-     */
-    async credentials(
-      signIn: ArmadaSignIn,
-      held: HeldTursoToken | null,
-      purpose: KeysPurpose | null = null,
-    ): Promise<ArmadaKeysAnswer> {
-      const { status, body } = await call("POST", "credentials", {
-        signIn,
-        body: purpose ? { turso: held, purpose } : { turso: held },
-      });
+    /** The organization's keys for `signIn`. Answers 503 when that Armada keeps no keys. */
+    async credentials(signIn: ArmadaSignIn, purpose: KeysPurpose | null = null): Promise<ArmadaKeysAnswer> {
+      const { status, body } = await call("POST", "credentials", { signIn, body: purpose ? { purpose } : {} });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada gave no keys");
       const str = (v: unknown) => typeof v === "string" && v.length > 0;
       const org = body.organization as ArmadaKeysAnswer["organization"] | undefined;
       const linear = body.linear as ArmadaKeysAnswer["linear"];
-      const turso = body.turso as ArmadaKeysAnswer["turso"];
-      const shaped =
-        body.schemaVersion === 1 &&
-        str(org?.id) &&
-        (linear === null || str(linear?.apiKey)) &&
-        (turso === null ||
-          (turso?.kind === "kept" && str(turso.revision) && str(turso.expiresAt)) ||
-          ((turso?.kind === "minted" || turso?.kind === "stored") && str(turso.url) && str(turso.token)));
+      const shaped = body.schemaVersion === 1 && str(org?.id) && (linear === null || str(linear?.apiKey));
       if (!shaped) throw new ArmadaApiError(`Armada (${host}) answered the keys in a shape this CLI does not know`);
       const warnings = Array.isArray(body.warnings)
         ? body.warnings.filter((w): w is string => typeof w === "string")
         : [];
-      return { ...(body as unknown as ArmadaKeysAnswer), warnings };
+      return {
+        schemaVersion: 1,
+        organization: org as ArmadaKeysAnswer["organization"],
+        linear: linear ? { apiKey: linear.apiKey, scope: linear.scope === "own" ? "own" : "organization" } : null,
+        warnings,
+      };
+    },
+
+    /** The projects registered for the organization `signIn` acts for. */
+    async projects(signIn: ArmadaSignIn): Promise<ArmadaProject[]> {
+      const { status, body } = await call("GET", "projects", { signIn });
+      if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada did not list the projects");
+      if (!Array.isArray(body.projects))
+        throw new ArmadaApiError(`Armada (${host}) answered the projects in a shape this CLI does not know`);
+      return (body.projects as Record<string, unknown>[]).flatMap((p) =>
+        typeof p.slug === "string" &&
+        typeof p.name === "string" &&
+        typeof p.repository === "string" &&
+        typeof p.programRoot === "string"
+          ? [{ slug: p.slug, name: p.name, repository: p.repository, programRoot: p.programRoot }]
+          : [],
+      );
+    },
+
+    /**
+     * One operation on the fleet's live data (`fleet-api.ts`): its result,
+     * null when Armada answers "not modified" (304), or an ArmadaApiError
+     * naming the refusal.
+     */
+    async fleet(signIn: ArmadaSignIn, op: string, body: object, timeoutMs?: number): Promise<unknown> {
+      const { status, body: answer } = await call("POST", `fleet/${op}`, {
+        signIn,
+        body,
+        ...(timeoutMs ? { timeoutMs } : {}),
+      });
+      if (status === 304) return null;
+      if (status !== 200) throw refusal(status, answer, status === 401 ? null : "Armada refused");
+      if (!("result" in answer))
+        throw new ArmadaApiError(`Armada (${host}) answered fleet/${op} in a shape this CLI does not know`);
+      return answer.result;
     },
 
     /** A one-time launch token for a worker on `ticket`, valid one hour; the launch message carries it. */

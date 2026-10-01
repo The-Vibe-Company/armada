@@ -1,19 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { parseLease } from "../../core/src/credentials.ts";
+import { dirname, join } from "node:path";
 import type { Fetch } from "../../core/src/linear.ts";
-import {
-  ARMADA_URL,
-  closeTempTurso,
-  DEMO_TOML,
-  type FakeVault,
-  fakeArmada,
-  NOW,
-  recordedFetch,
-  tempTurso,
-} from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 
@@ -24,7 +14,6 @@ const LINEAR = "lin_api_CANARY_org_key";
 const dirs: string[] = [];
 afterEach(async () => {
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
-  await closeTempTurso();
 });
 
 /**
@@ -34,15 +23,9 @@ afterEach(async () => {
 async function machine(over: Partial<FakeVault> = {}, env: Record<string, string> = {}) {
   const home = await mkdtemp(join(tmpdir(), "armada-keys-"));
   dirs.push(home);
-  const { url } = await tempTurso();
-  let clock = NOW.getTime();
   const vault: FakeVault = {
     linear: { apiKey: LINEAR, scope: "organization" },
-    turso: "mint",
-    tursoUrl: url,
-    revision: "rev-1",
-    now: () => new Date(clock),
-    minted: 0,
+    now: () => NOW,
     ...over,
   };
   const armada = fakeArmada({ token: SESSION, polls: ["approve"], vault });
@@ -62,7 +45,7 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
     stderr: (t) => out.push(t),
     ghToken: () => null,
     fetch,
-    now: () => new Date(clock),
+    now: () => NOW,
     sleep: async () => {},
     interactive: true,
   };
@@ -73,19 +56,14 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
     armada,
     linear,
     credentials,
-    advance: (minutes: number) => {
-      clock += minutes * 60_000;
-    },
     armadaDown: (value: boolean) => {
       down = value;
     },
-    lease: async () => parseLease((await readFile(credentials, "utf8")).match(/^ARMADA_TURSO_LEASE=(.*)$/m)?.[1]),
     asked: () => armada.calls.filter((c) => c.path === "credentials"),
     /** Everything printed since the last call; asserts no secret leaked. */
     printed: () => {
       const text = out.splice(0).join("");
-      for (const secret of [SESSION, LINEAR, "minted-turso-token", "stored-db-token"])
-        expect(text).not.toContain(secret);
+      for (const secret of [SESSION, LINEAR, "CANARY"]) expect(text).not.toContain(secret);
       return text;
     },
   };
@@ -101,67 +79,38 @@ describe("the organization's keys from Armada", () => {
     m.printed();
     expect(await run(["status", "--json"], m.io)).toBe(0);
     expect(JSON.parse(m.printed()).project.slug).toBe("widgets");
-    // Linear was read with the organization's key.
+    // Linear was read with the organization's key, asked for with the session and nothing else.
     expect(m.linear.calls.find((c) => c.url.includes("linear"))?.authorization).toBe(LINEAR);
+    expect(m.asked().map((c) => [c.authorization, c.body])).toEqual([[`Bearer ${SESSION}`, {}]]);
 
-    // Only the short-lived Turso token is kept, with its expiry, in the 0600 file; never the Linear key.
+    // The Linear key stays in memory: the 0600 file holds the sign-in only.
     const file = await readFile(m.credentials, "utf8");
     expect(file).not.toContain(LINEAR);
-    expect(await m.lease()).toMatchObject({
-      api: ARMADA_URL,
-      organization: "org-1",
-      token: "minted-turso-token-1",
-      expiresAt: "2026-03-04T14:00:00.000Z",
-      revision: "rev-1",
-    });
+    expect(file).not.toContain("TURSO");
     expect((await stat(m.credentials)).mode & 0o777).toBe(0o600);
 
     expect(await run(["auth", "status"], m.io)).toBe(0);
-    const status = m.printed();
-    expect(status).toMatch(/LINEAR_API_KEY\s+set\s+Armada: the key of Acme/);
-    expect(status).toMatch(
-      /ARMADA_TURSO_TOKEN\s+set\s+Armada: a token made for this terminal, expires 2026-03-04 14:00 UTC/,
-    );
+    expect(m.printed()).toMatch(/LINEAR_API_KEY\s+set\s+Armada: the key of Acme/);
   });
 
-  test("the Turso token is kept while it lasts and renewed near its end, or as soon as the keys change, without asking", async () => {
+  test("Armada is asked on every command: a key replaced in the app takes effect on the next one, with its warnings", async () => {
     const m = await machine();
     expect(await run(["login"], m.io)).toBe(0);
-    expect(await run(["auth", "status", "--json"], m.io)).toBe(0);
-    m.printed();
-    expect(m.vault.minted).toBe(1);
+    expect(await run(["auth", "status"], m.io)).toBe(0);
+    expect(m.printed()).toMatch(/LINEAR_API_KEY\s+set\s+Armada: the key of Acme/);
 
-    // Armada is asked on every command, told which token the terminal holds (never the token), and says keep it.
-    m.advance(60);
-    expect(await run(["auth", "status", "--json"], m.io)).toBe(0);
-    expect(m.asked().at(-1)?.body).toEqual({
-      turso: { revision: "rev-1", expiresAt: "2026-03-04T14:00:00.000Z" },
-    });
-    expect(JSON.stringify(m.asked())).not.toContain("minted-turso-token");
-    expect(m.vault.minted).toBe(1);
-
-    // Less than an hour left: a new one, kept in place of the old.
-    m.advance(2 * 60 + 30);
-    expect(await run(["auth", "status", "--json"], m.io)).toBe(0);
-    expect(m.vault.minted).toBe(2);
-    expect((await m.lease())?.token).toBe("minted-turso-token-2");
-
-    // A key replaced in the app takes effect on the next command.
-    m.vault.revision = "rev-2";
     m.vault.linear = { apiKey: "lin_api_CANARY_own_key", scope: "own" };
+    m.vault.warnings = ["your own Linear key was last checked a week ago"];
     expect(await run(["auth", "status"], m.io)).toBe(0);
-    expect(m.printed()).toMatch(/LINEAR_API_KEY\s+set\s+Armada: your own key/);
-    expect((await m.lease())?.token).toBe("minted-turso-token-3");
-
-    // Signing out drops the kept token with the sign-in.
-    expect(await run(["logout"], m.io)).toBe(0);
-    expect(await readFile(m.credentials, "utf8")).not.toContain("ARMADA_TURSO_LEASE");
+    const text = m.printed();
+    expect(text).toMatch(/LINEAR_API_KEY\s+set\s+Armada: your own key/);
+    expect(text).toContain("! Armada: your own Linear key was last checked a week ago\n");
+    expect(m.asked()).toHaveLength(2);
   });
 
-  test("Armada unreachable: a warning, then the machine's keys and the Turso token kept earlier while it lasts", async () => {
+  test("Armada unreachable, or the sign-in revoked: a warning, then the machine's keys", async () => {
     const m = await machine();
     expect(await run(["login"], m.io)).toBe(0);
-    expect(await run(["auth", "status"], m.io)).toBe(0);
     m.printed();
     await writeFile(m.credentials, `${await readFile(m.credentials, "utf8")}LINEAR_API_KEY=lin_api_local\n`);
 
@@ -170,28 +119,13 @@ describe("the organization's keys from Armada", () => {
     const offline = m.printed();
     expect(offline).toContain("! Armada gave no keys (Armada (armada.example.test) unreachable");
     expect(offline).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
-    expect(offline).toMatch(/ARMADA_TURSO_TOKEN\s+set\s+Armada: a token made for this terminal/);
 
-    // Signed out on Armada's side: the kept token is dropped at once.
     m.armadaDown(false);
     m.armada.sessions.clear();
     expect(await run(["auth", "status"], m.io)).toBe(0);
     const revoked = m.printed();
     expect(revoked).toContain("Next: armada login");
-    expect(revoked).toMatch(/ARMADA_TURSO_TOKEN\s+missing/);
-    expect(await readFile(m.credentials, "utf8")).not.toContain("ARMADA_TURSO_LEASE");
-  });
-
-  test("an expired kept token is not used, even with Armada unreachable", async () => {
-    const m = await machine();
-    expect(await run(["login"], m.io)).toBe(0);
-    expect(await run(["auth", "status"], m.io)).toBe(0);
-    m.printed();
-    m.armadaDown(true);
-    // Expired, the kept token is not used any more.
-    m.advance(5 * 60);
-    expect(await run(["auth", "status"], m.io)).toBe(0);
-    expect(m.printed()).toMatch(/ARMADA_TURSO_TOKEN\s+missing/);
+    expect(revoked).toMatch(/LINEAR_API_KEY\s+set\s+credentials file/);
   });
 
   test("an Armada without a vault, or keys in the environment, leave the terminal as it was", async () => {
@@ -203,18 +137,41 @@ describe("the organization's keys from Armada", () => {
     expect(quiet).not.toContain("!");
     expect(quiet).toMatch(/LINEAR_API_KEY\s+missing/);
 
-    const env = { LINEAR_API_KEY: "lin_api_env", ARMADA_TURSO_URL: "file:env.db" };
-    const configured = await machine({}, env);
+    const configured = await machine({}, { LINEAR_API_KEY: "lin_api_env" });
     expect(await run(["login"], configured.io)).toBe(0);
     expect(await run(["auth", "status"], configured.io)).toBe(0);
     expect(configured.asked()).toEqual([]);
     expect(configured.printed()).toMatch(/LINEAR_API_KEY\s+set\s+environment \(LINEAR_API_KEY\)/);
+  });
 
-    // A stored database token (no Turso Platform token on Armada) is used, and never written to the file.
-    const stored = await machine({ turso: "stored" });
-    expect(await run(["login"], stored.io)).toBe(0);
-    expect(await run(["auth", "status"], stored.io)).toBe(0);
-    expect(stored.printed()).toMatch(/ARMADA_TURSO_TOKEN\s+set\s+Armada: the stored Turso access of Acme/);
-    expect(await readFile(stored.credentials, "utf8")).not.toContain("ARMADA_TURSO_LEASE");
+  test("a worker session of another project is refused before any key is asked or anything is written", async () => {
+    const m = await machine();
+    m.armada.launches.set("armada_launch_CANARY_9", { project: "gadgets", ticket: "DEMO-7", used: false });
+    expect(await run(["login", "--launch-token", "armada_launch_CANARY_9", "--api-url", ARMADA_URL], m.io)).toBe(0);
+    m.printed();
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], m.io)).toBe(2);
+    expect(m.printed()).toBe(
+      "armada: the worker session of DEMO-7 is for the project gadgets, not widgets (armada.toml): this repository is not its own\nNext: cd into the repository of gadgets\n",
+    );
+    expect(m.asked()).toEqual([]);
+    expect(m.armada.calls.filter((c) => c.path.startsWith("fleet/"))).toEqual([]);
+  });
+});
+
+describe("keys of the retired fleet database", () => {
+  test("armada login removes ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN and ARMADA_TURSO_LEASE, without printing them", async () => {
+    const m = await machine();
+    await mkdir(dirname(m.credentials), { recursive: true });
+    await writeFile(
+      m.credentials,
+      "# mine\nOTHER_TOOL=keep\nARMADA_TURSO_URL=libsql://CANARY-db.example.io\nARMADA_TURSO_TOKEN=CANARY_db_token\nARMADA_TURSO_LEASE=CANARY_lease\n",
+      { mode: 0o600 },
+    );
+    expect(await run(["login"], m.io)).toBe(0);
+    m.printed();
+    const file = await readFile(m.credentials, "utf8");
+    expect(file).not.toContain("TURSO");
+    expect(file).toStartWith("# mine\nOTHER_TOOL=keep\n");
+    expect(file).toContain(`ARMADA_SESSION_TOKEN=${SESSION}\n`);
   });
 });

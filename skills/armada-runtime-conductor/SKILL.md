@@ -38,7 +38,7 @@ rm -f /tmp/abc-12-brief.md
 jq -r '"\(.workspaceId)/\(.sessionId)"' /tmp/abc-12-launch.json
 ```
 
-Without a launch token (an Armada that keeps no keys), pass the keys the brief's environment table marks `required` or `optional`, from your shell or from Armada's credentials file (`in credentials file`: the `set -a` line loads it without printing it; drop it when every variable is set in your shell). The subshell keeps the keys out of the rest of your session; drop an optional `--env` line whose variable you do not have. When Conductor's organization environment still holds the keys, every workspace already has them: use the first block.
+Without a launch token (an Armada that keeps no keys), pass the keys the brief's environment table marks `required`, from your shell or from Armada's credentials file (`in credentials file`: the `set -a` line loads it without printing it; drop it when every variable is set in your shell). The subshell keeps the keys out of the rest of your session. Without a launch token the worker is not signed in to Armada: its claims and reports reach Linear only, with a warning. When Conductor's organization environment still holds the keys, every workspace already has them: use the first block.
 
 ```sh
 (
@@ -52,8 +52,6 @@ Without a launch token (an Armada that keeps no keys), pass the keys the brief's
     --message-file - \
     --env ARMADA_TICKET=ABC-12 \
     --env LINEAR_API_KEY="$LINEAR_API_KEY" \
-    --env ARMADA_TURSO_URL="$ARMADA_TURSO_URL" \
-    --env ARMADA_TURSO_TOKEN="$ARMADA_TURSO_TOKEN" \
     < /tmp/abc-12-brief.md > /tmp/abc-12-launch.json
 )
 rm -f /tmp/abc-12-brief.md

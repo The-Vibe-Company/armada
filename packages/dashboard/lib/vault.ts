@@ -51,15 +51,7 @@ export function vaultModeOf(env: Env): VaultMode {
 
 // ------------------------------------------------------------ what is kept
 
-export const SECRET_NAMES = [
-  "linear-api-key",
-  "turso-url",
-  "turso-platform-token",
-  "turso-organization",
-  "turso-database",
-  "turso-database-token",
-  "github-token",
-] as const;
+export const SECRET_NAMES = ["linear-api-key", "github-token"] as const;
 export type SecretName = (typeof SECRET_NAMES)[number];
 export const isSecretName = (v: unknown): v is SecretName => SECRET_NAMES.includes(v as SecretName);
 
@@ -71,40 +63,12 @@ export interface SecretKind {
   check: (value: string) => boolean;
 }
 
-/**
- * A libsql:// or https:// URL to a named host. Not localhost, an IP address
- * or an internal name: the dashboard's server connects there with the stored
- * token, and must not be pointed at its own network.
- */
-function publicDatabaseUrl(v: string): boolean {
-  const m = /^(libsql|https):\/\/([a-z0-9.-]+)(:\d+)?\/?$/i.exec(v);
-  const host = m?.[2]?.toLowerCase().replace(/\.$/, "");
-  if (!host?.includes(".")) return false;
-  if (/^[\d.]+$/.test(host)) return false;
-  return !/(^|\.)(localhost|local|internal|localdomain|home|lan)$/.test(host);
-}
-
 const token = (v: string) => v.length <= 4096 && !/\s/.test(v);
-const name = (v: string) => /^[a-z0-9][a-z0-9-]{0,63}$/i.test(v);
 
 export const SECRET_KINDS: Record<SecretName, SecretKind> = {
   "linear-api-key": { secret: true, personal: true, check: token },
-  "turso-url": { secret: false, personal: false, check: (v) => publicDatabaseUrl(v) },
-  "turso-platform-token": { secret: true, personal: false, check: token },
-  "turso-organization": { secret: false, personal: false, check: name },
-  "turso-database": { secret: false, personal: false, check: name },
-  "turso-database-token": { secret: true, personal: false, check: token },
   "github-token": { secret: true, personal: false, check: token },
 };
-
-/** The keys that make up the Turso access: changing any of them changes the tokens handed out. */
-export const TURSO_SECRETS: readonly SecretName[] = [
-  "turso-url",
-  "turso-platform-token",
-  "turso-organization",
-  "turso-database",
-  "turso-database-token",
-];
 
 // ------------------------------------------------------------ sealing
 
@@ -219,7 +183,7 @@ export interface SecretEvent {
   id: number;
   at: string;
   action: SecretAction;
-  /** Which keys, e.g. ["linear-api-key", "turso"]. */
+  /** Which keys, e.g. ["linear-api-key"]. */
   keys: string[];
   actor: Actor;
   /** What happened, in words; never a value. */
@@ -268,7 +232,7 @@ export async function readSecrets(
   client: Queryable,
   vault: VaultKey,
   { organization, user }: { organization: string; user: string | null },
-): Promise<{ values: Partial<Record<SecretName, string>>; own: SecretName[]; revision: string; problems: string[] }> {
+): Promise<{ values: Partial<Record<SecretName, string>>; own: SecretName[]; problems: string[] }> {
   const rs = await client.query(
     `SELECT "userId", "name", "sealed", "updatedAt" FROM "armada_secret"
      WHERE "organizationId" = $1 AND "userId" IN ('', $2) ORDER BY "userId", "name"`,
@@ -277,7 +241,6 @@ export async function readSecrets(
   const values: Partial<Record<SecretName, string>> = {};
   const own: SecretName[] = [];
   const problems: string[] = [];
-  const turso: string[] = [];
   // Ordered by user: the organization's row ('') first, the person's own over it.
   for (const row of rs.rows) {
     const secretName = String(row.name);
@@ -290,14 +253,8 @@ export async function readSecrets(
     } catch (err) {
       problems.push(err instanceof Error ? err.message : String(err));
     }
-    if (!slot.user && TURSO_SECRETS.includes(secretName)) turso.push(`${secretName}@${isoAt(row.updatedAt)}`);
   }
-  // Which Turso keys, and when each was set: a token handed out under another revision is replaced.
-  const revision = createHash("sha256")
-    .update([organization, ...turso.sort()].join("\n"))
-    .digest("hex")
-    .slice(0, 16);
-  return { values, own, revision, problems };
+  return { values, own, problems };
 }
 
 /** Sets or replaces one key. `user` null is the organization's; a person's own key only for a personal kind. */

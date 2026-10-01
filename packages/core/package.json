@@ -9,7 +9,6 @@
     "./read": "./src/read.ts"
   },
   "dependencies": {
-    "@libsql/client": "0.18.0",
     "smol-toml": "1.9.0"
   }
 }

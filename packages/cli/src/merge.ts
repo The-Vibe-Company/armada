@@ -26,7 +26,7 @@ import {
   type TestMergeResult,
 } from "@armada/core";
 import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
-import { endWorkerSessions, openLive, type WorkerArgs } from "./worker.ts";
+import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
 /** A GitHub 5xx or a network failure, as gh reports them. */
 const TRANSIENT =
@@ -176,7 +176,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
   const gh = { token, repository: config.github.repository, ...fetchOpt };
   const linearOpts = { apiKey: linearApiKey, labels: config.tracker.labels, ...fetchOpt };
   const now = io.now ?? (() => new Date());
-  const turso: { live: ReturnType<typeof openLive> | null } = { live: null };
+  const live = liveFleet(io, config, credentials);
   const ctx: MergeContext = {
     config,
     linear: io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts),
@@ -187,11 +187,9 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       merge: ghMerge(exec, repoDir, config.github.repository),
     },
     repo: gitRepo(exec, repoDir),
-    tursoConfigured: !!credentials.tursoUrl,
-    turso: () => {
-      turso.live ??= openLive(credentials);
-      return turso.live;
-    },
+    // Signed in, the merge lock is required: two coordinators merge one after the other.
+    lockRequired: !!credentials.armadaSignIn,
+    fleet: async () => live,
     inFlight: async () =>
       (await loadStatus(config, { linearApiKey, githubToken: null, ...fetchOpt, now })).inFlight.map((t) => ({
         id: t.id,
@@ -209,18 +207,14 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       return false;
     },
   };
-  try {
-    const o = await mergePullRequest(ctx, {
-      pr: number,
-      ticket: a.options.ticket ?? null,
-      dryRun: !!a.options["dry-run"],
-      noLock: !!a.options["no-lock"],
-    });
-    io.stdout(a.json ? `${JSON.stringify(o, null, 2)}\n` : render(o));
-    for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
-    if (o.merged) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
-    return 0;
-  } finally {
-    (await turso.live)?.db?.close();
-  }
+  const o = await mergePullRequest(ctx, {
+    pr: number,
+    ticket: a.options.ticket ?? null,
+    dryRun: !!a.options["dry-run"],
+    noLock: !!a.options["no-lock"],
+  });
+  io.stdout(a.json ? `${JSON.stringify(o, null, 2)}\n` : render(o));
+  for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
+  if (o.merged) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+  return 0;
 }

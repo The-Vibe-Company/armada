@@ -6,15 +6,14 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listProjects } from "../../core/src/turso.ts";
-import { ARMADA_URL, closeTempTurso, fakeArmada, fakeLinearLabels, tempTurso } from "../../core/test/support.ts";
+import { memoryFleet } from "../../core/test/memory-fleet.ts";
+import { ARMADA_URL, fakeArmada, fakeLinearLabels } from "../../core/test/support.ts";
 import { version as VERSION } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
 import type { Exec, Io } from "../src/io.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
-  await closeTempTurso();
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
@@ -104,8 +103,9 @@ async function fixture() {
 
   const gh = fakeGh();
   const linear = fakeLinearLabels();
-  const api = fakeArmada({ keys: { armada_coordinator_key: "coordinator" } });
-  const registry = await tempTurso();
+  // The project registry is the fleet's, on Armada.
+  const registry = memoryFleet();
+  const api = fakeArmada({ keys: { armada_coordinator_key: "coordinator" }, store: registry });
   const exec: Exec = async (command, args, { cwd }) => {
     if (command === "gh") return gh.run(args);
     const r = spawnSync(command, args, { cwd, env, encoding: "utf8" });
@@ -118,7 +118,6 @@ async function fixture() {
     env: {
       XDG_CONFIG_HOME: join(home, "config"),
       LINEAR_API_KEY: "lin_test",
-      ARMADA_TURSO_URL: registry.url,
       ARMADA_API_URL: ARMADA_URL,
       ARMADA_API_KEY: "armada_coordinator_key",
     },
@@ -143,10 +142,25 @@ async function fixture() {
     git(work, "push", "--quiet", "origin", "main");
     pr.state = "merged";
   };
-  return { work, gh, linear, registry, armada, git, merge };
+  return { io, work, gh, linear, api, registry, armada, git, merge };
 }
 
 describe("armada doctor and armada init", () => {
+  test("init refuses without a sign-in to Armada, before it pushes, opens or creates anything", async () => {
+    const f = await fixture();
+    delete f.io.env.ARMADA_API_KEY;
+    const refused = await f.armada("init", "--program-root", "DEMO-1");
+    expect(refused.code).toBe(2);
+    expect(refused.err).toBe(
+      "armada: not signed in to Armada (armada.example.test). A person signs in with `armada login`; a headless coordinator sets ARMADA_API_KEY to an organization API key\nNext: armada login\n",
+    );
+    expect(f.gh.calls).toEqual([]);
+    expect(f.linear.created).toEqual([]);
+    expect(f.api.calls).toEqual([]);
+    expect(await f.registry.listProjects()).toEqual([]);
+    expect(f.git(f.work, "ls-remote", "--heads", "origin").split("\n")).toHaveLength(1);
+  });
+
   test("init opens one pull request that makes doctor pass once merged, and running it again updates it", async () => {
     const f = await fixture();
 
@@ -176,7 +190,8 @@ describe("armada doctor and armada init", () => {
     });
     expect(first.out).toContain(`Opened pull request ${pr.url}\n`);
     expect(f.linear.labels.filter((l) => l.isGroup).map((l) => l.name)).toEqual(["Agent phase", "Agent runtime"]);
-    expect(await listProjects(f.registry.db)).toMatchObject([
+    expect(first.out).toContain("Registered project widgets on Armada; armada status --all lists it.\n");
+    expect(await f.registry.listProjects()).toMatchObject([
       { slug: "widgets", name: "widgets", repository: "acme/widgets", programRoot: "DEMO-1" },
     ]);
     // The person's checkout is left alone: everything happened on the branch.

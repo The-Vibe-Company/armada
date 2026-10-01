@@ -1,28 +1,13 @@
 // What a worker does to the tracker: claim a ticket, report a phase, release
-// it. Linear is written first and is the record; Turso gets the live detail
-// afterwards, and any Turso failure becomes a warning, never a failure.
+// it. Linear is written first and is the record; the fleet's live data gets
+// the detail afterwards, through Armada, and any failure there becomes a
+// warning, never a failure.
 import type { ArmadaConfig } from "./config.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
+import type { Fleet, InboxItem } from "./live.ts";
 import { handBackProblems, transitionProblem } from "./phases.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
-import {
-  type Db,
-  ensureProject,
-  getRuntimeHandle,
-  type InboxItem,
-  openInboxItems,
-  putHandBack,
-  putPlan,
-  recordEvent,
-  redact,
-  releaseRuntimeHandle,
-  resolveInboxItem,
-  resolveInboxItems,
-  resolvePlans,
-  saveRuntimeHandle,
-  saveWorkerProfile,
-} from "./turso.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
 
 /**
@@ -43,10 +28,11 @@ export interface WorkerContext {
   config: ArmadaConfig;
   linear: LinearWriter;
   /**
-   * Opens Turso, called only once Linear has been written. `db` is null when
-   * Turso is not configured or could not be opened; `warning` then says why.
+   * The fleet's live data, asked for only once Linear has been written.
+   * `fleet` is null when this terminal cannot reach it (not signed in to
+   * Armada); `warning` then says why.
    */
-  turso: () => Promise<{ db: Db | null; warning: string | null }>;
+  fleet: () => Promise<{ fleet: Fleet | null; warning: string | null }>;
   /** Reads one pull request of the project repository; null without a GitHub token. */
   readPull: ((number: number) => Promise<PullRequest | null>) | null;
   now: () => Date;
@@ -68,42 +54,45 @@ export interface Outcome {
   /** What was done, one line each. */
   lines: string[];
   warnings: string[];
-  /** Unresolved inbox items addressed to this ticket's worker, when Turso was read. */
+  /** Unresolved inbox items addressed to this ticket's worker, when the fleet was read. */
   inbox: InboxItem[] | null;
   /** The ticket read back after the write (claim and report); null when it was not read. */
   state?: TicketState | null;
 }
 
-const TURSO_TIMEOUT_MS = 10_000;
+const LIVE_TIMEOUT_MS = 20_000;
 
-/** Runs a Turso step; a failure or a timeout becomes a warning. */
+/** Runs a step on the fleet's live data; a failure or a timeout becomes a warning. */
 export async function live<T>(
-  ctx: Pick<WorkerContext, "turso">,
+  ctx: Pick<WorkerContext, "fleet">,
   warnings: string[],
   what: string,
-  step: (db: Db) => Promise<T>,
+  step: (fleet: Fleet) => Promise<T>,
 ) {
-  const { db, warning } = await ctx.turso();
-  if (!db) {
-    if (warning) warnings.push(warning);
+  const { fleet, warning } = await ctx.fleet();
+  if (!fleet) {
+    if (warning && !warnings.includes(warning)) warnings.push(warning);
     return null;
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      step(db),
+      step(fleet),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`no answer within ${TURSO_TIMEOUT_MS / 1000} s`)), TURSO_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error(`no answer within ${LIVE_TIMEOUT_MS / 1000} s`)), LIVE_TIMEOUT_MS);
       }),
     ]);
   } catch (err) {
-    warnings.push(`Turso: could not ${what} (${redact(err)}); Linear is up to date`);
+    warnings.push(
+      `Armada: could not ${what} (${err instanceof Error ? err.message : String(err)}); Linear is up to date`,
+    );
     return null;
   } finally {
     clearTimeout(timer);
   }
 }
 
+/** The project as armada.toml describes it: every call to the fleet names it. */
 export const projectOf = (config: ArmadaConfig) => ({
   slug: config.project.slug,
   name: config.project.name,
@@ -324,50 +313,20 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
     `${inProgress ? `Moved to ${inProgress.name}` : "State unchanged"}, assigned to ${viewer.name}, labels ${phaseLabel?.name ?? ticket.agentPhase} and ${runtime.name}.`,
   );
 
-  const at = ctx.now();
-  const launched = await live(ctx, warnings, "record the claim", async (db) => {
-    await ensureProject(db, projectOf(config), at);
-    await saveRuntimeHandle(db, {
-      project: config.project.slug,
+  // The launch the owner asked for from the dashboard is done: the claim resolves it.
+  const launched = await live(ctx, warnings, "record the claim", (fleet) =>
+    fleet.claim({
       ticket: ticket.id,
       runtime: runtime.name,
       handle: input.handle,
       branch,
-      at,
-    });
-    // A new claim replaces the profile of an earlier one; a resume keeps it.
-    if (!resuming)
-      await saveWorkerProfile(db, {
-        project: config.project.slug,
-        ticket: ticket.id,
-        profile: profile
-          ? { name: profile.name, ...profile.profile, routed: profile.routed, reason: profile.reason, why: profile.why }
-          : null,
-        at,
-      });
-    await recordEvent(db, {
-      project: config.project.slug,
-      ticket: ticket.id,
-      kind: "claim",
       phase: phaseLabel ? "planning" : ticket.agentPhase,
-      runtime: runtime.name,
-      handle: input.handle,
-      at,
-    });
-    // The launch the owner asked for from the dashboard is done.
-    if (resuming) return [];
-    const asked = (
-      await openInboxItems(db, { project: config.project.slug, recipient: "coordinator", ticket: ticket.id })
-    ).filter((i) => i.kind === "launch-request");
-    for (const r of asked)
-      await resolveInboxItem(db, {
-        project: config.project.slug,
-        id: r.id,
-        resolution: `claimed by ${runtime.name} (${input.handle})`,
-        at,
-      });
-    return asked;
-  });
+      resuming,
+      profile: profile
+        ? { name: profile.name, ...profile.profile, routed: profile.routed, reason: profile.reason, why: profile.why }
+        : null,
+    }),
+  );
   if (launched?.length) {
     const who = [...new Set(launched.map((r) => r.author ?? "the owner"))].join(", ");
     const ids = launched.map((r) => `#${r.id}`).join(", ");
@@ -500,46 +459,17 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       : `${ticket.id}: ${ticket.agentPhase} → ${input.phase}.`,
   ];
 
-  const at = ctx.now();
-  const inbox = await live(ctx, warnings, "record the report", async (db) => {
-    await ensureProject(db, projectOf(config), at);
-    await recordEvent(db, {
-      project: config.project.slug,
+  const inbox = await live(ctx, warnings, "record the report", (fleet) =>
+    fleet.report({
       ticket: ticket.id,
-      kind: "report",
       phase: input.phase,
-      message: summary,
+      previous: ticket.agentPhase,
+      summary,
+      message,
       prUrl: pr?.url ?? null,
       headSha: sha,
-      at,
-    });
-    if (input.phase === "awaiting-approval" && ticket.agentPhase !== input.phase) {
-      const handle = await getRuntimeHandle(db, config.project.slug, ticket.id);
-      await putPlan(db, {
-        project: config.project.slug,
-        ticket: ticket.id,
-        author: handle && !handle.releasedAt ? handle.handle : null,
-        body: message,
-        at,
-      });
-    } else if (input.phase !== "awaiting-approval") {
-      await resolvePlans(db, {
-        project: config.project.slug,
-        ticket: ticket.id,
-        resolution: `worker reported ${input.phase}`,
-        at,
-      });
-    }
-    if (input.phase === "ready-to-merge")
-      await putHandBack(db, {
-        project: config.project.slug,
-        ticket: ticket.id,
-        author: null,
-        body: statusLine,
-        at,
-      });
-    return openInboxItems(db, { project: config.project.slug, recipient: "worker", ticket: ticket.id });
-  });
+    }),
+  );
   const state = await readBack(ctx, ticket.id, warnings);
   return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox, state };
 }
@@ -564,38 +494,8 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   });
   await linear.comment(ticket.uuid, `Agent status: released — ${input.reason.trim()}`);
   const lines = [`Released ${ticket.id}${back ? `, moved back to ${back.name}` : ""}.`];
-  const at = ctx.now();
-  await live(ctx, warnings, "record the release", async (db) => {
-    await ensureProject(db, projectOf(config), at);
-    await releaseRuntimeHandle(db, config.project.slug, ticket.id, at);
-    await resolvePlans(db, {
-      project: config.project.slug,
-      ticket: ticket.id,
-      resolution: `ticket released: ${input.reason.trim()}`,
-      at,
-    });
-    // No worker is left to take an answer.
-    await resolveInboxItems(db, {
-      project: config.project.slug,
-      ticket: ticket.id,
-      kind: "question",
-      resolution: `ticket released: ${input.reason.trim()}`,
-      at,
-    });
-    await resolveInboxItems(db, {
-      project: config.project.slug,
-      ticket: ticket.id,
-      kind: "answer-request",
-      resolution: `ticket released: ${input.reason.trim()}`,
-      at,
-    });
-    await recordEvent(db, {
-      project: config.project.slug,
-      ticket: ticket.id,
-      kind: "release",
-      message: input.reason.trim(),
-      at,
-    });
-  });
+  await live(ctx, warnings, "record the release", (fleet) =>
+    fleet.release({ ticket: ticket.id, reason: input.reason.trim() }),
+  );
   return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null };
 }

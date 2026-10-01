@@ -2,12 +2,13 @@
 // registry, events, the runtime session holding each ticket and the profile
 // its claim named, the coordinators' inboxes with the dashboard's requests,
 // leases, and when each coordinator last read its inbox. Every row carries its
-// project slug. The same operations as core's Turso adapter (`turso.ts`), with
-// the same results, so the dashboard reads the fleet here today and the CLI's
-// calls through the app (THE-850) write it here next. Losing this data loses
-// live detail, never progress: Linear stays the record.
+// project slug. `fleetStore` is core's `FleetStore` on it: the dashboard reads
+// the fleet here, and the CLI writes it through the Armada API (THE-850,
+// `cli-api.ts`). Losing this data loses live detail, never progress: Linear
+// stays the record.
 import type {
   EventInput,
+  FleetStore,
   InboxItem,
   InboxKind,
   InboxRecipient,
@@ -48,10 +49,63 @@ export async function ensureProject(db: Queryable, p: ProjectInput, now: Date = 
   );
 }
 
+/**
+ * Makes sure `organization` holds the project a terminal names: registered for
+ * it on first contact. A project registered without an organization (`bun run
+ * db register`, or before accounts) is the deployment's first organization's
+ * (`home`), as on the dashboard: only that one is given it. False when another
+ * organization holds it. Reads only, once the project is held.
+ */
+export async function holdProject(
+  db: Queryable,
+  p: ProjectInput,
+  organization: string,
+  home: () => Promise<string | null>,
+  now: Date = new Date(),
+): Promise<boolean> {
+  const owner = async () =>
+    (await db.query("SELECT organization_id FROM projects WHERE slug = $1", [p.slug])).rows[0] as Row | undefined;
+  const held = await owner();
+  if (held) {
+    if (held.organization_id !== null) return String(held.organization_id) === organization;
+    if ((await home()) !== organization) return false;
+    await db.query(
+      `UPDATE projects SET organization_id = $2, organization_assigned_at = $3
+       WHERE slug = $1 AND organization_id IS NULL`,
+      [p.slug, organization, now],
+    );
+  } else
+    await db.query(
+      `INSERT INTO projects (slug, name, repository, program_root, created_at, updated_at, organization_id, organization_assigned_at)
+       VALUES ($1, $2, $3, $4, $5, $5, $6, $5) ON CONFLICT (slug) DO NOTHING`,
+      [p.slug, p.name, p.repository, p.programRoot, now, organization],
+    );
+  // Whoever got there first holds it.
+  return text((await owner())?.organization_id) === organization;
+}
+
 /** Every registered project, by slug, with the organization it belongs to. */
 export async function listProjects(db: Queryable): Promise<ProjectRecord[]> {
   const rs = await db.query(
     `SELECT slug, name, repository, program_root, organization_id, created_at, updated_at FROM projects ORDER BY slug`,
+  );
+  return rs.rows.map((r) => ({
+    slug: String(r.slug),
+    name: String(r.name),
+    repository: String(r.repository),
+    programRoot: String(r.program_root),
+    organization: text(r.organization_id),
+    createdAt: isoAt(r.created_at),
+    updatedAt: isoAt(r.updated_at),
+  }));
+}
+
+/** The projects an organization holds, by slug. */
+export async function projectsOf(db: Queryable, organization: string): Promise<ProjectRecord[]> {
+  const rs = await db.query(
+    `SELECT slug, name, repository, program_root, organization_id, created_at, updated_at FROM projects
+     WHERE organization_id = $1 ORDER BY slug`,
+    [organization],
   );
   return rs.rows.map((r) => ({
     slug: String(r.slug),
@@ -384,13 +438,17 @@ export async function resolveInboxItem(
   return rs.rowCount > 0;
 }
 
-/** When the newest question or plan of each ticket was resolved, by ticket id. */
-export async function lastAnsweredAt(db: Queryable, project: string): Promise<Record<string, string>> {
+/** When the newest question or plan of each ticket was resolved, by ticket id; with `since`, only answers since then. */
+export async function lastAnsweredAt(
+  db: Queryable,
+  project: string,
+  opts: { since?: Date } = {},
+): Promise<Record<string, string>> {
   const rs = await db.query(
     `SELECT ticket, max(resolved_at) AS at FROM inbox_items
-     WHERE project = $1 AND kind IN ('question', 'plan') AND ticket IS NOT NULL AND resolved_at IS NOT NULL
+     WHERE project = $1 AND kind IN ('question', 'plan') AND ticket IS NOT NULL AND resolved_at >= $2
      GROUP BY ticket`,
-    [project],
+    [project, opts.since ?? new Date(0)],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
 }
@@ -522,6 +580,41 @@ export async function renewLease(
 export async function releaseLease(db: Queryable, l: { project: string; name: string; holder: string }) {
   await db.query("DELETE FROM leases WHERE project = $1 AND name = $2 AND holder = $3", [l.project, l.name, l.holder]);
 }
+
+// ------------------------------------------------------------------ the store
+
+/** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
+export const fleetStore = (db: Database): FleetStore => ({
+  ensureProject: (p, at) => ensureProject(db, p, at),
+  upsertProject: (p, at) => upsertProject(db, p, at),
+  listProjects: () => listProjects(db),
+  recordEvent: (e) => recordEvent(db, e),
+  lastEventTimes: (project) => lastEventTimes(db, project),
+  latestEvents: (project, opts) => latestEvents(db, project, opts),
+  recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),
+  lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
+  saveWorkerProfile: (w) => saveWorkerProfile(db, w),
+  getWorkerProfile: (project, ticket) => getWorkerProfile(db, project, ticket),
+  saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
+  releaseRuntimeHandle: (project, ticket, at) => releaseRuntimeHandle(db, project, ticket, at),
+  openRuntimeHandles: (project) => openRuntimeHandles(db, project),
+  getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
+  addInboxItem: (item) => addInboxItem(db, item),
+  addRequest: (r) => addRequest(db, r),
+  putPlan: (item) => putPlan(db, item),
+  putHandBack: (item) => putHandBack(db, item),
+  openInboxItems: (q) => openInboxItems(db, q),
+  getInboxItem: (project, id) => getInboxItem(db, project, id),
+  resolveInboxItem: (q) => resolveInboxItem(db, q),
+  lastAnsweredAt: (project, opts) => lastAnsweredAt(db, project, opts),
+  resolveInboxItems: (q) => resolveInboxItems(db, q),
+  resolveAnswerRequests: (q) => resolveAnswerRequests(db, q),
+  resolvePlans: (q) => resolvePlans(db, q),
+  acquireLease: (l) => acquireLease(db, l),
+  getLease: (project, name) => getLease(db, project, name),
+  renewLease: (l) => renewLease(db, l),
+  releaseLease: (l) => releaseLease(db, l),
+});
 
 // ------------------------------------------------------------------ what the dashboard reads
 

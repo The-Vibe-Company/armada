@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { DEMO_TOML } from "../../core/test/support.ts";
@@ -29,7 +29,6 @@ async function workspace() {
       XDG_CONFIG_HOME: join(directory, "config"),
       LINEAR_API_KEY: "synthetic-linear-key",
       GITHUB_TOKEN: "synthetic-github-token",
-      ARMADA_TURSO_URL: `file:${join(directory, "activity.db")}`,
     },
   };
 }
@@ -54,7 +53,7 @@ async function execute(command: string, args: string[], input = "", waitForRead 
     if (!waitForRead) child.stdin.end(input);
   });
   const record = JSON.parse(stdout.trim().split("\n").at(-1) ?? "") as { bodies: string[]; writes: string[] };
-  return { code, stderr, record, database: join(options.cwd, "activity.db") };
+  return { code, stderr, record };
 }
 
 describe("CLI standard input", () => {
@@ -122,12 +121,6 @@ describe("CLI standard input", () => {
         'Next: pass --message "<text>" or pipe a non-empty message into --message-file -',
       );
       expect(result.record).toEqual({ bodies: [], writes: [] });
-      expect(
-        await access(result.database).then(
-          () => true,
-          () => false,
-        ),
-      ).toBe(false);
     }
   });
 });

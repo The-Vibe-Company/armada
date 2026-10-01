@@ -3,8 +3,8 @@
 // list of what waits for the owner. Pure: the dashboard reads the sources,
 // calls `buildOverview` and renders the result as is.
 import type { ConductorProfile } from "./config.ts";
+import type { InboxItem } from "./live.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
-import type { InboxItem } from "./turso.ts";
 import type { AgentPhase } from "./types.ts";
 
 export const OVERVIEW_SCHEMA_VERSION = 2;
@@ -115,7 +115,7 @@ export interface ProjectReading {
   report: StatusReport | null;
   error: string | null;
   warnings?: string[];
-  /** Null when Turso was not read. */
+  /** Null when the live data was not read. */
   live: { inbox: InboxItem[]; coordinatorSeenAt: string | null } | null;
   /** `[conductor.profiles]` of its armada.toml. */
   profiles?: Record<string, ConductorProfile>;
@@ -124,7 +124,7 @@ export interface ProjectReading {
 export interface FleetOverview {
   schemaVersion: typeof OVERVIEW_SCHEMA_VERSION;
   generatedAt: string;
-  /** Turso: ok, unreachable (the view falls back to Linear and GitHub) or off (not configured). */
+  /** The live data: ok, unreachable (the view falls back to Linear and GitHub) or off (not configured). */
   live: { state: "ok" | "unreachable" | "off"; error: string | null };
   projects: ProjectOverview[];
   waiting: WaitingItem[];

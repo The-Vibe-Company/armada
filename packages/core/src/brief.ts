@@ -242,8 +242,6 @@ export function handBackNote(notes: BriefNote[]): BriefNote | null {
 
 const VARIABLES: { name: string; required: boolean; purpose: string }[] = [
   { name: "LINEAR_API_KEY", required: true, purpose: "Linear key the worker claims and reports with" },
-  { name: "ARMADA_TURSO_URL", required: false, purpose: "Turso database for live activity" },
-  { name: "ARMADA_TURSO_TOKEN", required: false, purpose: "Turso database token" },
 ];
 
 export interface BuildBriefInput {

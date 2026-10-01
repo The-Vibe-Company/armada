@@ -43,9 +43,9 @@ test("the credentials file is created 0600 in a 0700 directory and updated witho
   const open = await readCredentialStore(paths.credentials);
   expect([open.mode, storeIsExposed(open)]).toEqual([0o644, true]);
 
-  await updateCredentialStore(paths, { ARMADA_TURSO_TOKEN: "turso-token" });
+  await updateCredentialStore(paths, { ARMADA_API_KEY: "armada_key_1" });
   expect(await readFile(paths.credentials, "utf8")).toBe(
-    "# my keys\nLINEAR_API_KEY=lin_api_first\nOTHER_TOOL=keep\nARMADA_TURSO_TOKEN=turso-token\n",
+    "# my keys\nLINEAR_API_KEY=lin_api_first\nOTHER_TOOL=keep\nARMADA_API_KEY=armada_key_1\n",
   );
   const after = await readCredentialStore(paths.credentials);
   expect([after.mode, storeIsExposed(after)]).toEqual([0o600, false]);
@@ -57,7 +57,6 @@ test("config.toml is created once from a commented template and parsed with the 
   expect(await ensurePersonalConfig(paths)).toBe(true);
   expect(parsePersonalConfig(await readFile(paths.config, "utf8"))).toEqual({
     language: null,
-    turso: { url: null },
     dashboard: { url: null },
     api: { url: null },
   });
@@ -65,27 +64,18 @@ test("config.toml is created once from a commented template and parsed with the 
   expect(await ensurePersonalConfig(paths)).toBe(false);
   expect(await readFile(paths.config, "utf8")).toBe('language = "fr"\n');
 
-  expect(
-    parsePersonalConfig(
-      'language = "fr"\n[turso]\nurl = "libsql://db"\n[api]\nurl = "https://armada.example.test"\n[later]\nx = 1\n',
-    ),
-  ).toEqual({
+  expect(parsePersonalConfig('language = "fr"\n[api]\nurl = "https://armada.example.test"\n[later]\nx = 1\n')).toEqual({
     language: "fr",
-    turso: { url: "libsql://db" },
     dashboard: { url: null },
     api: { url: "https://armada.example.test" },
   });
   const problems = (() => {
     try {
-      parsePersonalConfig('stray = 1\n[turso]\nurl = ""\ntoken = "no"\n');
+      parsePersonalConfig('stray = 1\n[api]\nurl = ""\ntoken = "no"\n');
     } catch (err) {
       if (err instanceof ConfigError) return err.problems;
     }
     return null;
   })();
-  expect(problems).toEqual([
-    'unknown key "stray"',
-    'unknown key "turso.token"',
-    '"turso.url" must be a non-empty string',
-  ]);
+  expect(problems).toEqual(['unknown key "stray"', 'unknown key "api.token"', '"api.url" must be a non-empty string']);
 });

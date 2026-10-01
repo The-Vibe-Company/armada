@@ -4,34 +4,14 @@
 // signed by its author. The coordinator carries it out through the runtime
 // guide, then resolves it: `armada answer` for an answer, the worker's claim
 // for a launch. Every check the dashboard makes before writing lives here,
-// over `RequestStore`: the app's own database, or Turso.
+// over `RequestStore`: the fleet's live data in the app's database.
 import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
+import type { FleetStore } from "./live.ts";
 import type { StatusReport } from "./status.ts";
-import {
-  addRequest,
-  type Db,
-  getInboxItem,
-  getRuntimeHandle,
-  type NewRequest,
-  type RuntimeHandle,
-  type StoredInboxItem,
-} from "./turso.ts";
 
-/** The reads and the one write a request needs, wherever the inbox lives. */
-export interface RequestStore {
-  getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
-  getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
-  /** Adds the request unless the same one is open, or the question it answers is closed: null then. */
-  addRequest(r: NewRequest): Promise<number | null>;
-}
-
-/** The inbox in a Turso database. */
-export const tursoRequests = (db: Db): RequestStore => ({
-  getInboxItem: (project, id) => getInboxItem(db, project, id),
-  getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
-  addRequest: (r) => addRequest(db, r),
-});
+/** The reads and the one write a request needs. */
+export type RequestStore = Pick<FleetStore, "getInboxItem" | "getRuntimeHandle" | "addRequest">;
 
 export const REQUEST_LIMITS = { answer: 4000, author: 80 } as const;
 

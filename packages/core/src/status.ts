@@ -38,7 +38,7 @@ export interface InFlightTicket extends TicketRef {
   agent: string | null;
   since: string;
   lastUpdate: string;
-  /** Latest report by the worker (Turso event, status comment or claim); null if it never reported. */
+  /** Latest report by the worker (live event, status comment or claim); null if it never reported. */
   lastReport: string | null;
   silent: boolean;
   statusLine: { summary: string; at: string; url: string } | null;
@@ -86,11 +86,11 @@ export interface BuildStatusInput {
   program: ProgramData;
   forge: ForgeData | null;
   forgeError?: string | null;
-  /** Newest Turso event per ticket id; absent when Turso was not read. */
+  /** Newest live event per ticket id; absent when the live data was not read. */
   lastEvents?: Record<string, string>;
-  /** Turso events newer than the tracker read, and open runtime handles (the dashboard's live layer). */
+  /** Live events newer than the tracker read, and open runtime handles (the dashboard's live layer). */
   live?: LaneOptions["live"];
-  /** Problems met on optional sources (Turso), added to the report warnings. */
+  /** Problems met on optional sources (the live data), added to the report warnings. */
   extraWarnings?: string[];
   now: Date;
 }
@@ -194,7 +194,7 @@ export interface LoadStatusOptions {
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
-  /** Newest Turso event time per ticket, read by the caller when Turso is configured. */
+  /** Newest live event time per ticket, read by the caller through Armada when signed in. */
   lastEvents?: () => Promise<Record<string, string>>;
   fetch?: Fetch;
   now?: () => Date;
@@ -242,7 +242,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     ? opts.lastEvents().then(
         (events) => ({ events }),
         (err: unknown) => ({
-          warning: `Turso could not be read (${err instanceof Error ? err.message : String(err)}); silence is measured from Linear only`,
+          warning: `Armada's live data could not be read (${err instanceof Error ? err.message : String(err)}); silence is measured from Linear only`,
         }),
       )
     : Promise.resolve({});

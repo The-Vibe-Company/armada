@@ -1,27 +1,14 @@
 // `armada merge`: the coordinator merges a handed-back pull request. The
-// checklist is pure; GitHub, the local checkout, Linear and Turso are
-// injected, so every rule and every failure path is tested with fakes.
+// checklist is pure; GitHub, the local checkout, Linear and the fleet's live
+// data (through Armada) are injected, so every rule and every failure path is tested with fakes.
 // Order: take the per-project merge lease, check everything, merge pinned to
 // the handed-back SHA, read MERGED back, then close the ticket.
 import type { ArmadaConfig } from "./config.ts";
 import type { Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
+import type { Fleet, Lease, RuntimeHandle } from "./live.ts";
 import { checkProblems, FULL_SHA } from "./phases.ts";
-import {
-  acquireLease,
-  type Db,
-  ensureProject,
-  getRuntimeHandle,
-  type Lease,
-  openRuntimeHandles,
-  type RuntimeHandle,
-  recordEvent,
-  releaseLease,
-  releaseRuntimeHandle,
-  renewLease,
-  resolveInboxItems,
-} from "./turso.ts";
-import { activeClaimComments, firstState, live, others, projectOf, Refusal, ticketFromBranch } from "./worker.ts";
+import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
 // ------------------------------------------------------------------ adapters
 
@@ -77,9 +64,10 @@ export interface MergeContext {
   forge: MergeForge;
   /** Null when git cannot be run: a head behind its base is then refused and hints are skipped. */
   repo: LocalRepo | null;
-  turso: () => Promise<{ db: Db | null; warning: string | null }>;
-  /** True when a Turso URL is set: the merge lock is then required, and Turso being down refuses the merge. */
-  tursoConfigured: boolean;
+  /** The fleet's live data, through Armada; null with a warning when this terminal cannot reach it. */
+  fleet: () => Promise<{ fleet: Fleet | null; warning: string | null }>;
+  /** True when this terminal is signed in to Armada: the merge lock is then required, and Armada being down refuses the merge. */
+  lockRequired: boolean;
   /** Tickets in flight in the project (the merged one may be among them). */
   inFlight: () => Promise<TicketInFlight[]>;
   /** Identifies this coordinator in the merge lease. */
@@ -98,7 +86,7 @@ export interface MergeInput {
   ticket?: string | null;
   /** Run the checklist only. */
   dryRun?: boolean;
-  /** Merge without the merge lock, e.g. while Turso is down; recorded on the ticket. */
+  /** Merge without the merge lock, e.g. while Armada is down; recorded on the ticket. */
   noLock?: boolean;
 }
 
@@ -107,7 +95,7 @@ export interface WorkerToTell {
   title: string;
   phase: string;
   runtime: string | null;
-  /** Runtime session, when Turso knows it. */
+  /** Runtime session, when the fleet's live data knows it. */
   handle: string | null;
 }
 
@@ -302,17 +290,16 @@ export interface LeaseOptions {
   name: string;
   holder: string;
   ttlMs: number;
-  now: () => Date;
   sleep: (ms: number) => Promise<void>;
   pollMs?: number;
   /** Give up after waiting this long; defaults to the TTL, after which a crashed holder's lease has expired. */
   maxWaitMs?: number;
   onWait?: (held: Lease | null) => void;
-  /** Longest wait for one Turso call on the lease; a hung database refuses instead of hanging. */
+  /** Longest wait for one call to Armada on the lease; a hung server refuses instead of hanging. */
   timeoutMs?: number;
 }
 
-const LOCK_CALL_TIMEOUT_MS = 10_000;
+const LOCK_CALL_TIMEOUT_MS = 20_000;
 
 /** `p`, or a Refusal once `ms` pass without an answer. */
 async function timed<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
@@ -325,7 +312,7 @@ async function timed<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
           () =>
             reject(
               new Refusal(
-                `Turso did not answer within ${ms / 1000} s to ${what}; nothing was merged`,
+                `Armada did not answer within ${ms / 1000} s to ${what}; nothing was merged`,
                 "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
               ),
             ),
@@ -339,26 +326,32 @@ async function timed<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 }
 
 /**
- * Runs `body` while holding a Turso lease; waits (polling) while another
+ * Runs `body` while holding a lease of the project, taken through Armada
+ * (atomic on its database, with its clock); waits (polling) while another
  * holder has it. `renew` extends the lease and returns false if it was lost.
  */
 export async function withLease<T>(
-  db: Db,
+  fleet: Fleet,
   o: LeaseOptions,
   body: (renew: () => Promise<boolean>) => Promise<T>,
 ): Promise<T> {
-  const key = { project: o.project, name: o.name, holder: o.holder, ttlMs: o.ttlMs };
+  const key = { name: o.name, holder: o.holder, ttlMs: o.ttlMs };
   const poll = o.pollMs ?? LEASE_POLL_MS;
   const maxWait = o.maxWaitMs ?? o.ttlMs;
   const lockTimeout = o.timeoutMs ?? LOCK_CALL_TIMEOUT_MS;
   let waited = 0;
   let lastHolder: string | null | undefined;
   for (;;) {
-    const got = await timed(acquireLease(db, { ...key, at: o.now() }), lockTimeout, `take the ${o.name} lock`).catch(
+    const got = await timed(fleet.acquireLease(key), lockTimeout, `take the ${o.name} lock`).catch(
       async (err: unknown) => {
         // The write may still land later: give back whatever we might hold.
-        await timed(releaseLease(db, key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
-        throw err;
+        await timed(fleet.releaseLease(key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
+        throw err instanceof Refusal
+          ? err
+          : new Refusal(
+              `the ${o.name} lock could not be taken (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
+              "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
+            );
       },
     );
     if (got.acquired) break;
@@ -375,11 +368,9 @@ export async function withLease<T>(
     waited += poll;
   }
   try {
-    return await body(() =>
-      timed(renewLease(db, { ...key, at: o.now() }), lockTimeout, `renew the ${o.name} lock`).catch(() => false),
-    );
+    return await body(() => timed(fleet.renewLease(key), lockTimeout, `renew the ${o.name} lock`).catch(() => false));
   } finally {
-    await timed(releaseLease(db, key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
+    await timed(fleet.releaseLease(key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
   }
 }
 
@@ -474,7 +465,7 @@ async function checklist(ctx: MergeContext, input: MergeInput): Promise<Checked>
       pull.state !== "open"
         ? `gh pr view ${pull.number} --repo ${config.github.repository}`
         : ticket.agentPhase !== "ready-to-merge"
-          ? ctx.tursoConfigured
+          ? ctx.lockRequired
             ? `armada inbox --wait, until ${ticket.id} is handed back`
             : `armada status, until ${ticket.id} shows ready-to-merge`
           : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
@@ -657,7 +648,7 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     await recheck(ctx, c);
     if (!(await renew()))
       throw new Refusal(
-        "the merge lock could not be renewed (it expired and another coordinator took it, or Turso did not answer); nothing was merged",
+        "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged",
         `armada merge ${input.pr} again`,
       );
     say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
@@ -679,26 +670,25 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     early.push(`merged without the merge lock (--no-lock): make sure no other coordinator merges in ${slug} now`);
     return run(async () => true);
   }
-  const { db, warning } = await ctx.turso();
-  if (!db && ctx.tursoConfigured)
+  const { fleet, warning } = await ctx.fleet();
+  if (!fleet && ctx.lockRequired)
     throw new Refusal(
-      `the merge lock needs Turso, which is unavailable (${warning ?? "no answer"}); nothing was merged`,
-      `armada merge ${input.pr} again once Turso answers, or armada merge ${input.pr} --no-lock if you are sure no other coordinator merges in ${slug} now`,
+      `the merge lock needs Armada, which is unavailable (${warning ?? "no answer"}); nothing was merged`,
+      `armada merge ${input.pr} again once Armada answers, or armada merge ${input.pr} --no-lock if you are sure no other coordinator merges in ${slug} now`,
     );
-  if (!db) {
+  if (!fleet) {
     early.push(
-      `${warning ?? "Turso is not configured"}; the merge lock was not taken, so make sure no other coordinator merges in ${slug} now`,
+      `${warning ?? "not signed in to Armada"}; the merge lock was not taken, so make sure no other coordinator merges in ${slug} now`,
     );
     return run(async () => true);
   }
   return withLease(
-    db,
+    fleet,
     {
       project: slug,
       name: MERGE_LEASE,
       holder: ctx.holder,
       ttlMs: MERGE_LEASE_TTL_MS,
-      now: ctx.now,
       sleep: ctx.sleep,
       onWait: (held) =>
         say(
@@ -710,43 +700,17 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
   );
 }
 
-/** Turso bookkeeping and the list of workers to tell, after the ticket is closed. */
+/** The fleet's bookkeeping and the list of workers to tell, after the ticket is closed. */
 async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: string[]): Promise<MergeOutcome> {
-  const { config } = ctx;
-  const slug = config.project.slug;
-  const at = ctx.now();
-  const live$ = await live(ctx, c.warnings, "record the merge", async (db) => {
-    await ensureProject(db, projectOf(config), at);
-    const handle = await getRuntimeHandle(db, slug, c.ticket.id);
-    await recordEvent(db, {
-      project: slug,
+  const live$ = await live(ctx, c.warnings, "record the merge", (fleet) =>
+    fleet.merge({
       ticket: c.ticket.id,
-      kind: "merge",
-      phase: "merged",
-      message: `PR #${merged.number} merged as ${merged.mergeCommit ?? "unknown"}`,
-      prUrl: merged.url,
+      number: merged.number,
+      url: merged.url,
+      mergeCommit: merged.mergeCommit,
       headSha: merged.headSha,
-      at,
-    });
-    const resolved = await resolveInboxItems(db, {
-      project: slug,
-      ticket: c.ticket.id,
-      kind: "hand-back",
-      resolution: `merged as ${merged.mergeCommit ?? "unknown"}`,
-      at,
-    });
-    // No worker is left to take an answer.
-    await resolveInboxItems(db, { project: slug, ticket: c.ticket.id, kind: "question", resolution: "merged", at });
-    await resolveInboxItems(db, {
-      project: slug,
-      ticket: c.ticket.id,
-      kind: "answer-request",
-      resolution: "merged",
-      at,
-    });
-    await releaseRuntimeHandle(db, slug, c.ticket.id, at);
-    return { handle, resolved, open: await openRuntimeHandles(db, slug) };
-  });
+    }),
+  );
   if (live$?.resolved) lines.push(`Hand-back resolved in the coordinator's inbox.`);
 
   let workers: WorkerToTell[] = [];

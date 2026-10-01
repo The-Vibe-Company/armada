@@ -6,7 +6,6 @@ import {
   listSecrets,
   openSecret,
   readSecrets,
-  SECRET_KINDS,
   SealError,
   sealSecret,
   setSecret,
@@ -76,25 +75,6 @@ describe("sealing a value", () => {
   });
 });
 
-describe("what a key may be", () => {
-  test("a database URL names a public host: never localhost, an IP address or an internal name", () => {
-    const ok = SECRET_KINDS["turso-url"].check;
-    expect(ok("libsql://fleet-acme.aws-eu-west-1.turso.io")).toBe(true);
-    expect(ok("https://db.example.test:8080/")).toBe(true);
-    for (const bad of [
-      "libsql://localhost",
-      "https://127.0.0.1",
-      "https://169.254.169.254",
-      "https://[::1]",
-      "libsql://metadata.internal",
-      "https://printer.local",
-      "file:/tmp/x.db",
-      "http://fleet.turso.io",
-    ])
-      expect(ok(bad)).toBe(false);
-  });
-});
-
 describe("the keys of an organization", () => {
   let client: Database;
   const now = new Date("2026-09-30T12:00:00Z");
@@ -124,11 +104,17 @@ describe("the keys of an organization", () => {
     await setSecret(client, a, {
       organization: "org-1",
       user: null,
-      name: "turso-url",
-      value: "libsql://fleet-acme.turso.io",
+      name: "github-token",
+      value: "synthetic-github-token-0003",
       actor: owner,
       now,
     });
+    // A key the vault no longer keeps (an earlier version's) is neither listed nor handed out.
+    await client.query(
+      `INSERT INTO "armada_secret" ("organizationId", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
+       VALUES ('org-1', '', 'retired-key', 'x', 'u-owner', 'Olive Owner', $1, $1)`,
+      [now],
+    );
     await setSecret(client, a, {
       organization: "org-1",
       user: "u-mia",
@@ -151,16 +137,9 @@ describe("the keys of an organization", () => {
 
     const seen = await listSecrets(client, a, { organization: "org-1", user: "u-mia" });
     expect(seen).toEqual([
+      { name: "github-token", own: false, setBy: owner.label, setAt: now.toISOString(), value: null, readable: true },
       { name: "linear-api-key", own: false, setBy: owner.label, setAt: now.toISOString(), value: null, readable: true },
       { name: "linear-api-key", own: true, setBy: "Mia", setAt: now.toISOString(), value: null, readable: true },
-      {
-        name: "turso-url",
-        own: false,
-        setBy: owner.label,
-        setAt: now.toISOString(),
-        value: "libsql://fleet-acme.turso.io",
-        readable: true,
-      },
     ]);
     // Another person does not see Mia's own key, even as a row.
     expect((await listSecrets(client, a, { organization: "org-1", user: "u-other" })).map((s) => s.own)).toEqual([
@@ -172,7 +151,11 @@ describe("the keys of an organization", () => {
     expect((await readSecrets(client, a, { organization: "org-1", user: "u-mia" })).values["linear-api-key"]).toBe(
       "lin_api_synthetic_own_0002",
     );
-    expect((await readSecrets(client, a, { organization: "org-1", user: null })).values["linear-api-key"]).toBe(LINEAR);
+    const organization = await readSecrets(client, a, { organization: "org-1", user: null });
+    expect([organization.values, organization.problems]).toEqual([
+      { "linear-api-key": LINEAR, "github-token": "synthetic-github-token-0003" },
+      [],
+    ]);
 
     // Another master key: listed as unreadable, to be entered again; the broker gets a problem, not a value.
     const b = vaultOf(KEY_B);
@@ -196,7 +179,7 @@ describe("the keys of an organization", () => {
     expect(events.map((e) => `${e.action} ${e.keys.join(",")} ${e.detail}`)).toEqual([
       "delete linear-api-key their own key",
       "set linear-api-key their own key",
-      "set turso-url for the organization",
+      "set github-token for the organization",
       "set linear-api-key for the organization",
     ]);
     const stored = JSON.stringify((await client.query(`SELECT * FROM "armada_secret_event"`)).rows);

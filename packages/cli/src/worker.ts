@@ -1,7 +1,8 @@
 // `armada claim | report | release`: how a worker tells the fleet where it is.
-// Linear is written through the one write adapter; Turso is optional and a
-// failure there only warns. A release, and the coordinator's merge, end the
-// ticket's worker sessions on Armada.
+// Linear is written through the one write adapter; the fleet's live data is
+// reached through Armada with this terminal's sign-in, and a failure there
+// only warns. A release, and the coordinator's merge, end the ticket's worker
+// sessions on Armada.
 import {
   type ArmadaConfig,
   armadaApi,
@@ -9,16 +10,16 @@ import {
   checkRequestedProfile,
   claimTicket,
   createLinearWriter,
-  type Db,
+  type Fleet,
   fetchPullRequest,
+  fleetClient,
   isLabelPhase,
   LABEL_PHASES,
   LINEAR_KEY,
-  lastEventTimes,
   machinePaths,
   type Outcome,
-  openTurso,
   ProfileError,
+  projectOf,
   releaseTicket,
   reportPhase,
   ticketFromBranch,
@@ -28,53 +29,41 @@ import {
 } from "@armada/core";
 import { type Io, missingKey, UsageError } from "./io.ts";
 
-const TURSO_OPEN_TIMEOUT_MS = 10_000;
-
-/** Opens Turso when configured; any problem becomes a warning, never a failure. */
-export async function openLive(credentials: Credentials): Promise<{ db: Db | null; warning: string | null }> {
-  if (!credentials.tursoUrl)
-    return { db: null, warning: "Turso is not configured (ARMADA_TURSO_URL); live activity is not recorded" };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const opening = openTurso({ url: credentials.tursoUrl, token: credentials.tursoToken });
+/**
+ * The project's live data through Armada, signed in as this terminal: a
+ * coordinator's session or API key, or the worker session of the ticket the
+ * command acts on. Signed out, `fleet` is null and `warning` says so.
+ */
+export function liveFleet(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+): { fleet: Fleet | null; warning: string | null } {
+  const signIn = credentials.armadaSignIn;
+  if (!signIn)
+    return {
+      fleet: null,
+      warning: "not signed in to Armada (armada login); live activity is not recorded, Linear is",
+    };
   try {
-    const db = await Promise.race([
-      opening,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`no answer within ${TURSO_OPEN_TIMEOUT_MS / 1000} s`)),
-          TURSO_OPEN_TIMEOUT_MS,
-        );
-      }),
-    ]);
-    return { db, warning: null };
+    const api = armadaApi({ url: credentials.armadaApi.url, ...(io.fetch ? { fetch: io.fetch } : {}) });
+    return { fleet: fleetClient({ api, signIn, project: projectOf(config) }), warning: null };
   } catch (err) {
-    // A connection that opens after the timeout is closed, not leaked.
-    opening.then(
-      (db) => db.close(),
-      () => {},
-    );
-    const reason = err instanceof Error ? err.message : String(err);
-    return { db: null, warning: `Turso unavailable (${reason}); live activity is not recorded, Linear is` };
-  } finally {
-    clearTimeout(timer);
+    return {
+      fleet: null,
+      warning: `${err instanceof Error ? err.message : String(err)}; live activity is not recorded`,
+    };
   }
 }
 
-/** Newest Turso event per ticket for `armada status`; undefined when Turso is not configured. */
+/** Newest live event per ticket for `armada status`, through Armada; undefined when not signed in. */
 export function statusEvents(
+  io: Io,
   config: ArmadaConfig,
   credentials: Credentials,
 ): (() => Promise<Record<string, string>>) | undefined {
-  if (!credentials.tursoUrl) return undefined;
-  return async () => {
-    const { db, warning } = await openLive(credentials);
-    if (!db) throw new Error(warning ?? "Turso unavailable");
-    try {
-      return await lastEventTimes(db, config.project.slug);
-    } finally {
-      db.close();
-    }
-  };
+  const { fleet } = liveFleet(io, config, credentials);
+  return fleet ? () => fleet.lastEventTimes() : undefined;
 }
 
 /**
@@ -100,11 +89,7 @@ export function currentTicket(
   return id.toUpperCase();
 }
 
-async function context(
-  io: Io,
-  config: ArmadaConfig,
-  credentials: Credentials,
-): Promise<{ ctx: WorkerContext; close: () => Promise<void> }> {
+function context(io: Io, config: ArmadaConfig, credentials: Credentials): WorkerContext {
   if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   const linearOpts = {
     apiKey: credentials.linearApiKey,
@@ -112,16 +97,12 @@ async function context(
     ...(io.fetch ? { fetch: io.fetch } : {}),
   };
   const linear = io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts);
-  // Turso is opened only when a command reaches its Turso step, after Linear.
-  let live: ReturnType<typeof openLive> | null = null;
+  const live = liveFleet(io, config, credentials);
   const token = credentials.githubToken;
-  const ctx: WorkerContext = {
+  return {
     config,
     linear,
-    turso: () => {
-      live ??= openLive(credentials);
-      return live;
-    },
+    fleet: async () => live,
     readPull: token
       ? (number) =>
           fetchPullRequest({
@@ -133,11 +114,6 @@ async function context(
       : null,
     now: io.now ?? (() => new Date()),
   };
-  const close = async () => {
-    const opened = await live;
-    opened?.db?.close();
-  };
-  return { ctx, close };
 }
 
 function print(io: Io, outcome: Outcome, json: boolean) {
@@ -196,13 +172,8 @@ export async function withContext(
   json: boolean,
   act: (ctx: WorkerContext) => Promise<Outcome>,
 ): Promise<number> {
-  const { ctx, close } = await context(io, config, credentials);
-  try {
-    print(io, await act(ctx), json);
-    return 0;
-  } finally {
-    await close();
-  }
+  print(io, await act(context(io, config, credentials)), json);
+  return 0;
 }
 
 export async function claim(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {

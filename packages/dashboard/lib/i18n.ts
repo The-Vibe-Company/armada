@@ -58,15 +58,7 @@ export type WorkersError = (typeof WORKERS_ERRORS)[number];
 type WorkerStateLabel = "waiting" | "unused" | "active" | "idle" | "released" | "merged" | "revoked";
 
 /** The keys the Keys page names: the vault's, plus a person's own Linear key. */
-export type KeyLabel =
-  | "linear-api-key"
-  | "own-linear-api-key"
-  | "turso-url"
-  | "turso-platform-token"
-  | "turso-organization"
-  | "turso-database"
-  | "turso-database-token"
-  | "github-token";
+export type KeyLabel = "linear-api-key" | "own-linear-api-key" | "github-token";
 
 /** Why a code of `armada login` could not be approved or denied, shown on the /device page. */
 export const DEVICE_ERRORS = ["unknown", "used", "forbidden", "failed"] as const;
@@ -308,7 +300,7 @@ const en = {
     keyUnused: "never used",
     revoke: "Revoke",
     onlyOwners: "Only owners create and revoke API keys.",
-    keysLink: "Keys: Linear, Turso and GitHub",
+    keysLink: "Keys: Linear and GitHub",
     workersLink: "Workers: who launched them, and their sessions",
     githubLink: "GitHub: the Armada GitHub App and the installations this organization reads",
   },
@@ -320,18 +312,10 @@ const en = {
     vaultInvalid: (variable: string) =>
       `${variable} is set, but it is not 32 bytes in base64 or hex, so the vault is off. Its owner fixes it and redeploys.`,
     linear: "Linear",
-    turso: "Turso",
-    tursoHint:
-      "For terminals only, until they reach the fleet through Armada: the dashboard reads it from its own database. With a Platform API token, each terminal gets a database token made for it that expires after 4 hours. Without one, the database token below is handed out as is.",
     github: "GitHub",
     labels: {
       "linear-api-key": "Organization key",
       "own-linear-api-key": "Your own key",
-      "turso-url": "Database URL",
-      "turso-platform-token": "Platform API token",
-      "turso-organization": "Turso organization",
-      "turso-database": "Database name",
-      "turso-database-token": "Database token (fallback)",
       "github-token": "GitHub token",
     } satisfies Record<KeyLabel, string>,
     hints: {
@@ -339,13 +323,6 @@ const en = {
         "Linear > Settings > Security & access > Personal API keys. Workers post their comments with it.",
       "own-linear-api-key":
         "Optional. Your terminals use it instead of the organization's, so the comments they post carry your name. Only you use it.",
-      "turso-url":
-        "libsql://<database>-<organization>.turso.io. Optional with a Platform API token: Armada asks Turso.",
-      "turso-platform-token": "turso auth api-tokens mint armada",
-      "turso-organization": "Its slug, from turso org list",
-      "turso-database": "From turso db list",
-      "turso-database-token":
-        "Only without a Platform API token. It does not expire: turso db tokens create <database>",
       "github-token":
         "Only without the Armada GitHub App: with it, the dashboard reads pull requests, CI and armada.toml through the app (Organization > GitHub). Terminals keep GITHUB_TOKEN or gh.",
     } satisfies Record<KeyLabel, string>,
@@ -440,7 +417,7 @@ const en = {
     endedBy: (who: string, when: string) => `by ${who}, ${when}`,
     revoke: "Revoke",
     revokeHint:
-      "Revoking ends a worker's session at once: its next command fails, and it gets no more keys. A Turso token it already holds lasts until it expires (4 hours at most).",
+      "Revoking ends a worker's session at once: its next command fails, and it gets no more keys and no more access to the fleet's data.",
     onlyAdmins: "Only owners and admins revoke a worker.",
     none: "No worker launched with a token yet. A signed-in coordinator makes one with armada brief <ticket>.",
     errors: {
@@ -746,7 +723,7 @@ const fr: Strings = {
     keyUnused: "jamais utilisée",
     revoke: "Révoquer",
     onlyOwners: "Seuls les propriétaires créent et révoquent les clés d'API.",
-    keysLink: "Clés : Linear, Turso et GitHub",
+    keysLink: "Clés : Linear et GitHub",
     workersLink: "Workers : qui les a lancés, et leurs sessions",
     githubLink: "GitHub : l'app GitHub d'Armada et les installations que lit cette organisation",
   },
@@ -758,18 +735,10 @@ const fr: Strings = {
     vaultInvalid: (variable) =>
       `${variable} est défini, mais ne fait pas 32 octets en base64 ou en hexadécimal : le coffre est coupé. Son propriétaire le corrige et redéploie.`,
     linear: "Linear",
-    turso: "Turso",
-    tursoHint:
-      "Pour les terminaux seulement, jusqu'à ce qu'ils passent par Armada : le tableau de bord lit la flotte dans sa propre base. Avec un jeton de l'API Platform, chaque terminal reçoit un jeton de base fait pour lui, qui expire au bout de 4 heures. Sans lui, le jeton de base ci-dessous est remis tel quel.",
     github: "GitHub",
     labels: {
       "linear-api-key": "Clé de l'organisation",
       "own-linear-api-key": "Ta propre clé",
-      "turso-url": "URL de la base",
-      "turso-platform-token": "Jeton de l'API Platform",
-      "turso-organization": "Organisation Turso",
-      "turso-database": "Nom de la base",
-      "turso-database-token": "Jeton de base (secours)",
       "github-token": "Jeton GitHub",
     },
     hints: {
@@ -777,12 +746,6 @@ const fr: Strings = {
         "Linear > Settings > Security & access > Personal API keys. Les workers publient leurs commentaires avec.",
       "own-linear-api-key":
         "Facultative. Tes terminaux l'utilisent à la place de celle de l'organisation : leurs commentaires portent ton nom. Toi seul t'en sers.",
-      "turso-url":
-        "libsql://<base>-<organisation>.turso.io. Facultative avec un jeton de l'API Platform : Armada la demande à Turso.",
-      "turso-platform-token": "turso auth api-tokens mint armada",
-      "turso-organization": "Son identifiant, d'après turso org list",
-      "turso-database": "D'après turso db list",
-      "turso-database-token": "Seulement sans jeton de l'API Platform. Il n'expire pas : turso db tokens create <base>",
       "github-token":
         "Seulement sans l'app GitHub d'Armada : avec elle, le tableau de bord lit pull requests, CI et armada.toml par l'app (Organisation > GitHub). Les terminaux gardent GITHUB_TOKEN ou gh.",
     },
@@ -878,7 +841,7 @@ const fr: Strings = {
     endedBy: (who, when) => `par ${who}, ${when}`,
     revoke: "Révoquer",
     revokeHint:
-      "Révoquer met fin tout de suite à la session d'un worker : sa prochaine commande échoue, et il ne reçoit plus de clés. Un jeton Turso qu'il détient déjà dure jusqu'à son expiration (4 heures au plus).",
+      "Révoquer met fin tout de suite à la session d'un worker : sa prochaine commande échoue, et il ne reçoit plus ni clé ni accès aux données de la flotte.",
     onlyAdmins: "Seuls les propriétaires et les admins révoquent un worker.",
     none: "Aucun worker lancé avec un jeton pour l'instant. Un coordinateur connecté en crée un avec armada brief <ticket>.",
     errors: {

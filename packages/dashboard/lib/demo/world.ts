@@ -1,5 +1,5 @@
 // A synthetic fleet for local trials and screenshots: two invented projects,
-// their Linear programs and pull requests, and the Turso activity to seed.
+// their Linear programs and pull requests, and the live activity to seed.
 // Times are relative to `now`, so the view always looks current.
 import type {
   CiState,
@@ -353,7 +353,7 @@ export function demoSnapshot(
   };
 }
 
-/** The Turso activity behind the demo tickets: claims, reports and runtime handles. */
+/** The live activity behind the demo tickets: claims, reports and runtime handles. */
 export function demoEvents(scenario: Scenario) {
   return demoTickets(scenario).map((t) => ({
     project: t.project,

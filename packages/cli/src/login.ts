@@ -19,9 +19,9 @@ import {
   formatWorkerSession,
   LOGIN_NEXT,
   machinePaths,
+  RETIRED_VARIABLES,
   SESSION_TOKEN_VARIABLE,
   SIGNED_IN_TO_VARIABLE,
-  TURSO_LEASE_VARIABLE,
   updateCredentialStore,
   WORKER_SESSION_PREFIX,
   waitForApproval,
@@ -37,6 +37,8 @@ export const hostOf = (url: string) => {
     return url;
   }
 };
+
+const RETIRED = Object.fromEntries(RETIRED_VARIABLES.map((v) => [v, null]));
 
 const apiOf = (io: Io, url: string) => armadaApi({ url, ...(io.fetch ? { fetch: io.fetch } : {}) });
 
@@ -119,8 +121,8 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
     [API_KEY_VARIABLE]: key,
     [SESSION_TOKEN_VARIABLE]: null,
     [SIGNED_IN_TO_VARIABLE]: armadaAddress(url),
-    // A Turso token made for the previous sign-in is not this one's.
-    [TURSO_LEASE_VARIABLE]: null,
+    // Keys of earlier versions are never read again: none stays on the machine.
+    ...RETIRED,
   });
   io.stdout(
     `Signed in to ${hostOf(credentials.armadaApi.url)} as ${describeIdentity(identity)}.\nThe key is stored in ${p.credentials}.\n`,
@@ -205,8 +207,8 @@ export async function login(io: Io, o: LoginOptions): Promise<number> {
     [SESSION_TOKEN_VARIABLE]: token,
     [API_KEY_VARIABLE]: null,
     [SIGNED_IN_TO_VARIABLE]: armadaAddress(url),
-    // A Turso token made for the previous sign-in is not this one's.
-    [TURSO_LEASE_VARIABLE]: null,
+    // Keys of earlier versions are never read again: none stays on the machine.
+    ...RETIRED,
   });
   // The session this one replaces is revoked on the Armada that issued it, not left behind.
   if (previous && previous !== token)
@@ -246,7 +248,7 @@ export async function logout(io: Io): Promise<number> {
   const p = paths(io);
   const at = storedAt(machine);
   const workers = (machine.store?.assigned ?? []).filter((k) => k.startsWith(WORKER_SESSION_PREFIX));
-  const stored = [SESSION_TOKEN_VARIABLE, API_KEY_VARIABLE, TURSO_LEASE_VARIABLE, ...workers].filter((k) =>
+  const stored = [SESSION_TOKEN_VARIABLE, API_KEY_VARIABLE, ...RETIRED_VARIABLES, ...workers].filter((k) =>
     machine.store?.assigned.includes(k),
   );
   const session = machine.store?.values[SESSION_TOKEN_VARIABLE]?.trim();
@@ -265,7 +267,7 @@ export async function logout(io: Io): Promise<number> {
       [SESSION_TOKEN_VARIABLE]: null,
       [API_KEY_VARIABLE]: null,
       [SIGNED_IN_TO_VARIABLE]: null,
-      [TURSO_LEASE_VARIABLE]: null,
+      ...RETIRED,
       // Worker sessions are forgotten, not ended: `armada release` ends one.
       ...Object.fromEntries(workers.map((k) => [k, null])),
     });

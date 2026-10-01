@@ -1,28 +1,22 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { configTemplate, parseConfig } from "../src/config.ts";
-import {
-  addInboxItem,
-  type Db,
-  getRuntimeHandle,
-  getWorkerProfile,
-  lastEventTimes,
-  listProjects,
-} from "../src/turso.ts";
+import type { Fleet } from "../src/live.ts";
 import type { CiState, PullRequest } from "../src/types.ts";
 import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
-import { closeTempTurso, DEMO_TOML, FakeLinear, NOW, tempTurso } from "./support.ts";
-
-afterEach(closeTempTurso);
+import { DEMO_TOML, FakeLinear, NOW, tempFleet } from "./support.ts";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const config = parseConfig(`${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]\n`);
 
-function setup(o: { turso?: Db | null; pull?: PullRequest | null; config?: typeof config } = {}) {
+type Live = ReturnType<typeof tempFleet>;
+
+function setup(o: { live?: Live | null; pull?: PullRequest | null; config?: typeof config } = {}) {
   const linear = new FakeLinear();
   const ctx: WorkerContext = {
     config: o.config ?? config,
     linear,
-    turso: async () => (o.turso ? { db: o.turso, warning: null } : { db: null, warning: "Turso is not configured" }),
+    fleet: async () =>
+      o.live ? { fleet: o.live.fleet, warning: null } : { fleet: null, warning: "not signed in to Armada" },
     readPull: async () => (o.pull === undefined ? null : o.pull),
     now: () => NOW,
   };
@@ -42,9 +36,10 @@ const refusal = (p: Promise<unknown>) =>
   );
 
 describe("claim", () => {
-  test("claims the ticket in Linear and records the handle and the event in Turso", async () => {
-    const { db } = await tempTurso();
-    const { linear, ctx } = setup({ turso: db });
+  test("claims the ticket in Linear and records the handle and the event through Armada", async () => {
+    const live = tempFleet();
+    const db = live.store;
+    const { linear, ctx } = setup({ live });
     linear.add("DEMO-7");
     const out = await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1/s-1" });
 
@@ -62,9 +57,9 @@ describe("claim", () => {
     });
     expect(t.comments[0]?.status).toEqual({ phase: "planning", summary: "claimed by Conductor (ws-1/s-1)" });
     expect(out.warnings).toEqual([]);
-    expect(await getRuntimeHandle(db, "widgets", "DEMO-7")).toMatchObject({ runtime: "Conductor", handle: "ws-1/s-1" });
-    expect(await lastEventTimes(db, "widgets")).toEqual({ "DEMO-7": NOW.toISOString() });
-    expect((await listProjects(db)).map((p) => p.slug)).toEqual(["widgets"]);
+    expect(await db.getRuntimeHandle("widgets", "DEMO-7")).toMatchObject({ runtime: "Conductor", handle: "ws-1/s-1" });
+    expect(await db.lastEventTimes("widgets")).toEqual({ "DEMO-7": NOW.toISOString() });
+    expect((await db.listProjects()).map((p) => p.slug)).toEqual(["widgets"]);
   });
 
   test("a ticket another worker holds is refused and left untouched", async () => {
@@ -131,9 +126,10 @@ describe("claim", () => {
       expect(linear.writes).toEqual([]);
     });
 
-    test("the claim comment and Turso record the profile, and an override's reason", async () => {
-      const { db } = await tempTurso();
-      const { linear, ctx } = setup({ config: routed, turso: db });
+    test("the claim comment and the live data record the profile, and an override's reason", async () => {
+      const live = tempFleet();
+      const db = live.store;
+      const { linear, ctx } = setup({ config: routed, live });
       webTicket(linear);
       const reason = "the page is fine; the session API is broken";
       await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1", profile: "codex", reason });
@@ -143,8 +139,8 @@ describe("claim", () => {
       expect(linear.bodies[0]).toBe(
         `Agent status: planning — claimed by Conductor (ws-1)\n\nAgent claim — runtime: Conductor · session: ws-1 · branch: feature/demo-7-do-the-thing · started: ${NOW.toISOString()} · profile: codex\nProfile: codex (agent codex, model gpt-6.1-sol, effort high), chosen by --profile, instead of "opus" from rule 1 of [[conductor.routing]] (label "web"): ${reason}`,
       );
-      expect(await getRuntimeHandle(db, "widgets", "DEMO-7")).toMatchObject({ handle: "ws-1", profile: "codex" });
-      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toMatchObject({ name: "codex", routed: "opus", reason });
+      expect(await db.getRuntimeHandle("widgets", "DEMO-7")).toMatchObject({ handle: "ws-1", profile: "codex" });
+      expect(await db.getWorkerProfile("widgets", "DEMO-7")).toMatchObject({ name: "codex", routed: "opus", reason });
 
       // A resume keeps the claim's profile, whatever it asks for.
       const resumed = await claimTicket(ctx, {
@@ -162,11 +158,11 @@ describe("claim", () => {
         runtime: "Conductor",
         profile: "codex",
       });
-      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toMatchObject({ name: "codex" });
+      expect(await db.getWorkerProfile("widgets", "DEMO-7")).toMatchObject({ name: "codex" });
 
       // A release forgets it.
       await releaseTicket(ctx, { ticket: "DEMO-7", reason: "relaunch" });
-      expect(await getWorkerProfile(db, "widgets", "DEMO-7")).toBeNull();
+      expect(await db.getWorkerProfile("widgets", "DEMO-7")).toBeNull();
     });
   });
 
@@ -180,7 +176,7 @@ describe("claim", () => {
 });
 
 describe("report", () => {
-  async function claimed(o: { turso?: Db | null; pull?: PullRequest | null } = {}) {
+  async function claimed(o: { live?: Live | null; pull?: PullRequest | null } = {}) {
     const s = setup(o);
     s.linear.add("DEMO-7");
     await claimTicket(s.ctx, { ticket: "DEMO-7", runtime: "claude-code", handle: "ws-1" });
@@ -188,9 +184,10 @@ describe("report", () => {
   }
 
   test("a valid move swaps the phase label, posts the status line and lists the worker's inbox", async () => {
-    const { db } = await tempTurso();
-    const { linear, ctx } = await claimed({ turso: db });
-    await addInboxItem(db, {
+    const live = tempFleet();
+    const db = live.store;
+    const { linear, ctx } = await claimed({ live });
+    await db.addInboxItem({
       project: "widgets",
       ticket: "DEMO-7",
       kind: "question",
@@ -241,8 +238,9 @@ describe("report", () => {
     );
     expect(red.linear.writes.length).toBe(before);
 
-    const { db } = await tempTurso();
-    const green = await claimed({ turso: db, pull: pull("success") });
+    const live = tempFleet();
+    const db = live.store;
+    const green = await claimed({ live, pull: pull("success") });
     shipping(green.linear);
     await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD.toUpperCase() });
     expect(green.linear.writes.slice(-3)).toEqual([
@@ -252,27 +250,29 @@ describe("report", () => {
     ]);
     // Handing back again refreshes the coordinator's item instead of adding one.
     await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD });
-    const handBack = await db.execute("SELECT kind, recipient FROM inbox_items WHERE ticket = 'DEMO-7'");
-    expect(handBack.rows.map((r) => [r.kind, r.recipient])).toEqual([["hand-back", "coordinator"]]);
+    expect(db.items.filter((i) => i.ticket === "DEMO-7").map((i) => [i.kind, i.recipient])).toEqual([
+      ["hand-back", "coordinator"],
+    ]);
   });
 
-  test("losing Turso still writes Linear and warns", async () => {
+  test("losing Armada still writes Linear and warns", async () => {
     const { linear, ctx } = await claimed();
-    const broken = { execute: async () => Promise.reject(new Error("connection reset")) } as unknown as Db;
+    const broken = { report: async () => Promise.reject(new Error("connection reset")) } as unknown as Fleet;
     const out = await reportPhase(
-      { ...ctx, turso: async () => ({ db: broken, warning: null }) },
+      { ...ctx, fleet: async () => ({ fleet: broken, warning: null }) },
       { ticket: "DEMO-7", phase: "planning", message: "reading" },
     );
     expect(linear.writes.at(-1)).toBe("comment DEMO-7 Agent status: planning — reading");
-    expect(out.warnings).toEqual(["Turso: could not record the report (connection reset); Linear is up to date"]);
+    expect(out.warnings).toEqual(["Armada: could not record the report (connection reset); Linear is up to date"]);
     expect(out.inbox).toBeNull();
   });
 });
 
 describe("release", () => {
   test("removes the agent labels, moves the ticket back and closes the handle", async () => {
-    const { db } = await tempTurso();
-    const { linear, ctx } = setup({ turso: db });
+    const live = tempFleet();
+    const db = live.store;
+    const { linear, ctx } = setup({ live });
     const ready = { id: "ready", name: ctx.config.tracker.readyLabel, group: null };
     linear.add("DEMO-7", { labels: [ready] });
     await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-1" });
@@ -283,7 +283,7 @@ describe("release", () => {
       [ready],
       { phase: "released", summary: "wrong ticket" },
     ]);
-    expect((await getRuntimeHandle(db, "widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    expect((await db.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
     // Released: a new worker may claim it.
     await claimTicket(ctx, { ticket: "DEMO-7", runtime: "claude-code", handle: "ws-2" });
     expect(labelsOf(linear, "DEMO-7")).toEqual([ready.name, "planning", "Claude Code"]);

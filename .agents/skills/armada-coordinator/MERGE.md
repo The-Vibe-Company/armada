@@ -16,7 +16,7 @@ Run `armada merge <pr>` (add `--dry-run` to see the checklist only). It checks e
 gh pr merge <n> --squash --match-head-commit <full-sha>
 ```
 
-- One merge at a time: `armada merge` holds the project's merge lock. If it refuses because Turso is down, use `--no-lock` only when you are sure no other coordinator merges in the project.
+- One merge at a time: `armada merge` holds the project's merge lock. If it refuses because Armada is down, use `--no-lock` only when you are sure no other coordinator merges in the project.
 - Leave out `--delete-branch`: it deletes local worktrees that have the branch checked out, including other agents'. Delete the branch once its worktree is gone.
 - If GitHub answers with a 5xx, check `gh pr view <n> --json state` before retrying.
 

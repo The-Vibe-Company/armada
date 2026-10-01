@@ -41,12 +41,8 @@ type Params = Promise<{ error?: string | string[]; done?: string | string[] }>;
 const pick = <T extends string>(list: readonly T[], v: string | string[] | undefined): T | null =>
   typeof v === "string" && (list as readonly string[]).includes(v) ? (v as T) : null;
 
-const GROUPS: { title: "linear" | "turso" | "github"; keys: SecretName[] }[] = [
+const GROUPS: { title: "linear" | "github"; keys: SecretName[] }[] = [
   { title: "linear", keys: ["linear-api-key"] },
-  {
-    title: "turso",
-    keys: ["turso-platform-token", "turso-organization", "turso-database", "turso-url", "turso-database-token"],
-  },
   { title: "github", keys: ["github-token"] },
 ];
 
@@ -168,7 +164,6 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
           <h2 id={`keys-${g.title}`} className="section-label">
             {k[g.title]}
           </h2>
-          {g.title === "turso" && <p className="login-hint is-top">{k.tursoHint}</p>}
           <ul className="plain-list">
             {g.keys.map((name) => row(name, false))}
             {g.title === "linear" && row("linear-api-key", true)}

@@ -145,8 +145,8 @@ export class PgDialect implements Dialect {
  * in one transaction that first takes an advisory lock, so two servers
  * starting together apply it once. Never edit an applied version: add one.
  *
- * Version 1 is everything the app had on libSQL and Turso, moved to one
- * Postgres database (THE-849):
+ * Version 1 is everything the app had before THE-849, moved to one Postgres
+ * database:
  * - what Better Auth 1.7 needs for email and password, GitHub, organizations,
  *   database rate limiting, device authorization (`armada login`) and the
  *   organizations' API keys;
@@ -447,6 +447,24 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
         "linkedAt" timestamptz NOT NULL,
         PRIMARY KEY ("organizationId", "installationId")
       )`,
+    ],
+  },
+  {
+    // Terminals reach the fleet's data through the Armada API (THE-850): the
+    // vault no longer keeps database access for them, so what it kept goes.
+    version: 3,
+    statements: [`DELETE FROM "armada_secret" WHERE "name" LIKE 'turso-%'`],
+  },
+  {
+    // What the CLI's calls through the API read on every poll (THE-850): the
+    // sessions holding a ticket, the answers since the oldest open claim, and
+    // an organization's projects. Each stays an index lookup as history grows.
+    version: 4,
+    statements: [
+      "CREATE INDEX IF NOT EXISTS runtime_handles_open ON runtime_handles (project) WHERE released_at IS NULL",
+      `CREATE INDEX IF NOT EXISTS inbox_answered ON inbox_items (project, resolved_at)
+        WHERE kind IN ('question', 'plan') AND resolved_at IS NOT NULL`,
+      "CREATE INDEX IF NOT EXISTS projects_by_organization ON projects (organization_id)",
     ],
   },
 ];

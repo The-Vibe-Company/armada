@@ -4,7 +4,7 @@
 import { type ArmadaConfig, CONFIG_FILE, configTemplate, parseConfig } from "./config.ts";
 import { fetchDefaultBranchFile } from "./github.ts";
 import type { Fetch } from "./linear.ts";
-import type { ProjectInput } from "./turso.ts";
+import type { ProjectInput } from "./live.ts";
 
 export interface ProjectConfigReading {
   config: ArmadaConfig;

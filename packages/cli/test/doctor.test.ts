@@ -22,11 +22,7 @@ afterEach(async () => {
 
 const vault = (): FakeVault => ({
   linear: { apiKey: LINEAR, scope: "organization" },
-  turso: "stored",
-  tursoUrl: "libsql://fleet-acme.turso.io",
-  revision: "r",
   now: () => NOW,
-  minted: 0,
 });
 
 /** A terminal in an empty directory, a credentials file holding `stored`, and a fake Armada. */
@@ -56,7 +52,7 @@ async function terminal(env: Record<string, string>, stored: Record<string, stri
     const text = out.splice(0).join("");
     for (const secret of [KEY, SESSION, LINEAR]) expect(text).not.toContain(secret);
     const report = JSON.parse(text.slice(text.indexOf("{"))) as { checks: Check[] };
-    return report.checks.filter((c) => c.id === "sign-in" || c.id === "local-keys");
+    return report.checks.filter((c) => ["sign-in", "local-keys", "retired-keys"].includes(c.id));
   };
   return { doctor, credentials: join(home, "armada", "credentials") };
 }
@@ -106,28 +102,37 @@ describe("armada doctor: the sign-in to Armada", () => {
     );
   });
 
-  test("keys left in the credentials file that Armada now gives are flagged; an environment override is not", async () => {
-    const stored = {
-      LINEAR_API_KEY: "lin_api_old",
-      ARMADA_TURSO_URL: "libsql://old.turso.io",
-      ARMADA_TURSO_TOKEN: "t",
-    };
+  test("a key left in the credentials file that Armada now gives is flagged; an environment override is not", async () => {
+    const stored = { LINEAR_API_KEY: "lin_api_old" };
     const t = await terminal({ ARMADA_API_KEY: KEY }, stored, vault());
     expect((await t.doctor())[1]).toEqual({
       id: "local-keys",
       level: "warning",
-      message: `${t.credentials} still holds LINEAR_API_KEY, ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN, which Armada now gives this terminal: they are no longer needed`,
-      fix: "`armada auth logout` removes them from this machine; the sign-in to Armada stays",
+      message: `${t.credentials} still holds LINEAR_API_KEY, which Armada now gives this terminal: it is no longer needed`,
+      fix: "`armada auth logout` removes it from this machine; the sign-in to Armada stays",
     });
 
-    // LINEAR_API_KEY from the environment is the override (CI, self-hosting): only the Turso keys are left over.
+    // LINEAR_API_KEY from the environment is the override (CI, self-hosting): nothing is left over.
     const env = await terminal({ ARMADA_API_KEY: KEY, LINEAR_API_KEY: "lin_api_env" }, stored, vault());
-    expect((await env.doctor())[1]?.message).toStartWith(
-      `${env.credentials} still holds ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN,`,
-    );
+    expect((await env.doctor()).map((c) => c.id)).toEqual(["sign-in"]);
 
-    // An Armada that keeps no keys: the file's keys are the ones in use.
+    // An Armada that keeps no keys: the file's key is the one in use.
     const none = await terminal({ ARMADA_API_KEY: KEY }, stored);
     expect((await none.doctor()).map((c) => c.id)).toEqual(["sign-in"]);
+  });
+
+  test("database variables of earlier versions left in the credentials file are flagged, signed in or not, never shown", async () => {
+    const stored = { ARMADA_TURSO_URL: "libsql://retired.example.test", ARMADA_TURSO_TOKEN: "retired-CANARY" };
+    for (const env of [{}, { ARMADA_API_KEY: KEY }] as Record<string, string>[]) {
+      const t = await terminal(env, stored);
+      const retired = (await t.doctor()).find((c) => c.id === "retired-keys");
+      expect(retired).toEqual({
+        id: "retired-keys",
+        level: "warning",
+        message: `${t.credentials} still holds ARMADA_TURSO_URL, ARMADA_TURSO_TOKEN, which this version never reads: the CLI reaches the fleet's data through Armada`,
+        fix: `\`armada login\` removes them as it signs this terminal in; or delete their lines from ${t.credentials}`,
+      });
+      expect(JSON.stringify(retired)).not.toContain("retired-CANARY");
+    }
   });
 });

@@ -9,7 +9,7 @@
 import type { ArmadaSignIn } from "./armada-api.ts";
 import type { PersonalConfig } from "./machine.ts";
 
-export type CredentialName = "linearApiKey" | "tursoUrl" | "tursoToken" | "githubToken";
+export type CredentialName = "linearApiKey" | "githubToken";
 
 export type CredentialSource =
   | { kind: "env"; variable: string }
@@ -22,10 +22,6 @@ export type CredentialSource =
 export interface Credentials {
   /** Linear personal API key, or null when none is configured. */
   linearApiKey: string | null;
-  /** Turso (libSQL) database URL, or null. */
-  tursoUrl: string | null;
-  /** Turso database token, or null. */
-  tursoToken: string | null;
   /** GitHub token, or null when none is configured. */
   githubToken: string | null;
   /** Where each value came from; null when it is missing. Safe to print. */
@@ -58,11 +54,12 @@ export const API_URL_VARIABLE = "ARMADA_API_URL";
 /** Credentials-file key: the Armada that issued the stored sign-in, which is sent nowhere else. */
 export const SIGNED_IN_TO_VARIABLE = "ARMADA_SIGNED_IN_TO";
 /**
- * Credentials-file key: the short-lived Turso token Armada made for this
- * terminal, with its expiry, kept until it is renewed. `armada login`,
- * `armada logout` and `armada auth logout` remove it.
+ * Keys earlier versions kept in the credentials file for a fleet database the
+ * CLI no longer reaches (it goes through the Armada API): `armada login`,
+ * `armada logout` and `armada auth logout` remove them, so no stale secret
+ * stays on the machine. Never read.
  */
-export const TURSO_LEASE_VARIABLE = "ARMADA_TURSO_LEASE";
+export const RETIRED_VARIABLES = ["ARMADA_TURSO_URL", "ARMADA_TURSO_TOKEN", "ARMADA_TURSO_LEASE"] as const;
 
 /**
  * Credentials-file key prefix of a worker session (`armada login
@@ -84,18 +81,6 @@ export interface StoredWorker {
   id: string;
 }
 
-/** A Turso token made by Armada for this terminal. */
-export interface TursoLease {
-  /** The Armada that made it (`armadaAddress`): it is used only while the CLI talks to that one. */
-  api: string;
-  organization: string;
-  url: string;
-  token: string;
-  expiresAt: string;
-  /** Which Turso keys it was made from; Armada replaces it when they change. */
-  revision: string;
-}
-
 /** A record as one credentials-file value (base64url JSON, so it fits a KEY=value line). */
 const formatRecord = (record: object) => Buffer.from(JSON.stringify(record), "utf8").toString("base64url");
 
@@ -109,14 +94,6 @@ function parseRecord<K extends string>(value: string | null | undefined, keys: r
   } catch {
     return null;
   }
-}
-
-export const formatLease = (lease: TursoLease) => formatRecord(lease);
-
-/** The lease a credentials-file value holds, or null when it is not one. */
-export function parseLease(value: string | null | undefined): TursoLease | null {
-  const l = parseRecord(value, ["api", "organization", "url", "token", "expiresAt", "revision"]);
-  return l && !Number.isNaN(Date.parse(l.expiresAt)) ? l : null;
 }
 
 export const formatWorkerSession = (worker: StoredWorker) => formatRecord(worker);
@@ -137,7 +114,6 @@ export function storedWorkers(store: Record<string, string>): StoredWorker[] {
 /** What Armada handed out for this command, with where each came from. */
 export interface ArmadaKeys {
   linearApiKey: { value: string; detail: string } | null;
-  turso: { url: string; token: string; detail: string } | null;
 }
 
 /** An Armada's address as sign-ins are bound to it: origin and path, without a trailing slash. */
@@ -170,23 +146,7 @@ export const LINEAR_KEY: StoredKey = {
 };
 
 /** The keys Armada keeps in the machine store, in prompt order. */
-export const STORED_KEYS: readonly StoredKey[] = [
-  LINEAR_KEY,
-  {
-    name: "tursoUrl",
-    variable: "ARMADA_TURSO_URL",
-    secret: false,
-    label: "Turso database URL",
-    hint: "libsql://<database>-<organization>.turso.io, from `turso db show <database> --url`",
-  },
-  {
-    name: "tursoToken",
-    variable: "ARMADA_TURSO_TOKEN",
-    secret: true,
-    label: "Turso database token",
-    hint: "`turso db tokens create <database>`",
-  },
-];
+export const STORED_KEYS: readonly StoredKey[] = [LINEAR_KEY];
 
 export interface CredentialSources {
   env: Record<string, string | undefined>;
@@ -212,11 +172,9 @@ const fromEnv = (env: CredentialSources["env"], variable: string): Found => {
 };
 
 /**
- * Linear: LINEAR_API_KEY, then Armada, then the credentials file. Turso:
- * ARMADA_TURSO_URL and ARMADA_TURSO_TOKEN, then Armada (URL and token as a
- * pair, only when the environment sets neither), then the credentials file
- * (the URL also from config.toml `turso.url`). GitHub: GITHUB_TOKEN, then
- * GH_TOKEN, then `gh auth token`.
+ * Linear: LINEAR_API_KEY, then Armada, then the credentials file. GitHub:
+ * GITHUB_TOKEN, then GH_TOKEN, then `gh auth token`. The fleet's live data
+ * needs no key: it is reached through Armada with the sign-in.
  */
 export function resolveCredentials({
   env,
@@ -230,13 +188,11 @@ export function resolveCredentials({
     const value = clean(store[variable]);
     return value ? { value, source: { kind: "store" } } : null;
   };
-  const stored = (variable: string): Found => fromEnv(env, variable) ?? fromStore(variable);
   const fromGh = (): Found => {
     const value = clean(ghToken?.());
     return value ? { value, source: { kind: "gh" } } : null;
   };
 
-  const tursoUrlConfig = clean(personal?.turso.url);
   const apiUrlConfig = clean(personal?.api.url);
   const apiUrl = fromEnv(env, API_URL_VARIABLE);
   const workers = storedWorkers(store);
@@ -276,30 +232,18 @@ export function resolveCredentials({
           : null;
   const fromArmada = (value: string | undefined, detail: string | undefined): Found =>
     value && detail ? { value, source: { kind: "armada", detail } } : null;
-  // A URL from one place and a token from another would open no database: Armada gives both, or neither.
-  const tursoPair =
-    armada?.turso && !fromEnv(env, "ARMADA_TURSO_URL") && !fromEnv(env, "ARMADA_TURSO_TOKEN") ? armada.turso : null;
   const found: Record<CredentialName, Found> = {
     linearApiKey:
       fromEnv(env, "LINEAR_API_KEY") ??
       fromArmada(armada?.linearApiKey?.value, armada?.linearApiKey?.detail) ??
       fromStore("LINEAR_API_KEY"),
-    tursoUrl:
-      fromArmada(tursoPair?.url, tursoPair?.detail) ??
-      stored("ARMADA_TURSO_URL") ??
-      (tursoUrlConfig ? { value: tursoUrlConfig, source: { kind: "config", key: "turso.url" } } : null),
-    tursoToken: fromArmada(tursoPair?.token, tursoPair?.detail) ?? stored("ARMADA_TURSO_TOKEN"),
     githubToken: fromEnv(env, "GITHUB_TOKEN") ?? fromEnv(env, "GH_TOKEN") ?? fromGh(),
   };
   return {
     linearApiKey: found.linearApiKey?.value ?? null,
-    tursoUrl: found.tursoUrl?.value ?? null,
-    tursoToken: found.tursoToken?.value ?? null,
     githubToken: found.githubToken?.value ?? null,
     sources: {
       linearApiKey: found.linearApiKey?.source ?? null,
-      tursoUrl: found.tursoUrl?.source ?? null,
-      tursoToken: found.tursoToken?.source ?? null,
       githubToken: found.githubToken?.source ?? null,
     },
     armadaApi,

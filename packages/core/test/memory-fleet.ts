@@ -1,0 +1,324 @@
+// The fleet's live data in memory, for tests: the same results as the app's
+// Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
+// with its unique rules (one open plan, hand-back and launch request per
+// ticket, one open answer per question) and its atomic lease.
+import type {
+  EventInput,
+  FleetStore,
+  InboxItem,
+  Lease,
+  ProjectRecord,
+  RuntimeHandle,
+  StoredInboxItem,
+  WorkerProfile,
+} from "../src/live.ts";
+
+interface EventRow extends Omit<EventInput, "at"> {
+  id: number;
+  at: string;
+}
+
+interface HandleRow extends Omit<RuntimeHandle, "profile"> {}
+
+interface ItemRow extends Omit<StoredInboxItem, "request"> {
+  requestQuestion: number | null;
+  requestProfile: string | null;
+}
+
+const REQUEST_KINDS = ["answer-request", "launch-request"];
+const key = (project: string, ticket: string) => `${project}\n${ticket}`;
+
+export function memoryFleet(): FleetStore & {
+  events: EventRow[];
+  items: ItemRow[];
+  leases: Map<string, Lease>;
+  presence: Map<string, { handle: string | null; at: string }>;
+} {
+  const projects = new Map<string, ProjectRecord>();
+  const events: EventRow[] = [];
+  const handles = new Map<string, HandleRow>();
+  const profiles = new Map<string, WorkerProfile>();
+  const items: ItemRow[] = [];
+  const leases = new Map<string, Lease>();
+  const presence = new Map<string, { handle: string | null; at: string }>();
+
+  const stored = (r: ItemRow): StoredInboxItem => {
+    const { requestQuestion, requestProfile, ...rest } = r;
+    return {
+      ...rest,
+      ...(REQUEST_KINDS.includes(r.kind) ? { request: { question: requestQuestion, profile: requestProfile } } : {}),
+    };
+  };
+  const item = (r: ItemRow): InboxItem => {
+    const { resolvedAt: _a, resolution: _b, ...rest } = stored(r);
+    return rest;
+  };
+  const handleOf = (h: HandleRow): RuntimeHandle => ({
+    ...h,
+    profile: profiles.get(key(h.project, h.ticket))?.name ?? null,
+  });
+  const insert = (r: Omit<ItemRow, "id" | "resolvedAt" | "resolution">) => {
+    const id = items.length + 1;
+    items.push({ ...r, id, resolvedAt: null, resolution: null });
+    return id;
+  };
+  const open = (project: string, ticket: string | null, kind: string) =>
+    items.find((i) => i.project === project && i.ticket === ticket && i.kind === kind && !i.resolvedAt);
+  const resolve = (rows: ItemRow[], resolution: string, at: Date) => {
+    for (const r of rows) Object.assign(r, { resolvedAt: at.toISOString(), resolution });
+    return rows.length;
+  };
+
+  return {
+    events,
+    items,
+    leases,
+    presence,
+
+    async ensureProject(p, at) {
+      if (projects.has(p.slug)) return;
+      const t = at.toISOString();
+      projects.set(p.slug, { ...p, organization: null, createdAt: t, updatedAt: t });
+    },
+    async upsertProject(p, at) {
+      const was = projects.get(p.slug);
+      if (!was) return this.ensureProject(p, at);
+      if (was.name !== p.name || was.repository !== p.repository || was.programRoot !== p.programRoot)
+        projects.set(p.slug, { ...was, ...p, updatedAt: at.toISOString() });
+    },
+    async listProjects() {
+      return [...projects.values()].sort((a, b) => a.slug.localeCompare(b.slug));
+    },
+
+    async recordEvent(e) {
+      events.push({ ...e, id: events.length + 1, at: e.at.toISOString() });
+    },
+    async lastEventTimes(project) {
+      const out: Record<string, string> = {};
+      for (const e of events)
+        if (e.project === project && e.ticket && (!out[e.ticket] || e.at > (out[e.ticket] ?? ""))) out[e.ticket] = e.at;
+      return out;
+    },
+    async latestEvents(project, opts = {}) {
+      const since = opts.since?.toISOString() ?? "";
+      const out: Record<string, EventRow> = {};
+      for (const e of events) {
+        if (e.project !== project || !e.ticket || e.at < since) continue;
+        const was = out[e.ticket];
+        if (!was || e.at > was.at || (e.at === was.at && e.id > was.id)) out[e.ticket] = e;
+      }
+      return Object.fromEntries(
+        Object.entries(out).map(([t, e]) => [
+          t,
+          {
+            kind: e.kind,
+            phase: e.phase ?? null,
+            message: e.message ?? null,
+            runtime: e.runtime ?? null,
+            handle: e.handle ?? null,
+            prUrl: e.prUrl ?? null,
+            at: e.at,
+          },
+        ]),
+      );
+    },
+    async recordCoordinatorSeen(seen) {
+      const was = presence.get(seen.project);
+      const at = seen.at.toISOString();
+      if (!was || was.at <= at) presence.set(seen.project, { handle: seen.handle ?? null, at });
+    },
+    async lastCoordinatorSeen(project) {
+      return presence.get(project)?.at ?? null;
+    },
+
+    async saveWorkerProfile(w) {
+      if (w.profile) profiles.set(key(w.project, w.ticket), w.profile);
+      else profiles.delete(key(w.project, w.ticket));
+    },
+    async getWorkerProfile(project, ticket) {
+      return profiles.get(key(project, ticket)) ?? null;
+    },
+    async saveRuntimeHandle(h) {
+      const was = handles.get(key(h.project, h.ticket));
+      const same = was && was.handle === h.handle && !was.releasedAt;
+      handles.set(key(h.project, h.ticket), {
+        project: h.project,
+        ticket: h.ticket,
+        runtime: h.runtime,
+        handle: h.handle,
+        branch: h.branch,
+        claimedAt: same ? was.claimedAt : h.at.toISOString(),
+        releasedAt: null,
+      });
+    },
+    async releaseRuntimeHandle(project, ticket, at) {
+      const h = handles.get(key(project, ticket));
+      if (h && !h.releasedAt) h.releasedAt = at.toISOString();
+      profiles.delete(key(project, ticket));
+    },
+    async openRuntimeHandles(project) {
+      return [...handles.values()]
+        .filter((h) => h.project === project && !h.releasedAt)
+        .sort((a, b) => a.ticket.localeCompare(b.ticket))
+        .map(handleOf);
+    },
+    async getRuntimeHandle(project, ticket) {
+      const h = handles.get(key(project, ticket));
+      return h ? handleOf(h) : null;
+    },
+
+    async addInboxItem(i) {
+      return insert({
+        project: i.project,
+        ticket: i.ticket,
+        kind: i.kind,
+        recipient: i.recipient,
+        author: i.author,
+        body: i.body,
+        createdAt: i.at.toISOString(),
+        requestQuestion: null,
+        requestProfile: null,
+      });
+    },
+    async addRequest(r) {
+      if (r.kind === "answer-request") {
+        const q = items.find((i) => i.project === r.project && i.id === r.question);
+        if (!q || !["question", "plan"].includes(q.kind) || q.recipient !== "coordinator" || q.resolvedAt) return null;
+        if (
+          items.some(
+            (i) =>
+              i.project === r.project &&
+              i.kind === "answer-request" &&
+              i.requestQuestion === r.question &&
+              !i.resolvedAt,
+          )
+        )
+          return null;
+      } else if (open(r.project, r.ticket, r.kind)) return null;
+      return insert({
+        project: r.project,
+        ticket: r.ticket,
+        kind: r.kind,
+        recipient: "coordinator",
+        author: r.author,
+        body: r.body,
+        createdAt: r.at.toISOString(),
+        requestQuestion: r.question,
+        requestProfile: r.profile,
+      });
+    },
+    async putPlan(i) {
+      if (open(i.project, i.ticket, "plan")) return;
+      await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
+    },
+    async putHandBack(i) {
+      const was = open(i.project, i.ticket, "hand-back");
+      if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
+      else await this.addInboxItem({ ...i, kind: "hand-back", recipient: "coordinator" });
+    },
+    async openInboxItems(q) {
+      return items
+        .filter(
+          (i) =>
+            i.project === q.project &&
+            i.recipient === q.recipient &&
+            !i.resolvedAt &&
+            (!q.ticket || i.ticket === q.ticket),
+        )
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id - b.id)
+        .map(item);
+    },
+    async getInboxItem(project, id) {
+      const r = items.find((i) => i.project === project && i.id === id);
+      return r ? stored(r) : null;
+    },
+    async resolveInboxItem(q) {
+      return (
+        resolve(
+          items.filter((i) => i.project === q.project && i.id === q.id && !i.resolvedAt),
+          q.resolution,
+          q.at,
+        ) > 0
+      );
+    },
+    async lastAnsweredAt(project, opts = {}) {
+      const since = opts.since?.toISOString() ?? "";
+      const out: Record<string, string> = {};
+      for (const i of items)
+        if (
+          i.project === project &&
+          ["question", "plan"].includes(i.kind) &&
+          i.ticket &&
+          i.resolvedAt &&
+          i.resolvedAt >= since
+        )
+          if (!out[i.ticket] || i.resolvedAt > (out[i.ticket] ?? "")) out[i.ticket] = i.resolvedAt;
+      return out;
+    },
+    async resolveInboxItems(q) {
+      return resolve(
+        items.filter((i) => i.project === q.project && i.ticket === q.ticket && i.kind === q.kind && !i.resolvedAt),
+        q.resolution,
+        q.at,
+      );
+    },
+    async resolveAnswerRequests(q) {
+      return resolve(
+        items.filter(
+          (i) =>
+            i.project === q.project && i.kind === "answer-request" && !i.resolvedAt && i.requestQuestion === q.question,
+        ),
+        q.resolution,
+        q.at,
+      );
+    },
+    async resolvePlans(q) {
+      const plans = items.filter(
+        (i) => i.project === q.project && i.ticket === q.ticket && i.kind === "plan" && !i.resolvedAt,
+      );
+      const ids = new Set(plans.map((p) => p.id));
+      resolve(
+        items.filter(
+          (i) =>
+            i.project === q.project &&
+            i.kind === "answer-request" &&
+            !i.resolvedAt &&
+            i.requestQuestion !== null &&
+            ids.has(i.requestQuestion),
+        ),
+        q.resolution,
+        q.at,
+      );
+      return resolve(plans, q.resolution, q.at);
+    },
+
+    async acquireLease(l) {
+      const k = key(l.project, l.name);
+      const held = leases.get(k);
+      if (held && held.holder !== l.holder && Date.parse(held.expiresAt) > l.at.getTime())
+        return { acquired: false, held: { ...held } };
+      leases.set(k, {
+        project: l.project,
+        name: l.name,
+        holder: l.holder,
+        acquiredAt: held?.holder === l.holder ? held.acquiredAt : l.at.toISOString(),
+        expiresAt: new Date(l.at.getTime() + l.ttlMs).toISOString(),
+      });
+      return { acquired: true };
+    },
+    async getLease(project, name) {
+      const l = leases.get(key(project, name));
+      return l ? { ...l } : null;
+    },
+    async renewLease(l) {
+      const held = leases.get(key(l.project, l.name));
+      if (!held || held.holder !== l.holder) return false;
+      held.expiresAt = new Date(l.at.getTime() + l.ttlMs).toISOString();
+      return true;
+    },
+    async releaseLease(l) {
+      const k = key(l.project, l.name);
+      if (leases.get(k)?.holder === l.holder) leases.delete(k);
+    },
+  };
+}

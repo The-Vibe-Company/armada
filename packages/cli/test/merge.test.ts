@@ -7,29 +7,31 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Fetch, GITHUB_GRAPHQL } from "@armada/core";
-import { saveRuntimeHandle } from "../../core/src/turso.ts";
+import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
-  closeTempTurso,
+  ARMADA_URL,
+  DEMO_PROJECT,
   DEMO_TOML,
   FakeLinear,
+  fakeArmada,
   LABELS,
   NOW,
   recordedFetch,
-  tempTurso,
 } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { Exec, Io } from "../src/io.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
-  await closeTempTurso();
   for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
 const SQUASH = "5555555555555555555555555555555555555555";
 const BRANCH = "feature/demo-18-expire-idle-sessions";
+const KEY = "armada_key_CANARY_coordinator";
 
-async function fixture() {
+/** A coordinator's terminal, signed in to the fake Armada with an organization API key unless `signedIn` is false. */
+async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "armada-merge-test-")));
   dirs.push(home);
   const origin = join(home, "origin.git");
@@ -99,7 +101,14 @@ async function fixture() {
   };
 
   const linearProgram = recordedFetch().fetch;
+  const store = memoryFleet();
+  const armada = fakeArmada({ keys: { [KEY]: "coordinator" }, store });
+  const net = { armadaDown: false };
   const fetch: Fetch = async (url, init) => {
+    if (url.startsWith(`${ARMADA_URL}/`)) {
+      if (net.armadaDown) throw new TypeError("fetch failed");
+      return armada.fetch(url, init);
+    }
     if (url === "https://api.github.com/repos/acme/widgets/pulls/9") return new Response(`${diff}\n`);
     if (url !== GITHUB_GRAPHQL) return linearProgram(url, init);
     const { query } = JSON.parse(String(init.body)) as { query: string };
@@ -159,12 +168,12 @@ async function fixture() {
   });
   linear.post("DEMO-18", `Agent status: ready-to-merge — PR #9, head ${head}, CI green`, "2026-03-04T09:40:00Z");
 
-  const turso = await tempTurso();
+  await store.ensureProject(DEMO_PROJECT, NOW);
   for (const [ticket, handle] of [
     ["DEMO-18", "ws-18"],
     ["DEMO-11", "ws-11"],
   ] as const)
-    await saveRuntimeHandle(turso.db, {
+    await store.saveRuntimeHandle({
       project: "widgets",
       ticket,
       runtime: "Claude Code",
@@ -177,7 +186,11 @@ async function fixture() {
   const err: string[] = [];
   const io: Io = {
     cwd: work,
-    env: { LINEAR_API_KEY: "lin_test", GITHUB_TOKEN: "gh_test", ARMADA_TURSO_URL: turso.url },
+    env: {
+      LINEAR_API_KEY: "lin_test",
+      GITHUB_TOKEN: "gh_test",
+      ...(signedIn ? { ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY } : {}),
+    },
     readFile: (path) => readFile(path, "utf8").catch(() => null),
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
@@ -188,7 +201,19 @@ async function fixture() {
     sleep: async () => {},
     linearWriter: () => linear,
   };
-  return { io, git, head, linear, ghCalls, out: () => out.join(""), err: () => err.join("") };
+  return {
+    io,
+    git,
+    head,
+    linear,
+    ghCalls,
+    armada,
+    store,
+    net,
+    merged: () => merged,
+    out: () => out.join(""),
+    err: () => err.join(""),
+  };
 }
 
 test("armada merge test-merges a head behind main, merges it pinned to its SHA and says who to tell", async () => {
@@ -218,6 +243,65 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
   expect(f.linear.get("DEMO-18").statusType).toBe("completed");
   // The throwaway worktree is gone.
   expect(f.git("worktree", "list").split("\n")).toHaveLength(1);
+  // Under the merge lock on Armada, given back afterwards; the merge recorded and the worker's session ended.
+  expect(f.armada.calls.map((c) => c.path)).toEqual([
+    "fleet/lease/acquire",
+    "fleet/lease/renew",
+    "fleet/merge",
+    "fleet/lease/release",
+    "workers/end",
+  ]);
+  expect(f.store.leases.size).toBe(0);
+  expect(f.store.events.map((e) => [e.ticket, e.kind])).toEqual([["DEMO-18", "merge"]]);
+  expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBe(NOW.toISOString());
+});
+
+test("signed in, Armada down refuses the merge; --no-lock merges anyway and says so", async () => {
+  const f = await fixture();
+  f.net.armadaDown = true;
+  expect(await run(["merge", "9"], f.io)).toBe(1);
+  expect(f.err()).toMatch(
+    /^armada: the merge lock could not be taken \(Armada \(armada\.example\.test\) unreachable: .+\); nothing was merged\nNext: the same armada merge again, or with --no-lock if you are sure no other coordinator merges now\n$/,
+  );
+  expect(f.ghCalls).toEqual([]);
+
+  expect(await run(["merge", "9", "--no-lock"], f.io)).toBe(0);
+  expect(f.merged()).toBe(true);
+  expect(f.err()).toContain(
+    "armada: warning: merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now\n",
+  );
+  expect(f.err()).toMatch(/armada: warning: Armada: could not record the merge \(.+\); Linear is up to date\n/);
+  expect(f.linear.bodies.at(-1)).toContain(", merged without lock (--no-lock)");
+});
+
+test("not signed in, the merge goes on without the lock, with a warning", async () => {
+  const f = await fixture({ signedIn: false });
+  expect(await run(["merge", "9"], f.io)).toBe(0);
+  expect(f.merged()).toBe(true);
+  expect(f.err()).toContain(
+    "armada: warning: not signed in to Armada (armada login); live activity is not recorded, Linear is; the merge lock was not taken, so make sure no other coordinator merges in widgets now\n",
+  );
+  expect(f.armada.calls).toEqual([]);
+});
+
+test("a merge lock held by another coordinator is waited for, then refused; nothing is merged", async () => {
+  const f = await fixture();
+  await f.store.acquireLease({
+    project: "widgets",
+    name: "merge",
+    holder: "olive@laptop",
+    ttlMs: 30 * 60_000,
+    at: NOW,
+  });
+  expect(await run(["merge", "9"], f.io)).toBe(1);
+  expect(f.out() + f.err()).toContain(
+    "Waiting for the merge lock held by olive@laptop (until 2026-03-04T10:30:00.000Z)…",
+  );
+  expect(f.err()).toContain(
+    "armada: the merge lock of widgets is still held by olive@laptop (until 2026-03-04T10:30:00.000Z)\nNext: the same armada merge again once that coordinator is done\n",
+  );
+  expect(f.ghCalls).toEqual([]);
+  expect(f.store.leases.get("widgets\nmerge")?.holder).toBe("olive@laptop");
 });
 
 test("a refused checklist exits 1 and names each failure", async () => {

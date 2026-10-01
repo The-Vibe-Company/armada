@@ -15,7 +15,6 @@ import {
   type ProjectReading,
   type ProjectRecord,
   type RuntimeHandle,
-  redact,
   type StatusReport,
   type StatusSources,
 } from "@armada/core/read";
@@ -96,7 +95,8 @@ export interface LoadOptions {
 }
 
 /** A Linear or GitHub error, safe for the browser: a token in a URL is masked. */
-const message = (err: unknown) => redact(err);
+const message = (err: unknown) =>
+  (err instanceof Error ? err.message : String(err)).replace(/((?:auth)?token=)[^&\s"']+/gi, "$1***");
 
 /**
  * Why the live data could not be read, for the browser: a time limit of ours,
