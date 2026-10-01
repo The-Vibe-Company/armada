@@ -1,11 +1,9 @@
 "use client";
 
 // The Fleet view: what waits for the owner across every project, then one row
-// per ticket in flight. It renders the overview core builds and polls the
-// server for a new one: every 5 s while work is in flight, every 30 s when the
-// fleet is quiet, never while the tab is hidden (THE-853: nothing runs when
-// nobody looks). Each poll names the overview it holds, and the server
-// answers 304 while nothing changed.
+// per ticket in flight. It renders the overview core builds, as the v4 shell
+// polls it (components/shell/context.tsx), until the overview screen
+// (THE-867) replaces it.
 import type {
   CoordinatorState,
   FleetOverview,
@@ -14,31 +12,12 @@ import type {
   ProjectOverview,
   WaitingItem,
 } from "@armada/core/read";
-import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { signOut } from "@/app/auth-actions";
-import { LANGUAGE_COOKIE, LANGUAGES, type Language, STRINGS, type Strings } from "@/lib/i18n";
+import { useMemo, useState } from "react";
+import type { Strings } from "@/lib/i18n";
 import { type ActionContext, QuestionBlock, ReadyBlock, splitQuestion } from "./Actions";
+import { useFleet, useNow, useShell } from "./shell/context";
 
-/** The signed-in person and their organization, as the top bar shows them. */
-export interface Account {
-  name: string;
-  email: string;
-  organization: string;
-}
-
-/** Polls while a worker is in flight, a request waits for the coordinator or a project is being read. */
-const BUSY_POLL_MS = 5_000;
-/** Polls while the fleet is quiet. */
-const IDLE_POLL_MS = 30_000;
 const FRESH_MS = 20_000;
-
-/** Something on the page may change within seconds. */
-const isBusy = (o: FleetOverview) =>
-  o.rows.length > 0 ||
-  o.projects.some((p) => p.reading) ||
-  o.waiting.some((w) => w.answer !== null) ||
-  o.ready.some((r) => r.launch !== null);
 
 const RUNTIME_COLOR: Record<string, string> = {
   "Claude Code": "#D97757",
@@ -52,132 +31,12 @@ const HIDDEN: LaneFlag[] = ["silent", "no-phase-label"];
 
 const since = (now: number, iso: string | null | undefined) => (iso ? now - Date.parse(iso) : 0);
 
-function useLiveOverview(initial: FleetOverview) {
-  const [overview, setOverview] = useState(initial);
-  const [checkedAt, setCheckedAt] = useState<number | null>(null);
-  const [failed, setFailed] = useState(false);
-  const [pending, setPending] = useState(false);
-  const [version, setVersion] = useState(0);
-  const inFlight = useRef(false);
-  /** The ETag of the overview shown; the server answers 304 while it is still current. */
-  const tag = useRef<string | null>(null);
-  const busy = useRef(isBusy(initial));
-
-  const poll = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setPending(true);
-    try {
-      const res = await fetch("/api/fleet", {
-        cache: "no-store",
-        headers: tag.current ? { "If-None-Match": tag.current } : {},
-      });
-      if (res.status === 401 || new URL(res.url).pathname === "/login") {
-        // The session ended (expired, logged out, or the password changed).
-        const here = `${window.location.pathname}${window.location.search}`;
-        window.location.assign(`/login${here === "/" ? "" : `?next=${encodeURIComponent(here)}`}`);
-        return;
-      }
-      if (res.status !== 304) {
-        if (!res.ok) throw new Error(String(res.status));
-        const next = (await res.json()) as FleetOverview;
-        tag.current = res.headers.get("etag");
-        busy.current = isBusy(next);
-        setOverview(next);
-      }
-      setVersion((v) => v + 1);
-      setFailed(false);
-      setCheckedAt(Date.now());
-    } catch {
-      setFailed(true);
-    } finally {
-      inFlight.current = false;
-      setPending(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let visible = false;
-    // Each start begins a new loop; a poll still running from an older one does not schedule another.
-    let loop = 0;
-    const next = (mine: number) => {
-      timer = setTimeout(
-        async () => {
-          await poll();
-          if (visible && mine === loop) next(mine);
-        },
-        busy.current ? BUSY_POLL_MS : IDLE_POLL_MS,
-      );
-    };
-    const start = () => {
-      if (visible) return;
-      visible = true;
-      loop++;
-      void poll();
-      next(loop);
-    };
-    const stop = () => {
-      visible = false;
-      loop++;
-      if (timer) clearTimeout(timer);
-      timer = null;
-    };
-    const onVisibility = () => (document.visibilityState === "visible" ? start() : stop());
-    onVisibility();
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [poll]);
-
-  return { overview, checkedAt, failed, pending, poll, version };
-}
-
-function useNow(initial: string) {
-  // Start from the server's clock so the first render matches the HTML.
-  const [now, setNow] = useState(() => Date.parse(initial));
-  useEffect(() => {
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
-  return now;
-}
-
-export function Fleet({
-  initial,
-  initialLanguage,
-  initialProject,
-  account = null,
-  canLogOut = false,
-  initialAuthor,
-}: {
-  initial: FleetOverview;
-  initialLanguage: Language;
-  initialProject: string | null;
-  /** The signed-in person, with accounts; null under the shared-password gate. */
-  account?: Account | null;
-  /** The shared-password gate's log out. */
-  canLogOut?: boolean;
-  /** The name that signs the viewer's requests; empty until they give one (password gate only). */
-  initialAuthor: string;
-}) {
-  const { overview, checkedAt, failed, pending, poll, version } = useLiveOverview(initial);
-  const [author, setAuthor] = useState(initialAuthor);
-  const now = useNow(initial.generatedAt);
-  const [lang, setLang] = useState(initialLanguage);
+export function Fleet({ initialProject }: { initialProject: string | null }) {
+  const { overview, checkedAt, failed, pending, refresh, version } = useFleet();
+  const { t, author, setAuthor, account } = useShell();
+  const now = useNow();
   const [project, setProject] = useState(initialProject);
-  const t = STRINGS[lang];
 
-  const chooseLanguage = (next: Language) => {
-    setLang(next);
-    document.documentElement.lang = next;
-    document.title = STRINGS[next].htmlTitle;
-    // biome-ignore lint/suspicious/noDocumentCookie: a plain preference cookie, read by the server on the next load.
-    document.cookie = `${LANGUAGE_COOKIE}=${next}; path=/; max-age=31536000; samesite=lax`;
-  };
   const chooseProject = (next: string | null) => {
     setProject(next);
     const url = new URL(window.location.href);
@@ -201,7 +60,7 @@ export function Fleet({
     live: overview.live.state === "ok" && !failed,
     now,
     version,
-    refresh: () => void poll(),
+    refresh,
   };
   const silent = rows.filter((r) => r.silent).length;
   const redCi = rows.filter((r) => r.flags.includes("ci-failing")).length;
@@ -210,18 +69,14 @@ export function Fleet({
     <>
       <TopBar
         t={t}
-        lang={lang}
-        onLanguage={chooseLanguage}
         overview={overview}
         now={now}
         checkedAt={checkedAt}
         failed={failed}
         pending={pending}
-        onRefresh={() => void poll()}
-        canLogOut={canLogOut}
-        account={account}
+        onRefresh={refresh}
       />
-      <main className="page">
+      <div className="page">
         {overview.live.state === "unreachable" && (
           <div className="banner" role="status">
             {t.unreachableBanner(overview.live.error)}
@@ -320,7 +175,7 @@ export function Fleet({
         )}
 
         <Footer t={t} projects={projects} now={now} />
-      </main>
+      </div>
     </>
   );
 }
@@ -336,28 +191,20 @@ function Stat({ label, value, tone }: { label: string; value: number; tone: "hot
 
 function TopBar({
   t,
-  lang,
-  onLanguage,
   overview,
   now,
   checkedAt,
   failed,
   pending,
   onRefresh,
-  canLogOut,
-  account,
 }: {
   t: Strings;
-  lang: Language;
-  onLanguage: (l: Language) => void;
   overview: FleetOverview;
   now: number;
   checkedAt: number | null;
   failed: boolean;
   pending: boolean;
   onRefresh: () => void;
-  canLogOut: boolean;
-  account: Account | null;
 }) {
   const state = failed ? "offline" : overview.live.state;
   const label = failed ? t.offline : t.live[overview.live.state];
@@ -370,10 +217,6 @@ function TopBar({
   return (
     <header className="topbar">
       <div className="topbar-in">
-        <Link href="/" className="brand">
-          <span className="brand-mark" aria-hidden />
-          Armada <small>{t.brandSub}</small>
-        </Link>
         <span className="spacer" />
         <div className="refresh">
           {/* Only the source state is announced; the ticking "checked" text is not. */}
@@ -409,30 +252,6 @@ function TopBar({
             </svg>
           </button>
         </div>
-        <fieldset className="lang">
-          <legend className="sr-only">{t.language}</legend>
-          {LANGUAGES.map((l) => (
-            <button key={l} type="button" aria-pressed={l === lang} onClick={() => onLanguage(l)}>
-              {l.toUpperCase()}
-            </button>
-          ))}
-        </fieldset>
-        {account && (
-          <div className="account">
-            <Link href="/organization" className="account-org" title={t.org.nav} prefetch>
-              <span className="account-name">{account.organization}</span>
-              <span className="account-user">{account.name}</span>
-            </Link>
-            <form action={signOut} className="logout">
-              <button type="submit">{t.auth.logout}</button>
-            </form>
-          </div>
-        )}
-        {canLogOut && (
-          <form method="post" action="/api/auth/logout" className="logout">
-            <button type="submit">{t.gate.logout}</button>
-          </form>
-        )}
       </div>
     </header>
   );
