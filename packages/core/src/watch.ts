@@ -68,7 +68,7 @@ export interface WatchOptions {
    * A newer Armada release the coordinator was not told of yet (`releaseEntry`),
    * asked after every read: it ends the watch, after every inbox entry.
    */
-  release?: () => InboxEntry | null;
+  release?: () => Promise<InboxEntry | null> | InboxEntry | null;
   pollMs?: number;
   idlePollMs?: number;
 }
@@ -133,7 +133,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
       await o.onRead?.({ items, inFlight });
     }
     // Not urgent: a release comes after the questions, plans and hand-backs already open.
-    const release = o.release?.() ?? null;
+    const release = (await o.release?.()) ?? null;
     if (release) items = [...items, { ...release, new: true }];
     if (items.some((e) => e.new)) return report("items");
     if (read && inFlight !== null && !inFlight.length && !items.length) return report("nothing");

@@ -20,15 +20,14 @@ export const NOTICE_COMMANDS = new Set(["status", "inbox", "watch", "brief", "me
 
 /**
  * The release newer than `running` this run heard of; null for a worker (its
- * session signed the run in, or its launch set ARMADA_TICKET: it installs the
- * version its brief names), or when this CLI is older than the server's
- * minimum (the upgrade line already says what to install).
+ * launch set ARMADA_TICKET: it installs the version its brief names), or when
+ * this CLI is older than the server's minimum (the upgrade line already says
+ * what to install).
  */
 function newer(io: Io, running: string): string | null {
-  const h = heard(io);
-  if (h.worker || io.env.ARMADA_TICKET?.trim() || !h.server || compareVersions(running, h.server.minimum) < 0)
-    return null;
-  return newerRelease(running, h.server.latest);
+  const server = heard(io).server;
+  if (io.env.ARMADA_TICKET?.trim() || !server || compareVersions(running, server.minimum) < 0) return null;
+  return newerRelease(running, server.latest);
 }
 
 /** The releases this machine's coordinator was already told of; none without a machine store. */
@@ -51,10 +50,18 @@ export async function noticeRelease(io: Io, running: string): Promise<void> {
   await rememberRelease(io, latest);
 }
 
-/** For `armada watch`: the `version` entry of a release not noticed yet, asked after every read. */
-export function pendingRelease(io: Io, running: string, noticed: Set<string>): () => InboxEntry | null {
-  return () => {
+/**
+ * For `armada watch`: the `version` entry of a release not noticed yet (on
+ * this machine, or in the watch state's `seen`), asked after every read.
+ * Without a machine store it stays quiet: a release it could not remember
+ * would end every watch.
+ */
+export function pendingRelease(io: Io, running: string, seen: readonly string[]): () => Promise<InboxEntry | null> {
+  return async () => {
     const latest = newer(io, running);
-    return latest && !noticed.has(latest) ? releaseEntry(running, latest, (io.now ?? (() => new Date()))()) : null;
+    if (!latest || !machinePaths(io.env) || seen.includes(`version:${latest}`)) return null;
+    // Read again each time: another command may have told the coordinator meanwhile.
+    if ((await noticedReleases(io)).has(latest)) return null;
+    return releaseEntry(running, latest, (io.now ?? (() => new Date()))());
   };
 }

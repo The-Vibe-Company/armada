@@ -6,10 +6,9 @@ import { armadaApi, type ServerCli } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import type { Io } from "./io.ts";
 
-/** What a run heard: the server's CLI versions, and whether it ran as a worker session. */
+/** What a run heard: the server's CLI versions. */
 export interface Heard {
   server: ServerCli | null;
-  worker: boolean;
 }
 
 const runs = new WeakMap<Io, Heard>();
@@ -18,7 +17,7 @@ const runs = new WeakMap<Io, Heard>();
 export function heard(io: Io): Heard {
   let h = runs.get(io);
   if (!h) {
-    h = { server: null, worker: false };
+    h = { server: null };
     runs.set(io, h);
   }
   return h;

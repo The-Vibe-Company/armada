@@ -3,7 +3,7 @@
 // RepoView, so the same rules run on a working tree or on a fresh checkout of
 // the default branch, and tests need no git.
 import { parse, TomlError } from "smol-toml";
-import { compareVersions } from "./armada-api.ts";
+import { compareVersions, installCommand } from "./armada-api.ts";
 import { CONFIG_FILE, ConfigError, parseConfig } from "./config.ts";
 import { BUNDLED_SKILLS, type BundledSkill, SKILLS_SOURCE, skillFolderHash } from "./skills.ts";
 
@@ -122,33 +122,47 @@ async function installedHash(view: RepoView, name: string): Promise<string | nul
 
 /**
  * The project's Armada skills that differ from this CLI's copy, and the
- * oldest release `skills-lock.json` records for them (null when it records
- * none). A recorded release older than the CLI alone is not "behind": Armada
- * releases several times a day, mostly without a skill change.
+ * oldest and newest releases `skills-lock.json` records for them (null when it
+ * records none). A recorded release older than the CLI alone is not "behind":
+ * Armada releases several times a day, mostly without a skill change.
  */
 export interface SkillsBehind {
   recorded: string | null;
+  newest: string | null;
   differing: string[];
 }
 
-const SKILLS_BEHIND_FIX = "run `armada init` and merge its PR (`armada merge <n> --no-ticket`)";
-
 function behindOf(lock: SkillsLock | null, differing: string[]): SkillsBehind | null {
   if (!differing.length) return null;
-  const refs = differing.flatMap((name) => {
-    const ref = lock?.skills[name]?.ref;
-    return typeof ref === "string" && /^v\d/.test(ref) ? [ref.slice(1)] : [];
-  });
-  const recorded = refs.sort(compareVersions)[0] ?? null;
-  return { recorded, differing };
+  const refs = differing
+    .flatMap((name) => {
+      const ref = lock?.skills[name]?.ref;
+      return typeof ref === "string" && /^v\d/.test(ref) ? [ref.slice(1)] : [];
+    })
+    .sort(compareVersions);
+  return { recorded: refs[0] ?? null, newest: refs.at(-1) ?? null, differing };
 }
 
-const skillsBehindMessage = (b: SkillsBehind, cli: string) =>
-  `this project's Armada skills are ${b.recorded ?? "of an unrecorded version"} (${b.differing.join(", ")} ${b.differing.length === 1 ? "differs" : "differ"}), the CLI is ${cli}`;
+/** Skills a newer CLI vendored: this CLI would take them back, so it is the one to update. */
+const ahead = (b: SkillsBehind, cli: string) => (b.newest && compareVersions(b.newest, cli) > 0 ? b.newest : null);
 
-/** The one line naming skills behind the CLI, with what to do; for `armada status`. */
+function skillsBehindMessage(b: SkillsBehind, cli: string): string {
+  const which = `${b.differing.join(", ")} ${b.differing.length === 1 ? "differs" : "differ"}`;
+  const newer = ahead(b, cli);
+  if (newer) return `this project's Armada skills are ${newer} (${which}), newer than the CLI ${cli}`;
+  return `this project's Armada skills are ${b.recorded ?? "of an unrecorded version"} (${which}), the CLI is ${cli}`;
+}
+
+function skillsBehindFix(b: SkillsBehind, cli: string): string {
+  const newer = ahead(b, cli);
+  return newer
+    ? `update the CLI, not the skills: ${installCommand(newer)}`
+    : "run `armada init` and merge its PR (`armada merge <n> --no-ticket`)";
+}
+
+/** The one line naming skills that differ from the CLI's, with what to do; for `armada status`. */
 export const skillsBehindLine = (b: SkillsBehind, cli: string) =>
-  `${skillsBehindMessage(b, cli)}: ${SKILLS_BEHIND_FIX}`;
+  `${skillsBehindMessage(b, cli)}: ${skillsBehindFix(b, cli)}`;
 
 /**
  * Whether the project's vendored Armada skills differ from this CLI's copy;
@@ -228,8 +242,8 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
       continue;
     }
     present++;
-    if (installed !== bundledHash(skill)) differing.push(skill.name);
-    if (installed !== bundledHash(skill))
+    if (installed !== bundledHash(skill)) {
+      differing.push(skill.name);
       checks.push(
         bad(
           id,
@@ -238,7 +252,7 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
           "run `armada init` to open a pull request that updates it",
         ),
       );
-    else checks.push(ok(id, `skill ${skill.name} is up to date`));
+    } else checks.push(ok(id, `skill ${skill.name} is up to date`));
 
     const target = await view.readLink(linkPath(skill.name));
     const linkId = `skill-link:${skill.name}`;
@@ -275,7 +289,14 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
   }
   const behind = behindOf(lock, differing);
   if (behind)
-    checks.push(bad("skills-version", "warning", skillsBehindMessage(behind, armadaVersion), SKILLS_BEHIND_FIX));
+    checks.push(
+      bad(
+        "skills-version",
+        "warning",
+        skillsBehindMessage(behind, armadaVersion),
+        skillsBehindFix(behind, armadaVersion),
+      ),
+    );
   else if (present) checks.push(ok("skills-version", `this project's Armada skills match Armada ${armadaVersion}'s`));
 
   const settings = await view.readFile(CONDUCTOR_SETTINGS);
