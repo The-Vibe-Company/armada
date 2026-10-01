@@ -258,8 +258,11 @@ describe("fetchProgramChanges", () => {
             },
           });
         // Named by a webhook (a relation or an attachment changed, which leaves its update time alone).
-        if (json.includes('"id":{"in":["uuid-demo-12"]}'))
-          return Response.json({ data: { issues: page([raw("DEMO-12", "DEMO-2", { title: "Renamed" })]) } });
+        // The other one is the new parent of a ticket moved out of the program: not read into it.
+        if (json.includes('"id":{"in":["uuid-demo-12","uuid-other-5"]}'))
+          return Response.json({
+            data: { issues: page([raw("DEMO-12", "DEMO-2", { title: "Renamed" }), raw("OTHER-5", "OTHER-1")]) },
+          });
         // DEMO-30's subtree.
         if (json.includes("uuid-demo-30"))
           return Response.json({ data: { issues: page([raw("DEMO-31", "DEMO-30")]) } });
@@ -308,7 +311,7 @@ describe("fetchProgramChanges", () => {
       labels,
       previous,
       since: "2026-03-04T09:59:00.000Z",
-      touched: ["uuid-demo-12"],
+      touched: ["uuid-demo-12", "uuid-other-5"],
       fetch,
       now: () => new Date("2026-03-04T10:05:00.000Z"),
     });
@@ -332,6 +335,7 @@ describe("fetchProgramChanges", () => {
     expect(byId.get("DEMO-11")?.agentPhase).toBe("shipping");
     expect(byId.get("DEMO-12")?.title).toBe("Renamed");
     expect(byId.get("DEMO-31")?.parentId).toBe("DEMO-30");
+    expect(byId.has("OTHER-5")).toBe(false);
     // Unchanged tickets are kept as read.
     expect(byId.get("DEMO-18")).toEqual(previous.issues.find((i) => i.id === "DEMO-18"));
     const of = (id: string) => next.comments.filter((c) => c.issueId === id).map((c) => c.id);

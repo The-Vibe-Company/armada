@@ -162,7 +162,7 @@ export class PgDialect implements Dialect {
  *   ticket and one open answer request per question, whatever the races.
  *
  * Version 2 links organizations to installations of the GitHub App (THE-851).
- * Version 5 keeps each project's reading of Linear and GitHub (THE-853).
+ * Versions 5 and 6 keep each project's reading of Linear and GitHub (THE-853).
  */
 export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -497,6 +497,18 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
       "CREATE INDEX IF NOT EXISTS fleet_snapshots_issues ON fleet_snapshots USING gin (issue_ids)",
       "CREATE INDEX IF NOT EXISTS fleet_snapshots_repository ON fleet_snapshots (repository)",
+    ],
+  },
+  {
+    // The webhooks' marks stay until a reading that saw them is written
+    // (`marked` counts them), and when each webhook last marked a reading
+    // (THE-853).
+    version: 6,
+    statements: [
+      `ALTER TABLE fleet_snapshots
+        ADD COLUMN IF NOT EXISTS marked bigint NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS linear_hook_at timestamptz,
+        ADD COLUMN IF NOT EXISTS github_hook_at timestamptz`,
     ],
   },
 ];

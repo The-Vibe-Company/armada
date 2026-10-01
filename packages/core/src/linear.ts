@@ -462,7 +462,7 @@ const CHANGED_COMMENTS_QUERY = /* GraphQL */ `
   }`;
 /** Ids per `in` filter of an incremental read: a 300-ticket program takes two requests. */
 const IDS_PER_FILTER = 200;
-/** Pages read per incremental query before giving up; a change touching more is a full read's job. */
+/** Pages read per incremental query; a change touching more is a full read's job. */
 const MAX_CHANGED_PAGES = 20;
 
 export interface FetchChangesOptions extends FetchProgramOptions {
@@ -474,13 +474,15 @@ export interface FetchChangesOptions extends FetchProgramOptions {
   touched?: string[];
 }
 
-/** Every page of one `issues` or `comments` query, with a warning when Linear stops advancing. */
+/** An incremental read stopped short: a full read follows instead. */
+class IncompleteChanges extends Error {}
+
+/** Every page of one `issues` or `comments` query; throws `IncompleteChanges` when they cannot all be read. */
 async function readPages<T>(
   opts: LinearRequestOptions,
   query: string,
   field: "issues" | "comments",
   filter: object,
-  warnings: string[],
 ): Promise<T[]> {
   const nodes: T[] = [];
   let after: string | null = null;
@@ -491,10 +493,7 @@ async function readPages<T>(
     nodes.push(...conn.nodes);
     const next = conn.pageInfo;
     if (!next?.hasNextPage) break;
-    if (!next.endCursor || next.endCursor === after || page + 1 >= MAX_CHANGED_PAGES) {
-      warnings.push(`${field} changed since the last reading: not every page could be read; some may be missing`);
-      break;
-    }
+    if (!next.endCursor || next.endCursor === after || page + 1 >= MAX_CHANGED_PAGES) throw new IncompleteChanges();
     after = next.endCursor;
   }
   return nodes;
@@ -507,13 +506,19 @@ async function readPages<T>(
  * (any depth), and the comments updated since on the tickets an agent may
  * hold (every comment of a ticket that just became one). A few requests
  * instead of one per level and page of the whole tree. Tickets deleted or
- * moved out of Linear's reach stay until the next full read.
+ * moved out of Linear's reach stay until the next full read. When the changes
+ * are too many to read in a few pages, the program is read whole instead.
  */
 export async function fetchProgramChanges(opts: FetchChangesOptions): Promise<ProgramData> {
   try {
-    return await readChanges(opts, true);
+    try {
+      return await readChanges(opts, true);
+    } catch (err) {
+      if (err instanceof LinearError && /delegate/i.test(err.message)) return await readChanges(opts, false);
+      throw err;
+    }
   } catch (err) {
-    if (err instanceof LinearError && /delegate/i.test(err.message)) return readChanges(opts, false);
+    if (err instanceof IncompleteChanges) return fetchProgram(opts);
     throw err;
   }
 }
@@ -522,8 +527,9 @@ async function readChanges(opts: FetchChangesOptions, delegate: boolean): Promis
   const { previous, since } = opts;
   const warnings: string[] = [];
   const known = previous.issues.map((i) => i.uuid);
+  const isKnown = new Set(known);
   const raws: RawIssue[] = [];
-  const read = (filter: object) => readPages<RawIssue>(opts, CHANGED_QUERY(delegate), "issues", filter, warnings);
+  const read = (filter: object) => readPages<RawIssue>(opts, CHANGED_QUERY(delegate), "issues", filter);
 
   // Tickets of the program updated since, and new tickets under them.
   for (const ids of chunks(known, IDS_PER_FILTER))
@@ -534,10 +540,15 @@ async function readChanges(opts: FetchChangesOptions, delegate: boolean): Promis
       })),
     );
   const touched = [...new Set(opts.touched ?? [])].filter((id) => !raws.some((r) => r.id === id));
-  for (const ids of chunks(touched, IDS_PER_FILTER)) raws.push(...(await read({ id: { in: ids } })));
+  // A webhook may name a ticket outside the program (the new parent of one moved out): only
+  // tickets of the program, or now under one of its tickets, are kept.
+  const inProgram = new Set([...previous.issues.map((i) => i.id), ...raws.map((r) => r.identifier)]);
+  for (const ids of chunks(touched, IDS_PER_FILTER))
+    for (const r of await read({ id: { in: ids } }))
+      if (isKnown.has(r.id) || (r.parent && inProgram.has(r.parent.identifier))) raws.push(r);
   // A ticket new to the program brings its own subtree, read whole.
   const seen = new Set([...known, ...raws.map((r) => r.id)]);
-  let fresh = raws.filter((r) => !known.includes(r.id)).map((r) => r.id);
+  let fresh = raws.filter((r) => !isKnown.has(r.id)).map((r) => r.id);
   for (let depth = 0; depth < MAX_DEPTH && fresh.length; depth++) {
     const children: RawIssue[] = [];
     for (const ids of chunks(fresh, IDS_PER_FILTER)) children.push(...(await read({ parent: { id: { in: ids } } })));
@@ -570,7 +581,6 @@ async function readChanges(opts: FetchChangesOptions, delegate: boolean): Promis
       CHANGED_COMMENTS_QUERY,
       "comments",
       { updatedAt: { gt: since }, issue: { id: { in: ids } } },
-      warnings,
     );
     for (const c of changed) if (c.issue) comments.set(c.id, normalizeComment(c, c.issue.identifier));
   }

@@ -99,11 +99,13 @@ function useLiveOverview(initial: FleetOverview) {
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     let visible = false;
-    const next = () => {
+    // Each start begins a new loop; a poll still running from an older one does not schedule another.
+    let loop = 0;
+    const next = (mine: number) => {
       timer = setTimeout(
         async () => {
           await poll();
-          if (visible) next();
+          if (visible && mine === loop) next(mine);
         },
         busy.current ? BUSY_POLL_MS : IDLE_POLL_MS,
       );
@@ -111,11 +113,13 @@ function useLiveOverview(initial: FleetOverview) {
     const start = () => {
       if (visible) return;
       visible = true;
+      loop++;
       void poll();
-      next();
+      next(loop);
     };
     const stop = () => {
       visible = false;
+      loop++;
       if (timer) clearTimeout(timer);
       timer = null;
     };

@@ -30,6 +30,7 @@ import {
   type FleetCache,
   type LoadOptions,
   loadOverview,
+  MARK_GAP_MS,
   newCache,
   type ProjectRef,
   refreshProject,
@@ -49,7 +50,6 @@ import {
 import { isLanguage, type Language } from "./i18n";
 import { dbSnapshots } from "./snapshots";
 import { vaultModeOf } from "./vault";
-import { webhookSecretsOf } from "./webhooks";
 
 /** Comma- or space-separated owner/name list, shown when the registry cannot be read. */
 function repositoriesFromEnv(): ProjectRef[] {
@@ -188,12 +188,6 @@ async function readKeysOf(scope: Scope | null): Promise<ReadKeys> {
   return { keys: fleetKeysOf(own, env, scope), installations };
 }
 
-/** How long a reading stays fresh: ARMADA_DASHBOARD_SNAPSHOT_SECONDS, else 60 s, or 10 minutes once both webhooks keep it fresh. */
-function snapshotMs(): number {
-  const webhooks = webhookSecretsOf(process.env);
-  return seconds(process.env.ARMADA_DASHBOARD_SNAPSHOT_SECONDS, webhooks.linear && webhooks.github ? 600 : 60) * 1000;
-}
-
 /** The fleet one scope reads: its process cache (shared by its viewers) and its sources. */
 function fleetFor(scope: Scope | null): LoadOptions {
   const id = scope ? `org:${scope.organization}` : "env";
@@ -209,7 +203,8 @@ function fleetFor(scope: Scope | null): LoadOptions {
     sources: demo ? demoSources(demo, real) : real,
     cache,
     now: () => new Date(),
-    snapshotMs: snapshotMs(),
+    // A reading both webhooks keep fresh is refreshed on view every 10 minutes instead (`fleet-data.ts`).
+    snapshotMs: seconds(process.env.ARMADA_DASHBOARD_SNAPSHOT_SECONDS, 60) * 1000,
     background: (work) => after(() => work),
   };
 }
@@ -243,7 +238,8 @@ export async function refreshMarked(keys: string[]): Promise<void> {
         // A project no organization holds yet is read by nobody's keys.
         if (signedIn && !organization) return;
         const opts = fleetFor(signedIn && organization ? { organization, home } : null);
-        await refreshProject(p, dbSnapshots(db, opts.cache.snapshots), opts);
+        // A burst of deliveries makes one read: the marks of the others wait for it, or for the next view.
+        await refreshProject(p, dbSnapshots(db, opts.cache.snapshots), opts, { gapMs: MARK_GAP_MS });
       }),
     );
   } catch (err) {

@@ -27,11 +27,13 @@ import {
 import { type Database, redactDatabase } from "./db";
 import type { LiveStore } from "./fleet-store";
 import {
+  type ClaimOptions,
   dbSnapshots,
   type MemorySnapshots,
   memorySnapshots,
   type Snapshot,
   type SnapshotEntry,
+  type SnapshotHead,
   type SnapshotStore,
 } from "./snapshots";
 
@@ -92,6 +94,8 @@ export interface LoadOptions {
   now: () => Date;
   /** How long a reading of Linear and GitHub stays fresh; a view after that refreshes it in the background. */
   snapshotMs: number;
+  /** The same for a reading both webhooks marked within the last day: they keep it fresh. Default 10 minutes. */
+  hookedSnapshotMs?: number;
   /** How often Linear is read whole rather than for its changes only. Default 30 minutes. */
   fullMs?: number;
   /** How long a refresh holds a project's lease. Default 2 minutes. */
@@ -127,6 +131,11 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
 
 const FULL_MS = 30 * 60_000;
 const LEASE_MS = 2 * 60_000;
+const HOOKED_SNAPSHOT_MS = 10 * 60_000;
+/** A reading counts as kept fresh by a webhook that marked it within this. */
+const HOOKED_WITHIN_MS = 24 * 3_600_000;
+/** A reading a webhook marked is refreshed at most this often: a burst of deliveries (a CI run) makes one read. */
+export const MARK_GAP_MS = 10_000;
 /** Linear's changes are read from a little before the last read started: clocks differ. */
 const OVERLAP_MS = 2 * 60_000;
 /** Passes of one refresh when webhooks keep marking the project while it reads. */
@@ -136,25 +145,40 @@ const MAX_PASSES = 3;
 export const keyOf = (p: ProjectRef) => p.slug ?? p.repository;
 
 /**
+ * How long a reading stays fresh: the snapshot period, or a longer one when
+ * both webhooks marked it within the last day, so they are known to reach it.
+ */
+function periodOf(
+  head: SnapshotHead | undefined,
+  opts: Pick<LoadOptions, "snapshotMs" | "hookedSnapshotMs">,
+  now: number,
+) {
+  const recent = (d: Date | null | undefined) => !!d && now - d.getTime() < HOOKED_WITHIN_MS;
+  return head && recent(head.hooks.linear) && recent(head.hooks.github)
+    ? Math.max(opts.snapshotMs, opts.hookedSnapshotMs ?? HOOKED_SNAPSHOT_MS)
+    : opts.snapshotMs;
+}
+
+/**
  * Refreshes one project's reading, unless another refresh holds it: Linear
  * whole when there is no reading, it is `fullMs` old, a webhook asked or the
  * program root changed; otherwise Linear's changes since the last read (when
  * a webhook said Linear changed, or the reading is stale) and GitHub's pull
  * requests and armada.toml (when a webhook said GitHub changed, or it is
- * stale). A failure keeps the previous reading, records why and gives the
- * webhooks' marks back. Never throws.
+ * stale). A failure keeps the previous reading and records why; the
+ * webhooks' marks stay for the next refresh. Never throws.
  */
 export async function refreshProject(
   p: ProjectRef,
   store: SnapshotStore,
-  opts: Pick<LoadOptions, "sources" | "now" | "snapshotMs" | "fullMs" | "leaseMs">,
-  /** The version the caller saw stale; a newer one written meanwhile is left alone. */
-  seen?: number,
+  opts: Pick<LoadOptions, "sources" | "now" | "snapshotMs" | "hookedSnapshotMs" | "fullMs" | "leaseMs">,
+  /** When the first pass has nothing to do (see `ClaimOptions`). */
+  first: ClaimOptions = {},
 ): Promise<void> {
   const key = keyOf(p);
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     const claim = await store
-      .claim(key, opts.now(), opts.leaseMs ?? LEASE_MS, pass === 0 ? seen : undefined)
+      .claim(key, opts.now(), opts.leaseMs ?? LEASE_MS, pass === 0 ? first : {})
       .catch((err: unknown) => {
         console.error(`armada dashboard: ${key}: refresh not started: ${redactDatabase(err)}`);
         return null;
@@ -164,7 +188,9 @@ export async function refreshProject(
     const prev = claim.entry.snapshot;
     try {
       const fullAge = claim.entry.fullAt ? started.getTime() - claim.entry.fullAt.getTime() : Number.POSITIVE_INFINITY;
-      const stale = !claim.entry.readAt || started.getTime() - claim.entry.readAt.getTime() >= opts.snapshotMs;
+      const stale =
+        !claim.entry.readAt ||
+        started.getTime() - claim.entry.readAt.getTime() >= periodOf(claim.entry, opts, started.getTime());
       let full = !prev || claim.full || fullAge >= (opts.fullMs ?? FULL_MS) || !opts.sources.readChanges;
       const github = stale || claim.forge;
       const reading = full || github ? await opts.sources.readConfig(p) : null;
@@ -188,8 +214,9 @@ export async function refreshProject(
         configWarning: reading ? reading.warning : (prev?.configWarning ?? null),
         sources,
       };
-      const { dirty } = await store.save(key, snapshot, { full, now: opts.now() });
-      if (!dirty) return;
+      // Not saved: the lease ran out and another refresh took over; its reading stands.
+      const { saved, dirty } = await store.save(key, snapshot, claim, { full, now: opts.now() });
+      if (!saved || !dirty) return;
     } catch (err) {
       await store.fail(key, message(err), claim).catch((e: unknown) => {
         console.error(`armada dashboard: ${key}: refresh failure not recorded: ${redactDatabase(e)}`);
@@ -201,18 +228,17 @@ export async function refreshProject(
 
 /**
  * Starts a background refresh of a project when its reading is missing, older
- * than the snapshot period or marked by a webhook, and no refresh holds it. A
- * failed refresh is not retried before the period ends, so a Linear outage
- * does not turn every poll into a read.
+ * than its period, or marked by a webhook (at most every `MARK_GAP_MS`), and
+ * no refresh holds it. A failed refresh is not retried before the period
+ * ends, so a Linear outage does not turn every poll into a read.
  */
 function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: SnapshotStore, opts: LoadOptions): boolean {
   const now = opts.now().getTime();
   if (entry?.refreshingUntil && entry.refreshingUntil.getTime() > now) return true;
-  const attempted = entry?.attemptedAt?.getTime();
-  const due =
-    attempted === undefined || now - attempted >= opts.snapshotMs || (entry?.dirty === true && entry.error === null);
+  const since = entry?.attemptedAt ? now - entry.attemptedAt.getTime() : Number.POSITIVE_INFINITY;
+  const due = since >= periodOf(entry, opts, now) || (entry?.dirty === true && !entry.error && since >= MARK_GAP_MS);
   if (!due) return false;
-  const work = refreshProject(p, store, opts, entry?.version ?? 0);
+  const work = refreshProject(p, store, opts, { seen: entry?.version ?? 0 });
   if (opts.background) opts.background(work);
   else void work;
   return true;

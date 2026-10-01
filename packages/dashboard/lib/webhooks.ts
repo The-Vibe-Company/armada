@@ -132,7 +132,7 @@ export async function handleLinearWebhook(request: Request, deps: WebhookDeps): 
     await markEveryProject(db);
     return answer(202, { marked: "every project" });
   }
-  const keys = await markIssues(db, ids, { full });
+  const keys = await markIssues(db, ids, { full, now: new Date(now) });
   if (keys.length) deps.refresh(keys);
   return answer(202, { marked: keys.length });
 }
@@ -155,7 +155,7 @@ export async function handleGithubWebhook(request: Request, deps: WebhookDeps): 
 
   const db = await deps.database();
   if (!db) return answer(503, { error: "the app's database is not configured" });
-  const keys = await markRepository(db, repository);
+  const keys = await markRepository(db, repository, deps.now?.() ?? new Date());
   if (keys.length) deps.refresh(keys);
   return answer(202, { marked: keys.length });
 }

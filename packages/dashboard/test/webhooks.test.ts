@@ -162,6 +162,8 @@ describe("Linear's webhook", () => {
     );
     expect(await res.json()).toEqual({ marked: "every project" });
     expect(w.refreshed).toEqual([]);
+    // The next view more than 10 s after the last read: one whole read.
+    w.advance(10_000);
     const background: Promise<unknown>[] = [];
     await loadOverview({ ...w.opts, background: (work) => background.push(work) }, null);
     expect(background).toHaveLength(1);
@@ -170,7 +172,7 @@ describe("Linear's webhook", () => {
     expect(w.asks).toEqual([]);
   });
 
-  test("a failed refresh gives the marks back, so the next one still reads what the webhook named", async () => {
+  test("a failed refresh keeps the marks, so the next one still reads what the webhook named", async () => {
     const w = await project();
     await handleLinearWebhook(
       w.linear({ type: "Attachment", action: "create", data: { issueId: "lin-wid-2" } }),
@@ -185,6 +187,77 @@ describe("Linear's webhook", () => {
     expect(w.asks.map((a) => a.touched)).toEqual([["lin-wid-2"], ["lin-wid-2"]]);
     const [after] = (await w.store.entries(["widgets"])).values();
     expect(after).toMatchObject({ dirty: false, error: null });
+  });
+});
+
+describe("refreshes and their lease", () => {
+  test("marks stay until a reading that saw them is written: a refresh cut short loses none, a mark during one is read next", async () => {
+    const w = await project();
+    await handleLinearWebhook(w.linear({ type: "Issue", action: "update", data: { id: "lin-wid-2" } }), w.deps);
+    // A refresh claims, then its function is stopped before it writes anything.
+    expect(await w.store.claim("widgets", new Date(T0), 120_000)).not.toBeNull();
+    w.advance(121_000);
+    await refreshProject(WIDGETS, w.store, w.opts);
+    expect(w.asks.map((a) => a.touched)).toEqual([["lin-wid-2"]]);
+
+    // A delivery while a refresh reads: the refresh writes, and the reading stays marked for the next one.
+    w.advance(60_000);
+    const claim = await w.store.claim("widgets", new Date(T0 + 181_000), 120_000);
+    if (!claim) throw new Error("not claimed");
+    await handleLinearWebhook(w.linear({ type: "Comment", action: "create", data: { issueId: "lin-wid-1" } }), w.deps);
+    const entry = claim.entry;
+    if (!entry.snapshot) throw new Error("no reading");
+    expect(await w.store.save("widgets", entry.snapshot, claim, { full: false, now: new Date(T0 + 182_000) })).toEqual({
+      saved: true,
+      dirty: true,
+    });
+  });
+
+  test("a refresh that outlived its lease does not overwrite the newer reading of the one that took over", async () => {
+    const w = await project();
+    const slow = await w.store.claim("widgets", new Date(T0 + 1_000), 120_000);
+    if (!slow?.entry.snapshot) throw new Error("not claimed");
+    const fast = await w.store.claim("widgets", new Date(T0 + 122_000), 120_000);
+    if (!fast?.entry.snapshot) throw new Error("not claimed");
+    const newer = { ...fast.entry.snapshot, configWarning: "newer" };
+    expect((await w.store.save("widgets", newer, fast, { full: false, now: new Date(T0 + 123_000) })).saved).toBe(true);
+    const late = { ...slow.entry.snapshot, configWarning: "late" };
+    expect((await w.store.save("widgets", late, slow, { full: false, now: new Date(T0 + 150_000) })).saved).toBe(false);
+    await w.store.fail("widgets", "late failure", slow);
+    const [kept] = (await w.store.entries(["widgets"])).values();
+    expect(kept).toMatchObject({ version: 2, error: null, refreshingUntil: null });
+    expect(kept?.snapshot?.configWarning).toBe("newer");
+  });
+
+  test("a burst of deliveries makes one read; a reading both webhooks keep fresh is refreshed on view every 10 minutes, not every minute", async () => {
+    const w = await project();
+    const deliver = () =>
+      handleGithubWebhook(w.github("check_run", { repository: { full_name: "acme/widgets" } }), w.deps);
+    w.advance(10_000);
+    await deliver();
+    await refreshProject(WIDGETS, w.store, w.opts, { gapMs: 10_000 });
+    w.advance(3_000);
+    await deliver();
+    await refreshProject(WIDGETS, w.store, w.opts, { gapMs: 10_000 });
+    expect(w.asks).toHaveLength(1);
+    // The second delivery's mark waits for the next view (or delivery) after the gap.
+    const [marked] = (await w.store.entries(["widgets"])).values();
+    expect(marked?.dirty).toBe(true);
+
+    // Both webhooks reached it today: a view two minutes later finds it fresh.
+    await handleLinearWebhook(w.linear({ type: "Issue", action: "update", data: { id: "lin-wid-2" } }), w.deps);
+    const view = async () => {
+      const background: Promise<unknown>[] = [];
+      await loadOverview({ ...w.opts, snapshotMs: 60_000, background: (work) => background.push(work) }, null);
+      await Promise.all(background);
+      return background.length;
+    };
+    w.advance(10_000);
+    expect(await view()).toBe(1);
+    w.advance(120_000);
+    expect(await view()).toBe(0);
+    w.advance(10 * 60_000);
+    expect(await view()).toBe(1);
   });
 });
 
