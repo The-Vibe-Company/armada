@@ -8,7 +8,16 @@ export const AGENT_STATUSES = ["waiting", "error", "silent", "running", "done"] 
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
 /** Why an agent has its status; each reason has its own label. */
-export type StatusReason = "question" | "approval" | "ci" | "conflict" | "blocked" | "silent" | "ready" | "phase";
+export type StatusReason =
+  | "question"
+  | "approval"
+  | "validation"
+  | "ci"
+  | "conflict"
+  | "blocked"
+  | "silent"
+  | "ready"
+  | "phase";
 
 export interface AgentState {
   status: AgentStatus;
@@ -19,6 +28,7 @@ export interface AgentState {
 export function agentState(row: Pick<FleetRow, "phase" | "pr" | "silent" | "question" | "flags">): AgentState {
   if (row.question) return { status: "waiting", reason: "question" };
   if (row.phase === "awaiting-approval") return { status: "waiting", reason: "approval" };
+  if (row.phase === "awaiting-validation") return { status: "waiting", reason: "validation" };
   if (row.pr?.ci === "failure" || row.flags.includes("ci-failing")) return { status: "error", reason: "ci" };
   if (row.pr?.mergeable === "CONFLICTING" || row.flags.includes("conflict"))
     return { status: "error", reason: "conflict" };

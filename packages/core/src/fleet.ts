@@ -7,7 +7,7 @@ import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASE
 const MIN = 60_000;
 
 /** Phases where the coordinator or a human must act. */
-export const NEEDS_HUMAN: AgentPhase[] = ["awaiting-approval", "blocked", "ready-to-merge"];
+export const NEEDS_HUMAN: AgentPhase[] = ["awaiting-approval", "awaiting-validation", "blocked", "ready-to-merge"];
 
 /** Pipeline order, furthest along first. */
 const PHASE_RANK: Record<AgentPhase, number> = {
@@ -15,10 +15,11 @@ const PHASE_RANK: Record<AgentPhase, number> = {
   "ready-to-merge": 1,
   shipping: 2,
   implementing: 3,
-  "awaiting-approval": 4,
-  planning: 5,
-  blocked: 6,
-  released: 7,
+  "awaiting-validation": 4,
+  "awaiting-approval": 5,
+  planning: 6,
+  blocked: 7,
+  released: 8,
 };
 
 const PLAN_HINT = /\b(plan|objective|assumptions|awaiting (?:plan )?approval)\b/i;

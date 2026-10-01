@@ -584,6 +584,7 @@ const en = {
     reasons: {
       question: "Waiting for your answer",
       approval: "Waiting for your approval",
+      validation: "Waiting for your validation",
       ci: "Red CI",
       conflict: "Conflict with main",
       blocked: "Blocked",
@@ -593,6 +594,7 @@ const en = {
     phases: {
       planning: "Planning",
       "awaiting-approval": "Awaiting approval",
+      "awaiting-validation": "Awaiting validation",
       implementing: "Implementing",
       shipping: "Shipping",
       blocked: "Blocked",
@@ -806,6 +808,7 @@ const en = {
       blocked: "Blocked",
       question: "Waiting for your answer",
       approval: "Waiting for your approval",
+      validation: "Waiting for your validation",
       silent: "Silent",
       ready: "Ready to merge",
       phase: "In progress",
@@ -1305,6 +1308,7 @@ const fr: Strings = {
     reasons: {
       question: "Attend ta réponse",
       approval: "Attend ton approbation",
+      validation: "Attend ta validation",
       ci: "CI rouge",
       conflict: "Conflit avec main",
       blocked: "Bloqué",
@@ -1314,6 +1318,7 @@ const fr: Strings = {
     phases: {
       planning: "Planification",
       "awaiting-approval": "En attente d'approbation",
+      "awaiting-validation": "En attente de validation",
       implementing: "Implémentation",
       shipping: "Livraison",
       blocked: "Bloqué",
@@ -1525,6 +1530,7 @@ const fr: Strings = {
       blocked: "Bloqué",
       question: "Attend ta réponse",
       approval: "Attend ton approbation",
+      validation: "Attend ta validation",
       silent: "Silencieux",
       ready: "Prêt à fusionner",
       phase: "En cours",

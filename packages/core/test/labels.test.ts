@@ -33,12 +33,12 @@ describe("tracker labels", () => {
         name: "Agent phase",
         id: "g-team",
         scope: "team",
-        missing: ["awaiting-approval", "shipping", "blocked", "ready-to-merge"],
+        missing: ["awaiting-approval", "shipping", "blocked", "ready-to-merge", "awaiting-validation"],
       },
       { name: "Agent runtime", id: null, scope: null, missing: ["Claude Code", "Codex", "Conductor"] },
     ]);
     expect(checkLabels(state).map((c) => [c.level, c.message])).toEqual([
-      ["error", 'label group "Agent phase" lacks "awaiting-approval", "shipping", "blocked", "ready-to-merge"'],
+      ["error", 'label group "Agent phase" lacks "awaiting-approval", "shipping", "blocked", "ready-to-merge", "awaiting-validation"'],
       ["error", 'label group "Agent runtime" does not exist in Linear team DEMO'],
     ]);
   });
@@ -56,19 +56,20 @@ describe("tracker labels", () => {
       "Agent phase / shipping",
       "Agent phase / blocked",
       "Agent phase / ready-to-merge",
+      "Agent phase / awaiting-validation",
       "Agent runtime",
       "Agent runtime / Claude Code",
       "Agent runtime / Codex",
       "Agent runtime / Conductor",
     ]);
     expect(linear.created[0]).toEqual({ name: "awaiting-approval", parentId: "g-shared" });
-    expect(linear.created[5]).toEqual({
+    expect(linear.created[6]).toEqual({
       name: "Agent runtime",
       teamId: DEMO_TEAM.id,
       isGroup: true,
       groupType: "singleSelect",
     });
-    expect(linear.created[6]).toEqual({ name: "Claude Code", parentId: "label-8", teamId: DEMO_TEAM.id });
+    expect(linear.created[7]).toEqual({ name: "Claude Code", parentId: "label-9", teamId: DEMO_TEAM.id });
     expect(checkLabels(await readLabels(demoConfig(), opts)).every((c) => c.level === "ok")).toBe(true);
   });
 });

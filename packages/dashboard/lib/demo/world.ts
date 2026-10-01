@@ -512,6 +512,7 @@ const BEFORE: Record<LabelPhase, LabelPhase[]> = {
   shipping: ["planning", "awaiting-approval", "implementing"],
   "ready-to-merge": ["planning", "awaiting-approval", "implementing", "shipping"],
   blocked: ["planning", "awaiting-approval", "implementing"],
+  "awaiting-validation": ["planning", "awaiting-approval", "implementing"],
 };
 
 const AT_WORK: Record<LabelPhase, string> = {
@@ -521,6 +522,7 @@ const AT_WORK: Record<LabelPhase, string> = {
   shipping: "Pull request open, waiting for CI",
   "ready-to-merge": "Handed back",
   blocked: "Waiting for an answer",
+  "awaiting-validation": "Design submitted for the owner's validation",
 };
 
 /** A report of a demo ticket: minutes ago, oldest first. */
@@ -552,7 +554,7 @@ export function demoReports(t: DemoTicket): DemoReport[] {
   const reports: DemoReport[] = [];
   const quiet = (m: number) => !!t.quiet && m < t.quiet[0] && m > t.quiet[1];
   for (const p of phases) {
-    const once = p.phase === "awaiting-approval" || p.phase === "blocked" || p.phase === "ready-to-merge";
+    const once = p.phase === "awaiting-approval" || p.phase === "awaiting-validation" || p.phase === "blocked" || p.phase === "ready-to-merge";
     for (let m = p.from; m > p.to; m -= once ? Number.POSITIVE_INFINITY : (t.every ?? 12))
       if (!quiet(m) && m !== t.claimed) reports.push({ ago: m, phase: p.phase, summary: AT_WORK[p.phase] });
   }

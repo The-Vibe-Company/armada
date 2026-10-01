@@ -40,6 +40,8 @@ export function pipeline(t: Pick<InFlightTicket, "phase" | "pr">): Pipeline {
   const at: Record<AgentPhase, Pipeline> = {
     planning: { step: 0, state: "ok" },
     "awaiting-approval": { step: 1, state: "wait" },
+    // The owner checks a design or a change before the work goes on.
+    "awaiting-validation": { step: pr ? 3 : 1, state: "wait" },
     implementing: { step: 2, state: "ok" },
     shipping: { step: checked ? 4 : 3, state: pr?.ci === "failure" ? "fail" : "ok" },
     "ready-to-merge": { step: 5, state: "wait" },
