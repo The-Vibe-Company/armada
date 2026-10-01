@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.18](https://github.com/The-Vibe-Company/armada/compare/v0.2.17...v0.2.18) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** a clear overview and a live fleet that scrolls back 24 h ([#98](https://github.com/The-Vibe-Company/armada/issues/98)) ([01afa00](https://github.com/The-Vibe-Company/armada/commit/01afa00a301cafc6d468df8fb39e9755b45f16bd))
+
 ## [0.2.17](https://github.com/The-Vibe-Company/armada/compare/v0.2.16...v0.2.17) (2026-10-01)
 
 
