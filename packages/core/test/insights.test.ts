@@ -94,6 +94,18 @@ describe("throughput", () => {
   });
 });
 
+describe("the previous period", () => {
+  test("is the same stretch of time a period earlier: a steady pace reads flat early in the day", () => {
+    const early = new Date("2026-03-11T01:00:00Z");
+    const events = Array.from({ length: 14 }, (_, k) =>
+      merge(`W-${k}`, new Date(Date.parse("2026-02-26T12:00:00Z") + k * 24 * HOUR).toISOString()),
+    );
+    const i = buildInsights({ records: [records({ events })], range: "7d", now: early });
+    expect([i.merged.count, i.merged.previous]).toEqual([6, 6]);
+    expect(insightsSummary(i).change).toBe(0);
+  });
+});
+
 describe("cycle time", () => {
   test("runs from the first claim since the previous merge, even before the range", () => {
     const i = insights(
@@ -174,13 +186,16 @@ describe("waiting time", () => {
           { ticket: "W-1", kind: "question", createdAt: at("03-05"), resolvedAt: at("03-05", "10:30") },
           { ticket: "W-2", kind: "hand-back", createdAt: at("03-06"), resolvedAt: at("03-06", "12:00") },
           { ticket: "W-3", kind: "plan", createdAt: at("03-11", "11:00"), resolvedAt: null },
-          // Before the range.
+          // Answered, but asked before the range.
           { ticket: "W-4", kind: "question", createdAt: at("03-01"), resolvedAt: at("03-06") },
+          // Still open from before the range: it waits now.
+          { ticket: "W-5", kind: "question", createdAt: at("03-04", "12:00"), resolvedAt: null },
         ],
       }),
     );
-    expect(i.waits.coordinator).toMatchObject({ count: 2, p50: 30 * MIN, p90: 2 * HOUR, open: 1 });
+    expect(i.waits.coordinator).toMatchObject({ count: 2, p50: 30 * MIN, p90: 2 * HOUR, open: 2 });
     expect(i.waits.coordinator.tickets.map((t) => [t.ticket, t.value])).toEqual([
+      ["W-5", 7 * 24 * HOUR],
       ["W-2", 2 * HOUR],
       ["W-3", HOUR],
       ["W-1", 30 * MIN],

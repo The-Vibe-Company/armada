@@ -61,6 +61,17 @@ beforeAll(async () => {
   // W-2: nothing since the range started: not read.
   await event("W-2", "claim", -5 * DAY, { phase: "planning" });
   await event("W-2", "heartbeat", -5 * DAY + 5);
+  // W-3: held since long before the range, silent since: its session keeps it read.
+  await saveRuntimeHandle(db, {
+    project: P,
+    ticket: "W-3",
+    runtime: "Codex",
+    handle: "ws/3",
+    branch: null,
+    at: at(-20 * DAY),
+  });
+  await event("W-3", "claim", -20 * DAY, { phase: "planning" });
+  await event("W-3", "report", -20 * DAY + 10, { phase: "blocked" });
   // Another project's ticket.
   await recordEvent(db, { project: "gadgets", ticket: "W-1", kind: "merge", at: at(10) });
   // The coordinator's waits and the owner's validations.
@@ -84,7 +95,8 @@ beforeAll(async () => {
     body: "fyi",
     at: at(25),
   });
-  await addInboxItem(db, {
+  // Asked before the range: answered, not read; still open, read.
+  const old = await addInboxItem(db, {
     project: P,
     ticket: "W-1",
     kind: "question",
@@ -92,6 +104,16 @@ beforeAll(async () => {
     author: null,
     body: "old",
     at: at(-DAY),
+  });
+  await resolveInboxItem(db, { project: P, id: old, resolution: "done", at: at(-DAY + 5) });
+  await addInboxItem(db, {
+    project: P,
+    ticket: "W-3",
+    kind: "question",
+    recipient: "coordinator",
+    author: "ws/3",
+    body: "still open",
+    at: at(-20 * DAY + 10),
   });
   await addValidation(db, {
     project: P,
@@ -121,23 +143,28 @@ afterAll(() => db.end());
 describe("insightRecords", () => {
   test("reads every event of a ticket active since `since`, and only the heartbeats that end a gap or come last", async () => {
     const r = await insightRecords(db, P, at(0), 15);
-    expect(r.events.map((e) => [e.kind, e.at, e.gapFrom, e.last])).toEqual([
-      ["claim", iso(-10 * DAY), null, false],
+    expect(r.events.map((e) => [e.ticket, e.kind, e.at, e.gapFrom, e.last])).toEqual([
+      // W-3 had no event since, but its session is still open.
+      ["W-3", "claim", iso(-20 * DAY), null, false],
+      ["W-3", "report", iso(-20 * DAY + 10), null, true],
+      ["W-1", "claim", iso(-10 * DAY), null, false],
       // The first heartbeat ends the ten days since the claim, but that gap began before the range: kept, it ends in it.
-      ["heartbeat", iso(0), iso(-10 * DAY), false],
-      ["heartbeat", iso(50), iso(5), false],
-      ["report", iso(61), null, false],
-      ["merge", iso(62), null, true],
+      ["W-1", "heartbeat", iso(0), iso(-10 * DAY), false],
+      ["W-1", "heartbeat", iso(50), iso(5), false],
+      ["W-1", "report", iso(61), null, false],
+      ["W-1", "merge", iso(62), null, true],
     ]);
-    expect(r.events[3]).toMatchObject({ phase: "ready-to-merge", headSha: "a1" });
+    expect(r.events[5]).toMatchObject({ phase: "ready-to-merge", headSha: "a1" });
   });
 
-  test("reads the sessions, the coordinator's waits and the owner's validations of the range, for the project only", async () => {
+  test("reads the sessions, the coordinator's waits and the owner's validations of the range and those still open, for the project only", async () => {
     const r = await insightRecords(db, P, at(0), 15);
     expect(r.sessions).toEqual([
+      { ticket: "W-3", runtime: "Codex", profile: null, claimedAt: iso(-20 * DAY), releasedAt: null },
       { ticket: "W-1", runtime: "Conductor", profile: "opus", claimedAt: iso(-10 * DAY), releasedAt: iso(62) },
     ]);
     expect(r.waits).toEqual([
+      { ticket: "W-3", kind: "question", createdAt: iso(-20 * DAY + 10), resolvedAt: null },
       { ticket: "W-1", kind: "question", createdAt: iso(20), resolvedAt: iso(30) },
       { ticket: "W-1", kind: "hand-back", createdAt: iso(61), resolvedAt: null },
     ]);

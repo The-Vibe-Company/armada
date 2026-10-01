@@ -1065,9 +1065,10 @@ const WORKER_EVENTS = "('claim', 'report', 'heartbeat', 'release', 'merge')";
 
 /**
  * What the Insights page computes from, for one project since `since`: the
- * events of every ticket with one since then, from its first (a ticket
- * merged in range keeps its claim from before), the sessions, the
- * coordinator's waits and the owner's validations. Heartbeats come back only
+ * events of every ticket with one since then or a session still open, from
+ * its first (a ticket merged in range keeps its claim from before), the
+ * sessions, the coordinator's waits and the owner's validations (and those
+ * still open, however old). Heartbeats come back only
  * when they end a gap longer than `silentAfterMinutes` or are a ticket's last
  * event: months of 5-minute heartbeats stay in Postgres.
  */
@@ -1080,8 +1081,10 @@ export async function insightRecords(
   const [events, sessions, waits, validations] = await Promise.all([
     db.query(
       `WITH active AS (
-         SELECT DISTINCT ticket FROM events
+         SELECT ticket FROM events
          WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind IN ${WORKER_EVENTS}
+         -- A session still open whose worker went quiet long ago still waits, or is still silent.
+         UNION SELECT ticket FROM fleet_sessions WHERE project = $1 AND released_at IS NULL
        ), timeline AS (
          -- Ticket by ticket (events_by_ticket), so a short range walks its tickets only, not the project.
          SELECT t.* FROM active a CROSS JOIN LATERAL (
@@ -1106,13 +1109,14 @@ export async function insightRecords(
     ),
     db.query(
       `SELECT ticket, kind, created_at, resolved_at FROM inbox_items
-       WHERE project = $1 AND created_at >= $2 AND recipient = 'coordinator' AND kind IN ('question', 'plan', 'hand-back')
+       WHERE project = $1 AND (created_at >= $2 OR resolved_at IS NULL) AND recipient = 'coordinator'
+         AND kind IN ('question', 'plan', 'hand-back')
        ORDER BY created_at, id`,
       [project, since],
     ),
     db.query(
       `SELECT ticket, kind, created_at, decided_at, outcome FROM validations
-       WHERE project = $1 AND created_at >= $2 ORDER BY created_at, id`,
+       WHERE project = $1 AND (created_at >= $2 OR decided_at IS NULL) ORDER BY created_at, id`,
       [project, since],
     ),
   ]);

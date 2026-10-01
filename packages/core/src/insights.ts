@@ -378,6 +378,9 @@ export function buildInsights(input: {
   const days = RANGE_DAYS[input.range];
   const from = startOfDay(now) - (days - 1) * DAY;
   const previousFrom = from - days * DAY;
+  // The same stretch of time a period earlier: today's first hours compare with the same hours a week ago.
+  const previousTo = now - days * DAY;
+  const inPrevious = (t: number) => t >= previousFrom && t <= previousTo;
   const inRange = (t: number) => t >= from && t <= now;
 
   const cycles: Cycle[] = [];
@@ -406,7 +409,7 @@ export function buildInsights(input: {
         if (e.kind !== "merge") continue;
         const at = Date.parse(e.at);
         if (inRange(at)) merges.push(ticketOf(r.project, ticket, null, at));
-        else if (at >= previousFrom && at < from) previousMerged++;
+        else if (inPrevious(at)) previousMerged++;
       }
       cycles.push(...cyclesOf(r.project, ticket, list, held));
       silences.push(...silencesOf(r, ticket, list, held, now).filter((s) => inRange(s.to)));
@@ -438,24 +441,27 @@ export function buildInsights(input: {
 
     for (const w of r.waits) {
       const created = Date.parse(w.createdAt);
-      if (!inRange(created) || !w.ticket) continue;
+      if (!w.ticket) continue;
+      // An open wait counts however old it is; a closed one when it began in the range.
       if (w.resolvedAt === null) {
         coordinatorOpen++;
         coordinatorTickets.push(ticketOf(r.project, w.ticket, now - created, created));
         continue;
       }
+      if (!inRange(created)) continue;
       const ms = Date.parse(w.resolvedAt) - created;
       coordinatorWaits.push(ms);
       coordinatorTickets.push(ticketOf(r.project, w.ticket, ms, created));
     }
     for (const v of r.validations) {
       const created = Date.parse(v.createdAt);
-      if (!inRange(created) || v.outcome === "superseded") continue;
+      if (v.outcome === "superseded") continue;
       if (v.decidedAt === null) {
         ownerOpen++;
         ownerTickets.push(ticketOf(r.project, v.ticket, now - created, created));
         continue;
       }
+      if (!inRange(created)) continue;
       const ms = Date.parse(v.decidedAt) - created;
       ownerWaits.push(ms);
       ownerTickets.push(ticketOf(r.project, v.ticket, ms, created));
@@ -463,7 +469,7 @@ export function buildInsights(input: {
   }
 
   const current = cycles.filter((c) => inRange(c.mergedAt));
-  const previous = cycles.filter((c) => c.mergedAt >= previousFrom && c.mergedAt < from);
+  const previous = cycles.filter((c) => inPrevious(c.mergedAt));
   const cycleMs = (c: Cycle) => c.mergedAt - c.claimedAt;
   const cycleTickets = current.map((c) => ticketOf(c.project, c.ticket, cycleMs(c), c.mergedAt)).sort(byValue);
 

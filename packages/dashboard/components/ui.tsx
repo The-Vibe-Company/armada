@@ -152,6 +152,7 @@ export function Tabs<K extends string>({
   label,
   size = "md",
   push = false,
+  prefetch = true,
 }: {
   items: TabItem<K>[];
   value: K;
@@ -160,6 +161,8 @@ export function Tabs<K extends string>({
   size?: "sm" | "md";
   /** Link tabs that open pages (the organization's) add to the history; filters replace it. */
   push?: boolean;
+  /** Off for filters of a page rendered on the server (/insights): each prefetch would render it. */
+  prefetch?: boolean;
 }) {
   return (
     <div className={`ui-tabs is-${size}`} role="tablist" aria-label={label}>
@@ -176,7 +179,7 @@ export function Tabs<K extends string>({
           <Link
             key={it.key}
             href={it.href}
-            prefetch
+            prefetch={prefetch}
             replace={!push}
             scroll={push}
             role="tab"

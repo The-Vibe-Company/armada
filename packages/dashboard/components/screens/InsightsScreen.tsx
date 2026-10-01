@@ -69,6 +69,7 @@ export function InsightsScreen({
       toolbar={
         <Toolbar>
           <Tabs
+            prefetch={false}
             label={t.insights.rangeLabel}
             value={q.range}
             items={INSIGHT_RANGES.map((range) => ({
@@ -79,6 +80,7 @@ export function InsightsScreen({
           />
           {r.projects.length > 1 && (
             <Tabs
+              prefetch={false}
               label={t.insights.projectLabel}
               value={q.project ?? "all"}
               items={[
@@ -115,7 +117,7 @@ export function InsightsScreen({
   );
 }
 
-const isHarness = (key: string): key is Harness => key in HARNESS_NAME;
+const isHarness = (key: string): key is Harness => Object.hasOwn(HARNESS_NAME, key);
 const dash = (t: Strings, ms: number | null) => (ms === null ? t.insights.none : t.duration(ms));
 const percent = (v: number | null) => (v === null ? "—" : `${Math.round(v * 100)}%`);
 const rate = (v: number | null) => (v === null ? "—" : v.toFixed(2));
@@ -139,12 +141,12 @@ function Figures({ ctx }: { ctx: Ctx }) {
   return (
     <Section label={t.insights.period(days)}>
       <CardGrid>
-        <Card href={open({ kind: "merged" })}>
+        <Card prefetch={false} href={open({ kind: "merged" })}>
           <CardHead label={t.insights.figures.merged} />
           <span className="ins-stat">{i.merged.count}</span>
           <CardMeta>{t.insights.trend(change, q.range)}</CardMeta>
         </Card>
-        <Card href={open({ kind: "cycle" })}>
+        <Card prefetch={false} href={open({ kind: "cycle" })}>
           <CardHead label={t.insights.figures.cycle} />
           <span className="ins-stat">{dash(t, i.cycle.p50)}</span>
           <CardMeta>
@@ -152,12 +154,12 @@ function Figures({ ctx }: { ctx: Ctx }) {
             {t.insights.previousMedian(i.cycle.previousP50 === null ? null : t.duration(i.cycle.previousP50))}
           </CardMeta>
         </Card>
-        <Card href={open({ kind: "first-pass" })}>
+        <Card prefetch={false} href={open({ kind: "first-pass" })}>
           <CardHead label={t.insights.figures.firstPass} />
           <span className="ins-stat">{percent(i.firstPass.rate)}</span>
           <CardMeta>{t.insights.firstPassLine(i.firstPass.green, i.firstPass.handedBack)}</CardMeta>
         </Card>
-        <Card href={open({ kind: "silences" })}>
+        <Card prefetch={false} href={open({ kind: "silences" })}>
           <CardHead label={t.insights.figures.silences} />
           <span className="ins-stat">{rate(i.silences.perWorkerHour)}</span>
           <CardMeta>{t.insights.silencesLine(i.silences.count, Math.round(i.silences.workerHours))}</CardMeta>
@@ -205,7 +207,13 @@ function BehindSection({ ctx, behind }: { ctx: Ctx; behind: Behind }) {
       label={behindTitle(t, behind)}
       count={list.length}
       side={
-        <Link href={insightsHref({ ...q, show: null })} replace scroll={false} className="sc-figure is-link">
+        <Link
+          href={insightsHref({ ...q, show: null })}
+          prefetch={false}
+          replace
+          scroll={false}
+          className="sc-figure is-link"
+        >
           {t.insights.close}
         </Link>
       }
@@ -285,7 +293,7 @@ function Shipped({ ctx }: { ctx: Ctx }) {
             key: b.key,
             cells: [
               b.kind === "week" ? dayLabel(t, b.key) : dayLabel(t, b.key),
-              <Link key="n" href={open({ kind: b.kind, day: b.key })}>
+              <Link key="n" href={open({ kind: b.kind, day: b.key })} prefetch={false}>
                 {b.count}
               </Link>,
             ],
@@ -305,7 +313,7 @@ function CycleTime({ ctx }: { ctx: Ctx }) {
       label={t.insights.cycle}
       count={c.count}
       side={
-        <Link href={open({ kind: "cycle" })} className="sc-figure is-link">
+        <Link href={open({ kind: "cycle" })} prefetch={false} className="sc-figure is-link">
           {t.insights.cycleSide(dash(t, c.p50), dash(t, c.p90), c.count)}
         </Link>
       }
@@ -329,7 +337,7 @@ function CycleTime({ ctx }: { ctx: Ctx }) {
                       key: d.day,
                       cells: [
                         dayLabel(t, d.day),
-                        <Link key="v" href={open({ kind: "day", day: d.day })}>
+                        <Link key="v" href={open({ kind: "day", day: d.day })} prefetch={false}>
                           {t.duration(v)}
                         </Link>,
                       ],
@@ -357,7 +365,7 @@ function WhereTimeGoes({ ctx }: { ctx: Ctx }) {
         </SectionBody>
       ) : (
         phases.map((p) => (
-          <Row key={p.phase} href={open({ kind: "phase", phase: p.phase })}>
+          <Row key={p.phase} prefetch={false} href={open({ kind: "phase", phase: p.phase })}>
             <RowIcon>
               <Dot color={WAITING.includes(p.phase) ? "var(--active)" : "var(--frontier)"} />
             </RowIcon>
@@ -411,7 +419,7 @@ function People({ ctx }: { ctx: Ctx }) {
   const { t, r, open } = ctx;
   const { coordinator, owner } = r.insights.waits;
   const row = (who: "coordinator" | "owner", w: FleetInsights["waits"]["owner"]) => (
-    <Row key={who} href={open({ kind: "waits", who })}>
+    <Row key={who} prefetch={false} href={open({ kind: "waits", who })}>
       <RowIcon>
         <Dot color={who === "owner" ? "var(--accent)" : "var(--text-3)"} />
       </RowIcon>
@@ -434,7 +442,7 @@ function Quality({ ctx }: { ctx: Ctx }) {
   const { firstPass, silences } = r.insights;
   return (
     <Section label={t.insights.quality}>
-      <Row href={open({ kind: "first-pass" })}>
+      <Row prefetch={false} href={open({ kind: "first-pass" })}>
         <RowIcon>
           <Dot color="var(--done)" />
         </RowIcon>
@@ -444,14 +452,14 @@ function Quality({ ctx }: { ctx: Ctx }) {
         </RowSide>
         <RowTime>{percent(firstPass.rate)}</RowTime>
       </Row>
-      <Row href={open({ kind: "redone" })}>
+      <Row prefetch={false} href={open({ kind: "redone" })}>
         <RowIcon>
           <Dot color="var(--critical)" />
         </RowIcon>
         <RowText title={t.insights.redone} line={t.insights.redoneLine(firstPass.redone.length)} />
         <RowTime>{firstPass.redone.length}</RowTime>
       </Row>
-      <Row href={open({ kind: "silences" })}>
+      <Row prefetch={false} href={open({ kind: "silences" })}>
         <RowIcon>
           <Dot color="var(--active)" />
         </RowIcon>
@@ -474,7 +482,7 @@ function Compared({ ctx, kind, list }: { ctx: Ctx; kind: "profile" | "harness"; 
   return (
     <Section label={kind === "profile" ? t.insights.profiles : t.insights.harnesses} side={t.insights.compareSide}>
       {list.map((c) => (
-        <Row key={c.key} href={open({ kind, key: c.key })}>
+        <Row key={c.key} prefetch={false} href={open({ kind, key: c.key })}>
           <RowIcon>
             <Dot color={kind === "harness" && isHarness(c.key) ? `var(--h-${c.key})` : "var(--text-3)"} />
           </RowIcon>

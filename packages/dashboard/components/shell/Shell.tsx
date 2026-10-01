@@ -293,7 +293,8 @@ function Sidebar({
           <Link
             key={n.key}
             href={n.href}
-            prefetch
+            // Insights renders on the server from Postgres: opened on demand, not on every page's load.
+            prefetch={n.key !== "insights"}
             className="sh-nav-item"
             aria-current={section === n.key ? "page" : undefined}
             title={t.shell.nav[n.key]}
