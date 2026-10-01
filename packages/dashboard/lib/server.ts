@@ -4,6 +4,7 @@
 // organization's fleet is read with that organization's Linear and GitHub keys
 // from the vault, and only the first organization falls back to the
 // environment's; otherwise every key comes from the environment, as before.
+// A project that keeps its own Linear key (THE-859) is read with it.
 // GitHub is read through the Armada GitHub App when it is configured
 // (THE-851): each repository with its installation's token
 // (`github-app.ts`); a stored GitHub token is only the fallback of a
@@ -24,7 +25,7 @@ import { after } from "next/server";
 import { type Access, requireFleetAccess, scopeOf } from "./access";
 import { accounts, homeOrganization } from "./accounts-server";
 import { appDatabase } from "./app-db";
-import { type FleetKeys, fleetKeysOf, type OrganizationKeys, organizationKeys } from "./broker";
+import { type FleetKeys, fleetKeysOf, type OrganizationKeys, organizationKeys, projectLinearKey } from "./broker";
 import { demoSources } from "./demo/sources";
 import {
   type FleetCache,
@@ -89,6 +90,8 @@ export function githubApp(): GithubApp | null {
 interface ReadKeys {
   keys: FleetKeys;
   installations: InstallationAccess;
+  /** The Linear key a project keeps for itself; null when it keeps none. */
+  projectLinear: (project: string) => Promise<string | null>;
 }
 
 function realSources(scope: Scope | null, resolve: () => Promise<ReadKeys>): Sources {
@@ -102,8 +105,9 @@ function realSources(scope: Scope | null, resolve: () => Promise<ReadKeys>): Sou
     const { keys, installations } = await read();
     return repositoryToken(app, installations, keys.githubToken, repository);
   };
-  const linearKey = async () => {
-    const { linearApiKey } = (await read()).keys;
+  const linearKey = async (project: string) => {
+    const { keys, projectLinear } = await read();
+    const linearApiKey = (await projectLinear(project)) ?? keys.linearApiKey;
     if (!linearApiKey) throw new Error("LINEAR_API_KEY is not set on the dashboard");
     return linearApiKey;
   };
@@ -134,13 +138,13 @@ function realSources(scope: Scope | null, resolve: () => Promise<ReadKeys>): Sou
       return { config: parseConfig(text, `${p.repository}:${CONFIG_FILE}`), warning: null };
     },
     readSnapshot: async (config) => {
-      const linearApiKey = await linearKey();
+      const linearApiKey = await linearKey(config.project.slug);
       const github = await tokenFor(config.github.repository);
       const sources = await readStatusSources(config, { linearApiKey, githubToken: github.token });
       return github.token === null ? { ...sources, forgeError: github.reason } : sources;
     },
     readChanges: async (config, previous, ask) => {
-      const linearApiKey = await linearKey();
+      const linearApiKey = await linearKey(config.project.slug);
       const github = ask.forge ? await tokenFor(config.github.repository) : null;
       const sources = await refreshStatusSources(config, previous, ask, {
         linearApiKey,
@@ -169,13 +173,23 @@ const globalCache = globalThis as unknown as { __armadaFleets?: Map<string, Flee
  */
 async function readKeysOf(scope: Scope | null): Promise<ReadKeys> {
   const env = envKeys();
-  if (!scope) return { keys: fleetKeysOf(null, env, scope), installations: { kind: "any" } };
+  const none = async () => null;
+  if (!scope) return { keys: fleetKeysOf(null, env, scope), installations: { kind: "any" }, projectLinear: none };
   const vault = vaultModeOf(process.env);
   const a = await accounts();
-  const own: OrganizationKeys | null =
-    a && vault.kind === "on"
-      ? await organizationKeys({ client: a.client, vault: vault.key }, scope.organization)
-      : null;
+  const deps = a && vault.kind === "on" ? { client: a.client, vault: vault.key } : null;
+  const own: OrganizationKeys | null = deps ? await organizationKeys(deps, scope.organization) : null;
+  // Read once per project and refresh, never kept beyond it: a changed key serves the next one.
+  const perProject = new Map<string, Promise<string | null>>();
+  const projectLinear = (project: string) => {
+    if (!deps) return none();
+    let found = perProject.get(project);
+    if (!found) {
+      found = projectLinearKey(deps, scope.organization, project);
+      perProject.set(project, found);
+    }
+    return found;
+  };
   const installations: InstallationAccess =
     scope.home === scope.organization
       ? { kind: "any" }
@@ -185,7 +199,7 @@ async function readKeysOf(scope: Scope | null): Promise<ReadKeys> {
             a && githubApp() ? (await linkedInstallations(a.client, scope.organization)).map((i) => i.id) : [],
           ),
         };
-  return { keys: fleetKeysOf(own, env, scope), installations };
+  return { keys: fleetKeysOf(own, env, scope), installations, projectLinear };
 }
 
 /** The fleet one scope reads: its process cache (shared by its viewers) and its sources. */

@@ -10,7 +10,7 @@ import { APIError } from "better-auth/api";
 import { revalidatePath } from "next/cache";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { isRole } from "@/lib/accounts";
+import { isRole, recordApiKeyCreator } from "@/lib/accounts";
 import { requireAccounts, requireMember, requireSession } from "@/lib/accounts-server";
 import { DEVICE_PATH, INVITATION_PATH, ORGANIZATION_PATH, WELCOME_PATH } from "@/lib/accounts-settings";
 import { clientAddress, FailureLimiter, LOGIN_PATH, safeNext } from "@/lib/auth";
@@ -279,13 +279,20 @@ export type ApiKeyState = { key: string; name: string } | { error: OrgError } | 
  */
 export async function createApiKey(_: ApiKeyState, form: FormData): Promise<ApiKeyState> {
   const viewer = await requireMember();
-  const { auth } = await requireAccounts();
+  const { auth, client } = await requireAccounts();
   const name = text(form, "name").replace(/\s+/g, " ").slice(0, 32);
   if (!name) return { error: "invalid" };
   try {
     const created = await auth.api.createApiKey({
       body: { name, organizationId: viewer.organization.id },
       headers: await headers(),
+    });
+    // Its rights are its creator's, as long as they hold them (THE-859).
+    await recordApiKeyCreator(client, {
+      id: created.id,
+      organization: viewer.organization.id,
+      user: viewer.user.id,
+      now: new Date(),
     });
     revalidatePath(ORGANIZATION_PATH);
     return { key: created.key, name };
