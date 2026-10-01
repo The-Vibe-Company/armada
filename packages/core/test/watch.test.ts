@@ -173,7 +173,7 @@ describe("armada watch", () => {
       },
     });
     const got = await watchInbox(live.fleet, o);
-    expect(got.items.map((e) => [e.id, e.kind, e.new])).toEqual([[shown?.items[0]?.id, "hand-back", true]]);
+    expect(got.items.map((e) => [e.id, e.kind, e.new])).toEqual([[shown?.items[0]?.id ?? 0, "hand-back", true]]);
     expect(got.items[0]?.body).toContain(`head ${"b".repeat(40)}`);
     expect(live.clock.now().getTime() - NOW.getTime()).toBe(60_000);
     // Unchanged reads in between were answered 304.
