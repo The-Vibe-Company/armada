@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.22](https://github.com/The-Vibe-Company/armada/compare/v0.1.21...v0.1.22) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** read GitHub through an Armada GitHub App ([#53](https://github.com/The-Vibe-Company/armada/issues/53)) ([35bf64f](https://github.com/The-Vibe-Company/armada/commit/35bf64ffd969b56d972093f1ed6c618f0d49f32d))
+
 ## [0.1.21](https://github.com/The-Vibe-Company/armada/compare/v0.1.20...v0.1.21) (2026-10-01)
 
 
