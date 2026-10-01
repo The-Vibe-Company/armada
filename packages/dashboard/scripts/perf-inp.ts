@@ -9,6 +9,8 @@ import type { Interaction } from "./perf";
 /** The agent of the `large` world with hundreds of activity entries. */
 const LONG_AGENT = "WID-400";
 const RUNS = 3;
+/** The pages it opens. */
+export const INP_PAGES = ["/agents", `/agents/${LONG_AGENT}`, "/"];
 
 declare global {
   interface Window {

@@ -1,6 +1,6 @@
 {
   "lighthouse": {
-    "pages": ["/landing", "/", "/agents", "/agents/WID-12", "/projects", "/validations"],
+    "pages": ["/landing", "/", "/agents", "/agents/WID-12", "/projects", "/validations", "/insights"],
     "runs": {
       "mobile": 3,
       "desktop": 1
@@ -41,24 +41,25 @@
   "bundles": {
     "tolerance": 0.05,
     "routes": {
-      "/agents/[ticket]": 186091,
-      "/": 183579,
-      "/approve/[id]": 181621,
-      "/validations": 181621,
-      "/projects/[slug]": 177868,
-      "/agents": 175022,
-      "/design": 173533,
-      "/projects": 173100,
-      "/organization": 171983,
-      "/organization/github": 170286,
-      "/organization/keys": 170286,
-      "/organization/workers": 170286,
-      "/device": 163728,
-      "/invitations/[id]": 163728,
-      "/login": 163728,
-      "/welcome": 163728,
-      "/landing": 147947,
-      "/_not-found": 135591
+      "/": 188475,
+      "/_not-found": 135591,
+      "/agents": 178140,
+      "/agents/[ticket]": 189219,
+      "/approve/[id]": 184750,
+      "/design": 176645,
+      "/device": 167852,
+      "/insights": 173345,
+      "/invitations/[id]": 167852,
+      "/landing": 147958,
+      "/login": 167852,
+      "/organization": 175089,
+      "/organization/github": 173345,
+      "/organization/keys": 173345,
+      "/organization/workers": 173345,
+      "/projects": 176209,
+      "/projects/[slug]": 180982,
+      "/validations": 184750,
+      "/welcome": 167852
     }
   }
 }

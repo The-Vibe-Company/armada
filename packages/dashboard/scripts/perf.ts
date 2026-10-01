@@ -288,8 +288,10 @@ async function bundles(update: boolean): Promise<boolean> {
   const { readFileSync } = await import("node:fs");
   const measured = routeBytes(stats, (p) => gzipSync(readFileSync(join(ROOT, p)), { level: 9 }).length);
   if (update) {
-    budgets.bundles.routes = measured;
+    budgets.bundles.routes = Object.fromEntries(Object.entries(measured).sort(([a], [b]) => a.localeCompare(b)));
     await writeFile(BUDGETS_FILE, `${JSON.stringify(budgets, null, 2)}\n`);
+    // In the repository's format, so `bun run verify` stays green.
+    spawnSync("bunx", ["biome", "format", "--write", BUDGETS_FILE], { cwd: ROOT, stdio: "ignore" });
   }
   const rows = checkBundles(measured, budgets.bundles);
   await save("bundles.json", rows);
@@ -298,6 +300,20 @@ async function bundles(update: boolean): Promise<boolean> {
       `${r.ok ? "ok  " : "OVER"} ${r.route.padEnd(28)} ${kb(r.bytes).padStart(9)}  budget ${r.limit ? kb(r.limit) : "none"}`,
     );
   return rows.every((r) => r.ok);
+}
+
+/**
+ * Each page read twice before it is measured: a fresh demo database has no
+ * reading of Linear and GitHub yet, and the first read makes it after it answers.
+ */
+async function warm(base: string, pages: string[], cookie: string) {
+  for (const round of [1, 2]) {
+    for (const page of pages)
+      await fetch(`${base}${page}`, { headers: { cookie } })
+        .then((r) => r.arrayBuffer())
+        .catch(() => undefined);
+    if (round === 1) await new Promise((done) => setTimeout(done, 2000));
+  }
 }
 
 const require = createRequire(import.meta.url);
@@ -351,9 +367,10 @@ export default {
 async function lighthouse(base: string): Promise<boolean> {
   const { lighthouse: config } = await readBudgets();
   const cookie = sessionCookie();
-  // A first run warms the server and measures this machine.
-  const warm = await lighthouseRun(`${base}/landing`, "mobile", config.cpu.slowdown, cookie);
-  const benchmarkIndex = warm.environment.benchmarkIndex;
+  await warm(base, config.pages, cookie);
+  // A first run warms Chrome and measures this machine.
+  const first = await lighthouseRun(`${base}/landing`, "mobile", config.cpu.slowdown, cookie);
+  const benchmarkIndex = first.environment.benchmarkIndex;
   const slowdown = cpuSlowdown(benchmarkIndex, config.cpu);
   console.log(`benchmark index ${Math.round(benchmarkIndex)}: mobile CPU ${slowdown}× slower`);
   const results: PageResult[] = [];
@@ -378,8 +395,10 @@ async function lighthouse(base: string): Promise<boolean> {
 
 async function inp(base: string): Promise<boolean> {
   const { inp: config } = await readBudgets();
-  const { measureInteractions } = await import("./perf-inp");
-  const interactions = await measureInteractions(base, sessionCookie(), config.cpuSlowdown);
+  const { INP_PAGES, measureInteractions } = await import("./perf-inp");
+  const cookie = sessionCookie();
+  await warm(base, INP_PAGES, cookie);
+  const interactions = await measureInteractions(base, cookie, config.cpuSlowdown);
   const breaches = checkInteractions(interactions, config.maxMs);
   await save("inp.json", { slowdown: config.cpuSlowdown, interactions, maxMs: config.maxMs, breaches });
   for (const i of interactions) console.log(`${i.ms > config.maxMs ? "SLOW" : "ok  "} ${i.name}: ${i.ms} ms`);
