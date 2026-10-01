@@ -6,6 +6,7 @@
 // project's secrets for workers (THE-859). It is the
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
+import type { Attachment } from "./attachments.ts";
 import type { Fetch } from "./linear.ts";
 import { networkReason } from "./linear.ts";
 
@@ -478,6 +479,24 @@ export function armadaApi(opts: ArmadaApiOptions) {
         missing: strings(body.missing),
         warnings: strings(body.warnings),
       };
+    },
+
+    async attach(
+      signIn: ArmadaSignIn,
+      target: {
+        project: SecretsProject;
+        ticket: string;
+        caption: string | null;
+        reference: string | null;
+        input: { kind: "image"; data: string; contentType: string } | { kind: "link"; url: string };
+      },
+    ): Promise<{ attachment: Attachment; url: string }> {
+      const { status, body } = await call("POST", "attachments", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, "Armada did not attach this item");
+      const attachment = body.attachment as Attachment | undefined;
+      if (!attachment || typeof attachment.id !== "string" || typeof body.url !== "string")
+        throw new ArmadaApiError("Armada answered the attachment in an unknown shape");
+      return { attachment, url: body.url };
     },
 
     /** Sets one secret for workers, for `project` or (scope "organization") every project. The value goes in the body only. */

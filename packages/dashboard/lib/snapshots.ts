@@ -12,7 +12,8 @@
 // newer reading. The webhooks' marks (`markIssues`, `markRepository`,
 // `markEveryProject`) stay until a reading that saw them is written: a refresh
 // that fails or is cut short loses none of them.
-import type { ArmadaConfig, StatusSources } from "@armada/core/read";
+import { type ArmadaConfig, CONFIG_DEFAULTS, type StatusSources } from "@armada/core/read";
+import { pruneAttachments } from "./attachments";
 import { type Database, iso, type Queryable, transaction } from "./db";
 
 /** One reading of a project: its armada.toml and what Linear and GitHub said. */
@@ -369,6 +370,13 @@ export function dbSnapshots(db: Database, memory: MemorySnapshots): SnapshotStor
       );
       const row = rs.rows[0];
       if (!row) return { saved: false, dirty: false };
+      await pruneAttachments(
+        db,
+        snapshot.config.project.slug,
+        snapshot.sources.program.issues,
+        snapshot.config.policy.attachmentsRetentionDays ?? CONFIG_DEFAULTS.attachmentsRetentionDays,
+        now,
+      );
       keep(key, headOf(row), snapshot);
       return { saved: true, dirty: row.dirty === true };
     },

@@ -59,6 +59,7 @@ import {
 } from "../ui";
 import { RequestAction } from "./AgentActions";
 import { rowLine, rowProgress } from "./AgentRow";
+import { Attachments, useAttachments } from "./Attachments";
 import { DecisionActions } from "./DecisionCard";
 
 /** A key and its value, as a static row. */
@@ -408,7 +409,7 @@ function Stepper({ row, color }: { row: FleetRow; color: string }) {
   );
 }
 
-const TABS = ["activity", "files"] as const;
+const TABS = ["activity", "files", "attachments"] as const;
 type Tab = (typeof TABS)[number];
 
 export function AgentScreen() {
@@ -417,7 +418,7 @@ export function AgentScreen() {
   const now = useNow();
   const ticket = decodeURIComponent(String(useParams<{ ticket: string }>().ticket ?? ""));
   const asked = useSearchParams().get("tab");
-  const tab: Tab = asked === "files" ? "files" : "activity";
+  const tab: Tab = asked === "files" || asked === "attachments" ? asked : "activity";
   const row = overview.rows.find((r) => r.id.toLowerCase() === ticket.toLowerCase());
   const project = overview.projects.find((p) => p.slug === row?.project);
   const requests = useMemo(() => project?.requests ?? [], [project]);
@@ -460,11 +461,12 @@ function Agent({
   const handle = row.session?.handle ?? row.handle;
   const link = sessionLink(row.runtime, handle);
   const activity = useActivity(row, requests);
+  const attachments = useAttachments(row.project, row.id, ctx.version);
   const branch = row.session?.branch ?? activity.entries.find((e) => e.kind === "branch")?.branch ?? null;
   const files = row.pr?.files ?? null;
   const coordinator = project?.coordinator;
   const coordHarness: Harness | null = coordinatorHarness(coordinator?.harness);
-  const tabPath = (k: Tab) => `${paths.agent(row.id)}${k === "files" ? "?tab=files" : ""}`;
+  const tabPath = (k: Tab) => `${paths.agent(row.id)}${k !== "activity" ? `?tab=${k}` : ""}`;
   const session = row.session;
 
   return (
@@ -629,8 +631,14 @@ function Agent({
       >
         <Decision ctx={ctx} row={row} state={state} label={label} project={project} />
         <Section
-          label={tab === "files" ? a.files : a.activity}
-          count={tab === "files" ? (files?.length ?? 0) : activity.entries.length}
+          label={tab === "attachments" ? a.attachments : tab === "files" ? a.files : a.activity}
+          count={
+            tab === "attachments"
+              ? (attachments?.items.length ?? 0)
+              : tab === "files"
+                ? (files?.length ?? 0)
+                : activity.entries.length
+          }
           side={
             <Tabs
               label={a.tabs}
@@ -638,14 +646,17 @@ function Agent({
               size="sm"
               items={TABS.map((k) => ({
                 key: k,
-                label: k === "files" ? a.files : a.activity,
-                count: k === "files" ? (files?.length ?? 0) : undefined,
+                label: k === "attachments" ? a.attachments : k === "files" ? a.files : a.activity,
+                count:
+                  k === "attachments" ? attachments?.items.length : k === "files" ? (files?.length ?? 0) : undefined,
                 href: tabPath(k),
               }))}
             />
           }
         >
-          {tab === "files" ? (
+          {tab === "attachments" ? (
+            <Attachments items={attachments?.items ?? null} failed={attachments?.failed ?? false} t={t} />
+          ) : tab === "files" ? (
             <FilesList row={row} t={t} />
           ) : (
             <>

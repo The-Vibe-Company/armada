@@ -57,7 +57,11 @@ export function guard(request: NextRequest, { env, now }: GateDeps): NextRespons
   // and the webhooks, which check their own signature.
   if (signedIn || pathname === LOGIN_ROUTE || pathname === LOGOUT_ROUTE || isCliApi(pathname) || isWebhook(pathname))
     return NextResponse.next();
-  if (wantsData(request)) return NextResponse.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
+  if (wantsData(request))
+    return NextResponse.json(
+      { error: "unauthorized" },
+      { status: pathname.startsWith("/api/attachments/") ? 403 : 401, headers: NO_STORE },
+    );
   const login = new URL(LOGIN_PATH, request.url);
   const next = `${pathname}${search}`;
   if (next !== "/") login.searchParams.set("next", next);
