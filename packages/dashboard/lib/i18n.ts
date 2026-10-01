@@ -165,9 +165,9 @@ const en = {
   refreshing: "updating…",
   refresh: "Refresh now",
   unreachableBanner: (error: string | null) =>
-    `Live activity is unavailable: Turso could not be read${error ? ` (${error})` : ""}. Showing Linear and GitHub; questions, hand-back notes and coordinator activity are hidden until it comes back.`,
+    `Live activity is unavailable: the database could not be read${error ? ` (${error})` : ""}. Showing Linear and GitHub; questions, hand-back notes and coordinator activity are hidden until it comes back.`,
   offBanner:
-    "Turso is not configured (ARMADA_TURSO_URL), so this view follows Linear and GitHub only: reports show at the next Linear read, and questions and coordinator activity are hidden.",
+    "No database is configured (ARMADA_DATABASE_URL), so this view follows Linear and GitHub only: reports show at the next Linear read, and questions and coordinator activity are hidden.",
   projectError: (name: string) => `${name} could not be read`,
   notes: (n: number) => (n === 1 ? "1 note" : `${n} notes`),
   footerRefresh: "Refreshes every 5 s while this tab is open",
@@ -226,7 +226,7 @@ const en = {
     incomplete: (variables: string) =>
       `Accounts are only partly configured, so this dashboard shows nothing. Set ${variables} in the deployment's environment variables, then redeploy.`,
     unavailableTitle: "Sign-in is unavailable",
-    unavailable: "The accounts database cannot be reached, so nobody can sign in right now. Try again in a moment.",
+    unavailable: "The database cannot be reached, so nobody can sign in right now. Try again in a moment.",
   },
   org: {
     nav: "Organization",
@@ -313,7 +313,7 @@ const en = {
     linear: "Linear",
     turso: "Turso",
     tursoHint:
-      "With a Platform API token, each terminal gets a database token made for it that expires after 4 hours. Without one, the database token below is handed out as is.",
+      "For terminals only, until they reach the fleet through Armada: the dashboard reads it from its own database. With a Platform API token, each terminal gets a database token made for it that expires after 4 hours. Without one, the database token below is handed out as is.",
     github: "GitHub",
     labels: {
       "linear-api-key": "Organization key",
@@ -458,7 +458,7 @@ const en = {
   moreUnblocked: (n: number) =>
     n === 1 ? "1 more unblocked, not marked ready" : `${n} more unblocked, not marked ready`,
   fewerUnblocked: "Hide the tickets not marked ready",
-  needsLive: "Answers and launches go through Turso, which cannot be read right now.",
+  needsLive: "Answers and launches go through the database, which cannot be read right now.",
   requestErrors: {
     "no-author": "Say who you are: the request is signed with your name.",
     "empty-answer": "The answer is empty.",
@@ -471,7 +471,7 @@ const en = {
     "unknown-profile": "This profile is not in the project's armada.toml.",
     "launch-waiting": "A launch of this ticket already waits for the coordinator.",
     "unknown-project": "This project is no longer on the dashboard.",
-    "live-down": "Turso cannot be reached: nothing was recorded. Try again in a moment.",
+    "live-down": "The database cannot be reached: nothing was recorded. Try again in a moment.",
     failed: "The request could not be recorded. Try again in a moment.",
   } satisfies Record<RequestError, string>,
 };
@@ -559,9 +559,9 @@ const fr: Strings = {
   refreshing: "mise à jour…",
   refresh: "Rafraîchir maintenant",
   unreachableBanner: (error) =>
-    `Activité en direct indisponible : Turso n'a pas pu être lu${error ? ` (${error})` : ""}. Affichage depuis Linear et GitHub ; questions, notes de remise et activité du coordinateur masquées jusqu'à son retour.`,
+    `Activité en direct indisponible : la base de données n'a pas pu être lue${error ? ` (${error})` : ""}. Affichage depuis Linear et GitHub ; questions, notes de remise et activité du coordinateur masquées jusqu'à son retour.`,
   offBanner:
-    "Turso n'est pas configuré (ARMADA_TURSO_URL) : cette vue suit Linear et GitHub seulement. Les rapports apparaissent à la lecture Linear suivante ; questions et activité du coordinateur sont masquées.",
+    "Aucune base de données n'est configurée (ARMADA_DATABASE_URL) : cette vue suit Linear et GitHub seulement. Les rapports apparaissent à la lecture Linear suivante ; questions et activité du coordinateur sont masquées.",
   projectError: (name) => `${name} n'a pas pu être lu`,
   notes: (n) => (n === 1 ? "1 remarque" : `${n} remarques`),
   footerRefresh: "Se rafraîchit toutes les 5 s tant que l'onglet est ouvert",
@@ -621,7 +621,7 @@ const fr: Strings = {
       `Les comptes ne sont configurés qu'en partie : ce tableau de bord n'affiche rien. Définis ${variables} dans les variables d'environnement du déploiement, puis redéploie.`,
     unavailableTitle: "Connexion indisponible",
     unavailable:
-      "La base des comptes est injoignable : personne ne peut se connecter pour l'instant. Réessaie dans un instant.",
+      "La base de données est injoignable : personne ne peut se connecter pour l'instant. Réessaie dans un instant.",
   },
   org: {
     nav: "Organisation",
@@ -709,7 +709,7 @@ const fr: Strings = {
     linear: "Linear",
     turso: "Turso",
     tursoHint:
-      "Avec un jeton de l'API Platform, chaque terminal reçoit un jeton de base fait pour lui, qui expire au bout de 4 heures. Sans lui, le jeton de base ci-dessous est remis tel quel.",
+      "Pour les terminaux seulement, jusqu'à ce qu'ils passent par Armada : le tableau de bord lit la flotte dans sa propre base. Avec un jeton de l'API Platform, chaque terminal reçoit un jeton de base fait pour lui, qui expire au bout de 4 heures. Sans lui, le jeton de base ci-dessous est remis tel quel.",
     github: "GitHub",
     labels: {
       "linear-api-key": "Clé de l'organisation",
@@ -853,7 +853,7 @@ const fr: Strings = {
   unlocks: (n) => `débloque ${n}`,
   moreUnblocked: (n) => (n === 1 ? "1 autre débloqué, pas marqué prêt" : `${n} autres débloqués, pas marqués prêts`),
   fewerUnblocked: "Masquer les tickets pas marqués prêts",
-  needsLive: "Réponses et lancements passent par Turso, illisible pour le moment.",
+  needsLive: "Réponses et lancements passent par la base de données, illisible pour le moment.",
   requestErrors: {
     "no-author": "Dis qui tu es : la demande est signée de ton nom.",
     "empty-answer": "La réponse est vide.",
@@ -866,7 +866,7 @@ const fr: Strings = {
     "unknown-profile": "Ce profil n'est pas dans l'armada.toml du projet.",
     "launch-waiting": "Un lancement de ce ticket attend déjà le coordinateur.",
     "unknown-project": "Ce projet n'est plus sur le tableau de bord.",
-    "live-down": "Turso est injoignable : rien n'a été enregistré. Réessaie dans un instant.",
+    "live-down": "La base de données est injoignable : rien n'a été enregistré. Réessaie dans un instant.",
     failed: "La demande n'a pas pu être enregistrée. Réessaie dans un instant.",
   },
 };

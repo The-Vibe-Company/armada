@@ -531,10 +531,31 @@ export async function pgliteDatabase(dataDir?: string): Promise<Database> {
   };
 }
 
+/**
+ * node-postgres verifies the server's certificate for `sslmode=require` (and
+ * `prefer`, `verify-ca`) already, and warns that it does; saying `verify-full`
+ * keeps that check and the log quiet. Neon's URLs carry `sslmode=require`.
+ */
+function strictSsl(url: string): string {
+  const u = safeUrl(url);
+  const mode = u?.searchParams.get("sslmode");
+  if (!u || !mode || !["prefer", "require", "verify-ca"].includes(mode)) return url;
+  u.searchParams.set("sslmode", "verify-full");
+  return u.toString();
+}
+
 /** A node-postgres pool, released before the platform suspends the function. */
-async function pgDatabase(url: string): Promise<Database> {
+async function pgDatabase(raw: string): Promise<Database> {
+  const url = strictSsl(raw);
   const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: url, max: 10, connectionTimeoutMillis: 10_000, idleTimeoutMillis: 30_000 });
+  // A stalled query fails rather than hold a request: the dashboard falls back to Linear and GitHub.
+  const pool = new Pool({
+    connectionString: url,
+    max: 10,
+    connectionTimeoutMillis: 10_000,
+    idleTimeoutMillis: 30_000,
+    query_timeout: 20_000,
+  });
   // An idle client losing its connection must not crash the process.
   pool.on("error", (err) => console.error(`armada dashboard: database connection lost: ${redactDatabase(err, url)}`));
   try {
@@ -558,12 +579,15 @@ async function pgDatabase(url: string): Promise<Database> {
         release: () => client.release(),
       };
     },
-    end: () => pool.end(),
+    // Idempotent, like PGlite's close.
+    end: async () => {
+      if (!pool.ending) await pool.end();
+    },
   };
 }
 
 /** Opens the database and brings its schema up to date. The password never appears in an error. */
-export async function openDatabase(url: string): Promise<Database> {
+export async function openDatabase(url: string, { migrate = true }: { migrate?: boolean } = {}): Promise<Database> {
   let db: Database;
   try {
     if (url.startsWith("pglite:")) {
@@ -573,6 +597,7 @@ export async function openDatabase(url: string): Promise<Database> {
   } catch (err) {
     throw new Error(`the app's database cannot be opened: ${redactDatabase(err, url)}`);
   }
+  if (!migrate) return db;
   try {
     await migrateDatabase(db);
   } catch (err) {
