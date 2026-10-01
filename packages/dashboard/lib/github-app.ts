@@ -15,19 +15,11 @@
 // them (`linkInstallation`). Otherwise an organization could register another
 // one's repository and read it through the app.
 //
-// Linking in one click (THE-852): the Install button carries a signed,
-// short-lived state naming the organization and the person; GitHub sends them
-// back to the Setup URL (Organization > GitHub) with the new installation, and
-// `linkFromSetup` links it under the same rule as the Link button.
-//
 // The same app signs people in (Better Auth's GitHub provider, fed with the
 // app's client id and secret: `accounts-settings.ts`). Everything is
 // injected: fetch, the clock, the database.
-import { createHmac, createPrivateKey, createSign, type KeyObject, timingSafeEqual } from "node:crypto";
-import { GITHUB_PATH } from "./accounts-settings";
-import { type Database, type Queryable, transaction } from "./db";
-import type { GithubError, GithubNotice } from "./i18n";
-import { type Actor, recordEvent } from "./vault";
+import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
+import type { Queryable } from "./db";
 
 export const GITHUB_APP_VARIABLES = {
   id: "ARMADA_GITHUB_APP_ID",
@@ -308,38 +300,15 @@ export async function linkInstallation(
 ): Promise<LinkOutcome> {
   const found = link.reachable.find((i) => i.id === link.installation);
   if (!found) return "unreachable";
+  // One statement, so a concurrent unlink cannot slip between a check and the write. xmax = 0: the row is new.
   const rs = await client.query(
     `INSERT INTO "armada_github_installation" ("organizationId", "installationId", "account", "linkedById", "linkedByLabel", "linkedAt")
      VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT ("organizationId", "installationId") DO NOTHING RETURNING 1`,
+     ON CONFLICT ("organizationId", "installationId") DO UPDATE SET "account" = EXCLUDED."account"
+     RETURNING (xmax = 0) AS "inserted"`,
     [link.organization, found.id, found.account, link.by.id, link.by.label, link.now],
   );
-  if (rs.rows.length > 0) return "linked";
-  await client.query(
-    `UPDATE "armada_github_installation" SET "account" = $3 WHERE "organizationId" = $1 AND "installationId" = $2`,
-    [link.organization, found.id, found.account],
-  );
-  return "already";
-}
-
-/** `linkInstallation` and, for a new link, its line in the audit list, in one transaction. */
-export async function linkAndRecord(
-  db: Database,
-  link: { organization: string; installation: number; reachable: Installation[]; by: Actor; now: Date },
-): Promise<LinkOutcome> {
-  return transaction(db, async (tx) => {
-    const outcome = await linkInstallation(tx, link);
-    if (outcome !== "linked") return outcome;
-    const account = link.reachable.find((i) => i.id === link.installation)?.account ?? String(link.installation);
-    await recordEvent(tx, link.organization, {
-      at: link.now.toISOString(),
-      action: "link",
-      keys: ["github-app"],
-      actor: link.by,
-      detail: `installation ${link.installation} on ${account}`,
-    });
-    return outcome;
-  });
+  return rs.rows[0]?.inserted === true ? "linked" : "already";
 }
 
 export async function unlinkInstallation(
@@ -352,94 +321,4 @@ export async function unlinkInstallation(
     [organization, installation],
   );
   return rs.rows.length > 0;
-}
-
-// ------------------------------------------------------------ one-click install (THE-852)
-
-/** How long the Install button's state is accepted back: picking the account and repositories on GitHub. */
-export const INSTALL_STATE_TTL_MS = 15 * 60 * 1000;
-
-/** Who clicked Install, for which organization. */
-export interface InstallState {
-  organization: string;
-  user: string;
-}
-
-// A key of its own, derived from the accounts secret, so the state's signature never doubles as a session's.
-const stateSignature = (secret: string, payload: string) =>
-  createHmac("sha256", createHmac("sha256", secret).update("armada:github-app-install-state").digest())
-    .update(payload)
-    .digest("base64url");
-
-/** The state the Install button carries: who and for which organization, until when, signed. Not a secret. */
-export function installState(secret: string, who: InstallState, now: Date): string {
-  const payload = base64url(
-    JSON.stringify({ o: who.organization, u: who.user, exp: now.getTime() + INSTALL_STATE_TTL_MS }),
-  );
-  return `${payload}.${stateSignature(secret, payload)}`;
-}
-
-/** The state GitHub sent back, or null when it is forged, altered or expired. */
-export function readInstallState(secret: string, state: string, now: Date): InstallState | null {
-  const [payload, signature, ...rest] = state.split(".");
-  if (!payload || !signature || rest.length > 0) return null;
-  const expected = Buffer.from(stateSignature(secret, payload));
-  const given = Buffer.from(signature);
-  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
-  try {
-    const p = JSON.parse(Buffer.from(payload, "base64url").toString()) as { o?: unknown; u?: unknown; exp?: unknown };
-    if (typeof p.o !== "string" || typeof p.u !== "string" || typeof p.exp !== "number") return null;
-    return p.exp > now.getTime() ? { organization: p.o, user: p.u } : null;
-  } catch {
-    return null;
-  }
-}
-
-/** GitHub's page that installs the app (`appUrl`: https://github.com/apps/<slug>), carrying the state back. */
-export const installUrl = (appUrl: string, state: string) =>
-  `${appUrl}/installations/new?state=${encodeURIComponent(state)}`;
-
-/** What a link or unlink did, as the GitHub page's query shows it. */
-export type GithubResult = { done: GithubNotice } | { error: GithubError };
-
-export const githubPage = (result: GithubResult) =>
-  "done" in result ? `${GITHUB_PATH}?done=${result.done}` : `${GITHUB_PATH}?error=${result.error}`;
-
-/**
- * GitHub sent the person back to the Setup URL with a new (or changed)
- * installation and the Install button's state. The installation is linked to
- * the state's organization only when the state is genuine and unexpired, was
- * made for this person in the organization they are in now, they still own or
- * administer it, and GitHub lists the installation among those they can reach
- * (asked with their own GitHub sign-in): the Link button's rule, without the
- * click. Linking again keeps the link.
- */
-export async function linkFromSetup(
-  db: Database,
-  setup: {
-    secret: string;
-    state: string;
-    installation: number;
-    viewer: { user: string; label: string; organization: string; role: string };
-    githubToken: () => Promise<string | null>;
-    fetch: Fetch;
-    now: Date;
-  },
-): Promise<GithubResult> {
-  const { viewer } = setup;
-  const state = readInstallState(setup.secret, setup.state, setup.now);
-  if (!state) return { error: "state" };
-  if (state.user !== viewer.user || state.organization !== viewer.organization) return { error: "state" };
-  if (viewer.role !== "owner" && viewer.role !== "admin") return { error: "forbidden" };
-  if (!Number.isSafeInteger(setup.installation) || setup.installation <= 0) return { error: "unreachable" };
-  const token = await setup.githubToken();
-  if (!token) return { error: "no-github" };
-  const outcome = await linkAndRecord(db, {
-    organization: viewer.organization,
-    installation: setup.installation,
-    reachable: await userInstallations(setup.fetch, token),
-    by: { kind: "person", id: viewer.user, label: viewer.label },
-    now: setup.now,
-  });
-  return outcome === "unreachable" ? { error: "unreachable" } : { done: "linked" };
 }

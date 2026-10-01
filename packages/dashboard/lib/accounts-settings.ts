@@ -37,6 +37,10 @@ export const KEYS_PATH = "/organization/keys";
 export const WORKERS_PATH = "/organization/workers";
 /** The Armada GitHub App (THE-851): the installations this organization reads GitHub through. */
 export const GITHUB_PATH = "/organization/github";
+/** Where the Install on GitHub button leads (THE-852): it signs the state, then sends the person to GitHub. */
+export const GITHUB_INSTALL_PATH = "/organization/github/install";
+/** Where GitHub's return to the Setup URL (GITHUB_PATH) is handled: the installation is linked, then the GitHub page shows. */
+export const GITHUB_SETUP_PATH = "/organization/github/setup";
 /** Where a person confirms the code `armada login` shows. */
 export const DEVICE_PATH = "/device";
 /** The routes the Armada CLI calls: sign-in from the terminal, whoami, sign-out. */

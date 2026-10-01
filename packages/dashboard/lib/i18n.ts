@@ -395,7 +395,7 @@ const en = {
       "no-github": "Sign in with GitHub first: Armada asks GitHub which installations you can reach.",
       unreachable: "GitHub does not show you this installation, so it was not linked.",
       state:
-        "The installation was not linked: the Install link expired, or was made for someone else or another organization. Click Install on GitHub again.",
+        "The installation was not linked: the Install link expired, was already used, or was made for someone else, another organization or another browser. Click Install on GitHub again: the installation stays on GitHub.",
       failed: "That did not work. Try again in a moment.",
     } satisfies Record<GithubError, string>,
     notices: {
@@ -826,7 +826,7 @@ const fr: Strings = {
       "no-github": "Connecte-toi d'abord avec GitHub : Armada demande à GitHub quelles installations tu peux voir.",
       unreachable: "GitHub ne te montre pas cette installation : elle n'a pas été liée.",
       state:
-        "L'installation n'a pas été liée : le lien d'installation a expiré, ou a été fait pour quelqu'un d'autre ou une autre organisation. Clique de nouveau sur Installer sur GitHub.",
+        "L'installation n'a pas été liée : le lien d'installation a expiré, a déjà servi, ou a été fait pour quelqu'un d'autre, une autre organisation ou un autre navigateur. Clique de nouveau sur Installer sur GitHub : l'installation reste sur GitHub.",
       failed: "Ça n'a pas marché. Réessaie dans un instant.",
     },
     notices: {

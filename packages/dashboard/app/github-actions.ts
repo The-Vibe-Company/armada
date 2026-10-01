@@ -6,58 +6,41 @@
 // with their own GitHub sign-in: nobody links an installation they cannot
 // see. Every change is recorded in the Keys page's audit list. The action
 // answers with a redirect to the GitHub page, with its outcome in the query.
-// The Install button links without this action (THE-852): `linkFromSetup`,
-// run by the GitHub page when GitHub sends the person back.
+// The Install button links without this action (THE-852): see
+// `lib/github-install.ts`; both go through `linkForViewer`.
 import { redirect } from "next/navigation";
 import { requireAccounts, requireMember, viewerGithubToken } from "@/lib/accounts-server";
 import { transaction } from "@/lib/db";
+import { unlinkInstallation } from "@/lib/github-app";
 import {
   type GithubResult,
-  linkAndRecord,
+  linkForViewer,
+  linkViewerOf,
+  managesOrganization,
   githubPage as page,
-  unlinkInstallation,
-  userInstallations,
-} from "@/lib/github-app";
+} from "@/lib/github-install";
 import { githubApp } from "@/lib/server";
 import { recordEvent } from "@/lib/vault";
 
-/** The viewer, who must manage the organization, and the installation the form names. */
-async function target(form: FormData) {
-  const viewer = await requireMember();
-  if (viewer.organization.role !== "owner" && viewer.organization.role !== "admin")
-    redirect(page({ error: "forbidden" }));
-  const id = Number(form.get("installation"));
-  if (!Number.isSafeInteger(id) || id <= 0) redirect(page({ error: "unreachable" }));
-  return { viewer, installation: id, actor: { kind: "person" as const, id: viewer.user.id, label: viewer.signature } };
-}
-
 export async function linkGithubInstallation(form: FormData): Promise<void> {
-  const { viewer, installation, actor } = await target(form);
+  const viewer = await requireMember();
   if (!githubApp()) redirect(page({ error: "off" }));
-  const token = await viewerGithubToken();
-  if (!token) redirect(page({ error: "no-github" }));
   const { client } = await requireAccounts();
-  let result: GithubResult;
-  try {
-    const outcome = await linkAndRecord(client, {
-      organization: viewer.organization.id,
-      installation,
-      reachable: await userInstallations(globalThis.fetch, token),
-      by: actor,
-      now: new Date(),
-    });
-    result = outcome === "unreachable" ? { error: "unreachable" } : { done: "linked" };
-  } catch (err) {
-    console.error(
-      `armada dashboard: installation ${installation} not linked: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    result = { error: "failed" };
-  }
+  const result = await linkForViewer(client, Number(form.get("installation")), {
+    viewer: linkViewerOf(viewer),
+    githubToken: viewerGithubToken,
+    fetch: globalThis.fetch,
+    now: new Date(),
+  });
   redirect(page(result));
 }
 
 export async function unlinkGithubInstallation(form: FormData): Promise<void> {
-  const { viewer, installation, actor } = await target(form);
+  const viewer = await requireMember();
+  if (!managesOrganization(viewer.organization)) redirect(page({ error: "forbidden" }));
+  const installation = Number(form.get("installation"));
+  if (!Number.isSafeInteger(installation) || installation <= 0) redirect(page({ error: "unreachable" }));
+  const actor = { kind: "person" as const, id: viewer.user.id, label: viewer.signature };
   const { client } = await requireAccounts();
   let result: GithubResult;
   try {

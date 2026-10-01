@@ -4,18 +4,13 @@ import { notFound, redirect } from "next/navigation";
 import { linkGithubInstallation, unlinkGithubInstallation } from "@/app/github-actions";
 import { AuthCard } from "@/components/AuthCard";
 import { homeOrganization, requireAccounts, requireMember, viewerGithubToken } from "@/lib/accounts-server";
-import { accountsModeOf, ORGANIZATION_PATH } from "@/lib/accounts-settings";
+import { accountsModeOf, GITHUB_INSTALL_PATH, GITHUB_SETUP_PATH, ORGANIZATION_PATH } from "@/lib/accounts-settings";
 import {
   type AppInfo,
   GITHUB_APP_VARIABLES,
-  type GithubResult,
   githubAppModeOf,
-  githubPage,
   type Installation,
-  installState,
-  installUrl,
   linkedInstallations,
-  linkFromSetup,
   userInstallations,
 } from "@/lib/github-app";
 import {
@@ -33,11 +28,9 @@ import { githubApp, languageOf } from "@/lib/server";
 // admins, the installations GitHub lets them reach, to link. No token reaches
 // this page.
 //
-// It is also the app's Setup URL (THE-852): an owner or admin's Install button
-// carries a signed state, and GitHub sends them back here with the
-// installation, which is linked before the page shows (`linkFromSetup`), then
-// the query is cleared. A return without a state (the installation changed
-// from GitHub's side) writes nothing: existing links stay.
+// It is also the app's Setup URL (THE-852): GitHub's return from the install
+// page is handed to GITHUB_SETUP_PATH, which links the installation and comes
+// back here with the outcome. This page writes nothing.
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -46,13 +39,9 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 type Param = string | string[] | undefined;
-type Params = Promise<{
-  error?: Param;
-  done?: Param;
-  installation_id?: Param;
-  setup_action?: Param;
-  state?: Param;
-}>;
+/** GitHub's query on the Setup URL. */
+const SETUP_PARAMS = ["installation_id", "setup_action", "state"] as const;
+type Params = Promise<{ error?: Param; done?: Param } & Partial<Record<(typeof SETUP_PARAMS)[number], Param>>>;
 
 const pick = <T extends string>(list: readonly T[], v: string | string[] | undefined): T | null =>
   typeof v === "string" && (list as readonly string[]).includes(v) ? (v as T) : null;
@@ -60,7 +49,13 @@ const pick = <T extends string>(list: readonly T[], v: string | string[] | undef
 export default async function Github({ searchParams }: { searchParams: Params }) {
   if (accountsModeOf(process.env).kind !== "accounts") notFound();
   const viewer = await requireMember();
-  const [{ client, settings }, jar, params] = await Promise.all([requireAccounts(), cookies(), searchParams]);
+  const [{ client }, jar, params] = await Promise.all([requireAccounts(), cookies(), searchParams]);
+  const setup = new URLSearchParams();
+  for (const name of SETUP_PARAMS) {
+    const v = params[name];
+    if (typeof v === "string") setup.set(name, v);
+  }
+  if (setup.size > 0) redirect(`${GITHUB_SETUP_PATH}?${setup}`);
   const lang = languageOf(jar.get(LANGUAGE_COOKIE)?.value);
   const t = STRINGS[lang];
   const g = t.github;
@@ -99,35 +94,6 @@ export default async function Github({ searchParams }: { searchParams: Params })
       </AuthCard>
     );
 
-  // Back from GitHub's install page. redirect() stays out of the try: it throws to navigate.
-  if (params.setup_action === "request") redirect(githubPage({ done: "requested" }));
-  if (typeof params.installation_id === "string" && typeof params.state === "string") {
-    const installation = Number(params.installation_id);
-    let result: GithubResult;
-    try {
-      result = await linkFromSetup(client, {
-        secret: settings.secret,
-        state: params.state,
-        installation,
-        viewer: {
-          user: viewer.user.id,
-          label: viewer.signature,
-          organization: viewer.organization.id,
-          role: viewer.organization.role,
-        },
-        githubToken: viewerGithubToken,
-        fetch: globalThis.fetch,
-        now: new Date(),
-      });
-    } catch (err) {
-      console.error(
-        `armada dashboard: installation ${installation} not linked: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      result = { error: "failed" };
-    }
-    redirect(githubPage(result));
-  }
-
   const [info, home, linked] = await Promise.all([
     app.info().catch((err: unknown): AppInfo | null => {
       console.error(`armada dashboard: GitHub App: ${err instanceof Error ? err.message : String(err)}`);
@@ -165,17 +131,7 @@ export default async function Github({ searchParams }: { searchParams: Params })
         </h2>
         {info && manager ? (
           <>
-            <a
-              className="btn is-primary"
-              href={installUrl(
-                info.url,
-                installState(
-                  settings.secret,
-                  { organization: viewer.organization.id, user: viewer.user.id },
-                  new Date(),
-                ),
-              )}
-            >
+            <a className="btn is-primary" href={GITHUB_INSTALL_PATH}>
               {g.install} →
             </a>
             <p className="login-hint">{g.installHint}</p>
