@@ -7,6 +7,7 @@
 // `cli-api.ts`). Losing this data loses live detail, never progress: Linear
 // stays the record.
 import type {
+  Attachment,
   CoordinatorPresence,
   CoordinatorSeen,
   EventInput,
@@ -33,6 +34,7 @@ import type {
   WorkerProfile,
 } from "@armada/core/read";
 import { REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
+import { ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
 import { endWorker } from "./workers";
 
@@ -1018,6 +1020,8 @@ export interface LiveStore extends RequestStore {
   /** What an agent's page shows of its ticket's history. */
   ticketHistory(project: string, ticket: string): Promise<TicketHistory>;
   listValidations(q: { project: string; ticket?: string; pr?: number; decidedSince?: Date }): Promise<Validation[]>;
+  /** The attachments of some tickets, metadata only: the galleries of their validations. */
+  ticketsAttachments(project: string, tickets: string[]): Promise<Attachment[]>;
 }
 
 /** A ticket's history in the app's database: its events, inbox items and launches. */
@@ -1053,4 +1057,5 @@ export const liveStore = (db: Database): LiveStore => ({
   listValidations: (q) => listValidations(db, q),
   getValidation: (project, id) => getValidation(db, project, id),
   decideValidation: (d) => decideValidation(db, d),
+  ticketsAttachments: (project, tickets) => ticketsAttachments(db, project, tickets),
 });

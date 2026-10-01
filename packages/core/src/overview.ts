@@ -3,6 +3,7 @@
 // list of what waits for the owner. Pure: the dashboard reads the sources,
 // calls `buildOverview` and renders the result as is.
 import { newerRelease } from "./armada-api.ts";
+import type { Attachment } from "./attachments.ts";
 import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
 import {
   type CoordinatorPresence,
@@ -21,6 +22,7 @@ import {
   type TimelineHistory,
 } from "./timeline.ts";
 import type { AgentPhase } from "./types.ts";
+import type { Validation } from "./validations.ts";
 
 export const OVERVIEW_SCHEMA_VERSION = 3;
 
@@ -157,6 +159,17 @@ export interface ProjectOverview {
   warnings: string[];
 }
 
+/**
+ * What the owner validates (THE-885), as the dashboard shows it: the
+ * validation, its ticket's title, and the attachments to look at (those it
+ * names, else its ticket's).
+ */
+export interface OwnerValidation extends Validation {
+  title: string | null;
+  url: string | null;
+  gallery: Attachment[];
+}
+
 /** One project as the dashboard read it. */
 export interface ProjectReading {
   owner?: string | null;
@@ -176,6 +189,8 @@ export interface ProjectReading {
     coordinator?: CoordinatorPresence | null;
     inboxReads?: InboxReadEvent[];
     sessions?: SessionRecord[];
+    /** Open validations and those decided lately, with their gallery and their ticket's title when known. */
+    validations?: OwnerValidation[];
   } | null;
   /** `[conductor.profiles]` of its armada.toml. */
   profiles?: Record<string, ConductorProfile>;
@@ -205,6 +220,8 @@ export interface FleetOverview {
   rows: FleetRow[];
   /** Tickets ready to start, per project in frontier order (best first). */
   ready: ReadyTicket[];
+  /** What the owner validates: the open ones first (oldest first), then those decided lately (newest first). */
+  validations: OwnerValidation[];
   /** Left out of the dashboard's live poll, which serves it on its own route. */
   timeline?: FleetTimeline;
 }
@@ -259,6 +276,7 @@ export function buildOverview(input: {
   const timeline: FleetTimeline = { rows: [], coordinators: [] };
   const ready: ReadyTicket[] = [];
   const sessions: SessionRecord[] = [];
+  const validations: OwnerValidation[] = [];
 
   for (const p of input.projects) {
     const tickets = p.report?.inFlight ?? [];
@@ -384,6 +402,11 @@ export function buildOverview(input: {
 
     for (const f of p.report?.frontier ?? []) ready.push({ ...f, project: p.slug, launch: launches.get(f.id) ?? null });
 
+    for (const v of p.live?.validations ?? []) {
+      const t = byId.get(v.ticket);
+      validations.push({ ...v, title: v.title ?? t?.title ?? null, url: v.url ?? t?.url ?? null });
+    }
+
     const seenAt = p.live?.coordinator?.seenAt ?? p.live?.coordinatorSeenAt ?? null;
     const cliVersion = p.live?.coordinator?.cliVersion ?? p.live?.coordinatorCliVersion ?? null;
     const threshold = (p.report?.silentAfterMinutes ?? 15) * MIN;
@@ -435,6 +458,15 @@ export function buildOverview(input: {
   }
 
   waiting.sort((a, b) => rank(a.kind) - rank(b.kind) || a.since.localeCompare(b.since));
+  validations.sort((a, b) =>
+    !a.decision !== !b.decision
+      ? a.decision
+        ? 1
+        : -1
+      : a.decision && b.decision
+        ? b.decision.at.localeCompare(a.decision.at)
+        : a.createdAt.localeCompare(b.createdAt),
+  );
   rows.sort(
     (a, b) =>
       rank(a.waiting) - rank(b.waiting) ||
@@ -451,6 +483,7 @@ export function buildOverview(input: {
     waiting,
     rows,
     ready,
+    validations,
     timeline,
   };
 }

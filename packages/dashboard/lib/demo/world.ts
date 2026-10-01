@@ -554,7 +554,11 @@ export function demoReports(t: DemoTicket): DemoReport[] {
   const reports: DemoReport[] = [];
   const quiet = (m: number) => !!t.quiet && m < t.quiet[0] && m > t.quiet[1];
   for (const p of phases) {
-    const once = p.phase === "awaiting-approval" || p.phase === "awaiting-validation" || p.phase === "blocked" || p.phase === "ready-to-merge";
+    const once =
+      p.phase === "awaiting-approval" ||
+      p.phase === "awaiting-validation" ||
+      p.phase === "blocked" ||
+      p.phase === "ready-to-merge";
     for (let m = p.from; m > p.to; m -= once ? Number.POSITIVE_INFINITY : (t.every ?? 12))
       if (!quiet(m) && m !== t.claimed) reports.push({ ago: m, phase: p.phase, summary: AT_WORK[p.phase] });
   }
