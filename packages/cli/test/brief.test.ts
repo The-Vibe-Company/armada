@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { machinePaths, readWatchState, updateWatchState } from "@armada/core";
+import { machinePaths, NPM_REGISTRY_URL, readWatchState, updateWatchState } from "@armada/core";
 import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
@@ -229,6 +229,47 @@ describe("armada brief", () => {
     expect(brief.claimCommand).toEndWith(` --profile codex --reason 'it'\\''s a session bug'`);
     expect(brief.prompt).toBe(p.out());
     expect(brief.environment.map((v: { name: string }) => v.name)).toEqual(["LINEAR_API_KEY", "ARMADA_TICKET"]);
+  });
+
+  test("the brief pins a version npm serves: else the newest published one, with a warning; offline it only warns", async () => {
+    const briefWith = async (npm: () => Promise<Response>) => {
+      const b = briefIo();
+      const linear = b.io.fetch;
+      b.io.fetch = (url, init) => (url === NPM_REGISTRY_URL ? npm() : (linear?.(url, init) ?? fetch(url)));
+      expect(await run(["brief", "DEMO-13", "--json"], b.io)).toBe(0);
+      return JSON.parse(b.out()) as { install: string; fallback: string; prompt: string; warnings: string[] };
+    };
+    const pkg = "@the-vibe-company/armada";
+
+    // A release npm does not serve yet: the newest published version below it, never a prerelease.
+    const behind = await briefWith(async () =>
+      Response.json({ versions: { "0.1.9": {}, "0.2.5": {}, [`${version}-rc.1`]: {} } }),
+    );
+    expect([behind.install, behind.fallback]).toEqual([
+      `npm install -g ${pkg}@0.2.5`,
+      `npm exec --yes --package=${pkg}@0.2.5 -- armada`,
+    ]);
+    expect(behind.prompt).toContain(
+      `This installs Armada 0.2.5, the newest on npm (the coordinator runs ${version}, not published yet).`,
+    );
+    expect(behind.warnings).toContain(
+      `armada ${version} is not on npm yet: this brief pins 0.2.5, the newest published version. The skills of this checkout may describe commands 0.2.5 lacks; publish ${version} (the release pull request) and brief again to launch with it`,
+    );
+
+    const none = await briefWith(async () => Response.json({ versions: { "99.0.0": {} } }));
+    expect(none.install).toBe(`npm install -g ${pkg}@${version}`);
+    expect(none.warnings).toContain(
+      `armada ${version} is not on npm, nor any older version: the worker's install and its fallback line fail until it is published`,
+    );
+
+    const offline = await briefWith(async () => {
+      throw new TypeError("fetch failed");
+    });
+    expect(offline.install).toBe(`npm install -g ${pkg}@${version}`);
+    expect(offline.prompt).toContain("This installs the coordinator's Armada version.");
+    expect(offline.warnings).toContain(
+      `could not check that armada ${version} is on npm (fetch failed); if it is not published yet, the worker's install fails`,
+    );
   });
 
   test("a claude-code profile names its guide, and the prompt puts the subagent in its own worktree first", async () => {

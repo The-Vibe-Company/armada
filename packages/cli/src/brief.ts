@@ -14,6 +14,7 @@ import {
   BriefError,
   type BriefLaunch,
   type Credentials,
+  checkPublished,
   checkRequestedProfile,
   DEFAULT_ARMADA_API_URL,
   LINEAR_KEY,
@@ -152,6 +153,8 @@ export async function brief(
       env: io.env,
       stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),
       launch: launcher(io, config, credentials),
+      // A worker cannot install a version npm does not serve yet.
+      npm: (v) => checkPublished(v, io.fetch ?? fetch),
       conventions,
       ...(io.fetch ? { fetch: io.fetch } : {}),
       ...(io.now ? { now: io.now } : {}),
