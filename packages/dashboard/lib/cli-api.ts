@@ -59,6 +59,7 @@ import {
   isWorkerCommand,
   isWorkerToken,
   launchingUser,
+  revokePendingLaunch,
   WORKER_COMMANDS,
   type Worker,
   workerActor,
@@ -104,7 +105,7 @@ const refuse = (status: number, error: string, next: string) =>
 const signedOut = (error: string) => refuse(401, error, LOGIN);
 
 /** What a worker without a valid launch does next. */
-const NEW_LAUNCH = "ask the coordinator for a new launch: `armada brief <ticket>` makes a new launch token";
+const NEW_LAUNCH = "ask the coordinator for a new launch: `armada brief <ticket> --prompt` makes a new launch token";
 const WORKER_SCOPE = `a worker session only ${WORKER_COMMANDS.slice(0, -1).join(", ")} and ${WORKER_COMMANDS.at(-1)} on its own ticket`;
 const hhmm = (iso: string) => `${iso.slice(0, 16).replace("T", " ")} UTC`;
 
@@ -447,6 +448,39 @@ async function exchange(a: CliAccounts, request: Request, now: Date): Promise<Re
     },
     { headers: NO_STORE },
   );
+}
+
+async function revokeLaunch(a: CliAccounts, request: Request, now: Date): Promise<Response> {
+  const identity = await identify(a, credentialOf(request), now);
+  if (identity instanceof Response) return identity;
+  if (identity.via === "worker") return refuse(403, `${WORKER_SCOPE}: it revokes no launch`, "the coordinator does it");
+  const holder = holderOf(identity);
+  if (!holder) return noOrganization(a);
+  const role =
+    identity.via === "api-key"
+      ? await apiKeyCreatorRole(a.client, identity.apiKey?.id ?? "", holder.organization.id)
+      : identity.organization?.role;
+  if (!MANAGERS.includes(role ?? ""))
+    return refuse(403, "only an owner or admin revokes launches", "ask an owner or admin of the organization");
+  const body = await jsonBody(request);
+  if (!isProjectSlug(body.project) || !isTicketId(body.ticket))
+    return refuse(400, "revoking a launch needs the project and ticket", "armada launch revoke <ticket>");
+  const result = await revokePendingLaunch(a.client, {
+    organization: holder.organization.id,
+    project: body.project,
+    ticket: body.ticket,
+    by: holder.actor,
+    now,
+  });
+  if ("reason" in result)
+    return result.reason === "claimed"
+      ? refuse(
+          409,
+          `the launch of ${body.ticket.toUpperCase()} was already claimed`,
+          `armada release --ticket ${body.ticket.toUpperCase()} --reason "<why>"`,
+        )
+      : refuse(404, `no pending launch of ${body.ticket.toUpperCase()} to revoke`, "armada status");
+  return Response.json({ id: result.worker.id, ticket: result.worker.ticket }, { headers: NO_STORE });
 }
 
 /** The coordinator merged or released a ticket: its worker sessions end. */
@@ -803,6 +837,7 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps): Pr
   if (route === "POST launch-tokens") return launch(a, request, deps, now);
   if (route === "POST launch-tokens/exchange") return exchange(a, request, now);
   if (route === "POST workers/end") return endWorkers(a, request, now);
+  if (route === "POST workers/revoke") return revokeLaunch(a, request, now);
   if (route === "GET projects") return projects(a, request, now);
   if (request.method === "POST" && path[0] === "secrets" && path.length === 2)
     return secrets(a, request, path[1] ?? "", deps, now);

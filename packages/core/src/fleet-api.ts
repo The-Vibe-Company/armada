@@ -13,6 +13,7 @@ import {
   type ClaimRecord,
   type Fleet,
   type FleetStore,
+  followedLaunches,
   type InboxItem,
   type InboxQuery,
   type InboxRead,
@@ -284,7 +285,7 @@ export async function serveFleet(
         case "events/latest":
           return store.lastEventTimes(slug);
         case "launches":
-          return store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS));
+          return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
         case "inbox": {
           const silent = b.silentAfterMinutes;
           if (typeof silent !== "number" || !Number.isFinite(silent) || silent < 0)

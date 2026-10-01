@@ -8,7 +8,7 @@
 // the organization's audit list (`vault.ts`), never with a token. Everything is
 // injected so tests run it on PGlite.
 import { createHash, randomBytes } from "node:crypto";
-import { type Database, isoAt, iso as isoOrNull, type Row } from "./db";
+import { type Database, isoAt, iso as isoOrNull, type Queryable, type Row, transaction } from "./db";
 import { type Actor, recordEvent } from "./vault";
 
 /** Every launch token starts with it, so a leaked one is recognisable. */
@@ -30,7 +30,7 @@ export const isTicketId = (v: unknown): v is string =>
   typeof v === "string" && /^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(v);
 export const isProjectSlug = (v: unknown): v is string => typeof v === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(v);
 
-export type EndReason = "released" | "merged" | "revoked";
+export type EndReason = "released" | "merged" | "revoked" | "expired";
 
 /** Who launched a worker: a person's terminal, or an organization API key. */
 export interface Launcher {
@@ -107,7 +107,8 @@ function workerOf(r: Row): Worker {
     sessionExpiresAt: isoOrNull(r.sessionExpiresAt),
     sessionSeenAt: isoOrNull(r.sessionSeenAt),
     endedAt: isoOrNull(r.endedAt),
-    endReason: reason === "released" || reason === "merged" || reason === "revoked" ? reason : null,
+    endReason:
+      reason === "released" || reason === "merged" || reason === "revoked" || reason === "expired" ? reason : null,
     endedBy: str(r.endedByLabel),
     handle: str(r.runtimeHandle),
   };
@@ -279,7 +280,7 @@ export async function workerSession(client: Database, token: string, now: Date):
 }
 
 async function end(
-  client: Database,
+  client: Queryable,
   where: { sql: string; args: (string | null)[] },
   input: { organization: string; reason: EndReason; by: Actor; now: Date },
 ): Promise<Worker[]> {
@@ -311,10 +312,34 @@ async function end(
 
 /** Ends one launch of the organization: its session, or its token if still unused. Null when there was none to end. */
 export async function endWorker(
-  client: Database,
+  client: Queryable,
   input: { organization: string; id: string; reason: EndReason; by: Actor; now: Date },
 ): Promise<Worker | null> {
   return (await end(client, { sql: `"id" = $2`, args: [input.id] }, input))[0] ?? null;
+}
+
+export async function revokePendingLaunch(
+  client: Database,
+  input: { organization: string; project: string; ticket: string; by: Actor; now: Date },
+): Promise<{ worker: Worker } | { reason: "claimed" | "gone" }> {
+  return transaction(client, async (tx) => {
+    const found = await tx.query(
+      `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 AND "project" = $2 AND "ticket" = $3
+       ORDER BY "createdAt" DESC, "id" DESC LIMIT 1 FOR UPDATE`,
+      [input.organization, input.project, input.ticket.toUpperCase()],
+    );
+    const row = found.rows[0];
+    if (!row || row.endedAt) return { reason: "gone" };
+    const worker = workerOf(row);
+    const held = await tx.query(
+      `SELECT 1 FROM runtime_handles WHERE project = $1 AND ticket = $2 AND released_at IS NULL
+       UNION ALL SELECT 1 FROM events WHERE project = $1 AND ticket = $2 AND kind = 'claim' AND created_at >= $3 LIMIT 1`,
+      [input.project, worker.ticket, worker.createdAt],
+    );
+    if (held.rows.length) return { reason: "claimed" };
+    const ended = await endWorker(tx, { ...input, id: worker.id, reason: "revoked" });
+    return ended ? { worker: ended } : { reason: "gone" };
+  });
 }
 
 /** Ends every launch of a ticket: its pull request merged, or the ticket released. */

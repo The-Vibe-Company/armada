@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { machinePaths, readWatchState, updateWatchState } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
@@ -68,6 +69,36 @@ async function runtime(env: Record<string, string> = {}) {
 }
 
 describe("a worker signed in with its launch token", () => {
+  test("launch revoke sends the project and ticket through the API and clears only that ticket from watch state", async () => {
+    const runtimeState = await runtime({ ARMADA_API_URL: ARMADA_URL });
+    runtimeState.armada.sessions.add("CANARY_coordinator");
+    const paths = machinePaths(runtimeState.io.env);
+    if (!paths) throw new Error("no machine store");
+    await updateWatchState(paths, "widgets", { inFlight: ["DEMO-7", "DEMO-8"] });
+    await writeFile(
+      runtimeState.credentials,
+      `ARMADA_SESSION_TOKEN=CANARY_coordinator\nARMADA_SIGNED_IN_TO=${ARMADA_URL}\n`,
+    );
+    const originalFetch = runtimeState.io.fetch;
+    const revocations: unknown[] = [];
+    runtimeState.io.fetch = async (url, init) => {
+      if (url.endsWith("/workers/revoke")) {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer CANARY_coordinator");
+        revocations.push(JSON.parse(String(init?.body)));
+        return Response.json({ id: "worker-7", ticket: "DEMO-7" });
+      }
+      if (!originalFetch) throw new Error("missing fake API");
+      return originalFetch(url, init);
+    };
+    expect(await run(["launch", "revoke", "demo-7", "--json"], runtimeState.io)).toBe(0);
+    expect(revocations).toEqual([{ project: "widgets", ticket: "DEMO-7" }]);
+    expect(JSON.parse(runtimeState.printed())).toMatchObject({ id: "worker-7", ticket: "DEMO-7" });
+    expect((await readWatchState(paths, "widgets"))?.inFlight).toEqual(["DEMO-8"]);
+    expect(runtimeState.armada.calls.some((call) => call.path === "launch-tokens")).toBe(false);
+    expect(await run(["launch", "revoke"], runtimeState.io)).toBe(2);
+    expect(runtimeState.printed()).toContain("armada launch revoke <ticket>");
+  });
+
   test("with only the launch message, it signs in, claims, reports and hands the ticket back", async () => {
     const r = await runtime();
     expect(await run(["login", "--launch-token", LAUNCH, "--api-url", ARMADA_URL], r.io)).toBe(0);

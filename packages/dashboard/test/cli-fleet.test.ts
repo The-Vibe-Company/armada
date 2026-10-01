@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type ArmadaSignIn, armadaApi, type Fleet, fleetClient, type ProjectInput } from "@armada/core/read";
-import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
+import { type Auth, createAuth, type EmailMessage, recordApiKeyCreator } from "../lib/accounts.ts";
 import { accountsModeOf } from "../lib/accounts-settings.ts";
 import { type CliAccounts, type CliApiDeps, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
@@ -56,15 +56,27 @@ beforeAll(async () => {
   const owner = cookiesOf(await auth.handler(new Request(link?.url ?? "")));
   const acme = await auth.api.createOrganization({ body: { name: "Acme", slug: "acme" }, headers: as(owner) });
   const globex = await auth.api.createOrganization({ body: { name: "Globex", slug: "globex" }, headers: as(owner) });
-  apiKey = (
-    await auth.api.createApiKey({ body: { name: "coordinator", organizationId: acme?.id ?? "" }, headers: as(owner) })
-  ).key;
-  otherKey = (
-    await auth.api.createApiKey({
-      body: { name: "other coordinator", organizationId: globex?.id ?? "" },
-      headers: as(owner),
-    })
-  ).key;
+  const primaryKey = await auth.api.createApiKey({
+    body: { name: "coordinator", organizationId: acme?.id ?? "" },
+    headers: as(owner),
+  });
+  const alternateKey = await auth.api.createApiKey({
+    body: { name: "other coordinator", organizationId: globex?.id ?? "" },
+    headers: as(owner),
+  });
+  apiKey = primaryKey.key;
+  otherKey = alternateKey.key;
+  const ownerSession = await auth.api.getSession({ headers: as(owner) });
+  for (const [key, organization] of [
+    [primaryKey, acme],
+    [alternateKey, globex],
+  ])
+    await recordApiKeyCreator(client, {
+      id: key?.id ?? "",
+      organization: organization?.id ?? "",
+      user: ownerSession?.user.id ?? "",
+      now: now(),
+    });
   ownerToken = (await auth.api.signInEmail({ body: { email: OWNER, password: PASSWORD } })).token ?? "";
 });
 
@@ -319,6 +331,94 @@ describe("the fleet through the Armada API", () => {
     expect(after.items.filter((e) => e.kind === "not-started").map((e) => e.ticket)).toEqual(["WID-71"]);
     // Shown as not started, a launch no longer holds the watch: its entry does.
     expect(after.inFlight).toEqual(["WID-72"]);
+  });
+
+  test("launch revoke ends only the newest pending launch with the Workers-page audit, and refuses claims", async () => {
+    clock = start.getTime() + 3 * 24 * 60 * 60_000;
+    const signIn: ArmadaSignIn = { kind: "session", token: ownerToken };
+    const coordinator = fleetOf(signIn);
+    const target = { project: WIDGETS.slug, ticket: "WID-80" };
+    const older = await api.launchToken(signIn, target);
+    clock += 60_000;
+    const newest = await api.launchToken(signIn, target);
+    const session = await api.exchangeLaunchToken(newest.token, "ws-80/s-1");
+    expect(await refusal(api.revokeLaunch({ kind: "api-key", key: otherKey }, target))).toEqual([
+      404,
+      expect.stringContaining("no pending launch"),
+    ]);
+    const revoked = await api.revokeLaunch(signIn, target);
+    expect(revoked.ticket).toBe("WID-80");
+    expect((await coordinator.pendingLaunches()).some((launch) => launch.ticket === "WID-80")).toBe(false);
+    expect(
+      await refusal(api.whoami({ kind: "worker", token: session.token, project: WIDGETS.slug, ticket: "WID-80" })),
+    ).toEqual([401, expect.stringContaining("cut off from Armada")]);
+    const history = await client.query(
+      'SELECT "endReason", "endedAt" FROM "armada_worker" WHERE "ticket" = $1 ORDER BY "createdAt"',
+      [target.ticket],
+    );
+    expect(history.rows[0]?.endedAt).toBeNull();
+    expect(history.rows[1]?.endReason).toBe("revoked");
+    expect((await api.exchangeLaunchToken(older.token)).worker.ticket).toBe("WID-80");
+    const audit = await client.query('SELECT detail FROM "armada_secret_event" WHERE action = $1 AND project = $2', [
+      "end",
+      WIDGETS.slug,
+    ]);
+    expect(audit.rows.map((row) => row.detail)).toContain("worker session of widgets WID-80 revoked");
+    expect(await refusal(api.revokeLaunch(signIn, target))).toEqual([
+      404,
+      expect.stringContaining("no pending launch"),
+    ]);
+
+    const claimed = await worker("WID-81");
+    await fleetOf(claimed).claim(claim("WID-81", "ws-81"));
+    await api.launchToken(signIn, { project: WIDGETS.slug, ticket: "WID-81" });
+    expect(await refusal(api.revokeLaunch(signIn, { project: WIDGETS.slug, ticket: "WID-81" }))).toEqual([
+      409,
+      expect.stringContaining("already claimed"),
+    ]);
+    expect((await api.whoami(claimed)).worker?.ticket).toBe("WID-81");
+
+    const unusedTarget = { project: WIDGETS.slug, ticket: "WID-82" };
+    const unused = await api.launchToken(signIn, unusedTarget);
+    expect((await api.revokeLaunch({ kind: "api-key", key: apiKey }, unusedTarget)).ticket).toBe("WID-82");
+    expect(await refusal(api.exchangeLaunchToken(unused.token))).toEqual([401, expect.stringContaining("revoked")]);
+    expect(await refusal(api.revokeLaunch(claimed, unusedTarget))).toEqual([403, expect.stringContaining("worker")]);
+  });
+
+  test("an unused token expires after its grace hour, shows once even with the old ETag, then clears; exchanged launches age out at 24 h", async () => {
+    clock = start.getTime() + 4 * 24 * 60 * 60_000;
+    const launchedAt = clock;
+    const signIn: ArmadaSignIn = { kind: "session", token: ownerToken };
+    const coordinator = fleetOf(signIn);
+    await api.launchToken(signIn, { project: WIDGETS.slug, ticket: "WID-90" });
+    await api.launchToken({ kind: "api-key", key: otherKey }, { project: WIDGETS.slug, ticket: "WID-92" });
+    const exchanged = await api.launchToken(signIn, { project: WIDGETS.slug, ticket: "WID-91" });
+    await api.exchangeLaunchToken(exchanged.token, "ws-91/s-1");
+    clock += 120 * 60_000;
+    const grace = await inboxOf(coordinator);
+    expect(grace.items.find((entry) => entry.ticket === "WID-90")?.body).not.toContain("token expired");
+    clock += 1;
+    const concurrent = await Promise.all([
+      coordinator.inbox({ ...read, etag: grace.etag }),
+      coordinator.inbox({ ...read, etag: grace.etag }),
+    ]);
+    const notices = concurrent.flatMap((answer) => answer?.items ?? []).filter((entry) => entry.ticket === "WID-90");
+    expect(notices).toHaveLength(1);
+    const expired = concurrent.find((answer) => answer?.items.some((entry) => entry.ticket === "WID-90"));
+    expect(expired?.items.find((entry) => entry.ticket === "WID-90")?.body).toContain("not started (token expired)");
+    expect(expired?.inFlight).not.toContain("WID-90");
+    expect(expired?.items.some((entry) => entry.ticket === "WID-92")).toBe(false);
+    const foreign = await client.query('SELECT "endReason" FROM "armada_worker" WHERE "ticket" = $1', ["WID-92"]);
+    expect(foreign.rows[0]?.endReason).toBeNull();
+    const cleared = await inboxOf(coordinator);
+    expect(cleared.items.some((entry) => entry.ticket === "WID-90")).toBe(false);
+    expect((await coordinator.pendingLaunches()).map((launch) => launch.ticket)).toContain("WID-91");
+    clock = launchedAt + 24 * 60 * 60_000 + 1;
+    expect((await coordinator.pendingLaunches()).map((launch) => launch.ticket)).not.toContain("WID-91");
+    const afterWindow = await inboxOf(coordinator);
+    expect(afterWindow.items.some((entry) => entry.ticket === "WID-91")).toBe(false);
+    expect(afterWindow.inFlight).not.toContain("WID-91");
+    expect((await api.revokeLaunch(signIn, { project: WIDGETS.slug, ticket: "WID-91" })).ticket).toBe("WID-91");
   });
 
   test("the masked token of the brief's human view is named as such, not as an invalid token", async () => {

@@ -185,7 +185,7 @@ describe("armada brief", () => {
     expect(text).not.toContain("ARMADA_TURSO");
     expect(text).toContain("ARMADA_TICKET=DEMO-13");
     // The last line is for the coordinator: once launched, a worker is in flight.
-    expect(text).toEndWith("\n----- once launched -----\n1 worker in flight (DEMO-13) — keep watching: armada watch\n");
+    expect(text).toEndWith("\n----- once launched -----\nNo worker in flight — nothing to watch.\n");
 
     const prompt = text.slice(text.indexOf("# DEMO-13 — Show a sign-in page"));
     const at = [
@@ -249,7 +249,7 @@ describe("armada brief", () => {
     const j = briefIo();
     expect(await run(["brief", "DEMO-13", "--json", ...override], j.io)).toBe(0);
     const brief = JSON.parse(j.out());
-    expect(brief.watch.line).toBe("1 worker in flight (DEMO-13) — keep watching: armada watch");
+    expect(brief.watch.line).toBe("No worker in flight — nothing to watch.");
     expect(brief.runtime).toBe("conductor");
     expect(brief.profile).toEqual({
       name: "codex",
@@ -489,39 +489,40 @@ describe("armada brief with a launch token", () => {
     expect(b.armada.calls.filter((call) => call.path === "launch-tokens")).toHaveLength(1);
   });
 
-  test("signed in, the prompt signs the worker in first, and says it needs no key; only --prompt shows the token", async () => {
-    const b = await signedIn();
-    expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
-    const text = b.out();
-    expect(b.armada.calls.find((c) => c.path === "launch-tokens")?.body).toEqual({
-      project: "widgets",
-      ticket: "DEMO-13",
-    });
-    expect(text).toContain(
-      "Launch:      one-time token in the prompt, valid until 2026-03-04 11:00 UTC: the worker needs no key\n             (shown as armada_launch_•••• here; `armada brief DEMO-13 --prompt` prints it)\n",
-    );
-    expect(text).toMatch(/ {2}LINEAR_API_KEY +optional /);
-    const prompt = text.slice(text.indexOf("# DEMO-13"));
-    expect(prompt).toContain(
-      `\nnpm install -g @the-vibe-company/armada@${version}\narmada login --launch-token armada_launch_•••• --api-url ${ARMADA_URL}\narmada claim DEMO-13 --runtime conductor`,
-    );
-    expect(text).not.toContain("armada_launch_CANARY");
+  test("human and JSON briefs mint nothing and leave watch state unchanged", async () => {
+    for (const flags of [[], ["--json"]]) {
+      const brief = await signedIn();
+      const paths = machinePaths(brief.io.env);
+      if (!paths) throw new Error("no machine store");
+      await updateWatchState(paths, "widgets", { root: "/work/widgets", inFlight: ["DEMO-8"] });
+      const before = await readWatchState(paths, "widgets");
+      expect(await run(["brief", "DEMO-13", ...flags], brief.io)).toBe(0);
+      expect(brief.armada.calls.filter((call) => call.path === "launch-tokens")).toEqual([]);
+      expect(brief.armada.launches.size).toBe(0);
+      expect(await readWatchState(paths, "widgets")).toEqual(before);
+      const text = brief.out();
+      expect(text).toContain("a one-time token is made when you print the prompt (--prompt)");
+      expect(text).not.toContain("armada_launch_");
+      if (flags.length) expect(JSON.parse(text).launch).toBeNull();
+    }
+  });
 
-    // Each run reads Linear afresh: a new terminal for each.
-    const j = await signedIn();
-    expect(await run(["brief", "DEMO-13", "--json"], j.io)).toBe(0);
-    const json = JSON.parse(j.out()) as { prompt: string; launch: { command: string } };
-    expect(json.launch.command).toBe(`armada login --launch-token armada_launch_•••• --api-url ${ARMADA_URL}`);
-    expect(json.prompt).toContain("armada login --launch-token armada_launch_•••• --api-url");
-    expect(JSON.stringify(json)).not.toContain("armada_launch_CANARY");
-
-    const p = await signedIn();
-    expect(await run(["brief", "DEMO-13", "--prompt"], p.io)).toBe(0);
-    expect(p.out()).toContain(`armada login --launch-token armada_launch_CANARY_1 --api-url ${ARMADA_URL}\n`);
-    expect(prompt).toContain("No key is needed in this workspace");
-    expect(prompt).not.toContain("The coordinator set `LINEAR_API_KEY`");
-    for (const secret of Object.values(SECRETS)) expect(text).not.toContain(secret);
-    expect(text).not.toContain("CANARY_coordinator_session");
+  test("--prompt mints exactly one token and --profile-line keeps stdout unchanged", async () => {
+    const plain = await signedIn();
+    const profiled = await signedIn();
+    const choice = ["--profile", "codex", "--reason", "CLI and core rules"];
+    expect(await run(["brief", "DEMO-13", "--prompt", ...choice], plain.io)).toBe(0);
+    expect(await run(["brief", "DEMO-13", "--prompt", "--profile-line", ...choice], profiled.io)).toBe(0);
+    expect(profiled.out()).toBe(plain.out());
+    expect(profiled.out()).toContain(`armada login --launch-token armada_launch_CANARY_1 --api-url ${ARMADA_URL}\n`);
+    expect(profiled.out()).toContain("No key is needed in this workspace");
+    expect(profiled.err()).toContain("Profile: codex: agent codex, model gpt-6.1-sol, effort high");
+    expect(profiled.err()).toContain("CLI and core rules");
+    expect(profiled.err()).not.toContain("armada_launch_");
+    for (const brief of [plain, profiled]) {
+      expect(brief.armada.calls.filter((call) => call.path === "launch-tokens")).toHaveLength(1);
+      expect(brief.armada.launches.size).toBe(1);
+    }
   });
 
   test("an Armada that refuses (no vault) leaves the prompt as before, with a warning; not signed in, the launch line says why", async () => {
@@ -535,9 +536,7 @@ describe("armada brief with a launch token", () => {
 
     const plain = briefIo();
     expect(await run(["brief", "DEMO-13"], plain.io)).toBe(0);
-    expect(plain.out()).toContain(
-      "Launch:      no launch token (launch tokens need this terminal signed in to an Armada with accounts: armada login): pass the keys below in the worker's environment\n",
-    );
+    expect(plain.out()).toContain("Launch:      a one-time token is made when you print the prompt (--prompt)\n");
     expect(plain.out()).not.toContain("--launch-token");
   });
 });

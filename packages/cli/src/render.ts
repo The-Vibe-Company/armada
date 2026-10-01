@@ -69,14 +69,17 @@ export function renderStatus(r: StatusReport): string {
     if (t.flags.length) out.push(`${indent}! ${t.flags.join(", ")}`);
   }
 
-  if (r.notStarted.length) {
-    out.push("", `Launched, not started (${r.notStarted.length})`);
-    for (const l of r.notStarted) {
+  const pending = r.pendingLaunches ?? r.notStarted;
+  if (pending.length) {
+    out.push("", `Pending launches (${pending.length})`);
+    for (const l of pending) {
       out.push(
         `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.handle ? ` · ${l.handle}` : ""}`,
       );
-      if (l.title) out.push(`${indent}${truncate(l.title, 90)}`);
+      const title = r.notStarted.find((launch) => launch.ticket === l.ticket)?.title;
+      if (title) out.push(`${indent}${truncate(title, 90)}`);
       out.push(`${indent}! check its session with the runtime guide's status section`);
+      out.push(`${indent}Cancel: armada launch revoke ${l.ticket}`);
     }
   }
 

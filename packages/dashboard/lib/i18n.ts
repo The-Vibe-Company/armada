@@ -65,7 +65,7 @@ export const WORKERS_ERRORS = ["forbidden", "gone", "failed"] as const;
 export type WorkersError = (typeof WORKERS_ERRORS)[number];
 
 /** Where a launch stands, as the Workers page shows it (`workerState` in lib/workers.ts). */
-type WorkerStateLabel = "waiting" | "unused" | "active" | "idle" | "released" | "merged" | "revoked";
+type WorkerStateLabel = "waiting" | "unused" | "active" | "idle" | "released" | "merged" | "revoked" | "expired";
 
 /** The keys the Keys page names: the vault's, plus a person's own Linear key. */
 export type KeyLabel = "linear-api-key" | "own-linear-api-key" | "project-linear-api-key" | "github-token";
@@ -409,6 +409,7 @@ const en = {
     states: {
       waiting: "token not used yet",
       unused: "token expired unused",
+      expired: "ended: unused token expired",
       active: "session active",
       idle: "session expired",
       released: "ended: ticket released",
@@ -1132,6 +1133,7 @@ const fr: Strings = {
     states: {
       waiting: "jeton pas encore utilisé",
       unused: "jeton expiré sans servir",
+      expired: "terminé : jeton inutilisé expiré",
       active: "session active",
       idle: "session expirée",
       released: "terminée : ticket rendu",

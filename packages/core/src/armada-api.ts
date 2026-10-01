@@ -536,6 +536,17 @@ export function armadaApi(opts: ArmadaApiOptions) {
       return typeof body.ended === "number" ? body.ended : 0;
     },
 
+    async revokeLaunch(
+      signIn: ArmadaSignIn,
+      target: { project: string; ticket: string },
+    ): Promise<{ id: string; ticket: string }> {
+      const { status, body } = await call("POST", "workers/revoke", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, "Armada did not revoke the launch");
+      if (typeof body.id !== "string" || typeof body.ticket !== "string")
+        throw new ArmadaApiError(`Armada (${host}) answered the revoked launch in a shape this CLI does not know`);
+      return { id: body.id, ticket: body.ticket };
+    },
+
     /** Revokes the session of `armada login` on the server; a worker session ends as released. */
     async signOut(signIn: ArmadaSignIn): Promise<void> {
       const { status, body } = await call("DELETE", "session", { signIn });
