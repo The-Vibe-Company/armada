@@ -1,0 +1,25 @@
+.agents/skills/frontend-design/LICENSE.txt
+  s_d658e7251951c2::t_67bf3eb7bfd147 1-177
+skills-lock.json
+  s_d658e7251951c2::t_67bf3eb7bfd147 44-49
+.agents/skills/frontend-design/SKILL.md
+  s_d658e7251951c2::t_67bf3eb7bfd147 1-71
+.claude/skills/frontend-design
+  s_d658e7251951c2::t_2d7c510c24040a 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "ec5fae8dbe45c4b394eb1974922f9332f65bb467",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
