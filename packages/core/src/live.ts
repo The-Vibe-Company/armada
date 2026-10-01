@@ -231,7 +231,9 @@ export interface FleetStore {
   /**
    * Launches of the project made since `since`, newest per ticket, that no
    * claim of their ticket followed and that have not ended (revoked, released,
-   * merged), oldest first.
+   * merged), oldest first. A ticket a session holds (open runtime handle) has
+   * none: a brief made to look at it again launches nobody, and a relaunch
+   * releases the old claim first.
    */
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
 }
@@ -601,9 +603,11 @@ async function readInboxAndFlight(
       new: false,
     });
   }
-  // A worker launched is in flight from its launch: a watch started then keeps watching for its claim.
-  for (const l of launches) if (!inFlight.includes(l.ticket)) inFlight.push(l.ticket);
-  for (const l of notStartedLaunches(launches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes))
+  // A worker launched is in flight from its launch, so a watch started then waits for its claim;
+  // once it shows as not started, its entry carries it until the coordinator acts.
+  const late = notStartedLaunches(launches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes);
+  for (const l of launches) if (!late.includes(l) && !inFlight.includes(l.ticket)) inFlight.push(l.ticket);
+  for (const l of late)
     entries.push({
       id: null,
       kind: "not-started",

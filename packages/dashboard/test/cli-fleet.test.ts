@@ -307,9 +307,13 @@ describe("the fleet through the Armada API", () => {
       { kind: "session", token: ownerToken },
       { project: WIDGETS.slug, ticket: "WID-70", reason: "released" },
     );
+    // Briefed again while its worker holds it, a ticket starts nobody new.
+    await launch("WID-72");
+    clock += 11 * 60_000;
     const after = await inboxOf(coordinator);
-    expect(after.items.map((e) => e.ticket)).toEqual(["WID-71"]);
-    expect(after.inFlight).toEqual(["WID-71", "WID-72"]);
+    expect(after.items.filter((e) => e.kind === "not-started").map((e) => e.ticket)).toEqual(["WID-71"]);
+    // Shown as not started, a launch no longer holds the watch: its entry does.
+    expect(after.inFlight).toEqual(["WID-72"]);
   });
 
   test("the masked token of the brief's human view is named as such, not as an invalid token", async () => {

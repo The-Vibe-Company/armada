@@ -297,6 +297,17 @@ describe("the coordinator's inbox", () => {
     launch("DEMO-6", 3);
     launch("DEMO-7", 25 * 60); // older than a day
     launch("GAD-1", 30, { project: "gadgets" });
+    // A worker at work, briefed again to read its prompt: that launch starts nobody.
+    await db.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-8",
+      runtime: "conductor",
+      handle: "ws-8",
+      branch: null,
+      at: at(120),
+    });
+    await db.recordEvent({ project: P, ticket: "DEMO-8", kind: "report", phase: "implementing", at: at(5) });
+    launch("DEMO-8", 30);
 
     const read = await serveInbox(db, P, { coordinator: null, silentAfterMinutes: 15, etag: null }, NOW);
     expect(read?.items.map((e) => [e.id, e.kind, e.ticket, e.author, e.createdAt])).toEqual([
@@ -309,8 +320,8 @@ describe("the coordinator's inbox", () => {
     expect(read?.items[1]?.body).toStartWith(
       "launched 20 min ago and never claimed; the worker signed in with its launch token at 09:42 UTC, then stopped before `armada claim` (session ws-2/s-2). Check",
     );
-    // A watch started after a launch keeps watching for its claim.
-    expect(read?.inFlight).toEqual(["DEMO-1", "DEMO-2", "DEMO-3", "DEMO-4", "DEMO-6"]);
+    // A watch started after a launch waits for its claim; past not_started_minutes, the entry carries it.
+    expect(read?.inFlight).toEqual(["DEMO-3", "DEMO-4", "DEMO-6", "DEMO-8"]);
     // `not_started_minutes` sets when a launch shows.
     const later = await readInbox(db, { project: P, silentAfterMinutes: 15, notStartedMinutes: 22, now: NOW });
     expect(later.map((e) => e.ticket)).toEqual(["DEMO-1"]);

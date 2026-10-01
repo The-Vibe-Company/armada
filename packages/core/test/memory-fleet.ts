@@ -333,6 +333,10 @@ export function memoryFleet(): FleetStore & {
     },
 
     async pendingLaunches(project, since) {
+      const held = (ticket: string) => {
+        const h = handles.get(key(project, ticket));
+        return !!h && !h.releasedAt;
+      };
       const newest = new Map<string, LaunchRow>();
       for (const l of launches)
         if (l.project === project && l.launchedAt >= since.toISOString()) {
@@ -343,6 +347,7 @@ export function memoryFleet(): FleetStore & {
         .filter(
           (l) =>
             !l.endedAt &&
+            !held(l.ticket) &&
             !events.some(
               (e) => e.project === project && e.ticket === l.ticket && e.kind === "claim" && e.at >= l.launchedAt,
             ),

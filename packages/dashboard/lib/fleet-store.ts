@@ -587,7 +587,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
 /**
  * The project's launches since `since` (`armada_worker`, written by
  * `workers.ts`), newest per ticket, that have not ended and that no claim of
- * their ticket followed: the workers launched that have not started (THE-872).
+ * their ticket followed, on tickets no session holds: the workers launched
+ * that have not started (THE-872).
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
@@ -596,10 +597,14 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
-     WHERE w."endedAt" IS NULL AND NOT EXISTS (
-       SELECT 1 FROM events e
-       WHERE e.project = $1 AND e.ticket = w."ticket" AND e.kind = 'claim' AND e.created_at >= w."createdAt"
-     )
+     WHERE w."endedAt" IS NULL
+       AND NOT EXISTS (
+         SELECT 1 FROM events e
+         WHERE e.project = $1 AND e.ticket = w."ticket" AND e.kind = 'claim' AND e.created_at >= w."createdAt"
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = w."ticket" AND h.released_at IS NULL
+       )
      ORDER BY w."createdAt", w."ticket"`,
     [project, since],
   );
