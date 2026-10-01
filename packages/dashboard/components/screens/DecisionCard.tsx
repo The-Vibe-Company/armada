@@ -46,14 +46,7 @@ function send(form: FormData) {
   return answerQuestion(form);
 }
 
-export function DecisionCard({
-  ctx,
-  w,
-  projectName,
-  coordinator,
-  pr,
-  sent: held,
-}: {
+interface DecisionProps {
   ctx: ActionContext;
   w: Decision;
   projectName: string;
@@ -62,9 +55,61 @@ export function DecisionCard({
   pr: number | null;
   /** What the owner already asked, as the server holds it. */
   sent: SentRequest | null;
-}) {
+}
+
+export function DecisionCard(props: DecisionProps) {
+  const { ctx, w, projectName } = props;
   const { t, now } = ctx;
   const color = KIND_COLOR[w.kind];
+  const age = Math.max(0, now - Date.parse(w.since));
+  return (
+    <Card>
+      <CardHead
+        icon={<Dot color={color} />}
+        label={t.overview.kinds[w.kind]}
+        color={color}
+        side={<span title={w.since}>{t.ago(age)}</span>}
+      />
+      <CardTitle>
+        {w.ticket ? (
+          <Link href={paths.agent(w.ticket)} prefetch>
+            {w.title ?? w.ticket}
+          </Link>
+        ) : (
+          (w.title ?? projectName)
+        )}
+      </CardTitle>
+      <CardMeta>
+        <Tag>{projectName}</Tag>
+        {w.ticket && <span className="mono">{w.ticket}</span>}
+        {w.author && <span>{w.author}</span>}
+        {w.coordinatorSince && (
+          <span className="late">
+            {t.coordinatorLate(t.duration(Math.max(0, now - Date.parse(w.coordinatorSince))))}
+          </span>
+        )}
+      </CardMeta>
+      <DecisionActions {...props} />
+    </Card>
+  );
+}
+
+/**
+ * A decision's text and its buttons, as the overview's card and an agent's
+ * page (THE-869) both show them: one click per choice of a question (the
+ * recommended one first and primary), approve or amend a plan, ask to merge.
+ * `full` shows a plan whole instead of its excerpt.
+ */
+export function DecisionActions({
+  ctx,
+  w,
+  projectName,
+  coordinator,
+  pr,
+  sent: held,
+  full = false,
+}: DecisionProps & { full?: boolean }) {
+  const { t, now } = ctx;
   const [amending, setAmending] = useState(false);
   const [draft, setDraft] = useState("");
   const [sent, markSent, unmark] = useSent<SentRequest>(ctx.version);
@@ -95,8 +140,8 @@ export function DecisionCard({
 
   const { text, options } =
     w.kind === "question" ? splitQuestion(w.detail ?? "") : { text: w.detail ?? "", options: [] };
-  const body = w.kind === "approval" ? excerpt(text, PLAN_EXCERPT) : text;
-  const age = Math.max(0, now - Date.parse(w.since));
+  const cut = w.kind === "approval" && !full;
+  const body = cut ? excerpt(text, PLAN_EXCERPT) : text;
 
   const hidden = (
     <>
@@ -113,32 +158,7 @@ export function DecisionCard({
   };
 
   return (
-    <Card>
-      <CardHead
-        icon={<Dot color={color} />}
-        label={t.overview.kinds[w.kind]}
-        color={color}
-        side={<span title={w.since}>{t.ago(age)}</span>}
-      />
-      <CardTitle>
-        {w.ticket ? (
-          <Link href={paths.agent(w.ticket)} prefetch>
-            {w.title ?? w.ticket}
-          </Link>
-        ) : (
-          (w.title ?? projectName)
-        )}
-      </CardTitle>
-      <CardMeta>
-        <Tag>{projectName}</Tag>
-        {w.ticket && <span className="mono">{w.ticket}</span>}
-        {w.author && <span>{w.author}</span>}
-        {w.coordinatorSince && (
-          <span className="late">
-            {t.coordinatorLate(t.duration(Math.max(0, now - Date.parse(w.coordinatorSince))))}
-          </span>
-        )}
-      </CardMeta>
+    <>
       {w.kind === "question" && options.length === 0 ? (
         // A question without choices: the answer is typed.
         <QuestionBlock
@@ -153,7 +173,7 @@ export function DecisionCard({
       ) : (
         <>
           {body && <p className="wait-detail is-quote">{body}</p>}
-          {w.kind === "approval" && w.url && text.length > PLAN_EXCERPT && (
+          {cut && w.url && text.length > PLAN_EXCERPT && (
             <a href={w.url} target="_blank" rel="noreferrer" className="link">
               {t.overview.readPlan}
             </a>
@@ -248,6 +268,6 @@ export function DecisionCard({
           )}
         </>
       )}
-    </Card>
+    </>
   );
 }

@@ -12,6 +12,7 @@ import type { Database } from "../lib/db.ts";
 import {
   type LoadOptions,
   loadOverview as load,
+  loadAgentActivity,
   loadProject,
   newCache,
   type Scope,
@@ -23,10 +24,11 @@ import {
   fleetStore,
   liveStore,
   recordEvent,
+  resolveInboxItem,
   saveRuntimeHandle,
   upsertProject,
 } from "../lib/fleet-store.ts";
-import { answerOverview } from "../lib/live-http.ts";
+import { answerJson, answerOverview } from "../lib/live-http.ts";
 import { submitAnswer as answer, submitLaunch as launchReq } from "../lib/requests.ts";
 import { markRepository } from "../lib/snapshots.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
@@ -374,6 +376,7 @@ describe("speed: a page reads Postgres only (THE-853)", () => {
       expect(stale.rows.map((r) => r.id)).toEqual(["WID-2"]);
       expect(w.background).toHaveLength(1);
       expect((await loadProject(w.opts, "widgets", HOME))?.report.inFlight.map((t) => t.id)).toEqual(["WID-2"]);
+      expect((await loadAgentActivity(w.opts, HOME, "widgets", "WID-2"))?.live).toBe(true);
       expect(await markRepository(db, "acme/widgets")).toEqual(["widgets"]);
       expect((await loadOverview(w.opts)).rows.map((r) => r.id)).toEqual(["WID-2"]);
 
@@ -436,6 +439,89 @@ describe("speed: a page reads Postgres only (THE-853)", () => {
     await w.warm();
     expect(w.reads.snapshots).toBe(2);
     expect(asks).toHaveLength(1);
+  });
+});
+
+describe("an agent's activity (THE-869)", () => {
+  test("merges the ticket's Linear comments with its events and inbox, for its organization only, with an ETag", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    await assignUnownedProjects(db, "org-home");
+    const w = world(db, {
+      readSnapshot: async (config) => {
+        const s = snapshot(config, T0, [issue("WID-2", { statusType: "started", agentPhase: "implementing" })]);
+        s.program.comments = [
+          {
+            id: "c1",
+            issueId: "WID-2",
+            author: "Worker",
+            createdAt: new Date(T0 - 60 * 60_000).toISOString(),
+            excerpt: "",
+            status: null,
+            claim: {
+              runtime: "Conductor",
+              session: "ws/2",
+              branch: "feature/wid-2",
+              startedAt: null,
+              at: new Date(T0 - 60 * 60_000).toISOString(),
+              author: "Worker",
+            },
+          },
+          // Another ticket's comment never shows.
+          {
+            id: "c2",
+            issueId: "WID-3",
+            author: "X",
+            createdAt: s.program.fetchedAt,
+            excerpt: "elsewhere",
+            status: null,
+            claim: null,
+          },
+        ];
+        return s;
+      },
+    });
+    const base = { project: "widgets", ticket: "WID-2" };
+    await recordEvent(db, { ...base, kind: "claim", runtime: "Conductor", handle: "ws/2", at: w.at(-60 * 60_000) });
+    await recordEvent(db, {
+      ...base,
+      kind: "report",
+      phase: "implementing",
+      message: "parser",
+      at: w.at(-30 * 60_000),
+    });
+    await addInboxItem(db, {
+      ...base,
+      kind: "question",
+      recipient: "coordinator",
+      author: "ws/2",
+      body: "Which table?",
+      at: w.at(-20 * 60_000),
+    });
+    await resolveInboxItem(db, { project: "widgets", id: 1, resolution: "orders", at: w.at(-10 * 60_000) });
+    await w.warm();
+
+    const activity = await loadAgentActivity(w.opts, HOME, "widgets", "WID-2");
+    expect(activity?.live).toBe(true);
+    expect(activity?.entries.map((e) => e.kind)).toEqual(["answer", "question", "phase", "branch", "claim"]);
+    expect(activity?.entries.find((e) => e.kind === "claim")).toMatchObject({
+      handle: "ws/2",
+      branch: "feature/wid-2",
+    });
+    expect(activity?.entries[0]?.text).toBe("orders");
+
+    expect(
+      await loadAgentActivity(w.opts, { organization: "org-other", home: "org-home" }, "widgets", "WID-2"),
+    ).toBeNull();
+    expect(await loadAgentActivity(w.opts, HOME, "nope", "WID-2")).toBeNull();
+
+    const first = answerJson(new Request("http://x/api/fleet/activity"), activity);
+    const tag = first.headers.get("etag") ?? "";
+    const again = answerJson(
+      new Request("http://x/api/fleet/activity", { headers: { "If-None-Match": tag } }),
+      activity,
+    );
+    expect(again.status).toBe(304);
   });
 });
 

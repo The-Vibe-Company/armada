@@ -3,6 +3,7 @@
 // (`fleet-api.ts`, whose client half its tests drive). Hosts that cannot load
 // the bundled skills (their files are imported as text, which only Bun
 // understands) use it.
+export * from "./activity.ts";
 export * from "./armada-api.ts";
 export * from "./config.ts";
 export * from "./credentials.ts";

@@ -14,6 +14,7 @@ import type {
   FormHTMLAttributes,
   InputHTMLAttributes,
   ReactNode,
+  Ref,
   SelectHTMLAttributes,
 } from "react";
 
@@ -72,6 +73,20 @@ export function Section({
       </div>
       {children}
     </section>
+  );
+}
+
+/**
+ * Two columns of sections on a wide screen, one under the other on a narrow
+ * one: the page's sections on the left, `side` (facts, a closing action) on
+ * the right. Each column holds `Section`s and their `Row`s, nothing else.
+ */
+export function Columns({ children, side }: { children: ReactNode; side: ReactNode }) {
+  return (
+    <div className="ui-columns">
+      <div className="ui-columns-main">{children}</div>
+      <aside className="ui-columns-side">{side}</aside>
+    </div>
   );
 }
 
@@ -236,7 +251,7 @@ export function Button({
   className,
   type = "submit",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "danger" }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { tone?: "primary" | "danger"; ref?: Ref<HTMLButtonElement> }) {
   return <button {...props} type={type} className={cx("ui-button", tone && `is-${tone}`, className)} />;
 }
 

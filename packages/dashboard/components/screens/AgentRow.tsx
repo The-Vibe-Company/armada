@@ -40,6 +40,7 @@ export function AgentRow({
             <span className="mono">{r.id}</span>
             {projectName && <> · {projectName}</>} · <HarnessBadge harness={harness} />
             {r.profile && <> · {r.profile}</>}
+            {r.pr?.files && <> · {t.shell.agent.fileCount(r.pr.files.length)}</>}
           </span>
           <span className="ui-row-line" style={{ color: r.question ? "var(--accent)" : undefined }}>
             {rowLine(r)}

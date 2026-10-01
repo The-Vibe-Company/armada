@@ -52,7 +52,13 @@ async function seed(scenario: string) {
   const s = scenario === "empty" ? "empty" : "fleet";
   for (const e of demoEvents(s)) {
     const base = { project: e.project, ticket: e.ticket };
-    await saveRuntimeHandle(db, { ...base, runtime: e.runtime, handle: e.handle, branch: null, at: ago(e.claimed) });
+    await saveRuntimeHandle(db, {
+      ...base,
+      runtime: e.runtime,
+      handle: e.handle,
+      branch: `feature/${e.ticket.toLowerCase()}`,
+      at: ago(e.claimed),
+    });
     await saveWorkerProfile(db, {
       ...base,
       profile: {

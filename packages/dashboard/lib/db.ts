@@ -576,6 +576,11 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
        FROM runtime_handles h LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket`,
     ],
   },
+  {
+    // An agent's page reads its ticket's whole inbox history (THE-869).
+    version: 11,
+    statements: ["CREATE INDEX inbox_by_ticket ON inbox_items (project, ticket, created_at)"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

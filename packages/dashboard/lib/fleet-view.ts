@@ -51,6 +51,40 @@ export function harnessOf(runtime: string | null | undefined): Harness {
 
 export const isHarness = (v: unknown): v is Harness => (HARNESSES as readonly unknown[]).includes(v);
 
+/** The harness a coordinator runs on, from what it recorded (`conductor-cloud`, `terminal`…); null when unknown. */
+export function coordinatorHarness(h: string | null | undefined): Harness | null {
+  if (!h) return null;
+  return h === "conductor-cloud" ? "conductor" : h === "terminal" ? "other" : harnessOf(h);
+}
+
+/**
+ * Where an agent's session opens, when its harness has a link: Conductor's
+ * workspace for a `<workspace>/<session>` handle. Null for a local harness.
+ */
+export function sessionLink(runtime: string | null | undefined, handle: string | null | undefined): string | null {
+  if (harnessOf(runtime) !== "conductor" || !handle) return null;
+  const workspace = handle.split("/")[0]?.trim();
+  return workspace && /^[\w-]+$/.test(workspace) ? `conductor://workspace?id=${encodeURIComponent(workspace)}` : null;
+}
+
+/** One of the six steps from plan to merge: done, the one at work, or to come. */
+export type StepState = "done" | "now" | "next";
+
+export const stepStates = (step: number): StepState[] =>
+  Array.from({ length: 6 }, (_, k) => (k < step ? "done" : k === step ? "now" : "next"));
+
+/** A pull request's changed files split for display: the folder (grey) and the name, and +/− in five squares. */
+export function fileShape(f: { path: string; additions: number; deletions: number }) {
+  const cut = f.path.lastIndexOf("/") + 1;
+  const total = f.additions + f.deletions;
+  const added = total ? Math.round((f.additions / total) * 5) : 0;
+  return {
+    dir: f.path.slice(0, cut),
+    name: f.path.slice(cut),
+    bar: Array.from({ length: 5 }, (_, k): "add" | "del" | "none" => (!total ? "none" : k < added ? "add" : "del")),
+  };
+}
+
 /**
  * The project colors. A slug keeps its color whatever other projects come and
  * go: FNV-1a of the slug picks the entry. The mockup's three land on their

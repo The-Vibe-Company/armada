@@ -10,7 +10,9 @@
 // soon as it is recorded. This module only orchestrates I/O; every fleet
 // rule lives in core.
 import {
+  type ActivityEntry,
   type ArmadaConfig,
+  agentActivity,
   buildOverview,
   buildStatus,
   type CoordinatorPresence,
@@ -390,6 +392,23 @@ const projectsOf = (opts: LoadOptions, scope: Scope | null) =>
  * organization, or it has no reading yet.
  */
 export async function loadProject(opts: LoadOptions, slug: string, scope: Scope | null): Promise<ProjectState | null> {
+  const found = await readingOf(opts, slug, scope);
+  if (!found) return null;
+  const { store, snap } = found;
+  const l = store
+    ? await withTimeout(readLive(store, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading live data").catch(
+        () => null,
+      )
+    : null;
+  return { store: l ? store : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
+}
+
+/** The last reading of a project the scope may see, and the live data's store; null when there is none. */
+async function readingOf(
+  opts: LoadOptions,
+  slug: string,
+  scope: Scope | null,
+): Promise<{ store: LiveStore | null; snap: Snapshot } | null> {
   const opened = await openLive(opts, scope);
   const projects = projectsOf(opts, scope);
   // Registry projects are keyed by slug; a repository-only project by the slug its armada.toml gives.
@@ -397,16 +416,54 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
   const { entries } = await readEntries(opened, opts, candidates.map(keyOf));
   for (const p of candidates) {
     const snap = entries.get(keyOf(p))?.snapshot;
-    if (!snap || snap.config.project.slug !== slug) continue;
-    const { store } = opened;
-    const l = store
-      ? await withTimeout(readLive(store, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading live data").catch(
-          () => null,
-        )
-      : null;
-    return { store: l ? store : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
+    if (snap && snap.config.project.slug === slug) return { store: opened.store, snap };
   }
   return null;
+}
+
+/** One ticket's history, as an agent's page shows it. */
+export interface AgentActivity {
+  project: string;
+  ticket: string;
+  /** False when the live data could not be read: the activity is Linear's and GitHub's only. */
+  live: boolean;
+  entries: ActivityEntry[];
+}
+
+/**
+ * What happened on one ticket (THE-869): its Linear comments and pull
+ * requests from the project's last reading, its events, inbox items and
+ * launches from the app's database. Never reads Linear or GitHub. Null when
+ * the scope may not see the project, or it has no reading yet.
+ */
+export async function loadAgentActivity(
+  opts: LoadOptions,
+  scope: Scope | null,
+  slug: string,
+  ticket: string,
+): Promise<AgentActivity | null> {
+  const found = await readingOf(opts, slug, scope);
+  if (!found) return null;
+  const { store, snap } = found;
+  const history = store
+    ? await withTimeout(store.ticketHistory(slug, ticket), opts.liveTimeoutMs ?? 4000, "reading live data").catch(
+        (err) => {
+          liveError(err);
+          return null;
+        },
+      )
+    : null;
+  const { program, forge } = snap.sources;
+  const issue = program.issues.find((i) => i.id === ticket);
+  const created = new Map((forge?.prs ?? []).map((p) => [p.number, p.createdAt ?? null]));
+  const entries = agentActivity({
+    comments: program.comments.filter((c) => c.issueId === ticket),
+    events: history?.events ?? [],
+    inbox: history?.inbox ?? [],
+    launches: history?.launches ?? [],
+    prs: (issue?.prs ?? []).map((p) => ({ number: p.number, createdAt: p.createdAt ?? created.get(p.number) ?? null })),
+  });
+  return { project: slug, ticket, live: history !== null, entries };
 }
 
 /** Reads every project of the scope's organization and builds the overview the Fleet view renders. */

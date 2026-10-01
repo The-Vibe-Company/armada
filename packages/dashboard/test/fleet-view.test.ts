@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import type { FleetRow } from "@armada/core/read";
 import {
   agentState,
+  coordinatorHarness,
   crumbsOf,
   densityOf,
   designPageEnabled,
   escapeTarget,
+  fileShape,
   filterSearch,
   harnessOf,
   PROJECT_PALETTE,
@@ -14,6 +16,8 @@ import {
   type SearchItem,
   searchItems,
   sectionOf,
+  sessionLink,
+  stepStates,
 } from "../lib/fleet-view.ts";
 
 type Bits = Pick<FleetRow, "phase" | "pr" | "silent" | "question" | "flags">;
@@ -140,4 +144,35 @@ test("density defaults to compact, and the component sheet shows in development 
   expect(designPageEnabled({ NODE_ENV: "development" })).toBe(true);
   expect(designPageEnabled({ NODE_ENV: "production" })).toBe(false);
   expect(designPageEnabled({ NODE_ENV: "production", ARMADA_DASHBOARD_DEMO: "fleet" })).toBe(true);
+});
+
+describe("an agent's page", () => {
+  test("a coordinator's harness, from what it recorded", () => {
+    expect(coordinatorHarness("conductor-cloud")).toBe("conductor");
+    expect(coordinatorHarness("claude-code")).toBe("claude-code");
+    expect(coordinatorHarness("codex")).toBe("codex");
+    expect(coordinatorHarness("terminal")).toBe("other");
+    expect(coordinatorHarness(null)).toBeNull();
+  });
+
+  test("only a Conductor session opens in Conductor, by its workspace", () => {
+    expect(sessionLink("Conductor", "ws-4f2a/ses-91")).toBe("conductor://workspace?id=ws-4f2a");
+    expect(sessionLink("Claude Code", "ws-4f2a/ses-91")).toBeNull();
+    expect(sessionLink("Conductor", null)).toBeNull();
+    expect(sessionLink("Conductor", "local tty/s004")).toBeNull();
+  });
+
+  test("steps before the current one are done, after it to come", () => {
+    expect(stepStates(2)).toEqual(["done", "done", "now", "next", "next", "next"]);
+    expect(stepStates(5)).toEqual(["done", "done", "done", "done", "done", "now"]);
+  });
+
+  test("a changed file splits into folder and name, its +/- into five squares", () => {
+    expect(fileShape({ path: "src/auth/routes.ts", additions: 38, deletions: 6 })).toEqual({
+      dir: "src/auth/",
+      name: "routes.ts",
+      bar: ["add", "add", "add", "add", "del"],
+    });
+    expect(fileShape({ path: "README.md", additions: 0, deletions: 0 }).bar).toEqual(Array(5).fill("none"));
+  });
 });
