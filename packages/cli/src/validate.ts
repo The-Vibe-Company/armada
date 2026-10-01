@@ -39,34 +39,33 @@ async function ensurePhaseLabel(io: Io, config: ArmadaConfig, credentials: Crede
   if (groups.length) await createMissingLabels({ ...state, groups }, opts);
 }
 
+/**
+ * The ticket `validate` names as its first argument: `validate <ticket> "<what>"`,
+ * or `validate <ticket> --message-file <path>`. That is the coordinator's form,
+ * signed in as the terminal; without it (`validate "<what>"`) a worker submits
+ * its own work, signed in with its ticket's session.
+ */
+export function namedTicket(rest: string[], options: Record<string, string>): string | null {
+  const [first, second] = rest;
+  const fromOption = options.message !== undefined || options["message-file"] !== undefined;
+  if (first && (second !== undefined || (fromOption && TICKET.test(first)))) return first.toUpperCase();
+  return null;
+}
+
 export async function validate(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {
   if (a.rest.length > 2) throw new UsageError(`unexpected argument ${a.rest[2]}; quote what to check`);
+  const named = namedTicket(a.rest, a.options);
+  const positional = named ? a.rest[1] : a.rest[0];
   const fromOption = await readMessage(io, a.options);
-  // `validate <ticket> "<what>"`, `validate "<what>"`, or `validate <ticket> --message-file <path>`.
-  const [first, second] = a.rest;
-  const ticketArg = second !== undefined || (fromOption !== null && first && TICKET.test(first)) ? first : undefined;
-  const positional = ticketArg === undefined ? first : second;
   if (positional !== undefined && fromOption !== null)
     throw new UsageError("give what to check once: as an argument, --message or --message-file");
   const what = positional ?? fromOption;
   if (!what?.trim())
     throw new UsageError('validate needs what the owner checks: armada validate "<what to check>" --attach <file|url>');
-  const signIn = credentials.armadaSignIn;
-  const ticket = ticketArg
-    ? ticketArg.toUpperCase()
-    : currentTicket(io, config, a.options.ticket, credentials.workerTickets);
-  const worker = signIn?.kind === "worker";
+  if (named && !TICKET.test(named)) throw new UsageError(`"${named}" is not a ticket id such as ABC-12`);
+  const ticket = named ?? currentTicket(io, config, a.options.ticket, credentials.workerTickets);
+  const worker = !named && credentials.armadaSignIn?.kind === "worker";
   const items = attachList(a.options.attach);
-  const attachments = items.length
-    ? (
-        await attachItems(io, config, credentials, {
-          ticket,
-          items,
-          ...(a.options.caption ? { caption: a.options.caption } : {}),
-          reference: "validation",
-        })
-      ).map((saved) => saved.attachment.id)
-    : [];
   if (worker) await ensurePhaseLabel(io, config, credentials);
   return withContext(io, config, credentials, a.json, (ctx) =>
     submitValidation(ctx, {
@@ -74,7 +73,19 @@ export async function validate(io: Io, config: ArmadaConfig, credentials: Creden
       kind: "validation",
       what,
       choices: parseChoices(a.options.choices),
-      attachments,
+      attachments: [],
+      // Uploaded once every check passed: a refused submission leaves nothing behind.
+      upload: async () =>
+        items.length
+          ? (
+              await attachItems(io, config, credentials, {
+                ticket,
+                items,
+                ...(a.options.caption ? { caption: a.options.caption } : {}),
+                reference: "validation",
+              })
+            ).map((saved) => saved.attachment.id)
+          : [],
       worker,
     }),
   );

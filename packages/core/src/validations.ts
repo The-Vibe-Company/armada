@@ -128,12 +128,12 @@ export type MergeApproval =
 /**
  * The newest merge approval asked for pull request `pr`. Approved counts only
  * for the head the owner saw, or for a head that is that one with only the
- * base branch merged in (`sameAs`, what `armada merge` proved of the head).
+ * base branch merged in (`sameAs`: the commits `armada merge` proved the head stands for).
  */
 export function mergeApproval(
   validations: readonly Validation[],
   pr: number,
-  head: { sha: string; sameAs: string | null },
+  head: { sha: string; sameAs: readonly string[] },
 ): MergeApproval {
   const asked = validations
     .filter((v) => v.kind === "merge" && v.pr?.number === pr && v.decision?.outcome !== "superseded")
@@ -143,7 +143,7 @@ export function mergeApproval(
   if (!d) return { state: "pending", validation: asked };
   if (d.outcome !== "approved") return { state: "changes", validation: asked };
   const approved = asked.pr.headSha;
-  if (head.sha !== approved && head.sameAs !== approved) return { state: "stale", validation: asked };
+  if (head.sha !== approved && !head.sameAs.includes(approved)) return { state: "stale", validation: asked };
   return { state: "approved", validation: asked, decision: d };
 }
 

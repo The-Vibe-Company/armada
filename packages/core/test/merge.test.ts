@@ -630,6 +630,25 @@ describe("the owner's merge approval (THE-885)", () => {
     ]);
   });
 
+  test("unreadable approvals refuse a merge the rule covers; an approval asked holds a pull request no ticket owns too", async () => {
+    const down = setup({
+      live: tempFleet({ fail: (op) => (op === "validations" ? new Error("connection reset") : null) }),
+      toml: `${GATES}${RULE}`,
+    });
+    expect(await refusal(mergePullRequest(down.ctx, { pr: 9, reason: "CLI only" }))).toBe(
+      "#9 (DEMO-7) cannot be merged: the owner's approvals of #9 could not be read (Armada (armada.example.test) unreachable: connection reset)\nNext: armada merge 9 again once Armada answers",
+    );
+    expect(down.forge.merges).toEqual([]);
+
+    const live = tempFleet();
+    const s = setup({ live });
+    await askOwnerToMerge(s.ctx, { pr: 9, reason: "a release that changes the landing" });
+    s.forge.pr.headRef = "release-please--branches--main";
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toStartWith(
+      "#9 cannot be merged: the owner has not decided on the merge of #9 yet",
+    );
+  });
+
   test("a new head needs a new approval", async () => {
     const live = tempFleet();
     const s = setup({ live });

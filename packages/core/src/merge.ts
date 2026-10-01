@@ -212,7 +212,15 @@ const stateLine = (pull: MergePull) =>
  * --no-ticket, the first head read) with `updates` merge commits that only
  * bring in the base; `why` says what disproved it.
  */
-export type Lineage = { from: string; updates: number; why: null } | { from: string; updates: null; why: string };
+export type Lineage =
+  | {
+      from: string;
+      updates: number;
+      why: null;
+      /** The commits walked, the head first and `from` last: each is `from` with only the base merged in. */
+      chain?: string[];
+    }
+  | { from: string; updates: null; why: string };
 
 export interface ChecklistInput {
   pull: MergePull;
@@ -572,8 +580,10 @@ async function lineageOf(ctx: MergeContext, pull: MergePull, from: string, run: 
   try {
     const lineage = await (async (): Promise<Lineage> => {
       let sha = pull.headSha;
+      const chain: string[] = [];
       for (let updates = 0; ; updates++) {
-        if (sha === from) return { from, updates, why: null };
+        chain.push(sha);
+        if (sha === from) return { from, updates, why: null, chain };
         if (updates >= MAX_UPDATES) return fail(`more than ${MAX_UPDATES} merge commits stand on it`);
         const commit = await ctx.forge.commit(sha);
         const [first, second] = commit?.parents ?? [];
@@ -675,6 +685,8 @@ interface Checked {
   warnings: string[];
   /** How the merge was decided (THE-885), for the ticket and the dashboard; null with --no-ticket. */
   decided?: string | null;
+  /** The commits the head stands for: itself, and those it is with only the base merged in. */
+  chain?: string[];
 }
 
 /** Every checklist rule, the base-branch rule (with a test merge when allowed) and the hints. */
@@ -731,7 +743,8 @@ async function checklist(ctx: MergeContext, input: MergeInput, run: Run): Promis
     `Checklist passed for ${label(pull, ticket)}: ${head}, ${pull.mergeStateStatus}, checks green, no open review thread.`,
     ...l.notes,
   );
-  return { pull, ticket, sha: pull.headSha, updatedFrom, baseSha: cmp?.baseSha ?? null, lines, hints, warnings };
+  const chain = [pull.headSha, ...(l.lineage?.why === null ? (l.lineage.chain ?? [l.lineage.from]) : [])];
+  return { pull, ticket, sha: pull.headSha, updatedFrom, baseSha: cmp?.baseSha ?? null, lines, hints, warnings, chain };
 }
 
 const indent = (text: string) =>
@@ -797,47 +810,59 @@ async function ownerDecision(
   c: Checked,
   dryRun: boolean,
 ): Promise<{ lines: string[]; decided: string | null }> {
-  if (!c.ticket) return { lines: [], decided: null };
-  const rule = ctx.config.policy.mergeApproval ?? null;
-  const reason = input.reason?.replace(/\s+/g, " ").trim() || null;
   const n = c.pull.number;
+  // The rule judges a ticket's merge; a pull request no ticket owns (a release) is still held by an approval asked for it.
+  const rule = c.ticket ? (ctx.config.policy.mergeApproval ?? null) : null;
+  const reason = input.reason?.replace(/\s+/g, " ").trim() || null;
   const lines = rule ? [`Merge rule (armada.toml [policy] merge_approval): "${rule}"`] : [];
   let approval: MergeApproval = { state: "none" };
+  let unreadable: string | null = null;
   const { fleet, warning } = await ctx.fleet();
   try {
-    if (fleet) approval = mergeApproval(await fleet.validations({ pr: n }), n, { sha: c.sha, sameAs: c.updatedFrom });
-    else if (rule) c.warnings.push(`the owner's approvals could not be read (${warning ?? "not signed in to Armada"})`);
+    if (fleet) approval = mergeApproval(await fleet.validations({ pr: n }), n, { sha: c.sha, sameAs: c.chain ?? [] });
+    else unreadable = warning ?? "not signed in to Armada";
   } catch (err) {
-    c.warnings.push(`the owner's approvals could not be read (${err instanceof Error ? err.message : String(err)})`);
+    unreadable = err instanceof Error ? err.message : String(err);
   }
   const link = (v: Validation) => approvalUrl(ctx.appUrl ?? null, v.id);
   const judge = `armada merge ${n} --reason "<why it may merge on its own>", or armada merge ${n} --ask-owner --reason "<why the owner must see it>"`;
   let problem: string | null = null;
   let next = "";
   let decided: string | null = null;
-  if (approval.state === "approved") decided = decidedLine(approval.decision);
+  if (unreadable && rule) {
+    // An approval the owner gave or refused cannot be checked: never merge past it.
+    problem = `the owner's approvals of #${n} could not be read (${unreadable})`;
+    next = `armada merge ${n} again once Armada answers`;
+  } else if (approval.state === "approved") decided = decidedLine(approval.decision);
   else if (approval.state === "pending") {
     problem = `the owner has not decided on the merge of #${n} yet (asked ${approval.validation.createdAt}): ${link(approval.validation)}`;
     next = "armada inbox --wait: the owner's decision arrives there";
   } else if (approval.state === "changes") {
     const d = approval.validation.decision;
     problem = `the owner requested changes on #${n}${d?.note ? `: ${d.note}` : ""}`;
-    next = `armada answer --note ${c.ticket.id} "<the owner's changes>", once you told its worker; then armada merge ${n} --ask-owner again on its next hand-back`;
+    next = c.ticket
+      ? `armada answer --note ${c.ticket.id} "<the owner's changes>", once you told its worker; then armada merge ${n} --ask-owner again on its next hand-back`
+      : `armada merge ${n} --ask-owner --reason "<why>" once the changes are made`;
   } else if (approval.state === "stale") {
     problem = `the owner approved #${n} at ${approval.validation.pr?.headSha}, but its head is now ${c.sha}: a new head needs a new approval`;
     next = `armada merge ${n} --ask-owner --reason "<why the owner must see it>"`;
   } else if (rule && !reason) {
     problem = `the merge rule asks you to judge #${n}: look at its files and what users will see, and record why`;
     next = judge;
-  } else
+  } else if (c.ticket)
     decided = rule
       ? `merged on its own (rule: ${rule})${reason ? `: ${reason}` : ""}`
       : `merged on its own (no merge rule)${reason ? `: ${reason}` : ""}`;
+  // Signed out with no rule, nothing could have been asked from here: no warning.
+  if (unreadable && !rule && fleet)
+    c.warnings.push(
+      `the owner's approvals of #${n} could not be read (${unreadable}); none is required without a merge rule`,
+    );
   if (problem) {
     if (dryRun) return { lines: [...lines, `Not mergeable yet: ${problem}`, `Next: ${next}`], decided: null };
-    throw new Refusal(`#${n} (${c.ticket.id}) cannot be merged: ${problem}`, next);
+    throw new Refusal(`#${n}${c.ticket ? ` (${c.ticket.id})` : ""} cannot be merged: ${problem}`, next);
   }
-  return { lines: [...lines, `Decided: ${decided}.`], decided };
+  return { lines: decided ? [...lines, `Decided: ${decided}.`] : lines, decided };
 }
 
 /**

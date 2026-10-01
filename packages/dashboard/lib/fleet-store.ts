@@ -977,6 +977,8 @@ export const validationRow = (r: Row): Validation => ({
 /** Adds a validation; the open one it repeats is superseded in the same transaction. */
 export async function addValidation(db: Database, v: Parameters<FleetStore["addValidation"]>[0]): Promise<Validation> {
   return transaction(db, async (tx) => {
+    // One submission at a time per project: the supersede and the insert never race into the unique indexes.
+    await tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`validations:${v.project}`]);
     if (v.kind === "merge" && v.pr)
       await tx.query(
         `UPDATE validations SET decided_at = $3, outcome = 'superseded'
@@ -1018,7 +1020,7 @@ export async function listValidations(
     `SELECT ${VALIDATION_COLUMNS} FROM validations
      WHERE project = $1 AND ($2::text IS NULL OR ticket = $2) AND ($3::bigint IS NULL OR pr_number = $3)
        AND (decided_at IS NULL OR $4::timestamptz IS NULL OR decided_at >= $4)
-     ORDER BY created_at DESC, id DESC LIMIT 200`,
+     ORDER BY decided_at IS NULL DESC, created_at DESC, id DESC LIMIT 200`,
     [q.project, q.ticket ?? null, q.pr ?? null, q.decidedSince ?? null],
   );
   return rs.rows.map(validationRow);

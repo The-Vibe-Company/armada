@@ -32,7 +32,7 @@ import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
-import { askOwner, done, validate } from "./validate.ts";
+import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
 
@@ -572,12 +572,15 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { path, text } = await findConfig(io, args.config, args.command);
       const config = parseConfig(text, path);
       const command = args.command;
-      const scope = WORKER_COMMANDS.has(command)
+      // `validate <ticket> "<what>"` is the coordinator's form: the terminal's sign-in, never a worker session.
+      const workerScope =
+        WORKER_COMMANDS.has(command) && !(command === "validate" && namedTicket(args.rest, args.options));
+      const scope = workerScope
         ? {
             command,
             project: config.project.slug,
             ticket: (stored: string[]) =>
-              command === "claim" || (command === "validate" && args.rest.length === 2)
+              command === "claim"
                 ? (args.rest[0]?.toUpperCase() ?? null)
                 : currentTicket(io, config, args.options.ticket, stored),
           }

@@ -26,6 +26,8 @@ export interface SubmitInput {
   choices: string[] | null;
   /** Attachments already uploaded for it (THE-886). */
   attachments: string[];
+  /** Uploads more attachments once every check passed, so a refused submission uploads nothing; their ids. */
+  upload?: () => Promise<string[]>;
   /** The worker of the ticket submits its own work: its phase becomes awaiting-validation. */
   worker: boolean;
 }
@@ -63,6 +65,7 @@ export async function submitValidation(ctx: WorkerContext, input: SubmitInput): 
       `the owner validates on Armada, which this terminal cannot reach (${warning ?? "not signed in"}); nothing was sent`,
       "armada login, then the same command again",
     );
+  const uploaded = input.upload ? await input.upload() : [];
   const { validation, url } = await fleet.validate({
     ticket: ticket.id,
     kind: input.kind,
@@ -70,7 +73,7 @@ export async function submitValidation(ctx: WorkerContext, input: SubmitInput): 
     reason: null,
     choices: input.choices,
     pr: null,
-    attachments: input.attachments,
+    attachments: [...input.attachments, ...uploaded],
   });
   const [first = "", ...rest] = what.split("\n");
   if (input.worker) {
@@ -126,7 +129,8 @@ export async function closeValidated(
       "armada login, then the same command again",
     );
   const v = lastValidation(await fleet.validations({ ticket: ticket.id }), ticket.id);
-  if (v?.decision?.outcome !== "approved")
+  // Approved, or one of the choices it was sent with picked.
+  if (v?.decision?.outcome !== "approved" && v?.decision?.outcome !== "answered")
     throw new Refusal(
       v
         ? `${ticket.id}'s validation #${v.id} is ${v.decision ? decidedLine(v.decision) : "still waiting for the owner"}: only an approved one closes the ticket`

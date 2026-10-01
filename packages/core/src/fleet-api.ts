@@ -397,6 +397,8 @@ export async function serveFleet(
             slug,
             {
               ...input,
+              // A worker shows its own work: the pull request card and the reason are the coordinator's to give.
+              ...(caller.kind === "worker" ? { pr: null, reason: null } : {}),
               worker: caller.kind === "worker",
               author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
             },

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
+import { answerItem } from "../src/inbox.ts";
 import { serveInbox } from "../src/live.ts";
 import { requestDecision } from "../src/requests.ts";
 import { closeValidated, submitValidation } from "../src/validate.ts";
@@ -88,6 +89,20 @@ describe("armada validate", () => {
       "Armada refused: fleet validate: a worker session only asks the owner to validate its work (kind validation)",
     );
     expect(live.store.validations).toEqual([]);
+    // Its own validation carries no pull request card or reason it could invent.
+    const pr = {
+      number: 9,
+      url: "https://github.com/acme/widgets/pull/9",
+      title: "x",
+      headSha: "a".repeat(40),
+      files: null,
+      additions: null,
+      deletions: null,
+      ci: "success" as const,
+      preview: "https://elsewhere.example.test",
+    };
+    await live.fleet.validate({ ...v, ticket: "DEMO-7", pr, reason: "the rule says so" });
+    expect(live.store.validations).toMatchObject([{ ticket: "DEMO-7", pr: null, reason: null }]);
   });
 });
 
@@ -137,6 +152,33 @@ describe("the owner's decision", () => {
     ]);
     // Decided once: a second click, or another viewer, is refused.
     await expect(decide("On for everyone")).rejects.toThrow("was already decided");
+  });
+});
+
+describe("armada answer", () => {
+  test("records what the coordinator did with the owner's decision, and closes it", async () => {
+    const live = tempFleet();
+    const { linear, ctx } = setup(live);
+    linear.add("DEMO-7");
+    const { validation } = await submitValidation(ctx, {
+      ticket: "DEMO-7",
+      kind: "validation",
+      what: "The card",
+      choices: null,
+      attachments: [],
+      worker: false,
+    });
+    const item = await requestDecision(live.store, {
+      project: "widgets",
+      id: validation?.id ?? 0,
+      action: "changes",
+      note: "Softer shadow",
+      author: "Ada",
+      now: NOW,
+    });
+    const out = await answerItem(ctx, { target: String(item), text: "relayed to the worker" });
+    expect(out.lines).toEqual([`Inbox item #${item} resolved.`]);
+    expect(live.store.items.find((i) => i.id === item)?.resolution).toBe("relayed to the worker");
   });
 });
 
@@ -256,10 +298,13 @@ describe("a merge approval", () => {
 
   test("counts for the head the owner saw, or that head with only the base merged in", () => {
     const approved = [asked()];
-    expect(mergeApproval(approved, 9, { sha: "a".repeat(40), sameAs: null }).state).toBe("approved");
-    expect(mergeApproval(approved, 9, { sha: "b".repeat(40), sameAs: "a".repeat(40) }).state).toBe("approved");
-    expect(mergeApproval(approved, 9, { sha: "b".repeat(40), sameAs: null }).state).toBe("stale");
-    expect(mergeApproval(approved, 8, { sha: "a".repeat(40), sameAs: null }).state).toBe("none");
-    expect(mergeApproval([asked({ decision: null })], 9, { sha: "a".repeat(40), sameAs: null }).state).toBe("pending");
+    expect(mergeApproval(approved, 9, { sha: "a".repeat(40), sameAs: [] }).state).toBe("approved");
+    expect(
+      mergeApproval(approved, 9, { sha: "b".repeat(40), sameAs: ["b".repeat(40), "c".repeat(40), "a".repeat(40)] })
+        .state,
+    ).toBe("approved");
+    expect(mergeApproval(approved, 9, { sha: "b".repeat(40), sameAs: [] }).state).toBe("stale");
+    expect(mergeApproval(approved, 8, { sha: "a".repeat(40), sameAs: [] }).state).toBe("none");
+    expect(mergeApproval([asked({ decision: null })], 9, { sha: "a".repeat(40), sameAs: [] }).state).toBe("pending");
   });
 });
