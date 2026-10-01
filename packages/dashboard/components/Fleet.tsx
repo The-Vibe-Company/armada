@@ -285,6 +285,12 @@ function ProjectCard({ t, overview, slug }: { t: Strings; overview: FleetOvervie
       <Fact label={t.overview.coordinatorKey}>
         <Dot color={coordColor} size={6} />
         {harness ? HARNESS_NAME[harness] : t.shell.coordinatorUnknown}
+        {/* The dot's color in words (THE-891): seen when the coordinator is not at work. */}
+        {p.coordinator.state === "active" ? (
+          <span className="sr-only"> · {t.a11y.coordinator.active}</span>
+        ) : (
+          harness && ` · ${t.a11y.coordinator[p.coordinator.state]}`
+        )}
       </Fact>
       <Fact label={t.overview.agentsKey}>{t.overview.agents(facts.inFlight, facts.ready)}</Fact>
       <Fact label={t.overview.prsKey}>{facts.prs ? t.overview.prs(facts.prs.open, facts.prs.green) : "—"}</Fact>
@@ -334,8 +340,8 @@ function LiveLine({
   const oldest = readings.length ? Math.min(...readings.map((r) => Date.parse(r))) : null;
   return (
     <span className="refresh">
-      {/* Only the source state is announced; the ticking "checked" text is not. */}
-      <span className={`source is-${state}`} role="status">
+      {/* Read, not announced: the shell's one live region says what changed (THE-891). */}
+      <span className={`source is-${state}`}>
         <span className={`dot ${state === "ok" ? "live" : ""}`} />
         {label}
       </span>

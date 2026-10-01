@@ -56,14 +56,42 @@ export interface RequestSteps {
 }
 
 /** Runs one request optimistically; keeps its error code when refused. The clicked button's name and value are in the form. */
+/**
+ * When a form gives way to what it sent (or to its refusal), the focus would
+ * fall to the page: it goes to the card's or row's status line instead, so a
+ * keyboard or a screen reader stays where it was (THE-891).
+ */
+function keepFocus(form: HTMLElement) {
+  // The card or row may leave with what it asked (an answered question), once
+  // the server has answered: then its section's heading. Checked until then.
+  const hosts = [form.closest<HTMLElement>(".ui-card, .ui-row"), form.closest<HTMLElement>(".ui-section")];
+  const rescue = () => {
+    const lost = !document.activeElement || document.activeElement === document.body;
+    const host = hosts.find((h) => h?.isConnected);
+    if (!lost || !host) return;
+    const target =
+      host.querySelector<HTMLElement>("[role='status'], [role='alert']") ??
+      (host.matches(".ui-section") ? host.querySelector<HTMLElement>(".ui-section-label") : null) ??
+      host;
+    if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+    target.focus({ preventScroll: true });
+  };
+  for (const ms of FOCUS_CHECKS_MS) setTimeout(rescue, ms);
+}
+
+/** When `keepFocus` looks again: the next frame, then while the server answers and the overview follows. */
+const FOCUS_CHECKS_MS = [16, 500, 1_500, 3_000, 6_000];
+
 export function useRequest(send: (form: FormData) => Promise<RequestResult>, steps: RequestSteps) {
   const [busy, start] = useTransition();
   const [error, setError] = useState<RequestError | null>(null);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter);
+    const element = event.currentTarget;
+    const form = new FormData(element, (event.nativeEvent as SubmitEvent).submitter);
     setError(null);
     steps.start(form);
+    keepFocus(element);
     start(async () => {
       const result: RequestResult = await send(form).catch(() => ({
         ok: false as const,
@@ -74,6 +102,7 @@ export function useRequest(send: (form: FormData) => Promise<RequestResult>, ste
       else {
         steps.undo();
         setError(result.code);
+        keepFocus(element);
       }
     });
   };

@@ -1,7 +1,9 @@
 "use client";
 
 // ⌘K: go to an agent, a project, a ticket ready to start or a section. Reads
-// the polled overview only; ↑/↓ choose, Enter opens, Esc closes.
+// the polled overview only; ↑/↓ choose, Enter opens, Esc closes. The focus
+// stays in its field while it is open, and goes back where it was when it
+// closes (THE-891).
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { filterSearch, type SearchItem, searchItems } from "@/lib/fleet-view";
@@ -39,7 +41,13 @@ export function Palette({ onClose }: { onClose: () => void }) {
   const items = useMemo(() => filterSearch(all, query, { navWords }), [all, query, navWords]);
   const at = Math.min(index, Math.max(0, items.length - 1));
 
-  useEffect(() => input.current?.focus(), []);
+  useEffect(() => {
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    input.current?.focus();
+    return () => {
+      if (opener?.isConnected) opener.focus();
+    };
+  }, []);
 
   const go = (item: SearchItem | undefined) => {
     if (!item) return;
@@ -62,6 +70,10 @@ export function Palette({ onClose }: { onClose: () => void }) {
             e.preventDefault();
             e.stopPropagation();
             onClose();
+          } else if (e.key === "Tab") {
+            // Its field is its only stop: the focus stays in the dialog.
+            e.preventDefault();
+            input.current?.focus();
           } else if (e.key === "ArrowDown") {
             e.preventDefault();
             setIndex(Math.min(items.length - 1, at + 1));
