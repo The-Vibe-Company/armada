@@ -2075,7 +2075,7 @@ a.ui-row:hover {
 .sc-step-labels .is-now {
   color: var(--text);
 }
-.sc-key {
+.ui-row.sc-key {
   flex-wrap: wrap;
   gap: 6px 12px;
   padding-top: 10px;
