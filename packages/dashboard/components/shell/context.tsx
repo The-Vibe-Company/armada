@@ -7,7 +7,7 @@
 // runs when nobody looks). Each poll names the overview it holds, and the
 // server answers 304 while nothing changed. Pages render from this context,
 // so moving between them never waits for the server.
-import type { FleetOverview } from "@armada/core/read";
+import type { FleetOverview, FleetTimeline } from "@armada/core/read";
 import { useRouter } from "next/navigation";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DENSITY_COOKIE, type Density } from "@/lib/fleet-view";
@@ -42,6 +42,8 @@ export interface Fleet {
   /** Bumped by every answered poll, 304 included. */
   version: number;
   refresh: () => void;
+  /** The live timeline's history when it is given (ShowcaseProvider); the timeline reads it from the server otherwise. */
+  timeline?: FleetTimeline;
 }
 
 export interface Shell {
@@ -227,6 +229,57 @@ export function FleetProvider({
     [lang, density, account, canLogOut, author, router],
   );
 
+  return (
+    <ShellContext.Provider value={shell}>
+      <FleetContext.Provider value={fleet}>
+        <NowContext.Provider value={now}>{children}</NowContext.Provider>
+      </FleetContext.Provider>
+    </ShellContext.Provider>
+  );
+}
+
+/**
+ * A fleet shown, not polled (the landing's replica, THE-887): the overview, the
+ * time and the viewer it is given, in English. The dashboard's own components
+ * render inside it as they do in the shell.
+ */
+export function ShowcaseProvider({
+  overview,
+  now,
+  account = null,
+  children,
+}: {
+  overview: FleetOverview;
+  now: number;
+  account?: Account | null;
+  children: ReactNode;
+}) {
+  const shell = useMemo<Shell>(
+    () => ({
+      t: STRINGS.en,
+      lang: "en",
+      setLanguage: () => {},
+      density: "compact",
+      setDensity: () => {},
+      account,
+      canLogOut: false,
+      author: account?.name ?? "",
+      setAuthor: () => {},
+    }),
+    [account],
+  );
+  const fleet = useMemo<Fleet>(
+    () => ({
+      overview,
+      checkedAt: now,
+      failed: false,
+      pending: false,
+      version: 0,
+      refresh: () => {},
+      timeline: overview.timeline ?? { rows: [], coordinators: [] },
+    }),
+    [overview, now],
+  );
   return (
     <ShellContext.Provider value={shell}>
       <FleetContext.Provider value={fleet}>

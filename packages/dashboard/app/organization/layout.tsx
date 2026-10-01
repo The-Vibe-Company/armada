@@ -1,3 +1,4 @@
+import { DocumentLanguage } from "@/components/DocumentLanguage";
 import { Shell } from "@/components/shell/Shell";
 import { requireFleetAccess } from "@/lib/access";
 import { shellProps } from "@/lib/shell-server";
@@ -8,5 +9,10 @@ export const dynamic = "force-dynamic";
 
 export default async function OrganizationLayout({ children }: { children: React.ReactNode }) {
   const access = await requireFleetAccess();
-  return <Shell {...(await shellProps(access))}>{children}</Shell>;
+  return (
+    <>
+      <DocumentLanguage />
+      <Shell {...(await shellProps(access))}>{children}</Shell>
+    </>
+  );
 }

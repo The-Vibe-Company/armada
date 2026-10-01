@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Armada core: armada.toml, Linear and GitHub read adapters and the fleet derivations.",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./read": "./src/read.ts"

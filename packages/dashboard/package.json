@@ -12,7 +12,8 @@
     "demo:seed": "bun scripts/demo.ts seed",
     "demo:report": "bun scripts/demo.ts report",
     "db": "bun scripts/db.ts",
-    "icons": "bun scripts/icons.ts"
+    "icons": "bun scripts/icons.ts",
+    "landing": "bun scripts/landing.ts"
   },
   "dependencies": {
     "@armada/core": "workspace:*",

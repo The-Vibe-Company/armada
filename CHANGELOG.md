@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.21](https://github.com/The-Vibe-Company/armada/compare/v0.2.20...v0.2.21) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** a living landing page for signed-out visitors ([#104](https://github.com/The-Vibe-Company/armada/issues/104)) ([79d6c37](https://github.com/The-Vibe-Company/armada/commit/79d6c37c97d72c244ef091b5ad7fde1cbdf4235f))
+
+## [0.2.20](https://github.com/The-Vibe-Company/armada/compare/v0.2.19...v0.2.20) (2026-10-01)
+
+
+### Features
+
+* **cli:** keep workers alive with background heartbeats ([#105](https://github.com/The-Vibe-Company/armada/issues/105)) ([02e103f](https://github.com/The-Vibe-Company/armada/commit/02e103f9d59e65d71eed87500d6bdc90c4ae47b7))
+
 ## [0.2.19](https://github.com/The-Vibe-Company/armada/compare/v0.2.18...v0.2.19) (2026-10-01)
 
 

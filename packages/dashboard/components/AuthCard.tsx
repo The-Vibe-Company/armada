@@ -5,6 +5,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { DocumentLanguage } from "./DocumentLanguage";
 import { Logo } from "./shell/Logo";
 
 export function AuthCard({
@@ -20,6 +21,7 @@ export function AuthCard({
 }) {
   return (
     <main className="au">
+      <DocumentLanguage />
       <div className="au-column">
         <Link href="/" className="au-brand">
           <Logo size={22} />
