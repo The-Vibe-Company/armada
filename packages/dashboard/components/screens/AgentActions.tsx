@@ -1,10 +1,10 @@
 "use client";
 
-// The requests an agent's page makes beyond answering (THE-869): ask the
-// coordinator to merge a hand-back, to change a plan, to release the ticket.
-// Like the overview's actions (../Actions.tsx), each only drops a request in
-// the coordinator's inbox; it shows as pending until the coordinator resolves
-// it, from the click on, and comes back with the reason if refused.
+// The request an agent's page makes beyond the overview's decisions
+// (THE-869): ask the coordinator to release the ticket. Like the overview's
+// actions (../Actions.tsx, DecisionCard.tsx), it only drops a request in the
+// coordinator's inbox; it shows as pending until the coordinator resolves it,
+// from the click on, and comes back with the reason if refused.
 import type { CoordinatorState, InboxItem } from "@armada/core/read";
 import { useRef, useState } from "react";
 import type { RequestResult } from "@/lib/requests";
@@ -22,26 +22,21 @@ export function RequestAction({
   pending: recorded,
   coordinator,
   hint,
-  text,
-  primary = false,
   className,
 }: {
   ctx: ActionContext;
-  /** The button: "Ask to merge". */
+  /** The button: "Ask to release the ticket". */
   label: string;
-  /** What the pending note says was asked: "Merge asked". */
+  /** What the pending note says was asked: "Release asked". */
   what: string;
   send: (form: FormData) => Promise<RequestResult>;
-  /** The form's hidden fields: project, ticket, pr, question. */
+  /** The form's hidden fields: project, ticket. */
   fields: Record<string, string | number>;
   /** The open request of this kind, from the overview. */
   pending: Pick<InboxItem, "author" | "createdAt"> | null;
   coordinator: CoordinatorState;
   /** What confirming does, shown before the confirm button. */
   hint?: string;
-  /** A text the request carries (the changes to a plan): its label and placeholder. */
-  text?: { label: string; placeholder: string };
-  primary?: boolean;
   className?: string;
 }) {
   const { t } = ctx;
@@ -76,12 +71,7 @@ export function RequestAction({
   if (!ctx.live) return null;
   if (!open)
     return (
-      <button
-        ref={opener}
-        type="button"
-        className={`btn ${primary ? "is-primary" : "is-soft"} ${className ?? ""}`}
-        onClick={() => setOpen(true)}
-      >
+      <button ref={opener} type="button" className={`btn is-soft ${className ?? ""}`} onClick={() => setOpen(true)}>
         {label}
       </button>
     );
@@ -91,28 +81,10 @@ export function RequestAction({
     requestAnimationFrame(() => opener.current?.focus());
   };
   return (
-    <form className="sc-decision-form composer" onSubmit={req.submit}>
+    <form className="sc-request-form composer" onSubmit={req.submit}>
       {Object.entries(fields).map(([name, value]) => (
         <input key={name} type="hidden" name={name} value={value} />
       ))}
-      {text && (
-        <textarea
-          name="text"
-          aria-label={text.label}
-          placeholder={text.placeholder}
-          rows={3}
-          maxLength={4000}
-          required
-          // biome-ignore lint/a11y/noAutofocus: the box opens on the owner's click, to be typed in
-          autoFocus
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              e.currentTarget.form?.requestSubmit();
-            } else if (e.key === "Escape") close();
-          }}
-        />
-      )}
       {hint && <p className="calm">{hint}</p>}
       <ErrorLine t={t} code={req.error} />
       <div className="composer-foot">
@@ -122,7 +94,7 @@ export function RequestAction({
           {t.cancel}
         </button>
         <button type="submit" className="btn is-primary" disabled={req.busy}>
-          {req.busy ? t.sending : text ? t.send : t.shell.agent.confirm}
+          {req.busy ? t.sending : t.shell.agent.confirm}
         </button>
       </div>
     </form>

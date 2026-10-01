@@ -56,13 +56,13 @@ export interface RequestSteps {
   undo: () => void;
 }
 
-/** Runs one request optimistically; keeps its error code when refused. */
+/** Runs one request optimistically; keeps its error code when refused. The clicked button's name and value are in the form. */
 export function useRequest(send: (form: FormData) => Promise<RequestResult>, steps: RequestSteps) {
   const [busy, start] = useTransition();
   const [error, setError] = useState<RequestError | null>(null);
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
+    const form = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter);
     setError(null);
     steps.start(form);
     start(async () => {

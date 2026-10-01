@@ -1,7 +1,7 @@
 // The view rules the shell and the screens share (THE-866): an agent's status,
 // its harness, a project's color, what waits for a decision, the search index
 // and where a page sits. Pure: they read the overview the shell polls.
-import type { FleetOverview, FleetRow, WaitingKind } from "@armada/core/read";
+import type { FleetOverview, FleetRow, WaitingItem, WaitingKind } from "@armada/core/read";
 
 /** An agent's status, as the v4 screens group them: most urgent first. */
 export const AGENT_STATUSES = ["waiting", "error", "silent", "running", "done"] as const;
@@ -115,10 +115,13 @@ export const projectColor = (slug: string): string =>
   PROJECT_PALETTE[fnv1a(slug) % PROJECT_PALETTE.length] ?? PROJECT_PALETTE[0];
 
 /** What the owner decides: answer a question, approve a plan, let a ready pull request merge. */
-export const DECISION_KINDS: readonly WaitingKind[] = ["question", "approval", "hand-back"];
+export const DECISION_KINDS = ["question", "approval", "hand-back"] as const satisfies readonly WaitingKind[];
+export type DecisionKind = (typeof DECISION_KINDS)[number];
 
-export const decisionsOf = (overview: Pick<FleetOverview, "waiting">) =>
-  overview.waiting.filter((w) => DECISION_KINDS.includes(w.kind));
+export const isDecision = (w: WaitingItem): w is WaitingItem & { kind: DecisionKind } =>
+  (DECISION_KINDS as readonly WaitingKind[]).includes(w.kind);
+
+export const decisionsOf = (overview: Pick<FleetOverview, "waiting">) => overview.waiting.filter(isDecision);
 
 /** Sessions per harness, every known harness listed even at zero. */
 export function harnessCounts(rows: Pick<FleetRow, "runtime">[]): Record<Harness, number> {

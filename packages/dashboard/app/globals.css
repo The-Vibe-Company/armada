@@ -2292,13 +2292,7 @@ a.ui-row:hover {
   color: var(--text);
   white-space: pre-wrap;
 }
-.sc-decision-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-.sc-decision-form {
+.sc-request-form {
   align-self: stretch;
   display: flex;
   flex-direction: column;

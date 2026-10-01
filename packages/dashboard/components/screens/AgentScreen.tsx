@@ -15,7 +15,7 @@ import {
 } from "@armada/core/read";
 import { useParams, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { changePlan, mergePullRequest, releaseTicket } from "@/app/actions";
+import { releaseTicket } from "@/app/actions";
 import {
   type AgentState,
   agentState,
@@ -29,7 +29,8 @@ import {
   stepStates,
 } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
-import { type ActionContext, QuestionBlock, splitQuestion } from "../Actions";
+import { decisionCards, handBackPr, sentRequest } from "@/lib/overview-view";
+import { type ActionContext, splitQuestion } from "../Actions";
 import {
   Columns,
   HeaderActions,
@@ -58,6 +59,7 @@ import {
 } from "../ui";
 import { RequestAction } from "./AgentActions";
 import { rowLine, rowProgress } from "./AgentRow";
+import { DecisionActions } from "./DecisionCard";
 
 /** A key and its value, as a static row. */
 function Fact({ k, children, color }: { k: ReactNode; children: ReactNode; color?: string }) {
@@ -323,83 +325,36 @@ function Decision({
   const { overview } = useFleet();
   const name = project?.name ?? row.project;
   const coordinator = project?.coordinator.state ?? "unknown";
-  const waiting = overview.waiting.find((w) => w.project === row.project && w.ticket === row.id);
+  // The overview's decision on this ticket, with the overview card's actions.
+  const decision = decisionCards(overview).find((w) => w.project === row.project && w.ticket === row.id);
   const head = (text: string, color: string, since: string | null) => ({
     icon: <Dot color={color} />,
     label: <span style={{ color }}>{text}</span>,
     side: since ? <RelativeTime at={since} /> : undefined,
   });
 
-  if (row.question)
+  if (decision) {
+    const pr = decision.kind === "hand-back" ? handBackPr(overview, decision) : null;
+    const title =
+      decision.kind === "question"
+        ? a.waitsAnswer(row.id)
+        : decision.kind === "approval"
+          ? a.planToApprove
+          : t.shell.reasons.ready;
+    const color = decision.kind === "hand-back" ? "var(--done)" : "var(--accent)";
     return (
-      <Section {...head(a.waitsAnswer(row.id), "var(--accent)", row.question.at)}>
+      <Section {...head(title, color, decision.since)}>
         <SectionBody>
-          <QuestionBlock
+          <DecisionActions
             ctx={ctx}
-            project={row.project}
-            ticket={row.id}
-            item={row.question.id}
-            body={row.question.body}
-            answer={row.question.answer}
+            w={decision}
+            projectName={name}
             coordinator={coordinator}
+            pr={pr}
+            sent={sentRequest(overview, decision, pr)}
+            full
           />
-          <p className="calm">{a.relays(name)}</p>
-        </SectionBody>
-      </Section>
-    );
-  if (state.reason === "approval" && waiting?.kind === "approval") {
-    const item = waiting.item;
-    return (
-      <Section {...head(a.planToApprove, "var(--accent)", waiting.since)}>
-        <SectionBody>
-          <QuestionBlock
-            ctx={ctx}
-            project={row.project}
-            ticket={row.id}
-            item={item}
-            body={waiting.detail ?? row.statusLine?.summary ?? ""}
-            answer={waiting.answer}
-            coordinator={coordinator}
-            approval
-          />
-          {item !== null && !waiting.answer && (
-            <RequestAction
-              ctx={ctx}
-              label={a.askChanges}
-              what={a.requests["plan-changes"]}
-              send={changePlan}
-              fields={{ project: row.project, question: item }}
-              pending={openRequest(project, "plan-changes", (i) => i.request?.question === item)}
-              coordinator={coordinator}
-              text={{ label: a.changesLabel(row.id), placeholder: a.changesPlaceholder }}
-            />
-          )}
-          <p className="calm">{a.relays(name)}</p>
-        </SectionBody>
-      </Section>
-    );
-  }
-  if (state.status === "done") {
-    const pr = row.pr;
-    return (
-      <Section {...head(label, "var(--done)", row.since)}>
-        <SectionBody>
-          <p className="sc-decision-text">{waiting?.detail ?? row.statusLine?.summary ?? ""}</p>
-          <p className="calm">{a.mergeHint(name)}</p>
-          {pr && (
-            <div className="sc-decision-actions">
-              <RequestAction
-                ctx={ctx}
-                label={a.askMerge}
-                what={a.requests["merge-request"]}
-                send={mergePullRequest}
-                fields={{ project: row.project, pr: pr.number }}
-                pending={openRequest(project, "merge-request", (i) => i.request?.pr === pr.number)}
-                coordinator={coordinator}
-                primary
-              />
-            </div>
-          )}
+          <p className="calm">{decision.kind === "hand-back" ? a.mergeHint(name) : a.relays(name)}</p>
         </SectionBody>
       </Section>
     );
