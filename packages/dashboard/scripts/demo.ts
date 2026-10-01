@@ -1,7 +1,7 @@
 // Local demo of the live Fleet view, without any key, in a local PGlite
 // database (.demo/armada), or the Postgres database ARMADA_DEMO_DATABASE_URL
 // names: never ARMADA_DATABASE_URL or DATABASE_URL, which may be production's.
-//   bun run demo:seed [fleet|empty]          fresh local database with the demo activity
+//   bun run demo:seed [fleet|busy|empty]     fresh local database with the demo activity
 //   bun run demo:report <TICKET> <phase> [message]   a worker report, as `armada report` records it
 //   bun scripts/demo.ts ask <TICKET> <question>      a worker question in the coordinator's inbox
 //   bun scripts/demo.ts seen <project>               the coordinator read its inbox
@@ -22,6 +22,7 @@ import {
   demoEvents,
   demoInboxReads,
   projectOfTicket,
+  scenarioOf,
 } from "../lib/demo/world";
 import {
   addInboxItem,
@@ -49,7 +50,7 @@ async function seed(scenario: string) {
   const db = await openDatabase(url);
   for (const p of DEMO_PROJECTS)
     await upsertProject(db, { ...p, owner: DEMO_PROJECT_FACTS[p.slug]?.owner ?? null }, ago(60 * 24));
-  const s = scenario === "empty" ? "empty" : "fleet";
+  const s = scenarioOf(scenario);
   for (const e of demoEvents(s)) {
     const base = { project: e.project, ticket: e.ticket };
     await saveRuntimeHandle(db, {
@@ -81,7 +82,7 @@ async function seed(scenario: string) {
     });
     await recordEvent(db, { ...base, kind: "report", phase: e.phase, message: e.summary, at: ago(e.lastReport) });
   }
-  if (s === "fleet") {
+  if (s !== "empty") {
     for (const i of DEMO_INBOX) {
       const item = { project: i.project, ticket: i.ticket, author: i.author, body: i.body, at: ago(i.ago) };
       if (i.kind === "hand-back") await putHandBack(db, item);

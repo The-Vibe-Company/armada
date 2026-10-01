@@ -40,7 +40,7 @@ test("coordinator activity and inbox reads have separate clocks, reset after sil
     ]);
     await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: false, at: at(51) });
     expect(await getCoordinatorPresence(db, "widgets")).toMatchObject({ startedAt: at(51).toISOString() });
-    expect(await inboxReads(db, "widgets", at(7 * 24 * 60 + 3))).toEqual([]);
+    expect(await inboxReads(db, "widgets", at(25 * 60 + 3))).toEqual([]);
     expect(await getCoordinatorPresence(db, "gadgets")).toBeNull();
   } finally {
     await db.end();

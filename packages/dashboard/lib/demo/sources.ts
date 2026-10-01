@@ -1,12 +1,12 @@
-// Demo mode (ARMADA_DASHBOARD_DEMO=fleet|empty): Linear and GitHub are replaced
+// Demo mode (ARMADA_DASHBOARD_DEMO=fleet|busy|empty): Linear and GitHub are replaced
 // by the synthetic world in ./world; the app's database stays real, usually a
 // local PGlite one (`pglite:` URL) seeded with `bun run demo:seed`. No key is needed.
 import { configTemplate, parseConfig } from "@armada/core/read";
 import type { Sources } from "../fleet-data";
-import { DEMO_PROJECTS, demoSnapshot, type Scenario } from "./world";
+import { DEMO_PROJECTS, demoSnapshot, scenarioOf } from "./world";
 
 export function demoSources(mode: string, real: Sources): Sources {
-  const scenario: Scenario = mode === "empty" ? "empty" : "fleet";
+  const scenario = scenarioOf(mode);
   const find = (repository: string) => {
     const p = DEMO_PROJECTS.find((d) => d.repository === repository);
     if (!p) throw new Error(`${repository} is not a demo project`);

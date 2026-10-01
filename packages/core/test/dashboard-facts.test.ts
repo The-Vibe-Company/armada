@@ -103,7 +103,7 @@ describe("dashboard facts", () => {
       health: null,
       pullRequests: null,
       requests: [],
-      coordinator: { state: "unknown", inboxReads: [] },
+      coordinator: { state: "unknown" },
     });
   });
 });

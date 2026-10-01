@@ -84,6 +84,7 @@ export function AgentsScreen() {
         groups.map((g) => (
           <Section
             key={g.status}
+            id={g.status}
             icon={<StatusDot status={g.status} />}
             label={t.shell.groups[g.status]}
             count={g.rows.length}

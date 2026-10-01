@@ -1,9 +1,10 @@
 // The overview's view rules (THE-867): its headline figures, the decisions
-// waiting for the owner, the problems and each project's card. Pure: they read
-// the overview the shell polls, and never recompute what core decides (health,
-// progress, what waits).
-import type { FleetOverview, InboxItem, WaitingItem } from "@armada/core/read";
-import { agentState, type DecisionKind, decisionsOf, harnessOf, paths } from "./fleet-view";
+// waiting for the owner (THE-880: with the coordinators that stopped answering)
+// and each project's card. Pure: they read the overview the shell polls, and
+// never recompute what core decides (health, progress, what waits, since when
+// an item waits for the coordinator).
+import type { CoordinatorState, FleetOverview, InboxItem, WaitingItem } from "@armada/core/read";
+import { agentState, type DecisionKind, decisionsOf, harnessOf } from "./fleet-view";
 import { lastActivity, prCounts, progressPercent } from "./project-view";
 
 /** A question, a plan or a hand-back: what the owner decides. */
@@ -11,7 +12,7 @@ export type Decision = WaitingItem & { kind: DecisionKind };
 
 export interface OverviewFigures {
   inFlight: number;
-  /** Questions, plans and hand-backs: the sidebar's count. */
+  /** Questions, plans, hand-backs and stopped coordinators: the sidebar's count. */
   decide: number;
   failing: number;
   silent: number;
@@ -25,7 +26,7 @@ export function overviewFigures(o: Pick<FleetOverview, "rows" | "waiting" | "pro
   const states = o.rows.map((r) => agentState(r).status);
   return {
     inFlight: o.rows.length,
-    decide: decisionsOf(o).length,
+    decide: decideCount(o),
     failing: states.filter((s) => s === "error").length,
     silent: states.filter((s) => s === "silent").length,
     coordinators: {
@@ -36,6 +37,38 @@ export function overviewFigures(o: Pick<FleetOverview, "rows" | "waiting" | "pro
     harnesses: new Set(o.rows.map((r) => harnessOf(r.runtime))).size,
   };
 }
+
+/**
+ * A coordinator that stopped answering while items wait for it: only the
+ * owner can bring it back. One per project, from core's `coordinatorSince`
+ * (an item open in its inbox longer than `policy.coordinator_minutes`).
+ */
+export interface CoordinatorAlert {
+  project: string;
+  state: Exclude<CoordinatorState, "active">;
+  /** Its last command; null when it never ran one. */
+  seenAt: string | null;
+  /** The items waiting for it. */
+  waiting: number;
+  /** Since when the oldest of them waits for it. */
+  since: string;
+}
+
+export function coordinatorAlerts(o: Pick<FleetOverview, "projects" | "waiting">): CoordinatorAlert[] {
+  const alerts: CoordinatorAlert[] = [];
+  for (const p of o.projects) {
+    const { state, seenAt } = p.coordinator;
+    if (state === "active") continue;
+    const late = o.waiting.flatMap((w) => (w.project === p.slug && w.coordinatorSince ? [w.coordinatorSince] : []));
+    if (late.length === 0) continue;
+    alerts.push({ project: p.slug, state, seenAt, waiting: late.length, since: late.sort()[0] as string });
+  }
+  return alerts.sort((a, b) => a.since.localeCompare(b.since));
+}
+
+/** What the owner has to decide: the questions, plans and hand-backs, and the coordinators to bring back. */
+export const decideCount = (o: Pick<FleetOverview, "projects" | "waiting">) =>
+  decisionsOf(o).length + coordinatorAlerts(o).length;
 
 /** The decisions the owner makes, oldest first. */
 export const decisionCards = (o: Pick<FleetOverview, "waiting">): Decision[] =>
@@ -88,67 +121,6 @@ export function sentRequest(o: Pick<FleetOverview, "projects">, w: WaitingItem, 
       : w.kind === "hand-back" && r.kind === "merge-request" && pr !== null && r.request?.pr === pr;
   const r = requests.find(match);
   return r ? { body: r.body, author: r.author, at: r.createdAt } : null;
-}
-
-export const PROBLEM_KINDS = ["ci", "conflict", "blocked", "silent", "not-started"] as const;
-export type ProblemKind = (typeof PROBLEM_KINDS)[number];
-
-export interface Problem {
-  kind: ProblemKind;
-  project: string;
-  ticket: string;
-  title: string | null;
-  /** Since when: the phase for a failure, the last report for a silence, the launch for one never started. */
-  since: string;
-  pr: number | null;
-  /** The first failing check of a red CI. */
-  check: string | null;
-  /** The worker's last status, or why a launch shows as not started. */
-  detail: string | null;
-  href: string;
-}
-
-/**
- * What is broken: the agents failing (red CI, conflict with main, blocked) or
- * silent, then the launches no worker claimed. An agent waiting for a decision
- * is a decision, not a problem.
- */
-export function problemsOf(o: Pick<FleetOverview, "rows" | "waiting" | "projects">): Problem[] {
-  const problems: Problem[] = [];
-  for (const r of o.rows) {
-    const { status, reason } = agentState(r);
-    if (status !== "error" && status !== "silent") continue;
-    const kind = reason as ProblemKind;
-    const pullRequest = o.projects
-      .find((p) => p.slug === r.project)
-      ?.pullRequests?.find((pr) => pr.number === r.pr?.number);
-    problems.push({
-      kind,
-      project: r.project,
-      ticket: r.id,
-      title: r.title,
-      since: kind === "silent" ? (r.lastReport ?? r.lastUpdate) : r.since,
-      pr: r.pr?.number ?? null,
-      check: r.pr?.failingChecks?.[0] ?? pullRequest?.failingChecks[0] ?? null,
-      detail: r.statusLine?.summary ?? null,
-      href: paths.agent(r.id),
-    });
-  }
-  for (const w of o.waiting)
-    if (w.kind === "not-started" && w.ticket)
-      problems.push({
-        kind: "not-started",
-        project: w.project,
-        ticket: w.ticket,
-        title: w.title,
-        since: w.since,
-        pr: null,
-        check: null,
-        detail: w.detail,
-        href: paths.project(w.project),
-      });
-  const rank = (k: ProblemKind) => PROBLEM_KINDS.indexOf(k);
-  return problems.sort((a, b) => rank(a.kind) - rank(b.kind) || a.since.localeCompare(b.since));
 }
 
 export interface ProjectFacts {

@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+html,body{margin:0;padding:0;background:#09090b;color:#f0efec;font-family:'Geist',ui-sans-serif,sans-serif;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:#f0efec;text-decoration:none}a:hover{color:#ffffff}
+::selection{background:#b6f15a;color:#09090b}
+@keyframes rise{from{opacity:0;transform:translateY(34px);filter:blur(12px)}to{opacity:1;transform:none;filter:none}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@keyframes livepulse{0%{box-shadow:0 0 0 0 rgba(182,241,90,.55)}70%{box-shadow:0 0 0 8px rgba(182,241,90,0)}100%{box-shadow:0 0 0 0 rgba(182,241,90,0)}}
+@keyframes bluepulse{0%{box-shadow:0 0 0 0 rgba(126,166,255,.6)}70%{box-shadow:0 0 0 7px rgba(126,166,255,0)}100%{box-shadow:0 0 0 0 rgba(126,166,255,0)}}
+@keyframes breathe{50%{opacity:.35}}
+@keyframes sheen{from{background-position:120% 0}to{background-position:-120% 0}}
+@keyframes scrollhint{0%{transform:translateY(-10px);opacity:0}40%{opacity:1}100%{transform:translateY(16px);opacity:0}}
+@keyframes caret{50%{opacity:0}}
+@keyframes popin{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:none}}
+</style>
+</helmet>
+<div ref="{{ rootRef }}" style="background:#09090b;min-height:100vh;overflow-x:clip">
+
+<header style="position:fixed;top:0;left:0;right:0;z-index:50;display:flex;justify-content:center;padding:14px 20px;pointer-events:none">
+  <div style="pointer-events:auto;display:flex;align-items:center;gap:26px;width:100%;max-width:1240px;height:52px;padding:0 8px 0 18px;border-radius:14px;background:rgba(14,14,16,.6);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);border:1px solid rgba(255,255,255,.07);animation:fade 1s ease both">
+    <a href="#top" style="display:flex;align-items:center;gap:10px">
+      <svg width="20" height="20" viewBox="0 0 32 32"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity=".45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity=".45"></path></svg>
+      <span style="font-weight:600;font-size:15px;letter-spacing:-.02em">Armada</span>
+    </a>
+    <nav style="display:flex;gap:22px;font-size:13.5px">
+      <a href="#method" style="color:#a1a1a6" style-hover="color:#f0efec">Method</a>
+      <a href="#fleet" style="color:#a1a1a6" style-hover="color:#f0efec">Fleet</a>
+      <a href="#cli" style="color:#a1a1a6" style-hover="color:#f0efec">CLI</a>
+      <a href="#security" style="color:#a1a1a6" style-hover="color:#f0efec">Security</a>
+    </nav>
+    <span style="flex:1"></span>
+    <a href="https://github.com/The-Vibe-Company/armada" target="_blank" style="font-size:13.5px;color:#a1a1a6;white-space:nowrap" style-hover="color:#f0efec">GitHub ↗</a>
+    <a href="https://github.com/The-Vibe-Company/armada#install" target="_blank" style="display:flex;align-items:center;height:36px;padding:0 16px;border-radius:10px;background:#f0efec;color:#09090b;font-size:13.5px;font-weight:600;white-space:nowrap;transition:background .2s" style-hover="background:#b6f15a;color:#09090b">Install</a>
+  </div>
+</header>
+
+<section id="top" ref="{{ heroRef }}" onMouseMove="{{ onHeroMove }}" onClick="{{ onHeroClick }}" style="position:relative;min-height:100vh;display:flex;align-items:center;overflow:hidden;cursor:crosshair">
+  <canvas ref="{{ canvasRef }}" style="position:absolute;inset:0;width:100%;height:100%;display:block"></canvas>
+  <div ref="{{ spotRef }}" style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(520px circle at 72% 42%, rgba(182,241,90,.08), transparent 62%)"></div>
+  <div style="position:absolute;inset:0;pointer-events:none;background:linear-gradient(90deg,rgba(9,9,11,.92) 0%,rgba(9,9,11,.7) 34%,rgba(9,9,11,0) 72%)"></div>
+  <div style="position:absolute;left:0;right:0;bottom:0;height:240px;pointer-events:none;background:linear-gradient(transparent,#09090b)"></div>
+
+  <div ref="{{ heroInnerRef }}" style="position:relative;width:100%;max-width:1240px;margin:0 auto;padding:150px 28px 140px;display:flex;flex-direction:column;gap:34px;pointer-events:none;will-change:transform,opacity">
+    <a href="#fleet" style="pointer-events:auto;align-self:flex-start;display:flex;align-items:center;gap:10px;height:32px;padding:0 14px 0 8px;border-radius:999px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);font-size:13px;color:#a1a1a6;animation:rise 1s .05s cubic-bezier(.2,.8,.2,1) both" style-hover="border-color:rgba(182,241,90,.45);color:#f0efec">
+      <span style="height:20px;padding:0 8px;display:flex;align-items:center;border-radius:999px;background:#b6f15a;color:#09090b;font-size:11.5px;font-weight:600">New</span>
+      Claude Code harness is live. Codex and boat.dev are next.
+      <span style="color:#6e6e73">→</span>
+    </a>
+    <h1 style="margin:0;max-width:900px;font-size:clamp(52px,8.4vw,112px);line-height:.94;font-weight:600;letter-spacing:-.055em">
+      <span style="display:inline-block;animation:rise 1.1s .15s cubic-bezier(.2,.8,.2,1) both">Run</span>
+      <span style="display:inline-block;animation:rise 1.1s .23s cubic-bezier(.2,.8,.2,1) both">a</span>
+      <span style="display:inline-block;animation:rise 1.1s .31s cubic-bezier(.2,.8,.2,1) both">fleet</span>
+      <span style="display:inline-block;animation:rise 1.1s .39s cubic-bezier(.2,.8,.2,1) both">of</span>
+      <span style="display:inline-block;animation:rise 1.1s .47s cubic-bezier(.2,.8,.2,1) both">coding</span>
+      <span style="display:inline-block;animation:rise 1.1s .55s cubic-bezier(.2,.8,.2,1) both">agents.</span>
+      <span style="display:inline-block;animation:rise 1.1s .7s cubic-bezier(.2,.8,.2,1) both;color:transparent;background:linear-gradient(100deg,#6e6e73 0%,#6e6e73 38%,#f0efec 48%,#b6f15a 52%,#6e6e73 62%,#6e6e73 100%);background-size:250% 100%;-webkit-background-clip:text;background-clip:text">See every move.</span>
+    </h1>
+    <p style="margin:0;max-width:560px;font-size:clamp(16px,1.5vw,19px);line-height:1.55;color:#a1a1a6;text-wrap:pretty;animation:rise 1.1s .85s cubic-bezier(.2,.8,.2,1) both">Armada gives each ticket to one agent, puts a coordinator in charge of every project, and shows the whole fleet live, from the first question to the green merge.</p>
+    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:12px;pointer-events:auto;animation:rise 1.1s 1s cubic-bezier(.2,.8,.2,1) both">
+      <a href="https://github.com/The-Vibe-Company/armada#install" target="_blank" style="display:flex;align-items:center;gap:10px;height:52px;padding:0 24px;border-radius:14px;background:#b6f15a;color:#09090b;font-size:15.5px;font-weight:600;white-space:nowrap;box-shadow:0 10px 40px -10px rgba(182,241,90,.55);transition:transform .2s, box-shadow .2s" style-hover="color:#09090b;transform:translateY(-2px);box-shadow:0 18px 50px -12px rgba(182,241,90,.75)">Install Armada <span style="font-size:18px">→</span></a>
+      <div onClick="{{ copyHero }}" style="display:flex;align-items:center;gap:14px;height:52px;padding:0 10px 0 18px;border-radius:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.1);cursor:pointer;font-family:'Geist Mono',monospace;font-size:14px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)" style-hover="border-color:rgba(255,255,255,.22)">
+        <span style="color:#6e6e73">$</span>
+        <span style="white-space:nowrap">npx @the-vibe-company/armada status</span>
+        <span style="height:32px;min-width:74px;padding:0 12px;display:grid;place-items:center;border-radius:9px;background:rgba(255,255,255,.07);font-family:'Geist',sans-serif;font-size:12.5px;font-weight:500;color:{{ heroCopyColor }}">{{ heroCopyLabel }}</span>
+      </div>
+    </div>
+    <span style="font-size:12.5px;color:#6e6e73;animation:fade 1.4s 1.3s both">Node 22 or later · Open source · Click anywhere to launch a new formation</span>
+  </div>
+
+  <div style="position:absolute;left:50%;bottom:34px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:10px;font-family:'Geist Mono',monospace;font-size:10.5px;letter-spacing:.2em;color:#6e6e73;pointer-events:none;animation:fade 1s 1.6s both">
+    SCROLL
+    <span style="width:1px;height:34px;position:relative;overflow:hidden;background:rgba(255,255,255,.08)"><span style="position:absolute;left:0;top:0;width:1px;height:14px;background:#f0efec;animation:scrollhint 1.8s infinite"></span></span>
+  </div>
+</section>
+
+<section style="position:relative;padding:34px 0;border-top:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06);overflow:hidden;-webkit-mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)">
+  <div style="display:flex;width:max-content;animation:marquee 32s linear infinite">
+    <sc-for list="{{ marquee }}" as="m" hint-placeholder-count="8">
+      <div style="display:flex;align-items:center;gap:14px;padding:0 44px;white-space:nowrap">
+        <span style="width:10px;height:10px;border-radius:50%;background:{{ m.color }};box-shadow:0 0 18px {{ m.color }}"></span>
+        <span style="font-size:26px;font-weight:500;letter-spacing:-.03em;color:{{ m.text }}">{{ m.name }}</span>
+        <span style="font-family:'Geist Mono',monospace;font-size:11px;letter-spacing:.08em;color:#6e6e73">{{ m.tag }}</span>
+      </div>
+    </sc-for>
+  </div>
+</section>
+
+<section id="method" ref="{{ methodRef }}" style="position:relative;height:460vh">
+  <div style="position:sticky;top:0;height:100vh;display:flex;align-items:center;overflow:hidden">
+    <div style="width:100%;max-width:1240px;margin:0 auto;padding:{{ mPad }};display:grid;grid-template-columns:{{ mCols }};gap:{{ mGap }};align-items:center">
+      <div style="display:flex;flex-direction:column;gap:{{ mLeftGap }};min-width:0">
+        <span style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.18em;color:#b6f15a">ONE METHOD</span>
+        <div style="position:relative;height:{{ mTitleH }}">
+          <sc-for list="{{ methodSteps }}" as="s" hint-placeholder-count="1">
+            <div style="position:absolute;inset:0;display:flex;flex-direction:column;gap:16px;opacity:{{ s.op }};transform:{{ s.tf }};filter:{{ s.blur }};transition:opacity .6s cubic-bezier(.2,.8,.2,1),transform .6s cubic-bezier(.2,.8,.2,1),filter .6s">
+              <h2 style="margin:0;font-size:{{ mTitleSize }};line-height:.95;font-weight:600;letter-spacing:-.05em">{{ s.title }}</h2>
+              <p style="margin:0;max-width:480px;font-size:{{ mBodySize }};line-height:1.5;color:#a1a1a6;text-wrap:pretty">{{ s.body }}</p>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:0;max-width:440px">
+          <div style="position:relative;height:2px;background:rgba(255,255,255,.08);border-radius:1px;overflow:hidden;margin-bottom:14px">
+            <span ref="{{ methodFillRef }}" style="position:absolute;left:0;top:0;bottom:0;width:0%;background:linear-gradient(90deg,#7ea6ff,#b6f15a)"></span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px">
+            <sc-for list="{{ methodSteps }}" as="s" hint-placeholder-count="5">
+              <span style="display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:{{ s.labelColor }};transition:color .4s"><span style="font-family:'Geist Mono',monospace;font-size:10.5px;color:#6e6e73">{{ s.num }}</span>{{ s.short }}</span>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+
+      <div style="width:100%;max-width:560px;justify-self:center;height:{{ mPanelH }};position:relative;border-radius:22px;background:linear-gradient(180deg,#141416,#0e0e10);border:1px solid rgba(255,255,255,.08);box-shadow:0 60px 120px -40px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.05) inset;overflow:hidden">
+        <div style="position:relative;width:{{ mInnerW }};height:520px;transform:scale({{ mScale }});transform-origin:0 0">
+        <div style="position:absolute;inset:0;background:radial-gradient(500px circle at 80% 0%,rgba(126,166,255,.08),transparent 60%)"></div>
+        <div style="position:relative;display:flex;align-items:center;gap:8px;height:44px;padding:0 18px;border-bottom:1px solid rgba(255,255,255,.06)">
+          <span style="width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.12)"></span><span style="width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.12)"></span><span style="width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.12)"></span>
+          <span style="flex:1"></span>
+          <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73">{{ methodWindow }}</span>
+        </div>
+
+        <sc-if value="{{ s0 }}" hint-placeholder-val="{{ true }}">
+          <div style="position:relative;padding:28px;display:flex;flex-direction:column;gap:14px">
+            <div style="align-self:flex-start;max-width:80%;padding:13px 16px;border-radius:16px 16px 16px 4px;background:rgba(255,255,255,.06);font-size:15px;line-height:1.45;animation:popin .5s .05s both">Which store keeps the sessions? I recommend SQLite.</div>
+            <div style="align-self:flex-end;max-width:80%;padding:13px 16px;border-radius:16px 16px 4px 16px;background:#7ea6ff;color:#09090b;font-size:15px;line-height:1.45;animation:popin .5s .35s both">SQLite, for the first slice.</div>
+            <div style="align-self:flex-start;max-width:80%;padding:13px 16px;border-radius:16px 16px 16px 4px;background:rgba(255,255,255,.06);font-size:15px;line-height:1.45;animation:popin .5s .65s both">How long should a sign-in link stay valid?</div>
+            <div style="align-self:flex-end;max-width:80%;padding:13px 16px;border-radius:16px 16px 4px 16px;background:#7ea6ff;color:#09090b;font-size:15px;line-height:1.45;animation:popin .5s .95s both">15 minutes.</div>
+            <div style="align-self:flex-start;display:flex;gap:5px;padding:14px 16px;border-radius:16px;background:rgba(255,255,255,.06);animation:popin .5s 1.25s both"><span style="width:6px;height:6px;border-radius:50%;background:#a1a1a6;animation:breathe 1s infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:#a1a1a6;animation:breathe 1s .2s infinite"></span><span style="width:6px;height:6px;border-radius:50%;background:#a1a1a6;animation:breathe 1s .4s infinite"></span></div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ s1 }}" hint-placeholder-val="{{ false }}">
+          <div style="position:relative;padding:30px 32px;display:flex;flex-direction:column;gap:10px;font-size:15px;line-height:1.5">
+            <span style="font-size:26px;font-weight:600;letter-spacing:-.03em;animation:popin .5s both">Magic link sign-in</span>
+            <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73;animation:popin .5s .08s both">spec · WID-1 · 6 decisions</span>
+            <span style="margin-top:10px;font-family:'Geist Mono',monospace;font-size:11.5px;letter-spacing:.12em;color:#b6f15a;animation:popin .5s .16s both">GOAL</span>
+            <span style="color:#a1a1a6;animation:popin .5s .22s both">Users sign in with a link sent by email. No password.</span>
+            <span style="margin-top:8px;font-family:'Geist Mono',monospace;font-size:11.5px;letter-spacing:.12em;color:#b6f15a;animation:popin .5s .3s both">DECISIONS</span>
+            <span style="display:flex;gap:10px;animation:popin .5s .36s both"><span style="color:#b6f15a">✓</span>Links expire after 15 minutes</span>
+            <span style="display:flex;gap:10px;animation:popin .5s .42s both"><span style="color:#b6f15a">✓</span>Sessions are stored in SQLite</span>
+            <span style="display:flex;gap:10px;animation:popin .5s .48s both"><span style="color:#b6f15a">✓</span>A used link cannot be used again</span>
+            <span style="margin-top:8px;font-family:'Geist Mono',monospace;font-size:11.5px;letter-spacing:.12em;color:#6e6e73;animation:popin .5s .56s both">OUT OF SCOPE</span>
+            <span style="color:#6e6e73;animation:popin .5s .62s both">Single sign-on, passkeys</span>
+          </div>
+        </sc-if>
+        <sc-if value="{{ s2 }}" hint-placeholder-val="{{ false }}">
+          <div style="position:relative;padding:22px;display:flex;flex-direction:column;gap:8px">
+            <sc-for list="{{ tickets }}" as="t" hint-placeholder-count="5">
+              <div style="display:flex;align-items:center;gap:12px;height:52px;padding:0 16px;border-radius:12px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.05);animation:popin .5s {{ t.delay }} both">
+                <span style="width:13px;height:13px;flex:none;border-radius:50%;border:1.5px solid {{ t.color }}"></span>
+                <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#6e6e73;width:56px;flex:none">{{ t.id }}</span>
+                <span style="flex:1;min-width:0;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ t.title }}</span>
+                <span style="font-size:11.5px;padding:2px 8px;border-radius:6px;white-space:nowrap;background:{{ t.tagBg }};color:{{ t.tagColor }}">{{ t.tag }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ s3 }}" hint-placeholder-val="{{ false }}">
+          <div style="position:relative;padding:28px;display:flex;flex-direction:column;gap:20px">
+            <div style="display:flex;align-items:center;gap:12px;animation:popin .5s both">
+              <span style="height:26px;padding:0 10px;display:flex;align-items:center;gap:6px;border-radius:999px;background:rgba(182,241,90,.12);color:#b6f15a;font-size:12.5px;font-weight:600"><span style="width:7px;height:7px;border-radius:50%;background:#b6f15a"></span>Open</span>
+              <span style="font-family:'Geist Mono',monospace;font-size:12.5px;color:#a1a1a6">#41 · feature/wid-14</span>
+            </div>
+            <span style="font-size:24px;font-weight:600;letter-spacing:-.03em;line-height:1.2;animation:popin .5s .08s both">feat(orders): show the invoice total on the order page</span>
+            <div style="display:flex;flex-direction:column;border-radius:12px;border:1px solid rgba(255,255,255,.06);overflow:hidden">
+              <sc-for list="{{ checks }}" as="c" hint-placeholder-count="3">
+                <div style="display:flex;align-items:center;gap:12px;height:46px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.05);animation:popin .5s {{ c.delay }} both">
+                  <span style="width:18px;height:18px;border-radius:50%;display:grid;place-items:center;background:rgba(182,241,90,.14);color:#b6f15a;font-size:11px">✓</span>
+                  <span style="flex:1;font-size:14px">{{ c.name }}</span>
+                  <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#6e6e73">{{ c.time }}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;gap:4px;animation:popin .5s .7s both">
+              <sc-for list="{{ pipeGreen }}" as="p" hint-placeholder-count="6"><span style="flex:1;display:flex;flex-direction:column;gap:6px"><span style="height:4px;border-radius:2px;background:{{ p.color }}"></span><span style="font-size:11px;color:#6e6e73">{{ p.label }}</span></span></sc-for>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ s4 }}" hint-placeholder-val="{{ false }}">
+          <div style="position:relative;padding:28px;display:flex;flex-direction:column;gap:9px;font-family:'Geist Mono',monospace;font-size:13.5px;line-height:1.5">
+            <span style="animation:popin .4s both"><span style="color:#6e6e73">$</span> armada merge 41</span>
+            <span style="color:#b6f15a;animation:popin .4s .2s both">✓ ticket WID-14 is ready-to-merge on head a3f9c2e</span>
+            <span style="color:#b6f15a;animation:popin .4s .35s both">✓ PR is open, not a draft, title in Commitizen format</span>
+            <span style="color:#b6f15a;animation:popin .4s .5s both">✓ Lint, typecheck and test green on the head</span>
+            <span style="color:#b6f15a;animation:popin .4s .65s both">✓ no unresolved review thread</span>
+            <span style="color:#a1a1a6;animation:popin .4s .8s both">  merge lock taken · squash at a3f9c2e</span>
+            <div style="margin-top:22px;display:flex;align-items:center;gap:16px;padding:20px;border-radius:14px;background:rgba(182,241,90,.08);border:1px solid rgba(182,241,90,.25);font-family:'Geist',sans-serif;animation:popin .6s 1s both">
+              <span style="width:44px;height:44px;flex:none;border-radius:50%;display:grid;place-items:center;background:#b6f15a;color:#09090b;font-size:20px;font-weight:700">✓</span>
+              <span style="display:flex;flex-direction:column;gap:2px"><span style="font-size:17px;font-weight:600">Merged. WID-14 moved to Done.</span><span style="font-size:13px;color:#a1a1a6">By the Widgets coordinator. Workers never merge.</span></span>
+            </div>
+          </div>
+        </sc-if>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="fleet" style="position:relative;padding:140px 28px 120px;overflow:hidden">
+  <div style="position:absolute;left:50%;top:180px;width:1100px;height:700px;transform:translateX(-50%);pointer-events:none;background:radial-gradient(closest-side,rgba(126,166,255,.12),transparent)"></div>
+  <div style="position:relative;max-width:1240px;margin:0 auto;display:flex;flex-direction:column;align-items:center;gap:22px;text-align:center">
+    <span data-reveal="up" style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.18em;color:#7ea6ff">THE FLEET, LIVE</span>
+    <h2 data-reveal="up" data-delay="80" style="margin:0;max-width:900px;font-size:clamp(42px,6vw,78px);line-height:.98;font-weight:600;letter-spacing:-.05em;text-wrap:balance">Every agent, every phase, one screen.</h2>
+    <p data-reveal="up" data-delay="160" style="margin:0;max-width:600px;font-size:18px;line-height:1.55;color:#a1a1a6;text-wrap:pretty">Questions, plans to approve and finished pull requests come first. Answer them right there; the project's coordinator carries the answer to the agent.</p>
+  </div>
+
+  <div style="position:relative;max-width:1180px;margin:70px auto 0;perspective:1800px">
+    <div data-reveal="tilt" style="border-radius:20px;background:#111113;border:1px solid rgba(255,255,255,.08);box-shadow:0 80px 160px -50px rgba(0,0,0,.95),0 0 0 1px rgba(0,0,0,.5),0 1px 0 rgba(255,255,255,.06) inset;overflow:hidden;transform-origin:50% 0">
+      <div style="display:flex;align-items:center;gap:14px;height:46px;padding:0 18px;border-bottom:1px solid rgba(255,255,255,.06)">
+        <svg width="16" height="16" viewBox="0 0 32 32"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity=".45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity=".45"></path></svg>
+        <span style="font-size:13px;font-weight:500">Fleet</span>
+        <span style="font-size:13px;color:#6e6e73">Acme · 3 projects</span>
+        <span style="flex:1"></span>
+        <span style="display:flex;align-items:center;gap:8px;font-size:12px;color:#6e6e73"><span style="width:7px;height:7px;border-radius:50%;background:#b6f15a;animation:livepulse 2.4s infinite"></span>Live</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap">
+        <div style="flex:1 1 320px;max-width:100%;display:flex;flex-direction:column;gap:14px;padding:22px;border-right:1px solid rgba(255,255,255,.06)">
+          <span style="font-size:13px;font-weight:600">Waiting for you <span style="color:#ff8a4c;font-weight:500">1</span></span>
+          <div style="display:flex;flex-direction:column;gap:14px;padding:18px;border-radius:14px;background:rgba(255,138,76,.06);border:1px solid rgba(255,138,76,.22)">
+            <span style="display:flex;align-items:center;gap:8px;font-size:12px;color:#ff8a4c"><span style="width:7px;height:7px;border-radius:50%;background:#ff8a4c"></span>Question · WID-15</span>
+            <span style="font-size:18px;font-weight:500;line-height:1.3;letter-spacing:-.015em">How long should a sign-in link stay valid?</span>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <sc-for list="{{ qOptions }}" as="o" hint-placeholder-count="2">
+                <div style="display:flex;align-items:center;gap:10px;height:38px;padding:0 12px;border-radius:10px;font-size:13.5px;background:{{ o.bg }};border:1px solid {{ o.border }};transition:all .35s">
+                  <span style="width:14px;height:14px;border-radius:50%;border:1.5px solid {{ o.ring }};background:{{ o.dot }};transition:all .35s"></span>{{ o.label }}
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;height:22px;font-size:12.5px;color:{{ qStatusColor }}">
+              <span style="width:6px;height:6px;border-radius:50%;background:{{ qStatusColor }};animation:breathe 1.4s infinite"></span>{{ qStatus }}
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:8px;padding-top:6px">
+            <sc-for list="{{ coords }}" as="c" hint-placeholder-count="3">
+              <div style="display:flex;align-items:center;gap:10px;font-size:12.5px">
+                <span style="width:9px;height:9px;transform:rotate(45deg);border-radius:2px;border:1.5px solid {{ c.color }};background:{{ c.fill }}"></span>
+                <span style="font-weight:500;width:64px">{{ c.name }}</span>
+                <span style="flex:1;color:#6e6e73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">coordinator · {{ c.h }}</span>
+                <span style="color:{{ c.color }};white-space:nowrap">{{ c.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:2 1 520px;min-width:0;display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:10px;height:46px;padding:0 20px;font-size:13px;font-weight:600;border-bottom:1px solid rgba(255,255,255,.06)">At work <span style="color:#6e6e73;font-weight:400">{{ fleetCount }}</span></div>
+          <sc-for list="{{ fleet }}" as="a" hint-placeholder-count="6">
+            <div style="display:flex;align-items:center;gap:14px;height:56px;padding:0 20px;border-bottom:1px solid rgba(255,255,255,.045);background:{{ a.flash }};transition:background .8s">
+              <span style="width:13px;height:13px;flex:none;border-radius:50%;border:1.5px solid {{ a.color }};background:{{ a.fill }};animation:{{ a.anim }};transition:all .5s"></span>
+              <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+                <span style="font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ a.title }}</span>
+                <span style="font-size:12px;color:#6e6e73;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="font-family:'Geist Mono',monospace">{{ a.id }}</span> · {{ a.project }} · <span style="color:{{ a.hColor }}">●</span> {{ a.h }}</span>
+              </div>
+              <div style="flex:none;width:150px;display:grid;grid-template-columns:repeat(6,1fr);gap:3px">
+                <sc-for list="{{ a.steps }}" as="s" hint-placeholder-count="6"><span style="height:5px;border-radius:3px;background:{{ s.color }};transition:background .6s"></span></sc-for>
+              </div>
+              <span style="flex:none;width:118px;text-align:right;font-size:12.5px;color:{{ a.color }};white-space:nowrap;transition:color .5s">{{ a.label }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section style="position:relative;padding:120px 28px">
+  <div style="max-width:1240px;margin:0 auto;display:flex;flex-wrap:wrap;gap:56px 72px;align-items:center">
+    <div style="flex:1 1 380px;display:flex;flex-direction:column;gap:22px;min-width:0">
+      <span data-reveal="up" style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.18em;color:#ffb547">COORDINATORS AND WORKERS</span>
+      <h2 data-reveal="up" data-delay="80" style="margin:0;font-size:clamp(40px,5.2vw,68px);line-height:.98;font-weight:600;letter-spacing:-.05em;text-wrap:balance">One coordinator per project. As many workers as you need.</h2>
+      <p data-reveal="up" data-delay="160" style="margin:0;max-width:500px;font-size:18px;line-height:1.55;color:#a1a1a6;text-wrap:pretty">The coordinator briefs and launches workers, relays your answers and merges. Each worker holds one ticket, reports every phase, asks when it is unsure and ships a green pull request.</p>
+      <div data-reveal="up" data-delay="240" style="display:flex;flex-direction:column;margin-top:10px;border-top:1px solid rgba(255,255,255,.08)">
+        <div style="display:flex;align-items:center;gap:14px;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.08)"><span style="width:10px;height:10px;transform:rotate(45deg);border-radius:2px;border:1.5px solid #b6f15a"></span><span style="width:120px;font-weight:500">Coordinator</span><span style="color:#a1a1a6;font-family:'Geist Mono',monospace;font-size:13px">brief · inbox · answer · merge</span></div>
+        <div style="display:flex;align-items:center;gap:14px;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.08)"><span style="width:10px;height:10px;border-radius:50%;border:1.5px solid #7ea6ff"></span><span style="width:120px;font-weight:500">Worker</span><span style="color:#a1a1a6;font-family:'Geist Mono',monospace;font-size:13px">claim · report · ask · release</span></div>
+        <div style="display:flex;align-items:center;gap:14px;padding:16px 0;border-bottom:1px solid rgba(255,255,255,.08)"><span style="width:10px;height:10px;border-radius:50%;background:#ff8a4c"></span><span style="width:120px;font-weight:500">You</span><span style="color:#a1a1a6;font-size:14px">answer, approve and launch from the dashboard</span></div>
+      </div>
+    </div>
+    <div data-reveal="scale" style="flex:1 1 520px;min-width:0;height:560px;position:relative;border-radius:24px;background:radial-gradient(circle at 50% 50%,#121214,#0b0b0d 70%);border:1px solid rgba(255,255,255,.06);overflow:hidden">
+      <canvas ref="{{ orbitRef }}" style="position:absolute;inset:0;width:100%;height:100%;display:block"></canvas>
+      <div style="position:absolute;left:20px;bottom:18px;display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12px;color:#6e6e73">
+        <span style="display:flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:#7ea6ff"></span>brief, answer</span>
+        <span style="display:flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:#ff8a4c"></span>question, plan</span>
+        <span style="display:flex;align-items:center;gap:7px"><span style="width:7px;height:7px;border-radius:50%;background:#b6f15a"></span>green hand-back</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="cli" style="position:relative;padding:120px 28px">
+  <div style="max-width:1240px;margin:0 auto;display:flex;flex-wrap:wrap-reverse;gap:56px 72px;align-items:center">
+    <div data-reveal="up" style="flex:1 1 560px;min-width:0;border-radius:18px;background:#0c0c0e;border:1px solid rgba(255,255,255,.08);box-shadow:0 60px 120px -40px rgba(0,0,0,.9);overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;height:42px;padding:0 16px;border-bottom:1px solid rgba(255,255,255,.06)">
+        <span style="width:11px;height:11px;border-radius:50%;background:#ff5f57"></span><span style="width:11px;height:11px;border-radius:50%;background:#febc2e"></span><span style="width:11px;height:11px;border-radius:50%;background:#28c840"></span>
+        <span style="flex:1;text-align:center;font-family:'Geist Mono',monospace;font-size:12px;color:#6e6e73">coordinator · widgets</span>
+        <span style="width:49px"></span>
+      </div>
+      <div ref="{{ termRef }}" style="height:430px;padding:20px 22px;font-family:'Geist Mono',monospace;font-size:13.5px;line-height:1.75;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end"></div>
+    </div>
+    <div style="flex:1 1 360px;display:flex;flex-direction:column;gap:22px;min-width:0">
+      <span data-reveal="up" style="font-family:'Geist Mono',monospace;font-size:12px;letter-spacing:.18em;color:#b6f15a">THE CLI</span>
+      <h2 data-reveal="up" data-delay="80" style="margin:0;font-size:clamp(40px,5.2vw,68px);line-height:.98;font-weight:600;letter-spacing:-.05em;text-wrap:balance">Twelve commands. Every agent speaks them.</h2>
+      <p data-reveal="up" data-delay="160" style="margin:0;max-width:480px;font-size:18px;line-height:1.55;color:#a1a1a6;text-wrap:pretty">Agents write to Linear only through Armada, so every claim, report and question lands in the same format. When a command cannot go on, it prints the reason and the next command to run.</p>
+      <div data-reveal="up" data-delay="240" style="display:flex;flex-wrap:wrap;gap:8px;max-width:480px">
+        <sc-for list="{{ commands }}" as="c" hint-placeholder-count="12">
+          <span style="height:30px;padding:0 11px;display:flex;align-items:center;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);font-family:'Geist Mono',monospace;font-size:12.5px;color:#a1a1a6;transition:all .2s" style-hover="color:#b6f15a;border-color:rgba(182,241,90,.35)">{{ c }}</span>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="security" style="position:relative;padding:120px 28px">
+  <div style="max-width:1240px;margin:0 auto;display:flex;flex-direction:column;gap:56px">
+    <div style="display:flex;flex-wrap:wrap;gap:24px 64px;align-items:flex-end">
+      <h2 data-reveal="up" style="flex:1 1 520px;margin:0;font-size:clamp(40px,5.2vw,68px);line-height:.98;font-weight:600;letter-spacing:-.05em;text-wrap:balance">Your keys stay in Armada. Not on laptops, not in prompts.</h2>
+      <p data-reveal="up" data-delay="100" style="flex:1 1 320px;margin:0;font-size:17px;line-height:1.55;color:#a1a1a6;text-wrap:pretty">Enter the Linear key once. Terminals sign in, workers get a one-time token, and Armada hands each command only what it needs.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));border-top:1px solid rgba(255,255,255,.1)">
+      <div data-reveal="up" style="display:flex;flex-direction:column;gap:14px;padding:34px 32px 34px 0;border-bottom:1px solid rgba(255,255,255,.1)">
+        <span style="font-size:clamp(48px,5vw,64px);font-weight:600;letter-spacing:-.05em;line-height:1">1 hour</span>
+        <span style="font-size:15px;line-height:1.5;color:#a1a1a6;text-wrap:pretty">A launch token covers one ticket, works once, and expires after an hour. The full brief only ever shows it masked.</span>
+      </div>
+      <div data-reveal="up" data-delay="100" style="display:flex;flex-direction:column;gap:14px;padding:34px 32px 34px 0;border-bottom:1px solid rgba(255,255,255,.1)">
+        <span style="font-size:clamp(48px,5vw,64px);font-weight:600;letter-spacing:-.05em;line-height:1">1 ticket</span>
+        <span style="font-size:15px;line-height:1.5;color:#a1a1a6;text-wrap:pretty">A worker session can claim, report, ask and release its own ticket. Armada refuses it anything else.</span>
+      </div>
+      <div data-reveal="up" data-delay="200" style="display:flex;flex-direction:column;gap:14px;padding:34px 32px 34px 0;border-bottom:1px solid rgba(255,255,255,.1)">
+        <span style="font-size:clamp(40px,4.2vw,54px);font-weight:600;letter-spacing:-.04em;line-height:1.1;font-family:'Geist Mono',monospace">AES-256</span>
+        <span style="font-size:15px;line-height:1.5;color:#a1a1a6;text-wrap:pretty">Each key is sealed with its own data key, write-only once saved, and every handout is in the audit list.</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install" ref="{{ ctaRef }}" style="position:relative;padding:160px 28px 140px;overflow:hidden">
+  <canvas ref="{{ ctaCanvasRef }}" style="position:absolute;inset:0;width:100%;height:100%;display:block;opacity:.8"></canvas>
+  <div style="position:absolute;inset:0;pointer-events:none;background:radial-gradient(ellipse at 50% 55%,rgba(9,9,11,.2),#09090b 72%)"></div>
+  <div style="position:relative;max-width:980px;margin:0 auto;display:flex;flex-direction:column;align-items:center;gap:30px;text-align:center">
+    <svg data-reveal="scale" width="64" height="64" viewBox="0 0 32 32"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity=".45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity=".45"></path></svg>
+    <h2 data-reveal="up" style="margin:0;font-size:clamp(56px,9vw,128px);line-height:.9;font-weight:600;letter-spacing:-.06em">Launch your fleet.</h2>
+    <p data-reveal="up" data-delay="100" style="margin:0;max-width:520px;font-size:18px;line-height:1.55;color:#a1a1a6;text-wrap:pretty">Three commands from an empty repository to your first worker in flight.</p>
+    <div data-reveal="up" data-delay="200" style="width:100%;max-width:640px;display:flex;flex-direction:column;border-radius:18px;background:rgba(17,17,19,.85);border:1px solid rgba(255,255,255,.09);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);overflow:hidden;text-align:left">
+      <sc-for list="{{ installSteps }}" as="i" hint-placeholder-count="3">
+        <div onClick="{{ i.copy }}" style="display:flex;align-items:center;gap:16px;min-height:64px;padding:0 14px 0 22px;border-bottom:1px solid rgba(255,255,255,.06);cursor:pointer" style-hover="background:rgba(255,255,255,.03)">
+          <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#6e6e73;width:20px">{{ i.n }}</span>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+            <span style="font-family:'Geist Mono',monospace;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="color:#6e6e73">$ </span>{{ i.cmd }}</span>
+            <span style="font-size:12.5px;color:#6e6e73">{{ i.note }}</span>
+          </div>
+          <span style="height:30px;min-width:68px;padding:0 10px;display:grid;place-items:center;border-radius:8px;background:rgba(255,255,255,.06);font-size:12px;color:{{ i.copyColor }}">{{ i.copyLabel }}</span>
+        </div>
+      </sc-for>
+    </div>
+    <div data-reveal="up" data-delay="300" style="display:flex;flex-wrap:wrap;justify-content:center;gap:12px">
+      <a href="https://github.com/The-Vibe-Company/armada#install" target="_blank" style="display:flex;align-items:center;gap:10px;height:56px;padding:0 28px;border-radius:15px;background:#b6f15a;color:#09090b;font-size:16px;font-weight:600;box-shadow:0 14px 50px -12px rgba(182,241,90,.6);transition:transform .2s" style-hover="color:#09090b;transform:translateY(-2px)">Read the install guide →</a>
+      <a href="https://armada.thevibecompany.co" target="_blank" style="display:flex;align-items:center;gap:10px;height:56px;padding:0 24px;border-radius:15px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);font-size:16px;font-weight:500" style-hover="background:rgba(255,255,255,.1)">Sign in with GitHub</a>
+    </div>
+  </div>
+</section>
+
+<footer style="padding:32px 28px 40px;border-top:1px solid rgba(255,255,255,.06)">
+  <div style="max-width:1240px;margin:0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:16px 28px;font-size:13px;color:#6e6e73">
+    <span style="display:flex;align-items:center;gap:9px;color:#f0efec;font-weight:600"><svg width="16" height="16" viewBox="0 0 32 32"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity=".45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity=".45"></path></svg>Armada</span>
+    <span>by The Vibe Company</span>
+    <span style="flex:1"></span>
+    <a href="https://github.com/The-Vibe-Company/armada" target="_blank" style="color:#6e6e73" style-hover="color:#f0efec">GitHub</a>
+    <a href="https://github.com/The-Vibe-Company/armada/releases" target="_blank" style="color:#6e6e73" style-hover="color:#f0efec">Releases</a>
+    <a href="https://github.com/The-Vibe-Company/armada#install" target="_blank" style="color:#6e6e73" style-hover="color:#f0efec">Docs</a>
+  </div>
+</footer>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;fleetSize&quot;: {&quot;editor&quot;: &quot;range&quot;, &quot;min&quot;: 3, &quot;max&quot;: 20, &quot;step&quot;: 1, &quot;default&quot;: 9, &quot;tsType&quot;: &quot;number&quot;}, &quot;reducedMotion&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;}}">
+const C = { text: '#f0efec', sec: '#a1a1a6', ter: '#6e6e73', lime: '#b6f15a', blue: '#7ea6ff', orange: '#ff8a4c', amber: '#ffb547', red: '#ff6b5b' };
+const RT = { 'Conductor Cloud': '#BB87FC', 'Claude Code': '#D97757', 'Codex': '#10A37F' };
+const PIPE = ['Plan', 'Approval', 'Implementing', 'PR', 'CI', 'Merge'];
+const STEPS = [
+  { short: 'Grill', title: 'Grill the decisions.', body: 'Every open question gets asked and answered before a line of code is written.', win: 'grill · magic link sign-in' },
+  { short: 'Spec', title: 'Write the spec.', body: 'The answers become one spec: the goal, the decisions, what is out of scope.', win: 'spec.md' },
+  { short: 'Tickets', title: 'Cut it into tickets.', body: 'Linear holds the tickets, each small enough for one agent, with what blocks what.', win: 'linear · WID-1' },
+  { short: 'Green PR', title: 'Ship each one green.', body: 'One worker per ticket opens a pull request and hands it back only when every check is green.', win: 'github · pull #41' },
+  { short: 'Merge', title: 'The coordinator merges.', body: 'It checks the hand-back, the head and the checks, then squashes. Workers never merge.', win: 'coordinator · widgets' },
+];
+const NEXT_TITLES = ['Rate-limit the public API', 'Email the invoice as a PDF', 'Filter the catalogue by size', 'Archive invoices older than a year', 'Spike a boat.dev harness', 'Let users change their email address', 'Retry failed webhook deliveries'];
+const TERM = [
+  { cmd: 'armada login', out: [['✓ Signed in to Acme as lea@acme.dev', C.lime]] },
+  { cmd: 'armada brief WID-21 --prompt | conductor launch', out: [['Profile: codex · routed by the label api', C.sec], ['Launch: one-time token, valid 1 h', C.sec], ['✓ Worker launched on Conductor Cloud', C.lime]] },
+  { cmd: 'armada inbox', out: [['* question   WID-15  How long should a sign-in link stay valid?', C.orange], ['* hand-back  WID-18  PR #44 ready, head a3f9c2e', C.lime], ['  silent     WID-17  no report for 42 min', C.amber]] },
+  { cmd: 'armada answer 12 "15 minutes."', out: [['✓ Answer posted on WID-15 · item 12 resolved', C.lime]] },
+  { cmd: 'armada merge 44 --wait', out: [['✓ hand-back on head a3f9c2e', C.lime], ['✓ Lint, typecheck and test', C.lime], ['✓ Merged PR #44 · WID-18 → Done', C.lime]] },
+  { cmd: 'armada watch', out: [['2 workers in flight (WID-12, WID-21) · keep watching', C.sec]] },
+];
+
+class Component extends DCLogic {
+  state = { vw: typeof window !== 'undefined' ? window.innerWidth : 1400, vh: typeof window !== 'undefined' ? window.innerHeight : 900, step: 0, copied: null, tick: 0, fleet: null, q: 0, flash: null };
+  rootRef = React.createRef(); heroRef = React.createRef(); heroInnerRef = React.createRef(); canvasRef = React.createRef(); spotRef = React.createRef();
+  methodRef = React.createRef(); methodFillRef = React.createRef(); orbitRef = React.createRef(); termRef = React.createRef(); ctaRef = React.createRef(); ctaCanvasRef = React.createRef();
+  mouse = { x: -9999, y: -9999 };
+
+  componentDidMount() {
+    this.alive = true;
+    this.reduced = this.props.reducedMotion ?? (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    this.setState({ fleet: this.seedFleet() });
+    this.setupReveal();
+    this.hero = this.makeFlock(this.canvasRef.current, Number(this.props.fleetSize ?? 9), true);
+    this.cta = this.makeFlock(this.ctaCanvasRef.current, 6, false);
+    this.orbit = this.makeOrbit(this.orbitRef.current);
+    this.onScroll = () => this.scroll();
+    window.addEventListener('scroll', this.onScroll, { passive: true });
+    this.onResize = () => { this.setState({ vw: window.innerWidth, vh: window.innerHeight }); [this.hero, this.cta, this.orbit].forEach((x) => x && x.resize()); };
+    window.addEventListener('resize', this.onResize);
+    this.scroll();
+    const loop = (t) => { if (!this.alive) return; [this.hero, this.cta, this.orbit].forEach((x) => x && x.visible && x.frame(t)); this.raf = requestAnimationFrame(loop); };
+    this.raf = requestAnimationFrame(loop);
+    this.ticker = setInterval(() => this.tickFleet(), 1700);
+    this.setupTerm();
+  }
+  componentWillUnmount() {
+    this.alive = false; cancelAnimationFrame(this.raf); clearInterval(this.ticker); clearTimeout(this.termT);
+    window.removeEventListener('scroll', this.onScroll); window.removeEventListener('resize', this.onResize);
+    this.io && this.io.disconnect(); this.vio && this.vio.disconnect();
+  }
+
+  setupReveal() {
+    const root = this.rootRef.current; if (!root) return;
+    const els = root.querySelectorAll('[data-reveal]');
+    const init = { up: 'translateY(40px)', scale: 'scale(.94)', tilt: 'rotateX(24deg) scale(.92) translateY(60px)' };
+    els.forEach((el) => {
+      const k = el.getAttribute('data-reveal');
+      el.style.opacity = '0'; el.style.transform = init[k] || init.up;
+      if (k !== 'tilt') el.style.filter = 'blur(8px)';
+      const d = Number(el.getAttribute('data-delay') || 0);
+      el.style.transition = `opacity 1.1s ${d}ms cubic-bezier(.2,.8,.2,1), transform ${k === 'tilt' ? 1.6 : 1.1}s ${d}ms cubic-bezier(.2,.8,.2,1), filter 1.1s ${d}ms`;
+    });
+    this.io = new IntersectionObserver((entries) => entries.forEach((e) => {
+      if (e.isIntersecting) { e.target.style.opacity = '1'; e.target.style.transform = 'none'; e.target.style.filter = 'none'; this.io.unobserve(e.target); }
+    }), { threshold: 0.12, rootMargin: '0px 0px -8% 0px' });
+    els.forEach((el) => this.io.observe(el));
+    this.vio = new IntersectionObserver((entries) => entries.forEach((e) => {
+      const x = [this.hero, this.cta, this.orbit].find((f) => f && f.canvas === e.target);
+      if (x) x.visible = e.isIntersecting;
+      if (e.target === this.termRef.current && e.isIntersecting && !this.termStarted) { this.termStarted = true; this.runTerm(); }
+    }), { threshold: 0.05 });
+    [this.canvasRef, this.ctaCanvasRef, this.orbitRef, this.termRef].forEach((r) => r.current && this.vio.observe(r.current));
+  }
+
+  scroll() {
+    const vh = window.innerHeight;
+    const hi = this.heroInnerRef.current;
+    if (hi) { const y = Math.min(window.scrollY, vh); hi.style.transform = `translateY(${y * 0.35}px)`; hi.style.opacity = String(Math.max(0, 1 - y / (vh * 0.75))); }
+    const m = this.methodRef.current;
+    if (m) {
+      const r = m.getBoundingClientRect();
+      const p = Math.max(0, Math.min(1, -r.top / (r.height - vh)));
+      if (this.methodFillRef.current) this.methodFillRef.current.style.width = `${(p * 100).toFixed(1)}%`;
+      const step = Math.min(4, Math.floor(p * 5));
+      if (step !== this.state.step) this.setState({ step });
+    }
+  }
+
+  makeFlock(canvas, count, interactive) {
+    if (!canvas) return null;
+    const ctx = canvas.getContext('2d');
+    const me = this;
+    const f = { canvas, visible: true, forms: [], w: 0, h: 0, dpr: 1 };
+    f.resize = () => { const r = canvas.getBoundingClientRect(); f.dpr = Math.min(2, window.devicePixelRatio || 1); f.w = r.width; f.h = r.height; canvas.width = r.width * f.dpr; canvas.height = r.height * f.dpr; ctx.setTransform(f.dpr, 0, 0, f.dpr, 0, 0); ctx.fillStyle = '#09090b'; ctx.fillRect(0, 0, f.w, f.h); };
+    f.resize();
+    const spawn = (x, y, lead) => {
+      const n = 3 + Math.floor(Math.random() * 4);
+      const size = 5 + Math.random() * 6;
+      const form = { x: x ?? -100 - Math.random() * f.w, y: y ?? Math.random() * f.h, base: y ?? Math.random() * f.h, sp: 0.5 + Math.random() * 1.1, amp: 20 + Math.random() * 60, fr: 0.0006 + Math.random() * 0.0008, ph: Math.random() * 6, size, lead: !!lead, members: [], hx: 1, hy: 0, push: 0 };
+      for (let i = 1; i <= n; i++) { const row = Math.ceil(i / 2), side = i % 2 ? 1 : -1; form.members.push({ row, side, x: form.x - row * 20, y: form.y + side * row * 14 }); }
+      f.forms.push(form); return form;
+    };
+    for (let i = 0; i < count; i++) spawn(Math.random() * f.w * 1.2, null, i === 0);
+    f.spawn = spawn;
+    const tri = (x, y, hx, hy, s, col) => {
+      const px = -hy, py = hx;
+      ctx.beginPath(); ctx.moveTo(x + hx * s * 1.4, y + hy * s * 1.4); ctx.lineTo(x - hx * s + px * s * 0.8, y - hy * s + py * s * 0.8); ctx.lineTo(x - hx * s - px * s * 0.8, y - hy * s - py * s * 0.8); ctx.closePath();
+      ctx.fillStyle = col; ctx.fill();
+    };
+    f.frame = (t) => {
+      ctx.fillStyle = 'rgba(9,9,11,0.16)'; ctx.fillRect(0, 0, f.w, f.h);
+      const spd = me.reduced ? 0.25 : 1;
+      for (const o of f.forms) {
+        const ox = o.x, oy = o.y;
+        o.x += o.sp * 1.6 * spd;
+        let ty = o.base + Math.sin(t * o.fr + o.ph) * o.amp;
+        if (interactive) {
+          const dx = o.x - me.mouse.x, dy = ty - me.mouse.y, d = Math.hypot(dx, dy);
+          if (d < 200) o.push += ((dy >= 0 ? 1 : -1) * (200 - d) * 0.9 - o.push) * 0.08; else o.push *= 0.96;
+          ty += o.push;
+        }
+        o.y += (ty - o.y) * 0.08;
+        const vx = o.x - ox, vy = o.y - oy, vl = Math.hypot(vx, vy) || 1;
+        o.hx += (vx / vl - o.hx) * 0.15; o.hy += (vy / vl - o.hy) * 0.15;
+        const hl = Math.hypot(o.hx, o.hy) || 1, hx = o.hx / hl, hy = o.hy / hl, px = -hy, py = hx;
+        o.members.forEach((m) => {
+          const tx = o.x - hx * m.row * 22 + px * m.side * m.row * 15, tyy = o.y - hy * m.row * 22 + py * m.side * m.row * 15;
+          m.x += (tx - m.x) * 0.12; m.y += (tyy - m.y) * 0.12;
+          tri(m.x, m.y, hx, hy, o.size * 0.8, o.lead ? 'rgba(182,241,90,.55)' : 'rgba(240,239,236,.38)');
+        });
+        tri(o.x, o.y, hx, hy, o.size, o.lead ? '#b6f15a' : 'rgba(240,239,236,.9)');
+        if (o.x > f.w + 160) { o.x = -160; o.base = Math.random() * f.h; o.y = o.base; o.members.forEach((m) => { m.x = o.x; m.y = o.y; }); }
+      }
+      if (f.forms.length > count + 8) f.forms.splice(1, 1);
+    };
+    return f;
+  }
+
+  makeOrbit(canvas) {
+    if (!canvas) return null;
+    const ctx = canvas.getContext('2d');
+    const me = this;
+    const f = { canvas, visible: true, w: 0, h: 0, packets: [], last: 0 };
+    f.resize = () => { const r = canvas.getBoundingClientRect(); const d = Math.min(2, window.devicePixelRatio || 1); f.w = r.width; f.h = r.height; canvas.width = r.width * d; canvas.height = r.height * d; ctx.setTransform(d, 0, 0, d, 0, 0); };
+    f.resize();
+    const systems = [
+      { name: 'Widgets', h: 'Conductor Cloud', workers: ['WID-12', 'WID-14', 'WID-15', 'WID-17'], fx: 0.5, fy: 0.36, r: 0.2, sp: 0.00018 },
+      { name: 'Gadgets', h: 'Claude Code', workers: ['GAD-3', 'GAD-5'], fx: 0.22, fy: 0.72, r: 0.12, sp: -0.00026 },
+      { name: 'Armada', h: 'Codex', workers: ['THE-858', 'THE-862', 'THE-864'], fx: 0.78, fy: 0.72, r: 0.13, sp: 0.00023 },
+    ];
+    const pos = (s, i, t) => { const R = Math.min(f.w, f.h * 1.3) * s.r; const a = t * s.sp * (me.reduced ? 0.3 : 1) + (i / s.workers.length) * Math.PI * 2; return { x: s.fx * f.w + Math.cos(a) * R, y: s.fy * f.h + Math.sin(a) * R * 0.62, R }; };
+    f.frame = (t) => {
+      ctx.clearRect(0, 0, f.w, f.h);
+      if (t - f.last > 650) {
+        f.last = t;
+        const si = Math.floor(Math.random() * 3), s = systems[si], wi = Math.floor(Math.random() * s.workers.length);
+        const kinds = [[C.blue, -1], [C.orange, 1], [C.lime, 1], [C.blue, -1]];
+        const k = kinds[Math.floor(Math.random() * kinds.length)];
+        f.packets.push({ si, wi, col: k[0], dir: k[1], t0: t });
+      }
+      systems.forEach((s, si) => {
+        const cx = s.fx * f.w, cy = s.fy * f.h, R = Math.min(f.w, f.h * 1.3) * s.r;
+        ctx.save(); ctx.setLineDash([2, 6]); ctx.strokeStyle = 'rgba(255,255,255,.1)'; ctx.beginPath(); ctx.ellipse(cx, cy, R, R * 0.62, 0, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+        s.workers.forEach((w, i) => { const p = pos(s, i, t); ctx.strokeStyle = 'rgba(255,255,255,.05)'; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p.x, p.y); ctx.stroke(); });
+        const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 46); g.addColorStop(0, 'rgba(182,241,90,.22)'); g.addColorStop(1, 'rgba(182,241,90,0)'); ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, 46, 0, Math.PI * 2); ctx.fill();
+        ctx.save(); ctx.translate(cx, cy); ctx.rotate(Math.PI / 4); ctx.fillStyle = '#0b0b0d'; ctx.strokeStyle = C.lime; ctx.lineWidth = 2; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(-11, -11, 22, 22, 4) : ctx.rect(-11, -11, 22, 22); ctx.fill(); ctx.stroke(); ctx.restore();
+        ctx.textAlign = 'center'; ctx.fillStyle = C.text; ctx.font = '600 13px Geist, sans-serif'; ctx.fillText(s.name, cx, cy + 34);
+        ctx.fillStyle = RT[s.h]; ctx.font = '11px Geist Mono, monospace'; ctx.fillText(s.h, cx, cy + 50);
+        s.workers.forEach((w, i) => {
+          const p = pos(s, i, t);
+          ctx.fillStyle = '#0b0b0d'; ctx.strokeStyle = C.blue; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+          ctx.fillStyle = C.blue; ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.arc(p.x, p.y, 7, -Math.PI / 2, -Math.PI / 2 + ((t * 0.001 + i) % 1) * Math.PI * 2); ctx.fill();
+          ctx.fillStyle = C.sec; ctx.font = '10.5px Geist Mono, monospace'; ctx.fillText(w, p.x, p.y - 14);
+        });
+      });
+      f.packets = f.packets.filter((k) => {
+        const s = systems[k.si], p = pos(s, k.wi, t), cx = s.fx * f.w, cy = s.fy * f.h;
+        let u = (t - k.t0) / 1100; if (u > 1) return false;
+        u = u * u * (3 - 2 * u); const a = k.dir > 0 ? u : 1 - u;
+        const x = p.x + (cx - p.x) * a, y = p.y + (cy - p.y) * a;
+        ctx.shadowColor = k.col; ctx.shadowBlur = 14; ctx.fillStyle = k.col; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, Math.PI * 2); ctx.fill(); ctx.shadowBlur = 0;
+        return true;
+      });
+    };
+    return f;
+  }
+
+  setupTerm() { const el = this.termRef.current; if (el) el.innerHTML = ''; }
+  runTerm() {
+    const el = this.termRef.current; if (!el || !this.alive) return;
+    el.innerHTML = '';
+    let ci = 0;
+    const wait = (ms, fn) => { this.termT = setTimeout(() => this.alive && fn(), ms); };
+    const nextCmd = () => {
+      if (ci >= TERM.length) { wait(3200, () => this.runTerm()); return; }
+      const c = TERM[ci++];
+      const line = document.createElement('div');
+      line.innerHTML = '<span style="color:#b6f15a">❯ </span>';
+      const txt = document.createElement('span'); line.appendChild(txt);
+      const caret = document.createElement('span'); caret.textContent = '▌'; caret.style.color = '#7ea6ff'; caret.style.animation = 'caret 1s steps(1) infinite'; line.appendChild(caret);
+      el.appendChild(line);
+      let k = 0;
+      const type = () => {
+        txt.textContent = c.cmd.slice(0, ++k);
+        if (k < c.cmd.length) wait(this.reduced ? 4 : 22 + Math.random() * 40, type);
+        else { caret.remove(); let oi = 0; const out = () => { if (oi >= c.out.length) { el.appendChild(document.createElement('div')).style.height = '10px'; wait(600, nextCmd); return; } const o = c.out[oi++]; const d = document.createElement('div'); d.textContent = o[0]; d.style.color = o[1]; d.style.whiteSpace = 'pre'; d.style.animation = 'popin .3s both'; el.appendChild(d); wait(220, out); }; wait(320, out); }
+      };
+      wait(380, type);
+    };
+    nextCmd();
+  }
+
+  seedFleet() {
+    return [
+      { id: 'WID-12', title: 'Let users export a report as CSV', project: 'Widgets', h: 'Claude Code', phase: 2 },
+      { id: 'WID-14', title: 'Show the invoice total on the order page', project: 'Widgets', h: 'Conductor Cloud', phase: 4 },
+      { id: 'GAD-5', title: 'Speed up the product search page', project: 'Gadgets', h: 'Conductor Cloud', phase: 3 },
+      { id: 'THE-862', title: 'Add a local Codex harness adapter', project: 'Armada', h: 'Codex', phase: 2 },
+      { id: 'GAD-6', title: 'Send a weekly digest email', project: 'Gadgets', h: 'Codex', phase: 0 },
+      { id: 'THE-858', title: 'Show the harness on every session', project: 'Armada', h: 'Conductor Cloud', phase: 5 },
+    ];
+  }
+  tickFleet() {
+    this.setState((s) => {
+      if (!s.fleet) return null;
+      const fleet = s.fleet.map((a) => ({ ...a }));
+      const i = Math.floor(Math.random() * fleet.length);
+      const a = fleet[i];
+      if (a.phase >= 5) { this.nid = (this.nid || 0) + 1; const proj = ['Widgets', 'Gadgets', 'Armada'][this.nid % 3]; Object.assign(a, { id: `${proj === 'Widgets' ? 'WID' : proj === 'Gadgets' ? 'GAD' : 'THE'}-${30 + this.nid}`, title: NEXT_TITLES[this.nid % NEXT_TITLES.length], project: proj, h: Object.keys(RT)[this.nid % 3], phase: 0 }); }
+      else a.phase += 1;
+      return { fleet, tick: s.tick + 1, q: (s.q + 1) % 6, flash: a.id };
+    });
+  }
+
+  copy(key, text) {
+    try { navigator.clipboard && navigator.clipboard.writeText(text); } catch (e) {}
+    this.setState({ copied: key });
+    clearTimeout(this.copyT); this.copyT = setTimeout(() => this.setState({ copied: null }), 1600);
+  }
+
+  renderVals() {
+    const s = this.state;
+    const methodSteps = STEPS.map((st, i) => ({
+      ...st, num: String(i + 1).padStart(2, '0'),
+      op: i === s.step ? 1 : 0, tf: i === s.step ? 'none' : i < s.step ? 'translateY(-30px)' : 'translateY(30px)', blur: i === s.step ? 'none' : 'blur(8px)',
+      labelColor: i === s.step ? C.text : i < s.step ? C.sec : C.ter,
+    }));
+    const harness = [
+      { name: 'Conductor Cloud', color: RT['Conductor Cloud'], text: C.text, tag: 'LIVE' },
+      { name: 'Claude Code', color: RT['Claude Code'], text: C.text, tag: 'LIVE' },
+      { name: 'Codex', color: RT.Codex, text: C.text, tag: 'NEXT' },
+      { name: 'boat.dev', color: '#6e6e73', text: C.sec, tag: 'SOON' },
+      { name: 'Linear', color: '#8b8ff7', text: C.text, tag: 'TRACKER' },
+      { name: 'GitHub', color: C.text, text: C.text, tag: 'PULL REQUESTS' },
+    ];
+    const marquee = [...harness, ...harness, ...harness, ...harness];
+
+    const statusOf = (p) => (p === 1 ? ['Awaiting approval', C.orange] : p === 5 ? ['Ready to merge', C.lime] : [PIPE[p], C.blue]);
+    const fleet = (s.fleet || this.seedFleet()).map((a) => {
+      const [label, color] = statusOf(a.phase);
+      return { ...a, label, color, hColor: RT[a.h],
+        fill: a.phase === 5 ? C.lime : a.phase === 1 ? `radial-gradient(circle, ${C.orange} 0 2.5px, transparent 3px)` : `conic-gradient(${C.blue} ${Math.round(((a.phase + 0.5) / 6) * 100)}%, transparent 0)`,
+        anim: a.phase !== 1 && a.phase !== 5 ? 'bluepulse 2s infinite' : 'none',
+        flash: s.flash === a.id ? 'rgba(126,166,255,.06)' : 'transparent',
+        steps: PIPE.map((_, k) => ({ color: k < a.phase ? 'rgba(240,239,236,.45)' : k === a.phase ? color : 'rgba(255,255,255,.07)' })) };
+    });
+    const q = s.q;
+    const qOptions = ['15 minutes (recommended)', '30 minutes'].map((label, i) => {
+      const on = i === 0 && q >= 2;
+      return { label, bg: on ? 'rgba(255,138,76,.12)' : 'rgba(255,255,255,.03)', border: on ? 'rgba(255,138,76,.5)' : 'rgba(255,255,255,.06)', ring: on ? C.orange : '#48484d', dot: on ? `radial-gradient(circle, ${C.orange} 0 3.5px, transparent 4px)` : 'transparent' };
+    });
+    const qStatus = q < 2 ? 'Asked 12 min ago' : q < 4 ? 'You picked an answer' : 'Sent to the Widgets coordinator';
+    const qStatusColor = q < 2 ? C.orange : q < 4 ? C.sec : C.blue;
+
+    const cp = (key) => ({ copyLabel: s.copied === key ? 'Copied' : 'Copy', copyColor: s.copied === key ? C.lime : C.sec });
+    const installs = [
+      ['npm install -g @the-vibe-company/armada', 'Node 22 or later'],
+      ['armada login', 'Approve the code in the browser'],
+      ['armada init --program-root ABC-1', 'One pull request adds everything the repository needs'],
+    ];
+
+    const stack = s.vw < 900, short = s.vh < 760;
+    const lay = stack
+      ? { mCols: 'minmax(0,1fr)', mGap: '20px', mPad: '80px 22px 20px', mLeftGap: '14px', mTitleH: '128px', mTitleSize: 'clamp(30px,6vw,46px)', mBodySize: '14.5px', mPanelH: `${Math.max(200, s.vh - 400)}px` }
+      : { mCols: 'minmax(0,1fr) minmax(0,1fr)', mGap: short ? '40px' : '64px', mPad: short ? '76px 28px 24px' : '90px 28px 40px', mLeftGap: short ? '18px' : '30px', mTitleH: short ? '190px' : 'clamp(170px,16vw,220px)', mTitleSize: short ? 'clamp(32px,4.2vw,54px)' : 'clamp(42px,5.6vw,84px)', mBodySize: short ? '16px' : '18px', mPanelH: `${Math.min(520, Math.max(260, s.vh - (short ? 130 : 200)))}px` };
+    const ph = parseFloat(lay.mPanelH), k = Math.min(1, ph / 520);
+    lay.mScale = k.toFixed(4); lay.mInnerW = `${(100 / k).toFixed(3)}%`;
+    return {
+      ...lay,
+      rootRef: this.rootRef, heroRef: this.heroRef, heroInnerRef: this.heroInnerRef, canvasRef: this.canvasRef, spotRef: this.spotRef,
+      methodRef: this.methodRef, methodFillRef: this.methodFillRef, orbitRef: this.orbitRef, termRef: this.termRef, ctaRef: this.ctaRef, ctaCanvasRef: this.ctaCanvasRef,
+      onHeroMove: (e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        this.mouse = { x: e.clientX - r.left, y: e.clientY - r.top };
+        if (this.spotRef.current) this.spotRef.current.style.background = `radial-gradient(520px circle at ${this.mouse.x}px ${this.mouse.y}px, rgba(182,241,90,.09), transparent 62%)`;
+      },
+      onHeroClick: (e) => {
+        if (e.target.closest && e.target.closest('a,[data-nofleet]')) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        if (this.hero) { const o = this.hero.spawn(e.clientX - r.left, e.clientY - r.top, Math.random() < 0.35); o.sp = 1.6; }
+      },
+      heroCopyLabel: s.copied === 'hero' ? 'Copied' : 'Copy', heroCopyColor: s.copied === 'hero' ? C.lime : C.sec,
+      copyHero: (e) => { e.stopPropagation(); this.copy('hero', 'npx @the-vibe-company/armada status'); },
+      marquee, methodSteps, methodWindow: STEPS[s.step].win,
+      s0: s.step === 0, s1: s.step === 1, s2: s.step === 2, s3: s.step === 3, s4: s.step === 4,
+      tickets: [
+        { id: 'WID-12', title: 'Issue and email a sign-in link', tag: 'ready-for-agent', color: C.blue, tagBg: 'rgba(126,166,255,.12)', tagColor: C.blue, delay: '.05s' },
+        { id: 'WID-13', title: 'Store sessions in SQLite', tag: 'ready-for-agent', color: C.blue, tagBg: 'rgba(126,166,255,.12)', tagColor: C.blue, delay: '.13s' },
+        { id: 'WID-14', title: 'Expire links after 15 minutes', tag: 'blocked by WID-12', color: C.ter, tagBg: 'rgba(255,255,255,.06)', tagColor: C.sec, delay: '.21s' },
+        { id: 'WID-15', title: 'Refuse a link used twice', tag: 'blocked by WID-12', color: C.ter, tagBg: 'rgba(255,255,255,.06)', tagColor: C.sec, delay: '.29s' },
+        { id: 'WID-16', title: 'Sign-in email template', tag: 'web', color: C.blue, tagBg: 'rgba(255,255,255,.06)', tagColor: C.sec, delay: '.37s' },
+      ],
+      checks: [{ name: 'Lint, typecheck and test', time: '2m 14s', delay: '.2s' }, { name: 'Build', time: '48s', delay: '.32s' }, { name: 'Commitizen title', time: '3s', delay: '.44s' }],
+      pipeGreen: PIPE.map((label, k) => ({ label, color: k < 5 ? 'rgba(182,241,90,.75)' : 'rgba(255,255,255,.1)' })),
+      fleet, fleetCount: fleet.length, qOptions, qStatus, qStatusColor,
+      coords: [
+        { name: 'Widgets', h: 'Conductor Cloud', state: 'active', color: C.lime, fill: 'rgba(182,241,90,.35)' },
+        { name: 'Gadgets', h: 'Claude Code', state: 'idle 24 min', color: C.amber, fill: 'transparent' },
+        { name: 'Armada', h: 'Codex', state: 'active', color: C.lime, fill: 'rgba(182,241,90,.35)' },
+      ],
+      commands: ['status', 'doctor', 'init', 'login', 'brief', 'claim', 'report', 'ask', 'inbox', 'answer', 'watch', 'merge'],
+      installSteps: installs.map(([cmd, note], i) => ({ n: String(i + 1).padStart(2, '0'), cmd, note, ...cp(`i${i}`), copy: () => this.copy(`i${i}`, cmd) })),
+    };
+  }
+}
+</script>
+</body>
+</html>

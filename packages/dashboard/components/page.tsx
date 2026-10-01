@@ -48,15 +48,18 @@ export function Toolbar({ children, end }: { children?: ReactNode; end?: ReactNo
 /**
  * A band and what it holds: an icon or a status dot, a label, a count and
  * what goes on its right (a figure, a hint, an action). Rows go straight
- * inside; anything else goes in a `SectionBody`.
+ * inside; anything else goes in a `SectionBody`. `id` lets a link open the
+ * page on it (`/agents#error`).
  */
 export function Section({
+  id,
   icon,
   label,
   count,
   side,
   children,
 }: {
+  id?: string;
   icon?: ReactNode;
   label: ReactNode;
   count?: ReactNode;
@@ -64,7 +67,7 @@ export function Section({
   children?: ReactNode;
 }) {
   return (
-    <section className="ui-section">
+    <section className="ui-section" id={id}>
       <div className="ui-section-h">
         {icon && <span className="ui-section-icon">{icon}</span>}
         <h2 className="ui-section-label">{label}</h2>

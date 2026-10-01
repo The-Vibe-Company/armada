@@ -73,6 +73,12 @@
   --livepulse: ui-livepulse 2.4s infinite;
   --breathe: ui-breathe 1.6s infinite;
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Interactions (better-ui, emil-design-eng): a strong ease-out, 150 ms for a hover or a press. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --t-fast: 150ms;
+  /* Shadows as borders for a raised surface (better-ui, dark): one white ring, brighter on hover. */
+  --shadow-border: 0 0 0 1px oklch(1 0 0 / 0.08);
+  --shadow-border-hover: 0 0 0 1px oklch(1 0 0 / 0.13);
 
   /* The names today's Fleet view and the account pages use, on the v4 values. */
   --panel: var(--surface);
@@ -245,6 +251,12 @@ button {
   background: var(--fill-2);
   color: var(--text-2);
   cursor: pointer;
+  transition-property: scale, background-color, color;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
+}
+.icon-btn:active {
+  scale: 0.96;
 }
 .icon-btn:hover {
   background: var(--fill-3);
@@ -295,6 +307,9 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.wait-detail.is-note {
+  white-space: normal;
+}
 .wait-detail.is-quote {
   color: var(--text);
   font-size: 13px;
@@ -312,20 +327,19 @@ button {
   height: 30px;
   padding: 0 12px;
   border-radius: 8px;
-  border: 1px solid var(--line-2);
+  border: 0;
+  box-shadow: var(--shadow-border);
   background: var(--panel);
   font-size: 12.5px;
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition:
-    background 0.15s,
-    border-color 0.15s,
-    color 0.15s,
-    transform 0.1s;
+  transition-property: scale, background-color, box-shadow, color;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
 }
 .btn:active:not(:disabled) {
-  transform: translateY(1px);
+  scale: 0.96;
 }
 .btn:disabled {
   opacity: 0.5;
@@ -336,10 +350,10 @@ button {
   background: var(--panel-2);
 }
 .btn.is-soft:hover {
-  border-color: var(--faint);
+  box-shadow: var(--shadow-border-hover);
 }
 .btn.is-ghost {
-  border-color: transparent;
+  box-shadow: none;
   background: none;
   color: var(--muted);
 }
@@ -347,7 +361,7 @@ button {
   color: var(--text);
 }
 .btn.is-primary {
-  border-color: transparent;
+  box-shadow: none;
   background: var(--text);
   color: var(--bg);
 }
@@ -363,7 +377,9 @@ button {
 .link {
   border: 0;
   background: none;
-  padding: 0;
+  /* A taller target than its line, the line kept. */
+  padding: 4px 0;
+  margin: -4px 0;
   font-size: inherit;
   color: var(--muted);
   text-decoration: underline;
@@ -414,9 +430,12 @@ input:focus-visible {
 }
 button.chip {
   cursor: pointer;
-  transition:
-    border-color 0.15s,
-    background 0.15s;
+  transition-property: scale, border-color, background-color;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
+}
+button.chip:active {
+  scale: 0.96;
 }
 button.chip:hover {
   border-color: var(--accent);
@@ -441,7 +460,8 @@ button.chip:hover {
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  border-radius: var(--r-md);
+  /* Concentric: its fields' 4 px and its 10 px padding. */
+  border-radius: var(--r-lg);
   border: 1px solid var(--line-2);
   background: var(--sunken);
   animation: rise 0.25s var(--ease) both;
@@ -451,7 +471,7 @@ button.chip:hover {
   min-height: 72px;
   resize: vertical;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--r-xs);
   border: 1px solid var(--line);
   background: var(--panel);
   color: var(--text);
@@ -1108,6 +1128,9 @@ a.sh-item:hover {
   color: var(--text-2);
   cursor: pointer;
   white-space: nowrap;
+  transition-property: color, background-color;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
 }
 .ui-tabs.is-md .ui-tab {
   height: 28px;
@@ -1426,15 +1449,21 @@ a.ui-row:hover {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  padding: 14px 20px;
+  padding: 15px 21px;
   border-radius: var(--r-lg);
   background: var(--card);
-  border: 1px solid var(--line);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  box-shadow:
+    var(--shadow-border),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
   color: var(--text);
 }
+.ui-card.is-link {
+  transition: box-shadow var(--t-fast) var(--ease-out);
+}
 .ui-card.is-link:hover {
-  border-color: var(--line-strong);
+  box-shadow:
+    var(--shadow-border-hover),
+    0 1px 0 rgba(255, 255, 255, 0.04) inset;
 }
 .ui-card-head {
   display: flex;
@@ -1484,6 +1513,12 @@ a.ui-row:hover {
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
+  transition-property: scale, background-color, opacity;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
+}
+.ui-button:active:not(:disabled) {
+  scale: 0.96;
 }
 .ui-button:hover {
   background: var(--fill-3);
@@ -1970,6 +2005,21 @@ a.ui-row:hover {
   gap: 6px;
   white-space: nowrap;
 }
+/* A figure that opens what it counts: a 28 px target, the band's height kept. */
+.sc-figure.is-link {
+  height: 28px;
+  margin: 0 -8px;
+  padding: 0 8px;
+  border-radius: var(--r);
+  transition: background-color 150ms var(--ease-out);
+}
+.sc-figure.is-link:hover {
+  background: var(--fill);
+  color: var(--text);
+}
+.sc-figure.is-link:hover .faint {
+  color: var(--text-2);
+}
 .sc-fact-k {
   width: 160px;
   flex: none;
@@ -2154,15 +2204,48 @@ a.ui-row:hover {
 }
 
 /* ---------------------------------------------------- live timeline (THE-868) */
+/* One horizontal scroller (THE-880): the track is 24 h wide, `--tl-zoom` views
+   of 3 h, sized from the scroller's own width (container units); the names on
+   the left and the "ago" column on the right are sticky, on the row's color. */
 .tl {
   position: relative;
+  --tl-label: 260px;
+  --tl-side: 152px;
+  --tl-gap: 22px;
 }
 .tl-defs {
   position: absolute;
 }
+.tl-scroll {
+  container-type: inline-size;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--fill-3) transparent;
+}
+.tl-scroll.is-dragging {
+  cursor: grabbing;
+  user-select: none;
+}
+.tl-rows {
+  width: max-content;
+  min-width: 100%;
+}
+.tl-rows .ui-row {
+  --tl-bg: var(--surface);
+  gap: 0;
+  padding: 0;
+}
+.tl-rows a.ui-row:hover {
+  --tl-bg: color-mix(in srgb, var(--surface), #fff 3%);
+}
+.tl-rows .ui-row[data-selected],
+.tl-rows .ui-row:focus-visible {
+  --tl-bg: color-mix(in srgb, var(--surface), #fff 4.5%);
+}
 .ui-row.tl-row {
   min-height: 46px;
-  padding-right: 20px;
 }
 .ui-row.tl-row.is-coordinator {
   min-height: 38px;
@@ -2173,23 +2256,51 @@ a.ui-row:hover {
   padding-bottom: 0;
 }
 .ui-row.tl-group-h {
+  --tl-bg: color-mix(in srgb, var(--surface), #fff 2%);
   min-height: 30px;
   padding-top: 0;
   padding-bottom: 0;
-  gap: 8px;
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--tl-bg);
   font-size: 12px;
   font-weight: 500;
   color: var(--text-2);
 }
-.tl-label {
-  width: 240px;
+.tl-label,
+.tl-side {
+  position: sticky;
+  z-index: 1;
+  align-self: stretch;
   flex: none;
   display: flex;
   align-items: center;
+  background: var(--tl-bg);
+}
+.tl-label {
+  left: 0;
+  width: var(--tl-label);
   gap: 10px;
   min-width: 0;
+  padding: 0 12px 0 20px;
   font-size: 12.5px;
+}
+.tl-side {
+  right: 0;
+  width: var(--tl-side);
+  justify-content: flex-end;
+  padding: 0 20px 0 12px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+}
+.ui-row.tl-group-h .tl-label {
+  gap: 8px;
+}
+.tl-rows .ui-row[data-selected] .tl-label,
+.tl-rows .ui-row:focus-visible .tl-label {
+  box-shadow: inset 2px 0 0 var(--frontier);
 }
 .tl-label-text {
   display: flex;
@@ -2212,13 +2323,16 @@ a.ui-row:hover {
 }
 .tl-track {
   position: relative;
-  flex: 1;
-  min-width: 0;
+  flex: none;
+  width: calc((100cqw - var(--tl-label) - var(--tl-side) - var(--tl-gap)) * var(--tl-zoom, 8));
   height: 46px;
-  margin-right: 22px;
+  margin-right: var(--tl-gap);
 }
 .tl-track.is-short {
   height: 38px;
+}
+.tl-now-icon {
+  margin-right: -2px;
 }
 .tl-svg {
   position: absolute;
@@ -2275,15 +2389,6 @@ a.ui-row:hover {
 .tl-coord-line {
   fill-opacity: 0.3;
 }
-.tl-side {
-  width: 100%;
-  text-align: right;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .ui-section-body.tl-legend {
   flex-direction: row;
   flex-wrap: wrap;
@@ -2331,9 +2436,15 @@ a.ui-row:hover {
   background: repeating-linear-gradient(135deg, rgba(255, 181, 71, 0.5) 0 2px, transparent 2px 5px);
 }
 .tl-swatch.is-inbox {
-  width: 2px;
-  height: 8px;
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
   background: var(--done);
+}
+.tl-swatch.is-idle {
+  width: 14px;
+  height: 2px;
+  background: repeating-linear-gradient(90deg, var(--active) 0 4px, transparent 4px 8px);
 }
 .tl-tip {
   position: absolute;
@@ -2356,8 +2467,9 @@ a.ui-row:hover {
   font-weight: 500;
 }
 @media (max-width: 1000px) {
-  .tl-label {
-    width: 180px;
+  .tl {
+    --tl-label: 200px;
+    --tl-side: 108px;
   }
 }
 .tl-tip.is-left {
