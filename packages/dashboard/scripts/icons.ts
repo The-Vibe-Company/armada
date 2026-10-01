@@ -27,7 +27,7 @@ function markBounds(count: number) {
   for (const { d } of MARK.slice(0, count)) {
     let x = 0;
     let y = 0;
-    for (const [, cmd, args] of d.matchAll(/([MLHVZ])([^MLHVZ]*)/g)) {
+    for (const [, cmd, args] of d.matchAll(/([A-Za-z])([^A-Za-z]*)/g)) {
       const n = (args ?? "")
         .trim()
         .split(/[\s,]+/)
@@ -36,7 +36,8 @@ function markBounds(count: number) {
       if (cmd === "M" || cmd === "L") [x, y] = n as [number, number];
       else if (cmd === "H") x = n[0] as number;
       else if (cmd === "V") y = n[0] as number;
-      else continue;
+      else if (cmd === "Z") continue;
+      else throw new Error(`scripts/icons.ts: the mark's path command ${cmd} is not read yet (${d})`);
       xs.push(x);
       ys.push(y);
     }
