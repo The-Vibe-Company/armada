@@ -704,7 +704,8 @@ button {
   color: var(--done);
   background: var(--done-dim);
 }
-.k-silent .wait-kind {
+.k-silent .wait-kind,
+.k-not-started .wait-kind {
   color: var(--active);
   background: var(--active-dim);
 }

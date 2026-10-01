@@ -56,6 +56,8 @@ export interface WatchOptions {
   coordinator: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  /** `policy.not_started_minutes`. */
+  notStartedMinutes?: number;
   /** Entries already shown to the coordinator (`WatchState.seen`). */
   seen: readonly string[];
   now: () => Date;
@@ -94,7 +96,11 @@ export interface WatchReport {
  * limit of its own.
  */
 export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchReport> {
-  const query = { coordinator: o.coordinator, silentAfterMinutes: o.silentAfterMinutes };
+  const query = {
+    coordinator: o.coordinator,
+    silentAfterMinutes: o.silentAfterMinutes,
+    ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
+  };
   const pollMs = o.pollMs ?? WATCH_POLL_MS;
   const idlePollMs = o.idlePollMs ?? WATCH_IDLE_POLL_MS;
   let known = new Set(o.seen);

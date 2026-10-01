@@ -149,6 +149,38 @@ describe("armada watch", () => {
     expect(live.clock.now().getTime() - NOW.getTime()).toBe(60_000);
   });
 
+  test("a hand-back already shown wakes the watch again when handed back on a new head, not on the same one", async () => {
+    const live = tempFleet();
+    await holding(live, "DEMO-2");
+    const handBackOn = (head: string) =>
+      live.store.putHandBack({
+        project: P,
+        ticket: "DEMO-2",
+        author: null,
+        body: `Agent status: ready-to-merge — PR #1, head ${head}, CI green`,
+        at: live.clock.now(),
+      });
+    await handBackOn("a".repeat(40));
+    const shown = await live.fleet.inbox({ coordinator: COORDINATOR, silentAfterMinutes: 15, etag: null });
+    let sleeps = 0;
+    const { o } = options(live, {
+      seen: (shown?.items ?? []).map(entryKey),
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        sleeps++;
+        // The same head again (a repeated report) changes nothing; main merged in, a new head does.
+        if (sleeps === 2) await handBackOn("a".repeat(40));
+        if (sleeps === 4) await handBackOn("b".repeat(40));
+      },
+    });
+    const got = await watchInbox(live.fleet, o);
+    expect(got.items.map((e) => [e.id, e.kind, e.new])).toEqual([[shown?.items[0]?.id ?? 0, "hand-back", true]]);
+    expect(got.items[0]?.body).toContain(`head ${"b".repeat(40)}`);
+    expect(live.clock.now().getTime() - NOW.getTime()).toBe(60_000);
+    // Unchanged reads in between were answered 304.
+    expect(live.statuses).toEqual([200, 200, 304, 304, 304, 200]);
+  });
+
   test("a new release ends the watch, after the open items", async () => {
     const live = tempFleet();
     await holding(live, "DEMO-2");

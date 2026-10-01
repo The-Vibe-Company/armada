@@ -40,6 +40,7 @@ describe("the fleet through Armada", () => {
     for (const call of [
       () => fleet.inbox({ coordinator: null, silentAfterMinutes: 15, etag: null }),
       () => fleet.inboxItem(1),
+      () => fleet.pendingLaunches(),
       () => fleet.answer({ text: "yes", note: false, ticket: "DEMO-7", item: 1 }),
       () => fleet.acquireLease({ name: "merge", holder: "w", ttlMs: 60_000 }),
       () => fleet.register(),
@@ -68,6 +69,7 @@ describe("the fleet through Armada", () => {
     });
     expect((await run("report", { ticket: "DEMO-7", phase: "dreaming", summary: "x" })).status).toBe(400);
     expect((await run("merge", { ticket: "DEMO-7", number: 9, url: "u", headSha: "not-a-sha" })).status).toBe(400);
+    expect((await run("inbox", { silentAfterMinutes: 15, notStartedMinutes: "ten" })).status).toBe(400);
     expect((await run("unknown", {})).status).toBe(404);
     expect(store.events).toEqual([]);
     expect(parseProject({ ...DEMO_PROJECT, slug: "Not A Slug" })).toBeNull();

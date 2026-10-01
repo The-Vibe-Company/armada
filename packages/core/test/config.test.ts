@@ -31,6 +31,7 @@ describe("armada.toml", () => {
       policy: {
         silentAfterMinutes: 15,
         coordinatorMinutes: 10,
+        notStartedMinutes: 10,
         plans: "approve",
         preApprovedLabel: "plan-approved",
         approvalLabel: "needs-plan-approval",
@@ -54,10 +55,13 @@ describe("armada.toml", () => {
     const text = DEMO_TOML.replace('slug = "widgets"', 'slug = "My Widgets"')
       .replace('repository = "acme/widgets"', 'repository = "widgets"')
       .replace('program_root = "DEMO-1"', 'program_root = "DEMO-1"\n[tracker.labels]\nruntimes = []')
-      .concat('\n[policy]\nsilence_minutes = -1\n[gates]\nrequired_checks = 1\nlocal_commands = [""]\n');
+      .concat(
+        '\n[policy]\nsilence_minutes = -1\nnot_started_minutes = "ten"\n[gates]\nrequired_checks = 1\nlocal_commands = [""]\n',
+      );
     expect(problemsOf(text)).toEqual([
       '"tracker.labels.runtimes" must be a non-empty list of names',
       '"policy.silence_minutes" must be a positive number',
+      '"policy.not_started_minutes" must be a positive number',
       '"gates.required_checks" must be a list of check names',
       '"gates.local_commands" must be a list of shell commands',
       '"project.slug" is "My Widgets", expected lowercase letters, digits and dashes',

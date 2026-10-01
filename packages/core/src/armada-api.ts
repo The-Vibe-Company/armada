@@ -29,6 +29,18 @@ export interface KeysPurpose {
   ticket?: string;
 }
 
+/** How `armada brief` shows a launch token outside `--prompt`: it signs nobody in. */
+export const MASKED_LAUNCH_TOKEN = "armada_launch_••••";
+
+/** Whether a launch token is the masked one of `armada brief`'s human view (its dots survive any copy). */
+export const isMaskedLaunchToken = (token: string) => token.includes("•");
+
+/** What `armada login` and Armada say to a worker given the masked token, and what it does next. */
+export const MASKED_LAUNCH_TOKEN_REFUSAL = {
+  error: "this is the masked token from `armada brief`'s human view, not a launch token",
+  next: "ask the coordinator for the `armada brief <ticket> --prompt` text: only it carries the token",
+} as const;
+
 /** A one-time launch token for one ticket, from `POST /api/cli/launch-tokens`. */
 export interface LaunchToken {
   token: string;
@@ -497,9 +509,15 @@ export function armadaApi(opts: ArmadaApiOptions) {
       return body as unknown as LaunchToken;
     },
 
-    /** Exchanges a launch token for a worker session; refused when used, expired or revoked. */
-    async exchangeLaunchToken(token: string): Promise<WorkerSession> {
-      const { status, body } = await call("POST", "launch-tokens/exchange", { body: { token } });
+    /**
+     * Exchanges a launch token for a worker session; refused when used, expired
+     * or revoked. `handle` is the worker's runtime session, when known: Armada
+     * shows it if the worker never claims.
+     */
+    async exchangeLaunchToken(token: string, handle: string | null = null): Promise<WorkerSession> {
+      const { status, body } = await call("POST", "launch-tokens/exchange", {
+        body: handle ? { token, handle } : { token },
+      });
       if (status !== 200) throw refusal(status, body, null);
       const w = body.worker as WorkerSession["worker"] | undefined;
       const org = body.organization as WorkerSession["organization"] | undefined;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, askCoordinator, checkInbox } from "../src/inbox.ts";
-import { type FleetStore, readInbox } from "../src/live.ts";
+import { type FleetStore, readInbox, serveInbox } from "../src/live.ts";
 import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_TOML, FakeLinear, fakeClock, NOW, tempFleet } from "./support.ts";
@@ -265,6 +265,66 @@ describe("the coordinator's inbox", () => {
     ]);
     expect(items[2]?.body).toStartWith("no report for 30 min since its question was answered (phase blocked");
     expect(items[1]?.body).toStartWith("no report for 40 min (phase implementing, Conductor ws/DEMO-1)");
+  });
+
+  test("a worker launched that never claimed is in flight at once, and not started after not_started_minutes", async () => {
+    const db = memoryFleet();
+    const launch = (ticket: string, minutesAgo: number, more: Partial<(typeof db.launches)[number]> = {}) =>
+      db.launches.push({
+        project: P,
+        ticket,
+        launchedAt: at(minutesAgo).toISOString(),
+        tokenUsedAt: null,
+        handle: null,
+        endedAt: null,
+        ...more,
+      });
+    launch("DEMO-1", 25); // its token never used
+    launch("DEMO-2", 20, { tokenUsedAt: at(18).toISOString(), handle: "ws-2/s-2" }); // signed in, no claim
+    launch("DEMO-3", 5); // launched just now
+    launch("DEMO-4", 30); // claimed since
+    await db.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-4",
+      runtime: "conductor",
+      handle: "ws-4",
+      branch: null,
+      at: at(10),
+    });
+    await db.recordEvent({ project: P, ticket: "DEMO-4", kind: "claim", phase: "planning", at: at(10) });
+    launch("DEMO-5", 30, { endedAt: at(2).toISOString() }); // revoked
+    launch("DEMO-6", 40); // launched again just now: the newest launch counts
+    launch("DEMO-6", 3);
+    launch("DEMO-7", 25 * 60); // older than a day
+    launch("GAD-1", 30, { project: "gadgets" });
+    // A worker at work, briefed again to read its prompt: that launch starts nobody.
+    await db.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-8",
+      runtime: "conductor",
+      handle: "ws-8",
+      branch: null,
+      at: at(120),
+    });
+    await db.recordEvent({ project: P, ticket: "DEMO-8", kind: "report", phase: "implementing", at: at(5) });
+    launch("DEMO-8", 30);
+
+    const read = await serveInbox(db, P, { coordinator: null, silentAfterMinutes: 15, etag: null }, NOW);
+    expect(read?.items.map((e) => [e.id, e.kind, e.ticket, e.author, e.createdAt])).toEqual([
+      [null, "not-started", "DEMO-1", null, at(25).toISOString()],
+      [null, "not-started", "DEMO-2", "ws-2/s-2", at(20).toISOString()],
+    ]);
+    expect(read?.items[0]?.body).toBe(
+      "launched 25 min ago and never claimed; its launch token was never used: the worker never reached its `armada login` line (an install that failed, a prompt cut short). Check its session with the runtime guide's status section; launch it again with armada brief, or revoke the launch on the dashboard's Workers page",
+    );
+    expect(read?.items[1]?.body).toStartWith(
+      "launched 20 min ago and never claimed; the worker signed in with its launch token at 09:42 UTC, then stopped before `armada claim` (session ws-2/s-2). Check",
+    );
+    // A watch started after a launch waits for its claim; past not_started_minutes, the entry carries it.
+    expect(read?.inFlight).toEqual(["DEMO-3", "DEMO-4", "DEMO-6", "DEMO-8"]);
+    // `not_started_minutes` sets when a launch shows.
+    const later = await readInbox(db, { project: P, silentAfterMinutes: 15, notStartedMinutes: 22, now: NOW });
+    expect(later.map((e) => e.ticket)).toEqual(["DEMO-1"]);
   });
 
   test("--wait asks Armada every 15 s, answered 304 while nothing changed, until a new question or the timeout", async () => {

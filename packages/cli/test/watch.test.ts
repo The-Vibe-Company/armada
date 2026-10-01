@@ -157,7 +157,8 @@ describe("armada watch", () => {
     expect(c.err()).toBe("");
     expect(await readWatchState(c.paths, P)).toEqual({
       root: COORDINATOR_ROOT,
-      seen: ["#1"],
+      // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.
+      seen: [expect.stringMatching(/^#1@/)],
       inFlight: ["DEMO-2", "DEMO-3"],
       readAt: new Date(NOW.getTime() + 30_000).toISOString(),
       stopped: null,
