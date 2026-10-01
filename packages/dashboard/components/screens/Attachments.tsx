@@ -1,7 +1,6 @@
 "use client";
 
 import type { Attachment } from "@armada/core/read";
-import dynamic from "next/dynamic";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -9,8 +8,10 @@ import type { Strings } from "@/lib/i18n";
 import { Card, CardGrid, CardMeta, CardTitle, Row, RowSide, RowText, SectionBody } from "../page";
 import { RelativeTime } from "../ui";
 
-// The full-size viewer loads when an image is opened (THE-892).
-const AttachmentViewer = dynamic(() => import("./AttachmentViewer"), { ssr: false });
+import { useLazy } from "../use-lazy";
+
+// The full-size viewer loads apart, once the ticket has an image (THE-892).
+const loadViewer = () => import("./AttachmentViewer").then((m) => m.AttachmentViewer);
 
 export function useAttachments(project: string, ticket: string, version: number | string) {
   const [reading, setReading] = useState<{
@@ -47,6 +48,7 @@ export function Attachments({ items, failed, t }: { items: Attachment[] | null; 
   const requested = useSearchParams().get("attachment");
   const [chosen, setChosen] = useState<string | null>(requested);
   const selected = items?.find((item) => item.id === chosen && item.kind === "image");
+  const AttachmentViewer = useLazy(loadViewer, !!items?.some((item) => item.kind === "image"));
   const a = t.shell.agent;
   if (failed || !items || items.length === 0)
     return (
@@ -94,7 +96,7 @@ export function Attachments({ items, failed, t }: { items: Attachment[] | null; 
           </RowSide>
         </Row>
       ))}
-      {selected && <AttachmentViewer item={selected} onClose={() => setChosen(null)} t={t} />}
+      {selected && AttachmentViewer && <AttachmentViewer item={selected} onClose={() => setChosen(null)} t={t} />}
     </>
   );
 }

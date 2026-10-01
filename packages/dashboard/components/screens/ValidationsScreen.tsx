@@ -10,7 +10,7 @@ import { useParams } from "next/navigation";
 import { useMemo } from "react";
 import { decidedValidations, pendingValidations } from "@/lib/overview-view";
 import type { ActionContext } from "../Actions";
-import { CardGrid, Notice, Page, Section, SectionBody } from "../page";
+import { CardGrid, LONG_LIST, Notice, Page, Section, SectionBody } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { ValidationCard } from "./ValidationCard";
 
@@ -58,7 +58,7 @@ export function ValidationsScreen() {
             <p>{s.decidedEmpty}</p>
           </SectionBody>
         ) : (
-          <CardGrid wide>
+          <CardGrid wide long={decided.length > LONG_LIST}>
             {decided.map((v) => (
               <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
             ))}

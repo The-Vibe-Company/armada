@@ -14,7 +14,8 @@
     "db": "bun scripts/db.ts",
     "icons": "bun scripts/icons.ts",
     "fonts": "bun scripts/fonts.ts",
-    "landing": "bun scripts/landing.ts"
+    "landing": "bun scripts/landing.ts",
+    "perf": "bun scripts/perf.ts"
   },
   "dependencies": {
     "@armada/core": "workspace:*",

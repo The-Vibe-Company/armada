@@ -15,7 +15,7 @@ import { type CSSProperties, memo, useCallback, useEffect, useMemo, useRef, useS
 import { agentState, HARNESS_NAME, HARNESSES, type Harness, harnessCounts, harnessOf, paths } from "@/lib/fleet-view";
 import type { Language, Strings } from "@/lib/i18n";
 import { coordinatorHarness } from "@/lib/project-view";
-import { Button, Row, Section, SectionBody } from "../page";
+import { Button, LONG_LIST, Row, Section, SectionBody } from "../page";
 import { rowProgress } from "../screens/AgentRow";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
@@ -154,7 +154,7 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
         <Hatch />
         {/* Right to left, so the browser opens it on now before any script runs; every row inside reads left to right. */}
         <div className="tl-scroll" ref={scroller} dir="rtl" style={{ "--tl-zoom": ZOOM } as CSSProperties}>
-          <div className="tl-rows" dir="ltr">
+          <div className={rows.length > LONG_LIST ? "tl-rows is-long" : "tl-rows"} dir="ltr">
             <Row className="tl-head">
               <span className="tl-label faint">{t.timeline.session}</span>
               <span className="tl-track tl-scale">

@@ -17,3 +17,5 @@ packages/cli/LICENSE
 .next/
 next-env.d.ts
 packages/dashboard/.demo/
+# Results of the performance budgets (bun run perf)
+packages/dashboard/.perf/

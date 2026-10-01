@@ -2747,3 +2747,22 @@ a.ui-row:hover {
     white-space: normal;
   }
 }
+
+/* A long list (THE-892): rows off screen skip style, layout and paint, and
+   stay in the DOM for j/k, find and screen readers. `auto` keeps the height
+   a row had once drawn. Last, over every other row and card rule. */
+.ui-section.is-long > .ui-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 40px;
+}
+.sh-main[data-density="airy"] .ui-section.is-long > .ui-row {
+  contain-intrinsic-size: auto 48px;
+}
+.ui-cards.is-long > .ui-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+.tl-rows.is-long .ui-row.tl-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 46px;
+}

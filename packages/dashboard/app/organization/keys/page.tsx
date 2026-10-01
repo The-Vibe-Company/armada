@@ -7,6 +7,7 @@ import {
   Button,
   Form,
   Input,
+  LONG_LIST,
   Notice,
   Page,
   Row,
@@ -294,7 +295,7 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
       </Section>
 
       {manager && (
-        <Section label={k.audit} count={events.length}>
+        <Section label={k.audit} count={events.length} long={events.length > LONG_LIST}>
           <SectionBody>
             <p>
               {k.auditHint}

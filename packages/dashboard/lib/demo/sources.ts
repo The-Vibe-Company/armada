@@ -1,4 +1,4 @@
-// Demo mode (ARMADA_DASHBOARD_DEMO=fleet|busy|empty): Linear and GitHub are replaced
+// Demo mode (ARMADA_DASHBOARD_DEMO=fleet|busy|large|empty): Linear and GitHub are replaced
 // by the synthetic world in ./world; the app's database stays real, usually a
 // local PGlite one (`pglite:` URL) seeded with `bun run demo:seed`. No key is needed.
 import { configTemplate, parseConfig } from "@armada/core/read";

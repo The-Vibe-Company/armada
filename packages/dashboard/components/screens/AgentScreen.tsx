@@ -36,6 +36,7 @@ import { type ActionContext, splitQuestion } from "../Actions";
 import {
   Columns,
   HeaderActions,
+  LONG_LIST,
   Page,
   Row,
   RowIcon,
@@ -641,6 +642,7 @@ function Agent({
       >
         <Decision ctx={ctx} row={row} state={state} label={label} project={project} />
         <Section
+          long={tab === "activity" && activity.entries.length > LONG_LIST}
           label={tab === "attachments" ? a.attachments : tab === "files" ? a.files : a.activity}
           count={
             tab === "attachments"

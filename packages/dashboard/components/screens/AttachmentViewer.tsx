@@ -9,7 +9,7 @@ import type { Strings } from "@/lib/i18n";
 import { Button, CardMeta } from "../page";
 import { RelativeTime } from "../ui";
 
-export default function AttachmentViewer({ item, onClose, t }: { item: Attachment; onClose: () => void; t: Strings }) {
+export function AttachmentViewer({ item, onClose, t }: { item: Attachment; onClose: () => void; t: Strings }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const element = dialog.current;
