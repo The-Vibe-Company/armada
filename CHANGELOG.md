@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/The-Vibe-Company/armada/compare/v0.2.1...v0.2.2) (2026-10-01)
+
+
+### Features
+
+* **cli:** never miss a worker's hand-back with armada watch and a Claude Code stop hook ([#60](https://github.com/The-Vibe-Company/armada/issues/60)) ([eb78519](https://github.com/The-Vibe-Company/armada/commit/eb785195a9d9057bc3dc29ee4f91cc9ef77fc0d4))
+
 ## [0.2.1](https://github.com/The-Vibe-Company/armada/compare/v0.2.0...v0.2.1) (2026-10-01)
 
 
