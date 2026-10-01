@@ -47,7 +47,8 @@ const HEALTH_COLOR: Record<ProjectHealth, string> = {
   "on-track": "var(--done)",
 };
 
-export function Fleet() {
+/** `insights`: the line under the summary (THE-893), which the overview page reads; the landing's replica has none. */
+export function Fleet({ insights }: { insights?: ReactNode } = {}) {
   const { overview, checkedAt, failed, pending, refresh, version } = useFleet();
   const { t, author, setAuthor, account } = useShell();
   const now = useNow();
@@ -128,6 +129,7 @@ export function Fleet() {
             {" · "}
             {t.overview.subline(figures)}
           </p>
+          {insights}
         </SectionBody>
       </Section>
 

@@ -34,7 +34,7 @@ import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-se
 import { attachmentBody, attachmentInput } from "./attachment-http";
 import { AttachmentRefusal, attachmentProjectAllowed, saveAttachment } from "./attachments";
 import { type Holder, releaseCredentials, releaseWorkerSecrets } from "./broker";
-import { LATEST_CLI_VERSION } from "./cli-version";
+import type { PublishedCli } from "./cli-version";
 import type { Database, Queryable } from "./db";
 import { fleetStore, holdProject, projectsOf } from "./fleet-store";
 import { dbSnapshots, memorySnapshots } from "./snapshots";
@@ -80,6 +80,8 @@ export interface CliApiDeps {
   /** The vault's master key; off, `POST credentials` answers 503 and the CLI keeps its local keys. */
   vault?: () => VaultMode;
   now?: () => Date;
+  publishedCli?: PublishedCli;
+  after?: (work: () => Promise<void>) => void;
 }
 
 /** Who a terminal is signed in as. Carries no secret. */
@@ -258,7 +260,13 @@ function holderOf(identity: CliIdentity & { launch?: Worker }): Holder | null {
   return { actor: { kind: "session", id: user.id, label }, organization: org, user: user.id };
 }
 
-async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, now: Date): Promise<Response> {
+async function credentials(
+  a: CliAccounts,
+  request: Request,
+  deps: CliApiDeps,
+  now: Date,
+  latest: string,
+): Promise<Response> {
   const vault = vaultKeyOf(deps, "it hands out no key");
   if (vault instanceof Response) return vault;
   const identity = await identify(a, credentialOf(request), now);
@@ -270,7 +278,7 @@ async function credentials(a: CliAccounts, request: Request, deps: CliApiDeps, n
     return refuse(
       426,
       `this CLI is older than this server expects (${MINIMUM_CLI_VERSION} or newer)`,
-      installCommand(LATEST_CLI_VERSION),
+      installCommand(latest),
     );
   const holder = holderOf(identity);
   if (!holder) return noOrganization(a);
@@ -855,18 +863,21 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
  * latest one, which the CLI compares with its own version.
  */
 export async function handleCli(request: Request, path: string[], deps: CliApiDeps): Promise<Response> {
-  const res = await answerCli(request, path, deps);
+  const latest = deps.publishedCli?.current() ?? MINIMUM_CLI_VERSION;
+  const res = await answerCli(request, path, deps, latest);
   const headers = new Headers(res.headers);
   headers.set(CLI_MINIMUM_HEADER, MINIMUM_CLI_VERSION);
-  headers.set(CLI_LATEST_HEADER, LATEST_CLI_VERSION);
+  headers.set(CLI_LATEST_HEADER, latest);
+  const published = deps.publishedCli;
+  if (published?.stale()) deps.after?.(() => published.refresh());
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-async function answerCli(request: Request, path: string[], deps: CliApiDeps): Promise<Response> {
+async function answerCli(request: Request, path: string[], deps: CliApiDeps, latest: string): Promise<Response> {
   // An outdated CLI is refused before anything runs: no write happens that it could not read back.
   const version = request.headers.get(CLI_VERSION_HEADER);
   if (version && compareVersions(version, MINIMUM_CLI_VERSION) < 0)
-    return refuse(426, upgradeLine(version, LATEST_CLI_VERSION), installCommand(LATEST_CLI_VERSION));
+    return refuse(426, upgradeLine(version, latest), installCommand(latest));
   const now = deps.now?.() ?? new Date();
   let a: CliAccounts | null;
   try {
@@ -899,7 +910,7 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps): Pr
     const { launch: _, ...shown } = identity;
     return Response.json(shown, { headers: NO_STORE });
   }
-  if (route === "POST credentials") return credentials(a, request, deps, now);
+  if (route === "POST credentials") return credentials(a, request, deps, now, latest);
   if (route === "POST launch-tokens") return launch(a, request, deps, now);
   if (route === "POST launch-tokens/exchange") return exchange(a, request, now);
   if (route === "POST workers/end") return endWorkers(a, request, now);

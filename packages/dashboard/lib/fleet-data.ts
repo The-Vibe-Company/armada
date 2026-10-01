@@ -14,20 +14,26 @@ import {
   type ArmadaConfig,
   type Attachment,
   agentActivity,
+  buildInsights,
   buildOverview,
   buildStatus,
+  CONFIG_DEFAULTS,
   type CoordinatorPresence,
+  type FleetInsights,
   type FleetOverview,
   type HistoryEvent,
   type InboxItem,
   type InboxReadEvent,
+  type InsightRange,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
   type OwnerValidation,
   type PendingLaunch,
   type ProjectConfigReading,
+  type ProjectInsightRecords,
   type ProjectReading,
   type ProjectRecord,
+  RANGE_DAYS,
   type RuntimeHandle,
   type SessionRecord,
   type SourcesRefresh,
@@ -39,6 +45,7 @@ import {
 import { LATEST_CLI_VERSION } from "./cli-version";
 import { type Database, redactDatabase } from "./db";
 import type { LiveStore } from "./fleet-store";
+import { insightKey } from "./insights-view";
 import {
   type ClaimOptions,
   dbSnapshots,
@@ -73,9 +80,11 @@ export interface FleetCache {
   snapshots: MemorySnapshots;
   /** The last project list read from the registry, used while the database is unreachable. */
   projects: ProjectRef[] | null;
+  /** Each project's Insights records per range, kept `INSIGHTS_CACHE_MS` (THE-893). */
+  insights: Map<string, { at: number; records: ProjectInsightRecords }>;
 }
 
-export const newCache = (): FleetCache => ({ snapshots: memorySnapshots(), projects: null });
+export const newCache = (): FleetCache => ({ snapshots: memorySnapshots(), projects: null, insights: new Map() });
 
 /**
  * Whose fleet a request reads: the viewer's organization, and the deployment's
@@ -587,4 +596,115 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
   });
 
   return buildOverview({ projects: readings, live, now: opts.now(), latestCli: LATEST_CLI_VERSION });
+}
+
+// ------------------------------------------------------------------ insights (THE-893)
+
+/** How long a project's Insights records are kept in this process: the page and the overview's line share them. */
+export const INSIGHTS_CACHE_MS = 60_000;
+
+/** A ticket an Insights number links to: its title, its Linear issue, and whether a worker holds it now. */
+export interface InsightTicketFacts {
+  title: string | null;
+  url: string | null;
+  inFlight: boolean;
+}
+
+/** The Insights page's reading: the numbers, the projects it may filter on, and what each ticket links to. */
+export interface InsightsReading {
+  insights: FleetInsights;
+  range: InsightRange;
+  /** The project filter; null for every project. */
+  project: string | null;
+  projects: { slug: string; name: string }[];
+  /** By `<project>/<ticket>`. */
+  tickets: Record<string, InsightTicketFacts>;
+  /** False when the live data could not be read: the numbers are empty, not zero. */
+  live: boolean;
+}
+
+/**
+ * The Insights of the scope's projects, or of one: Postgres only (each
+ * project's records, kept a minute per range, and its last reading of Linear
+ * for the titles and its silence threshold). Null when `project` is not one
+ * the scope may see.
+ */
+export async function loadInsights(
+  opts: LoadOptions,
+  scope: Scope | null,
+  q: { range: InsightRange; project: string | null },
+): Promise<InsightsReading | null> {
+  const now = opts.now();
+  const opened = await openLive(opts, scope);
+  const read = await readEntries(opened, opts, projectsOf(opts, scope).map(keyOf));
+  const shown = projectsOf(opts, scope).flatMap((p) => {
+    const snap = read.entries.get(keyOf(p))?.snapshot;
+    // As the overview: live data is read by the registry's slug, never by one only armada.toml names.
+    const slug = snap ? (!p.slug || p.slug === snap.config.project.slug ? snap.config.project.slug : null) : p.slug;
+    return slug ? [{ slug, name: snap?.config.project.name ?? p.name ?? slug, snap: snap ?? null }] : [];
+  });
+  if (q.project !== null && !shown.some((p) => p.slug === q.project)) return null;
+  const chosen = shown.filter((p) => q.project === null || p.slug === q.project);
+  const since = new Date(now.getTime() - 2 * RANGE_DAYS[q.range] * 24 * 3_600_000);
+  const cache = opts.cache.insights;
+  let live = opened.store !== null && !read.failed;
+  const records: ProjectInsightRecords[] = [];
+  if (opened.store && live) {
+    const store = opened.store;
+    try {
+      records.push(
+        ...(await withTimeout(
+          Promise.all(
+            chosen.map(async (p) => {
+              const silentAfterMinutes = p.snap?.config.policy.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes;
+              const key = `${p.slug}:${q.range}:${silentAfterMinutes}`;
+              const held = cache.get(key);
+              if (held && now.getTime() - held.at < INSIGHTS_CACHE_MS) return held.records;
+              const r: ProjectInsightRecords = {
+                project: p.slug,
+                silentAfterMinutes,
+                ...(await store.insightRecords(p.slug, since, silentAfterMinutes)),
+              };
+              cache.set(key, { at: now.getTime(), records: r });
+              return r;
+            }),
+          ),
+          opts.liveTimeoutMs ?? 4000,
+          "reading the insights",
+        )),
+      );
+    } catch (err) {
+      liveError(err);
+      live = false;
+      records.length = 0;
+    }
+  }
+  const insights = buildInsights({ records, range: q.range, now });
+  const tickets: Record<string, InsightTicketFacts> = {};
+  for (const r of records) {
+    const p = chosen.find((c) => c.slug === r.project);
+    const issues = new Map((p?.snap?.sources.program.issues ?? []).map((i) => [i.id, i]));
+    const held = new Set(r.sessions.filter((s) => s.releasedAt === null).map((s) => s.ticket));
+    const ids = new Set([
+      ...r.events.map((e) => e.ticket),
+      ...r.waits.flatMap((w) => w.ticket ?? []),
+      ...r.validations.map((v) => v.ticket),
+    ]);
+    for (const id of ids) {
+      const issue = issues.get(id);
+      tickets[insightKey(r.project, id)] = {
+        title: issue?.title ?? null,
+        url: issue?.url ?? null,
+        inFlight: held.has(id),
+      };
+    }
+  }
+  return {
+    insights,
+    range: q.range,
+    project: q.project,
+    projects: shown.map((p) => ({ slug: p.slug, name: p.name })),
+    tickets,
+    live,
+  };
 }

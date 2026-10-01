@@ -3,7 +3,9 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  checkPublished,
   machinePaths,
+  NPM_REGISTRY_URL,
   readWatchState,
   type ServerCli,
   takeWatchLock,
@@ -95,14 +97,38 @@ async function hook(c: Awaited<ReturnType<typeof coordinator>>, cwd: string, env
 }
 
 describe("armada watch", () => {
-  test("a new release ends the watch as a version item, once, and no notice repeats it", async () => {
-    const c = await coordinator({ cli: { minimum: "0.0.1", latest: "99.1.0" } });
+  test("a release with a delayed tarball ends the watch only after verification, once, and no notice repeats it", async () => {
+    const server = { minimum: "0.0.1", latest: version };
+    const c = await coordinator({ cli: server });
+    const tarball = "https://registry.npmjs.org/armada-99.1.0.tgz";
+    let ready = false;
+    c.onSleep.push(
+      async () => {
+        expect(
+          await checkPublished("99.1.0", async (url) =>
+            url === NPM_REGISTRY_URL
+              ? Response.json({ versions: { "99.1.0": { dist: { tarball } } } })
+              : new Response(null, { status: ready ? 200 : 404 }),
+          ),
+        ).toEqual({ state: "missing", newest: null });
+        expect(c.out()).not.toContain("is out");
+      },
+      async () => {
+        ready = true;
+        const answer = await checkPublished("99.1.0", async (url) =>
+          url === NPM_REGISTRY_URL
+            ? Response.json({ versions: { "99.1.0": { dist: { tarball } } } })
+            : new Response(null, { status: ready ? 200 : 404 }),
+        );
+        if (answer.state === "published") server.latest = "99.1.0";
+      },
+    );
     await c.hold("DEMO-2");
     expect(await run(["watch"], c.io)).toBe(0);
     expect(c.out()).toBe(
       [
         "Inbox of widgets (1), oldest first:",
-        `* version · ${NOW.toISOString()}`,
+        `* version · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
         `    Armada 99.1.0 is out (you run ${version}). Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0`,
         "    Not urgent: finish what is in flight first, then, between rounds:",
         "      1. npm install -g @the-vibe-company/armada@99.1.0",

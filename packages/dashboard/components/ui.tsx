@@ -159,6 +159,7 @@ export function Tabs<K extends string>({
   size = "md",
   push = false,
   controls,
+  prefetch = true,
 }: {
   items: TabItem<K>[];
   value: K;
@@ -168,6 +169,8 @@ export function Tabs<K extends string>({
   /** Link tabs that open pages (the organization's) add to the history; filters replace it. */
   push?: boolean;
   controls?: string;
+  /** Off for filters of a page rendered on the server (/insights): each prefetch would render it. */
+  prefetch?: boolean;
 }) {
   const stop = Math.max(
     0,
@@ -207,7 +210,7 @@ export function Tabs<K extends string>({
           <Link
             key={it.key}
             href={it.href}
-            prefetch
+            prefetch={prefetch}
             replace={!push}
             scroll={push}
             role="tab"

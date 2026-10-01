@@ -109,15 +109,18 @@ export function Row({
   children,
   className,
   style,
+  prefetch = true,
 }: {
   href?: string;
   children: ReactNode;
   className?: string;
   style?: CSSProperties;
+  /** Off for a link to the same page (a filter, `?show=`): its prefetch would render the page again. */
+  prefetch?: boolean;
 }) {
   if (href)
     return (
-      <Link href={href} prefetch className={cx("ui-row", className)} style={style} data-row="">
+      <Link href={href} prefetch={prefetch} className={cx("ui-row", className)} style={style} data-row="">
         {children}
       </Link>
     );
@@ -196,10 +199,21 @@ export function CardGrid({ children, wide = false }: { children: ReactNode; wide
 }
 
 /** A card: the rows' padding, hairline and type, with a radius; a link when `href` is set. */
-export function Card({ children, href, className }: { children: ReactNode; href?: string; className?: string }) {
+export function Card({
+  children,
+  href,
+  className,
+  prefetch = true,
+}: {
+  children: ReactNode;
+  href?: string;
+  className?: string;
+  /** As a row's. */
+  prefetch?: boolean;
+}) {
   if (href)
     return (
-      <Link href={href} prefetch className={cx("ui-card is-link", className)}>
+      <Link href={href} prefetch={prefetch} className={cx("ui-card is-link", className)}>
         {children}
       </Link>
     );

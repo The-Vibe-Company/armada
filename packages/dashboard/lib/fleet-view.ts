@@ -154,6 +154,8 @@ export const paths = {
   /** One validation, the link the CLI prints (THE-885). */
   validation: (id: number) => `/approve/${id}`,
   design: "/design",
+  /** How fast the fleet ships and where tickets wait (THE-893). */
+  insights: "/insights",
 } as const;
 
 /** A page of the shell, read from its path. */
@@ -167,6 +169,7 @@ export type Place =
   | { kind: "validation"; id: number }
   | { kind: "organization"; page: "members" | "keys" | "github" | "workers" }
   | { kind: "design" }
+  | { kind: "insights" }
   | { kind: "other" };
 
 export function placeOf(pathname: string): Place {
@@ -176,6 +179,7 @@ export function placeOf(pathname: string): Place {
   if (a === "projects") return b ? { kind: "project", slug: b } : { kind: "projects" };
   if (a === "agents") return b ? { kind: "agent", ticket: b } : { kind: "agents" };
   if (a === "design") return { kind: "design" };
+  if (a === "insights" && !b) return { kind: "insights" };
   if (a === "validations" && !b) return { kind: "validations" };
   if (a === "approve" && b && /^\d+$/.test(b)) return { kind: "validation", id: Number(b) };
   if (a === "organization") {
@@ -186,13 +190,14 @@ export function placeOf(pathname: string): Place {
 }
 
 /** The sidebar entry a page belongs to. An agent's page belongs to where it was opened from. */
-export type Section = "overview" | "validations" | "projects" | "agents" | null;
+export type Section = "overview" | "validations" | "projects" | "agents" | "insights" | null;
 
 export function sectionOf(place: Place, from: Place | null): Section {
   if (place.kind === "overview") return "overview";
   if (place.kind === "validations" || place.kind === "validation") return "validations";
   if (place.kind === "projects" || place.kind === "project") return "projects";
   if (place.kind === "agents") return "agents";
+  if (place.kind === "insights") return "insights";
   if (place.kind === "agent") {
     if (from?.kind === "overview") return "overview";
     if (from?.kind === "project" || from?.kind === "projects") return "projects";
@@ -203,7 +208,10 @@ export function sectionOf(place: Place, from: Place | null): Section {
 
 /** One step of the breadcrumbs; the last has no link. */
 export type Crumb =
-  | { kind: "overview" | "projects" | "agents" | "validations" | "organization" | "design"; href: string | null }
+  | {
+      kind: "overview" | "projects" | "agents" | "validations" | "insights" | "organization" | "design";
+      href: string | null;
+    }
   | { kind: "validation"; id: number; href: null }
   | { kind: "project"; slug: string; href: string | null }
   | { kind: "agent"; ticket: string; href: null }
@@ -249,6 +257,8 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
           ];
     case "design":
       return [{ kind: "design", href: null }];
+    case "insights":
+      return [{ kind: "insights", href: null }];
     default:
       return [];
   }
