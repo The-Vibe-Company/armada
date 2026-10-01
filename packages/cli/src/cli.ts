@@ -11,6 +11,8 @@ import {
   loadStatus,
   parseConfig,
   Refusal,
+  skillsBehind,
+  skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
@@ -22,8 +24,9 @@ import { type Io, missingKey, UsageError } from "./io.ts";
 import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
 import { statusAll } from "./projects.ts";
+import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
-import { CommandError } from "./repo.ts";
+import { CommandError, fsRepoView } from "./repo.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { hookStop, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusEvents } from "./worker.ts";
@@ -205,6 +208,8 @@ Files:
                        \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
     config.toml        personal defaults: language, [dashboard] url, [api] url
     watch/<project>.*  the project's watch: its lock, what you were shown, who is in flight
+    releases.json      the Armada releases you were told of: a coordinator command says once
+                       when a newer one is out (\`armada watch\` ends on it)
 `;
 
 /** The help of one command, or null for a command Armada does not know. */
@@ -376,6 +381,8 @@ async function status(io: Io, args: Args): Promise<number> {
     ...(io.fetch ? { fetch: io.fetch } : {}),
     ...(io.now ? { now: io.now } : {}),
   });
+  const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
+  if (behind) report.warnings.push(skillsBehindLine(behind, version));
   io.stdout(args.json ? `${JSON.stringify(report, null, 2)}\n` : renderStatus(report));
   return 0;
 }
@@ -409,8 +416,18 @@ function nextStep(err: unknown, command: string | null): string | null {
   return null;
 }
 
-/** Runs one command; returns the process exit code (0 ok, 1 failure, 2 usage or configuration). */
+/**
+ * Runs one command; returns the process exit code (0 ok, 1 failure, 2 usage or
+ * configuration). A coordinator command then says once when a newer Armada is out.
+ */
 export async function run(argv: string[], io: Io): Promise<number> {
+  const code = await dispatch(argv, io);
+  const command = commandOf(argv);
+  if (command && NOTICE_COMMANDS.has(command)) await noticeRelease(io, version).catch(() => {});
+  return code;
+}
+
+async function dispatch(argv: string[], io: Io): Promise<number> {
   try {
     const args = parseArgs(argv);
     if (args.version) {

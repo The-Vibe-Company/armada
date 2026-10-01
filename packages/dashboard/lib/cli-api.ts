@@ -26,12 +26,11 @@ import {
   parseProject,
   serveFleet,
   upgradeLine,
-  versionToInstall,
 } from "@armada/core/read";
-import cliPackage from "../../cli/package.json" with { type: "json" };
 import { type Auth, apiKeyCreatorRole, firstOrganization, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
 import { type Holder, releaseCredentials, releaseWorkerSecrets } from "./broker";
+import { LATEST_CLI_VERSION } from "./cli-version";
 import type { Database, Queryable } from "./db";
 import { fleetStore, holdProject, projectsOf } from "./fleet-store";
 import {
@@ -62,9 +61,6 @@ import {
   workerActor,
   workerSession,
 } from "./workers";
-
-/** The CLI released from this commit, what an outdated CLI is told to install; never below the minimum. */
-const LATEST_CLI_VERSION = versionToInstall(MINIMUM_CLI_VERSION, cliPackage.version);
 
 export interface CliAccounts {
   auth: Auth;
@@ -514,7 +510,11 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       `the project ${project.slug} belongs to another organization`,
       `another slug in armada.toml ([project] slug), or sign in to the organization of ${project.slug}`,
     );
-  const answer = await serveFleet(fleetStore(a.client), { op, project, caller, input: body.input }, { now });
+  const answer = await serveFleet(
+    fleetStore(a.client),
+    { op, project, caller, input: body.input },
+    { now, cliVersion: request.headers.get(CLI_VERSION_HEADER) },
+  );
   // An unchanged inbox: nothing to send.
   if (answer.status === 304) return new Response(null, { status: 304, headers: NO_STORE });
   if (answer.status !== 200)

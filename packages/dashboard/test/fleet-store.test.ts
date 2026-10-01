@@ -6,6 +6,7 @@ import {
   addInboxItem,
   addRequest,
   assignUnownedProjects,
+  coordinatorPresence,
   getLease,
   getRuntimeHandle,
   lastCoordinatorSeen,
@@ -70,10 +71,13 @@ describe("live data", () => {
     expect(Object.keys(latest)).toEqual(["WID-2"]);
     expect(latest["WID-2"]).toMatchObject({ kind: "report", phase: "shipping", prUrl: "u", at: at(3).toISOString() });
 
+    await recordCoordinatorSeen(db, { project: P, handle: "ws/c", cliVersion: "0.2.3", at: at(9) });
+    // A read that names no version keeps the one known.
     await recordCoordinatorSeen(db, { project: P, handle: "ws/c", at: at(10) });
     // A late write of an older read never moves it back.
-    await recordCoordinatorSeen(db, { project: P, at: at(8) });
+    await recordCoordinatorSeen(db, { project: P, cliVersion: "0.1.0", at: at(8) });
     expect(await lastCoordinatorSeen(db, P)).toBe(at(10).toISOString());
+    expect(await coordinatorPresence(db, P)).toEqual({ seenAt: at(10).toISOString(), cliVersion: "0.2.3" });
     expect(await lastCoordinatorSeen(db, "other")).toBeNull();
 
     const claim = { project: P, ticket: "WID-2", runtime: "Conductor", handle: "ws/2", branch: "b", at: at(1) };

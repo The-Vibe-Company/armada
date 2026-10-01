@@ -177,7 +177,12 @@ const NOT_MODIFIED = Symbol("not modified");
 
 export interface ServeFleetDeps {
   now: () => Date;
+  /** The caller's CLI version (`x-armada-cli-version`): the coordinator's presence keeps it. */
+  cliVersion?: string | null;
 }
+
+/** A CLI version as a release names it (0.2.4, 1.0.0-beta.1); anything else is not kept. */
+const CLI_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][\w.-]{1,40})?$/;
 
 /**
  * Runs one operation for `project`, already registered for the caller's
@@ -262,6 +267,7 @@ export async function serveFleet(
               etag: optText(b, "etag", 64),
             },
             at,
+            deps.cliVersion && CLI_VERSION.test(deps.cliVersion) ? deps.cliVersion : null,
           );
           return read ?? NOT_MODIFIED;
         }

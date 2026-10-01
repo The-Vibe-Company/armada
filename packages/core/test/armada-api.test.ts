@@ -1,5 +1,13 @@
 import { expect, test } from "bun:test";
-import { ArmadaApiError, armadaApi, compareVersions, waitForApproval } from "../src/armada-api.ts";
+import {
+  ArmadaApiError,
+  armadaApi,
+  compareVersions,
+  newerRelease,
+  releaseLine,
+  type ServerCli,
+  waitForApproval,
+} from "../src/armada-api.ts";
 import { ARMADA_URL, fakeArmada, NOW } from "./support.ts";
 
 /** A clock that moves only when the code sleeps. */
@@ -99,12 +107,31 @@ test("a CLI older than the server expects gets one upgrade line instead of an an
   expect(armada.calls.at(-1)?.version).toBe("0.1.22");
 
   // Current, or talking to a server that names no minimum: answers as before.
-  const current = armadaApi({ url: ARMADA_URL, fetch: armada.fetch, version: "0.2.0" });
+  const heard: ServerCli[] = [];
+  const current = armadaApi({
+    url: ARMADA_URL,
+    fetch: armada.fetch,
+    version: "0.2.0",
+    onServerCli: (s) => heard.push(s),
+  });
   expect(await current.startDeviceLogin()).toMatchObject({ userCode: "WDJBMJHT" });
   expect(current.serverCli()).toEqual({ minimum: "0.2.0", latest: "0.2.5" });
+  expect(heard).toEqual([{ minimum: "0.2.0", latest: "0.2.5" }]);
   const older = armadaApi({ url: ARMADA_URL, fetch: fakeArmada().fetch, version: "0.1.22" });
   expect(await older.startDeviceLogin()).toMatchObject({ userCode: "WDJBMJHT" });
   expect(older.serverCli()).toBeNull();
+});
+
+test("a newer release is named with its install command, the skills step and its notes", () => {
+  expect(newerRelease("0.2.3", "0.2.4")).toBe("0.2.4");
+  expect(newerRelease("0.2.4", "0.2.4")).toBeNull();
+  expect(newerRelease("0.2.5", "0.2.4")).toBeNull();
+  expect(newerRelease("0.2.3", null)).toBeNull();
+  // A development build is never told to install a release.
+  expect(newerRelease("0.0.0", "0.2.4")).toBeNull();
+  expect(releaseLine("0.2.3", "0.2.4")).toBe(
+    "Armada 0.2.4 is out (you run 0.2.3): npm install -g @the-vibe-company/armada@0.2.4 — then armada init to refresh this project's skills. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4",
+  );
 });
 
 test("versions compare by number", () => {

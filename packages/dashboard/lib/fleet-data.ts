@@ -24,6 +24,7 @@ import {
   type StatusReport,
   type StatusSources,
 } from "@armada/core/read";
+import { LATEST_CLI_VERSION } from "./cli-version";
 import { type Database, redactDatabase } from "./db";
 import type { LiveStore } from "./fleet-store";
 import {
@@ -250,16 +251,24 @@ interface LiveProject {
   handles: RuntimeHandle[];
   inbox: InboxItem[];
   coordinatorSeenAt: string | null;
+  /** The CLI version the coordinator ran at its last inbox read; null when unknown. */
+  coordinatorCliVersion: string | null;
 }
 
 async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
-  const [events, handles, inbox, coordinatorSeenAt] = await Promise.all([
+  const [events, handles, inbox, presence] = await Promise.all([
     store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
     store.openRuntimeHandles(project),
     store.openInboxItems({ project, recipient: "coordinator" }),
-    store.lastCoordinatorSeen(project),
+    store.coordinatorPresence(project),
   ]);
-  return { events, handles, inbox, coordinatorSeenAt };
+  return {
+    events,
+    handles,
+    inbox,
+    coordinatorSeenAt: presence?.seenAt ?? null,
+    coordinatorCliVersion: presence?.cliVersion ?? null,
+  };
 }
 
 /**
@@ -438,10 +447,12 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
       report: statusOf(snap, l, opts.now()),
       error: null,
       warnings,
-      live: l ? { inbox: l.inbox, coordinatorSeenAt: l.coordinatorSeenAt } : null,
+      live: l
+        ? { inbox: l.inbox, coordinatorSeenAt: l.coordinatorSeenAt, coordinatorCliVersion: l.coordinatorCliVersion }
+        : null,
       profiles: snap.config.conductor.profiles,
     };
   });
 
-  return buildOverview({ projects: readings, live, now: opts.now() });
+  return buildOverview({ projects: readings, live, now: opts.now(), latestCli: LATEST_CLI_VERSION });
 }

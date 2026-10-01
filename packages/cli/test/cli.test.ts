@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GITHUB_GRAPHQL, LINEAR_ENDPOINT } from "../../core/src/index.ts";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
+import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 
 function fakeIo(
@@ -88,6 +92,27 @@ Pull requests waiting (4)
     expect(out()).toEndWith(
       "\nWarnings (1)\n  ! DEMO-13: could not read all its relations (Linear API: Query too complex); some may be missing\n",
     );
+  });
+
+  test("project skills that differ from the CLI's are named with the release the lock records", async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-status-"));
+    try {
+      await mkdir(join(root, ".agents/skills/armada-worker"), { recursive: true });
+      await writeFile(join(root, ".agents/skills/armada-worker/SKILL.md"), "an older worker skill");
+      const entry = { source: "The-Vibe-Company/armada", ref: "v0.1.4", computedHash: "old" };
+      await writeFile(
+        join(root, "skills-lock.json"),
+        JSON.stringify({ version: 1, skills: { "armada-worker": entry } }),
+      );
+      const { io, out } = fakeIo({ [join(root, "armada.toml")]: DEMO_TOML });
+      io.cwd = root;
+      expect(await run(["status", "--json"], io)).toBe(0);
+      expect(JSON.parse(out()).warnings).toContain(
+        `this project's Armada skills are 0.1.4 (armada-worker differs), the CLI is ${version}: run \`armada init\` and merge its PR (\`armada merge <n> --no-ticket\`)`,
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("a missing armada.toml or a missing key is a configuration error naming what is missing", async () => {

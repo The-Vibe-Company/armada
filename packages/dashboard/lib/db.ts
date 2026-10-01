@@ -532,6 +532,12 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
     ],
   },
+  {
+    // The version of the CLI each coordinator runs, from the header of its
+    // inbox reads (THE-863): the dashboard shows a coordinator behind the latest.
+    version: 8,
+    statements: ["ALTER TABLE coordinator_presence ADD COLUMN IF NOT EXISTS cli_version text"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

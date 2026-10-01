@@ -174,6 +174,21 @@ export const installCommand = (version: string) => `npm install -g ${CLI_PACKAGE
 export const upgradeLine = (version: string, install: string) =>
   `Armada ${version} is older than this server expects: ${installCommand(install)}`;
 
+/** Where a release's notes are: release-please tags each version v<version>. */
+export const releaseNotesUrl = (version: string) =>
+  `https://github.com/The-Vibe-Company/armada/releases/tag/v${version}`;
+
+/**
+ * The release newer than the running CLI, from the server's latest; null when
+ * there is none, or for a development build (0.0.0), which no release replaces.
+ */
+export const newerRelease = (running: string, latest: string | null | undefined): string | null =>
+  latest && running !== "0.0.0" && compareVersions(latest, running) > 0 ? latest : null;
+
+/** The one line a coordinator reads when a newer Armada is out: what to install, then the skills, then the notes. */
+export const releaseLine = (running: string, latest: string) =>
+  `Armada ${latest} is out (you run ${running}): ${installCommand(latest)} — then armada init to refresh this project's skills. Changes: ${releaseNotesUrl(latest)}`;
+
 /** What a server said of the CLIs it serves, from the headers of its last answer. */
 export interface ServerCli {
   minimum: string;
@@ -233,6 +248,8 @@ export interface ArmadaApiOptions {
   timeoutMs?: number;
   /** This CLI's version: sent on every call, and compared with the oldest the server expects. */
   version?: string;
+  /** Called with what every answer says of the CLIs the server serves (`serverCli`). */
+  onServerCli?: (server: ServerCli) => void;
 }
 
 export function armadaApi(opts: ArmadaApiOptions) {
@@ -268,7 +285,10 @@ export function armadaApi(opts: ArmadaApiOptions) {
     // Whatever it answered, an older CLI than the server expects cannot trust its reading of it.
     const minimum = res.headers.get(CLI_MINIMUM_HEADER);
     const latest = res.headers.get(CLI_LATEST_HEADER) || null;
-    if (minimum) serverCli = { minimum, latest };
+    if (minimum) {
+      serverCli = { minimum, latest };
+      opts.onServerCli?.(serverCli);
+    }
     if (opts.version && minimum && compareVersions(opts.version, minimum) < 0) {
       await res.body?.cancel().catch(() => {});
       const install = versionToInstall(minimum, latest);

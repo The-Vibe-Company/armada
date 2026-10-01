@@ -32,7 +32,7 @@ export function memoryFleet(): FleetStore & {
   events: EventRow[];
   items: ItemRow[];
   leases: Map<string, Lease>;
-  presence: Map<string, { handle: string | null; at: string }>;
+  presence: Map<string, { handle: string | null; cliVersion: string | null; at: string }>;
 } {
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
@@ -40,7 +40,7 @@ export function memoryFleet(): FleetStore & {
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
-  const presence = new Map<string, { handle: string | null; at: string }>();
+  const presence = new Map<string, { handle: string | null; cliVersion: string | null; at: string }>();
 
   const stored = (r: ItemRow): StoredInboxItem => {
     const { requestQuestion, requestProfile, ...rest } = r;
@@ -125,7 +125,12 @@ export function memoryFleet(): FleetStore & {
     async recordCoordinatorSeen(seen) {
       const was = presence.get(seen.project);
       const at = seen.at.toISOString();
-      if (!was || was.at <= at) presence.set(seen.project, { handle: seen.handle ?? null, at });
+      if (!was || was.at <= at)
+        presence.set(seen.project, {
+          handle: seen.handle ?? null,
+          cliVersion: seen.cliVersion ?? was?.cliVersion ?? null,
+          at,
+        });
     },
     async lastCoordinatorSeen(project) {
       return presence.get(project)?.at ?? null;
