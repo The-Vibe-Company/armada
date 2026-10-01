@@ -176,7 +176,7 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 - Root Directory: `packages/dashboard`, with files outside the root directory included (the default). The framework preset is Next.js, and Bun installs the workspace from `bun.lock`.
 - Functions run in the region `packages/dashboard/vercel.json` names (`fra1`, Frankfurt): keep them next to the database, or change it to your database's region. Every poll makes a few database round trips, so the distance between the two is what the dashboard's speed depends on.
 - The database: one Postgres database holds everything (accounts, organizations, the vault, the workers, the fleet's live data). [Neon](https://neon.com) works well: create a project in the region of the functions (`aws-eu-central-1` for `fra1`) and set its pooled connection string as `ARMADA_DATABASE_URL` (`DATABASE_URL`, which Neon's Vercel integration sets, is read too). A remote database is reached over verified TLS unless its URL says otherwise: a Postgres without TLS on a private network needs `?sslmode=disable`. The schema is applied on first use; `ARMADA_DATABASE_URL=<direct URL> bun run db migrate` (in `packages/dashboard`) applies it beforehand. Accounts are Better Auth run by the app on that database, not Neon's managed auth, which offers neither the device sign-in of `armada login` nor organization API keys, nor a way to keep sign-up by invitation only.
-- Environment variables: `ARMADA_DATABASE_URL`, the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), `LINEAR_API_KEY` and `GITHUB_TOKEN`. With accounts and the vault (`ARMADA_SECRETS_KEY`, see [Keys kept in Armada](#keys-kept-in-armada)), the last two move to the Keys page and are only a fallback here, for the deployment's first organization. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while the database is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
+- Environment variables: `ARMADA_DATABASE_URL`, the accounts variables below (or, until they are set, `ARMADA_DASHBOARD_PASSWORD`), the [GitHub App](#github-app)'s `ARMADA_GITHUB_APP_ID` and `ARMADA_GITHUB_APP_PRIVATE_KEY`, and `LINEAR_API_KEY`. With accounts and the vault (`ARMADA_SECRETS_KEY`, see [Keys kept in Armada](#keys-kept-in-armada)), `LINEAR_API_KEY` moves to the Keys page and is only a fallback here, for the deployment's first organization. `GITHUB_TOKEN` is read only without the GitHub App, or for a repository it cannot read. Optional: `ARMADA_REPOSITORIES` (the `owner/name` list shown while the database is unreachable on a fresh server), `ARMADA_DASHBOARD_LANGUAGE` (`en` or `fr`), `ARMADA_DASHBOARD_SNAPSHOT_SECONDS` (Linear and GitHub read period, default 60) and `ARMADA_DASHBOARD_AUTHOR` (the name requests are signed with until a viewer gives theirs). Never add a runtime token (Conductor or other): the coordinator carries out every request.
 - The keys stay on the server; the browser only receives the fleet reading.
 
 **Accounts.** People sign in with GitHub (or email and password where enabled) and belong to organizations, with the roles owner, admin and member. Accounts, sessions, organizations and invitations live in the app's database (`ARMADA_DATABASE_URL`), with the fleet's data; its schema is applied on first use. Accounts turn on only when every required variable below is set. With none of them set, the shared password applies, unchanged; with some but not all, the dashboard fails closed (503, naming the missing ones) rather than fall back to a password that shows every organization's projects.
@@ -186,7 +186,7 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 | `ARMADA_DATABASE_URL` | The app's Postgres database (see Deploy on Vercel above); `pglite:<directory>` locally. It alone does not turn accounts on: the shared password reads the fleet from it too |
 | `ARMADA_AUTH_SECRET` | Signs sessions: 32 characters at least, for example `openssl rand -base64 32`. Changing it signs everyone out |
 | `ARMADA_AUTH_URL` | The dashboard's public address, for example `https://armada.example.com`: GitHub's callback and the links in emails |
-| `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET` | A GitHub OAuth app (GitHub > Settings > Developer settings > OAuth Apps) whose callback URL is `<ARMADA_AUTH_URL>/api/auth/callback/github` |
+| `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET` | The Client ID and a client secret of the deployment's [GitHub App](#github-app), whose callback URL is `<ARMADA_AUTH_URL>/api/auth/callback/github`. A GitHub OAuth app still signs people in, but cannot read GitHub for the dashboard |
 | `ARMADA_AUTH_OWNER_EMAILS` | Comma-separated addresses that may create an account without an invitation and create organizations |
 | `ARMADA_AUTH_EMAIL_PASSWORD` | Optional, `on` or `off`: email and password sign-in, with address confirmation. Development only for now (default on): production ignores it until an email provider is plugged in, since confirmation links would sit in the server log |
 
@@ -201,17 +201,17 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 | --- | --- |
 | `ARMADA_SECRETS_KEY` | The vault's master key: 32 random bytes in base64 or hex, `openssl rand -base64 32`. It stays in the deployment's environment, never in a database. Changing it makes every stored key unreadable (the Keys page asks to enter them again) |
 
-- The Keys page holds the Linear API key; the Turso access: a Platform API token (`turso auth api-tokens mint armada`) with the Turso organization and database names, or, without one, the database URL and a database token; and a GitHub token for the dashboard's own reads. Each member may add their own Linear key: their terminals use it, so the comments they post carry their name.
+- The Keys page holds the Linear API key; the Turso access: a Platform API token (`turso auth api-tokens mint armada`) with the Turso organization and database names, or, without one, the database URL and a database token; and a GitHub token for the dashboard's own reads, needed only without the [GitHub App](#github-app). Each member may add their own Linear key: their terminals use it, so the comments they post carry their name.
 - Values are write-only: once saved, a secret is never shown again, only who set it and when. Each value is sealed with AES-256-GCM under its own data key, itself sealed by the master key, and bound to its organization, person and name.
 - A signed-in terminal (a session of `armada login` or an organization API key) calls `POST /api/cli/credentials`. It receives the Linear key (the person's own first) and a Turso database token made for it through the Turso Platform API, which expires after 4 hours and is renewed without asking. Without a Platform token, the stored database token is handed out as is, and the audit list says so. Answers are never cached; a terminal asking more than 30 times a minute is refused for a minute.
 - Every change and every key handed out is in the audit list at the bottom of the Keys page (owners and admins): who, which key, when; never a value.
-- The dashboard reads each organization's fleet with that organization's Linear and GitHub keys from the vault. Only the deployment's first organization falls back to the environment's (and to `ARMADA_REPOSITORIES`): another organization could name any repository in the registry. Once the keys are on the Keys page, the environment shrinks to `ARMADA_DATABASE_URL`, the accounts variables and `ARMADA_SECRETS_KEY`. The Turso keys serve terminals only, until the CLI reaches the fleet through Armada: the dashboard reads the fleet from its own database.
+- The dashboard reads each organization's fleet with that organization's Linear and GitHub keys from the vault. Only the deployment's first organization falls back to the environment's (and to `ARMADA_REPOSITORIES`): another organization could name any repository in the registry. Once the keys are on the Keys page, the environment shrinks to `ARMADA_DATABASE_URL`, the accounts variables, `ARMADA_SECRETS_KEY` and the GitHub App's. With the [GitHub App](#github-app), GitHub is read through it rather than with a stored token. The Turso keys serve terminals only, until the CLI reaches the fleet through Armada: the dashboard reads the fleet from its own database.
 - Without `ARMADA_SECRETS_KEY` (or under the shared password), nothing changes: the Keys page says how to turn the vault on, the CLI's call answers 503 with that next step, and terminals keep their own keys.
 
 **Switch from the shared password to accounts** (a deployment that runs on `ARMADA_DASHBOARD_PASSWORD` keeps working until the redeploy of step 4; set every variable before it, since a partial set locks the dashboard):
 
 1. Create the database and set `ARMADA_DATABASE_URL` (see Deploy on Vercel above).
-2. Create a GitHub OAuth app with the callback URL `https://<your dashboard>/api/auth/callback/github`, and set `ARMADA_AUTH_GITHUB_CLIENT_ID` and `ARMADA_AUTH_GITHUB_CLIENT_SECRET`.
+2. Create the [GitHub App](#github-app) with the callback URL `https://<your dashboard>/api/auth/callback/github`, and set `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET`, `ARMADA_GITHUB_APP_ID` and `ARMADA_GITHUB_APP_PRIVATE_KEY`.
 3. Set `ARMADA_AUTH_SECRET`, `ARMADA_AUTH_URL` and `ARMADA_AUTH_OWNER_EMAILS` (at least the address of your GitHub account), for Production and Preview.
 4. Redeploy. The dashboard now asks for an account; sign in with GitHub, create the organization (the registered projects join it) and invite the others.
 5. Remove `ARMADA_DASHBOARD_PASSWORD` and `ARMADA_DASHBOARD_AUTHOR`: with accounts they are no longer read.
@@ -224,7 +224,45 @@ ARMADA_AUTH_URL=http://localhost:4822 ARMADA_AUTH_OWNER_EMAILS=you@example.com b
 - Without the variable and without accounts, the dashboard fails closed: every route answers 503 and names the variable. `ARMADA_DASHBOARD_PASSWORD=off` turns the password off for local development only; a production server refuses it the same way.
 - Vercel Authentication (Settings > Deployment Protection) is a useful second layer, but its standard protection leaves the production custom domain open (covering it takes a paid option), so it cannot replace the password.
 
-One deployment covers one Linear workspace and one GitHub organization: its keys must read every registered project.
+One deployment covers one Linear workspace: its Linear key must read every registered project. GitHub accounts are as many as the app is installed on.
+
+### GitHub App
+
+People sign in with GitHub, and the dashboard reads GitHub (pull requests, their CI checks, `armada.toml`), through one GitHub App of the deployment, installed with read-only rights on the GitHub accounts that hold the projects. Nobody sets a GitHub token by hand, and the CI of private repositories shows: an installation token holds the Checks permission, which fine-grained personal tokens do not have.
+
+Create the app once, under the GitHub organization that owns the projects (its Settings > Developer settings > GitHub Apps > New GitHub App) or under your account:
+
+| Setting | Value |
+| --- | --- |
+| Homepage URL | the dashboard's address, `ARMADA_AUTH_URL` |
+| Callback URL | `<ARMADA_AUTH_URL>/api/auth/callback/github`, for example `https://armada.thevibecompany.co/api/auth/callback/github` |
+| Expire user authorization tokens | on (the default): Armada refreshes them |
+| Request user authorization (OAuth) during installation | off |
+| Setup URL (optional) | `<ARMADA_AUTH_URL>/organization/github`, with Redirect on update: GitHub sends whoever installs the app back to the page that links it |
+| Webhook | off (clear Active): Armada reads, it does not listen |
+| Repository permissions | all **Read-only**: Actions, Checks, Commit statuses, Contents, Metadata, Pull requests. Nothing else, and no write access |
+| Account permissions | Email addresses: **Read-only** (sign-in reads the verified address) |
+| Where can this GitHub App be installed? | Only on this account; Any account if the projects live under several GitHub accounts |
+
+Then:
+
+1. On the app's page, note its App ID and Client ID, generate a client secret, and generate a private key (a `.pem` file is downloaded).
+2. Set the variables below for Production and Preview, and redeploy.
+3. Install the app (the app's page > Install App) on each GitHub account that holds a project, for all repositories or only the projects'.
+4. Open Organization > GitHub: it names the app and its installations. The deployment's first organization reads through every installation at once; another organization's owner or admin links its installations there (see below).
+5. Once the Fleet view shows the pull requests and CI of every project, delete the GitHub token from the Keys page and `GITHUB_TOKEN` from the deployment.
+
+| Variable | What |
+| --- | --- |
+| `ARMADA_GITHUB_APP_ID` | The app's App ID (a number) |
+| `ARMADA_GITHUB_APP_PRIVATE_KEY` | The whole `.pem` file, `-----BEGIN RSA PRIVATE KEY-----` included. On one line, `\n` stands for each line break |
+| `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET` | The app's Client ID and client secret, for sign-in (see Accounts above) |
+
+- The dashboard signs a JSON Web Token with the private key, asks GitHub which installation covers each project's repository, and mints that installation's token on the server. A token lasts an hour and is reused until five minutes before it expires; it never reaches a browser or a terminal. The private key stays in the deployment's environment.
+- Which installations an organization reads through: the deployment's first organization (and every project under the shared password), any of the app's, as with the environment's keys; any other organization, only those linked to it. Organization > GitHub lists, for an owner or admin signed in with GitHub, the installations GitHub lets them reach, each with a Link button: nobody links an installation they cannot see on GitHub. Links and unlinks are in the Keys page's audit list. Otherwise one organization could register another's repository and read it through the app.
+- People who signed in through an earlier OAuth app sign out and in again once, so Armada holds a token of the app that can list their installations. The GitHub tokens of sign-in are stored sealed with `ARMADA_AUTH_SECRET`.
+- Without `ARMADA_GITHUB_APP_ID` and `ARMADA_GITHUB_APP_PRIVATE_KEY`, nothing changes: the dashboard reads GitHub with the Keys page's GitHub token or `GITHUB_TOKEN`. With the app, that token is only the fallback for a repository the app cannot read, and the Fleet view says why the app could not (not installed there, or not linked).
+- Terminals do not change: `armada` reads GitHub with `GITHUB_TOKEN`, `GH_TOKEN` or `gh auth token`, and the coordinator merges with its own `gh`.
 
 ## Sign in from a terminal
 

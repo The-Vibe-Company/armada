@@ -35,6 +35,8 @@ export const ORGANIZATION_PATH = "/organization";
 export const KEYS_PATH = "/organization/keys";
 /** The workers launched with a launch token (THE-841): who launched them, their sessions, Revoke. */
 export const WORKERS_PATH = "/organization/workers";
+/** The Armada GitHub App (THE-851): the installations this organization reads GitHub through. */
+export const GITHUB_PATH = "/organization/github";
 /** Where a person confirms the code `armada login` shows. */
 export const DEVICE_PATH = "/device";
 /** The routes the Armada CLI calls: sign-in from the terminal, whoami, sign-out. */

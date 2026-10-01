@@ -42,6 +42,14 @@ export type KeysError = (typeof KEYS_ERRORS)[number];
 export const KEYS_NOTICES = ["saved", "deleted"] as const;
 export type KeysNotice = (typeof KEYS_NOTICES)[number];
 
+/** Why an installation of the GitHub App could not be linked or unlinked (a `?error=` of the GitHub page). */
+export const GITHUB_ERRORS = ["forbidden", "off", "no-github", "unreachable", "failed"] as const;
+export type GithubError = (typeof GITHUB_ERRORS)[number];
+
+/** What a change on the GitHub page did (a `?done=`). */
+export const GITHUB_NOTICES = ["linked", "unlinked"] as const;
+export type GithubNotice = (typeof GITHUB_NOTICES)[number];
+
 /** Why a worker could not be revoked (a `?error=` of the Workers page). */
 export const WORKERS_ERRORS = ["forbidden", "gone", "failed"] as const;
 export type WorkersError = (typeof WORKERS_ERRORS)[number];
@@ -302,6 +310,7 @@ const en = {
     onlyOwners: "Only owners create and revoke API keys.",
     keysLink: "Keys: Linear, Turso and GitHub",
     workersLink: "Workers: who launched them, and their sessions",
+    githubLink: "GitHub: the Armada GitHub App and the installations this organization reads",
   },
   keys: {
     nav: "Keys",
@@ -337,7 +346,8 @@ const en = {
       "turso-database": "From turso db list",
       "turso-database-token":
         "Only without a Platform API token. It does not expire: turso db tokens create <database>",
-      "github-token": "For the dashboard's own reads (pull requests, armada.toml). Terminals keep GITHUB_TOKEN or gh.",
+      "github-token":
+        "Only without the Armada GitHub App: with it, the dashboard reads pull requests, CI and armada.toml through the app (Organization > GitHub). Terminals keep GITHUB_TOKEN or gh.",
     } satisfies Record<KeyLabel, string>,
     notSet: "not set",
     setBy: (who: string, when: string) => `set by ${who}, ${when}`,
@@ -357,7 +367,9 @@ const en = {
       launch: "launch token made",
       exchange: "launch token used",
       end: "worker ended",
-    } satisfies Record<"set" | "delete" | "release" | "launch" | "exchange" | "end", string>,
+      link: "GitHub installation linked",
+      unlink: "GitHub installation unlinked",
+    } satisfies Record<"set" | "delete" | "release" | "launch" | "exchange" | "end" | "link" | "unlink", string>,
     nothing: "no key",
     errors: {
       forbidden: "Your role does not allow this.",
@@ -369,6 +381,44 @@ const en = {
       saved: "Saved. It takes effect on the next command.",
       deleted: "Deleted. It takes effect on the next command.",
     } satisfies Record<KeysNotice, string>,
+  },
+  github: {
+    nav: "GitHub",
+    lead: "The dashboard reads pull requests, CI checks and armada.toml through the Armada GitHub App, installed on your GitHub accounts with read-only rights. Nobody sets a GitHub token.",
+    off: (variables: string) =>
+      `This Armada has no GitHub App yet. Its owner creates one (see the README), sets ${variables} in the deployment's environment, then redeploys. Until then the dashboard reads GitHub with the GitHub token on the Keys page.`,
+    invalid: (reason: string) => `The GitHub App is off: ${reason}. Its owner fixes it and redeploys.`,
+    appUnreachable:
+      "GitHub did not give the app's details: check ARMADA_GITHUB_APP_ID and ARMADA_GITHUB_APP_PRIVATE_KEY, or try again in a moment. The server log says why.",
+    install: "Install the app on a GitHub account",
+    installHint:
+      "On GitHub, pick the account and the repositories: Armada reads only those. Then come back here and link the installation.",
+    home: "This organization is the deployment's first: it reads every repository the app is installed on, linked or not.",
+    linked: "Linked installations",
+    linkedHint: "This organization reads the repositories of these installations, and no others.",
+    noneLinked: "No installation linked yet.",
+    linkedBy: (who: string, when: string) => `linked by ${who}, ${when}`,
+    unlink: "Unlink",
+    reachable: "Your installations on GitHub",
+    reachableHint: "The app's installations GitHub lets you reach. Link those this organization works on.",
+    noneReachable:
+      "GitHub shows you no installation of the app. Install it first, or ask an owner of the GitHub account to.",
+    allLinked: "Every installation you can reach is linked.",
+    noGithub:
+      "Sign in with GitHub to link an installation: Armada asks GitHub which ones you can reach. If you did, sign out and sign in with GitHub again.",
+    link: "Link",
+    onlyAdmins: "Only owners and admins link installations.",
+    errors: {
+      forbidden: "Your role does not allow this.",
+      off: "The GitHub App is not configured on this Armada.",
+      "no-github": "Sign in with GitHub first: Armada asks GitHub which installations you can reach.",
+      unreachable: "GitHub does not show you this installation, so it was not linked.",
+      failed: "That did not work. Try again in a moment.",
+    } satisfies Record<GithubError, string>,
+    notices: {
+      linked: "Linked. The fleet's next read of GitHub goes through it.",
+      unlinked: "Unlinked. This organization no longer reads through it.",
+    } satisfies Record<GithubNotice, string>,
   },
   workers: {
     nav: "Workers",
@@ -698,6 +748,7 @@ const fr: Strings = {
     onlyOwners: "Seuls les propriétaires créent et révoquent les clés d'API.",
     keysLink: "Clés : Linear, Turso et GitHub",
     workersLink: "Workers : qui les a lancés, et leurs sessions",
+    githubLink: "GitHub : l'app GitHub d'Armada et les installations que lit cette organisation",
   },
   keys: {
     nav: "Clés",
@@ -733,7 +784,7 @@ const fr: Strings = {
       "turso-database": "D'après turso db list",
       "turso-database-token": "Seulement sans jeton de l'API Platform. Il n'expire pas : turso db tokens create <base>",
       "github-token":
-        "Pour les lectures du tableau de bord (pull requests, armada.toml). Les terminaux gardent GITHUB_TOKEN ou gh.",
+        "Seulement sans l'app GitHub d'Armada : avec elle, le tableau de bord lit pull requests, CI et armada.toml par l'app (Organisation > GitHub). Les terminaux gardent GITHUB_TOKEN ou gh.",
     },
     notSet: "non définie",
     setBy: (who, when) => `définie par ${who}, ${when}`,
@@ -753,6 +804,8 @@ const fr: Strings = {
       launch: "jeton de lancement créé",
       exchange: "jeton de lancement utilisé",
       end: "worker arrêté",
+      link: "installation GitHub liée",
+      unlink: "installation GitHub déliée",
     },
     nothing: "aucune clé",
     errors: {
@@ -764,6 +817,45 @@ const fr: Strings = {
     notices: {
       saved: "Enregistrée. Elle vaut dès la prochaine commande.",
       deleted: "Supprimée. Cela vaut dès la prochaine commande.",
+    },
+  },
+  github: {
+    nav: "GitHub",
+    lead: "Le tableau de bord lit pull requests, checks de CI et armada.toml par l'app GitHub d'Armada, installée sur vos comptes GitHub en lecture seule. Personne ne définit de jeton GitHub.",
+    off: (variables) =>
+      `Cet Armada n'a pas encore d'app GitHub. Son propriétaire en crée une (voir le README), définit ${variables} dans l'environnement du déploiement, puis redéploie. D'ici là, le tableau de bord lit GitHub avec le jeton GitHub de la page Clés.`,
+    invalid: (reason) => `L'app GitHub est coupée : ${reason}. Son propriétaire corrige et redéploie.`,
+    appUnreachable:
+      "GitHub n'a pas donné les détails de l'app : vérifie ARMADA_GITHUB_APP_ID et ARMADA_GITHUB_APP_PRIVATE_KEY, ou réessaie dans un instant. Le journal du serveur dit pourquoi.",
+    install: "Installer l'app sur un compte GitHub",
+    installHint:
+      "Sur GitHub, choisis le compte et les dépôts : Armada ne lit que ceux-là. Puis reviens ici et lie l'installation.",
+    home: "Cette organisation est la première du déploiement : elle lit tous les dépôts où l'app est installée, liés ou non.",
+    linked: "Installations liées",
+    linkedHint: "Cette organisation lit les dépôts de ces installations, et aucun autre.",
+    noneLinked: "Aucune installation liée pour l'instant.",
+    linkedBy: (who, when) => `liée par ${who}, ${when}`,
+    unlink: "Délier",
+    reachable: "Tes installations sur GitHub",
+    reachableHint:
+      "Les installations de l'app que GitHub te laisse voir. Lie celles sur lesquelles travaille cette organisation.",
+    noneReachable:
+      "GitHub ne te montre aucune installation de l'app. Installe-la d'abord, ou demande à un propriétaire du compte GitHub de le faire.",
+    allLinked: "Toutes les installations que tu peux voir sont liées.",
+    noGithub:
+      "Connecte-toi avec GitHub pour lier une installation : Armada demande à GitHub lesquelles tu peux voir. Si c'est déjà fait, déconnecte-toi et reconnecte-toi avec GitHub.",
+    link: "Lier",
+    onlyAdmins: "Seuls les propriétaires et les admins lient des installations.",
+    errors: {
+      forbidden: "Ton rôle ne le permet pas.",
+      off: "L'app GitHub n'est pas configurée sur cet Armada.",
+      "no-github": "Connecte-toi d'abord avec GitHub : Armada demande à GitHub quelles installations tu peux voir.",
+      unreachable: "GitHub ne te montre pas cette installation : elle n'a pas été liée.",
+      failed: "Ça n'a pas marché. Réessaie dans un instant.",
+    },
+    notices: {
+      linked: "Liée. La prochaine lecture de GitHub par la flotte passe par elle.",
+      unlinked: "Déliée. Cette organisation ne lit plus par elle.",
     },
   },
   workers: {

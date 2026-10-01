@@ -137,6 +137,9 @@ export function createAuth(settings: AuthSettings, { client, sender, now = () =>
     trustedOrigins: [settings.baseUrl],
     database: { dialect: new PgDialect(client), type: "postgres", transaction: true },
     telemetry: { enabled: false },
+    // The GitHub tokens people sign in with are kept to ask GitHub which
+    // installations of the app they reach (THE-851): sealed with the secret.
+    account: { encryptOAuthTokens: true },
     advanced: {
       cookiePrefix: COOKIE_PREFIX,
       // Session cookies are HttpOnly and SameSite=Lax; Secure everywhere but plain-http local development.

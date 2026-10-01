@@ -208,8 +208,12 @@ export interface Actor {
   label: string;
 }
 
-/** `launch`, `exchange` and `end` are the workers' (THE-841): a launch token made, used, and a worker ended. */
-export type SecretAction = "set" | "delete" | "release" | "launch" | "exchange" | "end";
+/**
+ * `launch`, `exchange` and `end` are the workers' (THE-841): a launch token
+ * made, used, and a worker ended. `link` and `unlink` are the GitHub App's
+ * installations (THE-851).
+ */
+export type SecretAction = "set" | "delete" | "release" | "launch" | "exchange" | "end" | "link" | "unlink";
 
 export interface SecretEvent {
   id: number;
