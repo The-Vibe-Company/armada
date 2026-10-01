@@ -1,6 +1,7 @@
 // GitHub read adapter: one GraphQL call returns the open pull requests and the
-// recently closed ones with their CI rollup and mergeability. GraphQL avoids the
-// REST checks endpoint, which personal access tokens cannot read.
+// recently closed ones with their CI rollup and mergeability. The rollup's
+// check runs need a token with the Checks permission: the dashboard's GitHub
+// App installation token has it (THE-851), fine-grained personal tokens do not.
 import { type Fetch, networkReason, REQUEST_TIMEOUT_MS } from "./linear.ts";
 import type { CiState, ForgeData, Issue, ProgramData, PullRequest } from "./types.ts";
 

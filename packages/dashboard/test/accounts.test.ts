@@ -274,6 +274,16 @@ describe("GitHub sign-in", () => {
     expect(new URL(welcomed.headers.get("location") ?? "", BASE).pathname).toBe("/");
     const session = await auth.api.getSession({ headers: headersWith(cookiesOf(welcomed)) });
     expect(session?.user).toMatchObject({ email: "second-owner@example.test", emailVerified: true });
+
+    // The GitHub token is kept sealed, and handed back to the server only (it lists the app's installations).
+    const rs = await client.query(`SELECT "id", "accessToken" FROM "account" WHERE "userId" = $1`, [session?.user.id]);
+    const row = rs.rows[0] as { id: string; accessToken: string };
+    expect(row.accessToken).not.toContain("synthetic-token");
+    const tokens = await auth.api.getAccessToken({
+      body: { accountId: row.id },
+      headers: headersWith(cookiesOf(welcomed)),
+    });
+    expect(tokens.accessToken).toBe("synthetic-token");
   });
 });
 

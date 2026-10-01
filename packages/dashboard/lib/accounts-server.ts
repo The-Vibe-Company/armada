@@ -106,3 +106,27 @@ export async function homeOrganization(): Promise<string | null> {
   a.home ??= (await firstOrganization(a.client))?.id;
   return a.home ?? null;
 }
+
+/**
+ * The GitHub token the viewer signed in with (a user token of the Armada
+ * GitHub App), refreshed by Better Auth when it expired; null when they did
+ * not sign in with GitHub or GitHub refuses the refresh. Server-side only: it
+ * asks GitHub which installations the viewer can reach (`github-app.ts`).
+ */
+export async function viewerGithubToken(): Promise<string | null> {
+  const viewer = await currentViewer();
+  if (!viewer) return null;
+  const { auth, client } = await requireAccounts();
+  const rs = await client.query(
+    `SELECT "id" FROM "account" WHERE "userId" = $1 AND "providerId" = 'github' ORDER BY "updatedAt" DESC LIMIT 1`,
+    [viewer.user.id],
+  );
+  const accountId = rs.rows[0]?.id;
+  if (typeof accountId !== "string") return null;
+  try {
+    const tokens = await auth.api.getAccessToken({ body: { accountId }, headers: await headers() });
+    return tokens?.accessToken || null;
+  } catch {
+    return null;
+  }
+}

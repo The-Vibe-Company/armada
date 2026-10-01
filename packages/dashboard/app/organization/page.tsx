@@ -15,7 +15,7 @@ import { AuthCard } from "@/components/AuthCard";
 import { CopyLink } from "@/components/CopyLink";
 import { invitationUrl, isRole, ROLES, type Role } from "@/lib/accounts";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
-import { accountsModeOf, KEYS_PATH, WORKERS_PATH } from "@/lib/accounts-settings";
+import { accountsModeOf, GITHUB_PATH, KEYS_PATH, WORKERS_PATH } from "@/lib/accounts-settings";
 import { LANGUAGE_COOKIE, ORG_ERRORS, ORG_NOTICES, type OrgError, type OrgNotice, STRINGS } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 
@@ -237,6 +237,15 @@ export default async function Organization({ searchParams }: { searchParams: Par
         </h2>
         <a className="link" href={KEYS_PATH}>
           {t.org.keysLink} →
+        </a>
+      </section>
+
+      <section className="org-section" aria-labelledby="github-title">
+        <h2 id="github-title" className="section-label">
+          {t.github.nav}
+        </h2>
+        <a className="link" href={GITHUB_PATH}>
+          {t.org.githubLink} →
         </a>
       </section>
 

@@ -160,6 +160,8 @@ export class PgDialect implements Dialect {
  *   item), leases, and when each project's coordinator last read its inbox.
  *   Partial unique indexes keep one open plan, hand-back, launch request per
  *   ticket and one open answer request per question, whatever the races.
+ *
+ * Version 2 links organizations to installations of the GitHub App (THE-851).
  */
 export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -428,6 +430,22 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
         project text PRIMARY KEY,
         handle text,
         seen_at timestamptz NOT NULL
+      )`,
+    ],
+  },
+  {
+    // The installations of the Armada GitHub App an organization reads through
+    // (THE-851), linked by an owner or admin who could reach them on GitHub.
+    version: 2,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS "armada_github_installation" (
+        "organizationId" text NOT NULL REFERENCES "organization" ("id") ON DELETE CASCADE,
+        "installationId" bigint NOT NULL,
+        "account" text NOT NULL,
+        "linkedById" text NOT NULL,
+        "linkedByLabel" text NOT NULL,
+        "linkedAt" timestamptz NOT NULL,
+        PRIMARY KEY ("organizationId", "installationId")
       )`,
     ],
   },
