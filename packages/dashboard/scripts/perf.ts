@@ -40,11 +40,8 @@ export interface Budgets {
   lighthouse: {
     pages: string[];
     runs: Record<FormFactor, number>;
-    /**
-     * Mobile's CPU slowdown, scaled by the machine's speed so a slower CI
-     * runner emulates the same phone: `slowdown × benchmarkIndex / reference`.
-     */
-    cpu: { slowdown: number; referenceBenchmarkIndex: number };
+    /** Mobile's CPU slowdown: Lighthouse's and PageSpeed Insights' standard 4×, on any machine. */
+    cpuSlowdown: number;
     budgets: Budget[];
   };
   inp: { maxMs: number; cpuSlowdown: number };
@@ -154,10 +151,6 @@ export function checkPages(results: PageResult[], budgets: Budget[]): Breach[] {
       }),
   );
 }
-
-/** Mobile's CPU slowdown on a machine of this benchmark index: never below 1. */
-export const cpuSlowdown = (benchmarkIndex: number, cpu: Budgets["lighthouse"]["cpu"]) =>
-  Math.max(1, Math.round(((cpu.slowdown * benchmarkIndex) / cpu.referenceBenchmarkIndex) * 10) / 10);
 
 // ---------------------------------------------------------------------- INP
 
@@ -360,11 +353,11 @@ async function lighthouse(base: string): Promise<boolean> {
   if (only?.length) config.pages = config.pages.filter((p) => only.includes(p));
   const cookie = sessionCookie();
   await warm(base, config.pages, cookie);
-  // A first run warms Chrome and measures this machine.
-  const first = await lighthouseRun(`${base}/landing`, "mobile", config.cpu.slowdown, cookie);
+  // ARMADA_PERF_CPU=5 slows the CPU down more, to see the margin (docs/performance.md).
+  const slowdown = Number(process.env.ARMADA_PERF_CPU) || config.cpuSlowdown;
+  // A first run warms Chrome, and says how fast this machine is.
+  const first = await lighthouseRun(`${base}/landing`, "mobile", slowdown, cookie);
   const benchmarkIndex = first.environment.benchmarkIndex;
-  // ARMADA_PERF_CPU=5 forces the slowdown, to replay another machine's run.
-  const slowdown = Number(process.env.ARMADA_PERF_CPU) || cpuSlowdown(benchmarkIndex, config.cpu);
   console.log(`benchmark index ${Math.round(benchmarkIndex)}: mobile CPU ${slowdown}× slower`);
   const results: PageResult[] = [];
   for (const formFactor of ["mobile", "desktop"] as const)

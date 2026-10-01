@@ -5,10 +5,7 @@
       "mobile": 3,
       "desktop": 1
     },
-    "cpu": {
-      "slowdown": 4,
-      "referenceBenchmarkIndex": 2000
-    },
+    "cpuSlowdown": 4,
     "budgets": [
       {
         "metric": "performance",

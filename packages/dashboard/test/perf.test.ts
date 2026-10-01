@@ -4,7 +4,6 @@ import {
   checkBundles,
   checkInteractions,
   checkPages,
-  cpuSlowdown,
   markdown,
   medianRun,
   type PageResult,
@@ -102,13 +101,6 @@ describe("the Lighthouse budgets", () => {
       ["/agents (mobile)", "accessibility", 96, 100, "warn"],
       ["/agents (mobile)", "cls", 0.001, 0, "error"],
       ["/projects (mobile)", "lcp", 2600, 2500, "error"],
-    ]);
-  });
-
-  test("slow mobile's CPU down as much on any machine: scaled by its benchmark index, never under 1", () => {
-    const cpu = { slowdown: 4, referenceBenchmarkIndex: 2000 };
-    expect([cpuSlowdown(2000, cpu), cpuSlowdown(1500, cpu), cpuSlowdown(2415, cpu), cpuSlowdown(300, cpu)]).toEqual([
-      4, 3, 4.8, 1,
     ]);
   });
 });
