@@ -2,7 +2,10 @@
 
 // The Fleet view: what waits for the owner across every project, then one row
 // per ticket in flight. It renders the overview core builds and polls the
-// server for a new one every few seconds while the tab is visible.
+// server for a new one: every 5 s while work is in flight, every 30 s when the
+// fleet is quiet, never while the tab is hidden (THE-853: nothing runs when
+// nobody looks). Each poll names the overview it holds, and the server
+// answers 304 while nothing changed.
 import type {
   CoordinatorState,
   FleetOverview,
@@ -11,6 +14,7 @@ import type {
   ProjectOverview,
   WaitingItem,
 } from "@armada/core/read";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signOut } from "@/app/auth-actions";
 import { LANGUAGE_COOKIE, LANGUAGES, type Language, STRINGS, type Strings } from "@/lib/i18n";
@@ -23,8 +27,18 @@ export interface Account {
   organization: string;
 }
 
-const POLL_MS = 5_000;
+/** Polls while a worker is in flight, a request waits for the coordinator or a project is being read. */
+const BUSY_POLL_MS = 5_000;
+/** Polls while the fleet is quiet. */
+const IDLE_POLL_MS = 30_000;
 const FRESH_MS = 20_000;
+
+/** Something on the page may change within seconds. */
+const isBusy = (o: FleetOverview) =>
+  o.rows.length > 0 ||
+  o.projects.some((p) => p.reading) ||
+  o.waiting.some((w) => w.answer !== null) ||
+  o.ready.some((r) => r.launch !== null);
 
 const RUNTIME_COLOR: Record<string, string> = {
   "Claude Code": "#D97757",
@@ -45,21 +59,32 @@ function useLiveOverview(initial: FleetOverview) {
   const [pending, setPending] = useState(false);
   const [version, setVersion] = useState(0);
   const inFlight = useRef(false);
+  /** The ETag of the overview shown; the server answers 304 while it is still current. */
+  const tag = useRef<string | null>(null);
+  const busy = useRef(isBusy(initial));
 
   const poll = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
     setPending(true);
     try {
-      const res = await fetch("/api/fleet", { cache: "no-store" });
+      const res = await fetch("/api/fleet", {
+        cache: "no-store",
+        headers: tag.current ? { "If-None-Match": tag.current } : {},
+      });
       if (res.status === 401 || new URL(res.url).pathname === "/login") {
         // The session ended (expired, logged out, or the password changed).
         const here = `${window.location.pathname}${window.location.search}`;
         window.location.assign(`/login${here === "/" ? "" : `?next=${encodeURIComponent(here)}`}`);
         return;
       }
-      if (!res.ok) throw new Error(String(res.status));
-      setOverview((await res.json()) as FleetOverview);
+      if (res.status !== 304) {
+        if (!res.ok) throw new Error(String(res.status));
+        const next = (await res.json()) as FleetOverview;
+        tag.current = res.headers.get("etag");
+        busy.current = isBusy(next);
+        setOverview(next);
+      }
       setVersion((v) => v + 1);
       setFailed(false);
       setCheckedAt(Date.now());
@@ -72,14 +97,30 @@ function useLiveOverview(initial: FleetOverview) {
   }, []);
 
   useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let visible = false;
+    // Each start begins a new loop; a poll still running from an older one does not schedule another.
+    let loop = 0;
+    const next = (mine: number) => {
+      timer = setTimeout(
+        async () => {
+          await poll();
+          if (visible && mine === loop) next(mine);
+        },
+        busy.current ? BUSY_POLL_MS : IDLE_POLL_MS,
+      );
+    };
     const start = () => {
-      if (timer) return;
+      if (visible) return;
+      visible = true;
+      loop++;
       void poll();
-      timer = setInterval(() => void poll(), POLL_MS);
+      next(loop);
     };
     const stop = () => {
-      if (timer) clearInterval(timer);
+      visible = false;
+      loop++;
+      if (timer) clearTimeout(timer);
       timer = null;
     };
     const onVisibility = () => (document.visibilityState === "visible" ? start() : stop());
@@ -321,13 +362,18 @@ function TopBar({
   const state = failed ? "offline" : overview.live.state;
   const label = failed ? t.offline : t.live[overview.live.state];
   const checked = checkedAt ?? Date.parse(overview.generatedAt);
+  // The oldest reading of Linear and GitHub shown: so nobody takes a stale view for a live one.
+  const readings = overview.projects.flatMap((p) =>
+    p.sources ? [p.sources.linear.fetchedAt, p.sources.github.fetchedAt ?? p.sources.linear.fetchedAt] : [],
+  );
+  const oldest = readings.length ? Math.min(...readings.map((r) => Date.parse(r))) : null;
   return (
     <header className="topbar">
       <div className="topbar-in">
-        <a href="/" className="brand">
+        <Link href="/" className="brand">
           <span className="brand-mark" aria-hidden />
           Armada <small>{t.brandSub}</small>
-        </a>
+        </Link>
         <span className="spacer" />
         <div className="refresh">
           {/* Only the source state is announced; the ticking "checked" text is not. */}
@@ -335,7 +381,15 @@ function TopBar({
             <span className={`dot ${state === "ok" ? "live" : ""}`} />
             {label}
           </span>
-          <span className="refresh-text tnum">{pending && !checkedAt ? t.refreshing : t.checked(now - checked)}</span>
+          <span className="refresh-text tnum">
+            {pending && !checkedAt ? t.refreshing : t.checked(now - checked)}
+            {oldest !== null && (
+              <span className="faint" title={t.dataReadHint}>
+                {" · "}
+                {t.dataRead(now - oldest)}
+              </span>
+            )}
+          </span>
           <button
             type="button"
             className={`icon-btn ${pending ? "spin" : ""}`}
@@ -365,10 +419,10 @@ function TopBar({
         </fieldset>
         {account && (
           <div className="account">
-            <a href="/organization" className="account-org" title={t.org.nav}>
+            <Link href="/organization" className="account-org" title={t.org.nav} prefetch>
               <span className="account-name">{account.organization}</span>
               <span className="account-user">{account.name}</span>
-            </a>
+            </Link>
             <form action={signOut} className="logout">
               <button type="submit">{t.auth.logout}</button>
             </form>
@@ -616,9 +670,15 @@ function CrewRow({
 
 function ProjectProblems({ t, projects }: { t: Strings; projects: ProjectOverview[] }) {
   const failing = projects.filter((p) => p.error);
-  if (!failing.length) return null;
+  const reading = projects.filter((p) => p.reading);
+  if (!failing.length && !reading.length) return null;
   return (
     <ul className="problems">
+      {reading.map((p) => (
+        <li key={p.slug} className="is-reading" role="status">
+          <span>{t.readingProject(p.name)}</span>
+        </li>
+      ))}
       {failing.map((p) => (
         <li key={p.slug}>
           <b>{t.projectError(p.name)}</b>

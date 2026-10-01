@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   cancelInvitation,
@@ -235,27 +236,27 @@ export default async function Organization({ searchParams }: { searchParams: Par
         <h2 id="keys-title" className="section-label">
           {t.keys.nav}
         </h2>
-        <a className="link" href={KEYS_PATH}>
+        <Link className="link" href={KEYS_PATH}>
           {t.org.keysLink} →
-        </a>
+        </Link>
       </section>
 
       <section className="org-section" aria-labelledby="github-title">
         <h2 id="github-title" className="section-label">
           {t.github.nav}
         </h2>
-        <a className="link" href={GITHUB_PATH}>
+        <Link className="link" href={GITHUB_PATH}>
           {t.org.githubLink} →
-        </a>
+        </Link>
       </section>
 
       <section className="org-section" aria-labelledby="workers-title">
         <h2 id="workers-title" className="section-label">
           {t.workers.nav}
         </h2>
-        <a className="link" href={WORKERS_PATH}>
+        <Link className="link" href={WORKERS_PATH}>
           {t.org.workersLink} →
-        </a>
+        </Link>
       </section>
 
       {organizations.length > 1 && (
@@ -284,9 +285,9 @@ export default async function Organization({ searchParams }: { searchParams: Par
       )}
 
       <div className="org-foot">
-        <a className="link" href="/">
+        <Link className="link" href="/">
           ← {t.org.back}
-        </a>
+        </Link>
         <form action={signOut}>
           <button type="submit" className="link">
             {t.auth.logout}

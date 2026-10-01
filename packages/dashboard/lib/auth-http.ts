@@ -3,7 +3,7 @@
 // Each takes the environment, the clock and the limiter as arguments so tests
 // drive them without a server.
 import { type NextRequest, NextResponse } from "next/server";
-import { isCliApi } from "./accounts-settings";
+import { isCliApi, isWebhook } from "./accounts-settings";
 import {
   clearedSessionCookie,
   clientAddress,
@@ -52,9 +52,10 @@ export function guard(request: NextRequest, { env, now }: GateDeps): NextRespons
   const signedIn = gate.kind === "off" || validSession(request.cookies.get(SESSION_COOKIE)?.value, gate.password, now);
   if (pathname === LOGIN_PATH)
     return signedIn ? NextResponse.redirect(new URL("/", request.url), 303) : NextResponse.next();
-  // The two routes a viewer without a session must reach, and the CLI's routes, which
-  // refuse the terminal with the next step while the dashboard has no accounts.
-  if (signedIn || pathname === LOGIN_ROUTE || pathname === LOGOUT_ROUTE || isCliApi(pathname))
+  // The two routes a viewer without a session must reach, the CLI's routes, which
+  // refuse the terminal with the next step while the dashboard has no accounts,
+  // and the webhooks, which check their own signature.
+  if (signedIn || pathname === LOGIN_ROUTE || pathname === LOGOUT_ROUTE || isCliApi(pathname) || isWebhook(pathname))
     return NextResponse.next();
   if (wantsData(request)) return NextResponse.json({ error: "unauthorized" }, { status: 401, headers: NO_STORE });
   const login = new URL(LOGIN_PATH, request.url);

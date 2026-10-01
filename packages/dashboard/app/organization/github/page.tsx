@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { linkGithubInstallation, unlinkGithubInstallation } from "@/app/github-actions";
 import { AuthCard } from "@/components/AuthCard";
@@ -75,9 +76,9 @@ export default async function Github({ searchParams }: { searchParams: Params })
       <a className="link" href={ORGANIZATION_PATH}>
         ← {t.org.nav}
       </a>
-      <a className="link" href="/">
+      <Link className="link" href="/">
         {t.org.back}
-      </a>
+      </Link>
     </div>
   );
   const mode = githubAppModeOf(process.env);

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { acceptInvitation, rejectInvitation, signOut } from "@/app/auth-actions";
 import { AuthCard } from "@/components/AuthCard";
@@ -43,9 +44,9 @@ export default async function Invitation({ params, searchParams }: Props) {
       >
         <p className="login-hint">{t.org.signedInAs(viewer.user.email)}</p>
         <p className="login-switch">
-          <a className="link" href="/">
+          <Link className="link" href="/">
             {t.org.back}
-          </a>
+          </Link>
         </p>
         <form action={signOut} className="login-switch">
           <button type="submit" className="link">
