@@ -203,7 +203,7 @@ describe("linking installations", () => {
       linkInstallation(client, { organization, installation, reachable, by, now: start });
     expect(await link("org-a", 99)).toBe("unreachable");
     expect(await link("org-a", 11)).toBe("linked");
-    expect(await link("org-a", 11)).toBe("linked");
+    expect(await link("org-a", 11)).toBe("already");
     expect(await link("org-b", 11)).toBe("linked");
     expect(await linkedInstallations(client, "org-a")).toEqual([
       { id: 11, account: "acme", linkedBy: by.label, linkedAt: start.toISOString() },

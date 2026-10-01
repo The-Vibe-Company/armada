@@ -239,7 +239,7 @@ Create the app once, under the GitHub organization that owns the projects (its S
 | Callback URL | `<ARMADA_AUTH_URL>/api/auth/callback/github`, for example `https://armada.thevibecompany.co/api/auth/callback/github` |
 | Expire user authorization tokens | on (the default): Armada refreshes them |
 | Request user authorization (OAuth) during installation | off |
-| Setup URL (optional) | `<ARMADA_AUTH_URL>/organization/github`, with Redirect on update: GitHub sends whoever installs the app back to the page that links it |
+| Setup URL | `<ARMADA_AUTH_URL>/organization/github`, with Redirect on update: GitHub sends whoever clicks Install on GitHub in Armada back to the page, which links the installation in the same step |
 | Webhook | off (clear Active): Armada reads, it does not listen |
 | Repository permissions | all **Read-only**: Actions, Checks, Commit statuses, Contents, Metadata, Pull requests. Nothing else, and no write access |
 | Account permissions | Email addresses: **Read-only** (sign-in reads the verified address) |
@@ -250,7 +250,7 @@ Then:
 1. On the app's page, note its App ID and Client ID, generate a client secret, and generate a private key (a `.pem` file is downloaded).
 2. Set the variables below for Production and Preview, and redeploy.
 3. Install the app (the app's page > Install App) on each GitHub account that holds a project, for all repositories or only the projects'.
-4. Open Organization > GitHub: it names the app and its installations. The deployment's first organization reads through every installation at once; another organization's owner or admin links its installations there (see below).
+4. Open Organization > GitHub: it names the app and its installations. The deployment's first organization reads through every installation at once; another organization's owner or admin clicks Install on GitHub there, or links an installation made outside Armada (see below).
 5. Once the Fleet view shows the pull requests and CI of every project, delete the GitHub token from the Keys page and `GITHUB_TOKEN` from the deployment.
 
 | Variable | What |
@@ -260,7 +260,7 @@ Then:
 | `ARMADA_AUTH_GITHUB_CLIENT_ID`, `ARMADA_AUTH_GITHUB_CLIENT_SECRET` | The app's Client ID and client secret, for sign-in (see Accounts above) |
 
 - The dashboard signs a JSON Web Token with the private key, asks GitHub which installation covers each project's repository, and mints that installation's token on the server. A token lasts an hour and is reused until five minutes before it expires; it never reaches a browser or a terminal. The private key stays in the deployment's environment.
-- Which installations an organization reads through: the deployment's first organization (and every project under the shared password), any of the app's, as with the environment's keys; any other organization, only those linked to it. Organization > GitHub lists, for an owner or admin signed in with GitHub, the installations GitHub lets them reach, each with a Link button: nobody links an installation they cannot see on GitHub. Links and unlinks are in the Keys page's audit list. Otherwise one organization could register another's repository and read it through the app.
+- Which installations an organization reads through: the deployment's first organization (and every project under the shared password), any of the app's, as with the environment's keys; any other organization, only those linked to it. On Organization > GitHub, an owner or admin clicks Install on GitHub: GitHub's install page opens with a signed state naming the organization and the person, valid 30 minutes and once, in the browser that clicked; when GitHub sends them back to the Setup URL the installation is linked, with no other click. The page also lists the installations GitHub lets them reach, each with a Link button, for those made outside Armada. Either way, Armada asks GitHub with the person's own sign-in, so nobody links an installation they cannot see on GitHub; a forged, expired or someone else's state links nothing, and coming back after changing the repositories keeps the link. Links and unlinks are in the Keys page's audit list. Otherwise one organization could register another's repository and read it through the app.
 - People who signed in through an earlier OAuth app sign out and in again once, so Armada holds a token of the app that can list their installations. The GitHub tokens of sign-in are stored sealed with `ARMADA_AUTH_SECRET`.
 - Without `ARMADA_GITHUB_APP_ID` and `ARMADA_GITHUB_APP_PRIVATE_KEY`, nothing changes: the dashboard reads GitHub with the Keys page's GitHub token or `GITHUB_TOKEN`. With the app, that token is only the fallback for a repository the app cannot read, and the Fleet view says why the app could not (not installed there, or not linked).
 - Terminals do not change: `armada` reads GitHub with `GITHUB_TOKEN`, `GH_TOKEN` or `gh auth token`, and the coordinator merges with its own `gh`.

@@ -281,7 +281,8 @@ export async function linkedInstallations(client: Queryable, organization: strin
   }));
 }
 
-export type LinkOutcome = "linked" | "unreachable";
+/** `already`: the organization had it linked; only the account's name is refreshed. */
+export type LinkOutcome = "linked" | "already" | "unreachable";
 
 /**
  * Links an installation to an organization, only when GitHub lists it among
@@ -299,13 +300,15 @@ export async function linkInstallation(
 ): Promise<LinkOutcome> {
   const found = link.reachable.find((i) => i.id === link.installation);
   if (!found) return "unreachable";
-  await client.query(
+  // One statement, so a concurrent unlink cannot slip between a check and the write. xmax = 0: the row is new.
+  const rs = await client.query(
     `INSERT INTO "armada_github_installation" ("organizationId", "installationId", "account", "linkedById", "linkedByLabel", "linkedAt")
      VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT ("organizationId", "installationId") DO UPDATE SET "account" = EXCLUDED."account"`,
+     ON CONFLICT ("organizationId", "installationId") DO UPDATE SET "account" = EXCLUDED."account"
+     RETURNING (xmax = 0) AS "inserted"`,
     [link.organization, found.id, found.account, link.by.id, link.by.label, link.now],
   );
-  return "linked";
+  return rs.rows[0]?.inserted === true ? "linked" : "already";
 }
 
 export async function unlinkInstallation(

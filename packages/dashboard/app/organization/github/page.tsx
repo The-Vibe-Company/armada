@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { linkGithubInstallation, unlinkGithubInstallation } from "@/app/github-actions";
 import { AuthCard } from "@/components/AuthCard";
 import { homeOrganization, requireAccounts, requireMember, viewerGithubToken } from "@/lib/accounts-server";
-import { accountsModeOf, ORGANIZATION_PATH } from "@/lib/accounts-settings";
+import { accountsModeOf, GITHUB_INSTALL_PATH, GITHUB_SETUP_PATH, ORGANIZATION_PATH } from "@/lib/accounts-settings";
 import {
   type AppInfo,
   GITHUB_APP_VARIABLES,
@@ -27,6 +27,10 @@ import { githubApp, languageOf } from "@/lib/server";
 // installations this organization reads GitHub through, and, for owners and
 // admins, the installations GitHub lets them reach, to link. No token reaches
 // this page.
+//
+// It is also the app's Setup URL (THE-852): GitHub's return from the install
+// page is handed to GITHUB_SETUP_PATH, which links the installation and comes
+// back here with the outcome. This page writes nothing.
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -34,7 +38,10 @@ export async function generateMetadata(): Promise<Metadata> {
   return { title: `${t.github.nav} — Armada` };
 }
 
-type Params = Promise<{ error?: string | string[]; done?: string | string[] }>;
+type Param = string | string[] | undefined;
+/** GitHub's query on the Setup URL. */
+const SETUP_PARAMS = ["installation_id", "setup_action", "state"] as const;
+type Params = Promise<{ error?: Param; done?: Param } & Partial<Record<(typeof SETUP_PARAMS)[number], Param>>>;
 
 const pick = <T extends string>(list: readonly T[], v: string | string[] | undefined): T | null =>
   typeof v === "string" && (list as readonly string[]).includes(v) ? (v as T) : null;
@@ -43,6 +50,12 @@ export default async function Github({ searchParams }: { searchParams: Params })
   if (accountsModeOf(process.env).kind !== "accounts") notFound();
   const viewer = await requireMember();
   const [{ client }, jar, params] = await Promise.all([requireAccounts(), cookies(), searchParams]);
+  const setup = new URLSearchParams();
+  for (const name of SETUP_PARAMS) {
+    const v = params[name];
+    if (typeof v === "string") setup.set(name, v);
+  }
+  if (setup.size > 0) redirect(`${GITHUB_SETUP_PATH}?${setup}`);
   const lang = languageOf(jar.get(LANGUAGE_COOKIE)?.value);
   const t = STRINGS[lang];
   const g = t.github;
@@ -116,12 +129,19 @@ export default async function Github({ searchParams }: { searchParams: Params })
         <h2 id="github-app" className="section-label">
           {info?.name ?? g.nav}
         </h2>
-        {info ? (
+        {info && manager ? (
           <>
-            <a className="link" href={`${info.url}/installations/new`} target="_blank" rel="noreferrer">
+            <a className="btn is-primary" href={GITHUB_INSTALL_PATH}>
               {g.install} →
             </a>
             <p className="login-hint">{g.installHint}</p>
+          </>
+        ) : info ? (
+          <>
+            <a className="link" href={`${info.url}/installations/new`} target="_blank" rel="noreferrer">
+              {g.installElsewhere} →
+            </a>
+            <p className="login-hint">{g.installElsewhereHint}</p>
           </>
         ) : (
           <p className="login-hint">{g.appUnreachable}</p>

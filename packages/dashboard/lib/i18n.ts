@@ -43,11 +43,11 @@ export const KEYS_NOTICES = ["saved", "deleted"] as const;
 export type KeysNotice = (typeof KEYS_NOTICES)[number];
 
 /** Why an installation of the GitHub App could not be linked or unlinked (a `?error=` of the GitHub page). */
-export const GITHUB_ERRORS = ["forbidden", "off", "no-github", "unreachable", "failed"] as const;
+export const GITHUB_ERRORS = ["forbidden", "off", "no-github", "unreachable", "state", "failed"] as const;
 export type GithubError = (typeof GITHUB_ERRORS)[number];
 
-/** What a change on the GitHub page did (a `?done=`). */
-export const GITHUB_NOTICES = ["linked", "unlinked"] as const;
+/** What a change on the GitHub page did (a `?done=`); `requested`: GitHub awaits the account owner's approval. */
+export const GITHUB_NOTICES = ["linked", "unlinked", "requested"] as const;
 export type GithubNotice = (typeof GITHUB_NOTICES)[number];
 
 /** Why a worker could not be revoked (a `?error=` of the Workers page). */
@@ -367,9 +367,12 @@ const en = {
     invalid: (reason: string) => `The GitHub App is off: ${reason}. Its owner fixes it and redeploys.`,
     appUnreachable:
       "GitHub did not give the app's details: check ARMADA_GITHUB_APP_ID and ARMADA_GITHUB_APP_PRIVATE_KEY, or try again in a moment. The server log says why.",
-    install: "Install the app on a GitHub account",
+    install: "Install on GitHub",
     installHint:
-      "On GitHub, pick the account and the repositories: Armada reads only those. Then come back here and link the installation.",
+      "On GitHub, pick the account and the repositories: Armada reads only those. GitHub then sends you back here, and the installation is linked to this organization.",
+    installElsewhere: "Install the app on a GitHub account",
+    installElsewhereHint:
+      "On GitHub, pick the account and the repositories: Armada reads only those. An owner or admin of this organization then links the installation here.",
     home: "This organization is the deployment's first: it reads every repository the app is installed on, linked or not.",
     linked: "Linked installations",
     linkedHint: "This organization reads the repositories of these installations, and no others.",
@@ -377,7 +380,8 @@ const en = {
     linkedBy: (who: string, when: string) => `linked by ${who}, ${when}`,
     unlink: "Unlink",
     reachable: "Your installations on GitHub",
-    reachableHint: "The app's installations GitHub lets you reach. Link those this organization works on.",
+    reachableHint:
+      "The app's installations GitHub lets you reach, installed without the button above. Link those this organization works on.",
     noneReachable:
       "GitHub shows you no installation of the app. Install it first, or ask an owner of the GitHub account to.",
     allLinked: "Every installation you can reach is linked.",
@@ -390,11 +394,15 @@ const en = {
       off: "The GitHub App is not configured on this Armada.",
       "no-github": "Sign in with GitHub first: Armada asks GitHub which installations you can reach.",
       unreachable: "GitHub does not show you this installation, so it was not linked.",
+      state:
+        "The installation was not linked: the Install link expired, was already used, or was made for someone else, another organization or another browser. Click Install on GitHub again: the installation stays on GitHub.",
       failed: "That did not work. Try again in a moment.",
     } satisfies Record<GithubError, string>,
     notices: {
       linked: "Linked. The fleet's next read of GitHub goes through it.",
       unlinked: "Unlinked. This organization no longer reads through it.",
+      requested:
+        "GitHub sent the request to an owner of that GitHub account. Once they approve it, link the installation here.",
     } satisfies Record<GithubNotice, string>,
   },
   workers: {
@@ -790,9 +798,12 @@ const fr: Strings = {
     invalid: (reason) => `L'app GitHub est coupée : ${reason}. Son propriétaire corrige et redéploie.`,
     appUnreachable:
       "GitHub n'a pas donné les détails de l'app : vérifie ARMADA_GITHUB_APP_ID et ARMADA_GITHUB_APP_PRIVATE_KEY, ou réessaie dans un instant. Le journal du serveur dit pourquoi.",
-    install: "Installer l'app sur un compte GitHub",
+    install: "Installer sur GitHub",
     installHint:
-      "Sur GitHub, choisis le compte et les dépôts : Armada ne lit que ceux-là. Puis reviens ici et lie l'installation.",
+      "Sur GitHub, choisis le compte et les dépôts : Armada ne lit que ceux-là. GitHub te renvoie ensuite ici, et l'installation est liée à cette organisation.",
+    installElsewhere: "Installer l'app sur un compte GitHub",
+    installElsewhereHint:
+      "Sur GitHub, choisis le compte et les dépôts : Armada ne lit que ceux-là. Un propriétaire ou un admin de cette organisation lie ensuite l'installation ici.",
     home: "Cette organisation est la première du déploiement : elle lit tous les dépôts où l'app est installée, liés ou non.",
     linked: "Installations liées",
     linkedHint: "Cette organisation lit les dépôts de ces installations, et aucun autre.",
@@ -801,7 +812,7 @@ const fr: Strings = {
     unlink: "Délier",
     reachable: "Tes installations sur GitHub",
     reachableHint:
-      "Les installations de l'app que GitHub te laisse voir. Lie celles sur lesquelles travaille cette organisation.",
+      "Les installations de l'app que GitHub te laisse voir, faites sans le bouton ci-dessus. Lie celles sur lesquelles travaille cette organisation.",
     noneReachable:
       "GitHub ne te montre aucune installation de l'app. Installe-la d'abord, ou demande à un propriétaire du compte GitHub de le faire.",
     allLinked: "Toutes les installations que tu peux voir sont liées.",
@@ -814,11 +825,15 @@ const fr: Strings = {
       off: "L'app GitHub n'est pas configurée sur cet Armada.",
       "no-github": "Connecte-toi d'abord avec GitHub : Armada demande à GitHub quelles installations tu peux voir.",
       unreachable: "GitHub ne te montre pas cette installation : elle n'a pas été liée.",
+      state:
+        "L'installation n'a pas été liée : le lien d'installation a expiré, a déjà servi, ou a été fait pour quelqu'un d'autre, une autre organisation ou un autre navigateur. Clique de nouveau sur Installer sur GitHub : l'installation reste sur GitHub.",
       failed: "Ça n'a pas marché. Réessaie dans un instant.",
     },
     notices: {
       linked: "Liée. La prochaine lecture de GitHub par la flotte passe par elle.",
       unlinked: "Déliée. Cette organisation ne lit plus par elle.",
+      requested:
+        "GitHub a envoyé la demande à un propriétaire de ce compte GitHub. Une fois qu'il l'a approuvée, lie l'installation ici.",
     },
   },
   workers: {
