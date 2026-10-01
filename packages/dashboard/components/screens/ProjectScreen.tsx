@@ -143,7 +143,7 @@ export function ProjectScreen() {
             <p>{t.projectPages.nothingBlocks}</p>
           </SectionBody>
         ) : (
-          blockers.map((b) => <BlockerRow key={`${b.reason}-${b.ticket ?? b.pr ?? ""}`} blocker={b} />)
+          blockers.map((b) => <BlockerRow key={`${b.reason}-${b.ticket ?? ""}-${b.pr ?? ""}`} blocker={b} />)
         )}
       </Section>
       <Section
