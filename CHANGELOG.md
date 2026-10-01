@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.28](https://github.com/The-Vibe-Company/armada/compare/v0.2.27...v0.2.28) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** keep the dashboard fast with budgets checked on every PR ([#119](https://github.com/The-Vibe-Company/armada/issues/119)) ([f46eea4](https://github.com/The-Vibe-Company/armada/commit/f46eea457f3b0faa6f47b86e6b87bc12487b68b3))
+
 ## [0.2.27](https://github.com/The-Vibe-Company/armada/compare/v0.2.26...v0.2.27) (2026-10-01)
 
 
