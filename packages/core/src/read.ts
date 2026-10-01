@@ -5,6 +5,7 @@
 // understands) use it.
 export * from "./activity.ts";
 export * from "./armada-api.ts";
+export * from "./attachments.ts";
 export * from "./config.ts";
 export * from "./credentials.ts";
 export * from "./fleet.ts";

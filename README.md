@@ -101,11 +101,14 @@ armada login --launch-token <token>        # the first line of the launch messag
 armada claim ABC-12 --runtime conductor --handle <workspace>/<session>
 armada report awaiting-approval --plan-file plan.md        # the plan as its own block, one-line status
 armada report implementing --message "plan approved, writing the parser"
+armada attach ABC-12 .context/overview.png https://example.com/design --caption "Check the new overview"
 armada report implementing --message "parser done, wiring the CLI"   # same phase = status update
 armada report shipping --message "PR open" --pr 34
 armada report ready-to-merge --pr 34 --sha <full 40-character head SHA>
 armada release --reason "wrong ticket"
 ```
+
+`armada attach <ticket> <file|url>... [--caption "<text>"] [--for <item>]` keeps visual evidence out of git. It uploads byte-checked PNG, JPEG, WebP or GIF images (at most 2 MB each) and records HTTPS links, then prints private dashboard URLs. An organization member can inspect them in the agent's **Attachments** tab, enlarge images, and follow links. The bytes stay in the app's Postgres and are served only after organization/project access checks; signed-out callers and other organizations receive 403. Worker sessions attach only to their own ticket; coordinators attach to any ticket in their project's cached reading. Refresh the dashboard first if a new ticket is missing there. `--for` stores a free validation reference. Identical content on a ticket is stored once (a later `--for` can bind it to a validation). Each ticket defaults to 20 images/links, the project to 200 MB of image bytes, and evidence is deleted by the next successful project refresh at least 30 days after completion or cancellation; reopening resets that window. Configure these limits in `[policy]` below. Never include credentials or secrets in linked URLs or screenshots.
 
 - `claim` re-reads the ticket and refuses it when another worker holds it; if two claims race, the older comment wins and the other withdraws. It assigns the ticket to the Linear key's user, moves it to the team's first started state, sets the `planning` phase label and the runtime label (matched by name, so `conductor` finds `Conductor`), and posts an `Agent claim — runtime · session · branch · started` line. The handle is kept in that comment and on Armada, so a coordinator finds the session either way. Claiming again with the same handle repairs labels and state. It reads every comment and label of the ticket, however many.
 - `report <phase>` accepts: planning → awaiting-approval or implementing; awaiting-approval → planning or implementing; implementing → shipping; shipping → implementing or ready-to-merge; ready-to-merge → shipping; blocked from anywhere and back to any phase; the current phase again as a status update. Anything else exits 1 with the reason. The output lists what waits in the worker's inbox.
@@ -390,6 +393,9 @@ required_checks = ["test"]       # CI checks that must be green before a hand-ba
 local_commands = ["npm ci", "npm test"]  # run by `armada merge` on a test merge of a head behind its base (default: none: the worker brings the base branch in instead)
 
 [policy]
+attachments_per_ticket = 20      # images and links together (default 20)
+attachments_project_mb = 200     # private image bytes per project, MB = 1024² bytes (default 200)
+attachments_retention_days = 30  # deleted after completion/cancellation by the next project refresh (default 30)
 silence_minutes = 15             # a worker with no report for longer is flagged silent (default 15)
 coordinator_minutes = 10         # an inbox item open longer shows "waiting for the coordinator" (default 10)
 not_started_minutes = 10         # a launched worker that has not claimed after this long shows as not started (default 10; a CLI older than this setting refuses it)

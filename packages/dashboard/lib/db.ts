@@ -581,6 +581,23 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 11,
     statements: ["CREATE INDEX inbox_by_ticket ON inbox_items (project, ticket, created_at)"],
   },
+  {
+    version: 12,
+    statements: [
+      `CREATE TABLE attachments (
+        id text PRIMARY KEY, project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        ticket text NOT NULL, kind text NOT NULL CHECK (kind IN ('image', 'link')),
+        bytes bytea, content_type text, size integer NOT NULL CHECK (size >= 0 AND size <= 2097152),
+        sha256 text NOT NULL, caption text, author text NOT NULL, created_at timestamptz NOT NULL,
+        reference text, url text, done_at timestamptz,
+        CHECK ((kind = 'image' AND bytes IS NOT NULL AND content_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif') AND url IS NULL AND octet_length(bytes) = size)
+          OR (kind = 'link' AND bytes IS NULL AND content_type IS NULL AND url IS NOT NULL AND size = 0)),
+        UNIQUE (project, ticket, sha256)
+      )`,
+      "CREATE INDEX attachments_ticket ON attachments (project, ticket, created_at)",
+      "CREATE INDEX attachments_retention ON attachments (project, done_at) WHERE done_at IS NOT NULL",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

@@ -56,6 +56,9 @@ export interface ArmadaConfig {
     preApprovedLabel: string;
     /** A ticket carrying this label waits for approval, whatever `plans` says; it wins over `preApprovedLabel`. */
     approvalLabel: string;
+    attachmentsPerTicket: number;
+    attachmentsProjectMb: number;
+    attachmentsRetentionDays: number;
   };
   brief: {
     /** Repository path, relative to armada.toml, of a file every brief carries under "Project conventions"; null when unset. */
@@ -125,6 +128,9 @@ export const CONFIG_DEFAULTS = {
   plans: "approve",
   preApprovedLabel: "plan-approved",
   approvalLabel: "needs-plan-approval",
+  attachmentsPerTicket: 20,
+  attachmentsProjectMb: 200,
+  attachmentsRetentionDays: 30,
 } as const;
 
 export class ConfigError extends Error {
@@ -247,6 +253,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "plans",
         "pre_approved_label",
         "approval_label",
+        "attachments_per_ticket",
+        "attachments_project_mb",
+        "attachments_retention_days",
       ],
     ],
     ["brief", briefT, ["extra"]],
@@ -359,6 +368,16 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"policy.plans" must be ${PLAN_POLICIES.map((p) => `"${p}"`).join(" or ")}`);
   }
   const preApprovedLabel = str(policyT, "policy", "pre_approved_label", { default: CONFIG_DEFAULTS.preApprovedLabel });
+  const quota = (key: string, fallback: number): number => {
+    const value = policyT[key];
+    if (value === undefined) return fallback;
+    if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+    problems.push(`"policy.${key}" must be a positive integer`);
+    return fallback;
+  };
+  const attachmentsPerTicket = quota("attachments_per_ticket", CONFIG_DEFAULTS.attachmentsPerTicket);
+  const attachmentsProjectMb = quota("attachments_project_mb", CONFIG_DEFAULTS.attachmentsProjectMb);
+  const attachmentsRetentionDays = quota("attachments_retention_days", CONFIG_DEFAULTS.attachmentsRetentionDays);
   const approvalLabel = str(policyT, "policy", "approval_label", { default: CONFIG_DEFAULTS.approvalLabel });
   if (preApprovedLabel && approvalLabel && routingLabelKey(preApprovedLabel) === routingLabelKey(approvalLabel))
     problems.push(`"policy.pre_approved_label" and "policy.approval_label" must name different labels`);
@@ -420,7 +439,17 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
     gates: { requiredChecks, localCommands },
-    policy: { silentAfterMinutes, coordinatorMinutes, notStartedMinutes, plans, preApprovedLabel, approvalLabel },
+    policy: {
+      silentAfterMinutes,
+      coordinatorMinutes,
+      notStartedMinutes,
+      plans,
+      preApprovedLabel,
+      approvalLabel,
+      attachmentsPerTicket,
+      attachmentsProjectMb,
+      attachmentsRetentionDays,
+    },
     brief: { extra },
     secrets: { names: secretNames },
     conductor: { defaultProfile, profiles, routing },
@@ -461,6 +490,9 @@ silence_minutes = 15     # a worker with no report for longer than this shows as
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
 # not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
 # plans = "approve"       # or "pre-approved": workers post their plan and go on without waiting
+# attachments_per_ticket = 20
+# attachments_project_mb = 200
+# attachments_retention_days = 30
 # pre_approved_label = "plan-approved"      # a ticket with this label skips the approval
 # approval_label = "needs-plan-approval"    # a ticket with this label waits for it; wins over the other
 

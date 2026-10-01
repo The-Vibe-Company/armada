@@ -31,6 +31,8 @@ import {
 } from "@armada/core/read";
 import { type Auth, apiKeyCreatorRole, firstOrganization, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
+import { attachmentBody, attachmentInput } from "./attachment-http";
+import { AttachmentRefusal, attachmentProjectAllowed, saveAttachment } from "./attachments";
 import { type Holder, releaseCredentials, releaseWorkerSecrets } from "./broker";
 import { LATEST_CLI_VERSION } from "./cli-version";
 import type { Database, Queryable } from "./db";
@@ -482,6 +484,70 @@ async function endWorkers(a: CliAccounts, request: Request, now: Date): Promise<
 
 const UPDATE_CLI = "update the CLI: npm install -g @the-vibe-company/armada";
 
+async function attach(a: CliAccounts, request: Request, now: Date): Promise<Response> {
+  const identity = await identify(a, credentialOf(request), now);
+  if (identity instanceof Response) return identity;
+  if (!identity.organization) return noOrganization(a);
+  try {
+    const body = await attachmentBody(request);
+    const project = parseProject(body.project);
+    const ticket = typeof body.ticket === "string" ? body.ticket.toUpperCase() : "";
+    if (!project || !isTicketId(ticket))
+      throw new AttachmentRefusal("attachment ticket limit: project and ticket are required");
+    if (identity.via === "worker" && (identity.launch?.project !== project.slug || identity.launch?.ticket !== ticket))
+      throw new AttachmentRefusal(
+        `attachment ticket limit: this worker session acts on ${identity.launch?.project}/${identity.launch?.ticket} only`,
+        403,
+      );
+    const scope = { organization: identity.organization.id, home: (await firstOrganization(a.client))?.id ?? null };
+    if (!(await attachmentProjectAllowed(a.client, project.slug, scope)))
+      throw new AttachmentRefusal(
+        "attachment ticket limit: project belongs to another organization or is not registered",
+        403,
+      );
+    const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
+      project.slug,
+    )?.snapshot;
+    const issue = snapshot?.sources.program.issues.find((issue) => issue.id === ticket);
+    if (
+      !snapshot ||
+      !issue ||
+      snapshot.config.project.slug !== project.slug ||
+      snapshot.config.github.repository.toLowerCase() !== project.repository.toLowerCase() ||
+      snapshot.config.tracker.programRoot !== project.programRoot
+    )
+      throw new AttachmentRefusal(
+        `attachment ticket limit: ${ticket} is not in the cached project reading; refresh the dashboard first`,
+        403,
+      );
+    for (const key of ["caption", "reference"])
+      if (body[key] != null && typeof body[key] !== "string")
+        throw new AttachmentRefusal(`attachment ${key} must be text`);
+    const attachment = await saveAttachment(a.client, {
+      project: project.slug,
+      ticket,
+      input: attachmentInput(body.input),
+      caption: (body.caption as string | null) ?? null,
+      reference: (body.reference as string | null) ?? null,
+      author: identity.launch ? workerActor(identity.launch).label : (holderOf(identity)?.actor.label ?? "Coordinator"),
+      now,
+      policy: snapshot.config.policy,
+      doneAt: ["completed", "canceled"].includes(issue.statusType)
+        ? (issue.completedAt ?? issue.canceledAt ?? now.toISOString())
+        : null,
+    });
+    const url = new URL(
+      `/agents/${encodeURIComponent(ticket)}?tab=attachments&attachment=${attachment.id}`,
+      a.settings.baseUrl,
+    ).toString();
+    return Response.json({ schemaVersion: 1, attachment, url }, { headers: NO_STORE });
+  } catch (err) {
+    if (err instanceof AttachmentRefusal)
+      return refuse(err.status, err.message, "armada attach <ticket> <file|url>... --help");
+    throw err;
+  }
+}
+
 /**
  * `POST fleet/<operation>`: one operation on the fleet's live data, for the
  * project the request names. The caller's organization holds the project (it
@@ -804,6 +870,7 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps): Pr
   if (route === "POST launch-tokens/exchange") return exchange(a, request, now);
   if (route === "POST workers/end") return endWorkers(a, request, now);
   if (route === "GET projects") return projects(a, request, now);
+  if (route === "POST attachments") return attach(a, request, now);
   if (request.method === "POST" && path[0] === "secrets" && path.length === 2)
     return secrets(a, request, path[1] ?? "", deps, now);
   if (request.method === "POST" && path[0] === "fleet" && path.length > 1)

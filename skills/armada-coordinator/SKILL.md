@@ -56,6 +56,8 @@ You only learn of something new when a command you run ends. So while a worker i
 
 ## Rules of thumb
 
+- When asking the owner to validate a design or change, attach what they must see with `armada attach <ticket> <files|https-urls>... --caption "<what to check>" [--for <item>]` and include the returned private dashboard URLs in the request. Keep screenshots out of git. Only organization members can open the evidence; each image is at most 2 MB.
+
 - Merge only after the worker's hand-back; a green pull request can still get one more push that brings the default branch in.
 - Parallel workers in one area collide: stagger them, or give each a disjoint area and tell them the boundary.
 - Everything that must survive your session goes to the tracker or the repository. The next coordinator may be a fresh cloud session with none of your context: it resumes from `armada status` and `armada inbox`.

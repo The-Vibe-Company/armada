@@ -1,10 +1,20 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type ArmadaSignIn, armadaApi, type Fleet, fleetClient, type ProjectInput } from "@armada/core/read";
+import {
+  type ArmadaSignIn,
+  armadaApi,
+  configTemplate,
+  type Fleet,
+  fleetClient,
+  type ProjectInput,
+  parseConfig,
+} from "@armada/core/read";
+import { issue } from "../../core/test/support.ts";
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
 import { accountsModeOf } from "../lib/accounts-settings.ts";
 import { type CliAccounts, type CliApiDeps, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
 import { fleetStore, liveStore } from "../lib/fleet-store.ts";
+import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
 import { vaultModeOf } from "../lib/vault.ts";
 import { tempDatabase } from "./support.ts";
 
@@ -87,6 +97,67 @@ const fetch = async (url: string, init: RequestInit) =>
 const CLI = "9.9.9";
 const api = armadaApi({ url: BASE, fetch, version: CLI });
 const fleetOf = (signIn: ArmadaSignIn, project: ProjectInput = WIDGETS): Fleet => fleetClient({ api, signIn, project });
+
+describe("private attachments through the authenticated CLI API", () => {
+  test("a coordinator and scoped worker attach to cached tickets; cross-project and cross-ticket calls fail", async () => {
+    const coordinator: ArmadaSignIn = { kind: "api-key", key: apiKey };
+    await fleetOf(coordinator).register();
+    const config = parseConfig(configTemplate(WIDGETS));
+    const store = dbSnapshots(client, memorySnapshots());
+    const lease = await store.claim(WIDGETS.slug, now(), 60_000);
+    if (!lease) throw new Error("snapshot lease missing");
+    await store.save(
+      WIDGETS.slug,
+      {
+        startedAt: now(),
+        config,
+        configWarning: null,
+        sources: {
+          program: {
+            rootId: "WID-1",
+            fetchedAt: now().toISOString(),
+            issues: [issue("WID-1"), issue("WID-71"), issue("WID-72")],
+            comments: [],
+            warnings: [],
+          },
+          forge: null,
+          forgeError: null,
+        },
+      },
+      lease,
+      { full: true, now: now() },
+    );
+    const target = {
+      project: WIDGETS,
+      ticket: "WID-71",
+      caption: "Design",
+      reference: "owner-item",
+      input: { kind: "image" as const, contentType: "image/png", data: "iVBORw0KGgo=" },
+    };
+    const image = await api.attach(coordinator, target);
+    expect(image.url).toContain("/agents/WID-71?tab=attachments&attachment=");
+    const session = await worker("WID-71");
+    const duplicate = await api.attach(session, target);
+    expect(duplicate.attachment.id).toBe(image.attachment.id);
+    const link = await api.attach(session, { ...target, input: { kind: "link", url: "https://example.test/design" } });
+    expect(link.attachment.kind).toBe("link");
+    expect((await refusal(api.attach(session, { ...target, ticket: "WID-72" })))[0]).toBe(403);
+    expect((await refusal(api.attach(session, { ...target, project: { ...WIDGETS, slug: "gadgets" } })))[0]).toBe(403);
+    expect((await refusal(api.attach(coordinator, { ...target, ticket: "OTHER-1" })))[0]).toBe(403);
+    expect((await refusal(api.attach({ kind: "api-key", key: otherKey }, target)))[0]).toBe(403);
+    expect(
+      await refusal(api.attach(session, { ...target, input: { ...target.input, contentType: "image/jpeg" } })),
+    ).toEqual([400, expect.stringContaining("type limit")]);
+    expect(
+      await refusal(
+        api.attach(session, {
+          ...target,
+          input: { ...target.input, data: Buffer.alloc(2 * 1024 * 1024 + 1).toString("base64") },
+        }),
+      ),
+    ).toEqual([413, expect.stringContaining("2 MB")]);
+  });
+});
 
 async function worker(ticket: string): Promise<ArmadaSignIn> {
   const made = await api.launchToken({ kind: "session", token: ownerToken }, { project: WIDGETS.slug, ticket });

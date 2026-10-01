@@ -2475,3 +2475,44 @@ a.ui-row:hover {
 .tl-tip.is-left {
   transform: translate(calc(-100% - 12px), 14px);
 }
+.attachment-thumbnail {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: var(--bg);
+  cursor: zoom-in;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.attachment-thumbnail img {
+  display: block;
+  width: 100%;
+  height: 160px;
+  object-fit: contain;
+  outline: 1px solid oklch(1 0 0 / 0.1);
+  outline-offset: -1px;
+}
+.attachment-thumbnail:focus-visible {
+  outline: 2px solid var(--active);
+  outline-offset: 2px;
+}
+.attachment-dialog {
+  max-width: min(960px, 90vw);
+  max-height: 90vh;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--surface);
+}
+.attachment-dialog::backdrop {
+  background: rgb(0 0 0 / 0.75);
+}
+.attachment-dialog img {
+  display: block;
+  max-width: 100%;
+  max-height: 70vh;
+  margin-top: 12px;
+  object-fit: contain;
+}

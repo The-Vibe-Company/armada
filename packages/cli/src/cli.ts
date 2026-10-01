@@ -15,6 +15,7 @@ import {
   skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { doctor } from "./doctor.ts";
@@ -37,6 +38,11 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  attach: `  attach <ticket> <file|url>... [--caption <text>] [--for <item>]
+                    Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
+                    or HTTPS links. Prints a dashboard URL for each attachment.
+                    --for keeps a free reference for an owner validation item
+`,
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
   status --all      The same for every project registered by \`armada init\`
 `,
@@ -163,6 +169,7 @@ const COMMAND_HELP: Record<string, string> = {
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
+  "attach",
   "status",
   "secrets",
   "run",
@@ -176,7 +183,12 @@ const CONFIG_OPTION = new Set([
   "merge",
   "brief",
 ]);
-const JSON_OPTION = new Set([...[...CONFIG_OPTION].filter((c) => c !== "run"), "doctor", "auth", "whoami"]);
+const JSON_OPTION = new Set([
+  ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach"),
+  "doctor",
+  "auth",
+  "whoami",
+]);
 const TICKET_HELP = `  --ticket <id>     Ticket for report, release and ask (default ARMADA_TICKET, then the git
                     branch) and for merge (default: the ticket the PR branch names)
 `;
@@ -269,6 +281,8 @@ const VALUE_OPTIONS = [
   "only",
   "file",
   "from-env",
+  "caption",
+  "for",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
@@ -285,6 +299,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  attach: ["caption", "for"],
   claim: ["runtime", "handle", "branch", "profile", "reason"],
   report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha"],
   release: ["ticket", "reason"],
@@ -470,6 +485,15 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
             }),
       });
       return await (args.command === "run" ? runCommand : secretsCommand)(io, config, credentials, args);
+    }
+    if (args.command === "attach") {
+      const { path, text } = await findConfig(io, args.config, "attach");
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, {
+        armada: false,
+        worker: { command: "attach", project: config.project.slug, ticket: () => args.rest[0]?.toUpperCase() ?? null },
+      });
+      return await attachCommand(io, config, credentials, args);
     }
     const worker = { claim, report, release, ask, inbox, answer }[args.command];
     if (worker) {

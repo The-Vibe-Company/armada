@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { isatty } from "node:tty";
 import { run } from "./cli.ts";
 import type { Exec } from "./io.ts";
+import { UsageError } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
 import { spawnInherited } from "./spawn.ts";
 
@@ -115,6 +116,29 @@ const code = await run(process.argv.slice(2), {
       throw err;
     }),
   stdout: (t) => process.stdout.write(t),
+  readBinaryFile: async (path, maxBytes) => {
+    const file = await open(path, "r").catch((err: NodeJS.ErrnoException) => {
+      if (err.code === "ENOENT" || err.code === "ENOTDIR") return null;
+      throw err;
+    });
+    if (!file) return null;
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile()) throw new UsageError("attachment must be a regular image file");
+      if (stat.size > maxBytes) throw new UsageError("attachment size limit: images must be at most 2 MB each");
+      const buffer = Buffer.alloc(maxBytes + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const { bytesRead } = await file.read(buffer, size, buffer.length - size, null);
+        if (!bytesRead) break;
+        size += bytesRead;
+      }
+      if (size > maxBytes) throw new UsageError("attachment size limit: images must be at most 2 MB each");
+      return buffer.subarray(0, size);
+    } finally {
+      await file.close();
+    }
+  },
   stderr: (t) => process.stderr.write(t),
   ghToken,
   interactive: isatty(0) && isatty(2),
