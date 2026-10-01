@@ -171,8 +171,13 @@ const en = {
     "No database is configured (ARMADA_DATABASE_URL), so this view follows Linear and GitHub only: reports show at the next Linear read, and questions and coordinator activity are hidden.",
   projectError: (name: string) => `${name} could not be read`,
   notes: (n: number) => (n === 1 ? "1 note" : `${n} notes`),
-  footerRefresh: "Refreshes every 5 s while this tab is open",
+  footerRefresh:
+    "Refreshes every 5 s while work is in flight, every 30 s otherwise, and pauses while this tab is hidden",
   linearRead: (ago: string) => `Linear read ${ago} ago`,
+  dataRead: (ago: string) => `Linear and GitHub read ${ago} ago`,
+  dataReadHint:
+    "The oldest reading of Linear and GitHub on this page. Webhooks refresh it within seconds when they are set up, otherwise every minute while someone looks.",
+  readingProject: (name: string) => `${name}: reading Linear and GitHub for the first time…`,
   githubMissing: "GitHub not read",
   language: "Language",
   filterLabel: "Show one project",
@@ -601,8 +606,13 @@ const fr: Strings = {
     "Aucune base de données n'est configurée (ARMADA_DATABASE_URL) : cette vue suit Linear et GitHub seulement. Les rapports apparaissent à la lecture Linear suivante ; questions et activité du coordinateur sont masquées.",
   projectError: (name) => `${name} n'a pas pu être lu`,
   notes: (n) => (n === 1 ? "1 remarque" : `${n} remarques`),
-  footerRefresh: "Se rafraîchit toutes les 5 s tant que l'onglet est ouvert",
+  footerRefresh:
+    "Se rafraîchit toutes les 5 s quand du travail est en cours, toutes les 30 s sinon, et s'arrête quand l'onglet est caché",
   linearRead: (ago) => `Linear lu il y a ${ago}`,
+  dataRead: (ago) => `Linear et GitHub lus il y a ${ago}`,
+  dataReadHint:
+    "La plus ancienne lecture de Linear et GitHub de cette page. Les webhooks la rafraîchissent en quelques secondes s'ils sont configurés, sinon chaque minute tant que quelqu'un regarde.",
+  readingProject: (name) => `${name} : première lecture de Linear et GitHub…`,
   githubMissing: "GitHub non lu",
   language: "Langue",
   filterLabel: "Afficher un projet",
