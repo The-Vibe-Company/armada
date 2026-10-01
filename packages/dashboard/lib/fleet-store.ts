@@ -28,8 +28,9 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "@armada/core/read";
-import { REQUEST_KINDS, TIMELINE_HOURS } from "@armada/core/read";
+import { REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
+import { endWorker } from "./workers";
 
 // ------------------------------------------------------------------ projects
 
@@ -764,8 +765,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."runtimeHandle" FROM (
-       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "runtimeHandle", "endedAt"
+    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtimeHandle" FROM (
+       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtimeHandle", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -784,8 +785,52 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
     ticket: String(r.ticket),
     launchedAt: isoAt(r.createdAt),
     tokenUsedAt: iso(r.tokenUsedAt),
+    tokenExpiresAt: isoAt(r.tokenExpiresAt),
     handle: text(r.runtimeHandle),
   }));
+}
+
+export async function expireUnusedLaunches(db: Database, project: string, now: Date): Promise<PendingLaunch[]> {
+  return transaction(db, async (tx) => {
+    const candidates = await tx.query(
+      `SELECT w."id", w."organizationId", w."ticket", w."createdAt", w."tokenExpiresAt", w."runtimeHandle"
+       FROM "armada_worker" w
+       WHERE w."project" = $1 AND w."organizationId" = (SELECT organization_id FROM projects WHERE slug = $1)
+         AND w."endedAt" IS NULL AND w."tokenUsedAt" IS NULL AND w."tokenExpiresAt" < $2
+         AND NOT EXISTS (
+           SELECT 1 FROM "armada_worker" newer
+           WHERE newer."organizationId" = w."organizationId" AND newer."project" = w."project" AND newer."ticket" = w."ticket"
+             AND (newer."createdAt", newer."id") > (w."createdAt", w."id")
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM events e WHERE e.project = $1 AND e.ticket = w."ticket" AND e.kind = 'claim' AND e.created_at >= w."createdAt"
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = w."ticket" AND h.released_at IS NULL
+         )
+       ORDER BY w."createdAt", w."ticket" FOR UPDATE OF w`,
+      [project, new Date(now.getTime() - UNUSED_LAUNCH_GRACE_MS)],
+    );
+    const expired: PendingLaunch[] = [];
+    for (const row of candidates.rows) {
+      const ended = await endWorker(tx, {
+        organization: String(row.organizationId),
+        id: String(row.id),
+        reason: "expired",
+        by: { kind: "dashboard", id: "", label: "Armada (token expired)" },
+        now,
+      });
+      if (ended)
+        expired.push({
+          ticket: ended.ticket,
+          launchedAt: ended.createdAt,
+          tokenExpiresAt: ended.tokenExpiresAt,
+          tokenUsedAt: null,
+          handle: ended.handle,
+        });
+    }
+    return expired;
+  });
 }
 
 // ------------------------------------------------------------------ the store
@@ -825,6 +870,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   renewLease: (l) => renewLease(db, l),
   releaseLease: (l) => releaseLease(db, l),
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
+  expireUnusedLaunches: (project, now) => expireUnusedLaunches(db, project, now),
 });
 
 // ------------------------------------------------------------------ what the dashboard reads

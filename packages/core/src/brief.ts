@@ -132,6 +132,7 @@ export interface BriefLaunch {
 }
 
 export interface Brief {
+  launchHint?: string;
   ticket: { id: string; title: string; url: string; branch: string | null; status: string; description: string };
   parent: { id: string; title: string; url: string } | null;
   /** Where the worker runs, from its profile: the `armada-runtime-<runtime>` skill launches it. */
@@ -168,6 +169,7 @@ export interface Brief {
 }
 
 export interface ProfileSelectionBrief {
+  launchHint?: string;
   ticket: { id: string; title: string; url: string; inShort: string };
   parent: BriefTicket["parent"];
   selection: { profiles: { name: string; when: string | null }[]; hint: string };
@@ -613,6 +615,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 // ------------------------------------------------------------------ load
 
 export interface LoadBriefOptions {
+  prompt?: boolean;
   linearApiKey: string;
   ticket: string;
   profile: string | null;
@@ -636,6 +639,7 @@ export interface LoadBriefOptions {
 
 /** Reads the ticket and the program from Linear and builds the brief. */
 export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): Promise<Brief | ProfileSelectionBrief> {
+  const launchHint = "a one-time token is made when you print the prompt (--prompt)";
   const now = opts.now ?? (() => new Date());
   const linear = { apiKey: opts.linearApiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) };
   // Fail on a bad profile before any network call.
@@ -654,6 +658,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     throw new Refusal(`ticket ${opts.ticket} not found in Linear`, "armada status, to see the tickets of the program");
   if (opts.profile === null && hasProfileRules(config) && !routeProfile(config, ticket.labels))
     return {
+      launchHint,
       ticket: {
         id: ticket.id,
         title: ticket.title,
@@ -685,11 +690,11 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     if (err instanceof ProfileError) throw new BriefError(err.message);
     throw err;
   }
-  const launch = await launchForBrief(ticket, opts.launch);
+  const launch = await launchForBrief(ticket, opts.prompt === true ? opts.launch : undefined);
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
   if (missed?.warn) ticket.warnings.push(`no launch token: ${missed.reason}`);
-  return buildBrief({
+  const brief = buildBrief({
     config,
     ticket,
     program,
@@ -704,6 +709,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     conventions: opts.conventions ?? null,
     now: now(),
   });
+  return opts.prompt ? brief : { ...brief, launchHint };
 }
 
 async function launchForBrief(ticket: BriefTicket, launch: LoadBriefOptions["launch"]) {

@@ -68,7 +68,7 @@ export function renderBrief(b: Brief): string {
     ...(b.conventions ? [`Conventions: ${b.conventions.path} (under "Project conventions" in the prompt)`] : []),
     `Repository:  ${b.repository.url}`,
     `Branch:      ${b.ticket.branch ?? "none suggested by Linear"} (the worker renames its workspace branch to it)`,
-    `Launch:      ${b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key\n             (shown as ${HIDDEN_LAUNCH_TOKEN} here; \`${promptCommand}\` prints it)` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`}`,
+    `Launch:      ${b.launchHint ?? (b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key\n             (shown as ${HIDDEN_LAUNCH_TOKEN} here; \`${promptCommand}\` prints it)` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`)}`,
     "",
     "Environment to pass (values are never printed):",
     ...b.environment.map((v) => {
@@ -102,6 +102,7 @@ export function renderProfileSelection(b: ProfileSelectionBrief): string {
     ),
     "",
     b.selection.hint,
+    ...(b.launchHint ? [`Launch: ${b.launchHint}`] : []),
     ...b.warnings.map((warning) => `Warning: ${warning}`),
   ].join("\n");
 }
@@ -146,6 +147,7 @@ export async function brief(
     throw new UsageError('brief needs a ticket: armada brief <ticket> [--profile <name> [--reason "<why>"]]');
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const promptOnly = a.options.prompt === "true";
+  if (a.options["profile-line"] && !promptOnly) throw new UsageError("--profile-line goes with --prompt");
   if (a.json && promptOnly) throw new UsageError("pass --json or --prompt, not both");
   const profile = a.options.profile?.trim() || null;
   const reason = a.options.reason?.trim() || null;
@@ -173,6 +175,7 @@ export async function brief(
       version,
       env: io.env,
       stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),
+      prompt: promptOnly,
       launch: launcher(io, config, credentials),
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
@@ -192,15 +195,24 @@ export async function brief(
   // Once this worker is launched, it is in flight with the ones known before: the stop hook counts it at once.
   const project = config.project.slug;
   const known = (await watchOf(io, project)).state?.inFlight ?? [];
-  const inFlight = [...new Set([...known, b.ticket.id])].sort((x, y) => x.localeCompare(y, "en", { numeric: true }));
-  await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
   if (promptOnly) {
+    const inFlight = [...new Set([...known, b.ticket.id])].sort((x, y) => x.localeCompare(y, "en", { numeric: true }));
+    await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
+    if (a.options["profile-line"]) {
+      const profile = b.profile;
+      io.stderr(
+        `Profile: ${profile ? `${profile.name}: agent ${profile.agent}, model ${profile.model}, effort ${profile.effort}${profile.fastMode ? ", fast mode" : ""}` : "none declared in armada.toml"}, runtime ${b.runtime}${b.routing ? ` — ${b.routing.why}` : ""}\n`,
+      );
+      io.stderr(
+        `Launch: ${b.launch ? `one-time token made, valid until ${b.launch.expiresAt}` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}`}\n`,
+      );
+    }
     // The worker's prompt, as is: the re-arm line is for the coordinator.
     io.stdout(b.prompt);
     for (const w of b.warnings) io.stderr(`armada: warning: ${w}\n`);
     return 0;
   }
-  const next = await rearmFor(io, project, { inFlight, open: null });
+  const next = await rearmFor(io, project, { inFlight: known, open: null });
   const shown = hideLaunchToken(b);
   if (a.json) io.stdout(`${JSON.stringify({ ...shown, watch: next }, null, 2)}\n`);
   else io.stdout(`${renderBrief(shown)}\n\n----- once launched -----\n${next.line}\n`);

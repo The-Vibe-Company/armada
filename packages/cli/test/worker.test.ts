@@ -231,18 +231,22 @@ describe("armada claim, report and release", () => {
       { ...launch, ticket: "DEMO-8", launchedAt: "2026-03-04T09:40:00.000Z", tokenUsedAt: "2026-03-04T09:42:00.000Z" },
       // Within the 10 minutes `not_started_minutes` gives it.
       { ...launch, ticket: "DEMO-9", launchedAt: "2026-03-04T09:55:00.000Z" },
+      { ...launch, ticket: "DEMO-10", launchedAt: "2026-03-04T07:00:00.000Z" },
     );
     w.net.rest = recordedFetch().fetch;
     expect(await run(["status"], w.io)).toBe(0);
     expect(w.out()).toContain(
       [
-        "Launched, not started (2)",
+        "Pending launches (3)",
         "  DEMO-7   launched 25 min ago · launch token never used",
         "           ! check its session with the runtime guide's status section",
+        "           Cancel: armada launch revoke DEMO-7",
         "  DEMO-8   launched 20 min ago · signed in 18 min ago, no claim",
       ].join("\n"),
     );
-    expect(w.out()).not.toContain("DEMO-9   launched");
+    expect(w.out()).toContain("DEMO-9   launched");
+    expect(w.out()).toContain("Cancel: armada launch revoke DEMO-9");
+    expect(w.out()).not.toContain("DEMO-10  launched");
   });
 });
 

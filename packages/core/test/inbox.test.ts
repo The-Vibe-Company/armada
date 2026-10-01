@@ -323,7 +323,7 @@ describe("the coordinator's inbox", () => {
     launch("DEMO-5", 30, { endedAt: at(2).toISOString() }); // revoked
     launch("DEMO-6", 40); // launched again just now: the newest launch counts
     launch("DEMO-6", 3);
-    launch("DEMO-7", 25 * 60); // older than a day
+    launch("DEMO-7", 25 * 60, { tokenUsedAt: at(25 * 60 - 1).toISOString() }); // older than a day
     launch("GAD-1", 30, { project: "gadgets" });
     // A worker at work, briefed again to read its prompt: that launch starts nobody.
     await db.saveRuntimeHandle({
@@ -343,7 +343,7 @@ describe("the coordinator's inbox", () => {
       [null, "not-started", "DEMO-2", "ws-2/s-2", at(20).toISOString()],
     ]);
     expect(read?.items[0]?.body).toBe(
-      "launched 25 min ago and never claimed; its launch token was never used: the worker never reached its `armada login` line (an install that failed, a prompt cut short). Check its session with the runtime guide's status section; launch it again with armada brief, or revoke the launch on the dashboard's Workers page",
+      "launched 25 min ago and never claimed; its launch token was never used: the worker never reached its `armada login` line (an install that failed, a prompt cut short). Check its session with the runtime guide's status section; launch it again with armada brief DEMO-1 --prompt, or revoke it with armada launch revoke DEMO-1",
     );
     expect(read?.items[1]?.body).toStartWith(
       "launched 20 min ago and never claimed; the worker signed in with its launch token at 09:42 UTC, then stopped before `armada claim` (session ws-2/s-2). Check",
