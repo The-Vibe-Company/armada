@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.22](https://github.com/The-Vibe-Company/armada/compare/v0.2.21...v0.2.22) (2026-10-01)
+
+
+### Features
+
+* ask the owner to validate only what they want, on one Validations page ([#108](https://github.com/The-Vibe-Company/armada/issues/108)) ([802ceb9](https://github.com/The-Vibe-Company/armada/commit/802ceb924ba5c6a7ba1a0e13ce728dff9033e3d0))
+
 ## [0.2.21](https://github.com/The-Vibe-Company/armada/compare/v0.2.20...v0.2.21) (2026-10-01)
 
 
