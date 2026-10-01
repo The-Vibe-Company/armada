@@ -1,11 +1,14 @@
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { cookies } from "next/headers";
 import { LANGUAGE_COOKIE, STRINGS } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 import "./globals.css";
+
+// The browser's chrome takes the dashboard's background (`--bg` in globals.css).
+export const viewport: Viewport = { themeColor: "#09090b" };
 
 export async function generateMetadata(): Promise<Metadata> {
   const lang = languageOf((await cookies()).get(LANGUAGE_COOKIE)?.value);
