@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
@@ -28,9 +28,9 @@ describe("the browser's icons (THE-881)", () => {
   });
 
   test("pass the gate, which still holds every page and route", async () => {
-    // proxy.ts reads the accounts on the server only; its matcher is all this test needs.
-    mock.module("server-only", () => ({}));
-    const { config } = await import("../proxy");
+    // Importing proxy.ts would load the accounts for every test file of the run; its matcher is a literal Next reads as such.
+    const source = await readFile(join(ROOT, "proxy.ts"), "utf8");
+    const config = { matcher: JSON.parse(/matcher: \[\s*("(?:[^"\\]|\\.)*")/.exec(source)?.[1] ?? "null") as string };
     const passes = (path: string) =>
       !unstable_doesMiddlewareMatch({ config, url: `https://fleet.example.test${path}` });
     const open = [
