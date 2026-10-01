@@ -1,22 +1,25 @@
 "use client";
 
-// The overview (THE-867): what waits for the owner across every project. A
-// summary band (how many agents run, what waits, what fails, the active
-// coordinators), the decisions as cards the owner acts on, the problems as
-// rows, the live timeline (THE-868) and one card per project. It renders the
-// overview core builds, as the shell polls it (components/shell/context.tsx),
-// on the page kit (components/page.tsx), through the view rules of
-// lib/overview-view.ts.
+// The overview (THE-867): what needs the owner and what the fleet is doing.
+// A summary band (how many agents run, what waits, what fails, the active
+// coordinators; failing and silent open their group on /agents), the
+// decisions as cards the owner acts on (a coordinator that stopped answering
+// first), the live timeline (THE-868) and one card per project. A failing or
+// silent agent shows in the timeline and on /agents, not in a list of its own
+// (THE-880). It renders the overview core builds, as the shell polls it
+// (components/shell/context.tsx), on the page kit (components/page.tsx),
+// through the view rules of lib/overview-view.ts.
 import type { FleetOverview, ProjectHealth } from "@armada/core/read";
+import Link from "next/link";
 import { type ReactNode, useMemo } from "react";
 import { HARNESS_NAME, paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import {
+  type CoordinatorAlert,
+  coordinatorAlerts,
   decisionCards,
   handBackPr,
   overviewFigures,
-  type Problem,
-  problemsOf,
   projectFacts,
   sentRequest,
 } from "@/lib/overview-view";
@@ -27,30 +30,17 @@ import {
   CardGrid,
   CardHead,
   CardMeta,
+  CardTitle,
   HeaderActions,
   Notice,
   Page,
-  Row,
-  RowIcon,
-  RowId,
-  RowSide,
-  RowText,
-  RowTime,
   Section,
   SectionBody,
 } from "./page";
 import { DecisionCard } from "./screens/DecisionCard";
 import { useFleet, useNow, useShell } from "./shell/context";
 import { LiveTimeline } from "./timeline/Timeline";
-import { Dot, EmptyState, PhasePill, ProjectChip, RelativeTime, StatusDot, Tag, type Tone } from "./ui";
-
-const PROBLEM_TONE: Record<Problem["kind"], Tone> = {
-  ci: "error",
-  conflict: "error",
-  blocked: "error",
-  silent: "silent",
-  "not-started": "silent",
-};
+import { Dot, EmptyState, ProjectChip, RelativeTime, Tag } from "./ui";
 
 const HEALTH_COLOR: Record<ProjectHealth, string> = {
   blocked: "var(--critical)",
@@ -64,7 +54,7 @@ export function Fleet() {
   const now = useNow();
   const figures = useMemo(() => overviewFigures(overview), [overview]);
   const decisions = useMemo(() => decisionCards(overview), [overview]);
-  const problems = useMemo(() => problemsOf(overview), [overview]);
+  const alerts = useMemo(() => coordinatorAlerts(overview), [overview]);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
   const coordinators = new Map(overview.projects.map((p) => [p.slug, p.coordinator.state]));
   const ctx: ActionContext = {
@@ -116,11 +106,13 @@ export function Fleet() {
               label={t.overview.figures.failing}
               value={figures.failing}
               dot={figures.failing ? "var(--critical)" : undefined}
+              href={figures.failing ? paths.agentGroup("error") : undefined}
             />
             <Figure
               label={t.overview.figures.silent}
               value={figures.silent}
               dot={figures.silent ? "var(--active)" : undefined}
+              href={figures.silent ? paths.agentGroup("silent") : undefined}
             />
             <Figure
               label={t.overview.figures.coordinators}
@@ -144,13 +136,16 @@ export function Fleet() {
         <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
       ) : (
         <>
-          <Section label={t.overview.decideTitle} count={decisions.length}>
-            {decisions.length === 0 ? (
+          <Section label={t.overview.decideTitle} count={figures.decide}>
+            {figures.decide === 0 ? (
               <SectionBody>
                 <p>{t.overview.decideEmpty}</p>
               </SectionBody>
             ) : (
               <CardGrid>
+                {alerts.map((a) => (
+                  <StoppedCard key={a.project} t={t} a={a} now={now} projectName={names.get(a.project) ?? a.project} />
+                ))}
                 {decisions.map((w, k) => {
                   const pr = w.kind === "hand-back" ? handBackPr(overview, w) : null;
                   return (
@@ -168,14 +163,6 @@ export function Fleet() {
               </CardGrid>
             )}
           </Section>
-
-          {problems.length > 0 && (
-            <Section label={t.overview.problemsTitle} count={problems.length}>
-              {problems.map((p) => (
-                <ProblemRow key={`${p.project}-${p.ticket}`} t={t} p={p} now={now} projectName={names.get(p.project)} />
-              ))}
-            </Section>
-          )}
 
           <LiveTimeline />
 
@@ -200,46 +187,59 @@ function dateLabel(now: number, locale: string): string {
   return `${day.charAt(0).toUpperCase()}${day.slice(1)} · ${time}`;
 }
 
-/** A figure of a section's side, its label in grey: "En vol 10". */
-function Figure({ label, value, dot }: { label: string; value: number | string; dot?: string }) {
-  return (
-    <span className="sc-figure">
+/** A figure of a section's side, its label in grey: "En vol 10"; with `href`, a link to what it counts. */
+function Figure({ label, value, dot, href }: { label: string; value: number | string; dot?: string; href?: string }) {
+  const body = (
+    <>
       {dot && <Dot color={dot} size={6} />}
       <span className="faint">{label}</span> <span className="mono">{value}</span>
-    </span>
+    </>
+  );
+  return href ? (
+    <Link href={href} prefetch className="sc-figure is-link">
+      {body}
+    </Link>
+  ) : (
+    <span className="sc-figure">{body}</span>
   );
 }
 
-/** Something broken, as a row that opens the agent (or, for a launch never started, its project). */
-function ProblemRow({ t, p, now, projectName }: { t: Strings; p: Problem; now: number; projectName?: string }) {
-  const tone = PROBLEM_TONE[p.kind];
-  const line =
-    p.kind === "ci"
-      ? t.overview.ciLine(p.pr, p.check)
-      : p.kind === "conflict"
-        ? t.overview.conflictLine(p.pr)
-        : p.kind === "silent"
-          ? t.overview.silentLine(t.duration(Math.max(0, now - Date.parse(p.since))))
-          : (p.detail ?? "");
+/** A coordinator that stopped answering while items wait for it: what the owner does to bring it back. */
+function StoppedCard({
+  t,
+  a,
+  now,
+  projectName,
+}: {
+  t: Strings;
+  a: CoordinatorAlert;
+  now: number;
+  projectName: string;
+}) {
+  const seen = a.seenAt === null ? null : t.duration(Math.max(0, now - Date.parse(a.seenAt)));
   return (
-    <Row href={p.href}>
-      <RowIcon>
-        <StatusDot status={tone === "error" ? "error" : "silent"} label={t.overview.problems[p.kind]} />
-      </RowIcon>
-      <RowId>{p.ticket}</RowId>
-      <RowText title={p.title ?? p.ticket} line={line} />
-      {projectName && (
-        <RowSide roomy>
-          <Tag>{projectName}</Tag>
-        </RowSide>
-      )}
-      <RowSide>
-        <PhasePill tone={tone}>{t.overview.problems[p.kind]}</PhasePill>
-      </RowSide>
-      <RowTime>
-        <RelativeTime at={p.since} format="duration" />
-      </RowTime>
-    </Row>
+    <Card>
+      <CardHead
+        icon={<Dot color="var(--active)" />}
+        label={t.overview.stopped.kind}
+        color="var(--active)"
+        side={<span title={a.since}>{t.ago(Math.max(0, now - Date.parse(a.since)))}</span>}
+      />
+      <CardTitle>
+        <Link href={paths.project(a.project)} prefetch>
+          {t.overview.stopped.title(projectName)}
+        </Link>
+      </CardTitle>
+      <CardMeta>
+        <Tag>{projectName}</Tag>
+        <span className="late">{t.overview.stopped.waiting(a.waiting)}</span>
+        <span>{t.overview.stopped.seen(seen)}</span>
+      </CardMeta>
+      <p className="wait-detail is-note">{t.overview.stopped.what}</p>
+      <Link href={paths.project(a.project)} prefetch className="link">
+        {t.overview.stopped.open}
+      </Link>
+    </Card>
   );
 }
 

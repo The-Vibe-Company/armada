@@ -10,7 +10,6 @@ import type {
   WaitingKind,
 } from "@armada/core/read";
 import type { AgentStatus, DecisionKind, Density, Section, StatusReason } from "./fleet-view";
-import type { ProblemKind } from "./overview-view";
 import type { BlockerReason, PrState, RegisterStep } from "./project-view";
 
 export const LANGUAGES = ["en", "fr"] as const;
@@ -524,18 +523,14 @@ const en = {
     readPlan: "Read the whole plan ↗",
     sent: (project: string) => `Sent to the ${project} coordinator`,
     sentBy: (author: string | null, ago: string) => `by ${author ?? "you"}, ${ago}`,
-    problemsTitle: "Problems",
-    problems: {
-      ci: "Red CI",
-      conflict: "Conflict with main",
-      blocked: "Blocked",
-      silent: "Silent",
-      "not-started": "Not started",
-    } satisfies Record<ProblemKind, string>,
-    ciLine: (pr: number | null, check: string | null) =>
-      `${pr ? `PR #${pr} · ` : ""}${check ? `“${check}” fails` : "a check fails"}`,
-    conflictLine: (pr: number | null) => `${pr ? `PR #${pr}` : "The branch"} conflicts with main`,
-    silentLine: (d: string) => `No report for ${d}`,
+    stopped: {
+      kind: "Coordinator stopped",
+      title: (project: string) => `The ${project} coordinator stopped answering`,
+      waiting: (n: number) => (n === 1 ? "1 item waits for it" : `${n} items wait for it`),
+      seen: (d: string | null) => (d === null ? "it never ran a command" : `its last command ${d} ago`),
+      what: "Open its session and have it run armada watch again, or start a new coordinator.",
+      open: "Open the project",
+    },
     projectsTitle: "Projects",
     health: { blocked: "Blocked", watch: "Needs watching", "on-track": "On track" } satisfies Record<
       ProjectHealth,
@@ -728,23 +723,25 @@ const en = {
   },
   timeline: {
     title: "Live fleet",
-    span: "Time span",
-    hours: (h: number) => `${h} h`,
     session: "Session",
     now: "now",
+    backToNow: "Back to now: the last 3 hours",
     coordinator: (harness: string | null) => (harness ? `Coordinator · ${harness}` : "Coordinator"),
     from: (clock: string, length: string) => `from ${clock} · ${length}`,
     report: (clock: string) => `Report at ${clock}`,
     prOpened: (n: number, clock: string) => `PR #${n} opened at ${clock}`,
     silence: (length: string) => `No report for ${length}`,
     inboxRead: (clock: string) => `Inbox read at ${clock}`,
+    inboxWatch: (count: number, from: string, to: string) => `Watching its inbox, ${from} → ${to} · ${count} reads`,
+    idle: (length: string) => `Not reading its inbox for ${length}`,
     legend: {
       past: "earlier phases",
       current: "current phase",
       pr: "PR opened",
       report: "report",
       silence: "silence",
-      inbox: "coordinator's inbox read",
+      inbox: "coordinator watching its inbox",
+      idle: "coordinator idle",
     },
   },
   /** The Projects list and a project's page (THE-870). */
@@ -1243,17 +1240,14 @@ const fr: Strings = {
     readPlan: "Lire tout le plan ↗",
     sent: (project) => `Transmis au coordinateur ${project}`,
     sentBy: (author, ago) => `par ${author ?? "toi"}, ${ago}`,
-    problemsTitle: "Problèmes",
-    problems: {
-      ci: "CI rouge",
-      conflict: "Conflit avec main",
-      blocked: "Bloqué",
-      silent: "Silencieux",
-      "not-started": "Pas démarré",
+    stopped: {
+      kind: "Coordinateur arrêté",
+      title: (project) => `Le coordinateur de ${project} ne répond plus`,
+      waiting: (n) => (n === 1 ? "1 élément l'attend" : `${n} éléments l'attendent`),
+      seen: (d) => (d === null ? "il n'a jamais lancé de commande" : `sa dernière commande remonte à ${d}`),
+      what: "Ouvre sa session et fais-lui relancer armada watch, ou démarre un nouveau coordinateur.",
+      open: "Ouvrir le projet",
     },
-    ciLine: (pr, check) => `${pr ? `PR #${pr} · ` : ""}${check ? `« ${check} » échoue` : "un check échoue"}`,
-    conflictLine: (pr) => `${pr ? `PR #${pr}` : "La branche"} en conflit avec main`,
-    silentLine: (d) => `Aucun rapport depuis ${d}`,
     projectsTitle: "Projets",
     health: { blocked: "Bloqué", watch: "À surveiller", "on-track": "En bonne voie" },
     healthKey: "Santé",
@@ -1439,23 +1433,25 @@ const fr: Strings = {
   },
   timeline: {
     title: "Flotte en direct",
-    span: "Période",
-    hours: (h) => `${h} h`,
     session: "Session",
     now: "maintenant",
+    backToNow: "Revenir à maintenant : les 3 dernières heures",
     coordinator: (harness) => (harness ? `Coordinateur · ${harness}` : "Coordinateur"),
     from: (clock, length) => `depuis ${clock} · ${length}`,
     report: (clock) => `Rapport à ${clock}`,
     prOpened: (n, clock) => `PR #${n} ouverte à ${clock}`,
     silence: (length) => `Aucun rapport pendant ${length}`,
     inboxRead: (clock) => `Inbox lue à ${clock}`,
+    inboxWatch: (count, from, to) => `Surveille son inbox, ${from} → ${to} · ${count} lectures`,
+    idle: (length) => `N'a pas lu son inbox pendant ${length}`,
     legend: {
       past: "phases précédentes",
       current: "phase en cours",
       pr: "PR ouverte",
       report: "rapport",
       silence: "silence",
-      inbox: "lecture de l'inbox par le coordinateur",
+      inbox: "le coordinateur surveille son inbox",
+      idle: "coordinateur inactif",
     },
   },
   projectPages: {

@@ -203,7 +203,12 @@ describe("live Fleet reading", () => {
       owner: "Synthetic Owner",
       progress: { done: 0, total: 3 },
       health: "blocked",
-      coordinator: { ...facts, inboxSeenAt: null, startedAt: w.at(0).toISOString(), inboxReads: [] },
+      coordinator: {
+        ...facts,
+        inboxSeenAt: null,
+        startedAt: w.at(0).toISOString(),
+        inboxTrack: { reads: [], idle: [] },
+      },
       pullRequests: [
         {
           number: 11,
@@ -247,7 +252,7 @@ describe("live Fleet reading", () => {
     expect(changed.status).toBe(200);
     expect(changed.headers.get("etag")).not.toBe(tag);
     const updated = await changed.json();
-    expect(updated.projects[0].coordinator.inboxReads).toMatchObject([{ at: w.at(3_000).toISOString() }]);
+    expect(updated.projects[0].coordinator.inboxTrack.reads).toMatchObject([{ from: w.at(3_000).toISOString() }]);
     expect(updated.projects[0].requests).toMatchObject([{ kind: "merge-request", request: { pr: 11 } }]);
     expect(w.reads.snapshots).toBe(1);
   });
@@ -289,7 +294,7 @@ describe("live Fleet reading", () => {
     const report = (phase: string, ms: number) =>
       recordEvent(db, { project: "widgets", ticket: "WID-2", kind: "report", phase, message: phase, at: w.at(ms) });
     // Older than the timeline's span: not read on a poll.
-    await report("planning", -10 * 3_600_000);
+    await report("planning", -26 * 3_600_000);
     await report("planning", -3_600_000);
     await report("implementing", -1_800_000);
     const o = await loadOverview(w.opts);

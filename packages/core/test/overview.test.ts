@@ -268,7 +268,7 @@ describe("fleet overview", () => {
       seenAt: null,
       cliVersion: null,
       updateAvailable: false,
-      inboxReads: [],
+      inboxTrack: { reads: [], idle: [] },
     });
   });
 

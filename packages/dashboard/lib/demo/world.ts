@@ -38,8 +38,10 @@ export interface DemoProjectFacts {
     model: string | null;
     /** First command after 30 min of silence. */
     since: number;
-    /** Each inbox read, every 15 minutes since it started, the last one `seen` minutes ago. */
+    /** Its inbox reads, every 15 seconds as `armada watch` reads since it started, the last one `seen` minutes ago. */
     seen: number;
+    /** Minutes ago between which it did not read its inbox, for an idle stretch on the timeline. */
+    pause?: [number, number];
   };
 }
 
@@ -54,6 +56,7 @@ export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
       model: "opus-5-5-1m",
       since: 420,
       seen: 2,
+      pause: [250, 205],
     },
   },
   gadgets: {
@@ -61,7 +64,7 @@ export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
     done: 6,
     coordinator: {
       harness: "Claude Code",
-      where: "local · tty s004",
+      where: "hugo-mbp/ttys004",
       profile: "opus",
       model: "opus-5-5-1m",
       since: 300,
@@ -73,7 +76,7 @@ export const DEMO_PROJECT_FACTS: Record<string, DemoProjectFacts> = {
     done: 31,
     coordinator: {
       harness: "Codex",
-      where: "local · tty s011",
+      where: "camille-mbp/ttys011",
       profile: "codex",
       model: "gpt-6.1-sol",
       since: 190,
@@ -96,12 +99,13 @@ export function demoCoordinatorFacts(project: string): CoordinatorFacts | null {
   return { harness: HARNESS_FACT[c.harness], handle: c.where, model: c.model, cliVersion: null };
 }
 
-/** The minutes ago of a coordinator's inbox reads, newest first: one every 15 minutes since it started. */
+/** The minutes ago of a coordinator's inbox reads, newest first: every 15 seconds since it started, but in its pause. */
 export function demoInboxReads(project: string): number[] {
   const c = DEMO_PROJECT_FACTS[project]?.coordinator;
   if (!c) return [];
   const reads: number[] = [];
-  for (let m = c.seen; m < c.since; m += 15) reads.push(m);
+  const paused = (m: number) => !!c.pause && m < c.pause[0] && m > c.pause[1];
+  for (let m = c.seen; m < c.since; m += 0.25) if (!paused(m)) reads.push(m);
   return reads;
 }
 
@@ -131,6 +135,11 @@ interface DemoTicket {
   pr?: { number: number; ci: CiState; mergeable?: "MERGEABLE" | "CONFLICTING"; opened: number };
   /** Minutes ago between which the worker did not report, for a past silence on the timeline. */
   quiet?: [number, number];
+  /**
+   * Minutes ago of status lines other agents left on the ticket before its
+   * claim (input for it, not a claim): they are not part of this session.
+   */
+  notes?: number[];
 }
 
 const f = (path: string, additions: number, deletions: number): DemoFile => ({ path, additions, deletions });
@@ -290,6 +299,7 @@ const TICKETS: DemoTicket[] = [
     phaseSince: 31,
     lastReport: 1,
     summary: "Mapping Codex session events onto armada report",
+    notes: [1650, 1340],
     files: [
       f("packages/core/src/harness/codex-local.ts", 156, 0),
       f("packages/core/src/harness/index.ts", 8, 2),
@@ -578,6 +588,15 @@ export function demoSnapshot(
       }),
     );
     const base = { issueId: t.id, author: t.agent, excerpt: "" };
+    for (const [k, m] of (t.notes ?? []).entries())
+      comments.push({
+        ...base,
+        id: `${t.id}-note-${k}`,
+        author: "Another worker",
+        createdAt: ago(now, m),
+        status: { phase: "planning", summary: "input for this ticket from another campaign (not a claim)" },
+        claim: null,
+      });
     comments.push({
       ...base,
       id: `${t.id}-claim`,

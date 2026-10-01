@@ -28,7 +28,7 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "@armada/core/read";
-import { REQUEST_KINDS } from "@armada/core/read";
+import { REQUEST_KINDS, TIMELINE_HOURS } from "@armada/core/read";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
 
 // ------------------------------------------------------------------ projects
@@ -304,10 +304,11 @@ export async function getCoordinatorPresence(db: Queryable, project: string): Pr
     : null;
 }
 
+/** The inbox reads the live timeline draws: its whole span, and an hour before it for the gap that crosses its start. */
 export async function inboxReads(db: Queryable, project: string, now: Date): Promise<InboxReadEvent[]> {
   const result = await db.query(
     "SELECT id, created_at, handle FROM events WHERE project = $1 AND kind = 'inbox' AND created_at >= $2 AND created_at <= $3 ORDER BY created_at, id",
-    [project, new Date(now.getTime() - 7 * 24 * 60 * 60_000), now],
+    [project, new Date(now.getTime() - (TIMELINE_HOURS + 1) * 60 * 60_000), now],
   );
   return result.rows.map((row) => ({ id: Number(row.id), at: isoAt(row.created_at), handle: text(row.handle) }));
 }

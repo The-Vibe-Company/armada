@@ -12,10 +12,17 @@ import {
   type SessionRecord,
 } from "./live.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
-import { historyByTicket, type SessionTimeline, sessionTimeline, type TimelineHistory } from "./timeline.ts";
+import {
+  type CoordinatorTrack,
+  coordinatorTrack,
+  historyByTicket,
+  type SessionTimeline,
+  sessionTimeline,
+  type TimelineHistory,
+} from "./timeline.ts";
 import type { AgentPhase } from "./types.ts";
 
-export const OVERVIEW_SCHEMA_VERSION = 2;
+export const OVERVIEW_SCHEMA_VERSION = 3;
 
 /** The six steps of the phase pipeline, in order. */
 export const PIPELINE_STEPS = ["plan", "approval", "implement", "pr", "ci", "merge"] as const;
@@ -126,7 +133,8 @@ export interface ProjectOverview {
     seenAt: string | null;
     cliVersion: string | null;
     updateAvailable: boolean;
-    inboxReads: InboxReadEvent[];
+    /** Its inbox reads over the last `TIMELINE_HOURS`, as stretches of watching and idle gaps. */
+    inboxTrack: CoordinatorTrack;
   } & Partial<Omit<CoordinatorPresence, "seenAt">>;
   inFlight: number;
   waiting: number;
@@ -169,10 +177,10 @@ export interface ProjectReading {
 /**
  * Dashboard contract: projects expose owner, leaf-ticket progress, health, open PR facts,
  * pending requests and coordinator {harness, handle, model, cliVersion, startedAt,
- * seenAt, inboxSeenAt, inboxReads}. `seenAt` is command activity, not an inbox read.
+ * seenAt, inboxSeenAt, inboxTrack}. `seenAt` is command activity, not an inbox read.
  * `sessions` retains per-launch profile/agent/model/effort, claimedAt, releasedAt and
  * lastReport; each row points to its active session and carries its `timeline` (phases, report
- * times, silences, PR opening over the last 8 h, from the snapshot's status comments and
+ * times, silences, PR opening over the last 24 h, from the snapshot's status comments and
  * Armada's events; summaries cut short). Ready tickets carry their labels (the ready label
  * left out) and open PRs their head branch. PR files/totals may be null for
  * legacy snapshots; completeness flags identify capped lists. Missing facts are never inferred.
@@ -390,7 +398,11 @@ export function buildOverview(input: {
         seenAt,
         cliVersion,
         updateAvailable: cliVersion !== null && newerRelease(cliVersion, input.latestCli) !== null,
-        inboxReads: p.live?.inboxReads ?? [],
+        inboxTrack: coordinatorTrack({
+          reads: p.live?.inboxReads ?? [],
+          silentAfterMinutes: p.report?.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes,
+          now: input.now,
+        }),
       },
       inFlight: tickets.length,
       waiting: perTicket.size + projectWide,

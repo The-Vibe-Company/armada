@@ -1,27 +1,31 @@
-// The live timeline's geometry (THE-868): where a time falls on a row, the
-// hour marks, each phase's color. Pure, so the drawing stays a plain map of
-// what core gives each row (`FleetRow.timeline`) onto x positions.
-import type { AgentPhase, FleetRow } from "@armada/core/read";
+// The live timeline's geometry (THE-868, THE-880): where a time falls on a
+// row, the hour marks, each phase's color. Pure, so the drawing stays a plain
+// map of what core gives each row (`FleetRow.timeline`) onto x positions.
+import { type AgentPhase, type FleetRow, TIMELINE_HOURS } from "@armada/core/read";
 
-/** The spans the switch offers, in hours; the rows carry the longest (core's TIMELINE_HOURS). */
-export const SPANS = [2, 4, 8] as const;
-export type Span = (typeof SPANS)[number];
-export const DEFAULT_SPAN: Span = 4;
+/** The hours the view shows at once; the rest of the rows' `TIMELINE_HOURS` is a scroll away. */
+export const VISIBLE_HOURS = 3;
+/** How many views wide the track is: the CSS sizes it from this (`--tl-zoom`). */
+export const ZOOM = TIMELINE_HOURS / VISIBLE_HOURS;
 
-const HOUR = 3_600_000;
-/** The drawing follows the clock by steps this long: 0.5 px at 8 h, and rows redraw only at each step. */
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+/** The drawing follows the clock by steps this long: about a pixel at 3 h, and rows redraw only at each step. */
 export const STEP_MS = 15_000;
+/** No hour mark this close to now, where the "now" label sits. */
+const NOW_LABEL_MS = 15 * MIN;
 
 export interface Scale {
   start: number;
   end: number;
-  /** A time's place on the row, in percent, kept on the row. */
+  /** A time's place on the track, in percent, kept on the track. */
   x: (at: number | string) => number;
 }
 
-export function scaleOf(now: number, span: Span): Scale {
+/** The whole track: the last `TIMELINE_HOURS` up to now, now on the right. */
+export function scaleOf(now: number): Scale {
   const end = Math.floor(now / STEP_MS) * STEP_MS;
-  const start = end - span * HOUR;
+  const start = end - TIMELINE_HOURS * HOUR;
   const x = (at: number | string) => {
     const t = typeof at === "string" ? Date.parse(at) : at;
     return Math.max(0, Math.min(100, ((t - start) / (end - start)) * 100));
@@ -29,16 +33,12 @@ export function scaleOf(now: number, span: Span): Scale {
   return { start, end, x };
 }
 
-/** The hour marks of a span, on whole hours of the viewer's clock: every hour, every 2 h over 8 h, none next to now. */
-export function hourMarks(scale: Scale, span: Span): number[] {
-  const every = span > 4 ? 2 : 1;
+/** Every whole hour of the viewer's clock on the track, but the one next to now. */
+export function hourMarks(scale: Scale): number[] {
   const marks: number[] = [];
   const first = new Date(scale.start);
   first.setMinutes(0, 0, 0);
-  // None right before now, where the "now" label sits.
-  const last = scale.end - (scale.end - scale.start) * 0.06;
-  for (let t = first.getTime() + HOUR; t < last; t += HOUR)
-    if (new Date(t).getHours() % every === 0 && t > scale.start) marks.push(t);
+  for (let t = first.getTime() + HOUR; t < scale.end - NOW_LABEL_MS; t += HOUR) if (t > scale.start) marks.push(t);
   return marks;
 }
 
@@ -54,7 +54,7 @@ export const PHASE_COLOR: Record<AgentPhase, string> = {
   released: "var(--text-3)",
 };
 
-/** A phase segment's place on the row; null when it ended before the span. */
+/** A phase segment's place on the row; null when it ended before the track. */
 export function segmentBox(
   s: FleetRow["timeline"]["phases"][number],
   scale: Scale,
@@ -63,4 +63,11 @@ export function segmentBox(
   if (to <= scale.start) return null;
   const x = scale.x(s.from);
   return { x, width: Math.max(0, scale.x(to) - x) };
+}
+
+/** A span drawn on a row: its x and width in percent, null when it ended before the track or has no length. */
+export function spanBox(from: string | number, to: string | number | null, scale: Scale) {
+  const x = scale.x(from);
+  const width = scale.x(to ?? scale.end) - x;
+  return width > 0 ? { x, width } : null;
 }
