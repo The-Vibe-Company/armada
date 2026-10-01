@@ -1,9 +1,14 @@
-// The dashboard's reading of the fleet. Two speeds: Linear and GitHub are read
-// at most once per snapshot period per project (they are slow and rate
-// limited), the fleet's live data in the app's database on every poll (a few
-// SQL reads, next to the function: THE-849). Every poll rebuilds the overview
-// through core, so a worker's report shows as soon as it is recorded. This
-// module only orchestrates I/O; every fleet rule lives in core.
+// The dashboard's reading of the fleet (THE-853: instant and cheap). A page
+// or a poll reads Postgres only: each project's last reading of Linear and
+// GitHub (`snapshots.ts`) and the fleet's live data (a few SQL reads, next to
+// the function: THE-849). It never waits for Linear or GitHub: a reading that
+// is missing, older than the snapshot period or marked by a webhook is
+// refreshed in the background (`after()`), and shows on a next poll. A
+// refresh reads only what changed (Linear's changes since the last reading,
+// GitHub's pull requests), and Linear whole every `fullMs` at most. Every
+// poll rebuilds the overview through core, so a worker's report shows as
+// soon as it is recorded. This module only orchestrates I/O; every fleet
+// rule lives in core.
 import {
   type ArmadaConfig,
   buildOverview,
@@ -15,11 +20,20 @@ import {
   type ProjectReading,
   type ProjectRecord,
   type RuntimeHandle,
+  type SourcesRefresh,
   type StatusReport,
   type StatusSources,
 } from "@armada/core/read";
-import { redactDatabase } from "./db";
+import { type Database, redactDatabase } from "./db";
 import type { LiveStore } from "./fleet-store";
+import {
+  dbSnapshots,
+  type MemorySnapshots,
+  memorySnapshots,
+  type Snapshot,
+  type SnapshotEntry,
+  type SnapshotStore,
+} from "./snapshots";
 
 /** A project to show: a registry record, or only a repository when the registry could not be read. */
 export type ProjectRef = Pick<ProjectRecord, "repository"> & Partial<Omit<ProjectRecord, "repository">>;
@@ -27,36 +41,26 @@ export type ProjectRef = Pick<ProjectRecord, "repository"> & Partial<Omit<Projec
 export interface Sources {
   /** The fleet's live data (the app's database); null when none is configured. Throws when it is unreachable. */
   live(): Promise<LiveStore | null>;
+  /** The app's database, where the readings are kept; null when none is configured (they stay in memory). */
+  database?(): Promise<Database | null>;
   /** Repositories to show when the registry cannot be read (ARMADA_REPOSITORIES). */
   fallbackProjects(): ProjectRef[];
   readConfig(p: ProjectRef): Promise<ProjectConfigReading>;
+  /** Linear whole and GitHub's pull requests. */
   readSnapshot(config: ArmadaConfig): Promise<StatusSources>;
-}
-
-interface Snapshot {
-  /** When the read started: live events after this are newer than what it says. */
-  startedAt: Date;
-  config: ArmadaConfig;
-  configWarning: string | null;
-  sources: StatusSources;
-}
-
-interface Entry {
-  snapshot: Snapshot | null;
-  error: string | null;
-  /** When the last read started, successful or not: reads are spaced by the snapshot period. */
-  attemptedAt: number | null;
-  refreshing: Promise<void> | null;
+  /** Brings a reading up to date with what changed; without it every refresh reads whole. */
+  readChanges?(config: ArmadaConfig, previous: StatusSources, ask: SourcesRefresh): Promise<StatusSources>;
 }
 
 /** Server memory kept between polls. One per server process. */
 export interface FleetCache {
-  snapshots: Map<string, Entry>;
+  /** The readings this process holds (the database's bodies, or the only copy without one). */
+  snapshots: MemorySnapshots;
   /** The last project list read from the registry, used while the database is unreachable. */
   projects: ProjectRef[] | null;
 }
 
-export const newCache = (): FleetCache => ({ snapshots: new Map(), projects: null });
+export const newCache = (): FleetCache => ({ snapshots: memorySnapshots(), projects: null });
 
 /**
  * Whose fleet a request reads: the viewer's organization, and the deployment's
@@ -86,11 +90,15 @@ export interface LoadOptions {
   sources: Sources;
   cache: FleetCache;
   now: () => Date;
-  /** How long a Linear and GitHub read stays fresh. */
+  /** How long a reading of Linear and GitHub stays fresh; a view after that refreshes it in the background. */
   snapshotMs: number;
+  /** How often Linear is read whole rather than for its changes only. Default 30 minutes. */
+  fullMs?: number;
+  /** How long a refresh holds a project's lease. Default 2 minutes. */
+  leaseMs?: number;
   /** Live reads slower than this count as unreachable. */
   liveTimeoutMs?: number;
-  /** Keeps a background refresh alive after the response (Next's `after`). */
+  /** Keeps a background refresh alive after the response (Next's `after`); without it the refresh runs unawaited. */
   background?: (work: Promise<unknown>) => void;
 }
 
@@ -117,51 +125,97 @@ function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> 
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
-async function readSnapshot(p: ProjectRef, opts: LoadOptions): Promise<Snapshot> {
-  const startedAt = opts.now();
-  const { config, warning } = await opts.sources.readConfig(p);
-  return { startedAt, config, configWarning: warning, sources: await opts.sources.readSnapshot(config) };
+const FULL_MS = 30 * 60_000;
+const LEASE_MS = 2 * 60_000;
+/** Linear's changes are read from a little before the last read started: clocks differ. */
+const OVERLAP_MS = 2 * 60_000;
+/** Passes of one refresh when webhooks keep marking the project while it reads. */
+const MAX_PASSES = 3;
+
+/** The key a project's reading is kept under: its slug, else its repository. */
+export const keyOf = (p: ProjectRef) => p.slug ?? p.repository;
+
+/**
+ * Refreshes one project's reading, unless another refresh holds it: Linear
+ * whole when there is no reading, it is `fullMs` old, a webhook asked or the
+ * program root changed; otherwise Linear's changes since the last read (when
+ * a webhook said Linear changed, or the reading is stale) and GitHub's pull
+ * requests and armada.toml (when a webhook said GitHub changed, or it is
+ * stale). A failure keeps the previous reading, records why and gives the
+ * webhooks' marks back. Never throws.
+ */
+export async function refreshProject(
+  p: ProjectRef,
+  store: SnapshotStore,
+  opts: Pick<LoadOptions, "sources" | "now" | "snapshotMs" | "fullMs" | "leaseMs">,
+  /** The version the caller saw stale; a newer one written meanwhile is left alone. */
+  seen?: number,
+): Promise<void> {
+  const key = keyOf(p);
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const claim = await store
+      .claim(key, opts.now(), opts.leaseMs ?? LEASE_MS, pass === 0 ? seen : undefined)
+      .catch((err: unknown) => {
+        console.error(`armada dashboard: ${key}: refresh not started: ${redactDatabase(err)}`);
+        return null;
+      });
+    if (!claim) return;
+    const started = opts.now();
+    const prev = claim.entry.snapshot;
+    try {
+      const fullAge = claim.entry.fullAt ? started.getTime() - claim.entry.fullAt.getTime() : Number.POSITIVE_INFINITY;
+      const stale = !claim.entry.readAt || started.getTime() - claim.entry.readAt.getTime() >= opts.snapshotMs;
+      let full = !prev || claim.full || fullAge >= (opts.fullMs ?? FULL_MS) || !opts.sources.readChanges;
+      const github = stale || claim.forge;
+      const reading = full || github ? await opts.sources.readConfig(p) : null;
+      const config = reading?.config ?? (prev as Snapshot).config;
+      // armada.toml now names another program: its reading starts over.
+      if (prev && config.tracker.programRoot !== prev.config.tracker.programRoot) full = true;
+      const sources =
+        full || !prev || !opts.sources.readChanges
+          ? await opts.sources.readSnapshot(config)
+          : await opts.sources.readChanges(config, prev.sources, {
+              linearSince:
+                stale || claim.linear || claim.touched.length
+                  ? new Date(prev.startedAt.getTime() - OVERLAP_MS).toISOString()
+                  : null,
+              touched: claim.touched,
+              forge: github,
+            });
+      const snapshot: Snapshot = {
+        startedAt: started,
+        config,
+        configWarning: reading ? reading.warning : (prev?.configWarning ?? null),
+        sources,
+      };
+      const { dirty } = await store.save(key, snapshot, { full, now: opts.now() });
+      if (!dirty) return;
+    } catch (err) {
+      await store.fail(key, message(err), claim).catch((e: unknown) => {
+        console.error(`armada dashboard: ${key}: refresh failure not recorded: ${redactDatabase(e)}`);
+      });
+      return;
+    }
+  }
 }
 
 /**
- * The project's snapshot: read it when there is none, serve it while fresh,
- * and refresh it in the background once stale. A failed read keeps the
- * previous snapshot, reports the error next to it and is not retried before
- * the next period, so a Linear outage does not turn every poll into a read.
+ * Starts a background refresh of a project when its reading is missing, older
+ * than the snapshot period or marked by a webhook, and no refresh holds it. A
+ * failed refresh is not retried before the period ends, so a Linear outage
+ * does not turn every poll into a read.
  */
-async function snapshotOf(p: ProjectRef, key: string, opts: LoadOptions): Promise<Entry> {
-  const { snapshots } = opts.cache;
-  let entry = snapshots.get(key);
-  if (!entry) {
-    entry = { snapshot: null, error: null, attemptedAt: null, refreshing: null };
-    snapshots.set(key, entry);
-  }
-  const current = entry;
+function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: SnapshotStore, opts: LoadOptions): boolean {
   const now = opts.now().getTime();
-  const refresh = () => {
-    if (!current.refreshing) {
-      current.attemptedAt = now;
-      current.refreshing = readSnapshot(p, opts)
-        .then(
-          (snapshot) => {
-            current.snapshot = snapshot;
-            current.error = null;
-          },
-          (err: unknown) => {
-            current.error = message(err);
-          },
-        )
-        .finally(() => {
-          current.refreshing = null;
-        });
-    }
-    return current.refreshing;
-  };
-  const due = current.attemptedAt === null || now - current.attemptedAt >= opts.snapshotMs;
-  if (!current.snapshot) {
-    if (due || current.refreshing) await refresh();
-  } else if (due) opts.background?.(refresh());
-  return current;
+  if (entry?.refreshingUntil && entry.refreshingUntil.getTime() > now) return true;
+  const attempted = entry?.attemptedAt?.getTime();
+  const due =
+    attempted === undefined || now - attempted >= opts.snapshotMs || (entry?.dirty === true && entry.error === null);
+  if (!due) return false;
+  const work = refreshProject(p, store, opts, entry?.version ?? 0);
+  if (opts.background) opts.background(work);
+  else void work;
+  return true;
 }
 
 interface LiveProject {
@@ -193,19 +247,47 @@ async function readRegistry(store: LiveStore, scope: Scope | null, now: Date): P
   return store.listProjects();
 }
 
-async function openLive(
-  opts: LoadOptions,
-  scope: Scope | null,
-): Promise<{ store: LiveStore | null; state: FleetOverview["live"] }> {
+interface Opened {
+  store: LiveStore | null;
+  state: FleetOverview["live"];
+  /** Where the readings are: the database's, or this process's memory without one. */
+  snapshots: SnapshotStore;
+}
+
+async function openLive(opts: LoadOptions, scope: Scope | null): Promise<Opened> {
   const timeout = opts.liveTimeoutMs ?? 4000;
+  const memory = opts.cache.snapshots;
   try {
     const store = await withTimeout(opts.sources.live(), timeout, "opening the database");
-    if (!store) return { store: null, state: { state: "off", error: null } };
+    if (!store) return { store: null, state: { state: "off", error: null }, snapshots: memory };
     const projects = await withTimeout(readRegistry(store, scope, opts.now()), timeout, "reading the project registry");
     opts.cache.projects = projects;
-    return { store, state: { state: "ok", error: null } };
+    const db = (await opts.sources.database?.()) ?? null;
+    return { store, state: { state: "ok", error: null }, snapshots: db ? dbSnapshots(db, memory) : memory };
   } catch (err) {
-    return { store: null, state: { state: "unreachable", error: liveError(err) } };
+    return { store: null, state: { state: "unreachable", error: liveError(err) }, snapshots: memory };
+  }
+}
+
+/**
+ * The readings of `keys`: the database's, else, when it fails, the last ones
+ * this process holds; `failed` says why, for the banner.
+ */
+async function readEntries(
+  opened: Opened,
+  opts: LoadOptions,
+  keys: string[],
+): Promise<{ entries: Map<string, SnapshotEntry>; store: SnapshotStore; failed: string | null }> {
+  try {
+    const entries = await withTimeout(
+      opened.snapshots.entries(keys),
+      opts.liveTimeoutMs ?? 4000,
+      "reading the projects' readings",
+    );
+    return { entries, store: opened.snapshots, failed: null };
+  } catch (err) {
+    const memory = opts.cache.snapshots;
+    return { entries: await memory.entries(keys), store: memory, failed: liveError(err) };
   }
 }
 
@@ -241,25 +323,21 @@ const projectsOf = (opts: LoadOptions, scope: Scope | null) =>
   (opts.cache.projects ?? opts.sources.fallbackProjects()).filter((p) => inScope(p, scope));
 
 /**
- * Reads one project the way `loadOverview` does (the cached Linear and GitHub
- * snapshot, live data read now), so a request is checked against what the viewer
- * sees, plus every claim recorded since. Null when no such project is shown to
- * the scope's organization.
+ * Reads one project the way `loadOverview` does (its last reading, live data
+ * read now), so a request is checked against what the viewer sees, plus every
+ * claim recorded since. Null when no such project is shown to the scope's
+ * organization, or it has no reading yet.
  */
 export async function loadProject(opts: LoadOptions, slug: string, scope: Scope | null): Promise<ProjectState | null> {
-  const { store } = await openLive(opts, scope);
+  const opened = await openLive(opts, scope);
   const projects = projectsOf(opts, scope);
   // Registry projects are keyed by slug; a repository-only project by the slug its armada.toml gives.
-  const candidates = [
-    ...projects.filter((p) => p.slug === slug),
-    ...projects.filter(
-      (p) => !p.slug && opts.cache.snapshots.get(p.repository)?.snapshot?.config.project.slug === slug,
-    ),
-  ];
+  const candidates = [...projects.filter((p) => p.slug === slug), ...projects.filter((p) => !p.slug)];
+  const { entries } = await readEntries(opened, opts, candidates.map(keyOf));
   for (const p of candidates) {
-    const entry = await snapshotOf(p, p.slug ?? p.repository, opts);
-    const snap = entry.snapshot;
+    const snap = entries.get(keyOf(p))?.snapshot;
     if (!snap || snap.config.project.slug !== slug) continue;
+    const { store } = opened;
     const l = store
       ? await withTimeout(readLive(store, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading live data").catch(
           () => null,
@@ -272,48 +350,60 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
 
 /** Reads every project of the scope's organization and builds the overview the Fleet view renders. */
 export async function loadOverview(opts: LoadOptions, scope: Scope | null): Promise<FleetOverview> {
-  const { store, state } = await openLive(opts, scope);
+  const opened = await openLive(opts, scope);
+  const { store } = opened;
   const projects = projectsOf(opts, scope);
-  let live = state;
+  let live = opened.state;
 
-  const entries = await Promise.all(
-    projects.map(async (p) => {
-      const key = p.slug ?? p.repository;
-      return { p, key, entry: await snapshotOf(p, key, opts) };
-    }),
-  );
+  const read = await readEntries(opened, opts, projects.map(keyOf));
+  if (read.failed) live = { state: "unreachable", error: read.failed };
+  const entries = projects.map((p) => {
+    const entry = read.entries.get(keyOf(p));
+    return { p, key: keyOf(p), entry, refreshing: revalidate(p, entry, read.store, opts) };
+  });
   // Live data is read by the slug armada.toml gives, but only when the
   // registry agrees: a repository naming another project's slug must not show
   // that project's inbox and events, which may belong to another organization.
-  const liveSlug = (p: ProjectRef, snap: Snapshot | null) =>
+  const liveSlug = (p: ProjectRef, snap: Snapshot | null | undefined) =>
     snap && (!p.slug || p.slug === snap.config.project.slug) ? snap.config.project.slug : null;
 
   // Live data for every project, or for none: the database failing midway must
   // not show some rows live under the "unreachable" banner.
   let liveData = new Map<string, LiveProject>();
-  if (store) {
+  if (store && !read.failed) {
     try {
-      const slugs = entries.flatMap((e) => liveSlug(e.p, e.entry.snapshot) ?? []);
-      const read = await withTimeout(
+      const slugs = entries.flatMap((e) => liveSlug(e.p, e.entry?.snapshot) ?? []);
+      const rows = await withTimeout(
         Promise.all(slugs.map(async (slug) => [slug, await readLive(store, slug, opts.now())] as const)),
         opts.liveTimeoutMs ?? 4000,
         "reading live data",
       );
-      liveData = new Map(read);
+      liveData = new Map(rows);
     } catch (err) {
       live = { state: "unreachable", error: liveError(err) };
     }
   }
 
-  const readings = entries.map(({ p, key, entry }): ProjectReading => {
-    const snap = entry.snapshot;
-    const base = { slug: snap?.config.project.slug ?? key, name: snap?.config.project.name ?? p.name ?? key };
-    if (!snap) return { ...base, repository: p.repository, report: null, error: entry.error ?? "not read", live: null };
+  const readings = entries.map(({ p, key, entry, refreshing }): ProjectReading => {
+    const snap = entry?.snapshot;
+    const base = { slug: snap?.config.project.slug ?? p.slug ?? key, name: snap?.config.project.name ?? p.name ?? key };
+    if (!snap) {
+      // Never read yet: the first reading is under way, unless the last attempt failed.
+      const error = entry?.error ?? null;
+      return {
+        ...base,
+        repository: p.repository,
+        report: null,
+        error: error ?? (refreshing ? null : "not read"),
+        reading: error === null && refreshing,
+        live: null,
+      };
+    }
     const slug = liveSlug(p, snap);
     const l = slug ? (liveData.get(slug) ?? null) : null;
     const warnings = [
       ...(snap.configWarning ? [snap.configWarning] : []),
-      ...(entry.error ? [`Linear or GitHub could not be read again (${entry.error}); showing the last reading`] : []),
+      ...(entry?.error ? [`Linear or GitHub could not be read again (${entry.error}); showing the last reading`] : []),
     ];
     return {
       ...base,

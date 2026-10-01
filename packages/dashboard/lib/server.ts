@@ -17,11 +17,12 @@ import {
   parseConfig,
   readProjectConfig,
   readStatusSources,
+  refreshStatusSources,
   resolveCredentials,
 } from "@armada/core/read";
 import { after } from "next/server";
 import { type Access, requireFleetAccess, scopeOf } from "./access";
-import { accounts } from "./accounts-server";
+import { accounts, homeOrganization } from "./accounts-server";
 import { appDatabase } from "./app-db";
 import { type FleetKeys, fleetKeysOf, type OrganizationKeys, organizationKeys } from "./broker";
 import { demoSources } from "./demo/sources";
@@ -31,10 +32,11 @@ import {
   loadOverview,
   newCache,
   type ProjectRef,
+  refreshProject,
   type Scope,
   type Sources,
 } from "./fleet-data";
-import { liveStore } from "./fleet-store";
+import { listProjects, liveStore } from "./fleet-store";
 import {
   createGithubApp,
   GITHUB_APP_VARIABLES,
@@ -45,7 +47,9 @@ import {
   repositoryToken,
 } from "./github-app";
 import { isLanguage, type Language } from "./i18n";
+import { dbSnapshots } from "./snapshots";
 import { vaultModeOf } from "./vault";
+import { webhookSecretsOf } from "./webhooks";
 
 /** Comma- or space-separated owner/name list, shown when the registry cannot be read. */
 function repositoriesFromEnv(): ProjectRef[] {
@@ -81,16 +85,37 @@ export function githubApp(): GithubApp | null {
   return appHolder.__armadaGithubApp.app;
 }
 
-function realSources(keys: FleetKeys, installations: InstallationAccess): Sources {
-  const { linearApiKey } = keys;
+/** What one fleet reads Linear and GitHub with: resolved only when a refresh runs, never on a poll. */
+interface ReadKeys {
+  keys: FleetKeys;
+  installations: InstallationAccess;
+}
+
+function realSources(scope: Scope | null, resolve: () => Promise<ReadKeys>): Sources {
+  let resolving: Promise<ReadKeys> | null = null;
+  const read = () => {
+    resolving ??= resolve();
+    return resolving;
+  };
   const app = githubApp();
-  const tokenFor = (repository: string) => repositoryToken(app, installations, keys.githubToken, repository);
+  const tokenFor = async (repository: string) => {
+    const { keys, installations } = await read();
+    return repositoryToken(app, installations, keys.githubToken, repository);
+  };
+  const linearKey = async () => {
+    const { linearApiKey } = (await read()).keys;
+    if (!linearApiKey) throw new Error("LINEAR_API_KEY is not set on the dashboard");
+    return linearApiKey;
+  };
+  // Only the first organization, and the password gate, may stand ARMADA_REPOSITORIES in for the registry.
+  const envRepositories = !scope || scope.home === scope.organization;
   return {
     live: async () => {
       const db = await appDatabase();
       return db ? liveStore(db) : null;
     },
-    fallbackProjects: keys.envRepositories ? repositoriesFromEnv : () => [],
+    database: appDatabase,
+    fallbackProjects: envRepositories ? repositoriesFromEnv : () => [],
     readConfig: async (p) => {
       const github = await tokenFor(p.repository);
       if (p.slug && p.name && p.programRoot)
@@ -109,10 +134,19 @@ function realSources(keys: FleetKeys, installations: InstallationAccess): Source
       return { config: parseConfig(text, `${p.repository}:${CONFIG_FILE}`), warning: null };
     },
     readSnapshot: async (config) => {
-      if (!linearApiKey) throw new Error("LINEAR_API_KEY is not set on the dashboard");
+      const linearApiKey = await linearKey();
       const github = await tokenFor(config.github.repository);
       const sources = await readStatusSources(config, { linearApiKey, githubToken: github.token });
       return github.token === null ? { ...sources, forgeError: github.reason } : sources;
+    },
+    readChanges: async (config, previous, ask) => {
+      const linearApiKey = await linearKey();
+      const github = ask.forge ? await tokenFor(config.github.repository) : null;
+      const sources = await refreshStatusSources(config, previous, ask, {
+        linearApiKey,
+        githubToken: github?.token ?? null,
+      });
+      return github?.token === null ? { ...sources, forgeError: github.reason } : sources;
     },
   };
 }
@@ -128,55 +162,93 @@ const seconds = (value: string | undefined, fallback: number) => {
 const globalCache = globalThis as unknown as { __armadaFleets?: Map<string, FleetCache> };
 
 /**
- * The keys of the viewer's fleet: with a vault, the organization's, then the
+ * The keys a fleet reads with: with a vault, the organization's, then the
  * environment's (`fleetKeysOf`); and the GitHub App's installations it reads
  * through: any for the first organization and under the password gate, else
  * those linked to the organization.
  */
-async function keysOf(
-  access: Access,
-): Promise<{ id: string; keys: FleetKeys; installations: InstallationAccess; scope: Scope | null }> {
+async function readKeysOf(scope: Scope | null): Promise<ReadKeys> {
   const env = envKeys();
-  const scope = scopeOf(access);
-  if (access.kind !== "account")
-    return { id: "env", keys: fleetKeysOf(null, env, scope), installations: { kind: "any" }, scope };
+  if (!scope) return { keys: fleetKeysOf(null, env, scope), installations: { kind: "any" } };
   const vault = vaultModeOf(process.env);
   const a = await accounts();
-  const organization = access.viewer.organization.id;
   const own: OrganizationKeys | null =
-    a && vault.kind === "on" ? await organizationKeys({ client: a.client, vault: vault.key }, organization) : null;
+    a && vault.kind === "on"
+      ? await organizationKeys({ client: a.client, vault: vault.key }, scope.organization)
+      : null;
   const installations: InstallationAccess =
-    !scope || scope.home === scope.organization
+    scope.home === scope.organization
       ? { kind: "any" }
       : {
           kind: "linked",
           installations: new Set(
-            a && githubApp() ? (await linkedInstallations(a.client, organization)).map((i) => i.id) : [],
+            a && githubApp() ? (await linkedInstallations(a.client, scope.organization)).map((i) => i.id) : [],
           ),
         };
-  return { id: `org:${organization}`, keys: fleetKeysOf(own, env, scope), installations, scope };
+  return { keys: fleetKeysOf(own, env, scope), installations };
 }
 
-/** How the viewer's reads and requests reach the sources, and whose projects they see. Checks access first. */
-export async function fleetOf(access?: Access): Promise<{ opts: LoadOptions; scope: Scope | null }> {
-  const { id, keys, installations, scope } = await keysOf(access ?? (await requireFleetAccess()));
+/** How long a reading stays fresh: ARMADA_DASHBOARD_SNAPSHOT_SECONDS, else 60 s, or 10 minutes once both webhooks keep it fresh. */
+function snapshotMs(): number {
+  const webhooks = webhookSecretsOf(process.env);
+  return seconds(process.env.ARMADA_DASHBOARD_SNAPSHOT_SECONDS, webhooks.linear && webhooks.github ? 600 : 60) * 1000;
+}
+
+/** The fleet one scope reads: its process cache (shared by its viewers) and its sources. */
+function fleetFor(scope: Scope | null): LoadOptions {
+  const id = scope ? `org:${scope.organization}` : "env";
   globalCache.__armadaFleets ??= new Map();
   let cache = globalCache.__armadaFleets.get(id);
   if (!cache) {
     cache = newCache();
     globalCache.__armadaFleets.set(id, cache);
   }
+  const real = realSources(scope, () => readKeysOf(scope));
   const demo = process.env.ARMADA_DASHBOARD_DEMO;
   return {
-    opts: {
-      sources: demo ? demoSources(demo, realSources(keys, installations)) : realSources(keys, installations),
-      cache,
-      now: () => new Date(),
-      snapshotMs: seconds(process.env.ARMADA_DASHBOARD_SNAPSHOT_SECONDS, 60) * 1000,
-      background: (work) => after(() => work),
-    },
-    scope,
+    sources: demo ? demoSources(demo, real) : real,
+    cache,
+    now: () => new Date(),
+    snapshotMs: snapshotMs(),
+    background: (work) => after(() => work),
   };
+}
+
+/** How the viewer's reads and requests reach the sources, and whose projects they see. Checks access first. */
+export async function fleetOf(access?: Access): Promise<{ opts: LoadOptions; scope: Scope | null }> {
+  const scope = scopeOf(access ?? (await requireFleetAccess()));
+  return { opts: fleetFor(scope), scope };
+}
+
+/**
+ * Refreshes the readings a webhook marked, each with its own organization's
+ * keys, as a viewer of that organization would. Runs after the webhook's
+ * answer; never throws.
+ */
+export async function refreshMarked(keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  try {
+    const db = await appDatabase();
+    if (!db) return;
+    const registry = await listProjects(db);
+    const signedIn = (await accounts()) !== null;
+    const home = signedIn ? await homeOrganization() : null;
+    await Promise.all(
+      keys.map(async (key) => {
+        // A registered project by its slug; one known only by its repository (ARMADA_REPOSITORIES) by owner/name.
+        const p: ProjectRef | undefined =
+          registry.find((r) => r.slug === key) ?? (key.includes("/") ? { repository: key } : undefined);
+        if (!p) return;
+        const organization = p.organization ?? home;
+        // A project no organization holds yet is read by nobody's keys.
+        if (signedIn && !organization) return;
+        const opts = fleetFor(signedIn && organization ? { organization, home } : null);
+        await refreshProject(p, dbSnapshots(db, opts.cache.snapshots), opts);
+      }),
+    );
+  } catch (err) {
+    console.error(`armada dashboard: refresh after a webhook failed: ${err instanceof Error ? err.message : err}`);
+  }
 }
 
 /** The Fleet overview the viewer may read: their organization's projects, or every project under the password gate. */

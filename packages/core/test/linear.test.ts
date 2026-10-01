@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { type Fetch, fetchProgram, parseClaim, parseStatusLine } from "../src/linear.ts";
+import {
+  type Fetch,
+  fetchProgram,
+  fetchProgramChanges,
+  LINEAR_ENDPOINT,
+  parseClaim,
+  parseStatusLine,
+  type RawIssue,
+} from "../src/linear.ts";
 import { NOW, recordedFetch } from "./support.ts";
 
 const labels = { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" };
@@ -188,5 +196,149 @@ describe("fetchProgram", () => {
       fetch,
     });
     expect(program.issues.filter((i) => i.agentPhase || i.agentRuntime)).toEqual([]);
+  });
+});
+
+describe("fetchProgramChanges", () => {
+  const raw = (identifier: string, parent: string, over: Partial<RawIssue> = {}): RawIssue => ({
+    id: `uuid-${identifier.toLowerCase()}`,
+    identifier,
+    title: identifier,
+    url: `https://linear.app/acme/issue/${identifier}`,
+    description: null,
+    createdAt: "2026-03-04T10:00:00.000Z",
+    updatedAt: "2026-03-04T10:01:00.000Z",
+    startedAt: null,
+    completedAt: null,
+    canceledAt: null,
+    state: { name: "Backlog", type: "backlog" },
+    assignee: null,
+    delegate: null,
+    parent: { identifier: parent },
+    labels: { pageInfo: { hasNextPage: false }, nodes: [] },
+    attachments: { pageInfo: { hasNextPage: false }, nodes: [] },
+    inverseRelations: { pageInfo: { hasNextPage: false }, nodes: [] },
+    ...over,
+  });
+  const phase = (name: string) => ({
+    pageInfo: { hasNextPage: false },
+    nodes: [{ name, parent: { name: "Agent phase" } }],
+  });
+  const started = { name: "In Progress", type: "started" };
+  const page = <T>(nodes: T[]) => ({ pageInfo: { hasNextPage: false, endCursor: null }, nodes });
+
+  test("reads only what changed since, what a webhook named and new subtrees, then merges it into the last reading", async () => {
+    const previous = await fetchProgram({
+      apiKey: "k",
+      rootId: "DEMO-1",
+      labels,
+      fetch: recordedFetch().fetch,
+      now: () => NOW,
+    });
+    const calls: { operation: string; filter: Record<string, unknown> }[] = [];
+    const fetch: Fetch = async (url, init) => {
+      expect(url).toBe(LINEAR_ENDPOINT);
+      const body = JSON.parse(String(init.body)) as {
+        query: string;
+        variables: { filter?: Record<string, unknown>; ids?: string[] };
+      };
+      const operation = body.query.match(/query\s+(\w+)/)?.[1] ?? "?";
+      const filter = body.variables.filter ?? { ids: body.variables.ids };
+      calls.push({ operation, filter });
+      const json = JSON.stringify(filter);
+      if (operation === "Changed") {
+        // Updated since: DEMO-11 moved to shipping, and DEMO-30 is new under the root.
+        if ("updatedAt" in filter)
+          return Response.json({
+            data: {
+              issues: page([
+                raw("DEMO-11", "DEMO-2", { state: started, labels: phase("shipping") }),
+                raw("DEMO-30", "DEMO-1", { state: started, labels: phase("planning") }),
+              ]),
+            },
+          });
+        // Named by a webhook (a relation or an attachment changed, which leaves its update time alone).
+        if (json.includes('"id":{"in":["uuid-demo-12"]}'))
+          return Response.json({ data: { issues: page([raw("DEMO-12", "DEMO-2", { title: "Renamed" })]) } });
+        // DEMO-30's subtree.
+        if (json.includes("uuid-demo-30"))
+          return Response.json({ data: { issues: page([raw("DEMO-31", "DEMO-30")]) } });
+        return Response.json({ data: { issues: page([]) } });
+      }
+      if (operation === "ChangedComments")
+        return Response.json({
+          data: {
+            comments: page([
+              {
+                id: "c11-new",
+                createdAt: "2026-03-04T10:02:00.000Z",
+                body: "Agent status: shipping — PR open",
+                user: { name: "Ada Worker" },
+                issue: { identifier: "DEMO-11" },
+              },
+            ]),
+          },
+        });
+      if (operation === "Comments")
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                {
+                  identifier: "DEMO-30",
+                  comments: page([
+                    {
+                      id: "c30",
+                      createdAt: "2026-03-04T10:00:30.000Z",
+                      body: "Agent claim — runtime: Codex",
+                      user: null,
+                    },
+                  ]),
+                },
+              ],
+            },
+          },
+        });
+      throw new Error(`unexpected ${operation}`);
+    };
+
+    const next = await fetchProgramChanges({
+      apiKey: "k",
+      rootId: "DEMO-1",
+      labels,
+      previous,
+      since: "2026-03-04T09:59:00.000Z",
+      touched: ["uuid-demo-12"],
+      fetch,
+      now: () => new Date("2026-03-04T10:05:00.000Z"),
+    });
+
+    expect(calls.map((c) => c.operation)).toEqual([
+      "Changed",
+      "Changed",
+      "Changed",
+      "Changed",
+      "ChangedComments",
+      "Comments",
+    ]);
+    expect(calls[0]?.filter).toMatchObject({ updatedAt: { gt: "2026-03-04T09:59:00.000Z" } });
+    // Comments updated since, on the tickets that were already in flight; every comment of the new one.
+    expect(calls[4]?.filter).toMatchObject({ updatedAt: { gt: "2026-03-04T09:59:00.000Z" } });
+    expect(calls[5]?.filter).toEqual({ ids: ["uuid-demo-30"] });
+
+    expect(next.fetchedAt).toBe("2026-03-04T10:05:00.000Z");
+    expect(next.issues).toHaveLength(previous.issues.length + 2);
+    const byId = new Map(next.issues.map((i) => [i.id, i]));
+    expect(byId.get("DEMO-11")?.agentPhase).toBe("shipping");
+    expect(byId.get("DEMO-12")?.title).toBe("Renamed");
+    expect(byId.get("DEMO-31")?.parentId).toBe("DEMO-30");
+    // Unchanged tickets are kept as read.
+    expect(byId.get("DEMO-18")).toEqual(previous.issues.find((i) => i.id === "DEMO-18"));
+    const of = (id: string) => next.comments.filter((c) => c.issueId === id).map((c) => c.id);
+    expect(of("DEMO-11")).toEqual([
+      "c11-new",
+      ...previous.comments.filter((c) => c.issueId === "DEMO-11").map((c) => c.id),
+    ]);
+    expect(of("DEMO-30")).toEqual(["c30"]);
   });
 });

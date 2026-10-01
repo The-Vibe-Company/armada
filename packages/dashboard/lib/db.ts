@@ -162,6 +162,7 @@ export class PgDialect implements Dialect {
  *   ticket and one open answer request per question, whatever the races.
  *
  * Version 2 links organizations to installations of the GitHub App (THE-851).
+ * Version 5 keeps each project's reading of Linear and GitHub (THE-853).
  */
 export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
@@ -465,6 +466,37 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS inbox_answered ON inbox_items (project, resolved_at)
         WHERE kind IN ('question', 'plan') AND resolved_at IS NOT NULL`,
       "CREATE INDEX IF NOT EXISTS projects_by_organization ON projects (organization_id)",
+    ],
+  },
+  {
+    // Each project's reading of Linear and GitHub (THE-853): pages and the
+    // live route read it here and never call Linear or GitHub themselves.
+    // `version` grows with each new reading, so a server keeps the body it
+    // already has; the webhooks find a project by a Linear id it holds
+    // (`issue_ids`) or by its repository, and leave marks (`*_dirty`,
+    // `touched`) the next refresh takes over; `refreshing_until` is the lease
+    // that keeps one refresh per project at a time across servers.
+    version: 5,
+    statements: [
+      `CREATE TABLE IF NOT EXISTS fleet_snapshots (
+        key text PRIMARY KEY,
+        version bigint NOT NULL DEFAULT 0,
+        body jsonb,
+        repository text,
+        issue_ids text[] NOT NULL DEFAULT '{}',
+        started_at timestamptz,
+        read_at timestamptz,
+        full_at timestamptz,
+        attempted_at timestamptz,
+        error text,
+        linear_dirty boolean NOT NULL DEFAULT false,
+        forge_dirty boolean NOT NULL DEFAULT false,
+        full_due boolean NOT NULL DEFAULT false,
+        touched text[] NOT NULL DEFAULT '{}',
+        refreshing_until timestamptz
+      )`,
+      "CREATE INDEX IF NOT EXISTS fleet_snapshots_issues ON fleet_snapshots USING gin (issue_ids)",
+      "CREATE INDEX IF NOT EXISTS fleet_snapshots_repository ON fleet_snapshots (repository)",
     ],
   },
 ];
