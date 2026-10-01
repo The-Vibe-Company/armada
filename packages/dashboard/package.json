@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit -p .",
     "demo:seed": "bun scripts/demo.ts seed",
     "demo:report": "bun scripts/demo.ts report",
-    "db": "bun scripts/db.ts"
+    "db": "bun scripts/db.ts",
+    "icons": "bun scripts/icons.ts"
   },
   "dependencies": {
     "@armada/core": "workspace:*",
@@ -29,6 +30,7 @@
     "server-only": "0.0.1"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "2.6.2",
     "@types/node": "26.6.3",
     "@types/pg": "8.23.1",
     "@types/react": "19.3.0",
