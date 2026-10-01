@@ -7,9 +7,10 @@
 // (`useFleet`).
 import type { FleetOverview } from "@armada/core/read";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signOut, switchOrganization } from "@/app/auth-actions";
+import { isCurrentView, type SavedView, viewHref } from "@/lib/filters";
 import {
   type Crumb,
   crumbsOf,
@@ -35,6 +36,7 @@ import { type Account, FleetProvider, useFleet, useNow, useShell } from "./conte
 import { Logo, SearchIcon } from "./Logo";
 import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
+import { useViews, ViewsProvider } from "./views";
 import { VisitProvider } from "./visit";
 
 // ⌘K and its index load apart from every page, as soon as the browser is idle (THE-892).
@@ -48,6 +50,7 @@ export function Shell({
   account,
   canLogOut,
   initialAuthor,
+  views,
   children,
 }: {
   initial: FleetOverview;
@@ -58,6 +61,8 @@ export function Shell({
   account: Account | null;
   canLogOut: boolean;
   initialAuthor: string;
+  /** The viewer's saved views (THE-895); null under the password gate, where the browser keeps them. */
+  views: SavedView[] | null;
   children: ReactNode;
 }) {
   return (
@@ -71,7 +76,9 @@ export function Shell({
       initialAuthor={initialAuthor}
     >
       <VisitProvider>
-        <Frame>{children}</Frame>
+        <ViewsProvider initial={views}>
+          <Frame>{children}</Frame>
+        </ViewsProvider>
       </VisitProvider>
     </FleetProvider>
   );
@@ -349,6 +356,7 @@ function Sidebar({
           ))}
         </nav>
       )}
+      <ViewsGroup />
       <nav className="sh-group" aria-labelledby="sh-harness-h">
         <div className="sh-group-h sh-label" id="sh-harness-h">
           {t.shell.harnessHeading}
@@ -377,6 +385,46 @@ function Sidebar({
       <span className="spacer" />
       <LiveStatus />
     </aside>
+  );
+}
+
+/** The views the viewer saved (THE-895), under the projects: each opens its list with its filters. */
+function ViewsGroup() {
+  const { t } = useShell();
+  const { views, remove } = useViews();
+  const pathname = usePathname();
+  const search = useSearchParams().toString();
+  if (!views.length) return null;
+  return (
+    <nav className="sh-group" aria-labelledby="sh-views-h">
+      <div className="sh-group-h sh-label" id="sh-views-h">
+        {t.views.heading}
+      </div>
+      {views.map((v) => (
+        <div key={v.id} className="sh-view">
+          <Link
+            href={viewHref(v)}
+            className="sh-item"
+            title={v.name}
+            aria-current={isCurrentView(v, pathname, search) ? "page" : undefined}
+          >
+            <span className="sh-item-icon">
+              <NavIcon section={v.list} />
+            </span>
+            <span className="sh-label">{v.name}</span>
+          </Link>
+          <button
+            type="button"
+            className="sh-view-remove"
+            aria-label={t.views.remove(v.name)}
+            title={t.views.remove(v.name)}
+            onClick={() => void remove(v.id)}
+          >
+            <span aria-hidden>×</span>
+          </button>
+        </div>
+      ))}
+    </nav>
   );
 }
 

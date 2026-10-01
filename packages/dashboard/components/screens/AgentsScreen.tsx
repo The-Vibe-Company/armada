@@ -2,11 +2,11 @@
 
 import type { ProjectOverview } from "@armada/core/read";
 // /agents (THE-869): each project's coordinator, then every session grouped by
-// what it needs, the harness filter in the address (?harness=), the density
-// the viewer chose. It is the page the page kit (components/page.tsx) was
-// taken from.
-import { useSearchParams } from "next/navigation";
+// what it needs, the density the viewer chose. Its filters live in the
+// address (THE-895: ?harness=, ?project=, ?state=, ?q=, ?sort=…). It is the
+// page the page kit (components/page.tsx) was taken from.
 import { useMemo } from "react";
+import { filterAgents, hasFilters } from "@/lib/filters";
 import {
   AGENT_STATUSES,
   agentState,
@@ -14,12 +14,11 @@ import {
   decisionsOf,
   HARNESS_NAME,
   HARNESSES,
-  type Harness,
   harnessOf,
-  isHarness,
   paths,
 } from "@/lib/fleet-view";
-import { DensityToggle, LONG_LIST, Page, Row, RowIcon, RowSide, RowText, Section, Toolbar } from "../page";
+import { FilterBar, useListFilters } from "../FilterBar";
+import { Button, DensityToggle, LONG_LIST, Page, Row, RowIcon, RowSide, RowText, Section, Toolbar } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Dot, EmptyState, harnessColor, StatusDot, Tabs } from "../ui";
 import { AgentRow } from "./AgentRow";
@@ -27,41 +26,62 @@ import { AgentRow } from "./AgentRow";
 export function AgentsScreen() {
   const { t, density } = useShell();
   const { overview } = useFleet();
-  const asked = useSearchParams().get("harness");
-  const harness: Harness | null = isHarness(asked) ? asked : null;
-  const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
+  const { filters, go, hrefFor } = useListFilters("agents");
+  const { harness } = filters;
+  const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
   const groups = useMemo(() => {
-    const rows = overview.rows.filter((r) => !harness || harnessOf(r.runtime) === harness);
+    const rows = filterAgents(overview.rows, filters, names);
     return AGENT_STATUSES.map((status) => ({
       status,
       rows: rows.filter((r) => agentState(r).status === status),
     })).filter((g) => g.rows.length);
-  }, [overview, harness]);
-  const all = overview.rows;
-  const coordinators = overview.projects.filter(
-    (p) => !harness || coordinatorHarness(p.coordinator.harness) === harness,
+  }, [overview, filters, names]);
+  // The tabs count what the other filters keep.
+  const all = useMemo(
+    () => filterAgents(overview.rows, { ...filters, harness: null }, names),
+    [overview, filters, names],
   );
+  // Coordinators answer to a project, a harness and a project's name; a session's state or profile is not theirs.
+  const coordinators =
+    filters.state || filters.profile || filters.mine
+      ? []
+      : overview.projects.filter(
+          (p) =>
+            (!harness || coordinatorHarness(p.coordinator.harness) === harness) &&
+            (!filters.project || p.slug === filters.project) &&
+            (!filters.q || `${p.name} ${p.slug}`.toLowerCase().includes(filters.q.toLowerCase())),
+        );
   const decisions = decisionsOf(overview);
 
   return (
     <Page
       toolbar={
-        <Toolbar end={<DensityToggle />}>
-          <Tabs
-            label={t.shell.harnessHeading}
-            value={harness ?? "all"}
-            items={[
-              { key: "all", label: t.shell.all, count: all.length, dot: "var(--text-3)", href: paths.agents() },
-              ...HARNESSES.map((h) => ({
-                key: h,
-                label: HARNESS_NAME[h],
-                count: all.filter((r) => harnessOf(r.runtime) === h).length,
-                dot: harnessColor(h),
-                href: paths.agents(h),
-              })),
-            ]}
-          />
-        </Toolbar>
+        <>
+          <Toolbar end={<DensityToggle />}>
+            <Tabs
+              label={t.shell.harnessHeading}
+              value={harness ?? "all"}
+              push
+              items={[
+                {
+                  key: "all",
+                  label: t.shell.all,
+                  count: all.length,
+                  dot: "var(--text-3)",
+                  href: hrefFor({ harness: null }),
+                },
+                ...HARNESSES.map((h) => ({
+                  key: h,
+                  label: HARNESS_NAME[h],
+                  count: all.filter((r) => harnessOf(r.runtime) === h).length,
+                  dot: harnessColor(h),
+                  href: hrefFor({ harness: h }),
+                })),
+              ]}
+            />
+          </Toolbar>
+          <FilterBar list="agents" omit={["harness"]} />
+        </>
       }
     >
       {coordinators.length > 0 && (
@@ -79,7 +99,15 @@ export function AgentsScreen() {
         </Section>
       )}
       {groups.length === 0 ? (
-        <EmptyState title={t.shell.noAgents} hint={t.shell.noAgentsHint} />
+        hasFilters({ ...filters, harness: null }) && overview.rows.length > 0 ? (
+          <EmptyState title={t.filters.noMatch} hint={t.filters.noMatchHint}>
+            <Button type="button" onClick={() => go({ project: null, state: null, profile: null, mine: false, q: "" })}>
+              {t.filters.clear}
+            </Button>
+          </EmptyState>
+        ) : (
+          <EmptyState title={t.shell.noAgents} hint={t.shell.noAgentsHint} />
+        )
       ) : (
         groups.map((g) => (
           <Section

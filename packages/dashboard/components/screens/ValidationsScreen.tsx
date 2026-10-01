@@ -8,8 +8,9 @@
 // viewer's organization's projects only.
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
-import { decidedValidations, pendingValidations } from "@/lib/overview-view";
+import { filterValidations, hasFilters } from "@/lib/filters";
 import type { ActionContext } from "../Actions";
+import { FilterBar, useListFilters } from "../FilterBar";
 import { CardGrid, LONG_LIST, Notice, Page, Section, SectionBody } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { ValidationCard } from "./ValidationCard";
@@ -33,38 +34,51 @@ export function ValidationsScreen() {
   const ctx = useActionContext();
   const { t } = ctx;
   const s = t.validations;
-  const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
-  const pending = useMemo(() => pendingValidations(overview), [overview]);
-  const decided = useMemo(() => decidedValidations(overview), [overview]);
+  const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
+  const { filters } = useListFilters("validations");
+  const shown = useMemo(
+    () => filterValidations(overview.validations ?? [], filters, names),
+    [overview, filters, names],
+  );
+  const pending = shown.filter((v) => !v.decision);
+  const decided = shown.filter((v) => v.decision);
+  const filtered = hasFilters(filters);
+  // A filter on what was decided leaves out what is still to decide, and the other way round.
+  const showPending = !filters.state || filters.state === "pending";
+  const showDecided = !filters.mine && filters.state !== "pending";
   return (
-    <Page>
+    <Page toolbar={<FilterBar list="validations" />}>
       {overview.live.state === "unreachable" && <Notice tone="warn">{t.unreachableBanner(overview.live.error)}</Notice>}
-      <Section label={s.pendingTitle} count={pending.length}>
-        {pending.length === 0 ? (
-          <SectionBody>
-            <p>{s.empty}</p>
-          </SectionBody>
-        ) : (
-          <CardGrid wide>
-            {pending.map((v) => (
-              <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
-            ))}
-          </CardGrid>
-        )}
-      </Section>
-      <Section label={s.decidedTitle} count={decided.length}>
-        {decided.length === 0 ? (
-          <SectionBody>
-            <p>{s.decidedEmpty}</p>
-          </SectionBody>
-        ) : (
-          <CardGrid wide long={decided.length > LONG_LIST}>
-            {decided.map((v) => (
-              <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
-            ))}
-          </CardGrid>
-        )}
-      </Section>
+      {showPending && (
+        <Section label={s.pendingTitle} count={pending.length}>
+          {pending.length === 0 ? (
+            <SectionBody>
+              <p>{filtered ? t.filters.noMatch : s.empty}</p>
+            </SectionBody>
+          ) : (
+            <CardGrid wide>
+              {pending.map((v) => (
+                <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
+              ))}
+            </CardGrid>
+          )}
+        </Section>
+      )}
+      {showDecided && (
+        <Section label={s.decidedTitle} count={decided.length}>
+          {decided.length === 0 ? (
+            <SectionBody>
+              <p>{filtered ? t.filters.noMatch : s.decidedEmpty}</p>
+            </SectionBody>
+          ) : (
+            <CardGrid wide long={decided.length > LONG_LIST}>
+              {decided.map((v) => (
+                <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
+              ))}
+            </CardGrid>
+          )}
+        </Section>
+      )}
     </Page>
   );
 }

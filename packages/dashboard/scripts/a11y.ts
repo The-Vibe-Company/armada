@@ -2,7 +2,8 @@
 // world, in both languages and both densities, as CI runs it.
 //   bun run a11y seed   an owner of an organization, and a member invited to it, in the demo database
 //   bun run a11y scan   axe on every page; 320 px without sideways scroll and no motion under
-//                       reduced motion; the keyboard's promises (skip link, ⌘K, dialogs, tabs, j/k)
+//                       reduced motion; the keyboard's promises (skip link, ⌘K, dialogs, tabs, j/k,
+//                       filters in the address, saved views)
 // Seed after `bun run demo:seed` and before the dashboard starts (a PGlite
 // database belongs to one process), with the accounts variables the dashboard
 // runs with (ARMADA_AUTH_SECRET, ARMADA_AUTH_URL, ARMADA_AUTH_OWNER_EMAILS,
@@ -166,9 +167,13 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
     "/agents",
     `/agents/${agent}`,
     `/agents/${agent}?tab=files`,
+    // Filters in the address (THE-895): a list as a shared link opens it.
+    "/agents?state=running&sort=report",
     "/projects",
+    "/projects?sort=phase",
     `/projects/${project}`,
     "/validations",
+    "/validations?state=pending&q=e",
     `/approve/${validation}`,
     "/insights",
     "/activity",
@@ -306,6 +311,56 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
     await page.keyboard.press("Escape");
     return moved && typed;
   });
+
+  await check("⌘K is a combobox over groups of options, axe-clean, and a ticket id typed whole opens it", async () => {
+    const ticket = decodeURIComponent(agent.split("/")[2] ?? "");
+    await page.keyboard.press("ControlOrMeta+k");
+    const field = page.locator(".sh-palette input[role='combobox']");
+    await field.waitFor();
+    await page.keyboard.type(ticket.toLowerCase());
+    const groups = await page.locator(".sh-palette [role='listbox'] > [role='group'][aria-label]").count();
+    const pointed = await field.getAttribute("aria-activedescendant");
+    const selected = pointed ? await page.locator(`#${pointed}`).getAttribute("aria-selected") : null;
+    const result = await new AxeBuilder({ page }).include(".sh-palette").withTags(TAGS).analyze();
+    for (const v of result.violations) fail(`⌘K: ${v.id} (${v.impact}) ${v.nodes[0]?.target.join(" ") ?? ""}`);
+    await page.keyboard.press("Enter");
+    await page.waitForURL((url) => url.pathname === agent, { timeout: 5_000 });
+    return groups > 0 && selected === "true" && result.violations.length === 0;
+  });
+
+  await open(page, "/agents");
+  await check("a list's filters live in its address, and Back brings the view before back", async () => {
+    const state = page.getByRole("combobox", { name: "State" });
+    await state.selectOption("running");
+    await page.waitForURL((url) => url.searchParams.get("state") === "running", { timeout: 5_000 });
+    await page.getByRole("combobox", { name: "Sort" }).selectOption("report");
+    await page.waitForURL((url) => url.searchParams.get("sort") === "report", { timeout: 5_000 });
+    await page.goBack();
+    await page.waitForURL((url) => url.searchParams.get("sort") === null, { timeout: 5_000 });
+    const kept =
+      new URL(page.url()).searchParams.get("state") === "running" && (await state.inputValue()) === "running";
+    await page.goBack();
+    await page.waitForURL((url) => !url.search, { timeout: 5_000 });
+    return kept && (await state.inputValue()) === "";
+  });
+
+  if (seeded) {
+    await open(page, "/agents?state=running");
+    await check("a saved view is pinned in the sidebar, opens its filters, and goes on Remove", async () => {
+      await page.getByRole("button", { name: "Save view" }).click();
+      await page.getByRole("textbox", { name: "View name" }).fill("Running now");
+      await page.keyboard.press("Enter");
+      const link = page.locator(".sh-view a", { hasText: "Running now" });
+      await link.waitFor();
+      await open(page, "/agents");
+      await page.locator(".sh-view a", { hasText: "Running now" }).click();
+      await page.waitForURL((url) => url.searchParams.get("state") === "running", { timeout: 5_000 });
+      const current = (await link.getAttribute("aria-current")) === "page";
+      await page.getByRole("button", { name: "Remove the view Running now" }).click();
+      await link.waitFor({ state: "detached" });
+      return current;
+    });
+  }
 
   await open(page, agent);
   await check("the arrows move between tabs", async () => {

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.27](https://github.com/The-Vibe-Company/armada/compare/v0.2.26...v0.2.27) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** find any ticket, PR or agent with ⌘K, filter lists in the URL and save views ([#122](https://github.com/The-Vibe-Company/armada/issues/122)) ([a9a2d2b](https://github.com/The-Vibe-Company/armada/commit/a9a2d2bfa70e426ca433ffff90f8f823ccd2c914))
+* **dashboard:** show what happened since the owner last looked ([#123](https://github.com/The-Vibe-Company/armada/issues/123)) ([26f528d](https://github.com/The-Vibe-Company/armada/commit/26f528dbd24f5b921f727eeaea9e4fc94abc0764))
+
 ## [0.2.26](https://github.com/The-Vibe-Company/armada/compare/v0.2.25...v0.2.26) (2026-10-01)
 
 

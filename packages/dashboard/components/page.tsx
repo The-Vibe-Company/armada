@@ -292,7 +292,10 @@ export function Button({
 }
 
 /** A text field on the buttons' height; give it a label, visible or `sr-only`. */
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
+export function Input({
+  className,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement> & { ref?: Ref<HTMLInputElement> }) {
   return <input {...props} className={cx("ui-input", className)} />;
 }
 

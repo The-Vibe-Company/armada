@@ -22,6 +22,7 @@ import {
 import type { ActivityQuery, ActivityReading } from "@/lib/fleet-data";
 import type { Strings } from "@/lib/i18n";
 import { excerpt } from "@/lib/overview-view";
+import { SaveView } from "../FilterBar";
 import {
   Button,
   Form,
@@ -69,7 +70,13 @@ export function ActivityScreen({
   const { days, divider } = feedDays(t, r.entries, { zone, now, since });
   let dividerShown = false;
   return (
-    <Page toolbar={<Toolbar>{<Filters t={t} r={r} q={q} />}</Toolbar>}>
+    <Page
+      toolbar={
+        <Toolbar end={<SaveView list="activity" query={activityHref({ ...q, before: null }).split("?")[1] ?? ""} />}>
+          {<Filters t={t} r={r} q={q} />}
+        </Toolbar>
+      }
+    >
       {!r.live && <Notice tone="warn">{t.activity.unreachable}</Notice>}
       {r.live && r.entries.length === 0 && (
         <EmptyState title={filtered(q) || q.before ? t.activity.emptyFiltered : t.activity.empty} />

@@ -1,6 +1,6 @@
 // The view rules the shell and the screens share (THE-866): an agent's status,
-// its harness, a project's color, what waits for a decision, the search index
-// and where a page sits. Pure: they read the overview the shell polls.
+// its harness, a project's color, what waits for a decision and where a page
+// sits (⌘K's index is lib/search.ts). Pure: they read the overview the shell polls.
 import type { FleetOverview, FleetRow, WaitingItem, WaitingKind } from "@armada/core/read";
 
 /** An agent's status, as the v4 screens group them: most urgent first. */
