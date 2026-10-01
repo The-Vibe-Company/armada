@@ -13,7 +13,7 @@
 // every route refuses with the next step instead of a password prompt.
 // Everything is injected so tests run it on PGlite.
 import { type FleetCaller, parseProject, serveFleet } from "@armada/core/read";
-import { type Auth, organizationOf } from "./accounts";
+import { type Auth, firstOrganization, organizationOf } from "./accounts";
 import { AUTH_API_PREFIX, type AuthSettings, CLI_CLIENT_ID } from "./accounts-settings";
 import { type Holder, releaseCredentials } from "./broker";
 import type { Database, Queryable } from "./db";
@@ -462,7 +462,8 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       );
     caller = { kind: "worker", ticket: w.ticket };
   }
-  if (!(await holdProject(a.client, project, organization.id, now())))
+  const home = async () => (await firstOrganization(a.client))?.id ?? null;
+  if (!(await holdProject(a.client, project, organization.id, home, now())))
     return refuse(
       403,
       `the project ${project.slug} belongs to another organization`,

@@ -226,6 +226,15 @@ describe("the fleet through the Armada API", () => {
     await fleetOf({ kind: "api-key", key: otherKey }, { ...WIDGETS, slug: "rockets", name: "Rockets" }).register();
     expect((await api.projects({ kind: "api-key", key: otherKey })).map((p) => p.slug)).toEqual(["rockets"]);
     expect((await api.projects({ kind: "api-key", key: apiKey })).map((p) => p.slug)).toEqual(["widgets"]);
+    // A project registered without an organization (`bun run db register`) is the first organization's only.
+    const legacy = { ...WIDGETS, slug: "legacy", repository: "acme/legacy" };
+    await fleetStore(client).upsertProject(legacy, now());
+    expect(await refusal(fleetOf({ kind: "api-key", key: otherKey }, legacy).register())).toEqual([
+      403,
+      "Armada refused: the project legacy belongs to another organization",
+    ]);
+    await fleetOf({ kind: "api-key", key: apiKey }, legacy).register();
+    expect((await api.projects({ kind: "api-key", key: apiKey })).map((p) => p.slug)).toEqual(["legacy", "widgets"]);
     // A malformed project is refused before anything is written.
     const bad = await fetch(`${BASE}/api/cli/fleet/register`, {
       method: "POST",

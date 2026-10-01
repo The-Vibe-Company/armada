@@ -65,8 +65,10 @@ export interface FleetAnswer {
 }
 
 const TICKET = /^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/;
-const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const REPOSITORY = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+// The project as armada.toml allows it (`config.ts`), within lengths no real project reaches.
+const SLUG = /^[a-z0-9][a-z0-9-]{0,199}$/;
+const ROOT = /^[A-Za-z][A-Za-z0-9]{0,63}-\d{1,12}$/;
+const REPOSITORY = /^[\w.-]{1,200}\/[\w.-]{1,200}$/;
 const SHA = /^[0-9a-f]{7,64}$/;
 
 /** A request the server will not run as sent. */
@@ -135,11 +137,11 @@ export function parseProject(v: unknown): ProjectInput | null {
     SLUG.test(p.slug) &&
     typeof p.name === "string" &&
     p.name.trim().length > 0 &&
-    p.name.length <= 200 &&
+    p.name.length <= 500 &&
     typeof p.repository === "string" &&
     REPOSITORY.test(p.repository) &&
     typeof p.programRoot === "string" &&
-    TICKET.test(p.programRoot);
+    ROOT.test(p.programRoot);
   return ok
     ? {
         slug: p.slug as string,
@@ -234,7 +236,8 @@ export async function serveFleet(
               summary: text(b, "summary", BODY_MAX),
               message: optText(b, "message", BODY_MAX) ?? "",
               prUrl: optText(b, "prUrl", URL_MAX),
-              headSha: shaOf(b, "headSha"),
+              // Checked by the CLI for a hand-back only; any other report keeps what it was given.
+              headSha: optText(b, "headSha", LINE_MAX),
             },
             at,
           );

@@ -51,27 +51,35 @@ export async function ensureProject(db: Queryable, p: ProjectInput, now: Date = 
 
 /**
  * Makes sure `organization` holds the project a terminal names: registered for
- * it on first contact, or given to it when it has no organization yet. False
- * when another organization holds it. Reads only, once the project is held.
+ * it on first contact. A project registered without an organization (`bun run
+ * db register`, or before accounts) is the deployment's first organization's
+ * (`home`), as on the dashboard: only that one is given it. False when another
+ * organization holds it. Reads only, once the project is held.
  */
 export async function holdProject(
   db: Queryable,
   p: ProjectInput,
   organization: string,
+  home: () => Promise<string | null>,
   now: Date = new Date(),
 ): Promise<boolean> {
   const owner = async () =>
     (await db.query("SELECT organization_id FROM projects WHERE slug = $1", [p.slug])).rows[0] as Row | undefined;
   const held = await owner();
-  if (held && held.organization_id !== null) return String(held.organization_id) === organization;
-  await db.query(
-    `INSERT INTO projects (slug, name, repository, program_root, created_at, updated_at, organization_id, organization_assigned_at)
-     VALUES ($1, $2, $3, $4, $5, $5, $6, $5)
-     ON CONFLICT (slug) DO UPDATE SET organization_id = excluded.organization_id,
-       organization_assigned_at = excluded.organization_assigned_at
-     WHERE projects.organization_id IS NULL`,
-    [p.slug, p.name, p.repository, p.programRoot, now, organization],
-  );
+  if (held) {
+    if (held.organization_id !== null) return String(held.organization_id) === organization;
+    if ((await home()) !== organization) return false;
+    await db.query(
+      `UPDATE projects SET organization_id = $2, organization_assigned_at = $3
+       WHERE slug = $1 AND organization_id IS NULL`,
+      [p.slug, organization, now],
+    );
+  } else
+    await db.query(
+      `INSERT INTO projects (slug, name, repository, program_root, created_at, updated_at, organization_id, organization_assigned_at)
+       VALUES ($1, $2, $3, $4, $5, $5, $6, $5) ON CONFLICT (slug) DO NOTHING`,
+      [p.slug, p.name, p.repository, p.programRoot, now, organization],
+    );
   // Whoever got there first holds it.
   return text((await owner())?.organization_id) === organization;
 }
