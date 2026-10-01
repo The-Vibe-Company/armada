@@ -351,8 +351,8 @@ const en = {
     workerSecrets: "Secrets for workers",
     workerSecretsHint: (organization: boolean): string =>
       organization
-        ? "What workers need to build and test (an LLM provider key, a test database URL), for every project. A project's own secret with the same name wins. Workers fetch them with `armada run -- <command>`, never at launch."
-        : "What this project's workers need to build and test (an LLM provider key, a test database URL). Workers fetch them with `armada run -- <command>`, never at launch; a worker of another project never gets them.",
+        ? "What workers need to build and test (an LLM provider key, a test database URL), for every project. A project's own secret with the same name wins. Workers fetch them with armada run -- <command>, never at launch."
+        : "What this project's workers need to build and test (an LLM provider key, a test database URL). Workers fetch them with armada run -- <command>, never at launch; a worker of another project never gets them.",
     secretName: "Name",
     secretNamePlaceholder: "OPENAI_API_KEY",
     add: "Add",
@@ -910,8 +910,8 @@ const fr: Strings = {
     workerSecrets: "Secrets des workers",
     workerSecretsHint: (organization) =>
       organization
-        ? "Ce dont les workers ont besoin pour compiler et tester (une clé de fournisseur de LLM, l'URL d'une base de test), pour chaque projet. Le secret d'un projet du même nom passe avant. Les workers les obtiennent par `armada run -- <commande>`, jamais au lancement."
-        : "Ce dont les workers de ce projet ont besoin pour compiler et tester (une clé de fournisseur de LLM, l'URL d'une base de test). Les workers les obtiennent par `armada run -- <commande>`, jamais au lancement ; un worker d'un autre projet ne les reçoit jamais.",
+        ? "Ce dont les workers ont besoin pour compiler et tester (une clé de fournisseur de LLM, l'URL d'une base de test), pour chaque projet. Le secret d'un projet du même nom passe avant. Les workers les obtiennent par armada run -- <commande>, jamais au lancement."
+        : "Ce dont les workers de ce projet ont besoin pour compiler et tester (une clé de fournisseur de LLM, l'URL d'une base de test). Les workers les obtiennent par armada run -- <commande>, jamais au lancement ; un worker d'un autre projet ne les reçoit jamais.",
     secretName: "Nom",
     secretNamePlaceholder: "OPENAI_API_KEY",
     add: "Ajouter",

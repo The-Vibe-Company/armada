@@ -583,7 +583,11 @@ async function secrets(a: CliAccounts, request: Request, op: string, deps: CliAp
     const w = identity.launch;
     if (!w) return workerRefusal(null);
     if (op === "set" || op === "unset")
-      return refuse(403, `${WORKER_SCOPE}: it sets no secret`, "the coordinator does it");
+      return refuse(
+        403,
+        "a worker session sets and unsets no secret",
+        "ask the coordinator: `armada secrets set <NAME>`, signed in as an owner or admin",
+      );
     if (project.slug !== w.project) {
       const why = `this worker session is for the project ${w.project}, not ${project.slug}`;
       await recordEvent(a.client, organization.id, {
