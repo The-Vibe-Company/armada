@@ -279,6 +279,26 @@ describe("live Fleet reading", () => {
     expect(w.reads.snapshots).toBe(1);
   });
 
+  test("each row's timeline draws Armada's events of the last hours from Postgres", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const w = world(db);
+    await w.warm();
+    const report = (phase: string, ms: number) =>
+      recordEvent(db, { project: "widgets", ticket: "WID-2", kind: "report", phase, message: phase, at: w.at(ms) });
+    // Older than the timeline's span: not read on a poll.
+    await report("planning", -10 * 3_600_000);
+    await report("planning", -3_600_000);
+    await report("implementing", -1_800_000);
+    const o = await loadOverview(w.opts);
+    const timeline = o.rows[0]?.timeline;
+    expect(timeline?.reports).toEqual([w.at(-3_600_000).toISOString(), w.at(-1_800_000).toISOString()]);
+    expect(timeline?.phases.map((s) => [s.phase, s.from])).toEqual([
+      ["planning", w.at(-3_600_000).toISOString()],
+      ["implementing", w.at(-1_800_000).toISOString()],
+    ]);
+  });
+
   test("with the database unreachable the view falls back to Linear and GitHub and says so", async () => {
     const db = await tempDb();
     await upsertProject(db, WIDGETS);

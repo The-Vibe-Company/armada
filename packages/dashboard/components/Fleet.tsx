@@ -25,6 +25,7 @@ import {
 import { AgentRow } from "./screens/AgentRow";
 import { CoordinatorState as CoordinatorLine, Figure } from "./screens/ProjectsScreen";
 import { useFleet, useNow, useShell } from "./shell/context";
+import { LiveTimeline } from "./timeline/Timeline";
 import { Dot, EmptyState, ProjectChip, Tabs, Tag } from "./ui";
 
 const since = (now: number, iso: string | null | undefined) => (iso ? now - Date.parse(iso) : 0);
@@ -165,6 +166,8 @@ export function Fleet({ initialProject }: { initialProject: string | null }) {
           ))
         )}
       </Section>
+
+      <LiveTimeline project={active} />
 
       {overview.projects.length > 0 && (
         <ReadyBlock ctx={ctx} ready={ready} profiles={profiles} names={names} coordinators={coordinators} />

@@ -15,6 +15,7 @@ import {
   buildStatus,
   type CoordinatorPresence,
   type FleetOverview,
+  type HistoryEvent,
   type InboxItem,
   type InboxReadEvent,
   LAUNCH_WINDOW_MS,
@@ -28,6 +29,7 @@ import {
   type SourcesRefresh,
   type StatusReport,
   type StatusSources,
+  TIMELINE_HOURS,
 } from "@armada/core/read";
 import { LATEST_CLI_VERSION } from "./cli-version";
 import { type Database, redactDatabase } from "./db";
@@ -93,6 +95,8 @@ export const inScope = (p: ProjectRef, scope: Scope | null): boolean =>
 
 /** Live events older than this are not read on each poll: they no longer change what a row shows. */
 const LIVE_WINDOW_MS = 7 * 24 * 3_600_000;
+/** The events the live timeline draws: its longest span, and an hour before it for the gap that crosses its start. */
+const HISTORY_MS = (TIMELINE_HOURS + 1) * 3_600_000;
 
 export interface LoadOptions {
   sources: Sources;
@@ -256,6 +260,8 @@ interface LiveProject {
   inboxReads: InboxReadEvent[];
   sessions: SessionRecord[];
   events: Record<string, LatestEvent>;
+  /** Every worker event of the timeline's span, oldest first. */
+  history: HistoryEvent[];
   handles: RuntimeHandle[];
   launches: PendingLaunch[];
   inbox: InboxItem[];
@@ -265,8 +271,9 @@ interface LiveProject {
 }
 
 async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
-  const [events, handles, launches, inbox, coordinator, inboxReads, sessions] = await Promise.all([
+  const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions] = await Promise.all([
     store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+    store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
     store.openRuntimeHandles(project),
     store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
     store.openInboxItems({ project, recipient: "coordinator" }),
@@ -276,6 +283,7 @@ async function readLive(store: LiveStore, project: string, now: Date): Promise<L
   ]);
   return {
     events,
+    history,
     handles,
     launches,
     inbox,
@@ -479,6 +487,7 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
           }
         : null,
       profiles: snap.config.conductor.profiles,
+      history: { comments: snap.sources.program.comments, events: l?.history ?? [] },
     };
   });
 

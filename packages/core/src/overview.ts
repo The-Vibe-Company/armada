@@ -12,6 +12,7 @@ import {
   type SessionRecord,
 } from "./live.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
+import { historyByTicket, type SessionTimeline, sessionTimeline, type TimelineHistory } from "./timeline.ts";
 import type { AgentPhase } from "./types.ts";
 
 export const OVERVIEW_SCHEMA_VERSION = 2;
@@ -99,6 +100,8 @@ export interface FleetRow extends InFlightTicket {
   pipeline: Pipeline;
   /** Set when the row is in the waiting list. */
   waiting: WaitingKind | null;
+  /** Its last `TIMELINE_HOURS`, for the overview's live timeline. */
+  timeline: SessionTimeline;
 }
 
 export type CoordinatorState = "active" | "idle" | "unknown";
@@ -159,6 +162,8 @@ export interface ProjectReading {
   } | null;
   /** `[conductor.profiles]` of its armada.toml. */
   profiles?: Record<string, ConductorProfile>;
+  /** The snapshot's comments and Armada's recent events, which each row's timeline is drawn from. */
+  history?: TimelineHistory;
 }
 
 /**
@@ -166,7 +171,9 @@ export interface ProjectReading {
  * pending requests and coordinator {harness, handle, model, cliVersion, startedAt,
  * seenAt, inboxSeenAt, inboxReads}. `seenAt` is command activity, not an inbox read.
  * `sessions` retains per-launch profile/agent/model/effort, claimedAt, releasedAt and
- * lastReport; each row points to its active session. PR files/totals may be null for
+ * lastReport; each row points to its active session and carries its `timeline` (phases, report
+ * times, silences, PR opening over the last 8 h, from the snapshot's status comments and
+ * Armada's events; summaries cut short). PR files/totals may be null for
  * legacy snapshots; completeness flags identify capped lists. Missing facts are never inferred.
  */
 export interface FleetOverview {
@@ -328,6 +335,8 @@ export function buildOverview(input: {
       });
     waiting.push(...perTicket.values());
 
+    const history = historyByTicket(p.history);
+    const silentAfterMinutes = p.report?.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes;
     for (const t of tickets) {
       const q = questions.get(t.id);
       rows.push({
@@ -339,6 +348,12 @@ export function buildOverview(input: {
           : null,
         pipeline: pipeline(t),
         waiting: perTicket.get(t.id)?.kind ?? null,
+        timeline: sessionTimeline({
+          ticket: t,
+          history: history.get(t.id) ?? { comments: [], events: [] },
+          silentAfterMinutes,
+          now: input.now,
+        }),
       });
     }
 

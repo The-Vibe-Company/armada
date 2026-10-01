@@ -17,7 +17,9 @@ import {
   DEMO_INBOX,
   DEMO_PROFILES,
   DEMO_PROJECTS,
+  demoCoordinatorFacts,
   demoEvents,
+  demoInboxReads,
   projectOfTicket,
 } from "../lib/demo/world";
 import {
@@ -77,8 +79,10 @@ async function seed(scenario: string) {
       if (i.kind === "hand-back") await putHandBack(db, item);
       else await addInboxItem(db, { ...item, kind: i.kind, recipient: "coordinator" });
     }
-    for (const [project, minutes] of Object.entries(DEMO_COORDINATOR_SEEN))
-      await recordCoordinatorSeen(db, { project, at: ago(minutes) });
+    // Each coordinator read its inbox every 15 minutes since it started, oldest first.
+    for (const project of Object.keys(DEMO_COORDINATOR_SEEN))
+      for (const minutes of demoInboxReads(project).reverse())
+        await recordCoordinatorSeen(db, { project, facts: demoCoordinatorFacts(project), at: ago(minutes) });
   }
   await db.end();
   console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DEMO_DATABASE_URL names" : url}`);
