@@ -231,6 +231,37 @@ describe("launch tokens: one ticket, once, within the hour", () => {
 });
 
 describe("a worker session acts on its own ticket only", () => {
+  test("a heartbeat is project/ticket/session scoped, server timed, vault-free, and refuses replaced sessions", async () => {
+    now = at(900);
+    const session = String((await exchange(await launch("ABC-25"))).body.token);
+    const project = { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "ABC-1" };
+    const call = (op: string, input: unknown, token = session) =>
+      cli("POST", `fleet/${op}`, { token, body: { project, input } });
+    const claim = {
+      ticket: "ABC-25",
+      runtime: "Conductor",
+      handle: "workspace/worker-one",
+      branch: null,
+      phase: "implementing",
+      resuming: false,
+      profile: null,
+    };
+    expect((await call("claim", claim)).status).toBe(200);
+    now = at(905);
+    const before = await listEvents(client, orgId);
+    const ping = { ticket: claim.ticket, handle: claim.handle, at: "2099-01-01T00:00:00Z" };
+    expect((await call("heartbeat", ping)).body.result).toEqual({ active: true, claimedAt: at(900).toISOString() });
+    expect(await listEvents(client, orgId)).toEqual(before);
+    const rows = await client.query("SELECT heartbeat_at FROM runtime_handles WHERE project = $1 AND ticket = $2", [
+      "widgets",
+      claim.ticket,
+    ]);
+    expect(new Date(rows.rows[0]?.heartbeat_at as string).toISOString()).toBe(at(905).toISOString());
+    expect((await call("heartbeat", { ...ping, ticket: "ABC-26" })).status).toBe(403);
+    const replacement = String((await exchange(await launch(claim.ticket))).body.token);
+    expect((await call("claim", { ...claim, handle: "workspace/worker-two" }, replacement)).status).toBe(200);
+    expect((await call("heartbeat", ping)).body.result).toEqual({ active: false, claimedAt: null });
+  });
   test("keys for another ticket, another project or a coordinator's command are refused; it launches and ends no worker", async () => {
     now = at(1000);
     const session = String((await exchange(await launch("ABC-20"))).body.token);
@@ -294,6 +325,7 @@ describe("the end of a worker", () => {
     );
     expect(refused.body.next).toContain("report the cut-off to the coordinator");
     expect((await cli("GET", "session", { token: session })).status).toBe(401);
+    expect((await cli("POST", "fleet/heartbeat", { token: session, body: {} })).status).toBe(401);
 
     // Revoked before it was used, a token signs nothing in.
     const unused = await launch("ABC-31");
@@ -309,6 +341,7 @@ describe("the end of a worker", () => {
     const after = await keysFor(released, { command: "report", project: "widgets", ticket: "ABC-40" });
     expect(after.body.error).toContain("the worker session of ABC-40 ended at");
     expect(after.body.error).toContain("the ticket was released");
+    expect((await cli("POST", "fleet/heartbeat", { token: released, body: {} })).status).toBe(401);
 
     const merged = String((await exchange(await launch("ABC-41"))).body.token);
     const end = await cli("POST", "workers/end", {
@@ -316,6 +349,7 @@ describe("the end of a worker", () => {
       body: { project: "widgets", ticket: "abc-41", reason: "merged" },
     });
     expect(end.body).toEqual({ ended: 1 });
+    expect((await cli("POST", "fleet/heartbeat", { token: merged, body: {} })).status).toBe(401);
     expect((await keysFor(merged, { command: "report", project: "widgets", ticket: "ABC-41" })).body.error).toContain(
       "the ticket was merged",
     );

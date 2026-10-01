@@ -72,6 +72,7 @@ export interface InboxOptions {
   coordinator?: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  quietAfterMinutes?: number;
   /** `policy.not_started_minutes`. */
   notStartedMinutes?: number;
   now: () => Date;
@@ -97,6 +98,7 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   const query = {
     coordinator: o.coordinator ?? null,
     silentAfterMinutes: o.silentAfterMinutes,
+    quietAfterMinutes: o.quietAfterMinutes,
     ...(o.facts ? { facts: o.facts } : {}),
     ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
   };

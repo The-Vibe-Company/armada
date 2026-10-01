@@ -53,6 +53,7 @@ export interface Lane {
   lastUpdate: string;
   /** Latest report by the worker: live event, `Agent status:` comment or claim. Null when it never reported. */
   lastReport: string | null;
+  lastHeartbeat?: string | null;
   /** `plan`: the status comment carries the worker's plan, at `url`. */
   statusLine: { summary: string; at: string; author: string | null; url: string; plan: boolean } | null;
   pr: PullRequest | null;
@@ -111,6 +112,7 @@ export interface LaneOptions {
   silentAfterMinutes: number;
   /** Newest live event per ticket id, when the live data was read. */
   lastEvents?: Record<string, string>;
+  heartbeats?: Record<string, string>;
   /**
    * Live news from the fleet's live data. The tracker is read less often, so an
    * event newer than `after` (when the tracker read started) says more than
@@ -121,7 +123,10 @@ export interface LaneOptions {
     /** Newest event per ticket id. */
     events: Record<string, LiveEvent>;
     /** Open runtime handle per ticket id. */
-    handles?: Record<string, { runtime: string; handle: string; profile?: string | null }>;
+    handles?: Record<
+      string,
+      { runtime: string; handle: string; profile?: string | null; lastHeartbeatAt?: string | null }
+    >;
   };
 }
 
@@ -172,8 +177,7 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
   )
     phase = "merged";
 
-  // The phase started with the oldest status line of the latest run announcing
-  // it: workers repeat the same phase every 15 minutes to show they are alive.
+  // The phase started with the oldest status line of the latest run announcing it.
   let announcing: Comment | undefined;
   for (const c of comments) {
     if (!c.status || c.status.phase === "released") continue;
@@ -202,9 +206,9 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
 
   const flags: LaneFlag[] = [];
   const waitingOnHuman = NEEDS_HUMAN.includes(phase) || phase === "merged";
-  // Silence counts from the worker's last report; a lane that never reported
-  // (claimed by hand, before Armada) falls back to its last sign of life.
-  const alive = lastReport ?? lastUpdate;
+  // Old clients without heartbeat support keep their report-based liveness.
+  const lastHeartbeat = opts.heartbeats?.[issue.id] ?? opts.live?.handles?.[issue.id]?.lastHeartbeatAt ?? null;
+  const alive = lastHeartbeat ?? lastReport ?? lastUpdate;
   if (!waitingOnHuman && opts.now - Date.parse(alive) > opts.silentAfterMinutes * MIN) flags.push("silent");
   if (pr?.state === "open" && pr.ci === "failure") flags.push("ci-failing");
   if (pr?.state === "open" && pr.mergeable === "CONFLICTING") flags.push("conflict");
@@ -234,6 +238,7 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     since,
     lastUpdate,
     lastReport,
+    lastHeartbeat,
     statusLine:
       fresh?.message && phaseSource === "live"
         ? { summary: fresh.message, at: fresh.at, author: null, url: issue.url, plan: false }

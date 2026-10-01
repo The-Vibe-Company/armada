@@ -65,9 +65,21 @@ export function statusLive(
   io: Io,
   config: ArmadaConfig,
   credentials: Credentials,
-): { lastEvents: () => Promise<Record<string, string>>; launches: () => Promise<PendingLaunch[]> } | undefined {
+):
+  | {
+      lastEvents: () => Promise<Record<string, string>>;
+      heartbeats: () => Promise<Record<string, string>>;
+      launches: () => Promise<PendingLaunch[]>;
+    }
+  | undefined {
   const { fleet } = liveFleet(io, config, credentials);
-  return fleet ? { lastEvents: () => fleet.lastEventTimes(), launches: () => fleet.pendingLaunches() } : undefined;
+  return fleet
+    ? {
+        lastEvents: () => fleet.lastEventTimes(),
+        heartbeats: () => fleet.heartbeatTimes(),
+        launches: () => fleet.pendingLaunches(),
+      }
+    : undefined;
 }
 
 /**

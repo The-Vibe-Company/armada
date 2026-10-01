@@ -4,7 +4,7 @@
 // waits for it to exit rather than leave it behind.
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
-import type { Spawn } from "./io.ts";
+import type { Io, Spawn } from "./io.ts";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
@@ -31,4 +31,31 @@ export const spawnInherited: Spawn = (command, args, { cwd, env }) =>
       stop();
       done(code ?? 128 + (signal ? (constants.signals[signal] ?? 0) : 0));
     });
+  });
+
+export const startBackground: NonNullable<Io["startBackground"]> = (args) =>
+  new Promise((resolve) => {
+    if (process.platform === "win32") return resolve(false);
+    const child = spawn(process.execPath, [...process.execArgv, process.argv[1] as string, ...args], {
+      cwd: process.cwd(),
+      env: process.env,
+      detached: true,
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    let settled = false;
+    const finish = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (!ready) child.kill("SIGTERM");
+      if (child.connected) child.disconnect();
+      child.unref();
+      resolve(ready);
+    };
+    const timeout = setTimeout(() => finish(false), 20_000);
+    child.once("error", () => finish(false));
+    child.once("exit", () => finish(false));
+    child.once("message", (message) =>
+      finish(typeof message === "object" && message !== null && "ready" in message && message.ready === true),
+    );
   });

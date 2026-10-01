@@ -13,6 +13,13 @@ const problemsOf = (text: string) => {
 };
 
 describe("armada.toml", () => {
+  test("silence and quiet thresholds are independently configurable positive minutes", () => {
+    const configured = parseConfig(`${DEMO_TOML}\n[policy]\nsilence_minutes = 12\nquiet_minutes = 50\n`);
+    expect([configured.policy.silentAfterMinutes, configured.policy.quietAfterMinutes]).toEqual([12, 50]);
+    expect(problemsOf(`${DEMO_TOML}\n[policy]\nquiet_minutes = 0\n`)).toContain(
+      '"policy.quiet_minutes" must be a positive number',
+    );
+  });
   test("a minimal file gets the protocol defaults", () => {
     expect(parseConfig(DEMO_TOML)).toEqual({
       project: { name: "Widgets", slug: "widgets" },
@@ -33,6 +40,7 @@ describe("armada.toml", () => {
         attachmentsProjectMb: 200,
         attachmentsRetentionDays: 30,
         silentAfterMinutes: 15,
+        quietAfterMinutes: 45,
         coordinatorMinutes: 10,
         notStartedMinutes: 10,
         plans: "approve",

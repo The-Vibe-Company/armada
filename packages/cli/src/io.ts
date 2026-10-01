@@ -64,6 +64,9 @@ export interface Io {
   exec?: Exec;
   /** Runs the command of `armada run`, attached to this terminal. */
   spawn?: Spawn;
+  startBackground?: (args: string[]) => Promise<boolean>;
+  backgroundReady?: (ready: boolean) => void;
+  stopped?: () => boolean;
 }
 
 /**

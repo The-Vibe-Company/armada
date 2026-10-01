@@ -44,8 +44,9 @@ export interface ArmadaConfig {
     localCommands: string[];
   };
   policy: {
-    /** A working agent with no report for longer than this shows as silent. */
+    /** A working agent with no heartbeat for longer than this shows as silent; old clients use reports. */
     silentAfterMinutes: number;
+    quietAfterMinutes: number;
     /** An open item older than this in the coordinator's inbox shows "waiting for the coordinator" on the dashboard. */
     coordinatorMinutes: number;
     /** A launched worker that has not claimed its ticket after this long shows as not started. */
@@ -142,6 +143,7 @@ export const CONFIG_DEFAULTS = {
   runtimeGroup: "Agent runtime",
   runtimes: ["Claude Code", "Codex", "Conductor"],
   silentAfterMinutes: 15,
+  quietAfterMinutes: 45,
   coordinatorMinutes: 10,
   notStartedMinutes: 10,
   plans: "approve",
@@ -266,6 +268,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       policyT,
       [
         "silence_minutes",
+        "quiet_minutes",
         "silent_after_minutes",
         "coordinator_minutes",
         "not_started_minutes",
@@ -369,6 +372,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"policy.${silenceKey}" must be a positive number`);
   }
   let coordinatorMinutes: number = CONFIG_DEFAULTS.coordinatorMinutes;
+  let quietAfterMinutes: number = CONFIG_DEFAULTS.quietAfterMinutes;
+  if (policyT.quiet_minutes !== undefined) {
+    const value = policyT.quiet_minutes;
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) quietAfterMinutes = value;
+    else problems.push('"policy.quiet_minutes" must be a positive number');
+  }
   if (policyT.coordinator_minutes !== undefined) {
     const v = policyT.coordinator_minutes;
     if (typeof v === "number" && Number.isFinite(v) && v > 0) coordinatorMinutes = v;
@@ -479,6 +488,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,
+      quietAfterMinutes,
       coordinatorMinutes,
       notStartedMinutes,
       plans,
@@ -526,7 +536,8 @@ repository = ${q(p.repository)}
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
 
 [policy]
-silence_minutes = 15     # a worker with no report for longer than this shows as silent
+silence_minutes = 15     # a worker with no heartbeat for longer than this shows as silent
+quiet_minutes = 45       # alive but without a report: a coordinator-only note
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
 # not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
 # plans = "approve"       # or "pre-approved": workers post their plan and go on without waiting

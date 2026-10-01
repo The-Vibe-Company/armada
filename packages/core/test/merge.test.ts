@@ -468,7 +468,9 @@ describe("armada merge", () => {
 
     const out = await mergePullRequest(s.ctx, { pr: 9, noLock: true });
     expect(out.merged).toBe(true);
-    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(", merged without lock (--no-lock); merged on its own (no merge rule)");
+    expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toEndWith(
+      ", merged without lock (--no-lock); merged on its own (no merge rule)",
+    );
     expect(out.warnings[0]).toBe(
       "merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now",
     );
