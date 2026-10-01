@@ -15,7 +15,9 @@ import {
   buildStatus,
   type FleetOverview,
   type InboxItem,
+  LAUNCH_WINDOW_MS,
   type LatestEvent,
+  type PendingLaunch,
   type ProjectConfigReading,
   type ProjectReading,
   type ProjectRecord,
@@ -248,18 +250,20 @@ function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: Snap
 interface LiveProject {
   events: Record<string, LatestEvent>;
   handles: RuntimeHandle[];
+  launches: PendingLaunch[];
   inbox: InboxItem[];
   coordinatorSeenAt: string | null;
 }
 
 async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
-  const [events, handles, inbox, coordinatorSeenAt] = await Promise.all([
+  const [events, handles, launches, inbox, coordinatorSeenAt] = await Promise.all([
     store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
     store.openRuntimeHandles(project),
+    store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
     store.openInboxItems({ project, recipient: "coordinator" }),
     store.lastCoordinatorSeen(project),
   ]);
-  return { events, handles, inbox, coordinatorSeenAt };
+  return { events, handles, launches, inbox, coordinatorSeenAt };
 }
 
 /**
@@ -331,6 +335,7 @@ function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusRepor
             events: l.events,
             handles: Object.fromEntries(l.handles.map((h) => [h.ticket, h])),
           },
+          launches: l.launches,
         }
       : {}),
     now,

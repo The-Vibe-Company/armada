@@ -416,7 +416,7 @@ repository = ${q(p.repository)}
 [policy]
 silence_minutes = 15     # a worker with no report for longer than this shows as silent
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
-not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
+# not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
 # plans = "approve"       # or "pre-approved": workers post their plan and go on without waiting
 # pre_approved_label = "plan-approved"      # a ticket with this label skips the approval
 # approval_label = "needs-plan-approval"    # a ticket with this label waits for it; wins over the other

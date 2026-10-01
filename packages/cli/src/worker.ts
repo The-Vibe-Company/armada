@@ -17,6 +17,7 @@ import {
   LINEAR_KEY,
   machinePaths,
   type Outcome,
+  type PendingLaunch,
   ProfileError,
   projectOf,
   releaseTicket,
@@ -56,14 +57,14 @@ export function liveFleet(
   }
 }
 
-/** Newest live event per ticket for `armada status`, through Armada; undefined when not signed in. */
-export function statusEvents(
+/** What `armada status` reads through Armada: newest live event per ticket and launches not claimed; none when not signed in. */
+export function statusLive(
   io: Io,
   config: ArmadaConfig,
   credentials: Credentials,
-): (() => Promise<Record<string, string>>) | undefined {
+): { lastEvents: () => Promise<Record<string, string>>; launches: () => Promise<PendingLaunch[]> } | undefined {
   const { fleet } = liveFleet(io, config, credentials);
-  return fleet ? () => fleet.lastEventTimes() : undefined;
+  return fleet ? { lastEvents: () => fleet.lastEventTimes(), launches: () => fleet.pendingLaunches() } : undefined;
 }
 
 /**

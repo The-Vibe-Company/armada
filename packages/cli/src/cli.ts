@@ -25,7 +25,7 @@ import { statusAll } from "./projects.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError } from "./repo.ts";
 import { hookStop, watch } from "./watch.ts";
-import { claim, currentTicket, release, report, statusEvents } from "./worker.ts";
+import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
 export type { Io } from "./io.ts";
@@ -322,11 +322,11 @@ async function status(io: Io, args: Args): Promise<number> {
   const { credentials } = await loadCredentials(io);
   const { linearApiKey, githubToken } = credentials;
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
-  const events = statusEvents(io, config, credentials);
+  const live = statusLive(io, config, credentials);
   const report = await loadStatus(config, {
     linearApiKey,
     githubToken,
-    ...(events ? { lastEvents: events } : {}),
+    ...(live ?? {}),
     ...(io.fetch ? { fetch: io.fetch } : {}),
     ...(io.now ? { now: io.now } : {}),
   });

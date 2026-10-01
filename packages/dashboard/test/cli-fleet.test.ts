@@ -271,6 +271,62 @@ describe("the fleet through the Armada API", () => {
     expect(left?.inFlight).not.toContain("WID-10");
   });
 
+  test("a launch no claim followed is in flight, then not started, told apart by its token's use; its claim or its end clears it", async () => {
+    clock = start.getTime() + 2 * 24 * 60 * 60_000;
+    const coordinator = fleetOf({ kind: "api-key", key: apiKey });
+    const launch = (ticket: string) =>
+      api.launchToken({ kind: "session", token: ownerToken }, { project: WIDGETS.slug, ticket });
+    await launch("WID-70"); // never used
+    const signedIn = await launch("WID-71");
+    const claimed = await launch("WID-72");
+    clock += 60_000;
+    await api.exchangeLaunchToken(signedIn.token, "ws-71/s-1");
+    const session = await api.exchangeLaunchToken(claimed.token);
+    await fleetOf({ kind: "worker", token: session.token, ticket: "WID-72", project: WIDGETS.slug }).claim(
+      claim("WID-72", "ws-72"),
+    );
+    const young = await inboxOf(coordinator);
+    expect(young.items.filter((e) => e.kind === "not-started")).toEqual([]);
+    expect(young.inFlight).toEqual(["WID-70", "WID-71", "WID-72"]);
+
+    clock += 14 * 60_000;
+    const late = await inboxOf(coordinator);
+    expect(late.items.map((e) => [e.kind, e.ticket, e.author])).toEqual([
+      ["not-started", "WID-70", null],
+      ["not-started", "WID-71", "ws-71/s-1"],
+    ]);
+    expect(late.items[0]?.body).toContain("its launch token was never used");
+    expect(late.items[1]?.body).toContain("the worker signed in with its launch token at 09:01 UTC");
+    expect((await coordinator.pendingLaunches()).map((l) => [l.ticket, l.handle])).toEqual([
+      ["WID-70", null],
+      ["WID-71", "ws-71/s-1"],
+    ]);
+
+    // Ended (released, merged or revoked), a launch is no longer followed.
+    await api.endWorkers(
+      { kind: "session", token: ownerToken },
+      { project: WIDGETS.slug, ticket: "WID-70", reason: "released" },
+    );
+    const after = await inboxOf(coordinator);
+    expect(after.items.map((e) => e.ticket)).toEqual(["WID-71"]);
+    expect(after.inFlight).toEqual(["WID-71", "WID-72"]);
+  });
+
+  test("the masked token of the brief's human view is named as such, not as an invalid token", async () => {
+    const res = await fetch(`${BASE}/api/cli/launch-tokens/exchange`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: "armada_launch_••••" }),
+    });
+    expect([res.status, await res.json()]).toEqual([
+      400,
+      {
+        error: "this is the masked token from `armada brief`'s human view, not a launch token",
+        next: "ask the coordinator for the `armada brief <ticket> --prompt` text: only it carries the token",
+      },
+    ]);
+  });
+
   test("two coordinators taking the merge lock at once: one gets it, the other waits for it", async () => {
     const a = fleetOf({ kind: "api-key", key: apiKey });
     const b = fleetOf({ kind: "session", token: ownerToken });
