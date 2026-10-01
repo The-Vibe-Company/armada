@@ -6,6 +6,7 @@
 // (`/approve/<id>`). The owner's decision lands in the coordinator's inbox as
 // a `decision` item: the coordinator merges, or relays it to the worker.
 // Pure: the store keeps them (`FleetStore`), these rules read them.
+import type { ValidationRule } from "./config.ts";
 import type { ChangedFile, CiState } from "./types.ts";
 
 export const VALIDATION_KINDS = ["merge", "validation", "question"] as const;
@@ -153,4 +154,87 @@ export function lastValidation(validations: readonly Validation[], ticket: strin
       .filter((v) => v.ticket === ticket && v.kind === "validation" && v.decision?.outcome !== "superseded")
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id)[0] ?? null
   );
+}
+
+// ------------------------------------------------------------------ the launch's judgement
+
+/** The `[[policy.validation]]` rules the coordinator judged apply to a ticket, with its reason. */
+export interface ValidationChoice {
+  /** Empty: none applies (`--validation none`). */
+  rules: { index: number; when: string; show: string }[];
+  reason: string | null;
+}
+
+/** A `--validation` the brief or the claim cannot take; `next` is the exact command to run instead. */
+export class ValidationChoiceError extends Error {
+  override name = "ValidationChoiceError";
+  constructor(
+    message: string,
+    readonly next: string,
+  ) {
+    super(message);
+  }
+}
+
+const quoteWord = (s: string) => (/^\w[\w./:@+-]*$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`);
+
+/**
+ * The coordinator's judgement of `[[policy.validation]]` for one ticket
+ * (THE-885), like THE-882's profiles: Armada never classifies a ticket. With
+ * rules, a brief needs `--validation none` (most tickets: no reason needed) or
+ * `--validation <n,...> --validation-reason "<why>"`; `command` is the
+ * coordinator's own command, which the refusal completes for them to copy.
+ */
+export function chooseValidations(
+  rules: readonly ValidationRule[],
+  input: { ticket: string; requested: string | null; reason: string | null; command: string },
+): ValidationChoice | null {
+  const reason = input.reason?.replace(/\s+/g, " ").trim() || null;
+  const requested = input.requested?.trim().toLowerCase() || null;
+  const listed = rules.map((r, k) => `  ${k + 1}. when ${r.when}\n     then ${r.show}`).join("\n");
+  const none = `${input.command} --validation none`;
+  const some = (n: string) =>
+    `${input.command} --validation ${n} --validation-reason ${quoteWord("<why this ticket is one>")}`;
+  if (!rules.length) {
+    if (requested && requested !== "none")
+      throw new ValidationChoiceError(
+        "armada.toml has no [[policy.validation]] rule to apply",
+        none.replace(/ --validation none$/, ""),
+      );
+    return null;
+  }
+  if (requested === null)
+    throw new ValidationChoiceError(
+      `armada.toml has [[policy.validation]] rules: judge whether ${input.ticket} is one of them\n${listed}\nMost tickets are none: ${none}\nOne applies: ${some("<n>")}`,
+      none,
+    );
+  if (requested === "none") return { rules: [], reason };
+  const numbers = requested.split(",").map((n) => n.trim());
+  const picked = numbers.map((n) => Number(n));
+  if (picked.some((n, k) => !/^\d+$/.test(numbers[k] ?? "") || n < 1 || n > rules.length))
+    throw new ValidationChoiceError(
+      `--validation takes none or rule numbers from 1 to ${rules.length}, got "${input.requested}"\n${listed}`,
+      none,
+    );
+  if (!reason)
+    throw new ValidationChoiceError(
+      `say why ${input.ticket} needs the owner's validation with --validation-reason`,
+      some([...new Set(picked)].join(",")),
+    );
+  return {
+    rules: [...new Set(picked)]
+      .sort((a, b) => a - b)
+      .map((index) => {
+        const r = rules[index - 1] as ValidationRule;
+        return { index, when: r.when, show: r.show };
+      }),
+    reason,
+  };
+}
+
+/** The claim comment's line recording the judgement; null when no rule applies. */
+export function validationClaimLine(choice: ValidationChoice | null): string | null {
+  if (!choice?.rules.length) return null;
+  const rules = choice.rules.map((r) => `rule ${r.index} (${r.when})`).join(", ");
+  return `Owner validation: ${rules}${choice.reason ? ` — ${choice.reason}` : ""}`;
 }
