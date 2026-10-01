@@ -1,0 +1,31 @@
+AGENTS.md
+  s_d658e7251951c2::t_19545be054210a 9,20,35-36
+README.md
+  s_d658e7251951c2::t_232af26efb11e0 147,153-154,161-162,165-166,170,177-179,182,186,195,208,213,363
+docs/runbook.md
+  s_d658e7251951c2::t_6f4b83326eaf5f 20,34-46
+packages/dashboard/components/Actions.tsx
+  s_d658e7251951c2::t_4b74c0cbea384d 25
+packages/dashboard/lib/db.ts
+  s_d658e7251951c2::t_0e4369bf3c8873 534-546,548-549,551-558,582-585,590,600
+packages/dashboard/lib/i18n.ts
+  s_d658e7251951c2::t_7d6dcb92ebbf0a 168,170,229,316,461,474,562,564,624,712,856,869
+packages/dashboard/test/support.ts
+  s_d658e7251951c2::t_cac3ea46974996 3-8,11-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d17280e2fa3c144e48666f75be87f153ab86783c",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
