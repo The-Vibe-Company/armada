@@ -93,6 +93,8 @@ The laptop must stay awake and online while the coordinator runs: when it sleeps
 
 Workers launched from a laptop need no key either: the brief's prompt carries their launch token.
 
+A coordinator in Claude Code can also run short tickets as its own background subagents, each in its own git worktree: give those tickets a profile with `runtime = "claude-code"` and follow the `armada-runtime-claude-code` skill. They die with the coordinator's session, so anything long goes to Conductor.
+
 ## Start a coordinator in Conductor Cloud
 
 1. Create a workspace on the repository with the agent and model you want for the coordinator, and its organization API key, from a shell where `ARMADA_API_KEY` is set (never typed into the command):

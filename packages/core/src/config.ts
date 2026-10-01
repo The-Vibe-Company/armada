@@ -85,13 +85,19 @@ export interface RoutingRule {
   profile: string;
 }
 
-/** How a worker is launched on Conductor: every value is passed explicitly, never left to Conductor's defaults. */
+/** Where a profile's workers run, each with its runtime guide skill (`armada-runtime-<runtime>`). */
+export const PROFILE_RUNTIMES = ["conductor", "claude-code"] as const;
+export type ProfileRuntime = (typeof PROFILE_RUNTIMES)[number];
+
+/** How a worker is launched: every value is passed explicitly, never left to the runtime's defaults. */
 export interface ConductorProfile {
-  /** Conductor agent type, e.g. claude or codex (`conductor model` lists them). */
+  /** `conductor`: a Conductor workspace; `claude-code`: a subagent of the coordinator's Claude Code session. */
+  runtime: ProfileRuntime;
+  /** Conductor agent type, e.g. claude or codex (`conductor model` lists them); always claude for claude-code. */
   agent: string;
-  /** Model id for that agent, e.g. opus-5-5-1m. */
+  /** Model id for that agent, e.g. opus-5-5-1m; for claude-code, what the Agent tool's `model` takes, e.g. opus. */
   model: string;
-  /** Effort (thinking) level, e.g. high. */
+  /** Effort (thinking) level, e.g. high. Recorded only for claude-code: the Agent tool takes none. */
   effort: string;
   fastMode: boolean;
 }
@@ -229,10 +235,16 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       problems.push(`"${path}" is not a usable profile name`);
       continue;
     }
-    known.push([path, p, ["agent", "model", "effort", "fast_mode"]]);
+    known.push([path, p, ["runtime", "agent", "model", "effort", "fast_mode"]]);
     if (p.fast_mode !== undefined && typeof p.fast_mode !== "boolean")
       problems.push(`"${path}.fast_mode" must be true or false`);
+    const runtime = p.runtime ?? "conductor";
+    if (!PROFILE_RUNTIMES.includes(runtime as ProfileRuntime))
+      problems.push(`"${path}.runtime" must be one of ${PROFILE_RUNTIMES.map((r) => `"${r}"`).join(", ")}`);
+    if (runtime === "claude-code" && p.agent !== undefined && p.agent !== "claude")
+      problems.push(`"${path}.agent" must be "claude" with runtime = "claude-code"`);
     profiles[name] = {
+      runtime: PROFILE_RUNTIMES.includes(runtime as ProfileRuntime) ? (runtime as ProfileRuntime) : "conductor",
       agent: str(p, path, "agent"),
       model: str(p, path, "model"),
       effort: str(p, path, "effort"),
@@ -420,6 +432,15 @@ effort = "high"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "xhigh"
+
+# A worker run as a subagent of a coordinator's Claude Code session, in its own
+# worktree (the armada-runtime-claude-code skill). It dies with that session, so
+# long runs belong on Conductor. \`model\` is what the Agent tool takes; it applies no effort.
+# [conductor.profiles.local]
+# runtime = "claude-code"
+# agent = "claude"
+# model = "opus"
+# effort = "high"
 
 # Which profile a ticket gets from its Linear labels: the first rule with a label
 # the ticket carries wins, in file order. \`armada brief --profile\` overrides it.
