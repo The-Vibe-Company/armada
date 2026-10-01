@@ -74,7 +74,9 @@ A filter that prints nothing: count the event types of the last lines, look at o
 tail -n 200 "$f" | jq -r '.type' | sort | uniq -c
 ```
 
-## Stop and clean up
+## Stop and archive
+
+A subagent has no workspace to archive: archiving it means stopping it and removing its worktree.
 
 1. Stop a worker that runs the wrong thing, or one you release: TaskStop with its name (or `agentId`).
 

@@ -354,14 +354,19 @@ export function buildBrief(input: BuildBriefInput): Brief {
       inShell: has(v.name),
       inStore: !has(v.name) && !!input.stored?.includes(v.name),
     })),
-    {
-      name: "ARMADA_TICKET",
-      required: true,
-      value: ticket.id,
-      inShell: false,
-      inStore: false,
-      purpose: "the ticket this worker owns",
-    },
+    // A subagent inherits the coordinator's environment: nothing is set for it alone.
+    ...(runtime === "claude-code"
+      ? []
+      : [
+          {
+            name: "ARMADA_TICKET",
+            required: true,
+            value: ticket.id,
+            inShell: false,
+            inStore: false,
+            purpose: "the ticket this worker owns",
+          },
+        ]),
   ];
 
   const extra = input.conventions ?? null;
@@ -509,7 +514,9 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     b.launch
       ? `No key is needed in this workspace: once signed in, Armada hands each command the keys it needs, for ${t.id} only. If a command says this worker was cut off from Armada, stop and say so in your reply. Never print, commit or log a token or a key.`
-      : `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
+      : subagent
+        ? "You run with the coordinator's environment and keys. Never print, commit or log their values."
+        : `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
   );
   // The project's own text, as is: it speaks to every worker of the project.
   if (b.conventions) out.push("", "## Project conventions", "", b.conventions.text.trim());

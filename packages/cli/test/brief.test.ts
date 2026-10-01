@@ -252,6 +252,8 @@ describe("armada brief", () => {
     // The coordinator's ARMADA_TICKET reaches the subagent too: every command names the ticket.
     expect(prompt).toContain("Pass `--ticket DEMO-13` to every `armada report`, `ask` and `release`");
     expect(prompt).not.toContain("CONDUCTOR");
+    // Nothing can be set in a subagent's environment alone.
+    expect(text).not.toContain("ARMADA_TICKET=");
   });
 
   test("no secret value from the environment appears in any output", async () => {
