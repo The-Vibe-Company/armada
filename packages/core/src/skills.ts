@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import coordinatorMerge from "../../../skills/armada-coordinator/MERGE.md" with { type: "text" };
 import coordinator from "../../../skills/armada-coordinator/SKILL.md" with { type: "text" };
+import claudeCode from "../../../skills/armada-runtime-claude-code/SKILL.md" with { type: "text" };
 import conductor from "../../../skills/armada-runtime-conductor/SKILL.md" with { type: "text" };
 import worker from "../../../skills/armada-worker/SKILL.md" with { type: "text" };
 
@@ -31,6 +32,7 @@ export const BUNDLED_SKILLS: readonly BundledSkill[] = [
       { path: "SKILL.md", content: coordinator },
     ],
   },
+  { name: "armada-runtime-claude-code", files: [{ path: "SKILL.md", content: claudeCode }] },
   { name: "armada-runtime-conductor", files: [{ path: "SKILL.md", content: conductor }] },
   { name: "armada-worker", files: [{ path: "SKILL.md", content: worker }] },
 ];

@@ -6,7 +6,7 @@
 // signed-in coordinator: the worker's first command exchanges it for a
 // session limited to its ticket, so its runtime needs no key at all. It works
 // once, within the hour, which makes a copy left in a transcript useless.
-import type { ArmadaConfig, ConductorProfile, PlanPolicy } from "./config.ts";
+import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import {
   type Connection,
@@ -31,6 +31,11 @@ export const ARMADA_PACKAGE = "@the-vibe-company/armada";
 export const WORKER_SKILL_PATH = ".agents/skills/armada-worker/SKILL.md";
 /** Claim handle inside a Conductor workspace: both variables are set by Conductor. */
 export const CONDUCTOR_HANDLE = '"$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID"';
+/**
+ * Claim handle of a Claude Code subagent: the name the coordinator gives it at
+ * launch, so SendMessage and TaskStop reach it by that name.
+ */
+export const subagentName = (ticket: string) => ticket.toLowerCase();
 /** Newest comments of the ticket put in the brief. */
 const MAX_NOTES = 10;
 
@@ -83,7 +88,8 @@ export interface BriefLaunch {
 export interface Brief {
   ticket: { id: string; title: string; url: string; branch: string | null; status: string; description: string };
   parent: { id: string; title: string; url: string } | null;
-  runtime: "conductor";
+  /** Where the worker runs, from its profile: the `armada-runtime-<runtime>` skill launches it. */
+  runtime: ProfileRuntime;
   profile: ({ name: string } & ConductorProfile) | null;
   /** How the profile was chosen: routing rule, default, or the coordinator's override and its reason. */
   routing: Omit<ProfileChoice, "name" | "profile"> | null;
@@ -329,8 +335,10 @@ export function buildBrief(input: BuildBriefInput): Brief {
   // workspace package of the same name, which has no built command.
   const pkg = `${ARMADA_PACKAGE}@${input.version}`;
   const branch = ticket.branchName;
+  const runtime = choice?.profile.runtime ?? "conductor";
+  const handle = runtime === "claude-code" ? subagentName(ticket.id) : CONDUCTOR_HANDLE;
   const claimCommand = [
-    `armada claim ${ticket.id} --runtime conductor --handle ${CONDUCTOR_HANDLE}`,
+    `armada claim ${ticket.id} --runtime ${runtime} --handle ${handle}`,
     branch ? ` --branch ${branch}` : "",
     choice ? ` --profile ${shellWord(choice.name)}` : "",
     choice?.reason ? ` --reason ${shellWord(choice.reason)}` : "",
@@ -371,7 +379,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
       description: ticket.description,
     },
     parent: ticket.parent,
-    runtime: "conductor",
+    runtime,
     profile: choice ? { name: choice.name, ...choice.profile } : null,
     routing: choice
       ? { source: choice.source, rule: choice.rule, routed: choice.routed, reason: choice.reason, why: choice.why }
@@ -415,12 +423,21 @@ const byLine = (n: BriefNote) => `${n.author ?? "unknown"}, ${n.createdAt.slice(
 
 function renderPrompt(b: Omit<Brief, "prompt">): string {
   const t = b.ticket;
+  const subagent = b.runtime === "claude-code";
   const out: string[] = [
     `# ${t.id} — ${t.title}`,
     "",
     `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. Follow the \`armada-worker\` skill (\`${WORKER_SKILL_PATH}\`) and the repository's \`AGENTS.md\`. Never merge.`,
     "",
-    "## First: install Armada and claim the ticket",
+    ...(subagent
+      ? [
+          "## Before anything: your own worktree",
+          "",
+          `You run as a Claude Code subagent of the coordinator's session, in your own git worktree. Before you run anything else or touch a file, check that \`git rev-parse --show-toplevel\` is a folder under \`.claude/worktrees/\`. If it is not, you are in the coordinator's checkout: call the \`EnterWorktree\` tool with the name \`${subagentName(t.id)}\` and work only there. If it is refused, change nothing: reply that you were launched without a worktree and end your turn; the coordinator relaunches you in one. Never edit, commit or switch branches in the coordinator's checkout.`,
+          "",
+        ]
+      : []),
+    subagent ? "## Then: install Armada and claim the ticket" : "## First: install Armada and claim the ticket",
     "",
     "```sh",
     b.install,
@@ -441,9 +458,15 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "## Branch",
     "",
     t.branch
-      ? `Work on \`${t.branch}\`. Your workspace starts on a branch Conductor named; rename it before your first commit: \`git branch -m ${t.branch}\`.`
+      ? `Work on \`${t.branch}\`. Your ${subagent ? "worktree starts on a branch Claude Code" : "workspace starts on a branch Conductor"} named; rename it before your first commit: \`git branch -m ${t.branch}\`.`
       : "Linear suggests no branch name for this ticket; name yours after the ticket id.",
     "",
+    ...(subagent
+      ? [
+          `You share the coordinator's machine and environment: its \`ARMADA_TICKET\`, if it has one, is not yours. Pass \`--ticket ${t.id}\` to every \`armada report\`, \`ask\` and \`release\`. You end when the coordinator's session ends: report at every step, so the ticket always says where you are.`,
+          "",
+        ]
+      : []),
   ];
   if (t.description) out.push("## Ticket", "", quote(t.description), "");
   if (b.parent)

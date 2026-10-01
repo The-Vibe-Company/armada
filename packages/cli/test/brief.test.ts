@@ -22,6 +22,12 @@ model = "gpt-6.1-sol"
 effort = "high"
 fast_mode = true
 
+[conductor.profiles.local]
+runtime = "claude-code"
+agent = "claude"
+model = "opus"
+effort = "high"
+
 [[conductor.routing]]
 labels = ["web"]
 profile = "opus"
@@ -203,8 +209,10 @@ describe("armada brief", () => {
     expect(await run(["brief", "DEMO-13", "--json", ...override], j.io)).toBe(0);
     const brief = JSON.parse(j.out());
     expect(brief.watch.line).toBe("1 worker in flight (DEMO-13) — keep watching: armada watch");
+    expect(brief.runtime).toBe("conductor");
     expect(brief.profile).toEqual({
       name: "codex",
+      runtime: "conductor",
       agent: "codex",
       model: "gpt-6.1-sol",
       effort: "high",
@@ -221,6 +229,29 @@ describe("armada brief", () => {
     expect(brief.claimCommand).toEndWith(` --profile codex --reason 'it'\\''s a session bug'`);
     expect(brief.prompt).toBe(p.out());
     expect(brief.environment.map((v: { name: string }) => v.name)).toEqual(["LINEAR_API_KEY", "ARMADA_TICKET"]);
+  });
+
+  test("a claude-code profile names its guide, and the prompt puts the subagent in its own worktree first", async () => {
+    const b = briefIo();
+    expect(await run(["brief", "DEMO-13", "--profile", "local", "--reason", "short ticket"], b.io)).toBe(0);
+    const text = b.out();
+    expect(text).toContain(
+      "Runtime:     claude-code (follow the armada-runtime-claude-code skill to launch)\nProfile:     local: agent claude, model opus, effort high (not applied by the Agent tool)\n",
+    );
+    const prompt = text.slice(text.indexOf("# DEMO-13 — Show a sign-in page"));
+    const at = ["## Before anything: your own worktree", "`EnterWorktree`", "## Then: install Armada"].map((s) =>
+      prompt.indexOf(s),
+    );
+    expect(at.every((i) => i > 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    // The handle is the subagent's name, which the coordinator gives it at launch.
+    expect(prompt).toContain(
+      "\narmada claim DEMO-13 --runtime claude-code --handle demo-13 --branch feature/demo-13-show-a-sign-in-page --profile local --reason 'short ticket'\n",
+    );
+    expect(prompt).toContain("Your worktree starts on a branch Claude Code named");
+    // The coordinator's ARMADA_TICKET reaches the subagent too: every command names the ticket.
+    expect(prompt).toContain("Pass `--ticket DEMO-13` to every `armada report`, `ask` and `release`");
+    expect(prompt).not.toContain("CONDUCTOR");
   });
 
   test("no secret value from the environment appears in any output", async () => {
@@ -320,7 +351,9 @@ describe("armada brief", () => {
   test("an unknown profile is a usage error, before any request", async () => {
     const b = briefIo();
     expect(await run(["brief", "DEMO-13", "--profile", "turbo"], b.io)).toBe(2);
-    expect(b.err()).toBe('armada: no Conductor profile "turbo" (available: opus, codex)\nNext: armada brief --help\n');
+    expect(b.err()).toBe(
+      'armada: no Conductor profile "turbo" (available: opus, codex, local)\nNext: armada brief --help\n',
+    );
     expect(b.calls).toEqual([]);
   });
 });
