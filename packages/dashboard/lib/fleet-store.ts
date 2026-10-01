@@ -19,11 +19,14 @@ import type {
   InboxKind,
   InboxReadEvent,
   InboxRecipient,
+  InsightEvent,
+  InsightWait,
   LatestEvent,
   Lease,
   NewRequest,
   PendingLaunch,
   ProjectInput,
+  ProjectInsightRecords,
   ProjectRecord,
   RequestStore,
   RuntimeHandle,
@@ -1056,6 +1059,100 @@ export async function decideValidation(
   });
 }
 
+// ------------------------------------------------------------------ insights (THE-893)
+
+const WORKER_EVENTS = "('claim', 'report', 'heartbeat', 'release', 'merge')";
+
+/**
+ * What the Insights page computes from, for one project since `since`: the
+ * events of every ticket with one since then or a session still open, from
+ * its first (a ticket merged in range keeps its claim from before), the
+ * sessions, the coordinator's waits and the owner's validations (and those
+ * still open, however old). Heartbeats come back only
+ * when they end a gap longer than `silentAfterMinutes` or are a ticket's last
+ * event: months of 5-minute heartbeats stay in Postgres.
+ */
+export async function insightRecords(
+  db: Queryable,
+  project: string,
+  since: Date,
+  silentAfterMinutes: number,
+): Promise<Omit<ProjectInsightRecords, "project" | "silentAfterMinutes">> {
+  const [events, sessions, waits, validations] = await Promise.all([
+    db.query(
+      `WITH active AS (
+         SELECT ticket FROM events
+         WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind IN ${WORKER_EVENTS}
+         -- A session still open whose worker went quiet long ago still waits, or is still silent.
+         UNION SELECT ticket FROM fleet_sessions WHERE project = $1 AND released_at IS NULL
+       ), timeline AS (
+         -- Ticket by ticket (events_by_ticket), so a short range walks its tickets only, not the project.
+         SELECT t.* FROM active a CROSS JOIN LATERAL (
+           SELECT e.id, e.ticket, e.kind, e.phase, e.head_sha, e.created_at,
+             lag(e.created_at) OVER w AS previous, lead(e.id) OVER w IS NULL AS last
+           FROM events e
+           WHERE e.project = $1 AND e.ticket = a.ticket AND e.kind IN ${WORKER_EVENTS}
+           WINDOW w AS (ORDER BY e.created_at, e.id)
+         ) t
+       )
+       SELECT ticket, kind, phase, head_sha, created_at, last,
+         CASE WHEN created_at - previous > $3::int * interval '1 minute' THEN previous END AS gap_from
+       FROM timeline
+       WHERE kind <> 'heartbeat' OR last OR (created_at >= $2 AND created_at - previous > $3::int * interval '1 minute')
+       ORDER BY created_at, id`,
+      [project, since, Math.round(silentAfterMinutes)],
+    ),
+    db.query(
+      `SELECT ticket, runtime, profile, claimed_at, released_at FROM fleet_sessions
+       WHERE project = $1 AND (released_at IS NULL OR released_at >= $2) ORDER BY claimed_at`,
+      [project, since],
+    ),
+    db.query(
+      `SELECT ticket, kind, created_at, resolved_at FROM inbox_items
+       WHERE project = $1 AND (created_at >= $2 OR resolved_at IS NULL) AND recipient = 'coordinator'
+         AND kind IN ('question', 'plan', 'hand-back')
+       ORDER BY created_at, id`,
+      [project, since],
+    ),
+    db.query(
+      `SELECT ticket, kind, created_at, decided_at, outcome FROM validations
+       WHERE project = $1 AND (created_at >= $2 OR decided_at IS NULL) ORDER BY created_at, id`,
+      [project, since],
+    ),
+  ]);
+  return {
+    events: events.rows.map((r) => ({
+      ticket: String(r.ticket),
+      kind: String(r.kind) as InsightEvent["kind"],
+      phase: text(r.phase),
+      headSha: text(r.head_sha),
+      at: isoAt(r.created_at),
+      gapFrom: iso(r.gap_from),
+      last: r.last === true,
+    })),
+    sessions: sessions.rows.map((r) => ({
+      ticket: String(r.ticket),
+      runtime: String(r.runtime),
+      profile: text(r.profile),
+      claimedAt: isoAt(r.claimed_at),
+      releasedAt: iso(r.released_at),
+    })),
+    waits: waits.rows.map((r) => ({
+      ticket: text(r.ticket),
+      kind: String(r.kind) as InsightWait["kind"],
+      createdAt: isoAt(r.created_at),
+      resolvedAt: iso(r.resolved_at),
+    })),
+    validations: validations.rows.map((r) => ({
+      ticket: String(r.ticket),
+      kind: String(r.kind) as ValidationKind,
+      createdAt: isoAt(r.created_at),
+      decidedAt: iso(r.decided_at),
+      outcome: text(r.outcome) as ValidationOutcome | null,
+    })),
+  };
+}
+
 // ------------------------------------------------------------------ what the dashboard reads
 
 /** What the Fleet view reads on each poll, and what its requests write. */
@@ -1076,6 +1173,12 @@ export interface LiveStore extends RequestStore {
   listValidations(q: { project: string; ticket?: string; pr?: number; decidedSince?: Date }): Promise<Validation[]>;
   /** The attachments of some tickets, metadata only: the galleries of their validations. */
   ticketsAttachments(project: string, tickets: string[]): Promise<Attachment[]>;
+  /** What the Insights page computes from (THE-893). */
+  insightRecords(
+    project: string,
+    since: Date,
+    silentAfterMinutes: number,
+  ): Promise<Omit<ProjectInsightRecords, "project" | "silentAfterMinutes">>;
 }
 
 /** A ticket's history in the app's database: its events, inbox items and launches. */
@@ -1112,4 +1215,5 @@ export const liveStore = (db: Database): LiveStore => ({
   getValidation: (project, id) => getValidation(db, project, id),
   decideValidation: (d) => decideValidation(db, d),
   ticketsAttachments: (project, tickets) => ticketsAttachments(db, project, tickets),
+  insightRecords: (project, since, silentAfterMinutes) => insightRecords(db, project, since, silentAfterMinutes),
 });
