@@ -68,6 +68,20 @@ export function Section({
   );
 }
 
+/**
+ * Two columns of sections on a wide screen, one under the other on a narrow
+ * one: the page's sections on the left, `side` (facts, a closing action) on
+ * the right. Each column holds `Section`s and their `Row`s, nothing else.
+ */
+export function Columns({ children, side }: { children: ReactNode; side: ReactNode }) {
+  return (
+    <div className="ui-columns">
+      <div className="ui-columns-main">{children}</div>
+      <aside className="ui-columns-side">{side}</aside>
+    </div>
+  );
+}
+
 /** What a section holds that is not rows (a form, a hint, cards), on the rows' left edge. */
 export function SectionBody({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cx("ui-section-body", className)}>{children}</div>;

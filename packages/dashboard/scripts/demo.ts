@@ -16,6 +16,7 @@ import {
   DEMO_COORDINATOR_SEEN,
   DEMO_INBOX,
   DEMO_PROFILES,
+  DEMO_PROJECT_FACTS,
   DEMO_PROJECTS,
   demoEvents,
   projectOfTicket,
@@ -29,6 +30,14 @@ import {
   saveWorkerProfile,
   upsertProject,
 } from "../lib/fleet-store";
+
+/** How a coordinator records its harness (`armada watch`), from the demo's names. */
+const HARNESS_OF = {
+  "Conductor Cloud": "conductor-cloud",
+  "Claude Code": "claude-code",
+  Codex: "codex",
+  terminal: "terminal",
+} as const;
 
 const DEFAULT_DIR = resolve(import.meta.dir, "../.demo/armada");
 const configured = databaseUrlOf({ ARMADA_DATABASE_URL: process.env.ARMADA_DEMO_DATABASE_URL });
@@ -48,7 +57,13 @@ async function seed(scenario: string) {
   const s = scenario === "empty" ? "empty" : "fleet";
   for (const e of demoEvents(s)) {
     const base = { project: e.project, ticket: e.ticket };
-    await saveRuntimeHandle(db, { ...base, runtime: e.runtime, handle: e.handle, branch: null, at: ago(e.claimed) });
+    await saveRuntimeHandle(db, {
+      ...base,
+      runtime: e.runtime,
+      handle: e.handle,
+      branch: `feature/${e.ticket.toLowerCase()}`,
+      at: ago(e.claimed),
+    });
     await saveWorkerProfile(db, {
       ...base,
       profile: {
@@ -77,8 +92,16 @@ async function seed(scenario: string) {
       if (i.kind === "hand-back") await putHandBack(db, item);
       else await addInboxItem(db, { ...item, kind: i.kind, recipient: "coordinator" });
     }
-    for (const [project, minutes] of Object.entries(DEMO_COORDINATOR_SEEN))
-      await recordCoordinatorSeen(db, { project, at: ago(minutes) });
+    for (const [project, minutes] of Object.entries(DEMO_COORDINATOR_SEEN)) {
+      const c = DEMO_PROJECT_FACTS[project]?.coordinator;
+      const facts = c && {
+        harness: HARNESS_OF[c.harness],
+        handle: c.where,
+        model: c.model,
+        cliVersion: null,
+      };
+      await recordCoordinatorSeen(db, { project, at: ago(minutes), ...(facts ? { facts } : {}) });
+    }
   }
   await db.end();
   console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DEMO_DATABASE_URL names" : url}`);

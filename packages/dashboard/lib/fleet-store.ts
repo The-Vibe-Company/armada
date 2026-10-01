@@ -207,6 +207,27 @@ export async function latestEvents(
   );
 }
 
+/** How many of a ticket's events, inbox items and launches an agent's page reads, newest first. */
+export const TICKET_HISTORY_LIMIT = 200;
+
+/** A ticket's events, newest first (its claims, reports, releases and merges). */
+export async function ticketEvents(db: Queryable, project: string, ticket: string): Promise<LatestEvent[]> {
+  const rs = await db.query(
+    `SELECT kind, phase, message, runtime, handle, pr_url, created_at FROM events
+     WHERE project = $1 AND ticket = $2 ORDER BY created_at DESC, id DESC LIMIT $3`,
+    [project, ticket, TICKET_HISTORY_LIMIT],
+  );
+  return rs.rows.map((r) => ({
+    kind: String(r.kind) as LatestEvent["kind"],
+    phase: text(r.phase),
+    message: text(r.message),
+    runtime: text(r.runtime),
+    handle: text(r.handle),
+    prUrl: text(r.pr_url),
+    at: isoAt(r.created_at),
+  }));
+}
+
 // ------------------------------------------------------------------ coordinator presence
 
 /** Records coordinator command activity and, separately, its inbox reads: one presence row per project. */
@@ -524,6 +545,30 @@ export async function openInboxItems(
   return rs.rows.map(inboxItem);
 }
 
+/** Every inbox item of a ticket, open or resolved, newest first. */
+export async function ticketInboxItems(db: Queryable, project: string, ticket: string): Promise<StoredInboxItem[]> {
+  const rs = await db.query(
+    `SELECT ${INBOX_COLUMNS} FROM inbox_items WHERE project = $1 AND ticket = $2
+     ORDER BY created_at DESC, id DESC LIMIT $3`,
+    [project, ticket, TICKET_HISTORY_LIMIT],
+  );
+  return rs.rows.map(inboxRow);
+}
+
+/** Who asked Armada to launch a worker on a ticket (`armada brief`), and when; newest first. */
+export async function ticketLaunches(
+  db: Queryable,
+  project: string,
+  ticket: string,
+): Promise<{ at: string; by: string }[]> {
+  const rs = await db.query(
+    `SELECT "launchedByLabel", "createdAt" FROM "armada_worker" WHERE "project" = $1 AND "ticket" = $2
+     ORDER BY "createdAt" DESC LIMIT $3`,
+    [project, ticket, TICKET_HISTORY_LIMIT],
+  );
+  return rs.rows.map((r) => ({ at: isoAt(r.createdAt), by: String(r.launchedByLabel) }));
+}
+
 /** One inbox item of a project, open or resolved; null when the project has no such item. */
 export async function getInboxItem(db: Queryable, project: string, id: number): Promise<StoredInboxItem | null> {
   if (!Number.isSafeInteger(id) || id < 1) return null;
@@ -774,6 +819,15 @@ export interface LiveStore extends RequestStore {
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
   openInboxItems(q: { project: string; recipient: InboxRecipient }): Promise<InboxItem[]>;
   coordinatorPresence(project: string): Promise<{ seenAt: string; cliVersion: string | null } | null>;
+  /** What an agent's page shows of its ticket's history. */
+  ticketHistory(project: string, ticket: string): Promise<TicketHistory>;
+}
+
+/** A ticket's history in the app's database: its events, inbox items and launches. */
+export interface TicketHistory {
+  events: LatestEvent[];
+  inbox: StoredInboxItem[];
+  launches: { at: string; by: string }[];
 }
 
 export const liveStore = (db: Queryable): LiveStore => ({
@@ -787,6 +841,14 @@ export const liveStore = (db: Queryable): LiveStore => ({
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
   openInboxItems: (q) => openInboxItems(db, q),
   coordinatorPresence: (project) => coordinatorPresence(db, project),
+  ticketHistory: async (project, ticket) => {
+    const [events, inbox, launches] = await Promise.all([
+      ticketEvents(db, project, ticket),
+      ticketInboxItems(db, project, ticket),
+      ticketLaunches(db, project, ticket),
+    ]);
+    return { events, inbox, launches };
+  },
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addRequest: (r) => addRequest(db, r),

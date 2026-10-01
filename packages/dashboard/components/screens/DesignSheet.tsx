@@ -12,6 +12,7 @@ import {
   CardHead,
   CardMeta,
   CardTitle,
+  Columns,
   DensityToggle,
   Notice,
   Page,
@@ -147,6 +148,34 @@ export function DesignSheet() {
                 ))}
               </CardGrid>
             </Section>
+            <Columns
+              side={
+                <Section label={t.shell.session}>
+                  <Row>
+                    <span className="sc-fact-k">{t.shell.harness}</span>
+                    <span className="sc-fact-v">
+                      <HarnessBadge harness="conductor" />
+                    </span>
+                  </Row>
+                  <Row>
+                    <span className="sc-fact-k">{t.shell.profile}</span>
+                    <span className="sc-fact-v mono">opus</span>
+                  </Row>
+                </Section>
+              }
+            >
+              <Section label={t.shell.agent.activity} count={1}>
+                <Row>
+                  <RowIcon>
+                    <Dot color="var(--accent)" />
+                  </RowIcon>
+                  <RowText title={t.shell.agent.entries.question} line={SAMPLE[0].line} />
+                  <RowTime>
+                    <RelativeTime at={ago(12)} />
+                  </RowTime>
+                </Row>
+              </Section>
+            </Columns>
           </div>
           {(Object.keys(d.uses) as (keyof typeof d.uses)[]).map((k) => (
             <p key={k} className="ds-use">
