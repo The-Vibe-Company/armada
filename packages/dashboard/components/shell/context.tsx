@@ -9,7 +9,17 @@
 // so moving between them never waits for the server.
 import type { FleetOverview, FleetTimeline } from "@armada/core/read";
 import { useRouter } from "next/navigation";
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  startTransition,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { DENSITY_COOKIE, type Density } from "@/lib/fleet-view";
 import { LANGUAGE_COOKIE, type Language, STRINGS, type Strings } from "@/lib/i18n";
 
@@ -65,7 +75,7 @@ const FleetContext = createContext<Fleet | null>(null);
 const ShellContext = createContext<Shell | null>(null);
 const NowContext = createContext<number>(0);
 
-function useLiveOverview(initial: FleetOverview): Fleet {
+function useLiveOverview(initial: FleetOverview, initialTag: string | null): Fleet {
   const [overview, setOverview] = useState(initial);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const [failed, setFailed] = useState(false);
@@ -73,7 +83,7 @@ function useLiveOverview(initial: FleetOverview): Fleet {
   const [version, setVersion] = useState(0);
   const inFlight = useRef(false);
   /** The ETag of the overview shown; the server answers 304 while it is still current. */
-  const tag = useRef<string | null>(null);
+  const tag = useRef<string | null>(initialTag);
   const busy = useRef(isBusy(initial));
   /** When the overview shown was built: an older one, from a poll or a render, never replaces it. */
   const shown = useRef(initial.generatedAt);
@@ -93,7 +103,9 @@ function useLiveOverview(initial: FleetOverview): Fleet {
   const poll = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
-    setPending(true);
+    // Every update of a poll is a transition (THE-892): the whole page renders
+    // from the overview, and React renders it in slices the next input can cut.
+    startTransition(() => setPending(true));
     try {
       const res = await fetch("/api/fleet", {
         cache: "no-store",
@@ -105,20 +117,20 @@ function useLiveOverview(initial: FleetOverview): Fleet {
         window.location.assign(`/login${here === "/" ? "" : `?next=${encodeURIComponent(here)}`}`);
         return;
       }
-      if (res.status !== 304) {
-        if (!res.ok) throw new Error(String(res.status));
-        const next = (await res.json()) as FleetOverview;
+      const next = res.status === 304 ? null : res.ok ? ((await res.json()) as FleetOverview) : null;
+      if (res.status !== 304 && !next) throw new Error(String(res.status));
+      startTransition(() => {
         // A poll that answers after a newer render is dropped, with its tag.
-        if (show(next)) tag.current = res.headers.get("etag");
-      }
-      setVersion((v) => v + 1);
-      setFailed(false);
-      setCheckedAt(Date.now());
+        if (next && show(next)) tag.current = res.headers.get("etag");
+        setVersion((v) => v + 1);
+        setFailed(false);
+        setCheckedAt(Date.now());
+      });
     } catch {
-      setFailed(true);
+      startTransition(() => setFailed(true));
     } finally {
       inFlight.current = false;
-      setPending(false);
+      startTransition(() => setPending(false));
     }
   }, [show]);
 
@@ -182,6 +194,7 @@ const remember = (name: string, value: string) => {
 
 export function FleetProvider({
   initial,
+  initialTag = null,
   initialLanguage,
   initialDensity,
   account,
@@ -190,6 +203,7 @@ export function FleetProvider({
   children,
 }: {
   initial: FleetOverview;
+  initialTag?: string | null;
   initialLanguage: Language;
   initialDensity: Density;
   account: Account | null;
@@ -198,7 +212,7 @@ export function FleetProvider({
   children: ReactNode;
 }) {
   const router = useRouter();
-  const fleet = useLiveOverview(initial);
+  const fleet = useLiveOverview(initial, initialTag);
   const now = useClock(initial.generatedAt);
   const [lang, setLang] = useState(initialLanguage);
   const [density, setDensityState] = useState(initialDensity);

@@ -5,6 +5,7 @@ import {
   type FleetInsights,
   INSIGHT_RANGES,
   type InsightRange,
+  type InsightsSummary,
   type InsightTicket,
   isInsightRange,
   LABEL_PHASES,
@@ -145,4 +146,10 @@ export function shippedBars(i: FleetInsights): { key: string; kind: "day" | "wee
   return i.days.length > 31
     ? i.weeks.map((w) => ({ key: w.week, kind: "week", count: w.tickets.length }))
     : i.days.map((d) => ({ key: d.day, kind: "day", count: d.tickets.length }));
+}
+
+/** The overview's insights line as its page reads it (THE-892): what `/api/fleet/insights?range=7d` answers, and its tag. */
+export interface InsightsLineReading {
+  body: { range: "7d"; project: null; live: boolean; summary: InsightsSummary };
+  tag: string;
 }

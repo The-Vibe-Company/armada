@@ -9,6 +9,7 @@ import { requireAccounts } from "./accounts-server";
 import { passwordRequired } from "./auth-server";
 import { DENSITY_COOKIE, densityOf } from "./fleet-view";
 import { AUTHOR_COOKIE, LANGUAGE_COOKIE } from "./i18n";
+import { overviewTag } from "./live-http";
 import { authorOf, getOverview, languageOf } from "./server";
 
 export async function shellProps(access: Access) {
@@ -27,6 +28,7 @@ export async function shellProps(access: Access) {
   }
   return {
     initial,
+    initialTag: overviewTag(initial),
     initialLanguage: languageOf(jar.get(LANGUAGE_COOKIE)?.value),
     initialDensity: densityOf(jar.get(DENSITY_COOKIE)?.value),
     account,

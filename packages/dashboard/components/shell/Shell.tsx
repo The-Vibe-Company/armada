@@ -39,6 +39,7 @@ const loadPalette = () => import("./Palette").then((m) => m.Palette);
 
 export function Shell({
   initial,
+  initialTag,
   initialLanguage,
   initialDensity,
   account,
@@ -47,6 +48,8 @@ export function Shell({
   children,
 }: {
   initial: FleetOverview;
+  /** The ETag `/api/fleet` gives `initial`: the first poll answers 304 while nothing changed. */
+  initialTag: string;
   initialLanguage: Language;
   initialDensity: Density;
   account: Account | null;
@@ -57,6 +60,7 @@ export function Shell({
   return (
     <FleetProvider
       initial={initial}
+      initialTag={initialTag}
       initialLanguage={initialLanguage}
       initialDensity={initialDensity}
       account={account}

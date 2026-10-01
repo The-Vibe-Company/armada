@@ -216,6 +216,8 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  /* Its seconds tick: digits of one width keep the header still (THE-892). */
+  font-variant-numeric: tabular-nums;
 }
 .source {
   display: inline-flex;
@@ -626,6 +628,9 @@ button.chip:hover {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* WCAG 2.2's 24 px target, which the narrow top bar would miss. */
+  min-width: 24px;
+  min-height: 24px;
 }
 .sh-logo {
   flex: none;
@@ -643,6 +648,8 @@ button.chip:hover {
   align-items: center;
   gap: 4px;
   max-width: 110px;
+  min-width: 24px;
+  min-height: 24px;
   border: 0;
   background: none;
   padding: 2px 4px;

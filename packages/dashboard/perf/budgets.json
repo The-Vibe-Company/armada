@@ -40,25 +40,25 @@
   "bundles": {
     "tolerance": 0.05,
     "routes": {
-      "/": 188475,
+      "/": 190567,
       "/_not-found": 135591,
-      "/agents": 178140,
-      "/agents/[ticket]": 189219,
-      "/approve/[id]": 184750,
-      "/design": 176645,
-      "/device": 167852,
-      "/insights": 173345,
-      "/invitations/[id]": 167852,
-      "/landing": 147958,
-      "/login": 167852,
-      "/organization": 175089,
-      "/organization/github": 173345,
-      "/organization/keys": 173345,
-      "/organization/workers": 173345,
-      "/projects": 176209,
-      "/projects/[slug]": 180982,
-      "/validations": 184750,
-      "/welcome": 167852
+      "/agents": 180197,
+      "/agents/[ticket]": 191291,
+      "/approve/[id]": 186796,
+      "/design": 178479,
+      "/device": 168895,
+      "/insights": 175183,
+      "/invitations/[id]": 168895,
+      "/landing": 147956,
+      "/login": 168895,
+      "/organization": 176923,
+      "/organization/github": 175183,
+      "/organization/keys": 175183,
+      "/organization/workers": 175183,
+      "/projects": 178043,
+      "/projects/[slug]": 183063,
+      "/validations": 186796,
+      "/welcome": 168895
     }
   }
 }

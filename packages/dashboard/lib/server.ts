@@ -15,6 +15,7 @@ import {
   CONFIG_FILE,
   type FleetOverview,
   fetchDefaultBranchFile,
+  insightsSummary,
   parseConfig,
   readProjectConfig,
   readStatusSources,
@@ -32,6 +33,7 @@ import {
   type FleetCache,
   type LoadOptions,
   loadAgentActivity,
+  loadInsights,
   loadOverview,
   MARK_GAP_MS,
   newCache,
@@ -52,6 +54,7 @@ import {
   repositoryToken,
 } from "./github-app";
 import { isLanguage, type Language } from "./i18n";
+import type { InsightsLineReading } from "./insights-view";
 import { jsonTag, withoutTimeline } from "./live-http";
 import { dbSnapshots } from "./snapshots";
 import { vaultModeOf } from "./vault";
@@ -285,6 +288,15 @@ const overviewOfRequest = cache(async () => {
   const fleet = await fleetOf();
   return loadOverview(fleet.opts, fleet.scope);
 });
+
+/** The overview's insights line for its first render, so it neither arrives late nor moves the page (THE-892). */
+export async function initialInsightsLine(): Promise<InsightsLineReading | null> {
+  const { opts, scope } = await fleetOf();
+  const reading = await loadInsights(opts, scope, { range: "7d", project: null }).catch(() => null);
+  if (!reading) return null;
+  const body = { range: "7d" as const, project: null, live: reading.live, summary: insightsSummary(reading.insights) };
+  return { body, tag: jsonTag(body) };
+}
 
 /** The ticket's activity for its page's first render; null when the viewer cannot see it or it cannot be read. */
 export async function initialActivity(ticket: string): Promise<TaggedActivity | null> {

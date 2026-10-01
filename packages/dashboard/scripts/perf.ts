@@ -366,12 +366,16 @@ export default {
 
 async function lighthouse(base: string): Promise<boolean> {
   const { lighthouse: config } = await readBudgets();
+  // ARMADA_PERF_PAGES="/ /landing" measures only these, to iterate on one page.
+  const only = process.env.ARMADA_PERF_PAGES?.split(/\s+/).filter(Boolean);
+  if (only?.length) config.pages = config.pages.filter((p) => only.includes(p));
   const cookie = sessionCookie();
   await warm(base, config.pages, cookie);
   // A first run warms Chrome and measures this machine.
   const first = await lighthouseRun(`${base}/landing`, "mobile", config.cpu.slowdown, cookie);
   const benchmarkIndex = first.environment.benchmarkIndex;
-  const slowdown = cpuSlowdown(benchmarkIndex, config.cpu);
+  // ARMADA_PERF_CPU=5 forces the slowdown, to replay another machine's run.
+  const slowdown = Number(process.env.ARMADA_PERF_CPU) || cpuSlowdown(benchmarkIndex, config.cpu);
   console.log(`benchmark index ${Math.round(benchmarkIndex)}: mobile CPU ${slowdown}× slower`);
   const results: PageResult[] = [];
   for (const formFactor of ["mobile", "desktop"] as const)
