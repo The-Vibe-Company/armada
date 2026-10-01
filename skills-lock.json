@@ -29,6 +29,18 @@
       "ref": "v0.2.15",
       "computedHash": "a54e0efda3af0c5dfb7f5c6a6310e908640ef1474d629c77666a02c812f32483"
     },
+    "better-ui": {
+      "source": "jakubkrehel/skills",
+      "sourceType": "github",
+      "skillPath": "skills/better-ui/SKILL.md",
+      "computedHash": "d05cf568f197e47b15e71e21b19be1897eba2bf187ef7b0a341bc5ffaf3ffd4d"
+    },
+    "emil-design-eng": {
+      "source": "emilkowalski/skills",
+      "sourceType": "github",
+      "skillPath": "skills/emil-design-eng/SKILL.md",
+      "computedHash": "51f2537e04d15911b41d78e2de24c36a0e26d41beae15e82a954fe5496a5eda9"
+    },
     "neon": {
       "source": "neondatabase/agent-skills",
       "sourceType": "github",
