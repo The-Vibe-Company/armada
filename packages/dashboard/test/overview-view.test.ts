@@ -1,15 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import type { FleetOverview, FleetRow, InboxItem, ProjectOverview, ReadyTicket, WaitingItem } from "@armada/core/read";
+import type {
+  FleetOverview,
+  FleetRow,
+  InboxItem,
+  OwnerValidation,
+  ProjectOverview,
+  ReadyTicket,
+  WaitingItem,
+} from "@armada/core/read";
 import {
   coordinatorAlerts,
+  decidedValidations,
   decideCount,
   decisionCards,
   excerpt,
   handBackPr,
   orderOptions,
   overviewFigures,
+  pendingValidations,
   projectFacts,
   sentRequest,
+  withCoordinator,
 } from "../lib/overview-view.ts";
 
 // A synthetic fleet: two projects, every state the overview shows.
@@ -127,17 +138,51 @@ const overview = {
   ] as ReadyTicket[],
 } satisfies Pick<FleetOverview, "rows" | "waiting" | "projects" | "ready">;
 
+/** What the owner validates (THE-885): open unless `decided` minutes ago. */
+const validation = (id: number, ticket: string, minutesAgo: number, decided?: number): OwnerValidation => ({
+  id,
+  project: "widgets",
+  ticket,
+  kind: "merge",
+  what: `Merge ${ticket}`,
+  reason: "touches the front end",
+  choices: null,
+  pr: null,
+  attachments: [],
+  author: "coordinator",
+  createdAt: at(minutesAgo),
+  decision:
+    decided === undefined ? null : { outcome: "approved", answer: null, note: null, by: "Ada", at: at(decided) },
+  title: null,
+  url: null,
+  gallery: [],
+});
+
 describe("the overview's headline", () => {
-  test("counts what is in flight, what waits for a decision, what fails and the active coordinators", () => {
-    expect(overviewFigures(overview)).toEqual({
+  test("counts what is in flight, what waits for the owner's decision, what fails and the active coordinators", () => {
+    const validations = [validation(1, "WID-6", 4), validation(2, "WID-1", 9), validation(3, "WID-2", 30, 20)];
+    expect(overviewFigures({ ...overview, validations })).toEqual({
       inFlight: 7,
-      decide: 3,
+      decide: 2,
       failing: 2,
       silent: 1,
       coordinators: { active: 1, total: 2 },
       projects: 2,
       harnesses: 3,
     });
+  });
+});
+
+describe("yours to decide (THE-885)", () => {
+  test("holds only what the owner validates; the workers' questions, plans and hand-backs stay with the coordinator", () => {
+    const validations = [validation(3, "WID-2", 30, 20), validation(1, "WID-6", 4), validation(2, "WID-1", 9)];
+    expect(pendingValidations({ validations }).map((v) => v.id)).toEqual([1, 2]);
+    expect(decidedValidations({ validations }).map((v) => v.id)).toEqual([3]);
+    expect(decideCount({ ...overview, validations })).toBe(2);
+    expect(withCoordinator(overview)).toEqual({ count: 3, since: at(18) });
+    expect(withCoordinator({ waiting: [] })).toBeNull();
+    // An overview from before validations has none.
+    expect(decideCount(overview)).toBe(0);
   });
 });
 
@@ -219,8 +264,8 @@ describe("a coordinator to bring back", () => {
     expect(coordinatorAlerts(o)).toEqual([
       { project: "widgets", state: "idle", seenAt: at(40), waiting: 2, since: at(35) },
     ]);
-    // The sidebar and the headline count it with the decisions.
-    expect(decideCount(o)).toBe(5 + 1);
+    // The sidebar and the headline count it with what the owner validates.
+    expect(decideCount({ ...o, validations: [validation(1, "WID-6", 4)] })).toBe(1 + 1);
   });
 });
 

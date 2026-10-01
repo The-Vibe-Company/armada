@@ -41,14 +41,15 @@ function demoOverview() {
 }
 
 describe("the demo world", () => {
-  test("is the mockup's Acme world: three projects and ten sessions in every state", () => {
+  test("is the mockup's Acme world: three projects and eleven sessions in every state", () => {
     const o = demoOverview();
     expect(o.projects.map((p) => p.name)).toEqual(["Widgets", "Gadgets", "Armada"]);
-    expect(o.rows).toHaveLength(10);
+    expect(o.rows).toHaveLength(11);
     const byTicket = Object.fromEntries(o.rows.map((r) => [r.id, agentState(r)]));
     expect(byTicket).toMatchObject({
       "WID-15": { status: "waiting", reason: "question" },
       "GAD-3": { status: "waiting", reason: "approval" },
+      "GAD-9": { status: "waiting", reason: "validation" },
       "WID-14": { status: "error", reason: "ci" },
       "GAD-5": { status: "error", reason: "conflict" },
       "WID-17": { status: "silent" },
@@ -57,7 +58,7 @@ describe("the demo world", () => {
       "THE-858": { status: "done" },
     });
     expect(new Set(Object.values(byTicket).map((s) => s.status))).toEqual(new Set(AGENT_STATUSES));
-    expect(harnessCounts(o.rows)).toEqual({ conductor: 5, "claude-code": 3, codex: 2, other: 0 });
+    expect(harnessCounts(o.rows)).toEqual({ conductor: 6, "claude-code": 3, codex: 2, other: 0 });
   });
 
   test("waits on a question, a plan and two hand-backs, and has one idle coordinator", () => {

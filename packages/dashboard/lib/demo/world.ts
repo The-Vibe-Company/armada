@@ -1,5 +1,5 @@
 // A synthetic fleet for local trials and screenshots: the dashboard v4
-// mockup's Acme world (design/dashboard-v4), three projects with ten sessions
+// mockup's Acme world (design/dashboard-v4), three projects with eleven sessions
 // in every state, their Linear programs and pull requests, and the live
 // activity to seed. Times are relative to `now`, so the view always looks current.
 import type {
@@ -274,6 +274,21 @@ const TICKETS: DemoTicket[] = [
     files: [f("docs/plans/gad-3.md", 48, 0)],
   },
   {
+    id: "GAD-9",
+    project: "gadgets",
+    title: "Design the catalogue's product card",
+    phase: "awaiting-validation",
+    runtime: "Conductor",
+    agent: "Worker K",
+    handle: "ws-7e21/ses-08",
+    profile: "opus",
+    claimed: 95,
+    phaseSince: 14,
+    lastReport: 14,
+    summary: "Two directions for the product card, attached for the owner's validation",
+    files: [],
+  },
+  {
     id: "GAD-6",
     project: "gadgets",
     title: "Send a weekly digest email",
@@ -406,6 +421,79 @@ export const DEMO_INBOX: DemoInbox[] = [
     author: "Worker J",
     body: "PR #317 is ready: head 7c1e0a4, CI green.",
     ago: 9,
+  },
+];
+
+/** What the owner validates in the demo (THE-885): a merge, a design, an escalated question, one decided. */
+export interface DemoValidation {
+  project: string;
+  ticket: string;
+  kind: "merge" | "validation" | "question";
+  what: string;
+  reason: string | null;
+  choices: string[] | null;
+  pr: { number: number; headSha: string; preview: string | null } | null;
+  /** Screenshots drawn by the seed, with their captions. */
+  shots: string[];
+  author: string;
+  /** Minutes ago. */
+  ago: number;
+  decided?: { outcome: "approved" | "changes"; by: string; note: string | null; ago: number };
+}
+
+export const DEMO_VALIDATIONS: DemoValidation[] = [
+  {
+    project: "widgets",
+    ticket: "WID-18",
+    kind: "merge",
+    what: "Add a dark theme to the settings page",
+    reason: "touches the settings page users see: the rule keeps front-end changes for you",
+    choices: null,
+    pr: {
+      number: 44,
+      headSha: "a3f9c2e81d0b4c7e9f2a6b5d3c1e0f9a8b7c6d5e",
+      preview: "https://widgets-git-wid-18.example.app",
+    },
+    shots: ["Settings page, dark theme", "Settings page, light theme kept"],
+    author: "coordinator",
+    ago: 5,
+  },
+  {
+    project: "gadgets",
+    ticket: "GAD-9",
+    kind: "validation",
+    what: "Two directions for the product card: A keeps the photo square, B lets it bleed to the edges. Pick one, or say what to change.",
+    reason: null,
+    choices: null,
+    pr: null,
+    shots: ["Direction A: square photo", "Direction B: full-bleed photo", "Both on a phone"],
+    author: "ws-7e21/ses-08",
+    ago: 14,
+  },
+  {
+    project: "armada",
+    ticket: "THE-862",
+    kind: "question",
+    what: "Should the local Codex adapter ship behind a flag first?",
+    reason: "a product choice the worker escalated",
+    choices: ["Behind a flag (recommended)", "On for everyone"],
+    pr: null,
+    shots: [],
+    author: "coordinator",
+    ago: 22,
+  },
+  {
+    project: "armada",
+    ticket: "THE-858",
+    kind: "merge",
+    what: "Show the harness on every session",
+    reason: "changes the session rows on the overview",
+    choices: null,
+    pr: { number: 317, headSha: "7c1e0a4b2d9f8e7a6c5b4d3e2f1a0b9c8d7e6f5a", preview: null },
+    shots: [],
+    author: "coordinator",
+    ago: 80,
+    decided: { outcome: "approved", by: "Ada Lovelace", note: "Looks right on mobile too.", ago: 40 },
   },
 ];
 

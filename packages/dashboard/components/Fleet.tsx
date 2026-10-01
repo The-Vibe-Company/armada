@@ -17,11 +17,10 @@ import type { Strings } from "@/lib/i18n";
 import {
   type CoordinatorAlert,
   coordinatorAlerts,
-  decisionCards,
-  handBackPr,
   overviewFigures,
+  pendingValidations,
   projectFacts,
-  sentRequest,
+  withCoordinator,
 } from "@/lib/overview-view";
 import { coordinatorHarness } from "@/lib/project-view";
 import type { ActionContext } from "./Actions";
@@ -37,7 +36,7 @@ import {
   Section,
   SectionBody,
 } from "./page";
-import { DecisionCard } from "./screens/DecisionCard";
+import { ValidationCard } from "./screens/ValidationCard";
 import { useFleet, useNow, useShell } from "./shell/context";
 import { LiveTimeline } from "./timeline/Timeline";
 import { Dot, EmptyState, ProjectChip, RelativeTime, Tag } from "./ui";
@@ -53,10 +52,10 @@ export function Fleet() {
   const { t, author, setAuthor, account } = useShell();
   const now = useNow();
   const figures = useMemo(() => overviewFigures(overview), [overview]);
-  const decisions = useMemo(() => decisionCards(overview), [overview]);
+  const checks = useMemo(() => pendingValidations(overview), [overview]);
   const alerts = useMemo(() => coordinatorAlerts(overview), [overview]);
+  const queue = useMemo(() => withCoordinator(overview), [overview]);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
-  const coordinators = new Map(overview.projects.map((p) => [p.slug, p.coordinator.state]));
   const ctx: ActionContext = {
     t,
     signer: { name: author, set: setAuthor, fixed: account !== null },
@@ -136,7 +135,17 @@ export function Fleet() {
         <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
       ) : (
         <>
-          <Section label={t.overview.decideTitle} count={figures.decide}>
+          <Section
+            label={t.overview.decideTitle}
+            count={figures.decide}
+            side={
+              checks.length > 0 && (
+                <Link href={paths.validations} prefetch className="sc-figure is-link">
+                  <span className="faint">{t.shell.nav.validations}</span> <span className="mono">{checks.length}</span>
+                </Link>
+              )
+            }
+          >
             {figures.decide === 0 ? (
               <SectionBody>
                 <p>{t.overview.decideEmpty}</p>
@@ -146,21 +155,23 @@ export function Fleet() {
                 {alerts.map((a) => (
                   <StoppedCard key={a.project} t={t} a={a} now={now} projectName={names.get(a.project) ?? a.project} />
                 ))}
-                {decisions.map((w, k) => {
-                  const pr = w.kind === "hand-back" ? handBackPr(overview, w) : null;
-                  return (
-                    <DecisionCard
-                      key={`${w.project}-${w.ticket ?? k}-${w.kind}`}
-                      ctx={ctx}
-                      w={w}
-                      projectName={names.get(w.project) ?? w.project}
-                      coordinator={coordinators.get(w.project) ?? "unknown"}
-                      pr={pr}
-                      sent={sentRequest(overview, w, pr)}
-                    />
-                  );
-                })}
+                {checks.map((v) => (
+                  <ValidationCard
+                    key={v.id}
+                    ctx={ctx}
+                    v={v}
+                    projectName={names.get(v.project) ?? v.project}
+                    mode="compact"
+                  />
+                ))}
               </CardGrid>
+            )}
+            {queue && (
+              <SectionBody>
+                <p className="calm">
+                  {t.overview.withCoordinator(queue.count, t.duration(Math.max(0, now - Date.parse(queue.since))))}
+                </p>
+              </SectionBody>
             )}
           </Section>
 
