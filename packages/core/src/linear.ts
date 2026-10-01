@@ -57,6 +57,9 @@ const firstLine = (body: string) => (body.split("\n").find((l) => l.trim()) ?? "
  */
 export const COORDINATOR_RECORD = /^(?:answer|note)\s*:/i;
 
+/** The plan block `armada report --plan` puts under the status line. */
+const PLAN_BLOCK = /^## Plan[ \t]*$/m;
+
 /** First line "Agent status: <phase> — <summary>" (em dash, en dash or hyphen). */
 export function parseStatusLine(body: string): Comment["status"] {
   const m = firstLine(body).match(/^\s*Agent status\s*:\s*([a-z-]+)\s*(?:[—–-]+\s*(.*))?$/i);
@@ -65,7 +68,8 @@ export function parseStatusLine(body: string): Comment["status"] {
   const phase = LEGACY[raw] ?? (raw as AgentPhase);
   const summary = (m[2] ?? "").trim();
   if (COORDINATOR_RECORD.test(summary)) return null;
-  return PHASES.includes(phase) ? { phase, summary } : null;
+  if (!PHASES.includes(phase)) return null;
+  return PLAN_BLOCK.test(body) ? { phase, summary, plan: true } : { phase, summary };
 }
 
 /** Removes markdown backslash escapes (Linear stores `a_b` as `a\_b`). */

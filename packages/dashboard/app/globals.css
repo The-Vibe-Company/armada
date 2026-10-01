@@ -786,6 +786,10 @@ button {
 .crew-question {
   color: var(--accent);
 }
+.crew-plan {
+  margin-right: 7px;
+  color: var(--accent);
+}
 .q-mark {
   display: inline-grid;
   place-items: center;

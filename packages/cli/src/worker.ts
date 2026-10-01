@@ -150,17 +150,22 @@ export interface WorkerArgs {
 }
 
 /** --message or --message-file (a path, or - for standard input); null when neither is given. */
-export async function readMessage(io: Io, options: Record<string, string>): Promise<string | null> {
-  if (options.message !== undefined && options["message-file"] !== undefined)
-    throw new UsageError("pass --message or --message-file, not both");
-  const file = options["message-file"];
-  if (file === undefined) return options.message ?? null;
+export async function readMessage(
+  io: Io,
+  options: Record<string, string>,
+  name: "message" | "plan" = "message",
+): Promise<string | null> {
+  const fileOption = `${name}-file`;
+  if (options[name] !== undefined && options[fileOption] !== undefined)
+    throw new UsageError(`pass --${name} or --${fileOption}, not both`);
+  const file = options[fileOption];
+  if (file === undefined) return options[name] ?? null;
   const text = file === "-" ? ((await io.readStdin?.()) ?? null) : await io.readFile(file);
-  if (text === null) throw new UsageError(`cannot read the message from ${file}`);
+  if (text === null) throw new UsageError(`cannot read the ${name} from ${file}`);
   if (!text.trim())
     throw new UsageError(
-      `${file === "-" ? "standard input" : `message file ${file}`} is empty or whitespace-only`,
-      'pass --message "<text>" or pipe a non-empty message into --message-file -',
+      `${file === "-" ? "standard input" : `${name} file ${file}`} is empty or whitespace-only`,
+      `pass --${name} "<text>" or pipe a non-empty ${name} into --${fileOption} -`,
     );
   return text;
 }
@@ -212,15 +217,21 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
   if (!phase || !isLabelPhase(phase))
     throw new UsageError(`report needs a phase: ${LABEL_PHASES.join(", ")}${phase ? ` (got "${phase}")` : ""}`);
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
+  if (a.options["message-file"] === "-" && a.options["plan-file"] === "-")
+    throw new UsageError("--message-file - and --plan-file - both read standard input; give one of them a file");
   const message = await readMessage(io, a.options);
-  if (!message?.trim() && phase !== "ready-to-merge")
-    throw new UsageError("--message is required: what you did or what you are doing (first line = summary)");
+  const plan = await readMessage(io, a.options, "plan");
+  if (!message?.trim() && !plan?.trim() && phase !== "ready-to-merge")
+    throw new UsageError(
+      "--message is required: what you did or what you are doing (first line = summary), or --plan-file with your plan",
+    );
   const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
   return withContext(io, config, credentials, a.json, (ctx) =>
     reportPhase(ctx, {
       ticket,
       phase,
       message,
+      plan,
       pr: a.options.pr ?? null,
       sha: a.options.sha ?? null,
     }),

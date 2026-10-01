@@ -2,6 +2,8 @@
 // Prints variable names and whether this shell has them, never their values.
 // Signed in to Armada, it asks for a one-time launch token for the ticket and
 // puts it in the prompt: the worker's runtime then needs no key.
+
+import { dirname, join } from "node:path";
 import {
   ArmadaApiError,
   type ArmadaConfig,
@@ -37,6 +39,8 @@ export function renderBrief(b: Brief): string {
     `Runtime:     conductor (follow the armada-runtime-conductor skill to launch)`,
     `Profile:     ${p ? `${p.name}: agent ${p.agent}, model ${p.model}, effort ${p.effort}${p.fastMode ? ", fast mode" : ""}` : "none declared in armada.toml"}`,
     ...(b.routing ? [`Chosen by:   ${b.routing.why}`] : []),
+    `Plans:       ${b.plans.rule === "pre-approved" ? "pre-approved" : "wait for approval"} (${b.plans.why})`,
+    ...(b.conventions ? [`Conventions: ${b.conventions.path} (under "Project conventions" in the prompt)`] : []),
     `Repository:  ${b.repository.url}`,
     `Branch:      ${b.ticket.branch ?? "none suggested by Linear"} (the worker renames its workspace branch to it)`,
     `Launch:      ${b.launch ? `one-time token in the prompt, valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC: the worker needs no key` : `no launch token${b.noLaunch ? ` (${b.noLaunch})` : ""}: pass the keys below in the worker's environment`}`,
@@ -86,7 +90,14 @@ function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
   };
 }
 
-export async function brief(io: Io, config: ArmadaConfig, credentials: Credentials, a: BriefArgs, version: string) {
+export async function brief(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  a: BriefArgs,
+  version: string,
+  configPath: string,
+) {
   const [ticket, ...extra] = a.rest;
   if (!ticket)
     throw new UsageError('brief needs a ticket: armada brief <ticket> [--profile <name> [--reason "<why>"]]');
@@ -104,6 +115,11 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
     throw err;
   }
   if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
+  // `[brief] extra` is a path of the repository, relative to armada.toml.
+  const extraPath = config.brief.extra;
+  const conventions = extraPath
+    ? { path: extraPath, text: await io.readFile(join(dirname(configPath), extraPath)).catch(() => null) }
+    : null;
   let b: Brief;
   try {
     b = await loadBrief(config, {
@@ -115,6 +131,7 @@ export async function brief(io: Io, config: ArmadaConfig, credentials: Credentia
       env: io.env,
       stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),
       launch: launcher(io, config, credentials),
+      conventions,
       ...(io.fetch ? { fetch: io.fetch } : {}),
       ...(io.now ? { now: io.now } : {}),
     });

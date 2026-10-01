@@ -52,6 +52,7 @@ In flight (3)
   DEMO-11  implementing            Claude Code · Ada Worker · reported 50 min ago
            Send a sign-in link by email [Spec 1]
            “plan approved, writing the email sender”
+           plan: https://linear.app/acme/issue/DEMO-11#comment-c11b0000
            PR #7 · CI pending · mergeability unknown
            ! silent
 

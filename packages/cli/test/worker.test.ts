@@ -145,6 +145,30 @@ describe("armada claim, report and release", () => {
     expect(w.linear.bodies).toEqual([`Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`]);
   });
 
+  test("--plan-file posts the plan under a one-line status, from a file or standard input", async () => {
+    const plan = "Plan: parse the widget file\n\n1. Validate.\n2. Test.";
+    const w = worker();
+    w.linear.add("DEMO-7", { labels: [{ id: "phase-planning", name: "planning", group: "Agent phase" }] });
+    const readFile = w.io.readFile;
+    w.io.readFile = async (path) => (path === "plan.md" ? plan : readFile(path));
+    expect(await run(["report", "implementing", "--plan-file", "plan.md"], w.io)).toBe(0);
+    expect(w.linear.bodies.at(-1)).toBe(
+      `Agent status: implementing — Plan: parse the widget file\n\n## Plan\n\n${plan}`,
+    );
+
+    w.io.readStdin = async () => plan;
+    expect(await run(["report", "implementing", "--message", "plan posted", "--plan-file", "-"], w.io)).toBe(0);
+    expect(w.linear.bodies.at(-1)).toBe(`Agent status: implementing — plan posted\n\n## Plan\n\n${plan}`);
+
+    w.reset();
+    const both = ["report", "implementing", "--message-file", "-", "--plan-file", "-"];
+    expect(await run(both, w.io)).toBe(2);
+    expect(w.err()).toContain("--message-file - and --plan-file - both read standard input");
+    w.reset();
+    expect(await run(["report", "implementing", "--plan", "x", "--plan-file", "plan.md"], w.io)).toBe(2);
+    expect(w.err()).toContain("pass --plan or --plan-file, not both");
+  });
+
   test("an explicitly blank message file is refused even for a hand-back", async () => {
     for (const message of ["", " \n\t"]) {
       const w = worker();

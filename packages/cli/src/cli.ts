@@ -53,8 +53,12 @@ const COMMAND_HELP: Record<string, string> = {
                     routed profile needs --reason. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
+        [--plan <text> | --plan-file <path|->]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge); the same phase again is a status update.
+                    --plan posts the plan as its own block under a one-line status (the
+                    message's first line, else the plan's); awaiting-approval sends it to
+                    the coordinator's inbox.
                     ready-to-merge needs --sha (full 40 characters, the PR head) and green CI.
                     Prints the ticket's state and what waits in this worker's inbox.
 `,
@@ -211,6 +215,8 @@ const VALUE_OPTIONS = [
   "ticket",
   "message",
   "message-file",
+  "plan",
+  "plan-file",
   "pr",
   "sha",
   "reason",
@@ -228,7 +234,7 @@ const FLAG_OPTIONS = ["dry-run", "no-lock", "prompt", "wait", "note", "api-key",
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch", "profile", "reason"],
-  report: ["ticket", "message", "message-file", "pr", "sha"],
+  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
@@ -403,7 +409,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
     if (args.command === "brief") {
       const { path, text } = await findConfig(io, args.config, "brief");
       const { credentials } = await loadCredentials(io);
-      return await brief(io, parseConfig(text, path), credentials, args, version);
+      return await brief(io, parseConfig(text, path), credentials, args, version, path);
     }
     if (args.command === "status") {
       noExtra(args.rest);

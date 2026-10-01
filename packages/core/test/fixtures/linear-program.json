@@ -710,7 +710,7 @@
                   {
                     "id": "c11b0000-0000",
                     "createdAt": "2026-03-04T09:10:00.000Z",
-                    "body": "Agent status: implementing — plan approved, writing the email sender",
+                    "body": "Agent status: implementing — plan approved, writing the email sender\n\n## Plan\n\n1. Send the link.\n2. Test the expiry.",
                     "user": {
                       "name": "Ada Worker"
                     }

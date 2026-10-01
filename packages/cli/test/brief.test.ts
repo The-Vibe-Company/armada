@@ -97,6 +97,7 @@ function briefIo(
   env: Record<string, string> = SECRETS,
   response: object = BRIEF_RESPONSE,
   more: Record<string, unknown[]> = {},
+  files: Record<string, string> = { "/work/widgets/armada.toml": TOML },
 ) {
   const out: string[] = [];
   const err: string[] = [];
@@ -108,7 +109,7 @@ function briefIo(
   const io: Io = {
     cwd: "/work/widgets",
     env,
-    readFile: async (path) => (path === "/work/widgets/armada.toml" ? TOML : null),
+    readFile: async (path) => files[path] ?? null,
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
@@ -160,6 +161,35 @@ describe("armada brief", () => {
       "- DEMO-11 — Send a sign-in link by email (implementing), branch `feature/demo-11-sign-in-link`, https://github.com/acme/widgets/pull/7",
     );
     expect(b.err()).toBe("");
+  });
+
+  test("the plan rule is one line of the prompt, and [brief] extra ends it under Project conventions", async () => {
+    const b = briefIo();
+    expect(await run(["brief", "DEMO-13", "--prompt"], b.io)).toBe(0);
+    expect(b.out()).toContain(
+      '## Plan\n\nPlans need the coordinator\'s approval for DEMO-13 (armada.toml [policy] plans = "approve"): post your plan with `armada report awaiting-approval --plan-file -` and wait for approval.\n',
+    );
+    expect(b.out()).not.toContain("## Project conventions");
+
+    const toml = `${TOML}\n[policy]\nplans = "pre-approved"\n\n[brief]\nextra = "docs/workers.md"\n`;
+    const conventions = "Run `make check` before you push.\nNever force-push: merge main instead.\n";
+    const files = { "/work/widgets/armada.toml": toml, "/work/widgets/docs/workers.md": conventions };
+    const c = briefIo(SECRETS, BRIEF_RESPONSE, {}, files);
+    expect(await run(["brief", "DEMO-13", "--prompt"], c.io)).toBe(0);
+    expect(c.out()).toContain(
+      'Plans are pre-approved for DEMO-13 (armada.toml [policy] plans = "pre-approved"): post your plan with `armada report implementing --plan-file -` and go on.\n',
+    );
+    expect(c.out()).toEndWith(`\n## Project conventions\n\n${conventions}`);
+    expect(c.err()).toBe("");
+
+    // A missing file is a warning, and the brief goes out without the section.
+    const m = briefIo(SECRETS, BRIEF_RESPONSE, {}, { "/work/widgets/armada.toml": toml });
+    expect(await run(["brief", "DEMO-13"], m.io)).toBe(0);
+    expect(m.out()).toContain('Plans:       pre-approved (armada.toml [policy] plans = "pre-approved")\n');
+    expect(m.out()).toContain(
+      "  - [brief] extra names docs/workers.md, which could not be read; the brief has no project conventions\n",
+    );
+    expect(m.out()).not.toContain("## Project conventions");
   });
 
   test("--prompt prints only the prompt and --json the whole brief with the chosen profile", async () => {

@@ -345,12 +345,33 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
 export interface ReportInput {
   ticket: string;
   phase: LabelPhase;
-  /** First line becomes the status summary; the rest is the comment body. Optional only for ready-to-merge. */
+  /** First line becomes the status summary; the rest is the comment body. Optional for ready-to-merge and with a plan. */
   message?: string | null;
+  /** The plan, posted as its own block under the status line; without a message, its first line is the summary. */
+  plan?: string | null;
   /** Pull request number or URL; defaults to the newest one linked to the ticket. */
   pr?: string | null;
   /** Full head SHA; required for ready-to-merge. */
   sha?: string | null;
+}
+
+/** The heading of the plan block in a status comment, which `armada status` and the dashboard look for. */
+export const PLAN_HEADING = "## Plan";
+const SUMMARY_MAX = 100;
+
+/** A one-line summary of a plan: its first line that says something, without Markdown markers, cut at 100 characters. */
+export function planSummary(plan: string): string {
+  const lines = plan
+    .split("\n")
+    .map((l) =>
+      l
+        .replace(/^\s*(?:#+|>|[-*+]|\d+[.)])\s*/, "")
+        .replace(/[*_`]/g, "")
+        .trim(),
+    )
+    .filter((l) => l && !/^plan\s*:?$/i.test(l));
+  const first = lines[0] ?? "plan posted";
+  return first.length > SUMMARY_MAX ? `${first.slice(0, SUMMARY_MAX - 1).trimEnd()}…` : first;
 }
 
 /** Resolves --pr (number or URL) against the project repository and the ticket's links. */
@@ -392,6 +413,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     );
   const warnings = [...ticket.warnings];
   const message = input.message?.trim() ?? "";
+  const plan = input.plan?.trim() ?? "";
   let pr = resolvePr(ticket, config.github.repository, input.pr);
   const sha = input.sha?.trim().toLowerCase() || null;
 
@@ -427,15 +449,16 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     summary = `PR #${pr?.number}, head ${sha}, CI green`;
     body = message;
   } else {
-    if (!message)
+    if (!message && !plan)
       throw new Refusal(
         "--message is required: say what you did or what you are doing",
         `armada report ${input.phase} --ticket ${ticket.id} --message "<what you did>"`,
       );
     const [first = "", ...rest] = message.split("\n");
-    summary = first.trim();
+    summary = message ? first.trim() : planSummary(plan);
     body = rest.join("\n").trim();
   }
+  if (plan) body = [body, `${PLAN_HEADING}\n\n${plan}`].filter(Boolean).join("\n\n");
 
   // Every lookup that can refuse happens before the first write.
   const target =
@@ -465,7 +488,8 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       phase: input.phase,
       previous: ticket.agentPhase,
       summary,
-      message,
+      // The whole report: an awaiting-approval plan reaches the coordinator's inbox in full.
+      message: plan ? [summary, body].join("\n\n") : message,
       prUrl: pr?.url ?? null,
       headSha: sha,
     }),

@@ -1,6 +1,29 @@
 import { describe, expect, test } from "bun:test";
-import { handBackProblems, transitionProblem } from "../src/phases.ts";
+import { parseConfig } from "../src/config.ts";
+import { handBackProblems, planRule, transitionProblem } from "../src/phases.ts";
 import { LABEL_PHASES, type LabelPhase, type PullRequest } from "../src/types.ts";
+import { DEMO_TOML } from "./support.ts";
+
+describe("plan rule", () => {
+  test("[policy] plans decides, a ticket label overrides it, and asking for approval wins over pre-approval", () => {
+    const approve = parseConfig(DEMO_TOML);
+    const preApproved = parseConfig(`${DEMO_TOML}\n[policy]\nplans = "pre-approved"\n`);
+    expect(planRule(approve, [])).toEqual({ rule: "approve", why: 'armada.toml [policy] plans = "approve"' });
+    expect(planRule(preApproved, ["web"])).toEqual({
+      rule: "pre-approved",
+      why: 'armada.toml [policy] plans = "pre-approved"',
+    });
+    expect(planRule(approve, ["Plan Approved"])).toEqual({
+      rule: "pre-approved",
+      why: "the ticket's label plan-approved",
+    });
+    expect(planRule(preApproved, ["needs-plan-approval"])).toEqual({
+      rule: "approve",
+      why: "the ticket's label needs-plan-approval",
+    });
+    expect(planRule(approve, ["plan-approved", "needs-plan-approval"]).rule).toBe("approve");
+  });
+});
 
 describe("phase transitions", () => {
   test("the whole table: forward moves, going back where review sends the work, blocked from anywhere", () => {
