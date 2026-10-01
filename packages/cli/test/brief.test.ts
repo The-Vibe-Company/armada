@@ -131,6 +131,47 @@ afterEach(async () => {
 });
 
 describe("armada brief", () => {
+  test("semantic rules ask without a launch or watch write; prompt refuses until a reasoned choice", async () => {
+    const toml = TOML.replace(
+      "[conductor.profiles.opus]",
+      '[conductor.profiles.opus]\nwhen = "front end: pages and UI copy"',
+    ).replace("[conductor.profiles.codex]", '[conductor.profiles.codex]\nwhen = "back end: CLI and core rules"');
+    const response = structuredClone(BRIEF_RESPONSE);
+    response.data.issue.labels.nodes = [{ name: "Feature" }];
+    response.data.issue.description += "\n\n## Technical detail\n\nDo not include this in the choice summary.";
+    const files = { "/work/widgets/armada.toml": toml };
+    const b = briefIo(SECRETS, response, {}, files);
+    expect(await run(["brief", "DEMO-13"], b.io)).toBe(0);
+    expect(b.out()).toContain("Choose a profile");
+    expect(b.out()).toContain("DEMO-13 — Show a sign-in page");
+    expect(b.out()).toContain("A page with an email field.");
+    expect(b.out()).toContain("opus: front end: pages and UI copy");
+    expect(b.out()).toContain("codex: back end: CLI and core rules");
+    expect(b.out()).not.toContain("Technical detail");
+    expect(b.out()).not.toContain("armada claim");
+    const j = briefIo(SECRETS, response, {}, files);
+    expect(await run(["brief", "DEMO-13", "--json"], j.io)).toBe(0);
+    expect(JSON.parse(j.out()).selection.profiles).toContainEqual({
+      name: "codex",
+      when: "back end: CLI and core rules",
+    });
+    const p = briefIo(SECRETS, response, {}, files);
+    expect(await run(["brief", "DEMO-13", "--prompt"], p.io)).toBe(2);
+    expect(p.err()).toContain('armada brief DEMO-13 --profile <name> --reason "<why>"');
+    expect(p.out()).toBe("");
+    const chosen = briefIo(SECRETS, response, {}, files);
+    expect(
+      await run(
+        ["brief", "DEMO-13", "--prompt", "--profile", "opus", "--reason", "mostly dashboard components"],
+        chosen.io,
+      ),
+    ).toBe(0);
+    expect(chosen.out()).toContain("--profile opus --reason 'mostly dashboard components'");
+    const labelled = briefIo(SECRETS, BRIEF_RESPONSE, {}, files);
+    expect(await run(["brief", "DEMO-13", "--prompt"], labelled.io)).toBe(0);
+    expect(labelled.out()).toContain("--profile opus");
+  });
+
   test("prints the launch settings, then the prompt: claim first, blockers' hand-backs, decisions, workers in flight", async () => {
     const b = briefIo({ LINEAR_API_KEY: SECRETS.LINEAR_API_KEY });
     expect(await run(["brief", "demo-13"], b.io)).toBe(0);
@@ -403,7 +444,7 @@ describe("armada brief", () => {
 
 describe("armada brief with a launch token", () => {
   /** A coordinator signed in to a fake Armada that keeps the organization's keys. */
-  async function signedIn(vault: Partial<FakeVault> = {}) {
+  async function signedIn(vault: Partial<FakeVault> = {}, toml = TOML, response = BRIEF_RESPONSE) {
     const home = await mkdtemp(join(tmpdir(), "armada-brief-launch-"));
     homes.push(home);
     await mkdir(join(home, "armada"), { recursive: true });
@@ -416,12 +457,37 @@ describe("armada brief with a launch token", () => {
       vault: { linear: null, now: () => NOW, ...vault },
     });
     armada.sessions.add("CANARY_coordinator_session");
-    const b = briefIo({ ...SECRETS, XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL });
+    const b = briefIo(
+      { ...SECRETS, XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL },
+      response,
+      {},
+      { "/work/widgets/armada.toml": toml },
+    );
     const linear = b.io.fetch;
     b.io.fetch = (url, init) =>
       url.startsWith(ARMADA_URL) ? armada.fetch(url, init) : (linear?.(url, init) ?? fetch(url));
     return { ...b, armada };
   }
+
+  test("an undecided or invalid semantic brief never mints a token, even when signed in", async () => {
+    const toml = TOML.replace("[conductor.profiles.codex]", '[conductor.profiles.codex]\nwhen = "back end: CLI"');
+    const response = structuredClone(BRIEF_RESPONSE);
+    response.data.issue.labels.nodes = [];
+    for (const flags of [[], ["--json"], ["--prompt"], ["--profile", "codex", "--prompt"]]) {
+      const b = await signedIn({}, toml, response);
+      expect(await run(["brief", "DEMO-13", ...flags], b.io)).toBe(flags.includes("--prompt") ? 2 : 0);
+      expect(b.armada.calls.some((call) => call.path === "launch-tokens")).toBe(false);
+      expect(b.armada.launches.size).toBe(0);
+      const paths = machinePaths(b.io.env);
+      if (!paths) throw new Error("no machine store");
+      expect(await readWatchState(paths, "widgets")).toBeNull();
+    }
+    const b = await signedIn({}, toml, response);
+    expect(await run(["brief", "DEMO-13", "--prompt", "--profile", "codex", "--reason", "CLI (back end)"], b.io)).toBe(
+      0,
+    );
+    expect(b.armada.calls.filter((call) => call.path === "launch-tokens")).toHaveLength(1);
+  });
 
   test("signed in, the prompt signs the worker in first, and says it needs no key; only --prompt shows the token", async () => {
     const b = await signedIn();

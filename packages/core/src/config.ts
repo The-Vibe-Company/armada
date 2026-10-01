@@ -101,6 +101,7 @@ export type ProfileRuntime = (typeof PROFILE_RUNTIMES)[number];
 
 /** How a worker is launched: every value is passed explicitly, never left to the runtime's defaults. */
 export interface ConductorProfile {
+  when?: string;
   /** `conductor`: a Conductor workspace; `claude-code`: a subagent of the coordinator's Claude Code session. */
   runtime: ProfileRuntime;
   /** Conductor agent type, e.g. claude or codex (`conductor model` lists them); always claude for claude-code. */
@@ -263,7 +264,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       problems.push(`"${path}" is not a usable profile name`);
       continue;
     }
-    known.push([path, p, ["runtime", "agent", "model", "effort", "fast_mode"]]);
+    known.push([path, p, ["runtime", "agent", "model", "effort", "fast_mode", "when"]]);
     if (p.fast_mode !== undefined && typeof p.fast_mode !== "boolean")
       problems.push(`"${path}.fast_mode" must be true or false`);
     const runtime = p.runtime ?? "conductor";
@@ -272,6 +273,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     if (runtime === "claude-code" && p.agent !== undefined && p.agent !== "claude")
       problems.push(`"${path}.agent" must be "claude" with runtime = "claude-code"`);
     profiles[name] = {
+      ...(p.when !== undefined ? { when: str(p, path, "when") } : {}),
       runtime: PROFILE_RUNTIMES.includes(runtime as ProfileRuntime) ? (runtime as ProfileRuntime) : "conductor",
       agent: str(p, path, "agent"),
       model: str(p, path, "model"),
@@ -308,7 +310,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         problems.push(`"${path}.profile" is "${profile}", but there is no [conductor.profiles.${profile}]`);
       if (ok && profile) routing.push({ labels: labels.map((l: string) => l.trim()), profile });
     }
-  if (Array.isArray(routingRaw) && routingRaw.length && conductorT.default_profile === undefined)
+  if (
+    Array.isArray(routingRaw) &&
+    routingRaw.length &&
+    conductorT.default_profile === undefined &&
+    !Object.values(profiles).some((profile) => profile.when)
+  )
     problems.push(`"conductor.default_profile" is required with [[conductor.routing]], for tickets no rule matches`);
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
@@ -463,19 +470,22 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # How \`armada brief\` launches workers on Conductor. Every value is passed explicitly;
 # \`conductor model\` lists each agent's model ids and effort levels.
 [conductor]
-default_profile = "opus"  # for tickets no routing rule matches
+default_profile = "opus"  # used only when no profile has a when rule
 
 [conductor.profiles.opus]
+when = "front end: dashboard pages, components, styles, design, UI copy"
 agent = "claude"
 model = "opus-5-5-1m"
 effort = "high"
 
 [conductor.profiles.codex]
+when = "back end: CLI, core rules, API, database, migrations, tests, docs"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
 
 [conductor.profiles.debug]
+when = "a bug to diagnose"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "xhigh"

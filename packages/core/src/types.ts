@@ -90,6 +90,7 @@ export interface AgentClaim {
   startedAt: string | null;
   /** Conductor profile the worker runs on, when the claim names one (`armada claim --profile`). */
   profile?: string | null;
+  profileReason?: string | null;
   at: string;
   author: string | null;
 }

@@ -23,7 +23,15 @@ import {
 } from "./linear.ts";
 import { buildModel } from "./model.ts";
 import { planRule } from "./phases.ts";
-import { checkRequestedProfile, chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
+import {
+  checkRequestedProfile,
+  chooseProfile,
+  hasProfileRules,
+  type ProfileChoice,
+  ProfileError,
+  profileChoiceHint,
+  routeProfile,
+} from "./routing.ts";
 import type { AgentPhase, ProgramData, StatusType } from "./types.ts";
 import { Refusal } from "./worker.ts";
 
@@ -129,7 +137,7 @@ export interface Brief {
   /** Where the worker runs, from its profile: the `armada-runtime-<runtime>` skill launches it. */
   runtime: ProfileRuntime;
   profile: ({ name: string } & ConductorProfile) | null;
-  /** How the profile was chosen: routing rule, default, or the coordinator's override and its reason. */
+  /** How the profile was chosen: routing rule, legacy default, or the coordinator's choice and its reason. */
   routing: Omit<ProfileChoice, "name" | "profile"> | null;
   repository: { name: string; url: string };
   /**
@@ -156,6 +164,13 @@ export interface Brief {
   conventions: { path: string; text: string } | null;
   /** The first message of the worker's session. */
   prompt: string;
+  warnings: string[];
+}
+
+export interface ProfileSelectionBrief {
+  ticket: { id: string; title: string; url: string; inShort: string };
+  parent: BriefTicket["parent"];
+  selection: { profiles: { name: string; when: string | null }[]; hint: string };
   warnings: string[];
 }
 
@@ -305,7 +320,7 @@ export interface BuildBriefInput {
   program: ProgramData;
   /** `--profile`, or null to follow the routing rules. */
   profile: string | null;
-  /** Why `--profile` overrides the routed profile; required then. */
+  /** Why the coordinator chose or overrode the profile; required for semantic choices and routing overrides. */
   reason?: string | null;
   /** Version of the coordinator's Armada CLI; the worker runs the same one. */
   version: string;
@@ -620,7 +635,7 @@ export interface LoadBriefOptions {
 }
 
 /** Reads the ticket and the program from Linear and builds the brief. */
-export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): Promise<Brief> {
+export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): Promise<Brief | ProfileSelectionBrief> {
   const now = opts.now ?? (() => new Date());
   const linear = { apiKey: opts.linearApiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) };
   // Fail on a bad profile before any network call.
@@ -637,8 +652,40 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
   ]);
   if (!ticket)
     throw new Refusal(`ticket ${opts.ticket} not found in Linear`, "armada status, to see the tickets of the program");
-  const open = ticket.statusType !== "completed" && ticket.statusType !== "canceled";
-  const launch = open && opts.launch ? await opts.launch(ticket.id) : null;
+  if (opts.profile === null && hasProfileRules(config) && !routeProfile(config, ticket.labels))
+    return {
+      ticket: {
+        id: ticket.id,
+        title: ticket.title,
+        url: ticket.url,
+        inShort:
+          ticket.description
+            .match(/^## In short[^\S\n]*\n([\s\S]*)/m)?.[1]
+            ?.split(/^## |^---\s*$/m)[0]
+            ?.trim() ?? "",
+      },
+      parent: ticket.parent,
+      selection: {
+        profiles: Object.entries(config.conductor.profiles).map(([name, profile]) => ({
+          name,
+          when: profile.when ?? null,
+        })),
+        hint: profileChoiceHint(ticket.id),
+      },
+      warnings: [...new Set([...ticket.warnings, ...program.warnings])],
+    };
+  try {
+    chooseProfile(config, {
+      ticket: ticket.id,
+      labels: ticket.labels,
+      requested: opts.profile,
+      reason: opts.reason ?? null,
+    });
+  } catch (err) {
+    if (err instanceof ProfileError) throw new BriefError(err.message);
+    throw err;
+  }
+  const launch = await launchForBrief(ticket, opts.launch);
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
   if (missed?.warn) ticket.warnings.push(`no launch token: ${missed.reason}`);
@@ -657,4 +704,8 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     conventions: opts.conventions ?? null,
     now: now(),
   });
+}
+
+async function launchForBrief(ticket: BriefTicket, launch: LoadBriefOptions["launch"]) {
+  return ticket.statusType !== "completed" && ticket.statusType !== "canceled" && launch ? launch(ticket.id) : null;
 }

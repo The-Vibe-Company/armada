@@ -27,19 +27,22 @@ local_commands = ["bun install --frozen-lockfile", "bun run verify"]
 
 # How `armada brief` launches workers on Conductor; `conductor model` lists the ids.
 [conductor]
-default_profile = "codex"  # backend and everything not labelled web: GPT 6.1 Sol (owner, 2026-10-01)
+default_profile = "codex"  # legacy fallback only when no profile has a when rule
 
 [conductor.profiles.opus]
+when = "front end: dashboard pages, components, styles, design, UI copy (Opus 5.5)"
 agent = "claude"
 model = "opus-5-5-1m"
 effort = "high"
 
 [conductor.profiles.codex]
+when = "back end: CLI, core rules, API, database, migrations, tests, docs (GPT 6.1 Sol)"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
 
 [conductor.profiles.debug]
+when = "a bug to diagnose"
 agent = "codex"
 model = "gpt-6.1-sol"
 effort = "xhigh"
