@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.13](https://github.com/The-Vibe-Company/armada/compare/v0.2.12...v0.2.13) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** show every project and each project's page ([#83](https://github.com/The-Vibe-Company/armada/issues/83)) ([ba22466](https://github.com/The-Vibe-Company/armada/commit/ba2246660cba748f0b0e35b7a51686c92f380da3))
+
 ## [0.2.12](https://github.com/The-Vibe-Company/armada/compare/v0.2.11...v0.2.12) (2026-10-01)
 
 

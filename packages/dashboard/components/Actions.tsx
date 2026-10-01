@@ -57,7 +57,7 @@ interface RequestSteps {
 }
 
 /** Runs one request optimistically; keeps its error code when refused. */
-function useRequest(send: (form: FormData) => Promise<RequestResult>, steps: RequestSteps) {
+export function useRequest(send: (form: FormData) => Promise<RequestResult>, steps: RequestSteps) {
   const [busy, start] = useTransition();
   const [error, setError] = useState<RequestError | null>(null);
   const submit = (event: FormEvent<HTMLFormElement>) => {
@@ -82,7 +82,7 @@ function useRequest(send: (form: FormData) => Promise<RequestResult>, steps: Req
 }
 
 /** A request the server has not shown yet: kept for two overview reads after it was recorded (one may have started before). */
-function useSent<T>(version: number) {
+export function useSent<T>(version: number) {
   const [sent, setSent] = useState<(T & { version: number }) | null>(null);
   // The version when the write returned, not when the form was rendered.
   const latest = useRef(version);
