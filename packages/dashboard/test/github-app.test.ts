@@ -9,13 +9,19 @@ import {
   GITHUB_API,
   type GithubAppSettings,
   githubAppModeOf,
+  INSTALL_STATE_TTL_MS,
+  installState,
+  installUrl,
   linkedInstallations,
+  linkFromSetup,
   linkInstallation,
   RENEW_BEFORE_MS,
+  readInstallState,
   repositoryToken,
   unlinkInstallation,
   userInstallations,
 } from "../lib/github-app.ts";
+import { listEvents } from "../lib/vault.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
 // A throwaway key made for this run, synthetic accounts and repositories: no real app's keys.
@@ -203,7 +209,7 @@ describe("linking installations", () => {
       linkInstallation(client, { organization, installation, reachable, by, now: start });
     expect(await link("org-a", 99)).toBe("unreachable");
     expect(await link("org-a", 11)).toBe("linked");
-    expect(await link("org-a", 11)).toBe("linked");
+    expect(await link("org-a", 11)).toBe("already");
     expect(await link("org-b", 11)).toBe("linked");
     expect(await linkedInstallations(client, "org-a")).toEqual([
       { id: 11, account: "acme", linkedBy: by.label, linkedAt: start.toISOString() },
@@ -213,5 +219,97 @@ describe("linking installations", () => {
     expect(await unlinkInstallation(client, "org-a", 11)).toBe(false);
     expect(await linkedInstallations(client, "org-a")).toEqual([]);
     expect((await linkedInstallations(client, "org-b")).map((i) => i.id)).toEqual([11]);
+  });
+});
+
+describe("linking in one click from the Install button", () => {
+  let client: Database;
+  beforeAll(async () => {
+    client = await tempDatabase();
+    await addOrganizations(client, "org-a", "org-b");
+  });
+  afterAll(() => client.end());
+
+  const SECRET = "synthetic-accounts-secret-of-at-least-32-chars";
+  const owner = { user: "user-1", label: "Synthetic Owner <owner@example.test>", organization: "org-a", role: "owner" };
+  const github = fakeGithub(() => start);
+  /** GitHub's return to the Setup URL, `minutes` after the button was shown. */
+  const back = (
+    state: string,
+    { installation = 11, viewer = owner, minutes = 1, token = "ghu_synthetic_person" as string | null } = {},
+  ) =>
+    linkFromSetup(client, {
+      secret: SECRET,
+      state,
+      installation,
+      viewer,
+      githubToken: async () => token,
+      fetch: github.fetch,
+      now: new Date(start.getTime() + minutes * 60_000),
+    });
+  const stateFor = (organization = "org-a", user = "user-1", secret = SECRET) =>
+    installState(secret, { organization, user }, start);
+
+  test("the button opens GitHub's install page with a signed state naming the organization and the person", () => {
+    const state = stateFor();
+    expect(installUrl("https://github.com/apps/armada-synthetic", state)).toBe(
+      `https://github.com/apps/armada-synthetic/installations/new?state=${encodeURIComponent(state)}`,
+    );
+    expect(readInstallState(SECRET, state, start)).toEqual({ organization: "org-a", user: "user-1" });
+  });
+
+  test("a genuine state links the installation with no other click, once in the audit list; coming back again keeps the link", async () => {
+    expect(await back(stateFor())).toEqual({ done: "linked" });
+    expect(await linkedInstallations(client, "org-a")).toEqual([
+      { id: 11, account: "acme", linkedBy: owner.label, linkedAt: new Date(start.getTime() + 60_000).toISOString() },
+    ]);
+    // Changing the repositories, or installing again through the button, sends the person back: still linked.
+    expect(await back(stateFor(), { minutes: 5 })).toEqual({ done: "linked" });
+    expect((await linkedInstallations(client, "org-a")).map((i) => i.id)).toEqual([11]);
+    const events = await listEvents(client, "org-a");
+    expect(events.map((e) => [e.action, e.actor.id, e.detail])).toEqual([
+      ["link", "user-1", "installation 11 on acme"],
+    ]);
+  });
+
+  test("a forged, altered, expired or someone else's state links nothing", async () => {
+    const [payload, signature] = stateFor("org-b").split(".") as [string, string];
+    const altered = `${Buffer.from(JSON.stringify({ o: "org-b", u: "user-1", exp: start.getTime() + 86_400_000 })).toString("base64url")}.${signature}`;
+    const refused = [
+      stateFor("org-b", "user-1", "another-secret-of-at-least-32-characters"),
+      altered,
+      `${payload}.${signature.slice(0, -2)}`,
+      "not-a-state",
+      "",
+    ];
+    for (const state of refused)
+      expect(await back(state, { viewer: { ...owner, organization: "org-b" } })).toEqual({ error: "state" });
+    // Expired, made for another person, or for another organization than the one they are in.
+    expect(
+      await back(stateFor("org-b"), {
+        viewer: { ...owner, organization: "org-b" },
+        minutes: INSTALL_STATE_TTL_MS / 60_000,
+      }),
+    ).toEqual({
+      error: "state",
+    });
+    expect(await back(stateFor("org-b", "user-2"), { viewer: { ...owner, organization: "org-b" } })).toEqual({
+      error: "state",
+    });
+    expect(await back(stateFor("org-a"), { viewer: { ...owner, organization: "org-b" } })).toEqual({ error: "state" });
+    // A member who lost the owner or admin role since.
+    expect(await back(stateFor("org-b"), { viewer: { ...owner, organization: "org-b", role: "member" } })).toEqual({
+      error: "forbidden",
+    });
+    expect(await linkedInstallations(client, "org-b")).toEqual([]);
+  });
+
+  test("an installation GitHub does not show the person is never linked; without their GitHub sign-in, nothing is asked", async () => {
+    const asOrgB = { viewer: { ...owner, organization: "org-b" } };
+    expect(await back(stateFor("org-b"), { ...asOrgB, installation: 99 })).toEqual({ error: "unreachable" });
+    expect(await back(stateFor("org-b"), { ...asOrgB, token: null })).toEqual({ error: "no-github" });
+    await expect(back(stateFor("org-b"), { ...asOrgB, token: "ghu_synthetic_stranger" })).rejects.toThrow("HTTP 401");
+    expect(await linkedInstallations(client, "org-b")).toEqual([]);
+    expect(await listEvents(client, "org-b")).toEqual([]);
   });
 });

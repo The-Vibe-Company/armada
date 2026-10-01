@@ -57,10 +57,10 @@ A terminal not signed in still claims, reports and releases in Linear, with a wa
 
 The app signs people in and reads GitHub for the dashboard (pull requests, CI checks, `armada.toml`) through one GitHub App with read-only rights, so the CI of private repositories shows and no GitHub token is set by hand. Terminals are unchanged: they keep `gh` (merges included) and `GITHUB_TOKEN`.
 
-1. Create the GitHub App as the README's "GitHub App" section lists: callback URL `<dashboard>/api/auth/callback/github`, setup URL `<dashboard>/organization/github`, no webhook, repository permissions Actions, Checks, Commit statuses, Contents, Metadata and Pull requests all read-only, account permission Email addresses read-only. Generate a client secret and a private key.
+1. Create the GitHub App as the README's "GitHub App" section lists: callback URL `<dashboard>/api/auth/callback/github`, setup URL `<dashboard>/organization/github` with Redirect on update, no webhook, repository permissions Actions, Checks, Commit statuses, Contents, Metadata and Pull requests all read-only, account permission Email addresses read-only. Generate a client secret and a private key.
 2. On the deployment, set `ARMADA_GITHUB_APP_ID` and `ARMADA_GITHUB_APP_PRIVATE_KEY`, and replace the values of `ARMADA_AUTH_GITHUB_CLIENT_ID` and `ARMADA_AUTH_GITHUB_CLIENT_SECRET` with the app's Client ID and client secret. Redeploy.
 3. Install the app on each GitHub account that holds a project (the app's page > Install App).
-4. Sign out and sign in with GitHub again (the sign-in now goes through the app). Organization > GitHub names the app; another organization than the first links its installations there.
+4. Sign out and sign in with GitHub again (the sign-in now goes through the app). Organization > GitHub names the app; in another organization than the first, an owner or admin clicks Install on GitHub there, picks the repositories, and comes back with the installation linked.
 5. Check the Fleet view: every project shows its pull requests and CI. Then delete the GitHub token on Organization > Keys and remove `GITHUB_TOKEN` from the deployment. The old OAuth app can be deleted on GitHub.
 
 ## Start a coordinator on a laptop
