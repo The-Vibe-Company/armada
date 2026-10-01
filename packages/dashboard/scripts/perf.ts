@@ -319,7 +319,7 @@ async function warm(base: string, pages: string[], cookie: string) {
 const require = createRequire(import.meta.url);
 const lighthouseDir = () => dirname(require.resolve("lighthouse/package.json"));
 
-/** One Lighthouse run in Node (its CLI), with the throttling of perf/budgets.json. */
+/** One Lighthouse run in Node (scripts/perf-lighthouse.mjs), with the throttling of perf/budgets.json. */
 async function lighthouseRun(url: string, formFactor: FormFactor, slowdown: number, cookie: string): Promise<Lhr> {
   await mkdir(OUT, { recursive: true });
   const config = join(OUT, `lighthouse-${formFactor}.config.mjs`);
@@ -346,20 +346,9 @@ export default {
 };
 `,
   );
-  const run = spawnSync(
-    "node",
-    [
-      join(lighthouseDir(), "cli/index.js"),
-      url,
-      `--config-path=${config}`,
-      `--extra-headers=${JSON.stringify({ Cookie: cookie })}`,
-      "--chrome-flags=--headless=new --no-sandbox",
-      "--output=json",
-      `--output-path=${out}`,
-      "--quiet",
-    ],
-    { stdio: ["ignore", "ignore", "inherit"] },
-  );
+  const run = spawnSync("node", [join(ROOT, "scripts/perf-lighthouse.mjs"), url, config, cookie, out], {
+    stdio: ["ignore", "ignore", "inherit"],
+  });
   if (run.status !== 0) throw new Error(`Lighthouse failed on ${url} (${formFactor})`);
   return JSON.parse(await readFile(out, "utf8"));
 }
