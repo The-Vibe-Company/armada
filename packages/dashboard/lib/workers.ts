@@ -145,6 +145,7 @@ export async function createLaunch(
   await recordEvent(client, input.organization, {
     at,
     action: "launch",
+    project: input.project,
     keys: [],
     actor: { kind: input.launcher.kind, id: input.launcher.id, label: input.launcher.label },
     detail: `launch token for ${input.project} ${ticket}, to use before ${hhmm(expires)}`,
@@ -217,6 +218,7 @@ export async function exchangeLaunch(
     await recordEvent(client, found.organization, {
       at,
       action: "exchange",
+      project: found.project,
       keys: [],
       actor: workerActor(found),
       detail: `launch token for ${found.project} ${found.ticket} refused: ${why}`,
@@ -242,6 +244,7 @@ export async function exchangeLaunch(
   await recordEvent(client, found.organization, {
     at,
     action: "exchange",
+    project: found.project,
     keys: [],
     actor: workerActor(worker),
     detail: `launch token for ${found.project} ${found.ticket} used; worker session started`,
@@ -297,6 +300,7 @@ async function end(
     await recordEvent(client, input.organization, {
       at,
       action: "end",
+      project: w.project,
       keys: [],
       actor: input.by,
       detail: `${w.tokenUsedAt ? "worker session" : "unused launch token"} of ${w.project} ${w.ticket} ${input.reason}`,

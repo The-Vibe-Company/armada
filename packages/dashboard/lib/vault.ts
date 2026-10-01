@@ -1,14 +1,18 @@
-// The organization's keys, kept in the app's database (THE-840, THE-849). Each
-// value is sealed with envelope encryption: a fresh 256-bit data key encrypts
-// it with AES-256-GCM, and the master key (ARMADA_SECRETS_KEY, held in the
-// app's environment only, never in a database) wraps that data key. The row's
-// organization, person and name are the additional data of both, so a sealed
-// value copied onto another row does not open. Values are write-only: nothing
+// The organization's keys, kept in the app's database (THE-840, THE-849), and
+// each project's (THE-859). Each value is sealed with envelope encryption: a
+// fresh 256-bit data key encrypts it with AES-256-GCM, and the master key
+// (ARMADA_SECRETS_KEY, held in the app's environment only, never in a
+// database) wraps that data key. The row's organization, project, person and
+// name are the additional data of both, so a sealed value copied onto another
+// row does not open. Besides the keys Armada itself reads (Linear, GitHub),
+// the vault keeps the secrets workers need to build and test (`OPENAI_API_KEY`):
+// the organization's, and each project's, which wins for that project. Values are write-only: nothing
 // here returns a secret's value to a page, only to the broker (`broker.ts`)
 // and the dashboard's own reads. Every change and every release is recorded in
 // `armada_secret_event`, never with a value; so is every worker launched with a
 // launch token (`workers.ts`).
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { secretNameRefusal } from "@armada/core/read";
 import type { Env } from "./accounts-settings";
 import { type Database, isoAt, type Queryable, transaction } from "./db";
 
@@ -60,15 +64,32 @@ export interface SecretKind {
   secret: boolean;
   /** Whether a person may keep their own, which wins over the organization's for them. */
   personal: boolean;
+  /** Whether a project may keep its own, which wins over a person's and the organization's for that project. */
+  project: boolean;
   check: (value: string) => boolean;
 }
 
 const token = (v: string) => v.length <= 4096 && !/\s/.test(v);
 
 export const SECRET_KINDS: Record<SecretName, SecretKind> = {
-  "linear-api-key": { secret: true, personal: true, check: token },
-  "github-token": { secret: true, personal: false, check: token },
+  "linear-api-key": { secret: true, personal: true, project: true, check: token },
+  "github-token": { secret: true, personal: false, project: false, check: token },
 };
+
+/**
+ * Why `name` cannot be a secret for workers (THE-859); null when it can. The
+ * rule is core's, shared with the CLI: upper snake case, never a key Armada
+ * reads itself (those stay named and typed above).
+ */
+export const workerSecretRefusal = secretNameRefusal;
+
+export const isWorkerSecretName = (v: unknown): v is string => typeof v === "string" && !workerSecretRefusal(v);
+
+/** A worker secret's value: anything printable on one environment variable, up to 32 KB. */
+export const checkWorkerSecret = (v: string) => v.length > 0 && v.length <= 32_768 && !v.includes("\0");
+
+/** Where a key or secret applies: the organization's, or one project's. */
+export type SecretScope = "organization" | "project";
 
 // ------------------------------------------------------------ sealing
 
@@ -82,14 +103,27 @@ interface Sealed {
   c: [string, string, string];
 }
 
-/** Where a value belongs; bound into its encryption. `user` is "" for the organization's own. */
+/**
+ * Where a value belongs; bound into its encryption. `user` is "" for the
+ * organization's own, `project` "" for every project's (and absent before
+ * THE-859). `name` is a key's (`linear-api-key`) or a worker secret's.
+ */
 export interface SecretSlot {
   organization: string;
+  project?: string;
   user: string;
-  name: SecretName;
+  name: string;
 }
 
-const aad = (slot: SecretSlot) => Buffer.from(`armada-secret:v1:${slot.organization}:${slot.user}:${slot.name}`);
+// A row of no project keeps the additional data it was sealed with before
+// projects had their own, so those rows still open; a project's row names it,
+// unambiguously.
+const aad = (slot: SecretSlot) =>
+  Buffer.from(
+    slot.project
+      ? `armada-secret:v2:${JSON.stringify([slot.organization, slot.project, slot.user, slot.name])}`
+      : `armada-secret:v1:${slot.organization}:${slot.user}:${slot.name}`,
+  );
 const b64 = (b: Buffer) => b.toString("base64");
 
 function encrypt(key: Buffer, plain: Buffer, data: Buffer): [string, string, string] {
@@ -150,10 +184,13 @@ export function openSecret(vault: VaultKey, slot: SecretSlot, text: string): str
 
 // ------------------------------------------------------------ storage
 
-/** What the Keys page shows of a key: who set it and when, never a secret's value. */
+/** What the Keys page shows of a key or secret: who set it and when, never a secret's value. */
 export interface SecretInfo {
-  name: SecretName;
-  /** Whether it is the person's own (true) or the organization's. */
+  /** A key's name (`linear-api-key`) or a worker secret's (`OPENAI_API_KEY`). */
+  name: string;
+  /** The project it belongs to; "" for the organization's. */
+  project: string;
+  /** Whether it is the person's own (true) or the organization's or project's. */
   own: boolean;
   setBy: string;
   setAt: string;
@@ -175,48 +212,58 @@ export interface Actor {
 /**
  * `launch`, `exchange` and `end` are the workers' (THE-841): a launch token
  * made, used, and a worker ended. `link` and `unlink` are the GitHub App's
- * installations (THE-851).
+ * installations (THE-851). `refuse` is a release Armada refused, e.g. a
+ * worker asking for another project's secrets (THE-859).
  */
-export type SecretAction = "set" | "delete" | "release" | "launch" | "exchange" | "end" | "link" | "unlink";
+export type SecretAction = "set" | "delete" | "release" | "refuse" | "launch" | "exchange" | "end" | "link" | "unlink";
 
 export interface SecretEvent {
   id: number;
   at: string;
   action: SecretAction;
-  /** Which keys, e.g. ["linear-api-key"]. */
+  /** The project it concerns; "" for the organization's. */
+  project: string;
+  /** Which keys or secrets, e.g. ["linear-api-key"]. */
   keys: string[];
   actor: Actor;
   /** What happened, in words; never a value. */
   detail: string;
 }
 
-/** Lists the organization's keys and the person's own, without any secret value. */
+/** Whether a stored name is one the vault keeps: a key, or a worker secret. */
+const known = (name: string) => isSecretName(name) || isWorkerSecretName(name);
+
+/**
+ * Lists the keys and secrets of one scope, without any secret value: the
+ * organization's (`project` ""), with the person's own, or one project's.
+ */
 export async function listSecrets(
   client: Queryable,
   vault: VaultKey | null,
-  { organization, user }: { organization: string; user: string },
+  { organization, user, project = "" }: { organization: string; user: string; project?: string },
 ): Promise<SecretInfo[]> {
   const rs = await client.query(
     `SELECT "userId", "name", "sealed", "setByLabel", "updatedAt" FROM "armada_secret"
-     WHERE "organizationId" = $1 AND "userId" IN ('', $2) ORDER BY "name", "userId"`,
-    [organization, user],
+     WHERE "organizationId" = $1 AND "project" = $3 AND "userId" IN ('', $2) ORDER BY "name", "userId"`,
+    [organization, user, project],
   );
   return rs.rows.flatMap((row): SecretInfo[] => {
-    const secretName = String(row.name);
-    if (!isSecretName(secretName)) return [];
-    const slot = { organization, user: String(row.userId), name: secretName };
+    const name = String(row.name);
+    if (!known(name)) return [];
+    const slot = { organization, project, user: String(row.userId), name };
     let value: string | null = null;
     let readable = vault !== null;
     if (vault)
       try {
         const opened = openSecret(vault, slot, String(row.sealed));
-        if (!SECRET_KINDS[secretName].secret) value = opened;
+        if (isSecretName(name) && !SECRET_KINDS[name].secret) value = opened;
       } catch {
         readable = false;
       }
     return [
       {
-        name: secretName,
+        name,
+        project,
         own: slot.user !== "",
         setBy: String(row.setByLabel),
         setAt: isoAt(row.updatedAt),
@@ -227,54 +274,210 @@ export async function listSecrets(
   });
 }
 
-/** The opened values of the organization's keys, with the person's own on top. Server only: the broker and the dashboard's reads. */
+/**
+ * The opened values of the keys Armada reads: for `project`, the project's
+ * own first, then the person's own, then the organization's. Server only: the
+ * broker and the dashboard's reads.
+ */
 export async function readSecrets(
   client: Queryable,
   vault: VaultKey,
-  { organization, user }: { organization: string; user: string | null },
-): Promise<{ values: Partial<Record<SecretName, string>>; own: SecretName[]; problems: string[] }> {
+  { organization, user, project = null }: { organization: string; user: string | null; project?: string | null },
+): Promise<{
+  values: Partial<Record<SecretName, string>>;
+  own: SecretName[];
+  fromProject: SecretName[];
+  problems: string[];
+}> {
   const rs = await client.query(
-    `SELECT "userId", "name", "sealed", "updatedAt" FROM "armada_secret"
-     WHERE "organizationId" = $1 AND "userId" IN ('', $2) ORDER BY "userId", "name"`,
-    [organization, user ?? ""],
+    `SELECT "project", "userId", "name", "sealed" FROM "armada_secret"
+     WHERE "organizationId" = $1 AND "project" IN ('', $3) AND "userId" IN ('', $2) AND "name" = ANY($4)`,
+    [organization, user ?? "", project ?? "", [...SECRET_NAMES]],
   );
+  // The organization's (0), the person's own over it (1), the project's over both (2).
+  const rank = (r: { project: string; user: string }) => (r.project ? 2 : r.user ? 1 : 0);
+  const rows = rs.rows
+    .map((row) => ({ project: String(row.project), user: String(row.userId), name: String(row.name), sealed: row }))
+    .sort((a, b) => rank(a) - rank(b));
   const values: Partial<Record<SecretName, string>> = {};
   const own: SecretName[] = [];
+  const fromProject: SecretName[] = [];
   const problems: string[] = [];
-  // Ordered by user: the organization's row ('') first, the person's own over it.
-  for (const row of rs.rows) {
-    const secretName = String(row.name);
-    if (!isSecretName(secretName)) continue;
-    const slot = { organization, user: String(row.userId), name: secretName };
-    if (slot.user && (!user || !SECRET_KINDS[secretName].personal)) continue;
+  for (const row of rows) {
+    const name = row.name;
+    if (!isSecretName(name)) continue;
+    if (row.user && (!user || !SECRET_KINDS[name].personal)) continue;
+    if (row.project && (row.user || !SECRET_KINDS[name].project)) continue;
+    const slot = { organization, project: row.project, user: row.user, name };
     try {
-      values[secretName] = openSecret(vault, slot, String(row.sealed));
-      if (slot.user) own.push(secretName);
+      values[name] = openSecret(vault, slot, String(row.sealed.sealed));
+      if (row.user) own.push(name);
+      if (row.project) fromProject.push(name);
     } catch (err) {
-      problems.push(err instanceof Error ? err.message : String(err));
+      problems.push(
+        `${err instanceof Error ? err.message : String(err)}${row.project ? ` (project ${row.project})` : ""}`,
+      );
+      // A project's key that does not open is not replaced by another workspace's: none is handed out.
+      if (row.project) delete values[name];
     }
   }
-  return { values, own, problems };
+  return {
+    values,
+    own: own.filter((n) => !fromProject.includes(n)),
+    fromProject,
+    problems,
+  };
 }
 
-/** Sets or replaces one key. `user` null is the organization's; a person's own key only for a personal kind. */
+/**
+ * The opened value of one project's own key (not the organization's, not a
+ * person's): the dashboard's reads of that project. Null when it keeps none.
+ */
+export async function readProjectKey(
+  client: Queryable,
+  vault: VaultKey,
+  { organization, project, name }: { organization: string; project: string; name: SecretName },
+): Promise<string | null> {
+  const rs = await client.query(
+    `SELECT "sealed" FROM "armada_secret" WHERE "organizationId" = $1 AND "project" = $2 AND "userId" = '' AND "name" = $3`,
+    [organization, project, name],
+  );
+  const row = rs.rows[0];
+  return row ? openSecret(vault, { organization, project, user: "", name }, String(row.sealed)) : null;
+}
+
+/** The projects of an organization that keep their own Linear key. */
+export async function projectsWithLinearKey(client: Queryable, organization: string): Promise<Set<string>> {
+  const rs = await client.query(
+    `SELECT "project" FROM "armada_secret" WHERE "organizationId" = $1 AND "project" <> '' AND "userId" = '' AND "name" = 'linear-api-key'`,
+    [organization],
+  );
+  return new Set(rs.rows.map((r) => String(r.project)));
+}
+
+/** A worker secret as `armada secrets` lists it: where it is set, who set it and when. Never its value. */
+export interface WorkerSecretInfo {
+  name: string;
+  scope: SecretScope;
+  setBy: string;
+  setAt: string;
+  /** True for an organization's secret the project sets too: the project's wins. */
+  overridden: boolean;
+}
+
+/** The worker secrets of one project: its own and the organization's, without any value. */
+export async function listWorkerSecrets(
+  client: Queryable,
+  { organization, project }: { organization: string; project: string },
+): Promise<WorkerSecretInfo[]> {
+  const rs = await client.query(
+    `SELECT "project", "name", "setByLabel", "updatedAt" FROM "armada_secret"
+     WHERE "organizationId" = $1 AND "project" IN ('', $2) AND "userId" = '' ORDER BY "name", "project" DESC`,
+    [organization, project],
+  );
+  const rows = rs.rows.filter((r) => isWorkerSecretName(String(r.name)));
+  const inProject = new Set(rows.filter((r) => String(r.project)).map((r) => String(r.name)));
+  return rows.map((r) => {
+    const scope: SecretScope = String(r.project) ? "project" : "organization";
+    return {
+      name: String(r.name),
+      scope,
+      setBy: String(r.setByLabel),
+      setAt: isoAt(r.updatedAt),
+      overridden: scope === "organization" && inProject.has(String(r.name)),
+    };
+  });
+}
+
+/**
+ * The opened worker secrets of one project: its own over the organization's.
+ * `names` null asks for every one. Server only: the broker.
+ */
+export async function readWorkerSecrets(
+  client: Queryable,
+  vault: VaultKey,
+  { organization, project, names }: { organization: string; project: string; names: string[] | null },
+): Promise<{ values: Record<string, string>; scopes: Record<string, SecretScope>; problems: string[] }> {
+  const rs = await client.query(
+    `SELECT "project", "name", "sealed" FROM "armada_secret"
+     WHERE "organizationId" = $1 AND "project" IN ('', $2) AND "userId" = ''
+       AND ($3::text[] IS NULL OR "name" = ANY($3)) ORDER BY "project"`,
+    [organization, project, names],
+  );
+  const values: Record<string, string> = {};
+  const scopes: Record<string, SecretScope> = {};
+  const problems: string[] = [];
+  // Ordered by project: the organization's ('') first, the project's over it.
+  for (const row of rs.rows) {
+    const name = String(row.name);
+    if (!isWorkerSecretName(name)) continue;
+    const slot = { organization, project: String(row.project), user: "", name };
+    try {
+      values[name] = openSecret(vault, slot, String(row.sealed));
+      scopes[name] = slot.project ? "project" : "organization";
+    } catch (err) {
+      problems.push(err instanceof Error ? err.message : String(err));
+      // The project's own does not open: the organization's of the same name is not handed out in its place.
+      if (slot.project) {
+        delete values[name];
+        delete scopes[name];
+      }
+    }
+  }
+  return { values, scopes, problems };
+}
+
+/** What one `setSecret` or `deleteSecret` names: whose, which project's, which key or secret. */
+export interface SecretTarget {
+  organization: string;
+  /** The project's; null or "" for the organization's (or the person's own). */
+  project?: string | null;
+  /** The person's own; null for the organization's or the project's. */
+  user: string | null;
+  name: string;
+}
+
+/** Why a target is not a slot the vault keeps; null when it is. */
+export function targetRefusal({ project, user, name }: SecretTarget): string | null {
+  if (isSecretName(name)) {
+    if (user && !SECRET_KINDS[name].personal) return `${name} is the organization's only`;
+    if (project && !SECRET_KINDS[name].project) return `${name} is the organization's only`;
+    if (project && user) return `a person's own ${name} is not kept per project`;
+    return null;
+  }
+  const refusal = workerSecretRefusal(name);
+  if (refusal) return refusal;
+  return user ? "a secret for workers is the organization's or a project's, never a person's own" : null;
+}
+
+const scopeWords = (t: SecretTarget) =>
+  t.project ? `for the project ${t.project}` : t.user ? "their own key" : "for the organization";
+
+/** Sets or replaces one key or worker secret. Throws on a target the vault does not keep (`targetRefusal`). */
 export async function setSecret(
   client: Database,
   vault: VaultKey,
-  input: { organization: string; user: string | null; name: SecretName; value: string; actor: Actor; now: Date },
+  input: SecretTarget & { value: string; actor: Actor; now: Date },
 ): Promise<void> {
-  const slot = { organization: input.organization, user: input.user ?? "", name: input.name };
-  if (slot.user && !SECRET_KINDS[input.name].personal) throw new Error(`${input.name} is the organization's only`);
+  const refusal = targetRefusal(input);
+  if (refusal) throw new Error(refusal);
+  const slot = {
+    organization: input.organization,
+    project: input.project ?? "",
+    user: input.user ?? "",
+    name: input.name,
+  };
   const at = input.now;
   await transaction(client, async (tx) => {
     await tx.query(
-      `INSERT INTO "armada_secret" ("organizationId", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-       ON CONFLICT ("organizationId", "userId", "name") DO UPDATE SET
+      `INSERT INTO "armada_secret" ("organizationId", "project", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+       ON CONFLICT ("organizationId", "project", "userId", "name") DO UPDATE SET
          "sealed" = excluded."sealed", "setById" = excluded."setById",
          "setByLabel" = excluded."setByLabel", "updatedAt" = excluded."updatedAt"`,
       [
         slot.organization,
+        slot.project,
         slot.user,
         slot.name,
         sealSecret(vault, slot, input.value),
@@ -286,30 +489,32 @@ export async function setSecret(
     await recordEvent(tx, input.organization, {
       at: at.toISOString(),
       action: "set",
+      project: slot.project,
       keys: [input.name],
       actor: input.actor,
-      detail: slot.user ? "their own key" : "for the organization",
+      detail: scopeWords(input),
     });
   });
 }
 
-/** Deletes one key; true when there was one. */
+/** Deletes one key or worker secret; true when there was one. Its next release no longer has it. */
 export async function deleteSecret(
   client: Database,
-  input: { organization: string; user: string | null; name: SecretName; actor: Actor; now: Date },
+  input: SecretTarget & { actor: Actor; now: Date },
 ): Promise<boolean> {
   return transaction(client, async (tx) => {
     const rs = await tx.query(
-      `DELETE FROM "armada_secret" WHERE "organizationId" = $1 AND "userId" = $2 AND "name" = $3`,
-      [input.organization, input.user ?? "", input.name],
+      `DELETE FROM "armada_secret" WHERE "organizationId" = $1 AND "project" = $2 AND "userId" = $3 AND "name" = $4`,
+      [input.organization, input.project ?? "", input.user ?? "", input.name],
     );
     if (rs.rowCount > 0)
       await recordEvent(tx, input.organization, {
         at: input.now.toISOString(),
         action: "delete",
+        project: input.project ?? "",
         keys: [input.name],
         actor: input.actor,
-        detail: input.user ? "their own key" : "for the organization",
+        detail: scopeWords(input),
       });
     return rs.rowCount > 0;
   });
@@ -317,12 +522,17 @@ export async function deleteSecret(
 
 // ------------------------------------------------------------ audit
 
-export async function recordEvent(client: Queryable, organization: string, e: Omit<SecretEvent, "id">): Promise<void> {
+export async function recordEvent(
+  client: Queryable,
+  organization: string,
+  e: Omit<SecretEvent, "id" | "project"> & { project?: string | null },
+): Promise<void> {
   await client.query(
-    `INSERT INTO "armada_secret_event" ("organizationId", "at", "action", "keys", "actorKind", "actorId", "actorLabel", "detail")
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO "armada_secret_event" ("organizationId", "project", "at", "action", "keys", "actorKind", "actorId", "actorLabel", "detail")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
     [
       organization,
+      e.project ?? "",
       new Date(e.at),
       e.action,
       e.keys.join(","),
@@ -334,17 +544,23 @@ export async function recordEvent(client: Queryable, organization: string, e: Om
   );
 }
 
-/** The organization's audit list, newest first. */
-export async function listEvents(client: Queryable, organization: string, limit = 50): Promise<SecretEvent[]> {
+/** The organization's audit list, newest first; with `project`, that project's events only. */
+export async function listEvents(
+  client: Queryable,
+  organization: string,
+  limit = 50,
+  project: string | null = null,
+): Promise<SecretEvent[]> {
   const rs = await client.query(
-    `SELECT "id", "at", "action", "keys", "actorKind", "actorId", "actorLabel", "detail" FROM "armada_secret_event"
-     WHERE "organizationId" = $1 ORDER BY "id" DESC LIMIT $2`,
-    [organization, limit],
+    `SELECT "id", "at", "action", "project", "keys", "actorKind", "actorId", "actorLabel", "detail" FROM "armada_secret_event"
+     WHERE "organizationId" = $1 AND ($3::text IS NULL OR "project" = $3) ORDER BY "id" DESC LIMIT $2`,
+    [organization, limit, project],
   );
   return rs.rows.map((r) => ({
     id: Number(r.id),
     at: isoAt(r.at),
     action: String(r.action) as SecretAction,
+    project: String(r.project),
     keys: String(r.keys).split(",").filter(Boolean),
     actor: { kind: String(r.actorKind) as Actor["kind"], id: String(r.actorId), label: String(r.actorLabel) },
     detail: String(r.detail),

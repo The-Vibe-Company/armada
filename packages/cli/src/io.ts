@@ -15,6 +15,16 @@ export interface ExecResult {
 /** Runs a program (git, gh) without a shell and returns its exit code and output. */
 export type Exec = (command: string, args: string[], options: { cwd: string }) => Promise<ExecResult>;
 
+/**
+ * Runs a command with its own standard input and output and the environment
+ * given, and returns its exit code: `armada run` (THE-859).
+ */
+export type Spawn = (
+  command: string,
+  args: string[],
+  options: { cwd: string; env: Record<string, string | undefined> },
+) => Promise<number>;
+
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
   cwd: string;
@@ -49,6 +59,8 @@ export interface Io {
   linearWriter?: (options: LinearWriterOptions) => LinearWriter;
   /** Runs git and gh; required by doctor, init and merge. */
   exec?: Exec;
+  /** Runs the command of `armada run`, attached to this terminal. */
+  spawn?: Spawn;
 }
 
 /**

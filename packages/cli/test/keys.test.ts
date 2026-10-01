@@ -93,9 +93,11 @@ describe("the organization's keys from Armada", () => {
     m.printed();
     expect(await run(["status", "--json"], m.io)).toBe(0);
     expect(JSON.parse(m.printed()).project.slug).toBe("widgets");
-    // Linear was read with the organization's key, asked for with the session and nothing else.
+    // Linear was read with the organization's key, asked for with the session, for this project (its own key would win).
     expect(m.linear.calls.find((c) => c.url.includes("linear"))?.authorization).toBe(LINEAR);
-    expect(m.asked().map((c) => [c.authorization, c.body])).toEqual([[`Bearer ${SESSION}`, {}]]);
+    expect(m.asked().map((c) => [c.authorization, c.body])).toEqual([
+      [`Bearer ${SESSION}`, { purpose: { project: "widgets" } }],
+    ]);
 
     // The Linear key stays in memory: the 0600 file holds the sign-in only.
     const file = await readFile(m.credentials, "utf8");

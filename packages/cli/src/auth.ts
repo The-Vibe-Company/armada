@@ -80,7 +80,12 @@ async function fromArmada(io: Io, credentials: Credentials, purpose: KeysPurpose
     linearApiKey: answer.linear
       ? {
           value: answer.linear.apiKey,
-          detail: answer.linear.scope === "own" ? "your own key" : `the key of ${answer.organization.name}`,
+          detail:
+            answer.linear.scope === "own"
+              ? "your own key"
+              : answer.linear.scope === "project" && purpose
+                ? `the key of the project ${purpose.project}`
+                : `the key of ${answer.organization.name}`,
         }
       : null,
   };
@@ -103,11 +108,12 @@ export interface WorkerScope {
  * for the keys the environment does not set), the machine store and the
  * GitHub CLI. Commands that need no key (login, whoami, logout) pass
  * `armada: false`. A worker command passes its `worker` scope: the worker
- * session of its ticket, when the machine holds one, signs it in.
+ * session of its ticket, when the machine holds one, signs it in. A command
+ * run in a project passes its `project`: that project's own Linear key wins.
  */
 export async function loadCredentials(
   io: Io,
-  { armada = true, worker }: { armada?: boolean; worker?: WorkerScope } = {},
+  { armada = true, worker, project }: { armada?: boolean; worker?: WorkerScope; project?: string } = {},
 ): Promise<{ machine: Machine; credentials: Credentials }> {
   const machine = await loadMachine(io);
   let ticket: string | null = null;
@@ -131,7 +137,14 @@ export async function loadCredentials(
   };
   const local = resolveCredentials(sources);
   const signIn = local.armadaSignIn;
-  const purpose = worker && ticket ? { command: worker.command, project: worker.project, ticket } : null;
+  // The project the command acts on: its own Linear key, when it keeps one, wins (THE-859).
+  const scoped = worker?.project ?? project;
+  const purpose: KeysPurpose | null =
+    worker && ticket
+      ? { command: worker.command, project: worker.project, ticket }
+      : scoped
+        ? { project: scoped }
+        : null;
   if (signIn?.kind === "worker" && armada) {
     if (signIn.project !== worker?.project)
       throw new UsageError(
