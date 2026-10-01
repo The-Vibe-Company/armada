@@ -8,6 +8,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { type AgentStatus, HARNESS_NAME, type Harness, projectColor } from "@/lib/fleet-view";
+import { tabStep } from "@/lib/keyboard";
 import { useNow, useShell } from "./shell/context";
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
@@ -144,7 +145,12 @@ export interface TabItem<K extends string> {
   href?: string;
 }
 
-/** A segmented control: the harness filter, the density, an agent's tabs. */
+/**
+ * A segmented control: the harness filter, the density, an agent's tabs. One
+ * stop of the Tab key (THE-891): the arrows, Home and End move between its
+ * tabs, Enter or Space picks one. `controls` names what the tabs show (the
+ * agent's activity, files and attachments).
+ */
 export function Tabs<K extends string>({
   items,
   value,
@@ -152,6 +158,7 @@ export function Tabs<K extends string>({
   label,
   size = "md",
   push = false,
+  controls,
   prefetch = true,
 }: {
   items: TabItem<K>[];
@@ -161,12 +168,35 @@ export function Tabs<K extends string>({
   size?: "sm" | "md";
   /** Link tabs that open pages (the organization's) add to the history; filters replace it. */
   push?: boolean;
+  controls?: string;
   /** Off for filters of a page rendered on the server (/insights): each prefetch would render it. */
   prefetch?: boolean;
 }) {
+  const stop = Math.max(
+    0,
+    items.findIndex((it) => it.key === value),
+  );
   return (
-    <div className={`ui-tabs is-${size}`} role="tablist" aria-label={label}>
-      {items.map((it) => {
+    <div
+      className={`ui-tabs is-${size}`}
+      role="tablist"
+      aria-label={label}
+      onKeyDown={(e) => {
+        const tabs = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("[role='tab']"));
+        const at = tabs.indexOf(e.target as HTMLElement);
+        if (at < 0) return;
+        if (e.key === " " && tabs[at]?.tagName === "A") {
+          e.preventDefault();
+          tabs[at]?.click();
+          return;
+        }
+        const next = tabStep(e.key, at, tabs.length);
+        if (next === null) return;
+        e.preventDefault();
+        tabs[next]?.focus();
+      }}
+    >
+      {items.map((it, k) => {
         const body = (
           <>
             {it.dot && <Dot color={it.dot} />}
@@ -175,6 +205,7 @@ export function Tabs<K extends string>({
           </>
         );
         const on = it.key === value;
+        const roving = { tabIndex: k === stop ? 0 : -1, "aria-controls": on ? controls : undefined };
         return it.href ? (
           <Link
             key={it.key}
@@ -186,6 +217,7 @@ export function Tabs<K extends string>({
             aria-selected={on}
             className="ui-tab"
             onClick={() => onChange?.(it.key)}
+            {...roving}
           >
             {body}
           </Link>
@@ -197,6 +229,7 @@ export function Tabs<K extends string>({
             aria-selected={on}
             className="ui-tab"
             onClick={() => onChange?.(it.key)}
+            {...roving}
           >
             {body}
           </button>

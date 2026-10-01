@@ -3,7 +3,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 // Every page of the shell is built from the page kit (components/page.tsx,
-// THE-876): the shell's header bar is the page's only title, and the type is
+// THE-876): the shell's header bar is the page's only title, and its h1, read
+// by screen readers only (THE-891), is the page's only one; the type is
 // Geist and Geist Mono only. This walks each page and layout under
 // app/(fleet) and app/organization through every local module it renders.
 // The pages before the shell (sign in, welcome, device, invitation, THE-871)
@@ -47,8 +48,11 @@ const authModules = new Set(authPages.flatMap((p) => [...reach(p)]));
 const rel = (f: string) => relative(ROOT, f);
 
 /** What a module may not do on a page of the shell. */
-const FORBIDDEN: { what: string; pattern: RegExp }[] = [
-  { what: "an h1 (the header bar is the page's title)", pattern: /<h1[\s>]|["']h1["']/ },
+/** The header bar, whose h1 is the page's title. */
+const HEADER = "components/page-client.tsx";
+
+const FORBIDDEN: { what: string; pattern: RegExp; except?: string }[] = [
+  { what: "an h1 (the header bar is the page's title)", pattern: /<h1[\s>]|["']h1["']/, except: HEADER },
   { what: "a font family of its own", pattern: /fontFamily|font-family/ },
   { what: "the serif class", pattern: /className=\{?["'`][^"'`]*\bserif\b/ },
   { what: "a font import", pattern: /@fontsource|next\/font\/(?!local)|fonts\.googleapis/ },
@@ -61,11 +65,17 @@ describe("the pages of the shell", () => {
     expect([...modules].map(rel)).toContain("components/page.tsx");
   });
 
-  for (const { what, pattern } of FORBIDDEN)
+  for (const { what, pattern, except } of FORBIDDEN)
     test(`render no ${what}`, () => {
-      const offenders = [...modules].filter((f) => pattern.test(readFileSync(f, "utf8"))).map(rel);
+      const offenders = [...modules].filter((f) => rel(f) !== except && pattern.test(readFileSync(f, "utf8"))).map(rel);
       expect(offenders).toEqual([]);
     });
+
+  test("have one h1, the header bar's, that the shell names", () => {
+    expect([...modules].map(rel)).toContain(HEADER);
+    expect(readFileSync(join(ROOT, HEADER), "utf8").match(/<h1[\s>]/g)).toHaveLength(1);
+    expect(readFileSync(join(ROOT, "components/shell/Shell.tsx"), "utf8")).toMatch(/<PageHeader\s+heading=/);
+  });
 });
 
 describe("the pages before the shell", () => {
