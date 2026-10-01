@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.9](https://github.com/The-Vibe-Company/armada/compare/v0.2.8...v0.2.9) (2026-10-01)
+
+
+### Features
+
+* **cli:** tell coordinators when a new Armada version is out ([#74](https://github.com/The-Vibe-Company/armada/issues/74)) ([4b65767](https://github.com/The-Vibe-Company/armada/commit/4b657679e3f4f6108d8524853563316884722f7e))
+
 ## [0.2.8](https://github.com/The-Vibe-Company/armada/compare/v0.2.7...v0.2.8) (2026-10-01)
 
 
