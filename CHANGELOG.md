@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.21](https://github.com/The-Vibe-Company/armada/compare/v0.1.20...v0.1.21) (2026-10-01)
+
+
+### Features
+
+* **dashboard:** run the Armada app on one Neon database in Frankfurt ([#51](https://github.com/The-Vibe-Company/armada/issues/51)) ([0239fbb](https://github.com/The-Vibe-Company/armada/commit/0239fbba803209226c44461d388559c2a8fe97cb))
+
 ## [0.1.20](https://github.com/The-Vibe-Company/armada/compare/v0.1.19...v0.1.20) (2026-10-01)
 
 
