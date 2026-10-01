@@ -85,11 +85,14 @@ describe("places", () => {
     expect(placeOf("/organization/keys")).toEqual({ kind: "organization", page: "keys" });
   });
 
-  test("Esc goes back when the page was opened in the app, else to its parent, and nowhere from a list", () => {
-    expect(escapeTarget(placeOf("/agents/WID-15"), true)).toBe("back");
-    expect(escapeTarget(placeOf("/agents/WID-15"), false)).toBe("/agents");
-    expect(escapeTarget(placeOf("/projects/widgets"), false)).toBe("/projects");
-    expect(escapeTarget(placeOf("/agents"), true)).toBeNull();
+  test("Esc leads to where an agent was opened from, else to the parent, never out of the app", () => {
+    const agent = placeOf("/agents/WID-15");
+    expect(escapeTarget(agent, "/projects/widgets")).toBe("/projects/widgets");
+    expect(escapeTarget(agent, "/")).toBe("/");
+    expect(escapeTarget(agent, null)).toBe("/agents");
+    expect(escapeTarget(agent, "/organization/keys")).toBe("/agents");
+    expect(escapeTarget(placeOf("/projects/widgets"), "/agents/WID-15")).toBe("/projects");
+    expect(escapeTarget(placeOf("/agents"), "/")).toBeNull();
   });
 });
 

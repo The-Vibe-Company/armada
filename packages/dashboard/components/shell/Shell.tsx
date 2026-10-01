@@ -70,24 +70,16 @@ const typing = (e: KeyboardEvent) => {
 };
 
 /**
- * Where the viewer came from: the page an agent's page was opened from (for its
- * breadcrumbs and sidebar entry), and whether any page was opened in the app
- * (Esc then goes back in the history rather than to the parent).
+ * The page an agent's page was opened from, for its breadcrumbs, its sidebar
+ * entry and where Esc leads. Moving from one agent to another keeps the first one's.
  */
-function useTrail(pathname: string) {
-  const [trail, setTrail] = useState<{ path: string; from: Place | null; moves: number }>({
-    path: pathname,
-    from: null,
-    moves: 0,
-  });
+function useFrom(pathname: string): string | null {
+  const [trail, setTrail] = useState<{ path: string; from: string | null }>({ path: pathname, from: null });
   if (trail.path !== pathname) {
-    const here = placeOf(pathname);
-    const before = placeOf(trail.path);
-    // Moving from one agent to another keeps where the first was opened from.
-    const from = here.kind === "agent" && before.kind === "agent" ? trail.from : before;
-    setTrail({ path: pathname, from, moves: trail.moves + 1 });
+    const fromAgent = placeOf(pathname).kind === "agent" && placeOf(trail.path).kind === "agent";
+    setTrail({ path: pathname, from: fromAgent ? trail.from : trail.path });
   }
-  return { from: trail.from, openedInApp: trail.moves > 0 };
+  return trail.from;
 }
 
 function Frame({ children }: { children: ReactNode }) {
@@ -95,7 +87,8 @@ function Frame({ children }: { children: ReactNode }) {
   const router = useRouter();
   const { t, density } = useShell();
   const place = useMemo(() => placeOf(pathname), [pathname]);
-  const { from, openedInApp } = useTrail(pathname);
+  const fromPath = useFrom(pathname);
+  const from = useMemo(() => (fromPath === null ? null : placeOf(fromPath)), [fromPath]);
   const [palette, setPalette] = useState(false);
   const [menu, setMenu] = useState(false);
   const main = useRef<HTMLDivElement>(null);
@@ -136,9 +129,8 @@ function Frame({ children }: { children: ReactNode }) {
       if (palette || e.metaKey || e.ctrlKey || e.altKey || typing(e)) return;
       if (e.key === "Escape") {
         if (menu) return setMenu(false);
-        const to = escapeTarget(place, openedInApp);
-        if (to === "back") router.back();
-        else if (to) router.push(to);
+        const to = escapeTarget(place, fromPath);
+        if (to) router.push(to);
         return;
       }
       if (e.key === "j" || e.key === "ArrowDown" || e.key === "k" || e.key === "ArrowUp") {
@@ -150,8 +142,9 @@ function Frame({ children }: { children: ReactNode }) {
       }
       if (e.key === "Enter" && selected.current >= 0) {
         const row = rows()[selected.current];
-        // A focused link opens on its own.
-        if (row && document.activeElement !== row) {
+        // A focused control (a link, a tab, a button) answers Enter itself.
+        const focused = document.activeElement;
+        if (row && (!focused || focused === document.body)) {
           e.preventDefault();
           router.push(row.getAttribute("href") ?? "/");
         }
@@ -159,7 +152,7 @@ function Frame({ children }: { children: ReactNode }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [palette, menu, place, openedInApp, router, rows, select]);
+  }, [palette, menu, place, fromPath, router, rows, select]);
 
   const section = sectionOf(place, from);
   const listPage = place.kind === "agents" || place.kind === "projects";

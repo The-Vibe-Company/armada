@@ -189,11 +189,18 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
   }
 }
 
-/** Where Esc leads from a page: back in the history when the page was opened in the app, else its parent. */
-export function escapeTarget(place: Place, openedInApp: boolean): "back" | string | null {
-  if (place.kind !== "agent" && place.kind !== "project") return null;
-  if (openedInApp) return "back";
-  return place.kind === "agent" ? paths.agents() : paths.projects;
+/**
+ * Where Esc leads from a page: an agent's page back to the list, project or
+ * overview it was opened from (else the agents), a project's page to the
+ * projects; a list stays. Always a page of the app, never the browser's history.
+ */
+export function escapeTarget(place: Place, fromPath: string | null): string | null {
+  if (place.kind === "project") return paths.projects;
+  if (place.kind !== "agent") return null;
+  const from = fromPath === null ? null : placeOf(fromPath);
+  const back =
+    from?.kind === "overview" || from?.kind === "projects" || from?.kind === "project" || from?.kind === "agents";
+  return back && fromPath ? fromPath : paths.agents();
 }
 
 // ---------------------------------------------------------------------- search

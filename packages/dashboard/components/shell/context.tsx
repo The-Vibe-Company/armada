@@ -73,11 +73,20 @@ function useLiveOverview(initial: FleetOverview): Fleet {
   /** The ETag of the overview shown; the server answers 304 while it is still current. */
   const tag = useRef<string | null>(null);
   const busy = useRef(isBusy(initial));
+  /** When the overview shown was built: an older one, from a poll or a render, never replaces it. */
+  const shown = useRef(initial.generatedAt);
+  const show = useCallback((next: FleetOverview) => {
+    if (next.generatedAt < shown.current) return false;
+    shown.current = next.generatedAt;
+    busy.current = isBusy(next);
+    setOverview(next);
+    return true;
+  }, []);
 
   // A server render (a language change, an action) brings a newer overview: take it.
   useEffect(() => {
-    setOverview((held) => (initial.generatedAt > held.generatedAt ? initial : held));
-  }, [initial]);
+    show(initial);
+  }, [initial, show]);
 
   const poll = useCallback(async () => {
     if (inFlight.current) return;
@@ -97,9 +106,8 @@ function useLiveOverview(initial: FleetOverview): Fleet {
       if (res.status !== 304) {
         if (!res.ok) throw new Error(String(res.status));
         const next = (await res.json()) as FleetOverview;
-        tag.current = res.headers.get("etag");
-        busy.current = isBusy(next);
-        setOverview(next);
+        // A poll that answers after a newer render is dropped, with its tag.
+        if (show(next)) tag.current = res.headers.get("etag");
       }
       setVersion((v) => v + 1);
       setFailed(false);
@@ -110,7 +118,7 @@ function useLiveOverview(initial: FleetOverview): Fleet {
       inFlight.current = false;
       setPending(false);
     }
-  }, []);
+  }, [show]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
