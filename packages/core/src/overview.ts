@@ -44,7 +44,7 @@ export function pipeline(t: Pick<InFlightTicket, "phase" | "pr">): Pipeline {
 }
 
 /** What waits for the owner, most urgent kind first. */
-export const WAITING_KINDS = ["question", "blocked", "approval", "hand-back", "silent"] as const;
+export const WAITING_KINDS = ["question", "blocked", "approval", "hand-back", "not-started", "silent"] as const;
 export type WaitingKind = (typeof WAITING_KINDS)[number];
 
 export interface WaitingItem {
@@ -53,7 +53,7 @@ export interface WaitingItem {
   ticket: string | null;
   title: string | null;
   url: string | null;
-  /** The question, full plan, hand-back note or the worker's last status. */
+  /** The question, full plan, hand-back note, the worker's last status, or why a launched worker shows as not started. */
   detail: string | null;
   author: string | null;
   /** Since when it waits. */
@@ -311,6 +311,21 @@ export function buildOverview(input: {
         coordinatorSince: null,
       });
     }
+    // A worker launched that never claimed its ticket waits like a silent one.
+    for (const l of p.report?.notStarted ?? [])
+      offer({
+        kind: "not-started",
+        project: p.slug,
+        ticket: l.ticket,
+        title: l.title,
+        url: l.url,
+        detail: l.detail,
+        author: l.handle,
+        since: l.launchedAt,
+        item: null,
+        answer: null,
+        coordinatorSince: null,
+      });
     waiting.push(...perTicket.values());
 
     for (const t of tickets) {

@@ -539,7 +539,17 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     statements: ["ALTER TABLE coordinator_presence ADD COLUMN IF NOT EXISTS cli_version text"],
   },
   {
+    // A launch no claim followed shows as not started (THE-872): the
+    // worker's runtime session as its sign-in named it, and a project's
+    // launches of the last day, read on each inbox read.
     version: 9,
+    statements: [
+      `ALTER TABLE "armada_worker" ADD COLUMN IF NOT EXISTS "runtimeHandle" text`,
+      `CREATE INDEX IF NOT EXISTS "armada_worker_project_idx" ON "armada_worker" ("project", "createdAt")`,
+    ],
+  },
+  {
+    version: 10,
     statements: [
       "ALTER TABLE projects ADD COLUMN owner text",
       "ALTER TABLE coordinator_presence ADD COLUMN harness text",

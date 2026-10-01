@@ -43,6 +43,7 @@ export function renderStatus(r: StatusReport): string {
   const idWidth = Math.max(
     6,
     ...r.inFlight.map((t) => t.id.length),
+    ...r.notStarted.map((l) => l.ticket.length),
     ...r.frontier.map((t) => t.id.length),
     ...(r.pullRequests ?? []).map((p) => `#${p.number}`.length),
   );
@@ -65,6 +66,17 @@ export function renderStatus(r: StatusReport): string {
     if (t.statusLine?.plan) out.push(`${indent}plan: ${t.statusLine.url}`);
     if (t.pr) out.push(`${indent}${[`PR #${t.pr.number}`, prState(t.pr)].filter(Boolean).join(" · ")}`);
     if (t.flags.length) out.push(`${indent}! ${t.flags.join(", ")}`);
+  }
+
+  if (r.notStarted.length) {
+    out.push("", `Launched, not started (${r.notStarted.length})`);
+    for (const l of r.notStarted) {
+      out.push(
+        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.handle ? ` · ${l.handle}` : ""}`,
+      );
+      if (l.title) out.push(`${indent}${truncate(l.title, 90)}`);
+      out.push(`${indent}! check its session with the runtime guide's status section`);
+    }
   }
 
   const ready = r.frontier.filter((t) => t.readyForAgent);

@@ -16,9 +16,11 @@ import {
   type InboxItem,
   type InboxQuery,
   type InboxRead,
+  LAUNCH_WINDOW_MS,
   type LeaseResult,
   type MergeRecord,
   type MergeRecorded,
+  type PendingLaunch,
   type ProjectInput,
   type ReportRecord,
   recordAnswer,
@@ -45,6 +47,7 @@ export const FLEET_OPS = [
   "coordinator",
   "request",
   "events/latest",
+  "launches",
   "inbox",
   "inbox/item",
   "inbox/ticket",
@@ -280,10 +283,18 @@ export async function serveFleet(
         }
         case "events/latest":
           return store.lastEventTimes(slug);
+        case "launches":
+          return store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS));
         case "inbox": {
           const silent = b.silentAfterMinutes;
           if (typeof silent !== "number" || !Number.isFinite(silent) || silent < 0)
             throw new Invalid("silentAfterMinutes must be a number of minutes");
+          const notStarted = b.notStartedMinutes;
+          if (
+            notStarted !== undefined &&
+            (typeof notStarted !== "number" || !Number.isFinite(notStarted) || notStarted < 0)
+          )
+            throw new Invalid("notStartedMinutes must be a number of minutes");
           const read = await serveInbox(
             store,
             slug,
@@ -291,6 +302,7 @@ export async function serveFleet(
               coordinator: optText(b, "coordinator", LINE_MAX),
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
               silentAfterMinutes: silent,
+              ...(notStarted !== undefined ? { notStartedMinutes: notStarted } : {}),
               etag: optText(b, "etag", 64),
             },
             at,
@@ -386,6 +398,7 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
+    pendingLaunches: () => call<PendingLaunch[]>("launches", {}),
     claim: (c: ClaimRecord) => call<InboxItem[]>("claim", c),
     report: (r: ReportRecord) => call<InboxItem[]>("report", r),
     ask: (q) => call<number>("ask", q),

@@ -16,9 +16,12 @@ import {
   DEFAULT_ARMADA_API_URL,
   displayCode,
   formatWorkerSession,
+  isMaskedLaunchToken,
   LOGIN_NEXT,
+  MASKED_LAUNCH_TOKEN_REFUSAL,
   machinePaths,
   RETIRED_VARIABLES,
+  Refusal,
   SESSION_TOKEN_VARIABLE,
   SIGNED_IN_TO_VARIABLE,
   updateCredentialStore,
@@ -128,6 +131,13 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
   return 0;
 }
 
+/** The worker's runtime session when its environment names one (Conductor's), sent with its launch token. */
+function sessionHandle(io: Io): string | null {
+  const workspace = io.env.CONDUCTOR_WORKSPACE_ID?.trim();
+  const session = io.env.CONDUCTOR_SESSION_ID?.trim();
+  return workspace && session ? `${workspace}/${session}` : null;
+}
+
 /**
  * Exchanges the launch message's token for a worker session and keeps it under
  * its ticket's key, beside any other sign-in: a person's session on the same
@@ -139,6 +149,9 @@ async function loginWithLaunchToken(
   token: string,
   apiUrl: string | null,
 ): Promise<number> {
+  // The brief's human view hides the token: it was copied from there, not from `--prompt`.
+  if (isMaskedLaunchToken(token))
+    throw new Refusal(MASKED_LAUNCH_TOKEN_REFUSAL.error, MASKED_LAUNCH_TOKEN_REFUSAL.next);
   const p = paths(io);
   let url = credentials.armadaApi.url;
   if (apiUrl) {
@@ -150,7 +163,7 @@ async function loginWithLaunchToken(
       );
     url = apiUrl;
   }
-  const session = await apiOf(io, url).exchangeLaunchToken(token.trim());
+  const session = await apiOf(io, url).exchangeLaunchToken(token.trim(), sessionHandle(io));
   const w = session.worker;
   await updateCredentialStore(p, {
     [workerSessionVariable(w.ticket)]: formatWorkerSession({

@@ -72,6 +72,8 @@ export interface InboxOptions {
   coordinator?: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  /** `policy.not_started_minutes`. */
+  notStartedMinutes?: number;
   now: () => Date;
   /** Wait at most `timeoutMs` for a new item, asking Armada every `pollMs`. */
   wait?: { timeoutMs: number; sleep: (ms: number) => Promise<void>; pollMs?: number };
@@ -96,6 +98,7 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     coordinator: o.coordinator ?? null,
     silentAfterMinutes: o.silentAfterMinutes,
     ...(o.facts ? { facts: o.facts } : {}),
+    ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
   };
   const first = await fleet.inbox({ ...query, etag: null });
   if (!first) throw new Error("Armada answered the first inbox read with nothing");

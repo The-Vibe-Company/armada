@@ -17,7 +17,9 @@ import {
   type FleetOverview,
   type InboxItem,
   type InboxReadEvent,
+  LAUNCH_WINDOW_MS,
   type LatestEvent,
+  type PendingLaunch,
   type ProjectConfigReading,
   type ProjectReading,
   type ProjectRecord,
@@ -255,6 +257,7 @@ interface LiveProject {
   sessions: SessionRecord[];
   events: Record<string, LatestEvent>;
   handles: RuntimeHandle[];
+  launches: PendingLaunch[];
   inbox: InboxItem[];
   coordinatorSeenAt: string | null;
   /** The CLI version the coordinator ran at its last inbox read; null when unknown. */
@@ -262,9 +265,10 @@ interface LiveProject {
 }
 
 async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
-  const [events, handles, inbox, coordinator, inboxReads, sessions] = await Promise.all([
+  const [events, handles, launches, inbox, coordinator, inboxReads, sessions] = await Promise.all([
     store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
     store.openRuntimeHandles(project),
+    store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
     store.openInboxItems({ project, recipient: "coordinator" }),
     store.getCoordinatorPresence(project),
     store.inboxReads(project, now),
@@ -273,6 +277,7 @@ async function readLive(store: LiveStore, project: string, now: Date): Promise<L
   return {
     events,
     handles,
+    launches,
     inbox,
     coordinatorSeenAt: coordinator?.seenAt ?? null,
     coordinatorCliVersion: coordinator?.cliVersion ?? null,
@@ -351,6 +356,7 @@ function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusRepor
             events: l.events,
             handles: Object.fromEntries(l.handles.map((h) => [h.ticket, h])),
           },
+          launches: l.launches,
         }
       : {}),
     now,

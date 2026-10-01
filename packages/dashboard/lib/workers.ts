@@ -54,6 +54,8 @@ export interface Worker {
   endedAt: string | null;
   endReason: EndReason | null;
   endedBy: string | null;
+  /** The worker's runtime session, as its sign-in named it; null when it named none. */
+  handle: string | null;
 }
 
 /**
@@ -85,7 +87,7 @@ const hhmm = (iso: string) => `${iso.slice(0, 16)}Z`;
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
 const COLUMNS = `"id", "organizationId", "project", "ticket", "launchedByKind", "launchedById", "launchedByLabel",
-  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel"`;
+  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel", "runtimeHandle"`;
 
 function workerOf(r: Row): Worker {
   const reason = str(r.endReason);
@@ -107,6 +109,7 @@ function workerOf(r: Row): Worker {
     endedAt: isoOrNull(r.endedAt),
     endReason: reason === "released" || reason === "merged" || reason === "revoked" ? reason : null,
     endedBy: str(r.endedByLabel),
+    handle: str(r.runtimeHandle),
   };
 }
 
@@ -161,6 +164,7 @@ export async function createLaunch(
     endedAt: null,
     endReason: null,
     endedBy: null,
+    handle: null,
   };
   return { worker, token };
 }
@@ -194,11 +198,12 @@ async function tooManyAttempts(client: Database, address: string, now: Date): Pr
 /**
  * Exchanges a launch token for a worker session, once: a second use, a use
  * after its hour, or after the launch was revoked, is refused. Every outcome
- * with a known token is in the audit list.
+ * with a known token is in the audit list. `handle` is the worker's runtime
+ * session when its environment names one: a launch that never claims shows it.
  */
 export async function exchangeLaunch(
   client: Database,
-  input: { token: string; address: string; now: Date },
+  input: { token: string; address: string; handle?: string | null; now: Date },
 ): Promise<Exchange> {
   const { now } = input;
   if (await tooManyAttempts(client, input.address, now)) return { ok: false, reason: "limited", worker: null };
@@ -226,14 +231,16 @@ export async function exchangeLaunch(
 
   const token = newToken(WORKER_TOKEN_PREFIX);
   const expires = new Date(now.getTime() + WORKER_IDLE_MS).toISOString();
+  const handle = input.handle?.trim().slice(0, 500) || null;
   // One conditional write: of two exchanges racing, one wins.
   const won = await client.query(
-    `UPDATE "armada_worker" SET "tokenUsedAt" = $1, "sessionHash" = $2, "sessionExpiresAt" = $3, "sessionSeenAt" = $1
+    `UPDATE "armada_worker" SET "tokenUsedAt" = $1, "sessionHash" = $2, "sessionExpiresAt" = $3, "sessionSeenAt" = $1,
+       "runtimeHandle" = $5
      WHERE "id" = $4 AND "tokenUsedAt" IS NULL AND "endedAt" IS NULL AND "tokenExpiresAt" > $1`,
-    [at, hashOf(token), expires, found.id],
+    [at, hashOf(token), expires, found.id, handle],
   );
   if (won.rowCount !== 1) return refuse("used", "used by another exchange at the same time");
-  const worker: Worker = { ...found, tokenUsedAt: at, sessionExpiresAt: expires, sessionSeenAt: at };
+  const worker: Worker = { ...found, tokenUsedAt: at, sessionExpiresAt: expires, sessionSeenAt: at, handle };
   await recordEvent(client, found.organization, {
     at,
     action: "exchange",

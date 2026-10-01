@@ -2,6 +2,7 @@
 // responses (no network), a builder for normalized issues, a fake Linear
 // writer, and a fake Armada API with the fleet's live data in memory.
 
+import cliPackage from "../../cli/package.json" with { type: "json" };
 import {
   type ArmadaIdentity,
   type ArmadaSignIn,
@@ -11,6 +12,7 @@ import {
   CLI_VERSION_HEADER,
   type ServerCli,
 } from "../src/armada-api.ts";
+import { NPM_REGISTRY_URL } from "../src/brief.ts";
 import { type ArmadaConfig, parseConfig } from "../src/config.ts";
 import { type FleetCaller, fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
@@ -47,7 +49,7 @@ export interface Call {
 
 /** Replays the recorded responses in order, per GraphQL operation name. */
 export function recordedFetch(
-  overrides: { github?: unknown; linear?: (recorded: typeof linearProgram) => void } = {},
+  overrides: { github?: unknown; linear?: (recorded: typeof linearProgram) => void; npm?: unknown } = {},
 ): { fetch: Fetch; calls: Call[] } {
   const recorded = structuredClone(linearProgram);
   overrides.linear?.(recorded);
@@ -56,6 +58,8 @@ export function recordedFetch(
   );
   const calls: Call[] = [];
   const fetch: Fetch = async (url, init) => {
+    // npm serves the CLI's own version, unless a test says otherwise.
+    if (url === NPM_REGISTRY_URL) return Response.json(overrides.npm ?? { versions: { [cliPackage.version]: {} } });
     const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
     const operation = body.query.match(/query\s+(\w+)/)?.[1] ?? "?";
     const authorization = new Headers(init.headers).get("Authorization");

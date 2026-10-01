@@ -131,6 +131,7 @@ async function watchUntil(
       coordinator: coordinatorHandle(io),
       facts: detectCoordinator(io),
       silentAfterMinutes: config.policy.silentAfterMinutes,
+      notStartedMinutes: config.policy.notStartedMinutes,
       seen: before?.seen ?? [],
       now: io.now ?? (() => new Date()),
       sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))),

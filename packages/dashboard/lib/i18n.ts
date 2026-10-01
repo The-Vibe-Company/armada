@@ -124,6 +124,7 @@ const en = {
     blocked: "Blocked",
     approval: "Plan to approve",
     "hand-back": "Ready to merge",
+    "not-started": "Never started",
     silent: "Silent",
   } satisfies Record<WaitingKind, string>,
   phases: {
@@ -685,6 +686,7 @@ const fr: Strings = {
     blocked: "Bloqué",
     approval: "Plan à approuver",
     "hand-back": "Prêt à fusionner",
+    "not-started": "Jamais démarré",
     silent: "Silencieux",
   },
   phases: {

@@ -37,6 +37,7 @@ const report = (slug: string, inFlight: InFlightTicket[]): StatusReport => ({
   silentAfterMinutes: 15,
   coordinatorMinutes: 10,
   inFlight,
+  notStarted: [],
   frontier: [],
   pullRequests: [],
   warnings: [],
@@ -113,6 +114,10 @@ describe("fleet overview", () => {
         coordinatorSeenAt: at("09:50"),
       },
     );
+    // Launched, never claimed: no lane, it waits like a silent worker.
+    const launched = { ticket: "W-5", launchedAt: at("09:15"), tokenUsedAt: null, handle: "ws-5" };
+    if (widgets.report)
+      widgets.report.notStarted = [{ ...launched, title: "Parse", url: "u5", detail: "launched 45 min ago" }];
     const gadgets = reading("gadgets", [ticket("G-1", { phase: "awaiting-approval", since: at("08:00") })], {
       inbox: [],
       coordinatorSeenAt: at("09:00"),
@@ -123,6 +128,7 @@ describe("fleet overview", () => {
       ["question", "widgets", "W-1", "Which table?"],
       ["approval", "gadgets", "G-1", null],
       ["hand-back", "widgets", "W-2", "PR #4 green"],
+      ["not-started", "widgets", "W-5", "launched 45 min ago"],
       ["silent", "widgets", "W-3", null],
     ]);
     expect(o.rows.map((r) => [r.id, r.waiting, r.question?.body ?? null])).toEqual([
@@ -133,7 +139,7 @@ describe("fleet overview", () => {
       ["W-4", null, null],
     ]);
     expect(o.projects.map((p) => [p.slug, p.coordinator.state, p.inFlight, p.waiting])).toEqual([
-      ["widgets", "active", 4, 3],
+      ["widgets", "active", 4, 4],
       ["gadgets", "idle", 1, 1],
     ]);
   });

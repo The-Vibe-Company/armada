@@ -115,6 +115,7 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     coordinator: coordinatorHandle(io),
     facts: detectCoordinator(io),
     silentAfterMinutes: config.policy.silentAfterMinutes,
+    notStartedMinutes: config.policy.notStartedMinutes,
     now: io.now ?? (() => new Date()),
     ...(wait
       ? { wait: { timeoutMs, sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))) } }

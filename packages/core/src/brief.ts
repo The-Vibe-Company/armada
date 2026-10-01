@@ -6,6 +6,7 @@
 // signed-in coordinator: the worker's first command exchanges it for a
 // session limited to its ticket, so its runtime needs no key at all. It works
 // once, within the hour, which makes a copy left in a transcript useless.
+import { compareVersions } from "./armada-api.ts";
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import {
@@ -16,6 +17,7 @@ import {
   LinearError,
   type LinearRequestOptions,
   type MoreOf,
+  networkReason,
   parseStatusLine,
   readRest,
 } from "./linear.ts";
@@ -27,6 +29,42 @@ import { Refusal } from "./worker.ts";
 
 /** The npm package the worker runs Armada from. */
 export const ARMADA_PACKAGE = "@the-vibe-company/armada";
+/** npm's record of the package, which lists every published version. */
+export const NPM_REGISTRY_URL = `https://registry.npmjs.org/${ARMADA_PACKAGE.replace("/", "%2f")}`;
+/** How long `armada brief` waits for npm: one request, made beside its Linear reads. */
+export const NPM_CHECK_MS = 3_000;
+
+/**
+ * Whether npm serves a version: `missing` names the newest published version
+ * below it, if any; `unknown` says why npm could not be asked.
+ */
+export type NpmCheck =
+  | { state: "published" }
+  | { state: "missing"; newest: string | null }
+  | { state: "unknown"; reason: string };
+
+/**
+ * Asks npm whether `version` of Armada is published, once, within `timeoutMs`.
+ * Never throws: offline, the answer is `unknown`.
+ */
+export async function checkPublished(version: string, fetch: Fetch, timeoutMs = NPM_CHECK_MS): Promise<NpmCheck> {
+  try {
+    const res = await fetch(NPM_REGISTRY_URL, {
+      // The abbreviated record: versions without their readmes.
+      headers: { accept: "application/vnd.npm.install-v1+json" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return { state: "unknown", reason: `npm answered HTTP ${res.status}` };
+    const versions = Object.keys(((await res.json()) as { versions?: Record<string, unknown> }).versions ?? {});
+    if (!versions.length) return { state: "unknown", reason: "npm listed no version" };
+    if (versions.includes(version)) return { state: "published" };
+    const older = versions.filter((v) => !v.includes("-") && compareVersions(v, version) < 0).sort(compareVersions);
+    return { state: "missing", newest: older.at(-1) ?? null };
+  } catch (err) {
+    return { state: "unknown", reason: networkReason(err, timeoutMs) };
+  }
+}
+
 /** Where `armada init` vendors the worker skill. */
 export const WORKER_SKILL_PATH = ".agents/skills/armada-worker/SKILL.md";
 /** Claim handle inside a Conductor workspace: both variables are set by Conductor. */
@@ -94,7 +132,12 @@ export interface Brief {
   /** How the profile was chosen: routing rule, default, or the coordinator's override and its reason. */
   routing: Omit<ProfileChoice, "name" | "profile"> | null;
   repository: { name: string; url: string };
-  /** Installs the coordinator's exact Armada version as `armada` in the worker's workspace. */
+  /**
+   * The Armada version the worker installs: the coordinator's, or the newest
+   * one npm serves when the coordinator's is not published yet.
+   */
+  armadaVersion: { pinned: string; coordinator: string };
+  /** Installs the pinned Armada version as `armada` in the worker's workspace. */
   install: string;
   /** Runs that version where a global install is refused. */
   fallback: string;
@@ -266,6 +309,8 @@ export interface BuildBriefInput {
   reason?: string | null;
   /** Version of the coordinator's Armada CLI; the worker runs the same one. */
   version: string;
+  /** What npm said of `version`; null when it was not asked. */
+  npm?: NpmCheck | null;
   /** The coordinator's environment: only whether each variable is set is read. */
   env: Record<string, string | undefined>;
   /** Variables whose value comes from the machine credentials file. */
@@ -333,7 +378,8 @@ export function buildBrief(input: BuildBriefInput): Brief {
 
   // Not `npx <package>`: inside the Armada repository itself, npx resolves the
   // workspace package of the same name, which has no built command.
-  const pkg = `${ARMADA_PACKAGE}@${input.version}`;
+  const pinned = npmPin(input.version, input.npm ?? null, warnings);
+  const pkg = `${ARMADA_PACKAGE}@${pinned}`;
   const branch = ticket.branchName;
   const runtime = choice?.profile.runtime ?? "conductor";
   const handle = runtime === "claude-code" ? subagentName(ticket.id) : CONDUCTOR_HANDLE;
@@ -390,6 +436,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
       ? { source: choice.source, rule: choice.rule, routed: choice.routed, reason: choice.reason, why: choice.why }
       : null,
     repository: { name: config.github.repository, url: `https://github.com/${config.github.repository}` },
+    armadaVersion: { pinned, coordinator: input.version },
     install: `npm install -g ${pkg}`,
     fallback: `npm exec --yes --package=${pkg} -- armada`,
     claimCommand,
@@ -411,6 +458,31 @@ export function buildBrief(input: BuildBriefInput): Brief {
   if (ticket.notes.length > MAX_NOTES)
     warnings.push(`${ticket.id} has ${ticket.notes.length} comments; the brief carries the newest ${MAX_NOTES}`);
   return { ...brief, prompt: renderPrompt(brief) };
+}
+
+/**
+ * The version the brief pins: the coordinator's, unless npm does not serve it
+ * yet (a release still publishing, a checkout ahead of npm) and an older one
+ * is published. Each case npm leaves in doubt is a warning.
+ */
+function npmPin(version: string, npm: NpmCheck | null, warnings: string[]): string {
+  if (!npm || npm.state === "published") return version;
+  if (npm.state === "unknown") {
+    warnings.push(
+      `could not check that armada ${version} is on npm (${npm.reason}); if it is not published yet, the worker's install fails`,
+    );
+    return version;
+  }
+  if (!npm.newest) {
+    warnings.push(
+      `armada ${version} is not on npm, nor any older version: the worker's install and its fallback line fail until it is published`,
+    );
+    return version;
+  }
+  warnings.push(
+    `armada ${version} is not on npm yet: this brief pins ${npm.newest}, the newest published version. The skills of this checkout may describe commands ${npm.newest} lacks; publish ${version} (the release pull request) and brief again to launch with it`,
+  );
+  return npm.newest;
 }
 
 /** A shell word: as is when it is plain, else single-quoted. */
@@ -450,7 +522,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     b.claimCommand,
     "```",
     "",
-    `This installs the coordinator's Armada version. If the global install is refused, use \`${b.fallback}\` wherever this brief or the skill says \`armada\`.`,
+    `${b.armadaVersion.pinned === b.armadaVersion.coordinator ? "This installs the coordinator's Armada version." : `This installs Armada ${b.armadaVersion.pinned}, the newest on npm (the coordinator runs ${b.armadaVersion.coordinator}, not published yet).`} If the global install is refused, use \`${b.fallback}\` wherever this brief or the skill says \`armada\`.`,
     ...(b.launch
       ? [
           "",
@@ -539,6 +611,8 @@ export interface LoadBriefOptions {
    * the prompt then names the keys to pass.
    */
   launch?: (ticket: string) => Promise<BriefLaunch | { reason: string; warn: boolean }>;
+  /** Asks npm whether `version` is published (`checkPublished`), beside the Linear reads; not asked when absent. */
+  npm?: (version: string) => Promise<NpmCheck>;
   /** The `[brief] extra` file, read by the caller from the repository. */
   conventions?: { path: string; text: string | null } | null;
   fetch?: Fetch;
@@ -556,9 +630,10 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     if (err instanceof ProfileError) throw new BriefError(err.message);
     throw err;
   }
-  const [ticket, program] = await Promise.all([
+  const [ticket, program, npm] = await Promise.all([
     fetchBriefTicket(linear, opts.ticket),
     fetchProgram({ ...linear, rootId: config.tracker.programRoot, labels: config.tracker.labels, now }),
+    opts.npm?.(opts.version) ?? null,
   ]);
   if (!ticket)
     throw new Refusal(`ticket ${opts.ticket} not found in Linear`, "armada status, to see the tickets of the program");
@@ -574,6 +649,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     profile: opts.profile,
     reason: opts.reason ?? null,
     version: opts.version,
+    npm,
     env: opts.env,
     ...(opts.stored ? { stored: opts.stored } : {}),
     launch: made,

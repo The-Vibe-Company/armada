@@ -4,6 +4,7 @@ import type { ArmadaConfig } from "./config.ts";
 import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
+import { notStartedBody, notStartedLaunches, type PendingLaunch } from "./live.ts";
 import { buildModel, isDone } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
 import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest } from "./types.ts";
@@ -70,6 +71,15 @@ export interface WaitingPullRequest extends PrRef {
   ticket: { id: string; phase: AgentPhase | null } | null;
 }
 
+/** A worker launched on a ticket that has not claimed it after `policy.not_started_minutes`. */
+export interface NotStartedLaunch extends PendingLaunch {
+  /** The ticket's title and link, when the program holds it. */
+  title: string | null;
+  url: string | null;
+  /** Why it shows, and what to do (the inbox entry's text). */
+  detail: string;
+}
+
 export interface StatusReport {
   progress?: { done: number; total: number };
   schemaVersion: typeof STATUS_SCHEMA_VERSION;
@@ -84,6 +94,8 @@ export interface StatusReport {
   /** `policy.coordinator_minutes`: an inbox item open longer than this waits for the coordinator. */
   coordinatorMinutes: number;
   inFlight: InFlightTicket[];
+  /** Workers launched that have not claimed their ticket; empty when Armada's live data was not read. */
+  notStarted: NotStartedLaunch[];
   /** Ready to start: the frontier, ranked. `readyForAgent` marks tickets that carry the ready label. */
   frontier: FrontierTicket[];
   /** Open pull requests of the repository; null when GitHub could not be read. */
@@ -101,6 +113,8 @@ export interface BuildStatusInput {
   lastEvents?: Record<string, string>;
   /** Live events newer than the tracker read, and open runtime handles (the dashboard's live layer). */
   live?: LaneOptions["live"];
+  /** Launches no claim followed, from Armada's live data. */
+  launches?: PendingLaunch[];
   /** Problems met on optional sources (the live data), added to the report warnings. */
   extraWarnings?: string[];
   now: Date;
@@ -118,6 +132,7 @@ export function buildStatus({
   forgeError = null,
   lastEvents,
   live,
+  launches = [],
   extraWarnings = [],
   now,
 }: BuildStatusInput): StatusReport {
@@ -192,6 +207,10 @@ export function buildStatus({
       openBlockers: l.openBlockers,
       flags: l.flags,
     })),
+    notStarted: notStartedLaunches(launches, now, config.policy.notStartedMinutes).map((l) => {
+      const issue = issues.find((i) => i.id === l.ticket);
+      return { ...l, title: issue?.title ?? null, url: issue?.url ?? null, detail: notStartedBody(l, now) };
+    }),
     frontier: frontier(m, config.tracker.readyLabel)
       .filter((c) => !phaseOf.has(c.issue.id))
       .map((c) => ({
@@ -223,6 +242,8 @@ export interface LoadStatusOptions {
   githubToken: string | null;
   /** Newest live event time per ticket, read by the caller through Armada when signed in. */
   lastEvents?: () => Promise<Record<string, string>>;
+  /** Launches no claim followed, read by the caller through Armada when signed in. */
+  launches?: () => Promise<PendingLaunch[]>;
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -319,14 +340,27 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events] = await Promise.all([readStatusSources(config, opts), eventsP]);
+  const launchesP: Promise<{ launches?: PendingLaunch[]; warning?: string }> = opts.launches
+    ? opts.launches().then(
+        (launches) => ({ launches }),
+        (err: unknown) => ({
+          warning: `Armada's launches could not be read (${err instanceof Error ? err.message : String(err)}); workers launched that never started are not listed`,
+        }),
+      )
+    : Promise.resolve({});
+  const [{ program, forge, forgeError }, events, launches] = await Promise.all([
+    readStatusSources(config, opts),
+    eventsP,
+    launchesP,
+  ]);
   return buildStatus({
     config,
     program,
     forge,
     forgeError,
     ...(events.events ? { lastEvents: events.events } : {}),
-    extraWarnings: events.warning ? [events.warning] : [],
+    ...(launches.launches ? { launches: launches.launches } : {}),
+    extraWarnings: [events.warning, launches.warning].filter((w): w is string => !!w),
     now: now(),
   });
 }
