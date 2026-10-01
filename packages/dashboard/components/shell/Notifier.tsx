@@ -50,12 +50,17 @@ export function Notifier() {
     const fresh = seen && allowed ? toNotify(items, seen, settings, new Date()) : [];
     writeSeen(new Set([...(seen ?? []), ...items.map((i) => i.key)]));
     for (const item of fresh) {
-      const n = new Notification(notificationTitle(t, item), { body: t.notify.open, tag: item.key });
-      n.onclick = () => {
-        window.focus();
-        router.push(item.href);
-        n.close();
-      };
+      try {
+        const n = new Notification(notificationTitle(t, item), { body: t.notify.open, tag: item.key });
+        n.onclick = () => {
+          window.focus();
+          router.push(item.href);
+          n.close();
+        };
+      } catch {
+        // A browser that notifies through a service worker only (Chrome on Android): the page keeps the item.
+        return;
+      }
     }
   }, [overview, settings, t, router]);
 

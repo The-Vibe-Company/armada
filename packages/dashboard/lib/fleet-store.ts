@@ -1186,7 +1186,12 @@ export interface LiveStore extends RequestStore {
   feedPage(q: FeedQuery): Promise<FeedEntry[]>;
   feedPeople(projects: string[], now: Date): Promise<string[]>;
   /** What the overview's "since you were away" sums up (THE-894). */
-  catchupRecords(project: string, since: Date, silentAfterMinutes: number, now: Date): Promise<CatchupRecords>;
+  catchupRecords(
+    project: string,
+    window: { since: Date; until: Date },
+    silentAfterMinutes: number,
+    now: Date,
+  ): Promise<CatchupRecords>;
 }
 
 /** A ticket's history in the app's database: its events, inbox items and launches. */
@@ -1226,6 +1231,6 @@ export const liveStore = (db: Database): LiveStore => ({
   insightRecords: (project, since, silentAfterMinutes) => insightRecords(db, project, since, silentAfterMinutes),
   feedPage: (q) => feedPage(db, q),
   feedPeople: (projects, now) => feedPeople(db, projects, now),
-  catchupRecords: (project, since, silentAfterMinutes, now) =>
-    catchupRecords(db, project, since, silentAfterMinutes, now),
+  catchupRecords: (project, window, silentAfterMinutes, now) =>
+    catchupRecords(db, project, window, silentAfterMinutes, now),
 });

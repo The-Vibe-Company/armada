@@ -87,9 +87,10 @@ describe("the landing page", () => {
       .filter((f) => /next\/headers|\bfetch\((?!"\/landing\/)|cookies\(\)/.test(read(f)))
       .map((f) => relative(ROOT, f));
     // They read the server only in the shell: its poll (FleetProvider), its visit beacon (VisitProvider,
-    // THE-894), and the timeline's history when none is given. The replica runs in ShowcaseProvider,
-    // which gives the history, never polls and has no visit.
+    // THE-894) and the summary it announces, and the timeline's history when none is given. The replica
+    // runs in ShowcaseProvider, which gives the history, never polls and has no visit.
     expect(offenders.sort()).toEqual([
+      "components/SinceAway.tsx",
       "components/shell/context.tsx",
       "components/shell/visit.tsx",
       "components/timeline/Timeline.tsx",

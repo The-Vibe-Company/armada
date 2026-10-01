@@ -653,6 +653,7 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
         organization text NOT NULL,
         seen_at timestamptz NOT NULL,
         since timestamptz,
+        back_at timestamptz,
         dismissed_since timestamptz,
         notify jsonb,
         PRIMARY KEY (viewer, organization)

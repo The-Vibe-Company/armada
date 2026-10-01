@@ -251,21 +251,34 @@ describe("feedPage", () => {
 
 describe("catchupRecords", () => {
   test("reads the merges, claims, blocks, silences and what waits since a visit's start", async () => {
-    const r = await catchupRecords(db, P, at(30), 15, NOW);
+    const r = await catchupRecords(db, P, { since: at(30), until: NOW }, 15, NOW);
     expect(r.merged).toEqual([{ ticket: "W-1", at: iso(60) }]);
     expect(r.claimed).toEqual([{ ticket: "W-2", at: iso(100) }]);
     expect(r.blocked).toEqual([{ ticket: "W-2", at: iso(110) }]);
-    // W-1's 40 minutes between heartbeats; W-2 silent since its blocked report, still held.
+    // W-1's 40 minutes between heartbeats, planning; W-2 silent since its blocked report, still held.
     expect(r.gaps).toEqual([
-      { ticket: "W-1", from: iso(5), to: iso(45) },
-      { ticket: "W-2", from: iso(110), to: null },
+      { ticket: "W-1", from: iso(5), to: iso(45), phase: "planning" },
+      { ticket: "W-2", from: iso(110), to: null, phase: "blocked" },
     ]);
     expect(r.waiting).toEqual([{ id: expect.any(Number), ticket: "W-2", kind: "question" }]);
     const s = sinceSummary({ since: iso(30), now: NOW, records: [r] });
+    // Blocked waits on someone: named for the block, not for its silence.
     expect(s.stuck.map((x) => [x.ticket, x.reason, x.minutes, x.ongoing])).toEqual([
-      ["W-2", "silent", 190, true],
       ["W-1", "silent", 40, false],
+      ["W-2", "blocked", null, false],
     ]);
+  });
+
+  test("reads a silence whole when it began long before the visit's start, and stops at its end", async () => {
+    // W-1's last event before 50 is its heartbeat at 45; its report at 50 ends no silence.
+    const late = await catchupRecords(db, P, { since: at(46), until: NOW }, 15, NOW);
+    expect(late.gaps.filter((g) => g.ticket === "W-1")).toEqual([]);
+    const crossing = await catchupRecords(db, P, { since: at(40), until: NOW }, 15, NOW);
+    expect(crossing.gaps.filter((g) => g.ticket === "W-1")).toEqual([
+      { ticket: "W-1", from: iso(5), to: iso(45), phase: "planning" },
+    ]);
+    // Back at 55: the merge at 60 happened while they watched.
+    expect((await catchupRecords(db, P, { since: at(30), until: at(55) }, 15, NOW)).merged).toEqual([]);
   });
 });
 
@@ -276,9 +289,10 @@ describe("visits", () => {
     expect(await recordVisit(db, me, at(0))).toMatchObject({ seenAt: iso(0), since: null });
     expect(await recordVisit(db, me, at(20))).toMatchObject({ seenAt: iso(20), since: null });
     expect(await recordVisit(db, me, at(45))).toMatchObject({ seenAt: iso(45), since: null });
-    expect(await recordVisit(db, me, at(120))).toMatchObject({ seenAt: iso(120), since: iso(45) });
+    expect(await recordVisit(db, me, at(120))).toMatchObject({ seenAt: iso(120), since: iso(45), backAt: iso(120) });
+    expect(await recordVisit(db, me, at(125))).toMatchObject({ seenAt: iso(125), since: iso(45), backAt: iso(120) });
     // A late beacon from another tab moves nothing back.
-    expect(await recordVisit(db, me, at(110))).toMatchObject({ seenAt: iso(120), since: iso(45) });
+    expect(await recordVisit(db, me, at(110))).toMatchObject({ seenAt: iso(125), since: iso(45) });
     // Each person and organization is kept apart.
     expect(await readVisit(db, { viewer: "user-1", organization: "org-b" })).toMatchObject({ seenAt: null });
   });
@@ -287,7 +301,7 @@ describe("visits", () => {
     expect(await dismissSummary(db, me, at(0))).toBe(false);
     expect(await dismissSummary(db, me, at(45))).toBe(true);
     expect(await readVisit(db, me)).toMatchObject({ since: iso(45), dismissedSince: iso(45) });
-    expect(await recordVisit(db, me, at(200))).toMatchObject({ since: iso(120), dismissedSince: iso(45) });
+    expect(await recordVisit(db, me, at(200))).toMatchObject({ since: iso(125), dismissedSince: iso(45) });
   });
 
   test("keep the notification settings", async () => {

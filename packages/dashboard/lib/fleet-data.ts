@@ -641,22 +641,14 @@ export async function loadInsights(
   q: { range: InsightRange; project: string | null },
 ): Promise<InsightsReading | null> {
   const now = opts.now();
-  const opened = await openLive(opts, scope);
-  const read = await readEntries(opened, opts, projectsOf(opts, scope).map(keyOf));
-  const shown = projectsOf(opts, scope).flatMap((p) => {
-    const snap = read.entries.get(keyOf(p))?.snapshot;
-    // As the overview: live data is read by the registry's slug, never by one only armada.toml names.
-    const slug = snap ? (!p.slug || p.slug === snap.config.project.slug ? snap.config.project.slug : null) : p.slug;
-    return slug ? [{ slug, name: snap?.config.project.name ?? p.name ?? slug, snap: snap ?? null }] : [];
-  });
+  const { store, shown } = await shownProjects(opts, scope);
   if (q.project !== null && !shown.some((p) => p.slug === q.project)) return null;
   const chosen = shown.filter((p) => q.project === null || p.slug === q.project);
   const since = new Date(now.getTime() - 2 * RANGE_DAYS[q.range] * 24 * 3_600_000);
   const cache = opts.cache.insights;
-  let live = opened.store !== null && !read.failed;
+  let live = store !== null;
   const records: ProjectInsightRecords[] = [];
-  if (opened.store && live) {
-    const store = opened.store;
+  if (store) {
     try {
       records.push(
         ...(await withTimeout(
@@ -817,9 +809,14 @@ export async function loadActivity(
 
 /**
  * What happened in the scope's projects since `since`, for the overview's
- * "since you were away": Postgres only. Null when the live data cannot be read.
+ * "since you were away": from the end of their previous visit to when they
+ * came back. Postgres only. Null when the live data cannot be read.
  */
-export async function loadCatchup(opts: LoadOptions, scope: Scope | null, since: Date): Promise<SinceSummary | null> {
+export async function loadCatchup(
+  opts: LoadOptions,
+  scope: Scope | null,
+  window: { since: Date; until: Date },
+): Promise<SinceSummary | null> {
   const now = opts.now();
   const { store, shown } = await shownProjects(opts, scope);
   if (!store) return null;
@@ -829,7 +826,7 @@ export async function loadCatchup(opts: LoadOptions, scope: Scope | null, since:
         shown.map((p) =>
           store.catchupRecords(
             p.slug,
-            since,
+            window,
             p.snap?.config.policy.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes,
             now,
           ),
@@ -838,7 +835,7 @@ export async function loadCatchup(opts: LoadOptions, scope: Scope | null, since:
       opts.liveTimeoutMs ?? 4000,
       "reading what happened",
     );
-    return sinceSummary({ since: since.toISOString(), now, records });
+    return sinceSummary({ since: window.since.toISOString(), until: window.until.toISOString(), now, records });
   } catch (err) {
     liveError(err);
     return null;

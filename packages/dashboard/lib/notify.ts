@@ -5,7 +5,7 @@
 // phase change. Pure: the shell's Notifier keeps what it already notified,
 // reads the viewer's settings and shows each new item once, outside their
 // quiet hours. The live region says the same in the page (lib/announce.ts).
-import type { FleetOverview, SinceSummary } from "@armada/core/read";
+import type { FleetOverview } from "@armada/core/read";
 import { paths } from "./fleet-view";
 import type { Strings } from "./i18n";
 import { coordinatorAlerts, pendingValidations } from "./overview-view";
@@ -22,7 +22,6 @@ export const NOTIFY_OFF: NotifySettings = { on: false, quiet: null };
 export interface VisitAnswer {
   /** Where "since you were away" starts; null when there is no summary to show. */
   since: string | null;
-  summary: SinceSummary | null;
   notify: NotifySettings;
 }
 

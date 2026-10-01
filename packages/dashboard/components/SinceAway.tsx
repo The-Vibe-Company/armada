@@ -4,11 +4,12 @@
 // minutes, one line of what happened since the last visit: what merged, what
 // started, what got stuck and what waits for the owner now, each part a link
 // (the Activity page filtered, the agent, the validations). Dismissed, it
-// stays hidden until the next visit. It reads the shell's visit beacon
-// (components/shell/visit.tsx), computed from Postgres.
+// stays hidden until the next visit. The shell's visit beacon
+// (components/shell/visit.tsx) says when there is one; the summary is read
+// then, from Postgres (`/api/fleet/since`).
 import type { SinceSummary } from "@armada/core/read";
 import Link from "next/link";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { activityHref } from "@/lib/activity-view";
 import { paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
@@ -67,7 +68,7 @@ function parts(t: Strings, s: SinceSummary): ReactNode[] {
   }
   if (s.stuck.length > NAMED)
     out.push(
-      <Link key="more" href={paths.agentGroup("silent")} className="since-link">
+      <Link key="more" href={paths.agents()} className="since-link">
         {t.since.more(s.stuck.length - NAMED)}
       </Link>,
     );
@@ -78,8 +79,27 @@ export function SinceAway() {
   const visit = useVisit();
   const { t, lang } = useShell();
   const now = useNow();
-  const summary = visit?.answer?.summary;
-  if (!visit || !summary) return null;
+  const since = visit?.answer?.since ?? null;
+  const [summary, setSummary] = useState<SinceSummary | null>(null);
+  useEffect(() => {
+    if (!since) {
+      setSummary(null);
+      return;
+    }
+    let stopped = false;
+    fetch("/api/fleet/since", { cache: "no-store" })
+      .then((res) => (res.ok ? (res.json() as Promise<{ summary: SinceSummary | null }>) : null))
+      .then((body) => {
+        if (!stopped && body) setSummary(body.summary);
+      })
+      .catch(() => {
+        // A nicety: the overview stands without it.
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [since]);
+  if (!visit || !since || !summary) return null;
   const list = parts(t, summary);
   const clock = sinceClock(summary.since, now, lang);
   return (

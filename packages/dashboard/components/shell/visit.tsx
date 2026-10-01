@@ -2,11 +2,11 @@
 
 // The viewer's visit, as the shell keeps it (THE-894). A beacon to
 // `/api/fleet/visit` on load, when the tab comes back and every five minutes
-// while it is shown records that they are here and brings back what happened
-// since their last visit (the overview's "since you were away") and their
+// while it is shown records that they are here and brings back where "since
+// you were away" starts (the overview reads the summary) and their
 // notification settings. Nothing runs while the tab is hidden. Pages read it
 // with `useVisit`, which is null outside the shell (the landing's replica).
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ZONE_COOKIE } from "@/lib/activity-view";
 import type { NotifySettings, VisitAnswer } from "@/lib/notify";
 
@@ -32,8 +32,11 @@ function rememberZone() {
 
 export function VisitProvider({ children }: { children: ReactNode }) {
   const [answer, setAnswer] = useState<VisitAnswer | null>(null);
+  /** The last request sent: an older one's answer (a beat sent before a dismiss) is dropped. */
+  const sent = useRef(0);
 
   const post = useCallback(async (body: Record<string, unknown>) => {
+    const mine = ++sent.current;
     try {
       const res = await fetch("/api/fleet/visit", {
         method: "POST",
@@ -41,7 +44,8 @@ export function VisitProvider({ children }: { children: ReactNode }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (res.ok) setAnswer((await res.json()) as VisitAnswer);
+      const next = res.ok ? ((await res.json()) as VisitAnswer) : null;
+      if (next && mine === sent.current) setAnswer(next);
     } catch {
       // A nicety: the dashboard stands without it.
     }
@@ -66,11 +70,11 @@ export function VisitProvider({ children }: { children: ReactNode }) {
       answer,
       dismiss: () => {
         if (!answer?.since) return;
-        setAnswer({ ...answer, since: null, summary: null });
+        setAnswer({ ...answer, since: null });
         void post({ dismiss: answer.since });
       },
       setNotify: (notify) => {
-        setAnswer((a) => (a ? { ...a, notify } : { since: null, summary: null, notify }));
+        setAnswer((a) => (a ? { ...a, notify } : { since: null, notify }));
         void post({ notify });
       },
     }),

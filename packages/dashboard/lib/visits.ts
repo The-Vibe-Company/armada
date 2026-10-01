@@ -23,6 +23,7 @@ export interface ViewerVisit extends Visit {
 const visitOf = (r: Row | undefined): ViewerVisit => ({
   seenAt: iso(r?.seen_at),
   since: iso(r?.since),
+  backAt: iso(r?.back_at),
   dismissedSince: iso(r?.dismissed_since),
   notify: notifyOf(typeof r?.notify === "string" ? JSON.parse(r.notify) : (r?.notify ?? null)) ?? NOTIFY_OFF,
 });
@@ -34,12 +35,14 @@ const visitOf = (r: Row | undefined): ViewerVisit => ({
  */
 export async function recordVisit(db: Queryable, k: ViewerKey, now: Date): Promise<ViewerVisit> {
   const rs = await db.query(
-    `INSERT INTO fleet_viewers (viewer, organization, seen_at) VALUES ($1, $2, $3)
+    `INSERT INTO fleet_viewers (viewer, organization, seen_at, back_at) VALUES ($1, $2, $3, $3)
      ON CONFLICT (viewer, organization) DO UPDATE SET
        since = CASE WHEN excluded.seen_at - fleet_viewers.seen_at > $4::int * interval '1 minute'
                     THEN fleet_viewers.seen_at ELSE fleet_viewers.since END,
+       back_at = CASE WHEN excluded.seen_at - fleet_viewers.seen_at > $4::int * interval '1 minute'
+                      THEN excluded.seen_at ELSE fleet_viewers.back_at END,
        seen_at = GREATEST(fleet_viewers.seen_at, excluded.seen_at)
-     RETURNING seen_at, since, dismissed_since, notify`,
+     RETURNING seen_at, since, back_at, dismissed_since, notify`,
     [k.viewer, k.organization, now, AWAY_MINUTES],
   );
   return visitOf(rs.rows[0]);
@@ -48,7 +51,7 @@ export async function recordVisit(db: Queryable, k: ViewerKey, now: Date): Promi
 /** The viewer's visits as recorded, without recording one; a viewer never seen has none. */
 export async function readVisit(db: Queryable, k: ViewerKey): Promise<ViewerVisit> {
   const rs = await db.query(
-    "SELECT seen_at, since, dismissed_since, notify FROM fleet_viewers WHERE viewer = $1 AND organization = $2",
+    "SELECT seen_at, since, back_at, dismissed_since, notify FROM fleet_viewers WHERE viewer = $1 AND organization = $2",
     [k.viewer, k.organization],
   );
   return visitOf(rs.rows[0]);

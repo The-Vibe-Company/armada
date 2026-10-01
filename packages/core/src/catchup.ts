@@ -3,6 +3,8 @@
 // overview shows when the last visit was more than `AWAY_MINUTES` ago. Pure:
 // the dashboard reads the records from Postgres (its feed is one query over
 // the fleet's events, inbox, validations and launches) and renders these.
+import { NEEDS_HUMAN } from "./fleet.ts";
+import type { AgentPhase } from "./types.ts";
 import type { ValidationKind } from "./validations.ts";
 
 /** Everything the feed lists, in the order the Activity page's kind filter offers them. */
@@ -93,9 +95,13 @@ export interface Visit {
   seenAt: string | null;
   /** Where the visit going on started from: their previous visit's last moment; null on the first. */
   since: string | null;
+  /** When the visit going on began: they came back. */
+  backAt: string | null;
   /** The `since` whose summary they dismissed. */
   dismissedSince: string | null;
 }
+
+const away = (v: Visit, now: Date) => v.seenAt !== null && now.getTime() - Date.parse(v.seenAt) > AWAY_MINUTES * 60_000;
 
 /**
  * Where "since you were away" starts for a visit read at `now`: the last time
@@ -103,8 +109,13 @@ export interface Visit {
  * one, not recorded yet), else the start the current visit already has.
  */
 export function visitSince(v: Visit, now: Date): string | null {
-  if (v.seenAt && now.getTime() - Date.parse(v.seenAt) > AWAY_MINUTES * 60_000) return v.seenAt;
-  return v.since;
+  return away(v, now) ? v.seenAt : v.since;
+}
+
+/** What the viewer was away for: from their previous visit's end to when they came back; null on a first visit. */
+export function awayWindow(v: Visit, now: Date): { since: string; until: string } | null {
+  if (away(v, now)) return { since: v.seenAt as string, until: now.toISOString() };
+  return v.since ? { since: v.since, until: v.backAt ?? now.toISOString() } : null;
 }
 
 /** The summary shows on a visit that has a start and was not dismissed. */
@@ -122,8 +133,11 @@ export interface CatchupRecords {
   silentAfterMinutes: number;
   merged: { ticket: string; at: string }[];
   claimed: { ticket: string; at: string }[];
-  /** Gaps between a held ticket's events (heartbeats included) longer than the threshold; `to` null while it lasts. */
-  gaps: { ticket: string; from: string; to: string | null }[];
+  /**
+   * Gaps between a held ticket's events (heartbeats included) longer than the
+   * threshold, with the phase the ticket was in; `to` null while it lasts.
+   */
+  gaps: { ticket: string; from: string; to: string | null; phase: string | null }[];
   /** Reports that entered `blocked`. */
   blocked: { ticket: string; at: string }[];
   /** What waits for the owner now, however old: validations not decided yet. */
@@ -172,32 +186,43 @@ function distinct<T extends { ticket: string; at: string }>(
 
 /**
  * What happened since `since`, newest first in each list: the tickets merged
- * and started, those that got stuck (a silence longer than the project's
- * threshold that ended or lasts after `since`, the longest one per ticket; or
- * a report that entered `blocked`), and what waits for the owner now. A
- * silence going on wins over a block, a block over a silence that ended.
+ * and started while the viewer was away (from `since` to `until`, when they
+ * came back), those that got stuck then (a silence longer than the project's
+ * threshold, in a phase that waits on no one, that ended after `since` or
+ * lasts and began before `until`, the longest one per ticket; or a report
+ * that entered `blocked`), and what waits for the owner now. A silence going
+ * on wins over a block, a block over a silence that ended.
  */
-export function sinceSummary(input: { since: string; now: Date; records: CatchupRecords[] }): SinceSummary {
+export function sinceSummary(input: {
+  since: string;
+  until?: string;
+  now: Date;
+  records: CatchupRecords[];
+}): SinceSummary {
   const since = Date.parse(input.since);
   const now = input.now.getTime();
+  const until = input.until ? Date.parse(input.until) : now;
+  const during = <T extends { at: string }>(list: T[]) => list.filter((e) => Date.parse(e.at) <= until);
   const merged: (CatchupTicket & { at: string })[] = [];
   const started: (CatchupTicket & { at: string })[] = [];
   const stuck: StuckTicket[] = [];
   const waiting: SinceSummary["waiting"] = [];
   for (const r of input.records) {
-    merged.push(...(distinct(r.project, r.merged, since) as (CatchupTicket & { at: string })[]));
-    started.push(...(distinct(r.project, r.claimed, since) as (CatchupTicket & { at: string })[]));
+    merged.push(...(distinct(r.project, during(r.merged), since) as (CatchupTicket & { at: string })[]));
+    started.push(...(distinct(r.project, during(r.claimed), since) as (CatchupTicket & { at: string })[]));
     const byTicket = new Map<string, StuckTicket>();
     for (const g of r.gaps) {
+      const from = Date.parse(g.from);
       const end = g.to === null ? now : Date.parse(g.to);
-      const minutes = Math.round((end - Date.parse(g.from)) / MIN);
-      if (end < since || minutes <= r.silentAfterMinutes) continue;
+      const waits = g.phase === "merged" || NEEDS_HUMAN.includes(g.phase as AgentPhase);
+      if (waits || end < since || from > until || end - from <= r.silentAfterMinutes * MIN) continue;
+      const minutes = Math.round((end - from) / MIN);
       const held = byTicket.get(g.ticket);
       const ongoing = g.to === null;
       if (!held || (ongoing && !held.ongoing) || (ongoing === held.ongoing && minutes > (held.minutes ?? 0)))
         byTicket.set(g.ticket, { project: r.project, ticket: g.ticket, reason: "silent", minutes, ongoing });
     }
-    for (const b of r.blocked) {
+    for (const b of during(r.blocked)) {
       if (Date.parse(b.at) < since) continue;
       const held = byTicket.get(b.ticket);
       if (!held?.ongoing)

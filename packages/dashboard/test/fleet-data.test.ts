@@ -401,7 +401,7 @@ describe("speed: a page reads Postgres only (THE-853)", () => {
       expect((await loadInsights(w.opts, HOME, { range: "7d", project: null }))?.live).toBe(true);
       const everything = { project: null, ticket: null, kind: null, who: null, before: null };
       expect((await loadActivity(w.opts, HOME, everything))?.live).toBe(true);
-      expect(await loadCatchup(w.opts, HOME, w.at(-3_600_000))).not.toBeNull();
+      expect(await loadCatchup(w.opts, HOME, { since: w.at(-3_600_000), until: w.at(0) })).not.toBeNull();
       expect(await markRepository(db, "acme/widgets")).toEqual(["widgets"]);
       expect((await loadOverview(w.opts)).rows.map((r) => r.id)).toEqual(["WID-2"]);
 
@@ -626,18 +626,29 @@ describe("since the owner last looked (THE-894)", () => {
     const w = world(db);
     await w.warm();
     const base = { project: "widgets", ticket: "WID-2" };
-    await saveRuntimeHandle(db, { ...base, runtime: "Conductor", handle: "ws/2", branch: null, at: w.at(-2 * 3_600_000) });
+    await saveRuntimeHandle(db, {
+      ...base,
+      runtime: "Conductor",
+      handle: "ws/2",
+      branch: null,
+      at: w.at(-2 * 3_600_000),
+    });
     await recordEvent(db, { ...base, kind: "claim", phase: "planning", at: w.at(-2 * 3_600_000) });
-    await recordEvent(db, { project: "widgets", ticket: "WID-5", kind: "merge", phase: "merged", at: w.at(-1_800_000) });
+    await recordEvent(db, {
+      project: "widgets",
+      ticket: "WID-5",
+      kind: "merge",
+      phase: "merged",
+      at: w.at(-1_800_000),
+    });
 
-    const s = await loadCatchup(w.opts, HOME, w.at(-3 * 3_600_000));
+    const away = { since: w.at(-3 * 3_600_000), until: w.at(0) };
+    const s = await loadCatchup(w.opts, HOME, away);
     expect(s?.merged).toEqual([{ project: "widgets", ticket: "WID-5" }]);
     expect(s?.started).toEqual([{ project: "widgets", ticket: "WID-2" }]);
     // Silent two hours, past the template's threshold.
     expect(s?.stuck).toEqual([{ project: "widgets", ticket: "WID-2", reason: "silent", minutes: 120, ongoing: true }]);
-    expect((await loadCatchup(w.opts, { organization: "org-other", home: "org-home" }, w.at(-3 * 3_600_000)))?.quiet).toBe(
-      true,
-    );
+    expect((await loadCatchup(w.opts, { organization: "org-other", home: "org-home" }, away))?.quiet).toBe(true);
   });
 });
 

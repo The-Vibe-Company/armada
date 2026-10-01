@@ -1,14 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { FeedEntry } from "@armada/core/read";
-import {
-  activityHref,
-  activityQuery,
-  entryHref,
-  entryWhat,
-  entryWho,
-  feedDays,
-  zoneOf,
-} from "../lib/activity-view.ts";
+import { activityHref, activityQuery, entryHref, entryWhat, entryWho, feedDays, zoneOf } from "../lib/activity-view.ts";
 import { STRINGS } from "../lib/i18n.ts";
 
 // Synthetic entries, for these tests only.
