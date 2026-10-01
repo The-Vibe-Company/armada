@@ -24,20 +24,24 @@ export function HeaderSlotProvider({ children }: { children: ReactNode }) {
 /**
  * The 48 px bar on top of every page: its title (the breadcrumbs) on the
  * left, its key hints and the page's actions on the right. The shell draws
- * it; pages never draw a title of their own.
+ * it; pages never draw a title of their own. `heading` is the page's one h1,
+ * for screen readers (THE-891): the breadcrumbs already show it.
  */
 export function PageHeader({
   title,
+  heading,
   hints,
   sample = false,
 }: {
   title: ReactNode;
+  heading?: string;
   hints?: ReactNode;
   sample?: boolean;
 }) {
   const setSlot = useContext(SetHeaderSlot);
   return (
     <header className="ui-header">
+      {heading && <h1 className="sr-only">{heading}</h1>}
       {title}
       <span className="spacer" />
       {!sample && setSlot && <span className="ui-header-actions" ref={setSlot} />}

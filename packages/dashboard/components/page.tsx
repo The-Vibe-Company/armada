@@ -88,7 +88,7 @@ export function Columns({ children, side }: { children: ReactNode; side: ReactNo
   return (
     <div className="ui-columns">
       <div className="ui-columns-main">{children}</div>
-      <aside className="ui-columns-side">{side}</aside>
+      <div className="ui-columns-side">{side}</div>
     </div>
   );
 }
