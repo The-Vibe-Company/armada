@@ -1083,11 +1083,14 @@ export async function insightRecords(
          SELECT DISTINCT ticket FROM events
          WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind IN ${WORKER_EVENTS}
        ), timeline AS (
-         SELECT e.id, e.ticket, e.kind, e.phase, e.head_sha, e.created_at,
-           lag(e.created_at) OVER w AS previous, lead(e.id) OVER w IS NULL AS last
-         FROM events e JOIN active a ON a.ticket = e.ticket
-         WHERE e.project = $1 AND e.kind IN ${WORKER_EVENTS}
-         WINDOW w AS (PARTITION BY e.ticket ORDER BY e.created_at, e.id)
+         -- Ticket by ticket (events_by_ticket), so a short range walks its tickets only, not the project.
+         SELECT t.* FROM active a CROSS JOIN LATERAL (
+           SELECT e.id, e.ticket, e.kind, e.phase, e.head_sha, e.created_at,
+             lag(e.created_at) OVER w AS previous, lead(e.id) OVER w IS NULL AS last
+           FROM events e
+           WHERE e.project = $1 AND e.ticket = a.ticket AND e.kind IN ${WORKER_EVENTS}
+           WINDOW w AS (ORDER BY e.created_at, e.id)
+         ) t
        )
        SELECT ticket, kind, phase, head_sha, created_at, last,
          CASE WHEN created_at - previous > $3::int * interval '1 minute' THEN previous END AS gap_from

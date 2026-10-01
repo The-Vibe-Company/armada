@@ -183,6 +183,8 @@ const weekOf = (ms: number) => {
   return dayOf(day - ((new Date(day).getUTCDay() + 6) % 7) * DAY);
 };
 const iso = (ms: number) => new Date(ms).toISOString();
+/** ISO times and keys compare as plain strings: `localeCompare` is far slower on tens of thousands. */
+const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** The harness a worker runs on, from its claim's runtime (`Conductor`, `claude-code`…). */
 export function runtimeHarness(runtime: string | null | undefined): "conductor" | "claude-code" | "codex" | "other" {
@@ -346,7 +348,18 @@ const ticketOf = (project: string, ticket: string, value: number | null, at: num
   at: iso(at),
 });
 
-const byValue = (a: InsightTicket, b: InsightTicket) => (b.value ?? 0) - (a.value ?? 0) || a.at.localeCompare(b.at);
+const byValue = (a: InsightTicket, b: InsightTicket) => (b.value ?? 0) - (a.value ?? 0) || order(a.at, b.at);
+
+/** Records by ticket, in their order. */
+function groupBy<T extends { ticket: string }>(records: readonly T[]): Map<string, T[]> {
+  const by = new Map<string, T[]>();
+  for (const r of records) {
+    const list = by.get(r.ticket);
+    if (list) list.push(r);
+    else by.set(r.ticket, [r]);
+  }
+  return by;
+}
 
 const overlap = (from: number, to: number, start: number, end: number) =>
   Math.max(0, Math.min(to, end) - Math.max(from, start));
@@ -382,12 +395,10 @@ export function buildInsights(input: {
   let ownerOpen = 0;
 
   for (const r of input.records) {
-    const events = new Map<string, InsightEvent[]>();
-    for (const e of r.events) events.set(e.ticket, [...(events.get(e.ticket) ?? []), e]);
-    const sessions = new Map<string, InsightSession[]>();
-    for (const s of r.sessions) sessions.set(s.ticket, [...(sessions.get(s.ticket) ?? []), s]);
-    for (const list of events.values()) list.sort((a, b) => a.at.localeCompare(b.at));
-    for (const list of sessions.values()) list.sort((a, b) => a.claimedAt.localeCompare(b.claimedAt));
+    const events = groupBy(r.events);
+    const sessions = groupBy(r.sessions);
+    for (const list of events.values()) list.sort((a, b) => order(a.at, b.at));
+    for (const list of sessions.values()) list.sort((a, b) => order(a.claimedAt, b.claimedAt));
 
     for (const [ticket, list] of events) {
       const held = sessions.get(ticket) ?? [];
@@ -456,9 +467,17 @@ export function buildInsights(input: {
   const cycleMs = (c: Cycle) => c.mergedAt - c.claimedAt;
   const cycleTickets = current.map((c) => ticketOf(c.project, c.ticket, cycleMs(c), c.mergedAt)).sort(byValue);
 
+  const byDay = new Map<string, number[]>();
+  for (const c of current) {
+    const day = dayOf(c.mergedAt);
+    const list = byDay.get(day);
+    if (list) list.push(cycleMs(c));
+    else byDay.set(day, [cycleMs(c)]);
+  }
   const dayList = Array.from({ length: days }, (_, k) => dayOf(from + k * DAY));
   const dayTickets = (day: string) => merges.filter((m) => m.at.slice(0, 10) === day);
-  const weekList = [...new Set(dayList.map((d) => weekOf(Date.parse(d))))];
+  const weekOfDay = new Map(dayList.map((d) => [d, weekOf(Date.parse(d))]));
+  const weekList = [...new Set(weekOfDay.values())];
 
   const phases: PhaseTime[] = LABEL_PHASES.map((phase) => {
     const went = current.filter((c) => (c.phases[phase] ?? 0) > 0);
@@ -500,7 +519,7 @@ export function buildInsights(input: {
         };
       })
       .filter((c) => c.merged > 0 || c.workerHours > 0)
-      .sort((a, b) => b.merged - a.merged || b.workerHours - a.workerHours || a.key.localeCompare(b.key));
+      .sort((a, b) => b.merged - a.merged || b.workerHours - a.workerHours || order(a.key, b.key));
   };
 
   return {
@@ -509,20 +528,17 @@ export function buildInsights(input: {
     to: iso(now),
     previousFrom: iso(previousFrom),
     days: dayList.map((day) => ({ day, tickets: dayTickets(day) })),
-    weeks: weekList.map((week) => ({
-      week,
-      tickets: merges.filter((m) => weekOf(Date.parse(m.at)) === week),
-    })),
+    weeks: weekList.map((week) => ({ week, tickets: merges.filter((m) => weekOfDay.get(m.at.slice(0, 10)) === week) })),
     merged: {
       count: merges.length,
       previous: previousMerged,
-      tickets: [...merges].sort((a, b) => b.at.localeCompare(a.at)),
+      tickets: [...merges].sort((a, b) => order(b.at, a.at)),
     },
     cycle: {
       ...stat(current.map(cycleMs)),
       previousP50: quantile(previous.map(cycleMs), 0.5),
       tickets: cycleTickets,
-      daily: dayList.map((day) => quantile(current.filter((c) => dayOf(c.mergedAt) === day).map(cycleMs), 0.5)),
+      daily: dayList.map((day) => quantile(byDay.get(day) ?? [], 0.5)),
     },
     phases,
     waits: {
