@@ -109,6 +109,8 @@ export interface ProjectOverview {
   profiles: ProfileSummary[];
   /** Set when the project could not be read at all. */
   error: string | null;
+  /** Its first reading of Linear and GitHub is under way: it shows on a next poll. */
+  reading: boolean;
   warnings: string[];
 }
 
@@ -119,6 +121,8 @@ export interface ProjectReading {
   repository: string;
   report: StatusReport | null;
   error: string | null;
+  /** No reading yet, and one is under way. */
+  reading?: boolean;
   warnings?: string[];
   /** Null when the live data was not read. */
   live: { inbox: InboxItem[]; coordinatorSeenAt: string | null } | null;
@@ -276,6 +280,7 @@ export function buildOverview(input: {
         effort: c.effort,
       })),
       error: p.error,
+      reading: p.reading ?? false,
       warnings: [...(p.warnings ?? []), ...(p.report?.warnings ?? [])],
     });
   }

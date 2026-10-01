@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revokeWorker } from "@/app/workers-actions";
 import { AuthCard } from "@/components/AuthCard";
@@ -101,9 +102,9 @@ export default async function Workers({ searchParams }: { searchParams: Params }
         <a className="link" href={ORGANIZATION_PATH}>
           ← {t.org.nav}
         </a>
-        <a className="link" href="/">
+        <Link className="link" href="/">
           {t.org.back}
-        </a>
+        </Link>
       </div>
     </AuthCard>
   );

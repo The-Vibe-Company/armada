@@ -3,7 +3,7 @@
 import type { ArmadaConfig } from "./config.ts";
 import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
-import { type Fetch, fetchProgram } from "./linear.ts";
+import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import { buildModel } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
 import type { AgentPhase, CiState, ForgeData, ProgramData } from "./types.ts";
@@ -223,17 +223,63 @@ export async function readStatusSources(
     ...(opts.fetch ? { fetch: opts.fetch } : {}),
     now,
   });
-  const forgeP: Promise<{ forge: ForgeData | null; forgeError: string | null }> = opts.githubToken
-    ? fetchForge({
-        token: opts.githubToken,
-        repository: config.github.repository,
-        ...(opts.fetch ? { fetch: opts.fetch } : {}),
-        now,
-      }).then(
-        (forge) => ({ forge, forgeError: null }),
-        (err: unknown) => ({ forge: null, forgeError: err instanceof Error ? err.message : String(err) }),
-      )
-    : Promise.resolve({ forge: null, forgeError: "no GitHub token (set GITHUB_TOKEN or run gh auth login)" });
+  const [program, forge] = await Promise.all([programP, readForge(config, opts, now)]);
+  return { program, ...forge };
+}
+
+/** The repository's pull requests; a failure is kept as the reason, not thrown. */
+function readForge(
+  config: ArmadaConfig,
+  opts: Pick<LoadStatusOptions, "githubToken" | "fetch">,
+  now: () => Date,
+): Promise<{ forge: ForgeData | null; forgeError: string | null }> {
+  if (!opts.githubToken)
+    return Promise.resolve({ forge: null, forgeError: "no GitHub token (set GITHUB_TOKEN or run gh auth login)" });
+  return fetchForge({
+    token: opts.githubToken,
+    repository: config.github.repository,
+    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    now,
+  }).then(
+    (forge) => ({ forge, forgeError: null }),
+    (err: unknown) => ({ forge: null, forgeError: err instanceof Error ? err.message : String(err) }),
+  );
+}
+
+/** What a refresh of a reading reads again; what it leaves out is kept as read. */
+export interface SourcesRefresh {
+  /** Linear's changes since this instant (ISO, with some overlap); null keeps the program as read. */
+  linearSince: string | null;
+  /** Linear ids of tickets to read again whatever their update time (named by a webhook). */
+  touched?: string[];
+  /** The repository's pull requests, read again whole (one request). */
+  forge: boolean;
+}
+
+/** Brings a reading up to date with a few requests: Linear's changes only, and GitHub's pull requests if asked. */
+export async function refreshStatusSources(
+  config: ArmadaConfig,
+  previous: StatusSources,
+  ask: SourcesRefresh,
+  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now">,
+): Promise<StatusSources> {
+  const now = opts.now ?? (() => new Date());
+  const programP =
+    ask.linearSince === null
+      ? Promise.resolve(previous.program)
+      : fetchProgramChanges({
+          apiKey: opts.linearApiKey,
+          rootId: config.tracker.programRoot,
+          labels: config.tracker.labels,
+          previous: previous.program,
+          since: ask.linearSince,
+          ...(ask.touched ? { touched: ask.touched } : {}),
+          ...(opts.fetch ? { fetch: opts.fetch } : {}),
+          now,
+        });
+  const forgeP = ask.forge
+    ? readForge(config, opts, now)
+    : Promise.resolve({ forge: previous.forge, forgeError: previous.forgeError });
   const [program, forge] = await Promise.all([programP, forgeP]);
   return { program, ...forge };
 }
