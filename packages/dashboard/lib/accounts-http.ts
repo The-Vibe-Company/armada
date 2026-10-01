@@ -99,7 +99,7 @@ function lockedPage(lang: Language, title: string, message: string): string {
 *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--text);font:15px/1.55 ui-sans-serif,system-ui,sans-serif}
 main{max-width:460px;padding:32px;border:1px solid var(--line);border-radius:14px;background:var(--panel)}
 .k{font:11px/1 ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
-h1{font:400 34px/1.1 "Instrument Serif",Georgia,serif;margin:12px 0}p{margin:0;color:var(--muted)}
+h1{font:600 28px/1.15 ui-sans-serif,system-ui,sans-serif;letter-spacing:-.02em;margin:12px 0}p{margin:0;color:var(--muted)}
 </style></head>
 <body><main><div class="k">Armada · 503</div><h1>${html(title)}</h1><p>${html(message)}</p></main></body></html>`;
 }

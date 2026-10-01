@@ -1,19 +1,18 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
   cancelInvitation,
   inviteMember,
   removeMember,
   revokeApiKey,
-  signOut,
   switchOrganization,
   updateMemberRole,
 } from "@/app/auth-actions";
 import { ApiKeyForm } from "@/components/ApiKeyForm";
-import { AuthCard } from "@/components/AuthCard";
 import { CopyLink } from "@/components/CopyLink";
+import { Notice, Page, Row, RowSide, RowText, Section, SectionBody } from "@/components/page";
+import { Tag } from "@/components/ui";
 import { invitationUrl, isRole, ROLES, type Role } from "@/lib/accounts";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
 import { accountsModeOf, GITHUB_PATH, KEYS_PATH, WORKERS_PATH } from "@/lib/accounts-settings";
@@ -71,205 +70,179 @@ export default async function Organization({ searchParams }: { searchParams: Par
   const roleOf = (r: string) => t.org.roles[isRole(r) ? r : "member"];
 
   return (
-    <AuthCard wide brandSub={t.brandSub} kicker={t.org.nav} heading={viewer.organization.name} lead={t.org.roleHint}>
-      {error && (
-        <p className="login-error" role="alert">
-          {t.org.errors[error]}
-        </p>
-      )}
-      {done && (
-        <p className="login-notice" role="status">
-          {t.org.notices[done]}
-        </p>
-      )}
+    <Page>
+      {error && <Notice tone="critical">{t.org.errors[error]}</Notice>}
+      {done && <Notice tone="done">{t.org.notices[done]}</Notice>}
 
-      <section className="org-section" aria-labelledby="members-title">
-        <h2 id="members-title" className="section-label">
-          {t.org.members} <span className="tnum faint">{full?.members.length ?? 0}</span>
-        </h2>
-        <ul className="plain-list">
-          {(full?.members ?? []).map((m) => {
-            const self = m.userId === viewer.user.id;
-            return (
-              <li key={m.id} className="member-row">
-                <span className="member-who">
-                  <b>{m.user.name || m.user.email}</b>
-                  {self && <span className="tag">{t.org.you}</span>}
-                  <span className="member-mail">{m.user.email}</span>
-                </span>
-                {manager && !self ? (
-                  <span className="row-actions">
-                    <form action={updateMemberRole} className="inline-form">
-                      <input type="hidden" name="member" value={m.id} />
-                      <label className="sr-only" htmlFor={`role-${m.id}`}>
-                        {t.org.role}
-                      </label>
-                      <select id={`role-${m.id}`} name="role" defaultValue={m.role}>
-                        {grantable.map((r) => (
-                          <option key={r} value={r}>
-                            {t.org.roles[r]}
-                          </option>
-                        ))}
-                      </select>
-                      <button type="submit" className="btn">
-                        {t.org.changeRole}
-                      </button>
-                    </form>
-                    <form action={removeMember}>
-                      <input type="hidden" name="member" value={m.id} />
-                      <button type="submit" className="btn is-danger">
-                        {t.org.remove}
-                      </button>
-                    </form>
-                  </span>
-                ) : (
-                  <span className="role-tag">{roleOf(m.role)}</span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </section>
+      <Section label={t.org.members} count={full?.members.length ?? 0} side={viewer.organization.name}>
+        <SectionBody>
+          <p>{t.org.roleHint}</p>
+        </SectionBody>
+        {(full?.members ?? []).map((m) => {
+          const self = m.userId === viewer.user.id;
+          return (
+            <Row key={m.id}>
+              <RowText
+                title={
+                  <>
+                    {m.user.name || m.user.email} {self && <Tag>{t.org.you}</Tag>}
+                  </>
+                }
+                line={m.user.email}
+              />
+              {manager && !self ? (
+                <RowSide>
+                  <form action={updateMemberRole} className="inline-form">
+                    <input type="hidden" name="member" value={m.id} />
+                    <label className="sr-only" htmlFor={`role-${m.id}`}>
+                      {t.org.role}
+                    </label>
+                    <select id={`role-${m.id}`} name="role" defaultValue={m.role}>
+                      {grantable.map((r) => (
+                        <option key={r} value={r}>
+                          {t.org.roles[r]}
+                        </option>
+                      ))}
+                    </select>
+                    <button type="submit" className="btn">
+                      {t.org.changeRole}
+                    </button>
+                  </form>
+                  <form action={removeMember}>
+                    <input type="hidden" name="member" value={m.id} />
+                    <button type="submit" className="btn is-danger">
+                      {t.org.remove}
+                    </button>
+                  </form>
+                </RowSide>
+              ) : (
+                <RowSide>
+                  <Tag>{roleOf(m.role)}</Tag>
+                </RowSide>
+              )}
+            </Row>
+          );
+        })}
+      </Section>
 
-      <section className="org-section" aria-labelledby="invitations-title">
-        <h2 id="invitations-title" className="section-label">
-          {t.org.invitations} <span className="tnum faint">{invitations.length}</span>
-        </h2>
+      <Section label={t.org.invitations} count={invitations.length}>
         {invitations.length === 0 ? (
-          <p className="faint">{t.org.noInvitations}</p>
+          <SectionBody>
+            <p className="faint">{t.org.noInvitations}</p>
+          </SectionBody>
         ) : (
-          <ul className="plain-list">
-            {invitations.map((i) => (
-              <li key={i.id} className="member-row">
-                <span className="member-who">
-                  <b>{i.email}</b>
-                  <span className="member-mail">
-                    {roleOf(i.role ?? "member")} · {t.org.expires(date.format(new Date(i.expiresAt)))}
-                  </span>
-                </span>
-                {manager && (
-                  <span className="row-actions">
-                    <CopyLink url={invitationUrl(settings.baseUrl, i.id)} label={t.org.copyLink} done={t.org.copied} />
-                    <form action={cancelInvitation}>
-                      <input type="hidden" name="invitation" value={i.id} />
-                      <button type="submit" className="btn">
-                        {t.org.cancel}
-                      </button>
-                    </form>
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
+          invitations.map((i) => (
+            <Row key={i.id}>
+              <RowText
+                title={i.email}
+                line={`${roleOf(i.role ?? "member")} · ${t.org.expires(date.format(new Date(i.expiresAt)))}`}
+              />
+              {manager && (
+                <RowSide>
+                  <CopyLink url={invitationUrl(settings.baseUrl, i.id)} label={t.org.copyLink} done={t.org.copied} />
+                  <form action={cancelInvitation}>
+                    <input type="hidden" name="invitation" value={i.id} />
+                    <button type="submit" className="btn">
+                      {t.org.cancel}
+                    </button>
+                  </form>
+                </RowSide>
+              )}
+            </Row>
+          ))
         )}
-      </section>
+      </Section>
 
-      {manager ? (
-        <section className="org-section" aria-labelledby="invite-title">
-          <h2 id="invite-title" className="section-label">
-            {t.org.invite}
-          </h2>
-          <form action={inviteMember} className="invite-form">
-            <label className="sr-only" htmlFor="invite-email">
-              {t.org.inviteEmail}
-            </label>
-            <input id="invite-email" name="email" type="email" required placeholder={t.org.inviteEmail} />
-            <label className="sr-only" htmlFor="invite-role">
-              {t.org.role}
-            </label>
-            <select id="invite-role" name="role" defaultValue="member">
-              {grantable.map((r) => (
-                <option key={r} value={r}>
-                  {t.org.roles[r]}
-                </option>
-              ))}
-            </select>
-            <button type="submit" className="btn is-primary">
-              {t.org.sendInvite}
-            </button>
-          </form>
-          <p className="login-hint">{t.org.emailNote}</p>
-        </section>
-      ) : (
-        <p className="login-hint">{t.org.onlyAdmins}</p>
-      )}
+      <Section label={t.org.invite}>
+        <SectionBody>
+          {manager ? (
+            <>
+              <form action={inviteMember} className="invite-form">
+                <label className="sr-only" htmlFor="invite-email">
+                  {t.org.inviteEmail}
+                </label>
+                <input id="invite-email" name="email" type="email" required placeholder={t.org.inviteEmail} />
+                <label className="sr-only" htmlFor="invite-role">
+                  {t.org.role}
+                </label>
+                <select id="invite-role" name="role" defaultValue="member">
+                  {grantable.map((r) => (
+                    <option key={r} value={r}>
+                      {t.org.roles[r]}
+                    </option>
+                  ))}
+                </select>
+                <button type="submit" className="btn is-primary">
+                  {t.org.sendInvite}
+                </button>
+              </form>
+              <p className="faint">{t.org.emailNote}</p>
+            </>
+          ) : (
+            <p className="faint">{t.org.onlyAdmins}</p>
+          )}
+        </SectionBody>
+      </Section>
 
-      <section className="org-section" aria-labelledby="api-keys-title">
-        <h2 id="api-keys-title" className="section-label">
-          {t.org.apiKeys} {owner && <span className="tnum faint">{apiKeys.length}</span>}
-        </h2>
-        <p className="login-hint is-top">{t.org.apiKeysHint}</p>
-        {owner ? (
-          <>
-            {apiKeys.length === 0 ? (
-              <p className="faint">{t.org.noApiKeys}</p>
-            ) : (
-              <ul className="plain-list">
-                {apiKeys.map((k) => (
-                  <li key={k.id} className="member-row">
-                    <span className="member-who">
-                      <b>{k.name ?? k.start ?? k.id}</b>
-                      <span className="member-mail mono">{k.start ? `${k.start}…` : ""}</span>
-                      <span className="member-mail">
-                        {t.org.keyCreated(date.format(new Date(k.createdAt)))} ·{" "}
-                        {k.lastRequest ? t.org.keyUsed(date.format(new Date(k.lastRequest))) : t.org.keyUnused}
-                      </span>
-                    </span>
-                    <form action={revokeApiKey}>
-                      <input type="hidden" name="key" value={k.id} />
-                      <button type="submit" className="btn is-danger">
-                        {t.org.revoke}
-                      </button>
-                    </form>
-                  </li>
-                ))}
-              </ul>
-            )}
+      <Section label={t.org.apiKeys} count={owner ? apiKeys.length : undefined}>
+        <SectionBody>
+          <p>{t.org.apiKeysHint}</p>
+          {!owner && <p className="faint">{t.org.onlyOwners}</p>}
+          {owner && apiKeys.length === 0 && <p className="faint">{t.org.noApiKeys}</p>}
+        </SectionBody>
+        {owner &&
+          apiKeys.map((k) => (
+            <Row key={k.id}>
+              <RowText
+                title={k.name ?? k.start ?? k.id}
+                line={
+                  <>
+                    {k.start && <span className="mono">{k.start}… · </span>}
+                    {t.org.keyCreated(date.format(new Date(k.createdAt)))} ·{" "}
+                    {k.lastRequest ? t.org.keyUsed(date.format(new Date(k.lastRequest))) : t.org.keyUnused}
+                  </>
+                }
+              />
+              <RowSide>
+                <form action={revokeApiKey}>
+                  <input type="hidden" name="key" value={k.id} />
+                  <button type="submit" className="btn is-danger">
+                    {t.org.revoke}
+                  </button>
+                </form>
+              </RowSide>
+            </Row>
+          ))}
+        {owner && (
+          <SectionBody>
             <ApiKeyForm lang={lang} />
-          </>
-        ) : (
-          <p className="login-hint">{t.org.onlyOwners}</p>
+          </SectionBody>
         )}
-      </section>
+      </Section>
 
-      <section className="org-section" aria-labelledby="keys-title">
-        <h2 id="keys-title" className="section-label">
-          {t.keys.nav}
-        </h2>
-        <Link className="link" href={KEYS_PATH}>
-          {t.org.keysLink} →
-        </Link>
-      </section>
-
-      <section className="org-section" aria-labelledby="github-title">
-        <h2 id="github-title" className="section-label">
-          {t.github.nav}
-        </h2>
-        <Link className="link" href={GITHUB_PATH}>
-          {t.org.githubLink} →
-        </Link>
-      </section>
-
-      <section className="org-section" aria-labelledby="workers-title">
-        <h2 id="workers-title" className="section-label">
-          {t.workers.nav}
-        </h2>
-        <Link className="link" href={WORKERS_PATH}>
-          {t.org.workersLink} →
-        </Link>
-      </section>
+      <Section label={t.shell.settings}>
+        <Row href={KEYS_PATH}>
+          <RowText title={t.keys.nav} line={t.org.keysLink} />
+          <RowSide>→</RowSide>
+        </Row>
+        <Row href={GITHUB_PATH}>
+          <RowText title={t.github.nav} line={t.org.githubLink} />
+          <RowSide>→</RowSide>
+        </Row>
+        <Row href={WORKERS_PATH}>
+          <RowText title={t.workers.nav} line={t.org.workersLink} />
+          <RowSide>→</RowSide>
+        </Row>
+      </Section>
 
       {organizations.length > 1 && (
-        <section className="org-section" aria-labelledby="orgs-title">
-          <h2 id="orgs-title" className="section-label">
-            {t.org.yourOrganizations}
-          </h2>
-          <ul className="plain-list">
-            {organizations.map((o) => (
-              <li key={o.id} className="member-row">
-                <b>{o.name}</b>
+        <Section label={t.org.yourOrganizations} count={organizations.length}>
+          {organizations.map((o) => (
+            <Row key={o.id}>
+              <RowText title={o.name} />
+              <RowSide>
                 {o.id === viewer.organization.id ? (
-                  <span className="role-tag">{t.org.current}</span>
+                  <Tag>{t.org.current}</Tag>
                 ) : (
                   <form action={switchOrganization}>
                     <input type="hidden" name="organization" value={o.id} />
@@ -278,22 +251,11 @@ export default async function Organization({ searchParams }: { searchParams: Par
                     </button>
                   </form>
                 )}
-              </li>
-            ))}
-          </ul>
-        </section>
+              </RowSide>
+            </Row>
+          ))}
+        </Section>
       )}
-
-      <div className="org-foot">
-        <Link className="link" href="/">
-          ← {t.org.back}
-        </Link>
-        <form action={signOut}>
-          <button type="submit" className="link">
-            {t.auth.logout}
-          </button>
-        </form>
-      </div>
-    </AuthCard>
+    </Page>
   );
 }

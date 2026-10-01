@@ -1,13 +1,14 @@
 "use client";
 
-// One agent in flight as a list row (compact or airy), shared by the
-// placeholders of the Agents and project pages until THE-869 and THE-868 build theirs.
+// One agent in flight as a list row (compact or airy), on the page kit's Row:
+// the Agents page's row, which the overview and a project's page show too.
 import type { FleetRow } from "@armada/core/read";
 import { agentState, harnessOf, paths } from "@/lib/fleet-view";
 import { splitQuestion } from "../Actions";
+import { Row, RowId, RowSide, RowText, RowTime } from "../page";
 import { useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
-import { Dot, HarnessBadge, harnessColor, PhasePill, RelativeTime, Row, StatusDot, Steps, Tag, toneColor } from "../ui";
+import { Dot, HarnessBadge, harnessColor, PhasePill, RelativeTime, StatusDot, Steps, Tag, toneColor } from "../ui";
 
 /** What a row says under its title: the open question, else the worker's last status. */
 export const rowLine = (r: FleetRow) =>
@@ -34,13 +35,13 @@ export function AgentRow({
       <Row href={paths.agent(r.id)} className="sc-agent is-airy">
         <StatusDot status={state.status} progress={rowProgress(r)} size={14} label={label} />
         <span className="sc-agent-main">
-          <span className="sc-agent-title">{r.title}</span>
+          <span className="ui-row-title">{r.title}</span>
           <span className="sc-agent-meta">
             <span className="mono">{r.id}</span>
             {projectName && <> · {projectName}</>} · <HarnessBadge harness={harness} />
             {r.profile && <> · {r.profile}</>}
           </span>
-          <span className="sc-agent-line" style={{ color: r.question ? "var(--accent)" : undefined }}>
+          <span className="ui-row-line" style={{ color: r.question ? "var(--accent)" : undefined }}>
             {rowLine(r)}
           </span>
         </span>
@@ -48,7 +49,7 @@ export function AgentRow({
           <Steps step={r.pipeline.step} tone={state.status} wide />
           <span style={{ color: toneColor(state.status) }}>
             {label} <span className="faint">· </span>
-            <span className="faint">
+            <span className="faint mono">
               <RelativeTime at={r.since} format="duration" />
             </span>
           </span>
@@ -62,27 +63,26 @@ export function AgentRow({
       </Row>
     );
   return (
-    <Row href={paths.agent(r.id)} className="sc-agent">
+    <Row href={paths.agent(r.id)}>
       <StatusDot status={state.status} progress={rowProgress(r)} label={label} />
-      <span className="sc-agent-id mono">{r.id}</span>
-      <span className="sc-agent-text">
-        <span className="sc-agent-title">{r.title}</span>
-        <span className="sc-agent-line">{rowLine(r) || <PhasePill tone={state.status}>{label}</PhasePill>}</span>
-      </span>
+      <RowId>{r.id}</RowId>
+      <RowText title={r.title} line={rowLine(r) || <PhasePill tone={state.status}>{label}</PhasePill>} />
       {projectName && (
-        <span className="sc-roomy">
+        <RowSide roomy>
           <Tag>{projectName}</Tag>
-        </span>
+        </RowSide>
       )}
-      <span className="sc-roomy">
+      <RowSide roomy>
         <Steps step={r.pipeline.step} tone={state.status} />
-      </span>
-      <span title={harness}>
-        <Dot color={harnessColor(harness)} />
-      </span>
-      <span className="sc-agent-ago-short" style={{ color: r.silent ? "var(--active)" : undefined }}>
+      </RowSide>
+      <RowSide>
+        <span title={harness}>
+          <Dot color={harnessColor(harness)} />
+        </span>
+      </RowSide>
+      <RowTime color={r.silent ? "var(--active)" : undefined}>
         <RelativeTime at={r.lastReport} format="duration" />
-      </span>
+      </RowTime>
     </Row>
   );
 }

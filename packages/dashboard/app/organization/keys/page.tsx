@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { deleteKey, saveKey } from "@/app/keys-actions";
-import { AuthCard } from "@/components/AuthCard";
+import { Notice, Page, Row, RowSide, RowText, RowTime, Section, SectionBody, Toolbar } from "@/components/page";
+import { Tabs, Tag } from "@/components/ui";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
-import { accountsModeOf, KEYS_PATH, ORGANIZATION_PATH } from "@/lib/accounts-settings";
+import { accountsModeOf, KEYS_PATH } from "@/lib/accounts-settings";
 import { projectsOf } from "@/lib/fleet-store";
 import {
   KEYS_ERRORS,
@@ -70,24 +70,13 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   });
   const when = (iso: string) => date.format(new Date(iso));
 
-  const foot = (
-    <div className="org-foot">
-      <a className="link" href={ORGANIZATION_PATH}>
-        ← {t.org.nav}
-      </a>
-      <Link className="link" href="/">
-        {t.org.back}
-      </Link>
-    </div>
-  );
   if (vault.kind !== "on")
     return (
-      <AuthCard wide brandSub={t.brandSub} kicker={k.nav} heading={viewer.organization.name} lead={k.lead}>
-        <p className="login-error" role="alert">
+      <Page>
+        <Notice tone="critical">
           {vault.kind === "off" ? k.vaultOff(SECRETS_KEY_VARIABLE) : k.vaultInvalid(SECRETS_KEY_VARIABLE)}
-        </p>
-        {foot}
-      </AuthCard>
+        </Notice>
+      </Page>
     );
 
   const projects = await projectsOf(client, viewer.organization.id);
@@ -124,15 +113,12 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
     const secret = SECRET_KINDS[name].secret;
     const id = `key-${label}`;
     return (
-      <li key={label} className="key-row">
-        <span className="member-who">
-          <b>{k.labels[label]}</b>
-          <span className="member-mail">{status(info)}</span>
-        </span>
-        <span className="member-mail">{k.hints[label]}</span>
-        {info?.value && <code className="mono key-value">{info.value}</code>}
+      <Row key={label} className="sc-key">
+        <RowText title={k.labels[label]} line={status(info)} />
+        <span className="sc-key-wide faint">{k.hints[label]}</span>
+        {info?.value && <code className="mono key-value sc-key-wide">{info.value}</code>}
         {editable && (
-          <span className="row-actions is-key">
+          <span className="row-actions is-key sc-key-wide">
             <form action={saveKey} className="invite-form">
               {slotFields(name, scope)}
               <label className="sr-only" htmlFor={id}>
@@ -162,7 +148,7 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
             )}
           </span>
         )}
-      </li>
+      </Row>
     );
   };
 
@@ -170,13 +156,10 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   const workerRow = (info: SecretInfo) => {
     const id = `secret-${info.name}`;
     return (
-      <li key={info.name} className="key-row">
-        <span className="member-who">
-          <b className="mono">{info.name}</b>
-          <span className="member-mail">{status(info)}</span>
-        </span>
+      <Row key={info.name} className="sc-key">
+        <RowText title={<span className="mono">{info.name}</span>} line={status(info)} />
         {manager && (
-          <span className="row-actions is-key">
+          <span className="row-actions is-key sc-key-wide">
             <form action={saveKey} className="invite-form">
               {slotFields(info.name, secretScope)}
               <label className="sr-only" htmlFor={id}>
@@ -204,7 +187,7 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
             </form>
           </span>
         )}
-      </li>
+      </Row>
     );
   };
 
@@ -212,133 +195,124 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   const scopeHref = (p: string) => (p ? `${KEYS_PATH}?${new URLSearchParams({ project: p })}` : KEYS_PATH);
 
   return (
-    <AuthCard wide brandSub={t.brandSub} kicker={k.nav} heading={viewer.organization.name} lead={k.lead}>
-      {error && (
-        <p className="login-error" role="alert">
-          {k.errors[error]}
-        </p>
-      )}
-      {done && (
-        <p className="login-notice" role="status">
-          {k.notices[done]}
-        </p>
-      )}
-      {!manager && <p className="login-hint is-top">{k.onlyAdmins}</p>}
+    <Page
+      toolbar={
+        projects.length > 0 && (
+          <Toolbar>
+            <Tabs
+              label={k.scope}
+              value={slug}
+              items={[{ slug: "", name: k.organizationScope }, ...projects].map((p) => ({
+                key: p.slug,
+                label: p.name,
+                href: scopeHref(p.slug),
+              }))}
+            />
+          </Toolbar>
+        )
+      }
+    >
+      {error && <Notice tone="critical">{k.errors[error]}</Notice>}
+      {done && <Notice tone="done">{k.notices[done]}</Notice>}
 
-      {projects.length > 0 && (
-        <nav className="org-section" aria-label={k.scope}>
-          <h2 className="section-label">{k.scope}</h2>
-          <ul className="chips">
-            {[{ slug: "", name: k.organizationScope }, ...projects].map((p) => (
-              <li key={p.slug || "organization"}>
-                <Link
-                  className="chip is-scope"
-                  href={scopeHref(p.slug)}
-                  aria-current={p.slug === slug ? "page" : undefined}
-                >
-                  {p.name}
-                </Link>
-              </li>
-            ))}
-          </ul>
-          {project && <p className="login-hint is-top">{k.projectLead(project.name)}</p>}
-        </nav>
-      )}
-
-      {groups.map((g) => (
-        <section key={g.title} className="org-section" aria-labelledby={`keys-${g.title}`}>
-          <h2 id={`keys-${g.title}`} className="section-label">
-            {k[g.title]}
-          </h2>
-          <ul className="plain-list">
-            {g.keys.map((name) => row(name, false))}
-            {g.title === "linear" && !project && row("linear-api-key", true)}
-          </ul>
-        </section>
+      {groups.map((g, i) => (
+        <Section
+          key={g.title}
+          label={k[g.title]}
+          side={i === 0 ? (project?.name ?? viewer.organization.name) : undefined}
+        >
+          {i === 0 && (
+            <SectionBody>
+              <p>{project ? k.projectLead(project.name) : k.lead}</p>
+              {!manager && <p className="faint">{k.onlyAdmins}</p>}
+            </SectionBody>
+          )}
+          {g.keys.map((name) => row(name, false))}
+          {g.title === "linear" && !project && row("linear-api-key", true)}
+        </Section>
       ))}
 
-      <section className="org-section" aria-labelledby="keys-workers">
-        <h2 id="keys-workers" className="section-label">
-          {k.workerSecrets}
-        </h2>
-        <p className="login-hint is-top">{k.workerSecretsHint(!project)}</p>
-        {workerSecrets.length === 0 ? (
-          <p className="faint">{k.noSecrets}</p>
-        ) : (
-          <ul className="plain-list">{workerSecrets.map(workerRow)}</ul>
+      <Section label={k.workerSecrets} count={workerSecrets.length}>
+        <SectionBody>
+          <p>{k.workerSecretsHint(!project)}</p>
+          {workerSecrets.length === 0 && <p className="faint">{k.noSecrets}</p>}
+        </SectionBody>
+        {workerSecrets.map(workerRow)}
+        {(fromOrganization.length > 0 || manager) && (
+          <SectionBody>
+            {fromOrganization.length > 0 && (
+              <p className="faint mono">{k.fromOrganization(fromOrganization.join(", "))}</p>
+            )}
+            {manager && (
+              <form action={saveKey} className="invite-form">
+                <input type="hidden" name="scope" value={secretScope} />
+                {project && <input type="hidden" name="project" value={slug} />}
+                <label className="sr-only" htmlFor="secret-name">
+                  {k.secretName}
+                </label>
+                <input
+                  id="secret-name"
+                  name="name"
+                  type="text"
+                  required
+                  autoComplete="off"
+                  spellCheck={false}
+                  pattern="[A-Za-z][A-Za-z0-9_]{0,63}"
+                  placeholder={k.secretNamePlaceholder}
+                  maxLength={64}
+                  className="mono"
+                />
+                <label className="sr-only" htmlFor="secret-value">
+                  {k.newValue}
+                </label>
+                <input
+                  id="secret-value"
+                  name="value"
+                  type="password"
+                  required
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  placeholder={k.newValue}
+                  maxLength={32768}
+                />
+                <button type="submit" className="btn is-primary">
+                  {k.add}
+                </button>
+              </form>
+            )}
+          </SectionBody>
         )}
-        {fromOrganization.length > 0 && (
-          <p className="login-hint is-top mono">{k.fromOrganization(fromOrganization.join(", "))}</p>
-        )}
-        {manager && (
-          <form action={saveKey} className="invite-form">
-            <input type="hidden" name="scope" value={secretScope} />
-            {project && <input type="hidden" name="project" value={slug} />}
-            <label className="sr-only" htmlFor="secret-name">
-              {k.secretName}
-            </label>
-            <input
-              id="secret-name"
-              name="name"
-              type="text"
-              required
-              autoComplete="off"
-              spellCheck={false}
-              pattern="[A-Za-z][A-Za-z0-9_]{0,63}"
-              placeholder={k.secretNamePlaceholder}
-              maxLength={64}
-              className="mono"
-            />
-            <label className="sr-only" htmlFor="secret-value">
-              {k.newValue}
-            </label>
-            <input
-              id="secret-value"
-              name="value"
-              type="password"
-              required
-              autoComplete="new-password"
-              spellCheck={false}
-              placeholder={k.newValue}
-              maxLength={32768}
-            />
-            <button type="submit" className="btn is-primary">
-              {k.add}
-            </button>
-          </form>
-        )}
-      </section>
+      </Section>
 
       {manager && (
-        <section className="org-section" aria-labelledby="keys-audit">
-          <h2 id="keys-audit" className="section-label">
-            {k.audit}
-          </h2>
-          <p className="login-hint is-top">
-            {k.auditHint}
-            {project ? ` ${k.auditProjectHint(project.name)}` : ""}
-          </p>
-          {events.length === 0 ? (
-            <p className="faint">{k.noEvents}</p>
-          ) : (
-            <ul className="plain-list">
-              {events.map((e) => (
-                <li key={e.id} className="member-row">
-                  <span className="member-who">
-                    <b>{e.actor.label}</b>
-                    <span className="role-tag">{k.actions[e.action]}</span>
-                    {!project && e.project && <span className="role-tag mono">{e.project}</span>}
-                    <span className="mono member-mail">{e.keys.length ? e.keys.join(", ") : k.nothing}</span>
-                    <span className="member-mail">{e.detail}</span>
-                  </span>
-                  <span className="member-mail tnum key-when">{when(e.at)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+        <Section label={k.audit} count={events.length}>
+          <SectionBody>
+            <p>
+              {k.auditHint}
+              {project ? ` ${k.auditProjectHint(project.name)}` : ""}
+            </p>
+            {events.length === 0 && <p className="faint">{k.noEvents}</p>}
+          </SectionBody>
+          {events.map((e) => (
+            <Row key={e.id}>
+              <RowText
+                title={e.actor.label}
+                line={
+                  <>
+                    <span className="mono">{e.keys.length ? e.keys.join(", ") : k.nothing}</span>
+                    {e.detail && <> · {e.detail}</>}
+                  </>
+                }
+              />
+              <RowSide>
+                <Tag>{k.actions[e.action]}</Tag>
+                {!project && e.project && <Tag>{e.project}</Tag>}
+              </RowSide>
+              <RowTime>{when(e.at)}</RowTime>
+            </Row>
+          ))}
+        </Section>
       )}
-      {foot}
-    </AuthCard>
+    </Page>
   );
 }

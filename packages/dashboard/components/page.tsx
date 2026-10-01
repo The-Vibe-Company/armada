@@ -1,0 +1,207 @@
+// The page kit (THE-876): the only way to build a page of the shell. It is
+// the Agents page's anatomy, taken apart: the shell draws the header bar
+// (`PageHeader`, the page's only title; a page adds buttons to it with
+// `HeaderActions`), then a page is an optional `Toolbar` and its `Section`s,
+// each a band over `Row`s, with `Card`s where the design draws cards. /design
+// shows each one; test/page-anatomy.test.ts keeps every page to it.
+//
+// Server-safe: the organization's pages render these on the server. The parts
+// that need the shell (the header's slot, the density) are in page-client.tsx.
+import Link from "next/link";
+import type { CSSProperties, ReactNode } from "react";
+
+export { DensityToggle, HeaderActions, PageHeader } from "./page-client";
+
+const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
+
+/** A page under the header bar: its toolbar, if it has one, then its sections, full width. */
+export function Page({ toolbar, children }: { toolbar?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="ui-page">
+      {toolbar}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The row of tabs and filters under the header bar, with what goes on its
+ * right (the density toggle) in `end`. Leave it out when a page has none.
+ */
+export function Toolbar({ children, end }: { children?: ReactNode; end?: ReactNode }) {
+  return (
+    <div className="ui-toolbar">
+      {children}
+      {end && <div className="ui-toolbar-end">{end}</div>}
+    </div>
+  );
+}
+
+/**
+ * A band and what it holds: an icon or a status dot, a label, a count and
+ * what goes on its right (a figure, a hint, an action). Rows go straight
+ * inside; anything else goes in a `SectionBody`.
+ */
+export function Section({
+  icon,
+  label,
+  count,
+  side,
+  children,
+}: {
+  icon?: ReactNode;
+  label: ReactNode;
+  count?: ReactNode;
+  side?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <section className="ui-section">
+      <div className="ui-section-h">
+        {icon && <span className="ui-section-icon">{icon}</span>}
+        <h2 className="ui-section-label">{label}</h2>
+        {count !== undefined && <span className="ui-count">{count}</span>}
+        {side && <span className="ui-section-side">{side}</span>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/** What a section holds that is not rows (a form, a hint, cards), on the rows' left edge. */
+export function SectionBody({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cx("ui-section-body", className)}>{children}</div>;
+}
+
+/**
+ * A line of a list: 40 px compact, 48 px airy, a hairline under it. With
+ * `href` it opens a page: j/k moves through these, Enter opens the selected
+ * one, and its page is prefetched. Without, it is a static line (a member, a
+ * key, a ticket ready to start).
+ */
+export function Row({
+  href,
+  children,
+  className,
+  style,
+}: {
+  href?: string;
+  children: ReactNode;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  if (href)
+    return (
+      <Link href={href} prefetch className={cx("ui-row", className)} style={style} data-row="">
+        {children}
+      </Link>
+    );
+  return (
+    <div className={cx("ui-row is-static", className)} style={style}>
+      {children}
+    </div>
+  );
+}
+
+/** A row's first column, as wide as a status dot: a dot, a project's square, or empty to keep the columns. */
+export function RowIcon({ children }: { children?: ReactNode }) {
+  return <span className="ui-row-icon">{children}</span>;
+}
+
+/** A row's id column, in Geist Mono and one width, so titles line up. */
+export function RowId({ children }: { children: ReactNode }) {
+  return <span className="ui-row-id">{children}</span>;
+}
+
+/** A row's title and the grey line after it; the line gives way first. */
+export function RowText({ title, line, lineColor }: { title: ReactNode; line?: ReactNode; lineColor?: string }) {
+  return (
+    <span className="ui-row-text">
+      <span className="ui-row-title">{title}</span>
+      {line && (
+        <span className="ui-row-line" style={lineColor ? { color: lineColor } : undefined}>
+          {line}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** What a row shows on its right, before its time: a tag, a figure, an action. */
+export function RowSide({ children, roomy = false }: { children: ReactNode; roomy?: boolean }) {
+  return <span className={cx("ui-row-side", roomy && "is-roomy")}>{children}</span>;
+}
+
+/** A row's time or figure on the far right, in Geist Mono. */
+export function RowTime({ children, color }: { children: ReactNode; color?: string }) {
+  return (
+    <span className="ui-row-time" style={color ? { color } : undefined}>
+      {children}
+    </span>
+  );
+}
+
+/** A status line at the top of a page or section: the data is unreachable, a form was refused or done. */
+export function Notice({
+  tone = "neutral",
+  children,
+}: {
+  tone?: "critical" | "warn" | "done" | "neutral";
+  children: ReactNode;
+}) {
+  return (
+    <div className={`ui-row is-static ui-notice is-${tone}`} role={tone === "critical" ? "alert" : "status"}>
+      <span className="ui-notice-dot" aria-hidden />
+      <span className="ui-notice-text">{children}</span>
+    </div>
+  );
+}
+
+/** Cards side by side, in a section: the overview's decisions and projects. */
+export function CardGrid({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
+  return <div className={cx("ui-cards", wide && "is-wide")}>{children}</div>;
+}
+
+/** A card: the rows' padding, hairline and type, with a radius; a link when `href` is set. */
+export function Card({ children, href, className }: { children: ReactNode; href?: string; className?: string }) {
+  if (href)
+    return (
+      <Link href={href} prefetch className={cx("ui-card is-link", className)}>
+        {children}
+      </Link>
+    );
+  return <div className={cx("ui-card", className)}>{children}</div>;
+}
+
+/** A card's title, on the rows' type scale. */
+export function CardTitle({ children }: { children: ReactNode }) {
+  return <div className="ui-card-title">{children}</div>;
+}
+
+/** A card's grey line of facts: a project, an id, a person. */
+export function CardMeta({ children }: { children: ReactNode }) {
+  return <div className="ui-card-meta">{children}</div>;
+}
+
+/** A card's first line: an icon or dot, a label in its color, and what goes on the right (an age). */
+export function CardHead({
+  icon,
+  label,
+  side,
+  color,
+}: {
+  icon?: ReactNode;
+  label: ReactNode;
+  side?: ReactNode;
+  color?: string;
+}) {
+  return (
+    <div className="ui-card-head">
+      {icon}
+      <span className="ui-card-kind" style={color ? { color } : undefined}>
+        {label}
+      </span>
+      {side && <span className="ui-card-side">{side}</span>}
+    </div>
+  );
+}

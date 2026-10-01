@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { linkGithubInstallation, unlinkGithubInstallation } from "@/app/github-actions";
-import { AuthCard } from "@/components/AuthCard";
+import { Notice, Page, Row, RowSide, RowText, Section, SectionBody } from "@/components/page";
 import { homeOrganization, requireAccounts, requireMember, viewerGithubToken } from "@/lib/accounts-server";
-import { accountsModeOf, GITHUB_INSTALL_PATH, GITHUB_SETUP_PATH, ORGANIZATION_PATH } from "@/lib/accounts-settings";
+import { accountsModeOf, GITHUB_INSTALL_PATH, GITHUB_SETUP_PATH } from "@/lib/accounts-settings";
 import {
   type AppInfo,
   GITHUB_APP_VARIABLES,
@@ -71,28 +70,17 @@ export default async function Github({ searchParams }: { searchParams: Params })
   });
   const when = (iso: string) => date.format(new Date(iso));
 
-  const foot = (
-    <div className="org-foot">
-      <a className="link" href={ORGANIZATION_PATH}>
-        ← {t.org.nav}
-      </a>
-      <Link className="link" href="/">
-        {t.org.back}
-      </Link>
-    </div>
-  );
   const mode = githubAppModeOf(process.env);
   const app = githubApp();
   if (mode.kind !== "on" || !app)
     return (
-      <AuthCard wide brandSub={t.brandSub} kicker={g.nav} heading={viewer.organization.name} lead={g.lead}>
-        <p className="login-error" role="alert">
+      <Page>
+        <Notice tone="critical">
           {mode.kind === "invalid"
             ? g.invalid(mode.reason)
             : g.off(`${GITHUB_APP_VARIABLES.id}, ${GITHUB_APP_VARIABLES.privateKey}`)}
-        </p>
-        {foot}
-      </AuthCard>
+        </Notice>
+      </Page>
     );
 
   const [info, home, linked] = await Promise.all([
@@ -113,108 +101,95 @@ export default async function Github({ searchParams }: { searchParams: Params })
   const toLink = reachable?.filter((i) => !isLinked.has(i.id)) ?? [];
 
   return (
-    <AuthCard wide brandSub={t.brandSub} kicker={g.nav} heading={viewer.organization.name} lead={g.lead}>
-      {error && (
-        <p className="login-error" role="alert">
-          {g.errors[error]}
-        </p>
-      )}
-      {done && (
-        <p className="login-notice" role="status">
-          {g.notices[done]}
-        </p>
-      )}
-      {!manager && <p className="login-hint is-top">{g.onlyAdmins}</p>}
+    <Page>
+      {error && <Notice tone="critical">{g.errors[error]}</Notice>}
+      {done && <Notice tone="done">{g.notices[done]}</Notice>}
 
-      <section className="org-section" aria-labelledby="github-app">
-        <h2 id="github-app" className="section-label">
-          {info?.name ?? g.nav}
-        </h2>
-        {info && manager ? (
-          <>
-            <a className="btn is-primary" href={GITHUB_INSTALL_PATH}>
-              {g.install} →
-            </a>
-            <p className="login-hint">{g.installHint}</p>
-          </>
-        ) : info ? (
-          <>
-            <a className="link" href={`${info.url}/installations/new`} target="_blank" rel="noreferrer">
-              {g.installElsewhere} →
-            </a>
-            <p className="login-hint">{g.installElsewhereHint}</p>
-          </>
-        ) : (
-          <p className="login-hint">{g.appUnreachable}</p>
-        )}
-        {home === viewer.organization.id && <p className="login-hint">{g.home}</p>}
-      </section>
+      <Section label={info?.name ?? g.nav} side={viewer.organization.name}>
+        <SectionBody>
+          <p>{g.lead}</p>
+          {!manager && <p className="faint">{g.onlyAdmins}</p>}
+          {info && manager ? (
+            <>
+              <a className="btn is-primary" href={GITHUB_INSTALL_PATH}>
+                {g.install} →
+              </a>
+              <p className="faint">{g.installHint}</p>
+            </>
+          ) : info ? (
+            <>
+              <a className="link" href={`${info.url}/installations/new`} target="_blank" rel="noreferrer">
+                {g.installElsewhere} →
+              </a>
+              <p className="faint">{g.installElsewhereHint}</p>
+            </>
+          ) : (
+            <p className="faint">{g.appUnreachable}</p>
+          )}
+          {home === viewer.organization.id && <p className="faint">{g.home}</p>}
+        </SectionBody>
+      </Section>
 
-      <section className="org-section" aria-labelledby="github-linked">
-        <h2 id="github-linked" className="section-label">
-          {g.linked}
-        </h2>
-        {home !== viewer.organization.id && <p className="login-hint is-top">{g.linkedHint}</p>}
-        {linked.length === 0 ? (
-          <p className="faint">{g.noneLinked}</p>
-        ) : (
-          <ul className="plain-list">
-            {linked.map((i) => (
-              <li key={i.id} className="member-row">
-                <span className="member-who">
-                  <b>{i.account}</b>
-                  <span className="mono member-mail">{i.id}</span>
-                  <span className="member-mail">{g.linkedBy(i.linkedBy, when(i.linkedAt))}</span>
-                </span>
-                {manager && (
-                  <form action={unlinkGithubInstallation} className="row-actions">
-                    <input type="hidden" name="installation" value={i.id} />
-                    <button type="submit" className="btn is-danger">
-                      {g.unlink}
-                    </button>
-                  </form>
-                )}
-              </li>
-            ))}
-          </ul>
+      <Section label={g.linked} count={linked.length}>
+        {(home !== viewer.organization.id || linked.length === 0) && (
+          <SectionBody>
+            {home !== viewer.organization.id && <p>{g.linkedHint}</p>}
+            {linked.length === 0 && <p className="faint">{g.noneLinked}</p>}
+          </SectionBody>
         )}
-      </section>
+        {linked.map((i) => (
+          <Row key={i.id}>
+            <RowText
+              title={i.account}
+              line={
+                <>
+                  <span className="mono">{i.id}</span> · {g.linkedBy(i.linkedBy, when(i.linkedAt))}
+                </>
+              }
+            />
+            {manager && (
+              <RowSide>
+                <form action={unlinkGithubInstallation}>
+                  <input type="hidden" name="installation" value={i.id} />
+                  <button type="submit" className="btn is-danger">
+                    {g.unlink}
+                  </button>
+                </form>
+              </RowSide>
+            )}
+          </Row>
+        ))}
+      </Section>
 
       {manager && (
-        <section className="org-section" aria-labelledby="github-reachable">
-          <h2 id="github-reachable" className="section-label">
-            {g.reachable}
-          </h2>
-          {reachable === null ? (
-            <p className="login-hint is-top">{g.noGithub}</p>
-          ) : (
-            <>
-              <p className="login-hint is-top">{g.reachableHint}</p>
-              {toLink.length === 0 ? (
-                <p className="faint">{reachable.length === 0 ? g.noneReachable : g.allLinked}</p>
-              ) : (
-                <ul className="plain-list">
-                  {toLink.map((i) => (
-                    <li key={i.id} className="member-row">
-                      <span className="member-who">
-                        <b>{i.account}</b>
-                        <span className="mono member-mail">{i.id}</span>
-                      </span>
-                      <form action={linkGithubInstallation} className="row-actions">
-                        <input type="hidden" name="installation" value={i.id} />
-                        <button type="submit" className="btn is-primary">
-                          {g.link}
-                        </button>
-                      </form>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-        </section>
+        <Section label={g.reachable} count={reachable === null ? undefined : toLink.length}>
+          <SectionBody>
+            {reachable === null ? (
+              <p className="faint">{g.noGithub}</p>
+            ) : (
+              <>
+                <p>{g.reachableHint}</p>
+                {toLink.length === 0 && (
+                  <p className="faint">{reachable.length === 0 ? g.noneReachable : g.allLinked}</p>
+                )}
+              </>
+            )}
+          </SectionBody>
+          {toLink.map((i) => (
+            <Row key={i.id}>
+              <RowText title={i.account} line={<span className="mono">{i.id}</span>} />
+              <RowSide>
+                <form action={linkGithubInstallation}>
+                  <input type="hidden" name="installation" value={i.id} />
+                  <button type="submit" className="btn is-primary">
+                    {g.link}
+                  </button>
+                </form>
+              </RowSide>
+            </Row>
+          ))}
+        </Section>
       )}
-      {foot}
-    </AuthCard>
+    </Page>
   );
 }

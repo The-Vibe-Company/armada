@@ -1,39 +1,46 @@
 "use client";
 
-// The Fleet view: what waits for the owner across every project, then one row
-// per ticket in flight. It renders the overview core builds, as the v4 shell
-// polls it (components/shell/context.tsx), until the overview screen
-// (THE-867) replaces it.
-import type {
-  CoordinatorState,
-  FleetOverview,
-  FleetRow,
-  LaneFlag,
-  ProjectOverview,
-  WaitingItem,
-} from "@armada/core/read";
+// The overview until THE-867 rebuilds it: what waits for the owner across
+// every project, the agents at work, the tickets ready to start and each
+// project's coordinator. It renders the overview core builds, as the v4 shell
+// polls it (components/shell/context.tsx), on the page kit (components/page.tsx).
+import type { CoordinatorState, FleetOverview, ProjectOverview, WaitingItem, WaitingKind } from "@armada/core/read";
 import { useMemo, useState } from "react";
+import { projectColor } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
-import { type ActionContext, QuestionBlock, ReadyBlock, splitQuestion } from "./Actions";
+import { type ActionContext, QuestionBlock, ReadyBlock } from "./Actions";
+import {
+  Card,
+  CardGrid,
+  CardHead,
+  CardMeta,
+  CardTitle,
+  HeaderActions,
+  Notice,
+  Page,
+  Section,
+  SectionBody,
+  Toolbar,
+} from "./page";
+import { AgentRow } from "./screens/AgentRow";
+import { CoordinatorState as CoordinatorLine, Figure } from "./screens/ProjectsScreen";
 import { useFleet, useNow, useShell } from "./shell/context";
-
-const FRESH_MS = 20_000;
-
-const RUNTIME_COLOR: Record<string, string> = {
-  "Claude Code": "#D97757",
-  Codex: "#10A37F",
-  Conductor: "#BB87FC",
-};
-
-const SEVERE: LaneFlag[] = ["ci-failing", "conflict", "double-claim"];
-/** Flags shown elsewhere on the row (silence has its own column) or too noisy for it. */
-const HIDDEN: LaneFlag[] = ["silent", "no-phase-label"];
+import { Dot, EmptyState, ProjectChip, Tabs, Tag } from "./ui";
 
 const since = (now: number, iso: string | null | undefined) => (iso ? now - Date.parse(iso) : 0);
 
+/** A waiting item's color, by kind; a kind added later reads as a decision. */
+const KIND_COLOR: Partial<Record<WaitingKind, string>> = {
+  question: "var(--accent)",
+  approval: "var(--accent)",
+  blocked: "var(--critical)",
+  "hand-back": "var(--done)",
+  silent: "var(--active)",
+};
+
 export function Fleet({ initialProject }: { initialProject: string | null }) {
   const { overview, checkedAt, failed, pending, refresh, version } = useFleet();
-  const { t, author, setAuthor, account } = useShell();
+  const { t, author, setAuthor, account, density } = useShell();
   const now = useNow();
   const [project, setProject] = useState(initialProject);
 
@@ -64,132 +71,119 @@ export function Fleet({ initialProject }: { initialProject: string | null }) {
   };
   const silent = rows.filter((r) => r.silent).length;
   const redCi = rows.filter((r) => r.flags.includes("ci-failing")).length;
+  const problems = projects.filter((p) => p.error || p.reading);
 
   return (
-    <>
-      <TopBar
-        t={t}
-        overview={overview}
-        now={now}
-        checkedAt={checkedAt}
-        failed={failed}
-        pending={pending}
-        onRefresh={refresh}
-      />
-      <div className="page">
-        {overview.live.state === "unreachable" && (
-          <div className="banner" role="status">
-            {t.unreachableBanner(overview.live.error)}
-          </div>
-        )}
-        {overview.live.state === "off" && (
-          <div className="banner is-quiet" role="status">
-            {t.offBanner}
-          </div>
-        )}
+    <Page
+      toolbar={
+        overview.projects.length > 0 && (
+          <Toolbar>
+            <Tabs
+              label={t.filterLabel}
+              value={active ?? ""}
+              onChange={(slug) => chooseProject(slug || null)}
+              items={[
+                { key: "", label: t.allProjects, count: overview.rows.length, dot: "var(--text-3)" },
+                ...overview.projects.map((p) => ({
+                  key: p.slug,
+                  label: p.name,
+                  count: p.inFlight,
+                  dot: projectColor(p.slug),
+                })),
+              ]}
+            />
+          </Toolbar>
+        )
+      }
+    >
+      <HeaderActions>
+        <LiveLine
+          t={t}
+          overview={overview}
+          now={now}
+          checkedAt={checkedAt}
+          failed={failed}
+          pending={pending}
+          onRefresh={refresh}
+        />
+      </HeaderActions>
+      {overview.live.state === "unreachable" && <Notice tone="warn">{t.unreachableBanner(overview.live.error)}</Notice>}
+      {overview.live.state === "off" && <Notice>{t.offBanner}</Notice>}
 
-        <header className="hero">
-          <div className="hero-text">
-            <div className="kicker mono">{t.kicker}</div>
-            <h1 className="serif">{t.heading}</h1>
-            <p className="hero-line">
-              {t.atWorkLine(rows.length)}
-              {" · "}
-              {waiting.length ? <em>{t.waitingLine(waiting.length)}</em> : t.waitingLine(0)}
-            </p>
-          </div>
-          <dl className="stats">
-            <Stat label={t.stats.waiting} value={waiting.length} tone={waiting.length ? "hot" : null} />
-            <Stat label={t.stats.atWork} value={rows.length} tone={null} />
-            <Stat label={t.stats.silent} value={silent} tone={silent ? "warn" : null} />
-            <Stat label={t.stats.redCi} value={redCi} tone={redCi ? "bad" : null} />
-          </dl>
-        </header>
-
-        {overview.projects.length > 0 && (
-          <ProjectBar
-            t={t}
-            projects={overview.projects}
-            active={active}
-            onChoose={chooseProject}
-            now={now}
-            total={overview.rows.length}
-          />
+      <Section label={t.waitingTitle} count={waiting.length}>
+        {waiting.length === 0 ? (
+          <SectionBody>
+            <p>{t.waitingEmpty}</p>
+          </SectionBody>
+        ) : (
+          <CardGrid wide>
+            {waiting.map((w, k) => (
+              <WaitingCard
+                key={`${w.project}-${w.ticket ?? k}-${w.kind}`}
+                ctx={ctx}
+                w={w}
+                names={names}
+                coordinator={coordinators.get(w.project) ?? "unknown"}
+              />
+            ))}
+          </CardGrid>
         )}
+      </Section>
 
-        <section className="block" aria-labelledby="waiting-h">
-          <div className="block-h">
-            <h2 id="waiting-h" className="serif">
-              {t.waitingTitle}
-            </h2>
-            <span className="count tnum">{waiting.length}</span>
-          </div>
-          {waiting.length === 0 ? (
-            <p className="calm">{t.waitingEmpty}</p>
+      <Section
+        label={t.atWorkTitle}
+        count={rows.length}
+        side={
+          <>
+            <Figure label={t.stats.silent} value={silent} dot={silent ? "var(--active)" : undefined} />
+            <Figure label={t.stats.redCi} value={redCi} dot={redCi ? "var(--critical)" : undefined} />
+          </>
+        }
+      >
+        {problems.map((p) =>
+          p.error ? (
+            <Notice key={p.slug} tone="critical">
+              {t.projectError(p.name)} {p.error}
+            </Notice>
           ) : (
-            <ol className="waiting">
-              {waiting.map((w, k) => (
-                <WaitingRow
-                  key={`${w.project}-${w.ticket ?? k}-${w.kind}`}
-                  ctx={ctx}
-                  w={w}
-                  names={names}
-                  coordinator={coordinators.get(w.project) ?? "unknown"}
-                  i={k}
-                />
-              ))}
-            </ol>
-          )}
-        </section>
-
-        <section className="block" aria-labelledby="crew-h">
-          <div className="block-h">
-            <h2 id="crew-h" className="serif">
-              {t.atWorkTitle}
-            </h2>
-            <span className="count tnum">{rows.length}</span>
-          </div>
-          <ProjectProblems t={t} projects={projects} />
-          {overview.projects.length === 0 ? (
-            <Empty title={t.noProjects} hint={t.noProjectsHint} />
-          ) : rows.length === 0 ? (
-            <Empty title={t.emptyFleet} hint={t.emptyFleetHint} />
-          ) : (
-            <ol className="crew">
-              {rows.map((r, k) => (
-                <CrewRow
-                  key={`${r.project}-${r.id}`}
-                  t={t}
-                  row={r}
-                  now={now}
-                  projectName={names.get(r.project) ?? r.project}
-                  i={k}
-                />
-              ))}
-            </ol>
-          )}
-        </section>
-
-        {overview.projects.length > 0 && (
-          <ReadyBlock ctx={ctx} ready={ready} profiles={profiles} names={names} coordinators={coordinators} />
+            <Notice key={p.slug}>{t.readingProject(p.name)}</Notice>
+          ),
         )}
+        {overview.projects.length === 0 ? (
+          <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
+        ) : rows.length === 0 ? (
+          <EmptyState title={t.emptyFleet} hint={t.emptyFleetHint} />
+        ) : (
+          rows.map((r) => (
+            <AgentRow
+              key={`${r.project}-${r.id}`}
+              row={r}
+              projectName={names.get(r.project) ?? r.project}
+              airy={density === "airy"}
+            />
+          ))
+        )}
+      </Section>
 
-        <Footer t={t} projects={projects} now={now} />
-      </div>
-    </>
+      {overview.projects.length > 0 && (
+        <ReadyBlock ctx={ctx} ready={ready} profiles={profiles} names={names} coordinators={coordinators} />
+      )}
+
+      {projects.length > 0 && (
+        <Section label={t.projects} count={projects.length} side={t.footerRefresh}>
+          <CardGrid>
+            {projects.map((p) => (
+              <ProjectCard key={p.slug} t={t} p={p} now={now} />
+            ))}
+          </CardGrid>
+        </Section>
+      )}
+    </Page>
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: number; tone: "hot" | "warn" | "bad" | null }) {
-  return (
-    <div className={`stat ${tone ? `is-${tone}` : ""}`}>
-      <dt>{label}</dt>
-      <dd className="serif tnum">{value}</dd>
-    </div>
-  );
-}
-
-function TopBar({
+/** The header bar's live line: the source state, when the overview and Linear and GitHub were read, refresh. */
+function LiveLine({
   t,
   overview,
   now,
@@ -215,339 +209,129 @@ function TopBar({
   );
   const oldest = readings.length ? Math.min(...readings.map((r) => Date.parse(r))) : null;
   return (
-    <header className="topbar">
-      <div className="topbar-in">
-        <span className="spacer" />
-        <div className="refresh">
-          {/* Only the source state is announced; the ticking "checked" text is not. */}
-          <span className={`source is-${state}`} role="status">
-            <span className={`dot ${state === "ok" ? "live" : ""}`} />
-            {label}
+    <span className="refresh">
+      {/* Only the source state is announced; the ticking "checked" text is not. */}
+      <span className={`source is-${state}`} role="status">
+        <span className={`dot ${state === "ok" ? "live" : ""}`} />
+        {label}
+      </span>
+      <span className="refresh-text">
+        {pending && !checkedAt ? t.refreshing : t.checked(now - checked)}
+        {oldest !== null && (
+          <span className="faint" title={t.dataReadHint}>
+            {" · "}
+            {t.dataRead(now - oldest)}
           </span>
-          <span className="refresh-text tnum">
-            {pending && !checkedAt ? t.refreshing : t.checked(now - checked)}
-            {oldest !== null && (
-              <span className="faint" title={t.dataReadHint}>
-                {" · "}
-                {t.dataRead(now - oldest)}
-              </span>
-            )}
-          </span>
-          <button
-            type="button"
-            className={`icon-btn ${pending ? "spin" : ""}`}
-            onClick={onRefresh}
-            title={t.refresh}
-            aria-label={t.refresh}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
-              <path
-                d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
-        </div>
-      </div>
-    </header>
-  );
-}
-
-function ProjectBar({
-  t,
-  projects,
-  active,
-  onChoose,
-  now,
-  total,
-}: {
-  t: Strings;
-  projects: ProjectOverview[];
-  active: string | null;
-  onChoose: (slug: string | null) => void;
-  now: number;
-  total: number;
-}) {
-  return (
-    <nav className="projects" aria-label={t.filterLabel}>
-      <button type="button" className="proj" aria-pressed={!active} onClick={() => onChoose(null)}>
-        <span className="proj-name">{t.allProjects}</span>
-        <span className="proj-n tnum">{total}</span>
+        )}
+      </span>
+      <button
+        type="button"
+        className={`icon-btn ${pending ? "spin" : ""}`}
+        onClick={onRefresh}
+        title={t.refresh}
+        aria-label={t.refresh}
+      >
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <path
+            d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v3h-3"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
       </button>
-      {projects.map((p) => {
-        const ago = p.coordinator.seenAt ? t.duration(since(now, p.coordinator.seenAt)) : null;
-        return (
-          <button
-            key={p.slug}
-            type="button"
-            className={`proj ${p.error ? "has-error" : ""}`}
-            aria-pressed={active === p.slug}
-            onClick={() => onChoose(active === p.slug ? null : p.slug)}
-            title={t.coordinatorHint(p.coordinator.state, ago)}
-          >
-            <span className="proj-name">{p.name}</span>
-            <span className="proj-n tnum">{p.inFlight}</span>
-            {p.waiting > 0 && <span className="proj-wait tnum">{p.waiting}</span>}
-            <span className={`coord is-${p.coordinator.state}`}>
-              <i aria-hidden />
-              {t.coordinator[p.coordinator.state]}
-              {ago && <span className="faint"> · {ago}</span>}
-              {p.coordinator.cliVersion && (
-                <span className="faint">
-                  {" "}
-                  · {t.coordinatorCli(p.coordinator.cliVersion, p.coordinator.updateAvailable)}
-                </span>
-              )}
-            </span>
-          </button>
-        );
-      })}
-    </nav>
+    </span>
   );
 }
 
-function WaitingRow({
+/** One item waiting for the owner, as a decision card, with its answer or approval form. */
+function WaitingCard({
   ctx,
   w,
   names,
   coordinator,
-  i,
 }: {
   ctx: ActionContext;
   w: WaitingItem;
   names: Map<string, string>;
   coordinator: CoordinatorState;
-  i: number;
 }) {
   const { t, now } = ctx;
+  const color = KIND_COLOR[w.kind] ?? "var(--accent)";
   return (
-    <li className={`wait-row k-${w.kind}`} style={{ ["--i" as string]: i }}>
-      <span className="wait-kind">{t.kinds[w.kind]}</span>
-      <div className="wait-main">
-        <div className="wait-title">
-          {w.url ? (
-            <a href={w.url} target="_blank" rel="noreferrer">
-              {w.title ?? w.ticket}
-            </a>
-          ) : (
-            (w.title ?? w.ticket ?? names.get(w.project))
-          )}
-        </div>
-        <div className="meta">
-          <span className="tag">{names.get(w.project) ?? w.project}</span>
-          {w.ticket && <span className="mono">{w.ticket}</span>}
-          {w.author && <span>{w.author}</span>}
-          {w.coordinatorSince && (
-            <span className="late">{t.coordinatorLate(t.duration(since(now, w.coordinatorSince)))}</span>
-          )}
-        </div>
-        {(w.kind === "question" || w.kind === "approval") && w.detail ? (
-          <QuestionBlock
-            ctx={ctx}
-            project={w.project}
-            ticket={w.ticket}
-            item={w.item}
-            body={w.detail}
-            answer={w.answer}
-            coordinator={coordinator}
-            approval={w.kind === "approval"}
-          />
+    <Card>
+      <CardHead
+        icon={<Dot color={color} />}
+        label={t.kinds[w.kind]}
+        color={color}
+        side={<span title={w.since}>{t.duration(since(now, w.since))}</span>}
+      />
+      <CardTitle>
+        {w.url ? (
+          <a href={w.url} target="_blank" rel="noreferrer">
+            {w.title ?? w.ticket} <span className="faint">↗</span>
+          </a>
         ) : (
-          w.detail && <p className="wait-detail">{w.detail}</p>
+          (w.title ?? w.ticket ?? names.get(w.project))
         )}
-      </div>
-      <span className="wait-age tnum" title={w.since}>
-        {t.duration(since(now, w.since))}
-      </span>
-      {w.url && (
-        <a className="wait-open" href={w.url} target="_blank" rel="noreferrer">
-          {t.open} ↗
-        </a>
+      </CardTitle>
+      <CardMeta>
+        <Tag>{names.get(w.project) ?? w.project}</Tag>
+        {w.ticket && <span className="mono">{w.ticket}</span>}
+        {w.author && <span>{w.author}</span>}
+        {w.coordinatorSince && (
+          <span className="late">{t.coordinatorLate(t.duration(since(now, w.coordinatorSince)))}</span>
+        )}
+      </CardMeta>
+      {(w.kind === "question" || w.kind === "approval") && w.detail ? (
+        <QuestionBlock
+          ctx={ctx}
+          project={w.project}
+          ticket={w.ticket}
+          item={w.item}
+          body={w.detail}
+          answer={w.answer}
+          coordinator={coordinator}
+          approval={w.kind === "approval"}
+        />
+      ) : (
+        w.detail && <p className="wait-detail">{w.detail}</p>
       )}
-    </li>
+    </Card>
   );
 }
 
-function phaseTitle(t: Strings, r: FleetRow) {
-  if (r.phaseSource === "live") return t.sourceLive;
-  if (r.phaseSource === "inferred") return t.sourceInferred;
-  if (r.phaseSource === "status-line") return t.sourceStatusLine;
-  return undefined;
-}
-
-function phaseLabel(t: Strings, r: FleetRow) {
-  if (r.phase === "shipping" && r.pr?.ci === "failure") return t.ciRed;
-  if (r.phase === "shipping" && r.pr?.ci === "pending") return t.ciRunning;
-  return t.phases[r.phase];
-}
-
-function CrewRow({
-  t,
-  row: r,
-  now,
-  projectName,
-  i,
-}: {
-  t: Strings;
-  row: FleetRow;
-  now: number;
-  projectName: string;
-  i: number;
-}) {
-  const fresh = r.lastReport !== null && since(now, r.lastReport) < FRESH_MS;
-  const flags = r.flags.filter((f) => !HIDDEN.includes(f));
-  const rt = r.runtime ? (RUNTIME_COLOR[r.runtime] ?? "var(--muted)") : "var(--faint)";
-  const step = t.steps[r.pipeline.step] ?? "";
+/** A project's card: its coordinator (and the CLI it runs), when Linear and GitHub were read, its notes. */
+function ProjectCard({ t, p, now }: { t: Strings; p: ProjectOverview; now: number }) {
   return (
-    <li
-      className={`crew-row ${r.waiting && r.waiting !== "silent" ? "is-waiting" : ""} ${fresh ? "is-fresh" : ""}`}
-      style={{ ["--i" as string]: i, ["--rt" as string]: rt }}
-    >
-      <span className="crew-rt" aria-hidden />
-      <div className="crew-main">
-        <a className="crew-title" href={r.url} target="_blank" rel="noreferrer">
-          {r.title}
-        </a>
-        <div className="meta">
-          <span className="tag">{projectName}</span>
-          <span className="mono">{r.id}</span>
-          <span className="rt">
-            <i className="rt-mark" aria-hidden />
-            {r.runtime ?? t.runtimeUnknown}
-          </span>
-          {r.handle && (
-            <span className="mono faint handle" title={r.handle}>
-              {r.handle}
-            </span>
-          )}
-          {r.profile && (
-            <span className="mono faint" title={t.profile}>
-              {r.profile}
-            </span>
-          )}
-          {r.pr ? (
-            <a className="pr" href={r.pr.url} target="_blank" rel="noreferrer">
-              <span className="mono">#{r.pr.number}</span>
-              {r.pr.draft && <span className="faint">{t.draft}</span>}
-              <span className={`ci-dot ${r.pr.ci ?? "none"}`} title={t.ci[r.pr.ci ?? "none"]} />
-            </a>
-          ) : null}
-          {flags.map((f) => (
-            <span key={f} className={`flag ${SEVERE.includes(f) ? "is-severe" : ""}`}>
-              {t.flags[f]}
-            </span>
-          ))}
-        </div>
-        {r.question ? (
-          <p className="crew-question">
-            <span className="q-mark" aria-hidden>
-              ?
-            </span>
-            <span className="sr-only">{t.question}: </span>
-            {r.question.answer && (
-              <span className="q-answered" title={r.question.answer.body}>
-                {t.answerSent}
-              </span>
-            )}
-            {splitQuestion(r.question.body).text.replace(/\s+/g, " ")}
-          </p>
-        ) : (
-          r.statusLine && (
-            <p className="crew-status" title={r.statusLine.summary}>
-              {r.statusLine.plan && (
-                <a className="crew-plan" href={r.statusLine.url} target="_blank" rel="noreferrer">
-                  {t.plan} ↗
-                </a>
-              )}
-              {r.statusLine.summary}
-            </p>
-          )
+    <Card>
+      <CardHead icon={<ProjectChip slug={p.slug} bare />} label={p.name} color="var(--text)" side={p.repository} />
+      <CardMeta>
+        <Figure label={t.shell.inFlight} value={p.inFlight} />
+        <Figure label={t.shell.waitingForYou} value={p.waiting} dot={p.waiting ? "var(--accent)" : undefined} />
+      </CardMeta>
+      <CardMeta>
+        <CoordinatorLine project={p} />
+        {p.coordinator.cliVersion && (
+          <span className="mono">{t.coordinatorCli(p.coordinator.cliVersion, p.coordinator.updateAvailable)}</span>
         )}
-      </div>
-      <div className="crew-stage" title={`${step} · ${t.steps.join(" → ")}`}>
-        <ol className="steps" aria-label={`${step} (${r.pipeline.step + 1}/${t.steps.length})`}>
-          {t.steps.map((s, k) => (
-            <li
-              key={s}
-              className={k < r.pipeline.step ? "on" : k === r.pipeline.step ? `now ${r.pipeline.state}` : ""}
-            />
-          ))}
-        </ol>
-        <span className="crew-phase" title={phaseTitle(t, r)}>
-          {r.phaseSource === "live" && <span className="live-dot" aria-hidden />}
-          {phaseLabel(t, r)}
-          {r.phaseSource === "inferred" && " ≈"}
-          <span className="faint"> · </span>
-          <span className="tnum">{t.duration(since(now, r.since))}</span>
-        </span>
-      </div>
-      <div className={`crew-seen ${r.silent ? "is-silent" : ""}`}>
-        <span className="tnum">{r.lastReport ? t.ago(since(now, r.lastReport)) : t.neverReported}</span>
-        <span className="faint">{r.silent ? t.flags.silent : t.lastReport}</span>
-      </div>
-    </li>
-  );
-}
-
-function ProjectProblems({ t, projects }: { t: Strings; projects: ProjectOverview[] }) {
-  const failing = projects.filter((p) => p.error);
-  const reading = projects.filter((p) => p.reading);
-  if (!failing.length && !reading.length) return null;
-  return (
-    <ul className="problems">
-      {reading.map((p) => (
-        <li key={p.slug} className="is-reading" role="status">
-          <span>{t.readingProject(p.name)}</span>
-        </li>
-      ))}
-      {failing.map((p) => (
-        <li key={p.slug}>
-          <b>{t.projectError(p.name)}</b>
-          <span>{p.error}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function Empty({ title, hint }: { title: string; hint: string }) {
-  return (
-    <div className="empty">
-      <span className="serif">{title}</span>
-      <span>{hint}</span>
-    </div>
-  );
-}
-
-function Footer({ t, projects, now }: { t: Strings; projects: ProjectOverview[]; now: number }) {
-  const notes = projects.flatMap((p) => p.warnings.map((w) => ({ project: p.name, note: w })));
-  return (
-    <footer className="foot">
-      <div className="foot-sources">
-        {projects.map((p) => (
-          <span key={p.slug}>
-            <b>{p.name}</b> {p.sources ? t.linearRead(t.duration(since(now, p.sources.linear.fetchedAt))) : "—"}
-            {p.sources?.github.error ? ` · ${t.githubMissing}` : ""}
-          </span>
-        ))}
-        <span>{t.footerRefresh}</span>
-      </div>
-      {notes.length > 0 && (
+      </CardMeta>
+      <CardMeta>
+        {p.sources ? t.linearRead(t.duration(since(now, p.sources.linear.fetchedAt))) : "—"}
+        {p.sources?.github.error ? ` · ${t.githubMissing}` : ""}
+      </CardMeta>
+      {p.warnings.length > 0 && (
         <details className="notes">
-          <summary>{t.notes(notes.length)}</summary>
+          <summary>{t.notes(p.warnings.length)}</summary>
           <ul>
-            {notes.map((n) => (
-              <li key={`${n.project}-${n.note}`}>
-                <b>{n.project}</b> {n.note}
-              </li>
+            {p.warnings.map((w) => (
+              <li key={w}>{w}</li>
             ))}
           </ul>
         </details>
       )}
-    </footer>
+    </Card>
   );
 }

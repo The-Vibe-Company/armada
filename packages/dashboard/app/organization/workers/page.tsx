@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { revokeWorker } from "@/app/workers-actions";
-import { AuthCard } from "@/components/AuthCard";
+import { Notice, Page, Row, RowId, RowSide, RowText, Section, SectionBody } from "@/components/page";
+import { Tag } from "@/components/ui";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
-import { accountsModeOf, ORGANIZATION_PATH } from "@/lib/accounts-settings";
+import { accountsModeOf } from "@/lib/accounts-settings";
 import { LANGUAGE_COOKIE, STRINGS, WORKERS_ERRORS, type WorkersError } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 import { listWorkers, workerState } from "@/lib/workers";
@@ -47,65 +47,49 @@ export default async function Workers({ searchParams }: { searchParams: Params }
   const workers = await listWorkers(client, viewer.organization.id, 100);
 
   return (
-    <AuthCard wide brandSub={t.brandSub} kicker={w.nav} heading={viewer.organization.name} lead={w.lead}>
-      {error && (
-        <p className="login-error" role="alert">
-          {w.errors[error]}
-        </p>
-      )}
-      {revoked && (
-        <p className="login-notice" role="status">
-          {w.revoked}
-        </p>
-      )}
-      <p className="login-hint is-top">{manager ? w.revokeHint : w.onlyAdmins}</p>
-      {workers.length === 0 ? (
-        <p className="faint">{w.none}</p>
-      ) : (
-        <ul className="plain-list">
-          {workers.map((x) => {
-            const state = workerState(x, now);
-            const token = x.tokenUsedAt
-              ? w.tokenUsed(when(x.tokenUsedAt))
-              : state === "waiting"
-                ? w.tokenValid(when(x.tokenExpiresAt))
-                : w.tokenExpired(when(x.tokenExpiresAt));
-            const session = x.endedAt
-              ? w.endedBy(x.endedBy ?? "?", when(x.endedAt))
-              : x.sessionSeenAt
-                ? w.lastSeen(when(x.sessionSeenAt))
-                : null;
-            return (
-              <li key={x.id} className="member-row">
-                <span className="member-who">
-                  <b className="mono">{x.ticket}</b>
-                  <span className="role-tag">{w.states[state]}</span>
-                  <span className="member-mail">{x.project}</span>
-                  <span className="member-mail">{w.launchedBy(x.launchedBy.label, when(x.createdAt))}</span>
-                  <span className="member-mail">{token}</span>
-                  {session && <span className="member-mail">{session}</span>}
-                </span>
+    <Page>
+      {error && <Notice tone="critical">{w.errors[error]}</Notice>}
+      {revoked && <Notice tone="done">{w.revoked}</Notice>}
+      <Section label={w.nav} count={workers.length} side={viewer.organization.name}>
+        <SectionBody>
+          <p>{w.lead}</p>
+          <p className="faint">{manager ? w.revokeHint : w.onlyAdmins}</p>
+          {workers.length === 0 && <p className="faint">{w.none}</p>}
+        </SectionBody>
+        {workers.map((x) => {
+          const state = workerState(x, now);
+          const token = x.tokenUsedAt
+            ? w.tokenUsed(when(x.tokenUsedAt))
+            : state === "waiting"
+              ? w.tokenValid(when(x.tokenExpiresAt))
+              : w.tokenExpired(when(x.tokenExpiresAt));
+          const session = x.endedAt
+            ? w.endedBy(x.endedBy ?? "?", when(x.endedAt))
+            : x.sessionSeenAt
+              ? w.lastSeen(when(x.sessionSeenAt))
+              : null;
+          return (
+            <Row key={x.id}>
+              <RowId>{x.ticket}</RowId>
+              <RowText
+                title={w.launchedBy(x.launchedBy.label, when(x.createdAt))}
+                line={[x.project, token, session].filter(Boolean).join(" · ")}
+              />
+              <RowSide>
+                <Tag>{w.states[state]}</Tag>
                 {manager && (state === "waiting" || state === "active") && (
-                  <form action={revokeWorker} className="row-actions">
+                  <form action={revokeWorker}>
                     <input type="hidden" name="id" value={x.id} />
                     <button type="submit" className="btn is-danger">
                       {w.revoke}
                     </button>
                   </form>
                 )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <div className="org-foot">
-        <a className="link" href={ORGANIZATION_PATH}>
-          ← {t.org.nav}
-        </a>
-        <Link className="link" href="/">
-          {t.org.back}
-        </Link>
-      </div>
-    </AuthCard>
+              </RowSide>
+            </Row>
+          );
+        })}
+      </Section>
+    </Page>
   );
 }

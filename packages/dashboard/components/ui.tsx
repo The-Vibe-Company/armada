@@ -1,10 +1,12 @@
 "use client";
 
-// The shared components of the v4 dashboard (THE-866). The four screens build
-// on these, and on the tokens of globals.css, instead of their own; /design
-// shows each one in its states. Styles are the `ui-*` classes of globals.css.
+// The shared components of the v4 dashboard (THE-866): the small parts rows
+// and cards are made of (status dots, pills, badges, tabs, times). The page's
+// anatomy (header, toolbar, sections, rows, cards) is the page kit,
+// components/page.tsx. /design shows both; styles are the `ui-*` classes of
+// globals.css.
 import Link from "next/link";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { type AgentStatus, HARNESS_NAME, type Harness, projectColor } from "@/lib/fleet-view";
 import { useNow, useShell } from "./shell/context";
 
@@ -129,125 +131,6 @@ export function Avatar({ name, size = 18 }: { name: string; size?: number }) {
     <span className="ui-avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.47) }} title={name}>
       {initials(name)}
     </span>
-  );
-}
-
-/** One figure of a KPI row. */
-export function Kpi({ label, value, tone }: { label: string; value: ReactNode; tone?: Tone }) {
-  return (
-    <div className="ui-kpi">
-      <span className="ui-kpi-label">{label}</span>
-      <span className="ui-kpi-value" style={tone ? { color: TONE_COLOR[tone] } : undefined}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-export function KpiRow({ children }: { children: ReactNode }) {
-  return <div className="ui-kpis">{children}</div>;
-}
-
-/** A section's title with its count, and what goes on its right. */
-export function SectionHeader({
-  title,
-  count,
-  children,
-  as: Heading = "h2",
-}: {
-  title: ReactNode;
-  count?: ReactNode;
-  children?: ReactNode;
-  as?: "h1" | "h2" | "h3";
-}) {
-  return (
-    <div className="ui-section-h">
-      <Heading>{title}</Heading>
-      {count !== undefined && <span className="ui-count">{count}</span>}
-      {children && <span className="ui-section-side">{children}</span>}
-    </div>
-  );
-}
-
-/**
- * A row of a list that opens a page. j/k moves through the rows of the page,
- * Enter opens the selected one (the shell's keyboard), and the page behind it
- * is prefetched, so opening it never waits for the server.
- */
-export function Row({
-  href,
-  children,
-  className,
-  style,
-}: {
-  href: string;
-  children: ReactNode;
-  className?: string;
-  style?: CSSProperties;
-}) {
-  return (
-    <Link href={href} prefetch className={cx("ui-row", className)} style={style} data-row="">
-      {children}
-    </Link>
-  );
-}
-
-/** A list of rows in a bordered box. */
-export function RowList({ children }: { children: ReactNode }) {
-  return <div className="ui-rows">{children}</div>;
-}
-
-/** A grouped list's band: an icon, a label and a count; sticks to the top while its rows scroll. */
-export function GroupHeader({ icon, label, count }: { icon?: ReactNode; label: ReactNode; count?: ReactNode }) {
-  return (
-    <div className="ui-group-h">
-      {icon}
-      <span className="ui-group-label">{label}</span>
-      {count !== undefined && <span className="ui-count">{count}</span>}
-    </div>
-  );
-}
-
-/** A raised card; a link when `href` is set. */
-export function Card({ children, href, className }: { children: ReactNode; href?: string; className?: string }) {
-  if (href)
-    return (
-      <Link href={href} prefetch className={cx("ui-card is-link", className)}>
-        {children}
-      </Link>
-    );
-  return <div className={cx("ui-card", className)}>{children}</div>;
-}
-
-export interface PanelRow {
-  k: ReactNode;
-  v: ReactNode;
-  dot?: string;
-  mono?: boolean;
-  tone?: Tone;
-}
-
-/** A side panel group: a title over key/value rows, as an agent's or a project's inspector. */
-export function SidePanel({ title, rows }: { title: ReactNode; rows: PanelRow[] }) {
-  return (
-    <section className="ui-panel">
-      <h3 className="ui-panel-title">{title}</h3>
-      <dl className="ui-panel-rows">
-        {rows.map((r, i) => (
-          // biome-ignore lint/suspicious/noArrayIndexKey: rows are positional and static.
-          <div className="ui-panel-row" key={i}>
-            <dt className="ui-panel-k">{r.k}</dt>
-            <dd
-              className={r.mono ? "ui-panel-v mono" : "ui-panel-v"}
-              style={r.tone ? { color: TONE_COLOR[r.tone] } : undefined}
-            >
-              {r.dot && <Dot color={r.dot} />}
-              <span className="ui-ellipsis">{r.v}</span>
-            </dd>
-          </div>
-        ))}
-      </dl>
-    </section>
   );
 }
 

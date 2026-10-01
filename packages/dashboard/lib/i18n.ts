@@ -624,8 +624,8 @@ const en = {
     noPr: "No PR",
     openPr: (n: number) => `PR #${n} ↗`,
     openLinear: "Linear ↗",
-    placeholder: "This screen is being rebuilt on the v4 design; until then it shows today's data.",
-    projectsLead: "A project is a GitHub repository and a Linear root.",
+    stepsHeading: "Steps",
+    code: "Code",
     projectMissing: "This project is not on the dashboard.",
     projectMissingHint: "It may belong to another organization, or not be registered yet.",
     agentMissing: "No session in flight on this ticket.",
@@ -636,8 +636,20 @@ const en = {
     noProjectsHint: "Run armada init in a repository to register it.",
     nothingReady: "Nothing is ready to start.",
     design: {
-      title: "Components",
-      lead: "Every shared component of the v4 dashboard, in its states. Shown in development and in the demo only.",
+      title: "Design",
+      lead: "The page anatomy every page is built from, then every shared component in its states. Shown in development and in the demo only.",
+      anatomy: "Page anatomy",
+      components: "Components",
+      sample: "A sample page",
+      uses: {
+        PageHeader:
+          "The bar on top: breadcrumbs on the left, key hints on the right. The shell draws it; a page adds its buttons with HeaderActions and never a title of its own.",
+        Toolbar: "Tabs and filters, the density toggle in end. Left out when a page has none, never an empty row.",
+        Section:
+          "A band: an icon or status dot, a label, a count, a side. Rows go inside; anything else in a SectionBody.",
+        Row: "40 px compact, 48 px airy, a hairline. With href it opens a page and joins j/k; ids and times in Geist Mono (RowId, RowTime).",
+        Card: "Only where the design draws cards (decisions, projects): the rows' padding, hairline and type, in a CardGrid.",
+      },
     },
   },
 };
@@ -1177,8 +1189,8 @@ const fr: Strings = {
     noPr: "Pas de PR",
     openPr: (n) => `PR #${n} ↗`,
     openLinear: "Linear ↗",
-    placeholder: "Cet écran est en cours de refonte sur le design v4 ; en attendant, il montre les données actuelles.",
-    projectsLead: "Un projet, c'est un repo GitHub et une racine Linear.",
+    stepsHeading: "Étapes",
+    code: "Code",
     projectMissing: "Ce projet n'est pas sur le tableau de bord.",
     projectMissingHint: "Il appartient peut-être à une autre organisation, ou n'est pas encore enregistré.",
     agentMissing: "Aucune session en vol sur ce ticket.",
@@ -1189,8 +1201,20 @@ const fr: Strings = {
     noProjectsHint: "Lance armada init dans un repo pour l'enregistrer.",
     nothingReady: "Rien n'est prêt à lancer.",
     design: {
-      title: "Composants",
-      lead: "Chaque composant partagé du tableau de bord v4, dans ses états. Visible en développement et en démo seulement.",
+      title: "Design",
+      lead: "L'anatomie dont chaque page est faite, puis chaque composant partagé dans ses états. Visible en développement et en démo seulement.",
+      anatomy: "Anatomie d'une page",
+      components: "Composants",
+      sample: "Une page d'exemple",
+      uses: {
+        PageHeader:
+          "La barre du haut : le fil d'Ariane à gauche, les raccourcis à droite. Le shell la dessine ; une page y ajoute ses boutons avec HeaderActions, jamais un titre à elle.",
+        Toolbar: "Onglets et filtres, la densité dans end. Absente quand une page n'en a pas, jamais une ligne vide.",
+        Section:
+          "Une bande : une icône ou un point d'état, un libellé, un compte, un côté. Les lignes dedans ; le reste dans un SectionBody.",
+        Row: "40 px en compact, 48 px en aéré, un filet. Avec href elle ouvre une page et suit j/k ; ids et heures en Geist Mono (RowId, RowTime).",
+        Card: "Seulement là où le design dessine des cartes (décisions, projets) : le padding, le filet et le texte des lignes, dans une CardGrid.",
+      },
     },
   },
 };
