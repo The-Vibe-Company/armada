@@ -1,0 +1,27 @@
+biome.json
+  s_d658e7251951c2::t_4693463b5a8301 4
+design/dashboard-v4/README.md
+  s_d658e7251951c2::t_2edaa2629a7393 1-17
+design/dashboard-v4/dashboard.dc.html
+  s_d658e7251951c2::t_4827cb3a9d59c7 1-1129
+design/dashboard-v4/logo.dc.html
+  s_d658e7251951c2::t_d7b89a2617693c 1-98
+design/dashboard-v4/support.js
+  s_d658e7251951c2::t_2b67d9ada3ae4a 1-1911
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "1f17e90f283c46969e7b40085a2dc47e10dc5d44",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
