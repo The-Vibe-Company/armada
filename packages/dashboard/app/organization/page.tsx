@@ -11,11 +11,26 @@ import {
 } from "@/app/auth-actions";
 import { ApiKeyForm } from "@/components/ApiKeyForm";
 import { CopyLink } from "@/components/CopyLink";
-import { Notice, Page, Row, RowSide, RowText, Section, SectionBody } from "@/components/page";
-import { Tag } from "@/components/ui";
+import { OrganizationTabs } from "@/components/OrganizationTabs";
+import {
+  Button,
+  Form,
+  Input,
+  Notice,
+  Page,
+  Row,
+  RowSide,
+  RowText,
+  RowTime,
+  Section,
+  SectionBody,
+  Select,
+  Toolbar,
+} from "@/components/page";
+import { Avatar, EmptyState, Tag } from "@/components/ui";
 import { invitationUrl, isRole, ROLES, type Role } from "@/lib/accounts";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
-import { accountsModeOf, GITHUB_PATH, KEYS_PATH, WORKERS_PATH } from "@/lib/accounts-settings";
+import { accountsModeOf } from "@/lib/accounts-settings";
 import { LANGUAGE_COOKIE, ORG_ERRORS, ORG_NOTICES, type OrgError, type OrgNotice, STRINGS } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 
@@ -70,7 +85,13 @@ export default async function Organization({ searchParams }: { searchParams: Par
   const roleOf = (r: string) => t.org.roles[isRole(r) ? r : "member"];
 
   return (
-    <Page>
+    <Page
+      toolbar={
+        <Toolbar>
+          <OrganizationTabs t={t} page="members" />
+        </Toolbar>
+      }
+    >
       {error && <Notice tone="critical">{t.org.errors[error]}</Notice>}
       {done && <Notice tone="done">{t.org.notices[done]}</Notice>}
 
@@ -80,40 +101,38 @@ export default async function Organization({ searchParams }: { searchParams: Par
         </SectionBody>
         {(full?.members ?? []).map((m) => {
           const self = m.userId === viewer.user.id;
+          const name = m.user.name || m.user.email;
           return (
             <Row key={m.id}>
+              <Avatar name={name} size={20} />
               <RowText
                 title={
                   <>
-                    {m.user.name || m.user.email} {self && <Tag>{t.org.you}</Tag>}
+                    {name} {self && <Tag>{t.org.you}</Tag>}
                   </>
                 }
                 line={m.user.email}
               />
               {manager && !self ? (
                 <RowSide>
-                  <form action={updateMemberRole} className="inline-form">
+                  <Form action={updateMemberRole}>
                     <input type="hidden" name="member" value={m.id} />
                     <label className="sr-only" htmlFor={`role-${m.id}`}>
                       {t.org.role}
                     </label>
-                    <select id={`role-${m.id}`} name="role" defaultValue={m.role}>
+                    <Select id={`role-${m.id}`} name="role" defaultValue={m.role}>
                       {grantable.map((r) => (
                         <option key={r} value={r}>
                           {t.org.roles[r]}
                         </option>
                       ))}
-                    </select>
-                    <button type="submit" className="btn">
-                      {t.org.changeRole}
-                    </button>
-                  </form>
-                  <form action={removeMember}>
+                    </Select>
+                    <Button>{t.org.changeRole}</Button>
+                  </Form>
+                  <Form action={removeMember}>
                     <input type="hidden" name="member" value={m.id} />
-                    <button type="submit" className="btn is-danger">
-                      {t.org.remove}
-                    </button>
-                  </form>
+                    <Button tone="danger">{t.org.remove}</Button>
+                  </Form>
                 </RowSide>
               ) : (
                 <RowSide>
@@ -127,27 +146,21 @@ export default async function Organization({ searchParams }: { searchParams: Par
 
       <Section label={t.org.invitations} count={invitations.length}>
         {invitations.length === 0 ? (
-          <SectionBody>
-            <p className="faint">{t.org.noInvitations}</p>
-          </SectionBody>
+          <EmptyState compact title={t.org.noInvitations} hint={t.org.noInvitationsHint} />
         ) : (
           invitations.map((i) => (
             <Row key={i.id}>
-              <RowText
-                title={i.email}
-                line={`${roleOf(i.role ?? "member")} · ${t.org.expires(date.format(new Date(i.expiresAt)))}`}
-              />
+              <RowText title={i.email} line={roleOf(i.role ?? "member")} />
               {manager && (
                 <RowSide>
                   <CopyLink url={invitationUrl(settings.baseUrl, i.id)} label={t.org.copyLink} done={t.org.copied} />
-                  <form action={cancelInvitation}>
+                  <Form action={cancelInvitation}>
                     <input type="hidden" name="invitation" value={i.id} />
-                    <button type="submit" className="btn">
-                      {t.org.cancel}
-                    </button>
-                  </form>
+                    <Button tone="danger">{t.org.cancel}</Button>
+                  </Form>
                 </RowSide>
               )}
+              <RowTime>{t.org.expires(date.format(new Date(i.expiresAt)))}</RowTime>
             </Row>
           ))
         )}
@@ -157,25 +170,23 @@ export default async function Organization({ searchParams }: { searchParams: Par
         <SectionBody>
           {manager ? (
             <>
-              <form action={inviteMember} className="invite-form">
+              <Form action={inviteMember} grow>
                 <label className="sr-only" htmlFor="invite-email">
                   {t.org.inviteEmail}
                 </label>
-                <input id="invite-email" name="email" type="email" required placeholder={t.org.inviteEmail} />
+                <Input id="invite-email" name="email" type="email" required placeholder={t.org.inviteEmail} />
                 <label className="sr-only" htmlFor="invite-role">
                   {t.org.role}
                 </label>
-                <select id="invite-role" name="role" defaultValue="member">
+                <Select id="invite-role" name="role" defaultValue="member">
                   {grantable.map((r) => (
                     <option key={r} value={r}>
                       {t.org.roles[r]}
                     </option>
                   ))}
-                </select>
-                <button type="submit" className="btn is-primary">
-                  {t.org.sendInvite}
-                </button>
-              </form>
+                </Select>
+                <Button tone="primary">{t.org.sendInvite}</Button>
+              </Form>
               <p className="faint">{t.org.emailNote}</p>
             </>
           ) : (
@@ -188,8 +199,8 @@ export default async function Organization({ searchParams }: { searchParams: Par
         <SectionBody>
           <p>{t.org.apiKeysHint}</p>
           {!owner && <p className="faint">{t.org.onlyOwners}</p>}
-          {owner && apiKeys.length === 0 && <p className="faint">{t.org.noApiKeys}</p>}
         </SectionBody>
+        {owner && apiKeys.length === 0 && <EmptyState compact title={t.org.noApiKeys} hint={t.org.noApiKeysHint} />}
         {owner &&
           apiKeys.map((k) => (
             <Row key={k.id}>
@@ -198,19 +209,17 @@ export default async function Organization({ searchParams }: { searchParams: Par
                 line={
                   <>
                     {k.start && <span className="mono">{k.start}… · </span>}
-                    {t.org.keyCreated(date.format(new Date(k.createdAt)))} ·{" "}
-                    {k.lastRequest ? t.org.keyUsed(date.format(new Date(k.lastRequest))) : t.org.keyUnused}
+                    {t.org.keyCreated(date.format(new Date(k.createdAt)))}
                   </>
                 }
               />
               <RowSide>
-                <form action={revokeApiKey}>
+                <Form action={revokeApiKey}>
                   <input type="hidden" name="key" value={k.id} />
-                  <button type="submit" className="btn is-danger">
-                    {t.org.revoke}
-                  </button>
-                </form>
+                  <Button tone="danger">{t.org.revoke}</Button>
+                </Form>
               </RowSide>
+              <RowTime>{k.lastRequest ? t.org.keyUsed(date.format(new Date(k.lastRequest))) : t.org.keyUnused}</RowTime>
             </Row>
           ))}
         {owner && (
@@ -218,21 +227,6 @@ export default async function Organization({ searchParams }: { searchParams: Par
             <ApiKeyForm lang={lang} />
           </SectionBody>
         )}
-      </Section>
-
-      <Section label={t.shell.settings}>
-        <Row href={KEYS_PATH}>
-          <RowText title={t.keys.nav} line={t.org.keysLink} />
-          <RowSide>→</RowSide>
-        </Row>
-        <Row href={GITHUB_PATH}>
-          <RowText title={t.github.nav} line={t.org.githubLink} />
-          <RowSide>→</RowSide>
-        </Row>
-        <Row href={WORKERS_PATH}>
-          <RowText title={t.workers.nav} line={t.org.workersLink} />
-          <RowSide>→</RowSide>
-        </Row>
       </Section>
 
       {organizations.length > 1 && (
@@ -244,12 +238,10 @@ export default async function Organization({ searchParams }: { searchParams: Par
                 {o.id === viewer.organization.id ? (
                   <Tag>{t.org.current}</Tag>
                 ) : (
-                  <form action={switchOrganization}>
+                  <Form action={switchOrganization}>
                     <input type="hidden" name="organization" value={o.id} />
-                    <button type="submit" className="btn">
-                      {t.org.switchTo}
-                    </button>
-                  </form>
+                    <Button>{t.org.switchTo}</Button>
+                  </Form>
                 )}
               </RowSide>
             </Row>

@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { acceptInvitation, createOrganization, rejectInvitation, signOut } from "@/app/auth-actions";
-import { AuthCard } from "@/components/AuthCard";
+import { AuthCard, AuthNotice } from "@/components/AuthCard";
+import { Button, Form, Input } from "@/components/page";
 import { isRole } from "@/lib/accounts";
 import { requireAccounts, requireSession } from "@/lib/accounts-server";
 import { accountsModeOf } from "@/lib/accounts-settings";
@@ -38,53 +39,44 @@ export default async function Welcome({ searchParams }: { searchParams: Params }
 
   return (
     <AuthCard
-      brandSub={t.brandSub}
       kicker={viewer.user.email}
       heading={t.org.welcomeHeading(viewer.user.name || viewer.user.email)}
       lead={canCreate ? t.org.createLead : t.org.waitLead}
     >
-      {error && (
-        <p className="login-error" role="alert">
-          {t.org.errors[error]}
-        </p>
-      )}
+      {error && <AuthNotice tone="critical">{t.org.errors[error]}</AuthNotice>}
       {pending.length > 0 && (
-        <section className="welcome-invitations" aria-labelledby="invitations-title">
-          <h2 id="invitations-title" className="section-label">
+        <section className="au-list" aria-labelledby="invitations-title">
+          <h2 id="invitations-title" className="au-list-label">
             {t.org.invitationsForYou}
           </h2>
-          <ul className="plain-list">
-            {pending.map((i) => (
-              <li key={i.id} className="invite-row">
-                <span>{t.org.invitedTo(i.organizationName, t.org.roles[isRole(i.role) ? i.role : "member"])}</span>
-                <span className="row-actions">
-                  <form action={acceptInvitation}>
-                    <input type="hidden" name="invitation" value={i.id} />
-                    <button type="submit" className="btn is-primary">
-                      {t.org.accept}
-                    </button>
-                  </form>
-                  <form action={rejectInvitation}>
-                    <input type="hidden" name="invitation" value={i.id} />
-                    <button type="submit" className="btn">
-                      {t.org.decline}
-                    </button>
-                  </form>
-                </span>
-              </li>
-            ))}
-          </ul>
+          {pending.map((i) => (
+            <div key={i.id} className="au-list-row">
+              <span className="au-list-text">
+                {t.org.invitedTo(i.organizationName, t.org.roles[isRole(i.role) ? i.role : "member"])}
+              </span>
+              <Form action={acceptInvitation}>
+                <input type="hidden" name="invitation" value={i.id} />
+                <Button tone="primary">{t.org.accept}</Button>
+              </Form>
+              <Form action={rejectInvitation}>
+                <input type="hidden" name="invitation" value={i.id} />
+                <Button>{t.org.decline}</Button>
+              </Form>
+            </div>
+          ))}
         </section>
       )}
       {canCreate && (
-        <form action={createOrganization} className="login-form">
+        <form action={createOrganization} className="au-form">
           <label htmlFor="org-name">{t.org.orgName}</label>
-          <input id="org-name" name="name" required maxLength={60} autoComplete="organization" />
-          <button type="submit">{t.org.create}</button>
+          <Input id="org-name" name="name" required maxLength={60} autoComplete="organization" />
+          <Button tone="primary" className="au-submit">
+            {t.org.create}
+          </Button>
         </form>
       )}
-      <form action={signOut} className="login-switch">
-        <button type="submit" className="link">
+      <form action={signOut} className="au-foot">
+        <button type="submit" className="au-link">
           {t.auth.logout}
         </button>
       </form>

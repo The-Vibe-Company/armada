@@ -3,7 +3,8 @@ import { cookies, headers } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { approveDevice, denyDevice, signOut } from "@/app/auth-actions";
-import { AuthCard } from "@/components/AuthCard";
+import { AuthCard, AuthNotice } from "@/components/AuthCard";
+import { Button, Form, Input } from "@/components/page";
 import { requireAccounts, requireSession } from "@/lib/accounts-server";
 import { accountsModeOf, DEVICE_PATH } from "@/lib/accounts-settings";
 import { DEVICE_ERRORS, type DeviceError, LANGUAGE_COOKIE, STRINGS } from "@/lib/i18n";
@@ -44,13 +45,12 @@ export default async function Device({ searchParams }: { searchParams: Params })
   if (done === "approved" || done === "denied")
     return (
       <AuthCard
-        brandSub={t.brandSub}
         kicker={t.device.title}
         heading={done === "approved" ? t.device.approvedHeading : t.device.deniedHeading}
         lead={done === "approved" ? t.device.approved : t.device.denied}
       >
-        <p className="login-switch">
-          <Link className="link" href="/">
+        <p className="au-foot">
+          <Link className="au-link" href="/">
             {t.org.back}
           </Link>
         </p>
@@ -69,15 +69,11 @@ export default async function Device({ searchParams }: { searchParams: Params })
 
   if (!code || status !== "pending")
     return (
-      <AuthCard brandSub={t.brandSub} kicker={t.device.title} heading={t.device.title} lead={t.device.enterLead}>
-        {error && (
-          <p className="login-error" role="alert">
-            {t.device.errors[error]}
-          </p>
-        )}
-        <form action={DEVICE_PATH} method="get" className="login-form">
+      <AuthCard kicker={t.device.title} heading={t.device.title} lead={t.device.enterLead}>
+        {error && <AuthNotice tone="critical">{t.device.errors[error]}</AuthNotice>}
+        <form action={DEVICE_PATH} method="get" className="au-form">
           <label htmlFor="user_code">{t.device.code}</label>
-          <input
+          <Input
             id="user_code"
             name="user_code"
             className="mono"
@@ -87,39 +83,36 @@ export default async function Device({ searchParams }: { searchParams: Params })
             required
             placeholder="ABCD-EFGH"
           />
-          <button type="submit">{t.device.next}</button>
+          <Button tone="primary" className="au-submit">
+            {t.device.next}
+          </Button>
         </form>
       </AuthCard>
     );
 
   return (
     <AuthCard
-      brandSub={t.brandSub}
       kicker={t.device.title}
       heading={t.device.confirmHeading}
       lead={t.device.confirmLead(viewer.user.email, viewer.organization?.name ?? null)}
     >
-      {error && (
-        <p className="login-error" role="alert">
-          {t.device.errors[error]}
-        </p>
-      )}
-      <p className="device-code mono">{shown(code)}</p>
-      <div className="row-actions is-spread">
-        <form action={approveDevice} className="login-form is-grow">
+      {error && <AuthNotice tone="critical">{t.device.errors[error]}</AuthNotice>}
+      <p className="au-code mono">{shown(code)}</p>
+      <div className="au-actions">
+        <Form action={approveDevice} grow>
           <input type="hidden" name="code" value={code} />
-          <button type="submit">{t.device.approve}</button>
-        </form>
-        <form action={denyDevice}>
+          <Button tone="primary" className="au-submit">
+            {t.device.approve}
+          </Button>
+        </Form>
+        <Form action={denyDevice}>
           <input type="hidden" name="code" value={code} />
-          <button type="submit" className="btn">
-            {t.device.deny}
-          </button>
-        </form>
+          <Button className="au-submit">{t.device.deny}</Button>
+        </Form>
       </div>
-      <p className="login-hint">{t.device.signedInAs(viewer.user.email)}</p>
-      <form action={signOut} className="login-switch">
-        <button type="submit" className="link">
+      <p className="au-hint">{t.device.signedInAs(viewer.user.email)}</p>
+      <form action={signOut} className="au-foot">
+        <button type="submit" className="au-link">
           {t.auth.logout}
         </button>
       </form>

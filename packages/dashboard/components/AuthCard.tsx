@@ -1,36 +1,46 @@
-// The frame of the pages around the fleet (sign in, welcome, invitation): the
-// brand, a kicker, a heading and a lead, then the page's own content.
+// The frame of the pages before the shell (sign in, welcome, a terminal's
+// code, an invitation), in the v4 look: centered, the Armada mark over one
+// card, no sidebar. The card's heading is the page's one h1, since these
+// pages have no header bar. Their forms use the page kit's controls.
 
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { Logo } from "./shell/Logo";
 
 export function AuthCard({
-  brandSub,
   kicker,
   heading,
   lead,
-  wide = false,
   children,
 }: {
-  brandSub: string;
-  kicker: string;
+  kicker?: string;
   heading: string;
   lead?: ReactNode;
-  wide?: boolean;
   children: ReactNode;
 }) {
   return (
-    <main className="login">
-      <div className={`login-card${wide ? " is-wide" : ""}`}>
-        <Link href="/" className="brand">
-          <span className="brand-mark" aria-hidden />
-          Armada <small>{brandSub}</small>
+    <main className="au">
+      <div className="au-column">
+        <Link href="/" className="au-brand">
+          <Logo size={22} />
+          Armada
         </Link>
-        <div className="kicker mono">{kicker}</div>
-        <h1>{heading}</h1>
-        {lead && <p className="login-lead">{lead}</p>}
-        {children}
+        <div className="au-card">
+          {kicker && kicker !== heading && <div className="au-kicker">{kicker}</div>}
+          <h1 className="au-heading">{heading}</h1>
+          {lead && <p className="au-lead">{lead}</p>}
+          {children}
+        </div>
       </div>
     </main>
+  );
+}
+
+/** A line on top of the card's form: a refusal, or a step done. */
+export function AuthNotice({ tone, id, children }: { tone: "critical" | "done"; id?: string; children: ReactNode }) {
+  return (
+    <p id={id} className={`au-notice is-${tone}`} role={tone === "critical" ? "alert" : "status"}>
+      {children}
+    </p>
   );
 }

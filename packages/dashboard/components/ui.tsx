@@ -151,12 +151,15 @@ export function Tabs<K extends string>({
   onChange,
   label,
   size = "md",
+  push = false,
 }: {
   items: TabItem<K>[];
   value: K;
   onChange?: (key: K) => void;
   label: string;
   size?: "sm" | "md";
+  /** Link tabs that open pages (the organization's) add to the history; filters replace it. */
+  push?: boolean;
 }) {
   return (
     <div className={`ui-tabs is-${size}`} role="tablist" aria-label={label}>
@@ -174,8 +177,8 @@ export function Tabs<K extends string>({
             key={it.key}
             href={it.href}
             prefetch
-            replace
-            scroll={false}
+            replace={!push}
+            scroll={push}
             role="tab"
             aria-selected={on}
             className="ui-tab"
@@ -200,10 +203,20 @@ export function Tabs<K extends string>({
   );
 }
 
-/** What a list or page shows when it has nothing. */
-export function EmptyState({ title, hint, children }: { title: ReactNode; hint?: ReactNode; children?: ReactNode }) {
+/** What a list or page shows when it has nothing; `compact` for a list among others on a page (a settings page). */
+export function EmptyState({
+  title,
+  hint,
+  compact = false,
+  children,
+}: {
+  title: ReactNode;
+  hint?: ReactNode;
+  compact?: boolean;
+  children?: ReactNode;
+}) {
   return (
-    <div className="ui-empty">
+    <div className={cx("ui-empty", compact && "is-compact")}>
       <span className="ui-empty-title">{title}</span>
       {hint && <span className="ui-empty-hint">{hint}</span>}
       {children}

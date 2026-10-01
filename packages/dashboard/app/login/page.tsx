@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import { notFound } from "next/navigation";
 import { signInWithEmail, signInWithGitHub, signUpWithEmail } from "@/app/auth-actions";
-import { AuthCard } from "@/components/AuthCard";
+import { AuthCard, AuthNotice } from "@/components/AuthCard";
+import { Button, Input } from "@/components/page";
 import { accountsModeOf } from "@/lib/accounts-settings";
 import { LOGIN_ROUTE, safeNext } from "@/lib/auth";
 import { AUTH_ERRORS, type AuthError, LANGUAGE_COOKIE, STRINGS, type Strings } from "@/lib/i18n";
@@ -51,41 +52,37 @@ export default async function Login({ searchParams }: { searchParams: Params }) 
   if (next !== "/") switchMode.set("next", next);
 
   return (
-    <AuthCard brandSub={t.brandSub} kicker={t.auth.kicker} heading={t.auth.heading} lead={t.auth.lead}>
-      {sent && (
-        <p className="login-notice" role="status">
-          {t.auth.sent}
-        </p>
-      )}
+    <AuthCard kicker={t.auth.kicker} heading={t.auth.heading} lead={t.auth.lead}>
+      {sent && <AuthNotice tone="done">{t.auth.sent}</AuthNotice>}
       {error && (
-        <p id="login-error" className="login-error" role="alert">
+        <AuthNotice tone="critical" id="login-error">
           {t.auth.errors[error]}
-        </p>
+        </AuthNotice>
       )}
       {github && (
-        <form action={signInWithGitHub} className="login-form">
+        <form action={signInWithGitHub} className="au-form">
           <input type="hidden" name="next" value={next} />
-          <button type="submit" className="is-github">
+          <Button className="au-submit is-github">
             <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden fill="currentColor">
               <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
             </svg>
             {t.auth.github}
-          </button>
+          </Button>
         </form>
       )}
       {emailPassword && (
         <>
-          {github && <div className="login-or">{t.auth.orEmail}</div>}
-          <form action={signUp ? signUpWithEmail : signInWithEmail} className="login-form">
+          {github && <div className="au-or">{t.auth.orEmail}</div>}
+          <form action={signUp ? signUpWithEmail : signInWithEmail} className="au-form">
             <input type="hidden" name="next" value={next} />
             {signUp && (
               <>
                 <label htmlFor="name">{t.auth.name}</label>
-                <input id="name" name="name" autoComplete="name" required maxLength={80} />
+                <Input id="name" name="name" autoComplete="name" required maxLength={80} />
               </>
             )}
             <label htmlFor="email">{t.auth.email}</label>
-            <input
+            <Input
               id="email"
               name="email"
               type="email"
@@ -95,7 +92,7 @@ export default async function Login({ searchParams }: { searchParams: Params }) 
               aria-describedby={error ? "login-error" : undefined}
             />
             <label htmlFor="password">{t.auth.password}</label>
-            <input
+            <Input
               id="password"
               name="password"
               type="password"
@@ -106,21 +103,23 @@ export default async function Login({ searchParams }: { searchParams: Params }) 
               placeholder={signUp ? t.auth.passwordHint : undefined}
               aria-invalid={error ? true : undefined}
             />
-            <button type="submit">{signUp ? t.auth.signUp : t.auth.signIn}</button>
+            <Button tone="primary" className="au-submit">
+              {signUp ? t.auth.signUp : t.auth.signIn}
+            </Button>
           </form>
-          <p className="login-switch">
-            <a className="link" href={`/login${switchMode.size ? `?${switchMode}` : ""}`}>
+          <p className="au-foot">
+            <a className="au-link" href={`/login${switchMode.size ? `?${switchMode}` : ""}`}>
               {signUp ? t.auth.toSignIn : t.auth.toSignUp}
             </a>
           </p>
         </>
       )}
-      <p className="login-hint">{t.auth.hint}</p>
+      <p className="au-hint">{t.auth.hint}</p>
     </AuthCard>
   );
 }
 
-/** The shared-password form of THE-834, unchanged, while accounts are not configured. */
+/** The shared-password form of THE-834, while accounts are not configured. */
 function PasswordLogin({
   t,
   error: raw,
@@ -134,38 +133,30 @@ function PasswordLogin({
   // Only the path matters here; the login route checks it again against the real origin.
   const next = safeNext(rawNext, new URL("http://dashboard.local"));
   return (
-    <main className="login">
-      <div className="login-card">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden />
-          Armada <small>{t.brandSub}</small>
-        </div>
-        <div className="kicker mono">{t.gate.kicker}</div>
-        <h1>{t.gate.heading}</h1>
-        <p className="login-lead">{t.gate.lead}</p>
-        <form method="post" action={LOGIN_ROUTE} className="login-form">
-          <input type="hidden" name="next" value={next} />
-          <label htmlFor="password">{t.gate.password}</label>
-          <input
-            id="password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            // biome-ignore lint/a11y/noAutofocus: the password is the page's only field.
-            autoFocus
-            aria-invalid={error ? true : undefined}
-            aria-describedby={error ? "login-error" : undefined}
-          />
-          {error && (
-            <p id="login-error" className="login-error" role="alert">
-              {t.gate[error]}
-            </p>
-          )}
-          <button type="submit">{t.gate.submit}</button>
-        </form>
-        <p className="login-hint">{t.gate.hint}</p>
-      </div>
-    </main>
+    <AuthCard kicker={t.gate.kicker} heading={t.gate.heading} lead={t.gate.lead}>
+      <form method="post" action={LOGIN_ROUTE} className="au-form">
+        <input type="hidden" name="next" value={next} />
+        <label htmlFor="password">{t.gate.password}</label>
+        <Input
+          id="password"
+          name="password"
+          type="password"
+          autoComplete="current-password"
+          required
+          autoFocus
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? "login-error" : undefined}
+        />
+        {error && (
+          <AuthNotice tone="critical" id="login-error">
+            {t.gate[error]}
+          </AuthNotice>
+        )}
+        <Button tone="primary" className="au-submit">
+          {t.gate.submit}
+        </Button>
+      </form>
+      <p className="au-hint">{t.gate.hint}</p>
+    </AuthCard>
   );
 }
