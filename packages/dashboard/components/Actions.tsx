@@ -1,6 +1,6 @@
 "use client";
 
-// The owner's two actions on the Fleet view: answer a worker's question, and
+// The owner's two actions on the overview: answer a worker's question, and
 // ask for a ready ticket to be launched. Each only drops a request in the
 // coordinator's inbox (a server action); the coordinator carries it out, and
 // the request shows as pending until it does. The screen changes on the
@@ -11,6 +11,8 @@ import { type FormEvent, type KeyboardEvent, useId, useRef, useState, useTransit
 import { answerQuestion, launchTicket } from "@/app/actions";
 import type { RequestError, Strings } from "@/lib/i18n";
 import type { RequestResult } from "@/lib/requests";
+import { Row, RowIcon, RowId, RowSide, RowText, Section, SectionBody } from "./page";
+import { Dot, Tag } from "./ui";
 
 /** The viewer's name, which signs every request of the page. */
 export interface Signer {
@@ -336,42 +338,38 @@ export function ReadyBlock({
   const others = ready.filter((r) => !r.readyForAgent && !r.launch);
   const shown = all ? [...marked, ...others] : marked;
   return (
-    <section className="block" aria-labelledby="ready-h">
-      <div className="block-h">
-        <h2 id="ready-h" className="serif">
-          {t.readyTitle}
-        </h2>
-        <span className="count tnum">{marked.length}</span>
-        <span className="block-hint">{t.readyHint}</span>
-      </div>
-      {!ctx.live && ready.length > 0 && <p className="calm">{t.needsLive}</p>}
+    <Section label={t.readyTitle} count={marked.length} side={<span className="block-hint">{t.readyHint}</span>}>
+      {!ctx.live && ready.length > 0 && (
+        <SectionBody>
+          <p>{t.needsLive}</p>
+        </SectionBody>
+      )}
       {shown.length === 0 && others.length === 0 ? (
-        <p className="calm">{t.readyEmpty}</p>
+        <SectionBody>
+          <p>{t.readyEmpty}</p>
+        </SectionBody>
       ) : (
         <>
-          {shown.length > 0 && (
-            <ol className="ready">
-              {shown.map((r, k) => (
-                <ReadyRow
-                  key={`${r.project}-${r.id}`}
-                  ctx={ctx}
-                  r={r}
-                  profiles={profiles.get(r.project) ?? []}
-                  projectName={names.get(r.project) ?? r.project}
-                  coordinator={coordinators.get(r.project) ?? "unknown"}
-                  i={k}
-                />
-              ))}
-            </ol>
-          )}
+          {shown.map((r) => (
+            <ReadyRow
+              key={`${r.project}-${r.id}`}
+              ctx={ctx}
+              r={r}
+              profiles={profiles.get(r.project) ?? []}
+              projectName={names.get(r.project) ?? r.project}
+              coordinator={coordinators.get(r.project) ?? "unknown"}
+            />
+          ))}
           {others.length > 0 && (
-            <button type="button" className="link ready-more" onClick={() => setAll(!all)} aria-expanded={all}>
-              {all ? t.fewerUnblocked : t.moreUnblocked(others.length)}
-            </button>
+            <SectionBody>
+              <button type="button" className="link ready-more" onClick={() => setAll(!all)} aria-expanded={all}>
+                {all ? t.fewerUnblocked : t.moreUnblocked(others.length)}
+              </button>
+            </SectionBody>
           )}
         </>
       )}
-    </section>
+    </Section>
   );
 }
 
@@ -381,14 +379,12 @@ function ReadyRow({
   profiles,
   projectName,
   coordinator,
-  i,
 }: {
   ctx: ActionContext;
   r: ReadyTicket;
   profiles: ProfileSummary[];
   projectName: string;
   coordinator: CoordinatorState;
-  i: number;
 }) {
   const { t } = ctx;
   const routed = r.route?.profile ?? null;
@@ -422,28 +418,34 @@ function ReadyRow({
   };
 
   return (
-    <li
-      className={`ready-row ${open ? "is-open" : ""} ${pending ? "is-pending" : ""}`}
-      style={{ ["--i" as string]: i }}
-    >
-      <div className="ready-main">
-        <a className="crew-title" href={r.url} target="_blank" rel="noreferrer">
-          {r.title}
-        </a>
-        <div className="meta">
-          <span className="tag">{projectName}</span>
-          <span className="mono">{r.id}</span>
-          {r.spec && <span>{r.spec}</span>}
-          {r.onCriticalPath && <span className="flag is-severe">{t.criticalPath}</span>}
-          {r.unlocks.length > 0 && <span title={r.unlocks.join(", ")}>{t.unlocks(r.unlocks.length)}</span>}
-          {!r.readyForAgent && <span className="faint">{t.notMarkedReady}</span>}
-          {routed && !pending && (
-            <span className="mono faint" title={t.routedHint(r.route?.why ?? "")}>
-              → {routed}
-            </span>
-          )}
-        </div>
-      </div>
+    <Row className={`ready-row ${open ? "is-open" : ""} ${pending ? "is-pending" : ""}`}>
+      <RowIcon>
+        <Dot color={r.onCriticalPath ? "var(--critical)" : "var(--text-4)"} />
+      </RowIcon>
+      <RowId>{r.id}</RowId>
+      <RowText
+        title={
+          <a href={r.url} target="_blank" rel="noreferrer">
+            {r.title}
+          </a>
+        }
+        line={
+          <span className="ready-meta">
+            {r.spec && <span>{r.spec}</span>}
+            {r.onCriticalPath && <span className="flag is-severe">{t.criticalPath}</span>}
+            {r.unlocks.length > 0 && <span title={r.unlocks.join(", ")}>{t.unlocks(r.unlocks.length)}</span>}
+            {!r.readyForAgent && <span>{t.notMarkedReady}</span>}
+          </span>
+        }
+      />
+      <RowSide roomy>
+        <Tag>{projectName}</Tag>
+        {routed && !pending && (
+          <span className="mono" title={t.routedHint(r.route?.why ?? "")}>
+            → {routed}
+          </span>
+        )}
+      </RowSide>
       <div className="ready-act">
         {pending ? (
           <PendingNote
@@ -516,6 +518,6 @@ function ReadyRow({
           </div>
         </form>
       )}
-    </li>
+    </Row>
   );
 }

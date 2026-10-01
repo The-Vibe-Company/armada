@@ -1,53 +1,168 @@
 "use client";
 
-// /design: the shared components of the v4 dashboard, each in its states, so
-// the screens can be checked against one sheet (THE-866).
-import { useState } from "react";
-import { AGENT_STATUSES, DENSITIES, HARNESSES, PROJECT_PALETTE } from "@/lib/fleet-view";
+// /design: the reference every page is checked against (THE-876). First the
+// page anatomy, the page kit of components/page.tsx put together as the
+// Agents page uses it, with when to use each part; then every shared
+// component in its states.
+import type { ReactNode } from "react";
+import { AGENT_STATUSES, HARNESS_NAME, HARNESSES, PROJECT_PALETTE } from "@/lib/fleet-view";
+import {
+  Card,
+  CardGrid,
+  CardHead,
+  CardMeta,
+  CardTitle,
+  DensityToggle,
+  Notice,
+  Page,
+  PageHeader,
+  Row,
+  RowIcon,
+  RowId,
+  RowSide,
+  RowText,
+  RowTime,
+  Section,
+  SectionBody,
+  Toolbar,
+} from "../page";
 import { useNow, useShell } from "../shell/context";
 import {
   Avatar,
-  Card,
   Dot,
   EmptyState,
-  GroupHeader,
   HarnessBadge,
+  harnessColor,
   Kbd,
-  Kpi,
-  KpiRow,
   PhasePill,
   ProjectChip,
   RelativeTime,
-  Row,
-  RowList,
-  SectionHeader,
-  SidePanel,
   StatusDot,
   Steps,
   Tabs,
   Tag,
 } from "../ui";
 
-function Specimen({ name, children }: { name: string; children: React.ReactNode }) {
+/** One component in its states. */
+function Specimen({ name, children }: { name: string; children: ReactNode }) {
   return (
-    <section className="ds-specimen">
-      <h2 className="ds-name mono">{name}</h2>
-      <div className="ds-body">{children}</div>
-    </section>
+    <Section label={<span className="mono">{name}</span>}>
+      <SectionBody>
+        <div className="ds-items">{children}</div>
+      </SectionBody>
+    </Section>
   );
 }
 
+const SAMPLE = [
+  { id: "WID-15", title: "Sign in with a magic link", line: "How long should a sign-in link stay valid?", step: 1 },
+  { id: "GAD-3", title: "Import products from a spreadsheet", line: "Plan posted: parse, validate, import", step: 1 },
+] as const;
+
 export function DesignSheet() {
-  const { t, density, setDensity } = useShell();
+  const { t } = useShell();
   const now = useNow();
-  const [tab, setTab] = useState<"activity" | "files" | "terminal">("activity");
+  const d = t.shell.design;
   const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
   return (
-    <div className="sc-page">
-      <div className="sc-head">
-        <h1>{t.shell.design.title}</h1>
-        <p className="sc-lead">{t.shell.design.lead}</p>
-      </div>
+    <Page>
+      <Section label={d.anatomy}>
+        <SectionBody>
+          <p className="ds-use">{d.lead}</p>
+          <div className="ds-frame" title={d.sample}>
+            <PageHeader
+              sample
+              title={
+                <span className="sh-crumb">
+                  <span aria-current="page">{t.shell.nav.agents}</span>
+                </span>
+              }
+              hints={
+                <>
+                  <Kbd>j k</Kbd>
+                  {t.shell.navigate} <Kbd>↵</Kbd>
+                  {t.shell.open}
+                </>
+              }
+            />
+            <Toolbar end={<DensityToggle />}>
+              <Tabs
+                label={t.shell.harnessHeading}
+                value="all"
+                items={[
+                  { key: "all", label: t.shell.all, count: 10, dot: "var(--text-3)" },
+                  ...HARNESSES.map((h, k) => ({
+                    key: h,
+                    label: HARNESS_NAME[h],
+                    count: [5, 3, 2][k],
+                    dot: harnessColor(h),
+                  })),
+                ]}
+              />
+            </Toolbar>
+            <Section icon={<StatusDot status="waiting" />} label={t.shell.groups.waiting} count={SAMPLE.length}>
+              {SAMPLE.map((r, k) => (
+                <Row key={r.id} href={`/agents/${r.id}`}>
+                  <StatusDot status="waiting" />
+                  <RowId>{r.id}</RowId>
+                  <RowText title={r.title} line={r.line} />
+                  <RowSide roomy>
+                    <Tag>{k ? "Gadgets" : "Widgets"}</Tag>
+                  </RowSide>
+                  <RowSide roomy>
+                    <Steps step={r.step} tone="waiting" />
+                  </RowSide>
+                  <RowTime>
+                    <RelativeTime at={ago(12 + k * 6)} format="duration" />
+                  </RowTime>
+                </Row>
+              ))}
+              <Row>
+                <RowIcon>
+                  <Dot color="var(--text-4)" />
+                </RowIcon>
+                <RowId>WID-20</RowId>
+                <RowText title="Let users change their email address" line="static row: no href" />
+                <RowSide>
+                  <Tag>opus</Tag>
+                </RowSide>
+              </Row>
+            </Section>
+            <Section label={t.shell.waitingForYou} count={2}>
+              <CardGrid>
+                {SAMPLE.map((r) => (
+                  <Card key={r.id}>
+                    <CardHead
+                      icon={<Dot color="var(--accent)" />}
+                      label={t.kinds.question}
+                      color="var(--accent)"
+                      side="12 min"
+                    />
+                    <CardTitle>{r.title}</CardTitle>
+                    <CardMeta>
+                      <Tag>Widgets</Tag>
+                      <span className="mono">{r.id}</span>
+                    </CardMeta>
+                  </Card>
+                ))}
+              </CardGrid>
+            </Section>
+          </div>
+          {(Object.keys(d.uses) as (keyof typeof d.uses)[]).map((k) => (
+            <p key={k} className="ds-use">
+              <b>{k}</b> {d.uses[k]}
+            </p>
+          ))}
+        </SectionBody>
+      </Section>
+
+      <Specimen name="Notice">
+        <div className="ds-frame">
+          <Notice tone="critical">{t.projectError("Gadgets")} GitHub answered 502.</Notice>
+          <Notice tone="warn">{t.unreachableBanner("timeout")}</Notice>
+          <Notice>{t.readingProject("Widgets")}</Notice>
+        </div>
+      </Specimen>
 
       <Specimen name="StatusDot">
         {AGENT_STATUSES.map((s) => (
@@ -117,117 +232,45 @@ export function DesignSheet() {
         <Kbd>j k</Kbd>
       </Specimen>
 
-      <Specimen name="KPI">
-        <KpiRow>
-          <Kpi label={t.shell.inFlight} value={10} />
-          <Kpi label={t.shell.waitingForYou} value={4} tone="waiting" />
-          <Kpi label={t.shell.reasons.ci} value={2} tone="error" />
-          <Kpi label={t.shell.reasons.silent} value={1} tone="silent" />
-          <Kpi label={t.shell.coordinators} value="2/3" />
-        </KpiRow>
-      </Specimen>
-
-      <Specimen name="SectionHeader · GroupHeader">
-        <div className="ds-stack">
-          <SectionHeader title={t.shell.waitingForYou} count={4} />
-          <SectionHeader title={t.shell.readyToStart} count={3}>
-            <span className="faint">armada.toml</span>
-          </SectionHeader>
-          <GroupHeader icon={<StatusDot status="error" />} label={t.shell.groups.error} count={2} />
-        </div>
-      </Specimen>
-
-      <Specimen name="Row · RowList (j/k)">
-        <div className="ds-stack">
-          <RowList>
-            {["WID-15", "WID-18", "GAD-5"].map((id, k) => (
-              <Row key={id} href={`/agents/${id}`} className="sc-agent">
-                <StatusDot status={(["waiting", "done", "error"] as const)[k] ?? "running"} />
-                <span className="sc-agent-id mono">{id}</span>
-                <span className="sc-agent-title">Row {k + 1}</span>
-                <span className="spacer" />
-                <Steps step={[2, 5, 4][k] ?? 0} tone={(["waiting", "done", "error"] as const)[k] ?? "running"} />
-              </Row>
-            ))}
-          </RowList>
-        </div>
-      </Specimen>
-
-      <Specimen name="Card">
-        <Card>
-          <SectionHeader title="Card" as="h3" />
-          <span className="faint">{t.shell.projectsLead}</span>
-        </Card>
-        <Card href="/projects">
-          <SectionHeader title="Card · link" as="h3" />
-          <span className="faint">/projects</span>
-        </Card>
-      </Specimen>
-
-      <Specimen name="SidePanel">
-        <div className="ds-panel">
-          <SidePanel
-            title={t.shell.session}
-            rows={[
-              { k: t.shell.harness, v: "Conductor Cloud", dot: "var(--h-conductor)" },
-              { k: t.shell.profile, v: "opus", mono: true },
-              { k: t.shell.session, v: "ws-4f2a/ses-91", mono: true },
-              { k: t.shell.lastReportKey, v: <RelativeTime at={ago(42)} />, tone: "silent" },
-            ]}
-          />
-        </div>
-      </Specimen>
-
-      <Specimen name="Tabs">
+      <Specimen name="Tabs · DensityToggle">
         <Tabs
           label="tabs"
-          value={tab}
-          onChange={setTab}
+          value="activity"
           items={[
             { key: "activity", label: "Activité" },
             { key: "files", label: "Fichiers", count: 4 },
             { key: "terminal", label: "Terminal" },
           ]}
         />
-        <Tabs
-          label={t.shell.density.label}
-          value={density}
-          onChange={setDensity}
-          size="sm"
-          items={DENSITIES.map((d) => ({ key: d, label: t.shell.density[d] }))}
-        />
+        <DensityToggle />
       </Specimen>
 
       <Specimen name="Steps">
         {AGENT_STATUSES.map((s, k) => (
           <Steps key={s} step={k} tone={s} />
         ))}
-        <Steps step={3} tone="running" wide />
+        <span className="ds-item" style={{ flex: 1 }}>
+          <Steps step={3} tone="running" wide />
+        </span>
       </Specimen>
 
       <Specimen name="RelativeTime">
-        <span className="ds-item">
-          <RelativeTime at={ago(0)} />
-        </span>
-        <span className="ds-item">
-          <RelativeTime at={ago(12)} />
-        </span>
-        <span className="ds-item">
-          <RelativeTime at={ago(185)} />
-        </span>
-        <span className="ds-item">
+        {[0, 12, 185].map((m) => (
+          <span key={m} className="ds-item mono">
+            <RelativeTime at={ago(m)} />
+          </span>
+        ))}
+        <span className="ds-item mono">
           <RelativeTime at={ago(185)} format="duration" />
         </span>
-        <span className="ds-item">
+        <span className="ds-item mono">
           <RelativeTime at={null} />
         </span>
       </Specimen>
 
-      <Specimen name="EmptyState">
-        <div className="ds-stack">
-          <EmptyState title={t.shell.noAgents} hint={t.shell.noAgentsHint} />
-        </div>
-      </Specimen>
-    </div>
+      <Section label={<span className="mono">EmptyState</span>}>
+        <EmptyState title={t.shell.noAgents} hint={t.shell.noAgentsHint} />
+      </Section>
+    </Page>
   );
 }

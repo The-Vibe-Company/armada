@@ -2,12 +2,12 @@
 
 // /agents until THE-869 builds it: every session grouped by what it needs, the
 // harness filter in the address (?harness=), the density the viewer chose.
+// It is the page the page kit (components/page.tsx) was taken from.
 import { useSearchParams } from "next/navigation";
 import { useMemo } from "react";
 import {
   AGENT_STATUSES,
   agentState,
-  DENSITIES,
   HARNESS_NAME,
   HARNESSES,
   type Harness,
@@ -15,13 +15,13 @@ import {
   isHarness,
   paths,
 } from "@/lib/fleet-view";
+import { DensityToggle, Page, Section, Toolbar } from "../page";
 import { useFleet, useShell } from "../shell/context";
-import { EmptyState, GroupHeader, harnessColor, StatusDot, Tabs } from "../ui";
+import { EmptyState, harnessColor, StatusDot, Tabs } from "../ui";
 import { AgentRow } from "./AgentRow";
-import { PlaceholderNote } from "./Placeholder";
 
 export function AgentsScreen() {
-  const { t, density, setDensity } = useShell();
+  const { t, density } = useShell();
   const { overview } = useFleet();
   const asked = useSearchParams().get("harness");
   const harness: Harness | null = isHarness(asked) ? asked : null;
@@ -36,41 +36,36 @@ export function AgentsScreen() {
   const all = overview.rows;
 
   return (
-    <div className="sc-agents">
-      <div className="sc-toolbar">
-        <Tabs
-          label={t.shell.harnessHeading}
-          value={harness ?? "all"}
-          items={[
-            { key: "all", label: t.shell.all, count: all.length, dot: "var(--text-3)", href: paths.agents() },
-            ...HARNESSES.map((h) => ({
-              key: h,
-              label: HARNESS_NAME[h],
-              count: all.filter((r) => harnessOf(r.runtime) === h).length,
-              dot: harnessColor(h),
-              href: paths.agents(h),
-            })),
-          ]}
-        />
-        <span className="spacer" />
-        <Tabs
-          label={t.shell.density.label}
-          value={density}
-          onChange={setDensity}
-          items={DENSITIES.map((d) => ({ key: d, label: t.shell.density[d] }))}
-        />
-      </div>
-      <PlaceholderNote />
+    <Page
+      toolbar={
+        <Toolbar end={<DensityToggle />}>
+          <Tabs
+            label={t.shell.harnessHeading}
+            value={harness ?? "all"}
+            items={[
+              { key: "all", label: t.shell.all, count: all.length, dot: "var(--text-3)", href: paths.agents() },
+              ...HARNESSES.map((h) => ({
+                key: h,
+                label: HARNESS_NAME[h],
+                count: all.filter((r) => harnessOf(r.runtime) === h).length,
+                dot: harnessColor(h),
+                href: paths.agents(h),
+              })),
+            ]}
+          />
+        </Toolbar>
+      }
+    >
       {groups.length === 0 ? (
         <EmptyState title={t.shell.noAgents} hint={t.shell.noAgentsHint} />
       ) : (
         groups.map((g) => (
-          <section key={g.status} aria-label={t.shell.groups[g.status]}>
-            <GroupHeader
-              icon={<StatusDot status={g.status} />}
-              label={t.shell.groups[g.status]}
-              count={g.rows.length}
-            />
+          <Section
+            key={g.status}
+            icon={<StatusDot status={g.status} />}
+            label={t.shell.groups[g.status]}
+            count={g.rows.length}
+          >
             {g.rows.map((r) => (
               <AgentRow
                 key={`${r.project}-${r.id}`}
@@ -79,9 +74,9 @@ export function AgentsScreen() {
                 airy={density === "airy"}
               />
             ))}
-          </section>
+          </Section>
         ))
       )}
-    </div>
+    </Page>
   );
 }

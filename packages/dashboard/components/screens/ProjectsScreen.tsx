@@ -1,11 +1,11 @@
 "use client";
 
-// /projects until THE-868 builds it: one row per project of the viewer's organization.
+// /projects until THE-870 builds it: one row per project of the viewer's organization.
 import type { ProjectOverview } from "@armada/core/read";
 import { decisionsOf, paths } from "@/lib/fleet-view";
+import { Page, Row, RowIcon, RowSide, RowText, Section } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Dot, EmptyState, ProjectChip, Row, RowList } from "../ui";
-import { PlaceholderNote } from "./Placeholder";
+import { Dot, EmptyState, ProjectChip } from "../ui";
 
 /** A coordinator's state, in its color: "actif · il y a 2 min", "inactif depuis 24 min". */
 export function CoordinatorState({ project }: { project: ProjectOverview }) {
@@ -27,45 +27,55 @@ export function CoordinatorState({ project }: { project: ProjectOverview }) {
   );
 }
 
+/** A figure of a row, its label in grey: "en vol 5". */
+export function Figure({ label, value, dot }: { label: string; value: number; dot?: string }) {
+  return (
+    <span className="sc-figure">
+      {dot && <Dot color={dot} size={6} />}
+      <span className="faint">{label}</span> <span className="mono">{value}</span>
+    </span>
+  );
+}
+
+export const projectLine = (p: Pick<ProjectOverview, "repository" | "programRoot">) =>
+  `${p.repository}${p.programRoot ? ` · ${p.programRoot.id}` : ""}`;
+
 export function ProjectsScreen() {
   const { t } = useShell();
   const { overview } = useFleet();
   const decisions = decisionsOf(overview);
   return (
-    <div className="sc-page">
-      <div className="sc-head">
-        <h1>{t.shell.nav.projects}</h1>
-        <p className="sc-lead">{t.shell.projectsLead}</p>
-      </div>
-      <PlaceholderNote />
+    <Page>
       {overview.projects.length === 0 ? (
         <EmptyState title={t.shell.noProjects} hint={t.shell.noProjectsHint} />
       ) : (
-        <RowList>
+        <Section label={t.allProjects} count={overview.projects.length}>
           {overview.projects.map((p) => {
             const waiting = decisions.filter((d) => d.project === p.slug).length;
             return (
-              <Row key={p.slug} href={paths.project(p.slug)} className="sc-project">
-                <span className="sc-project-name">
-                  <ProjectChip slug={p.slug} name={p.name} />
-                  <span className="sc-project-repo">
-                    {p.repository}
-                    {p.programRoot ? ` · ${p.programRoot.id}` : ""}
-                  </span>
-                </span>
-                <CoordinatorState project={p} />
-                <span className="sc-project-figure">
-                  <span className="faint">{t.shell.inFlight}</span> {p.inFlight}
-                </span>
-                <span className="sc-project-figure">
-                  {waiting > 0 && <Dot color="var(--accent)" size={6} />}
-                  <span className="faint">{t.shell.waitingForYou}</span> {waiting}
-                </span>
+              <Row key={p.slug} href={paths.project(p.slug)}>
+                <RowIcon>
+                  <ProjectChip slug={p.slug} bare />
+                </RowIcon>
+                <RowText title={p.name} line={<span className="mono">{projectLine(p)}</span>} />
+                <RowSide roomy width={230}>
+                  <CoordinatorState project={p} />
+                </RowSide>
+                <RowSide width={90}>
+                  <Figure label={t.shell.inFlight} value={p.inFlight} />
+                </RowSide>
+                <RowSide width={140}>
+                  <Figure
+                    label={t.shell.waitingForYou}
+                    value={waiting}
+                    dot={waiting > 0 ? "var(--accent)" : undefined}
+                  />
+                </RowSide>
               </Row>
             );
           })}
-        </RowList>
+        </Section>
       )}
-    </div>
+    </Page>
   );
 }

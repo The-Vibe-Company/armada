@@ -27,7 +27,7 @@ export function AuthCard({
           Armada <small>{brandSub}</small>
         </Link>
         <div className="kicker mono">{kicker}</div>
-        <h1 className="serif">{heading}</h1>
+        <h1>{heading}</h1>
         {lead && <p className="login-lead">{lead}</p>}
         {children}
       </div>

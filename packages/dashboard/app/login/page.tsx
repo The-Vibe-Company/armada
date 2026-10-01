@@ -141,7 +141,7 @@ function PasswordLogin({
           Armada <small>{t.brandSub}</small>
         </div>
         <div className="kicker mono">{t.gate.kicker}</div>
-        <h1 className="serif">{t.gate.heading}</h1>
+        <h1>{t.gate.heading}</h1>
         <p className="login-lead">{t.gate.lead}</p>
         <form method="post" action={LOGIN_ROUTE} className="login-form">
           <input type="hidden" name="next" value={next} />

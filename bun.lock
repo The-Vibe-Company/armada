@@ -12,7 +12,7 @@
     },
     "packages/cli": {
       "name": "@the-vibe-company/armada",
-      "version": "0.2.2",
+      "version": "0.2.8",
       "bin": {
         "armada": "dist/armada.js",
       },
@@ -34,7 +34,6 @@
         "@armada/core": "workspace:*",
         "@better-auth/api-key": "1.7.6",
         "@electric-sql/pglite": "0.5.8",
-        "@fontsource/instrument-serif": "5.3.0",
         "@vercel/functions": "3.9.9",
         "@vercel/speed-insights": "2.0.0",
         "better-auth": "1.7.6",
@@ -101,8 +100,6 @@
     "@electric-sql/pglite": ["@electric-sql/pglite@0.5.8", "", {}, "sha512-n9tsbUOhwx2epK1V0ZG9Ar4SHWUju04dhmzZXiSBXwBoleOvIfals33NAaWgagQVAL4Rbvx/Ptsu3P+pA09f6Q=="],
 
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
-
-    "@fontsource/instrument-serif": ["@fontsource/instrument-serif@5.3.0", "", {}, "sha512-mDiaIg0u67sYV59fie92Wz4sM8UiVlbL7fLxnFPCKkX15DMASEnQTREbaP5S5/3DCcsoAOcQ0sV9E4AeY4QqYQ=="],
 
     "@img/colour": ["@img/colour@1.1.0", "", {}, "sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ=="],
 

@@ -1,9 +1,10 @@
 "use client";
 
-// The v4 frame every screen lives in (THE-866): the sidebar, the header with
-// its breadcrumbs, ⌘K search and the keyboard (j/k move through the rows of
-// the page, Enter opens, Esc goes back). Pages render inside it from the
-// overview it polls (`useFleet`).
+// The v4 frame every screen lives in (THE-866): the sidebar, the header bar
+// (the page kit's PageHeader: breadcrumbs, key hints, the page's actions),
+// ⌘K search and the keyboard (j/k move through the rows of the page, Enter
+// opens, Esc goes back). Pages render inside it from the overview it polls
+// (`useFleet`).
 import type { FleetOverview } from "@armada/core/read";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -25,6 +26,7 @@ import {
   sectionOf,
 } from "@/lib/fleet-view";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
+import { HeaderSlotProvider, PageHeader } from "../page-client";
 import { Dot, harnessColor, Kbd, ProjectChip } from "../ui";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
 import { Logo, SearchIcon } from "./Logo";
@@ -155,33 +157,35 @@ function Frame({ children }: { children: ReactNode }) {
   }, [palette, menu, place, fromPath, router, rows, select]);
 
   const section = sectionOf(place, from);
-  const listPage = place.kind === "agents" || place.kind === "projects";
+  const listPage = place.kind === "overview" || place.kind === "agents" || place.kind === "projects";
   const detailPage = place.kind === "agent" || place.kind === "project";
 
   return (
     <div className="sh">
       <Sidebar section={section} place={place} menu={menu} setMenu={setMenu} onSearch={() => setPalette(true)} />
       <main className="sh-main" data-density={density}>
-        <header className="sh-header">
-          <Crumbs crumbs={crumbsOf(place, from)} />
-          <span className="spacer" />
-          {detailPage && (
-            <span className="sh-hint">
-              <Kbd>esc</Kbd>
-              {t.shell.back}
-            </span>
-          )}
-          {listPage && (
-            <span className="sh-hint">
-              <Kbd>j k</Kbd>
-              {t.shell.navigate} <Kbd>↵</Kbd>
-              {t.shell.open}
-            </span>
-          )}
-        </header>
-        <div className="sh-scroll" ref={main}>
-          {children}
-        </div>
+        <HeaderSlotProvider>
+          <PageHeader
+            title={<Crumbs crumbs={crumbsOf(place, from)} />}
+            hints={
+              detailPage ? (
+                <>
+                  <Kbd>esc</Kbd>
+                  {t.shell.back}
+                </>
+              ) : listPage ? (
+                <>
+                  <Kbd>j k</Kbd>
+                  {t.shell.navigate} <Kbd>↵</Kbd>
+                  {t.shell.open}
+                </>
+              ) : null
+            }
+          />
+          <div className="sh-scroll" ref={main}>
+            {children}
+          </div>
+        </HeaderSlotProvider>
       </main>
       {palette && <Palette onClose={() => setPalette(false)} />}
     </div>
