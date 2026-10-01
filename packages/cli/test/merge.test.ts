@@ -273,6 +273,7 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
   expect(f.git("worktree", "list").split("\n")).toHaveLength(1);
   // Under the merge lock on Armada, given back afterwards; the merge recorded and the worker's session ended.
   expect(f.armada.calls.map((c) => c.path)).toEqual([
+    "fleet/coordinator",
     "fleet/lease/acquire",
     "fleet/lease/renew",
     "fleet/merge",
@@ -289,7 +290,7 @@ test("signed in, Armada down refuses the merge; --no-lock merges anyway and says
   f.net.armadaDown = true;
   expect(await run(["merge", "9"], f.io)).toBe(1);
   expect(f.err()).toMatch(
-    /^armada: the merge lock could not be taken \(Armada \(armada\.example\.test\) unreachable: .+\); nothing was merged\nNext: the same armada merge again, or with --no-lock if you are sure no other coordinator merges now\n$/,
+    /armada: the merge lock could not be taken \(Armada \(armada\.example\.test\) unreachable: .+\); nothing was merged\nNext: the same armada merge again, or with --no-lock if you are sure no other coordinator merges now\n$/,
   );
   expect(f.ghCalls).toEqual([]);
 

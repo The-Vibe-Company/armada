@@ -10,7 +10,14 @@
 import { cookies } from "next/headers";
 import { type Access, requireFleetAccess } from "@/lib/access";
 import { AUTHOR_COOKIE } from "@/lib/i18n";
-import { type RequestResult, submitAnswer, submitLaunch } from "@/lib/requests";
+import {
+  type RequestResult,
+  submitAnswer,
+  submitLaunch,
+  submitMerge,
+  submitPlanChanges,
+  submitRelease,
+} from "@/lib/requests";
 import { authorOf, fleetOf } from "@/lib/server";
 
 const text = (form: FormData, name: string) => {
@@ -52,6 +59,40 @@ export async function launchTicket(form: FormData): Promise<RequestResult> {
     project: text(form, "project"),
     ticket: text(form, "ticket"),
     profile: text(form, "profile") || null,
+    author: await author(access, form),
+  });
+}
+
+export async function mergePullRequest(form: FormData): Promise<RequestResult> {
+  const access = await requireFleetAccess();
+  const { opts, scope } = await fleetOf(access);
+  return submitMerge(opts, scope, {
+    project: text(form, "project"),
+    pr: Number(text(form, "pr")),
+    author: await author(access, form),
+  });
+}
+
+export async function releaseTicket(form: FormData): Promise<RequestResult> {
+  const access = await requireFleetAccess();
+  const { opts, scope } = await fleetOf(access);
+  return submitRelease(opts, scope, {
+    project: text(form, "project"),
+    ticket: text(form, "ticket"),
+    author: await author(access, form),
+  });
+}
+
+export async function changePlan(form: FormData): Promise<RequestResult> {
+  const access = await requireFleetAccess();
+  const question = Number(text(form, "question"));
+  if (!Number.isSafeInteger(question) || question <= 0)
+    return { ok: false, code: "no-question", message: "no plan id" };
+  const { opts, scope } = await fleetOf(access);
+  return submitPlanChanges(opts, scope, {
+    project: text(form, "project"),
+    question,
+    text: text(form, "text"),
     author: await author(access, form),
   });
 }

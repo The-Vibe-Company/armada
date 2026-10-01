@@ -214,7 +214,11 @@ describe("armada status --all", () => {
       return recorded(url, init);
     };
     expect(await run(["status", "--all", "--json"], io)).toBe(1);
-    expect(armada.calls.map((c) => [c.method, c.path, c.apiKey])).toEqual([["GET", "projects", KEY]]);
+    expect(armada.calls.map((c) => [c.method, c.path, c.apiKey])).toEqual([
+      ["GET", "projects", KEY],
+      ["POST", "fleet/coordinator", KEY],
+      ["POST", "fleet/coordinator", KEY],
+    ]);
     const all = JSON.parse(out());
     expect(
       all.projects.map((p: { slug: string; error: string | null; configWarning: string | null }) => [

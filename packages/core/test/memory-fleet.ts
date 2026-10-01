@@ -3,6 +3,7 @@
 // with its unique rules (one open plan, hand-back and launch request per
 // ticket, one open answer per question) and its atomic lease.
 import type {
+  CoordinatorPresence,
   EventInput,
   FleetStore,
   InboxItem,
@@ -10,6 +11,7 @@ import type {
   PendingLaunch,
   ProjectRecord,
   RuntimeHandle,
+  SessionRecord,
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
@@ -22,6 +24,7 @@ interface EventRow extends Omit<EventInput, "at"> {
 interface HandleRow extends Omit<RuntimeHandle, "profile"> {}
 
 interface ItemRow extends Omit<StoredInboxItem, "request"> {
+  requestPr?: number | null;
   requestQuestion: number | null;
   requestProfile: string | null;
 }
@@ -32,7 +35,7 @@ export interface LaunchRow extends PendingLaunch {
   endedAt: string | null;
 }
 
-const REQUEST_KINDS = ["answer-request", "launch-request"];
+const REQUEST_KINDS = ["answer-request", "launch-request", "merge-request", "release-request", "plan-changes"];
 const key = (project: string, ticket: string) => `${project}\n${ticket}`;
 
 export function memoryFleet(): FleetStore & {
@@ -50,13 +53,23 @@ export function memoryFleet(): FleetStore & {
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
   const presence = new Map<string, { handle: string | null; cliVersion: string | null; at: string }>();
+  const coordinators = new Map<string, CoordinatorPresence>();
+  const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
 
   const stored = (r: ItemRow): StoredInboxItem => {
-    const { requestQuestion, requestProfile, ...rest } = r;
+    const { requestQuestion, requestProfile, requestPr, ...rest } = r;
     return {
       ...rest,
-      ...(REQUEST_KINDS.includes(r.kind) ? { request: { question: requestQuestion, profile: requestProfile } } : {}),
+      ...(REQUEST_KINDS.includes(r.kind)
+        ? {
+            request: {
+              question: requestQuestion,
+              profile: requestProfile,
+              ...(requestPr == null ? {} : { pr: requestPr }),
+            },
+          }
+        : {}),
     };
   };
   const item = (r: ItemRow): InboxItem => {
@@ -94,8 +107,13 @@ export function memoryFleet(): FleetStore & {
     async upsertProject(p, at) {
       const was = projects.get(p.slug);
       if (!was) return this.ensureProject(p, at);
-      if (was.name !== p.name || was.repository !== p.repository || was.programRoot !== p.programRoot)
-        projects.set(p.slug, { ...was, ...p, updatedAt: at.toISOString() });
+      if (
+        was.name !== p.name ||
+        was.repository !== p.repository ||
+        was.programRoot !== p.programRoot ||
+        (!was.owner && p.owner)
+      )
+        projects.set(p.slug, { ...was, ...p, owner: was.owner ?? p.owner ?? null, updatedAt: at.toISOString() });
     },
     async listProjects() {
       return [...projects.values()].sort((a, b) => a.slug.localeCompare(b.slug));
@@ -103,6 +121,13 @@ export function memoryFleet(): FleetStore & {
 
     async recordEvent(e) {
       events.push({ ...e, id: events.length + 1, at: e.at.toISOString() });
+      if (e.kind === "report") {
+        const session = sessions.find(
+          (session) => session.project === e.project && session.ticket === e.ticket && !session.releasedAt,
+        );
+        if (session && (!session.lastReport || session.lastReport.at <= e.at.toISOString()))
+          session.lastReport = { at: e.at.toISOString(), message: e.message ?? null, phase: e.phase ?? null };
+      }
     },
     async lastEventTimes(project) {
       const out: Record<string, string> = {};
@@ -138,16 +163,67 @@ export function memoryFleet(): FleetStore & {
       const at = seen.at.toISOString();
       if (!was || was.at <= at)
         presence.set(seen.project, {
-          handle: seen.handle ?? null,
-          cliVersion: seen.cliVersion ?? was?.cliVersion ?? null,
+          handle: seen.facts?.handle ?? seen.handle ?? null,
+          cliVersion: seen.cliVersion ?? seen.facts?.cliVersion ?? was?.cliVersion ?? null,
           at,
+        });
+      if (was && was.at > at) return;
+      const previous = coordinators.get(seen.project);
+      coordinators.set(seen.project, {
+        harness: seen.facts?.harness ?? previous?.harness ?? null,
+        handle: seen.facts ? seen.facts.handle : (seen.handle ?? previous?.handle ?? null),
+        model: seen.facts ? seen.facts.model : (previous?.model ?? null),
+        cliVersion: seen.cliVersion ?? seen.facts?.cliVersion ?? previous?.cliVersion ?? null,
+        startedAt: previous && seen.at.getTime() - Date.parse(previous.seenAt) < 30 * 60_000 ? previous.startedAt : at,
+        seenAt: at,
+        inboxSeenAt: seen.inboxRead === false ? (previous?.inboxSeenAt ?? null) : at,
+      });
+      if (seen.inboxRead !== false)
+        await this.recordEvent({
+          project: seen.project,
+          ticket: "",
+          kind: "inbox",
+          handle: seen.facts?.handle ?? seen.handle ?? null,
+          at: seen.at,
         });
     },
     async lastCoordinatorSeen(project) {
       return presence.get(project)?.at ?? null;
     },
+    async getCoordinatorPresence(project) {
+      return coordinators.get(project) ?? null;
+    },
+    async inboxReads(project, now) {
+      return events
+        .filter(
+          (event) =>
+            event.project === project &&
+            event.kind === "inbox" &&
+            Date.parse(event.at) >= now.getTime() - 7 * 24 * 60 * 60_000 &&
+            Date.parse(event.at) <= now.getTime(),
+        )
+        .map((event) => ({ id: event.id, at: event.at, handle: event.handle ?? null }));
+    },
+    async listSessions(project, opts) {
+      return sessions
+        .filter(
+          (session) =>
+            session.project === project && (!session.releasedAt || session.releasedAt >= opts.since.toISOString()),
+        )
+        .map((session) => ({ ...session }));
+    },
 
     async saveWorkerProfile(w) {
+      const session = sessions.find(
+        (session) => session.project === w.project && session.ticket === w.ticket && !session.releasedAt,
+      );
+      if (session)
+        Object.assign(session, {
+          profile: w.profile?.name ?? null,
+          agent: w.profile?.agent ?? null,
+          model: w.profile?.model ?? null,
+          effort: w.profile?.effort ?? null,
+        });
       if (w.profile) profiles.set(key(w.project, w.ticket), w.profile);
       else profiles.delete(key(w.project, w.ticket));
     },
@@ -157,6 +233,26 @@ export function memoryFleet(): FleetStore & {
     async saveRuntimeHandle(h) {
       const was = handles.get(key(h.project, h.ticket));
       const same = was && was.handle === h.handle && !was.releasedAt;
+      if (!same) {
+        const previous = sessions.find(
+          (session) => session.project === h.project && session.ticket === h.ticket && !session.releasedAt,
+        );
+        if (previous) previous.releasedAt = h.at.toISOString();
+        sessions.push({
+          project: h.project,
+          ticket: h.ticket,
+          runtime: h.runtime,
+          handle: h.handle,
+          branch: h.branch,
+          claimedAt: h.at.toISOString(),
+          releasedAt: null,
+          profile: null,
+          agent: null,
+          model: null,
+          effort: null,
+          lastReport: null,
+        });
+      }
       handles.set(key(h.project, h.ticket), {
         project: h.project,
         ticket: h.ticket,
@@ -168,6 +264,9 @@ export function memoryFleet(): FleetStore & {
       });
     },
     async releaseRuntimeHandle(project, ticket, at) {
+      for (const session of sessions)
+        if (session.project === project && session.ticket === ticket && !session.releasedAt)
+          session.releasedAt = at.toISOString();
       const h = handles.get(key(project, ticket));
       if (h && !h.releasedAt) h.releasedAt = at.toISOString();
       profiles.delete(key(project, ticket));
@@ -197,20 +296,24 @@ export function memoryFleet(): FleetStore & {
       });
     },
     async addRequest(r) {
-      if (r.kind === "answer-request") {
+      if (
+        r.kind === "merge-request" &&
+        items.some(
+          (item) => item.project === r.project && item.kind === r.kind && item.requestPr === r.pr && !item.resolvedAt,
+        )
+      )
+        return null;
+      if (r.kind === "answer-request" || r.kind === "plan-changes") {
         const q = items.find((i) => i.project === r.project && i.id === r.question);
         if (!q || !["question", "plan"].includes(q.kind) || q.recipient !== "coordinator" || q.resolvedAt) return null;
+        if (r.kind === "plan-changes" && q.kind !== "plan") return null;
         if (
           items.some(
-            (i) =>
-              i.project === r.project &&
-              i.kind === "answer-request" &&
-              i.requestQuestion === r.question &&
-              !i.resolvedAt,
+            (i) => i.project === r.project && i.kind === r.kind && i.requestQuestion === r.question && !i.resolvedAt,
           )
         )
           return null;
-      } else if (open(r.project, r.ticket, r.kind)) return null;
+      } else if (r.kind !== "merge-request" && open(r.project, r.ticket, r.kind)) return null;
       return insert({
         project: r.project,
         ticket: r.ticket,
@@ -221,6 +324,7 @@ export function memoryFleet(): FleetStore & {
         createdAt: r.at.toISOString(),
         requestQuestion: r.question,
         requestProfile: r.profile,
+        requestPr: r.pr,
       });
     },
     async putPlan(i) {

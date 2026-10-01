@@ -20,11 +20,13 @@ import {
 import {
   addInboxItem,
   assignUnownedProjects,
+  fleetStore,
   liveStore,
   recordEvent,
   saveRuntimeHandle,
   upsertProject,
 } from "../lib/fleet-store.ts";
+import { answerOverview } from "../lib/live-http.ts";
 import { submitAnswer as answer, submitLaunch as launchReq } from "../lib/requests.ts";
 import { markRepository } from "../lib/snapshots.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
@@ -123,6 +125,131 @@ function world(db: Database | null, over: Partial<Sources> = {}) {
 }
 
 describe("live Fleet reading", () => {
+  test("the overview poll includes dashboard facts from Postgres and its ETag tracks those facts", async () => {
+    const db = await tempDb();
+    await upsertProject(db, { ...WIDGETS, owner: "Synthetic Owner" });
+    const w = world(db);
+    const readSnapshot = w.opts.sources.readSnapshot;
+    w.opts.sources.readSnapshot = async (config) => {
+      const sources = await readSnapshot(config);
+      if (sources.forge)
+        sources.forge.prs.push({
+          number: 11,
+          url: "https://github.com/acme/widgets/pull/11",
+          title: "Export a report",
+          repo: WIDGETS.repository,
+          state: "open",
+          draft: false,
+          ci: "failure",
+          mergeable: "MERGEABLE",
+          mergeability: "behind",
+          additions: 8,
+          deletions: 3,
+          files: [{ path: "src/export.ts", additions: 8, deletions: 3 }],
+          filesComplete: true,
+          checksComplete: true,
+          checks: [{ name: "unit", state: "failure" }],
+        });
+      return sources;
+    };
+    const store = fleetStore(db);
+    await store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "WID-2",
+      runtime: "Codex",
+      handle: "ws/session",
+      branch: null,
+      at: w.at(0),
+    });
+    await store.saveWorkerProfile({
+      project: "widgets",
+      ticket: "WID-2",
+      at: w.at(0),
+      profile: {
+        name: "fast",
+        agent: "codex",
+        model: "synthetic-model",
+        effort: "high",
+        fastMode: false,
+        routed: "fast",
+        reason: null,
+        why: "default",
+      },
+    });
+    const facts = { harness: "conductor-cloud" as const, handle: "ws/coordinator", model: null, cliVersion: "0.2.4" };
+    await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: false, at: w.at(0) });
+    await recordEvent(db, {
+      project: "widgets",
+      ticket: "WID-2",
+      kind: "report",
+      phase: "implementing",
+      message: "Tests added",
+      at: w.at(1_000),
+    });
+    w.advance(2_000);
+    const cold = await loadOverview(w.opts);
+    expect(cold.projects[0]).toMatchObject({ reading: true, owner: "Synthetic Owner", coordinator: facts });
+    expect(cold.sessions).toHaveLength(1);
+    expect(w.reads.snapshots).toBe(0);
+    await w.settle();
+    const initial = await loadOverview(w.opts);
+    const request = new Request("https://armada.example.test/api/fleet");
+    const response = answerOverview(request, initial);
+    const tag = response.headers.get("etag") ?? "";
+    const json = await response.json();
+    expect(json.projects[0]).toMatchObject({
+      owner: "Synthetic Owner",
+      progress: { done: 0, total: 3 },
+      health: "blocked",
+      coordinator: { ...facts, inboxSeenAt: null, startedAt: w.at(0).toISOString(), inboxReads: [] },
+      pullRequests: [
+        {
+          number: 11,
+          additions: 8,
+          deletions: 3,
+          failingChecks: ["unit"],
+          mergeability: "behind",
+          files: [{ path: "src/export.ts", additions: 8, deletions: 3 }],
+        },
+      ],
+    });
+    expect(json.rows[0].session).toMatchObject({
+      profile: "fast",
+      model: "synthetic-model",
+      claimedAt: w.at(0).toISOString(),
+      lastReport: { message: "Tests added" },
+    });
+    expect(json.sessions).toHaveLength(1);
+    const conditional = new Request(request, { headers: { "if-none-match": tag } });
+    w.advance(1_000);
+    expect(answerOverview(conditional, await loadOverview(w.opts)).status).toBe(304);
+    const forbidSource = async (): Promise<never> => {
+      throw new Error("poll read an external source");
+    };
+    w.opts.sources.readConfig = forbidSource;
+    w.opts.sources.readSnapshot = forbidSource;
+    w.opts.sources.readChanges = forbidSource;
+    await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: true, at: w.at(3_000) });
+    await store.addRequest({
+      project: "widgets",
+      ticket: "WID-2",
+      kind: "merge-request",
+      author: "Synthetic Owner",
+      body: "Please merge PR #11",
+      question: null,
+      profile: null,
+      pr: 11,
+      at: w.at(3_000),
+    });
+    const changed = answerOverview(conditional, await loadOverview(w.opts));
+    expect(changed.status).toBe(200);
+    expect(changed.headers.get("etag")).not.toBe(tag);
+    const updated = await changed.json();
+    expect(updated.projects[0].coordinator.inboxReads).toMatchObject([{ at: w.at(3_000).toISOString() }]);
+    expect(updated.projects[0].requests).toMatchObject([{ kind: "merge-request", request: { pr: 11 } }]);
+    expect(w.reads.snapshots).toBe(1);
+  });
+
   test("a report recorded after the Linear read shows on the next poll without reading Linear again", async () => {
     const db = await tempDb();
     await upsertProject(db, WIDGETS);

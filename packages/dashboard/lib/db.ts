@@ -548,6 +548,34 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX IF NOT EXISTS "armada_worker_project_idx" ON "armada_worker" ("project", "createdAt")`,
     ],
   },
+  {
+    version: 10,
+    statements: [
+      "ALTER TABLE projects ADD COLUMN owner text",
+      "ALTER TABLE coordinator_presence ADD COLUMN harness text",
+      "ALTER TABLE coordinator_presence ADD COLUMN model text",
+      "ALTER TABLE coordinator_presence ADD COLUMN started_at timestamptz",
+      "ALTER TABLE coordinator_presence ADD COLUMN inbox_seen_at timestamptz",
+      "UPDATE coordinator_presence SET started_at = seen_at, inbox_seen_at = seen_at",
+      "ALTER TABLE inbox_items ADD COLUMN request_pr bigint",
+      "CREATE UNIQUE INDEX inbox_merge_request ON inbox_items (project, request_pr) WHERE resolved_at IS NULL AND kind = 'merge-request'",
+      "CREATE UNIQUE INDEX inbox_release_request ON inbox_items (project, ticket) WHERE resolved_at IS NULL AND kind = 'release-request'",
+      "CREATE UNIQUE INDEX inbox_plan_changes ON inbox_items (project, request_question) WHERE resolved_at IS NULL AND kind = 'plan-changes'",
+      "CREATE INDEX events_inbox_history ON events (project, created_at, id) WHERE kind = 'inbox'",
+      `CREATE TABLE fleet_sessions (
+        project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        ticket text NOT NULL, runtime text NOT NULL, handle text NOT NULL, branch text,
+        claimed_at timestamptz NOT NULL, released_at timestamptz,
+        profile text, agent text, model text, effort text,
+        report_at timestamptz, report_message text, report_phase text,
+        PRIMARY KEY (project, ticket, handle, claimed_at)
+      )`,
+      "CREATE INDEX fleet_sessions_history ON fleet_sessions (project, claimed_at)",
+      `INSERT INTO fleet_sessions (project, ticket, runtime, handle, branch, claimed_at, released_at, profile, agent, model, effort)
+       SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, p.profile, p.agent, p.model, p.effort
+       FROM runtime_handles h LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

@@ -2,7 +2,14 @@
 // writes a request into the coordinator's inbox (the app's database) of the ticket's
 // project, after core checks it against the project as the viewer sees it. A
 // project outside the viewer's organization is unknown here.
-import { RequestRefusal, requestAnswer, requestLaunch } from "@armada/core/read";
+import {
+  RequestRefusal,
+  requestAnswer,
+  requestLaunch,
+  requestMerge,
+  requestPlanChanges,
+  requestRelease,
+} from "@armada/core/read";
 import { redactDatabase } from "./db";
 import { type LoadOptions, loadProject, type ProjectState, type Scope } from "./fleet-data";
 import type { LiveStore } from "./fleet-store";
@@ -73,4 +80,31 @@ export function submitLaunch(opts: LoadOptions, scope: Scope | null, form: Launc
       now: opts.now(),
     }),
   );
+}
+
+export function submitMerge(
+  opts: LoadOptions,
+  scope: Scope | null,
+  form: { project: string; pr: number; author: string },
+): Promise<RequestResult> {
+  return withProject(opts, scope, form.project, ({ store, report }) =>
+    requestMerge(store, {
+      ...form,
+      now: opts.now(),
+      openPrs: (report.pullRequests ?? []).map((pr) => pr.number),
+      ticket: report.pullRequests?.find((pr) => pr.number === form.pr)?.ticket?.id ?? null,
+    }),
+  );
+}
+
+export function submitRelease(
+  opts: LoadOptions,
+  scope: Scope | null,
+  form: { project: string; ticket: string; author: string },
+): Promise<RequestResult> {
+  return withProject(opts, scope, form.project, ({ store }) => requestRelease(store, { ...form, now: opts.now() }));
+}
+
+export function submitPlanChanges(opts: LoadOptions, scope: Scope | null, form: AnswerForm): Promise<RequestResult> {
+  return withProject(opts, scope, form.project, ({ store }) => requestPlanChanges(store, { ...form, now: opts.now() }));
 }

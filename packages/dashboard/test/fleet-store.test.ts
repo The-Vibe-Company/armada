@@ -54,6 +54,7 @@ describe("the project registry", () => {
         repository: "acme/widgets",
         programRoot: "WID-1",
         organization: "org-a",
+        owner: null,
         createdAt: at(0).toISOString(),
         updatedAt: at(5).toISOString(),
       },

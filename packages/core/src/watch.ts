@@ -52,6 +52,7 @@ export function transientFailure(err: unknown): boolean {
 }
 
 export interface WatchOptions {
+  facts?: import("./live.ts").CoordinatorFacts;
   project: string;
   coordinator: string | null;
   /** `policy.silence_minutes`. */
@@ -99,6 +100,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   const query = {
     coordinator: o.coordinator,
     silentAfterMinutes: o.silentAfterMinutes,
+    ...(o.facts ? { facts: o.facts } : {}),
     ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
   };
   const pollMs = o.pollMs ?? WATCH_POLL_MS;

@@ -7,10 +7,13 @@
 // `cli-api.ts`). Losing this data loses live detail, never progress: Linear
 // stays the record.
 import type {
+  CoordinatorPresence,
+  CoordinatorSeen,
   EventInput,
   FleetStore,
   InboxItem,
   InboxKind,
+  InboxReadEvent,
   InboxRecipient,
   LatestEvent,
   Lease,
@@ -20,9 +23,11 @@ import type {
   ProjectRecord,
   RequestStore,
   RuntimeHandle,
+  SessionRecord,
   StoredInboxItem,
   WorkerProfile,
 } from "@armada/core/read";
+import { REQUEST_KINDS } from "@armada/core/read";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
 
 // ------------------------------------------------------------------ projects
@@ -30,14 +35,16 @@ import { type Database, iso, isoAt, type Queryable, type Row, text, transaction 
 /** Registers a project, or updates its name, repository and root. `created_at` is kept. */
 export async function upsertProject(db: Queryable, p: ProjectInput, now: Date = new Date()): Promise<void> {
   await db.query(
-    `INSERT INTO projects (slug, name, repository, program_root, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $5)
+    `INSERT INTO projects (slug, name, repository, program_root, created_at, updated_at, owner)
+     VALUES ($1, $2, $3, $4, $5, $5, $6)
      ON CONFLICT (slug) DO UPDATE SET
        name = excluded.name, repository = excluded.repository,
-       program_root = excluded.program_root, updated_at = excluded.updated_at
+       program_root = excluded.program_root, updated_at = excluded.updated_at,
+       owner = COALESCE(projects.owner, excluded.owner)
      WHERE projects.name IS DISTINCT FROM excluded.name OR projects.repository IS DISTINCT FROM excluded.repository
-        OR projects.program_root IS DISTINCT FROM excluded.program_root`,
-    [p.slug, p.name, p.repository, p.programRoot, now],
+        OR projects.program_root IS DISTINCT FROM excluded.program_root
+        OR (projects.owner IS NULL AND excluded.owner IS NOT NULL)`,
+    [p.slug, p.name, p.repository, p.programRoot, now, p.owner ?? null],
   );
 }
 
@@ -88,7 +95,7 @@ export async function holdProject(
 /** Every registered project, by slug, with the organization it belongs to. */
 export async function listProjects(db: Queryable): Promise<ProjectRecord[]> {
   const rs = await db.query(
-    `SELECT slug, name, repository, program_root, organization_id, created_at, updated_at FROM projects ORDER BY slug`,
+    `SELECT slug, name, repository, program_root, organization_id, created_at, updated_at, owner FROM projects ORDER BY slug`,
   );
   return rs.rows.map((r) => ({
     slug: String(r.slug),
@@ -96,6 +103,7 @@ export async function listProjects(db: Queryable): Promise<ProjectRecord[]> {
     repository: String(r.repository),
     programRoot: String(r.program_root),
     organization: text(r.organization_id),
+    owner: text(r.owner),
     createdAt: isoAt(r.created_at),
     updatedAt: isoAt(r.updated_at),
   }));
@@ -104,7 +112,7 @@ export async function listProjects(db: Queryable): Promise<ProjectRecord[]> {
 /** The projects an organization holds, by slug. */
 export async function projectsOf(db: Queryable, organization: string): Promise<ProjectRecord[]> {
   const rs = await db.query(
-    `SELECT slug, name, repository, program_root, organization_id, created_at, updated_at FROM projects
+    `SELECT slug, name, repository, program_root, organization_id, created_at, updated_at, owner FROM projects
      WHERE organization_id = $1 ORDER BY slug`,
     [organization],
   );
@@ -114,6 +122,7 @@ export async function projectsOf(db: Queryable, organization: string): Promise<P
     repository: String(r.repository),
     programRoot: String(r.program_root),
     organization: text(r.organization_id),
+    owner: text(r.owner),
     createdAt: isoAt(r.created_at),
     updatedAt: isoAt(r.updated_at),
   }));
@@ -136,6 +145,13 @@ export async function assignUnownedProjects(db: Queryable, organization: string,
 // ------------------------------------------------------------------ events
 
 export async function recordEvent(db: Queryable, e: EventInput): Promise<void> {
+  if (e.kind === "report")
+    await db.query(
+      `UPDATE fleet_sessions SET report_at = $3, report_message = $4, report_phase = $5
+       WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND claimed_at <= $3
+         AND (report_at IS NULL OR report_at <= $3)`,
+      [e.project, e.ticket, e.at, e.message ?? null, e.phase ?? null],
+    );
   await db.query(
     `INSERT INTO events (project, ticket, kind, phase, message, runtime, handle, pr_url, head_sha, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -193,24 +209,85 @@ export async function latestEvents(
 
 // ------------------------------------------------------------------ coordinator presence
 
-/**
- * Records that the coordinator of a project is at work (it read its inbox):
- * one row per project, with its CLI version when it sent one (kept otherwise).
- */
-export async function recordCoordinatorSeen(
-  db: Queryable,
-  seen: { project: string; handle?: string | null; cliVersion?: string | null; at: Date },
-): Promise<void> {
+/** Records coordinator command activity and, separately, its inbox reads: one presence row per project. */
+export async function recordCoordinatorSeen(db: Queryable, seen: CoordinatorSeen): Promise<void> {
+  const inboxRead = seen.inboxRead !== false;
   await db.query(
-    `INSERT INTO coordinator_presence (project, handle, seen_at, cli_version) VALUES ($1, $2, $3, $4)
-     ON CONFLICT (project) DO UPDATE SET handle = excluded.handle, seen_at = excluded.seen_at,
-       cli_version = COALESCE(excluded.cli_version, coordinator_presence.cli_version)
-     WHERE coordinator_presence.seen_at <= excluded.seen_at`,
-    [seen.project, seen.handle ?? null, seen.at, seen.cliVersion ?? null],
+    `WITH presence AS (
+       INSERT INTO coordinator_presence (project, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version)
+       VALUES ($1, $2, $3, $3, CASE WHEN $4 THEN $3::timestamptz END, $5, $6, $7)
+       ON CONFLICT (project) DO UPDATE SET
+         started_at = CASE WHEN excluded.seen_at - coordinator_presence.seen_at >= interval '30 minutes'
+                           THEN excluded.seen_at ELSE COALESCE(coordinator_presence.started_at, excluded.seen_at) END,
+         handle = CASE WHEN $5::text IS NOT NULL THEN excluded.handle ELSE COALESCE(excluded.handle, coordinator_presence.handle) END,
+         seen_at = excluded.seen_at,
+         inbox_seen_at = CASE WHEN $4 THEN excluded.seen_at ELSE coordinator_presence.inbox_seen_at END,
+         harness = COALESCE(excluded.harness, coordinator_presence.harness),
+         model = CASE WHEN $5::text IS NOT NULL THEN excluded.model ELSE coordinator_presence.model END,
+         cli_version = COALESCE(excluded.cli_version, coordinator_presence.cli_version)
+       WHERE coordinator_presence.seen_at <= excluded.seen_at RETURNING project
+     ) INSERT INTO events (project, ticket, kind, handle, created_at)
+       SELECT project, '', 'inbox', $2, $3 FROM presence WHERE $4`,
+    [
+      seen.project,
+      seen.facts?.handle ?? seen.handle ?? null,
+      seen.at,
+      inboxRead,
+      seen.facts?.harness ?? null,
+      seen.facts?.model ?? null,
+      seen.cliVersion ?? seen.facts?.cliVersion ?? null,
+    ],
   );
+  if (inboxRead)
+    await db.query(
+      `DELETE FROM events WHERE id IN (SELECT id FROM events WHERE project = $1 AND kind = 'inbox'
+       AND created_at < $2 ORDER BY created_at, id LIMIT 1000)`,
+      [seen.project, new Date(seen.at.getTime() - 7 * 24 * 60 * 60_000)],
+    );
 }
 
-/** When the coordinator of a project last read its inbox; null if it never did. */
+export async function getCoordinatorPresence(db: Queryable, project: string): Promise<CoordinatorPresence | null> {
+  const result = await db.query("SELECT * FROM coordinator_presence WHERE project = $1", [project]);
+  const row = result.rows[0];
+  return row
+    ? {
+        harness: text(row.harness) as CoordinatorPresence["harness"],
+        handle: text(row.handle),
+        model: text(row.model),
+        cliVersion: text(row.cli_version),
+        startedAt: isoAt(row.started_at ?? row.seen_at),
+        seenAt: isoAt(row.seen_at),
+        inboxSeenAt: iso(row.inbox_seen_at),
+      }
+    : null;
+}
+
+export async function inboxReads(db: Queryable, project: string, now: Date): Promise<InboxReadEvent[]> {
+  const result = await db.query(
+    "SELECT id, created_at, handle FROM events WHERE project = $1 AND kind = 'inbox' AND created_at >= $2 AND created_at <= $3 ORDER BY created_at, id",
+    [project, new Date(now.getTime() - 7 * 24 * 60 * 60_000), now],
+  );
+  return result.rows.map((row) => ({ id: Number(row.id), at: isoAt(row.created_at), handle: text(row.handle) }));
+}
+
+export async function listSessions(db: Queryable, project: string, opts: { since: Date }): Promise<SessionRecord[]> {
+  const result = await db.query(
+    "SELECT * FROM fleet_sessions WHERE project = $1 AND (released_at IS NULL OR released_at >= $2) ORDER BY claimed_at, ticket, handle",
+    [project, opts.since],
+  );
+  return result.rows.map((row) => ({
+    ...handleOf(row),
+    agent: text(row.agent),
+    model: text(row.model),
+    effort: text(row.effort),
+    lastReport:
+      row.report_at == null
+        ? null
+        : { at: isoAt(row.report_at), message: text(row.report_message), phase: text(row.report_phase) },
+  }));
+}
+
+/** When the coordinator of a project last ran a command; null if it never did. */
 export async function lastCoordinatorSeen(db: Queryable, project: string): Promise<string | null> {
   return (await coordinatorPresence(db, project))?.seenAt ?? null;
 }
@@ -234,6 +311,10 @@ export async function saveWorkerProfile(
   w: { project: string; ticket: string; profile: WorkerProfile | null; at: Date },
 ): Promise<void> {
   const p = w.profile;
+  await db.query(
+    "UPDATE fleet_sessions SET profile = $3, agent = $4, model = $5, effort = $6 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+    [w.project, w.ticket, p?.name ?? null, p?.agent ?? null, p?.model ?? null, p?.effort ?? null],
+  );
   if (!p) {
     await db.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [w.project, w.ticket]);
     return;
@@ -277,12 +358,19 @@ export async function saveRuntimeHandle(
   h: { project: string; ticket: string; runtime: string; handle: string; branch: string | null; at: Date },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at)
+    `WITH previous_sessions AS (
+       UPDATE fleet_sessions SET released_at = $6 WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND handle <> $4
+     ), current_handle AS (
+       INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at)
      VALUES ($1, $2, $3, $4, $5, $6, NULL)
      ON CONFLICT (project, ticket) DO UPDATE SET
        claimed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
                          THEN runtime_handles.claimed_at ELSE excluded.claimed_at END,
-       runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch, released_at = NULL`,
+       runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch, released_at = NULL
+       RETURNING project, ticket, runtime, handle, branch, claimed_at
+     ) INSERT INTO fleet_sessions (project, ticket, runtime, handle, branch, claimed_at)
+     SELECT project, ticket, runtime, handle, branch, claimed_at FROM current_handle
+     ON CONFLICT (project, ticket, handle, claimed_at) DO UPDATE SET branch = excluded.branch`,
     [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at],
   );
 }
@@ -290,6 +378,10 @@ export async function saveRuntimeHandle(
 /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
 export async function releaseRuntimeHandle(db: Database, project: string, ticket: string, at: Date): Promise<void> {
   await transaction(db, async (tx) => {
+    await tx.query(
+      "UPDATE fleet_sessions SET released_at = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+      [project, ticket, at],
+    );
     await tx.query(
       "UPDATE runtime_handles SET released_at = $1 WHERE project = $2 AND ticket = $3 AND released_at IS NULL",
       [at, project, ticket],
@@ -329,9 +421,7 @@ export async function getRuntimeHandle(db: Queryable, project: string, ticket: s
 // ------------------------------------------------------------------ inbox
 
 const INBOX_COLUMNS = `id, project, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
-  request_question, request_profile`;
-
-const REQUEST_KINDS: readonly string[] = ["answer-request", "launch-request"];
+  request_question, request_profile, request_pr`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
   id: Number(r.id),
@@ -342,11 +432,12 @@ const inboxRow = (r: Row): StoredInboxItem => ({
   author: text(r.author),
   body: String(r.body),
   createdAt: isoAt(r.created_at),
-  ...(REQUEST_KINDS.includes(String(r.kind))
+  ...(REQUEST_KINDS.includes(String(r.kind) as InboxKind & (typeof REQUEST_KINDS)[number])
     ? {
         request: {
           question: r.request_question === null ? null : Number(r.request_question),
           profile: text(r.request_profile),
+          ...(r.request_pr == null ? {} : { pr: Number(r.request_pr) }),
         },
       }
     : {}),
@@ -379,15 +470,15 @@ export async function addInboxItem(
  */
 export async function addRequest(db: Queryable, r: NewRequest): Promise<number | null> {
   const questionOpen =
-    r.kind === "answer-request"
+    r.kind === "answer-request" || r.kind === "plan-changes"
       ? `AND EXISTS (SELECT 1 FROM inbox_items q WHERE q.project = $1 AND q.id = $7 AND q.kind IN ('question', 'plan')
-                     AND q.recipient = 'coordinator' AND q.resolved_at IS NULL)`
+                     AND q.recipient = 'coordinator' AND q.resolved_at IS NULL AND ($3 <> 'plan-changes' OR q.kind = 'plan'))`
       : "";
   const rs = await db.query<{ id: unknown }>(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile)
-     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8 WHERE true ${questionOpen}
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr)
+     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint WHERE true ${questionOpen}
      ON CONFLICT DO NOTHING RETURNING id`,
-    [r.project, r.ticket, r.kind, r.author, r.body, r.at, r.question, r.profile],
+    [r.project, r.ticket, r.kind, r.author, r.body, r.at, r.question, r.profile, r.pr ?? null],
   );
   const id = rs.rows[0]?.id;
   return id === undefined ? null : Number(id);
@@ -642,6 +733,9 @@ export const fleetStore = (db: Database): FleetStore => ({
   latestEvents: (project, opts) => latestEvents(db, project, opts),
   recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),
   lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
+  getCoordinatorPresence: (project) => getCoordinatorPresence(db, project),
+  inboxReads: (project, now) => inboxReads(db, project, now),
+  listSessions: (project, opts) => listSessions(db, project, opts),
   saveWorkerProfile: (w) => saveWorkerProfile(db, w),
   getWorkerProfile: (project, ticket) => getWorkerProfile(db, project, ticket),
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
@@ -670,6 +764,9 @@ export const fleetStore = (db: Database): FleetStore => ({
 
 /** What the Fleet view reads on each poll, and what its requests write. */
 export interface LiveStore extends RequestStore {
+  getCoordinatorPresence(project: string): Promise<CoordinatorPresence | null>;
+  inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
+  listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
   assignUnownedProjects(organization: string, now: Date): Promise<number>;
   latestEvents(project: string, opts: { since: Date }): Promise<Record<string, LatestEvent>>;
@@ -680,6 +777,9 @@ export interface LiveStore extends RequestStore {
 }
 
 export const liveStore = (db: Queryable): LiveStore => ({
+  getCoordinatorPresence: (project) => getCoordinatorPresence(db, project),
+  inboxReads: (project, now) => inboxReads(db, project, now),
+  listSessions: (project, opts) => listSessions(db, project, opts),
   listProjects: () => listProjects(db),
   assignUnownedProjects: (organization, now) => assignUnownedProjects(db, organization, now),
   latestEvents: (project, opts) => latestEvents(db, project, opts),

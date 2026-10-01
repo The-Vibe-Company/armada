@@ -5,12 +5,15 @@
 // organization on the dashboard's next read. Until the CLI registers projects
 // through the app (THE-850), `register` is how a project gets on a new database.
 import { readFile } from "node:fs/promises";
-import { parseConfig } from "@armada/core/read";
+import { userInfo } from "node:os";
+import { parseConfig, requestAuthor } from "@armada/core/read";
 import { DATABASE_VARIABLE, databaseUrlOf, openDatabase, redactDatabase } from "../lib/db";
 import { upsertProject } from "../lib/fleet-store";
 
 async function main(): Promise<number> {
-  const [command, path] = process.argv.slice(2);
+  const [command, path, ownerFlag, ownerName, ...extra] = process.argv.slice(2);
+  if ((ownerFlag !== undefined && ownerFlag !== "--owner") || (ownerFlag && !ownerName) || extra.length)
+    throw new Error("usage: bun run db register <path/to/armada.toml> [--owner <name>]");
   if (command !== "migrate" && command !== "register") {
     console.error("usage: bun run db migrate | bun run db register <path/to/armada.toml>");
     return 2;
@@ -37,6 +40,7 @@ async function main(): Promise<number> {
       name: config.project.name,
       repository: config.github.repository,
       programRoot: config.tracker.programRoot,
+      owner: requestAuthor(ownerName ?? userInfo().username),
     });
     console.log(`Registered project ${config.project.slug} (${config.github.repository}).`);
     return 0;
