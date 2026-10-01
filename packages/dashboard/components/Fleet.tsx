@@ -127,7 +127,7 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
       >
         <SectionBody>
           <p>
-            <time dateTime={new Date(now).toISOString()} suppressHydrationWarning>
+            <time className="tnum" dateTime={new Date(now).toISOString()} suppressHydrationWarning>
               {dateLabel(now, t.overview.locale)}
             </time>
             {" · "}
