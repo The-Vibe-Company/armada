@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.30](https://github.com/The-Vibe-Company/armada/compare/v0.2.29...v0.2.30) (2026-10-02)
+
+
+### Features
+
+* **dashboard:** build the Night watch look across the dashboard ([#128](https://github.com/The-Vibe-Company/armada/issues/128)) ([8466d22](https://github.com/The-Vibe-Company/armada/commit/8466d22f6066eb5cf173e25acdafcfd6c4b95d2f))
+
 ## [0.2.29](https://github.com/The-Vibe-Company/armada/compare/v0.2.28...v0.2.29) (2026-10-02)
 
 
