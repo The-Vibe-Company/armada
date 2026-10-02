@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.31](https://github.com/The-Vibe-Company/armada/compare/v0.2.30...v0.2.31) (2026-10-02)
+
+
+### Features
+
+* **dashboard:** group the overview by coordinator and put what to validate first ([#130](https://github.com/The-Vibe-Company/armada/issues/130)) ([86e5b78](https://github.com/The-Vibe-Company/armada/commit/86e5b78993891eb27150f9697904916972dca62c))
+
 ## [0.2.30](https://github.com/The-Vibe-Company/armada/compare/v0.2.29...v0.2.30) (2026-10-02)
 
 
