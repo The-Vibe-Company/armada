@@ -1,13 +1,14 @@
 "use client";
 
-// The overview's line under its summary (THE-893): this week's merges, their
-// median claim to merge and the change from last week, linking to /insights.
+// The overview's weekly figure (THE-893), a chip of its status (THE-899):
+// this week's merges and the change from last week, linking to /insights,
+// its full line (with the median claim to merge) as its title.
 // Rendered with the page (THE-892), then read on its own every five minutes,
 // never with the overview's poll: the numbers move by the hour, not the second.
 import type { InsightsSummary } from "@armada/core/read";
-import Link from "next/link";
 import { useEffect, useState } from "react";
 import { type InsightsLineReading, insightsHref } from "@/lib/insights-view";
+import { Stat } from "../page";
 import { useShell } from "../shell/context";
 
 const EVERY_MS = 5 * 60_000;
@@ -40,13 +41,18 @@ export function InsightsLine({ initial = null }: { initial?: InsightsLineReading
       clearInterval(timer);
     };
   }, []);
+  if (!summary) return null;
+  const change = summary.change === null ? null : Math.round(summary.change * 100);
   return (
-    <p className="ins-overview">
-      {summary && (
-        <Link href={insightsHref({ range: "7d" })} prefetch={false} className="ins-summary">
-          {t.insights.overviewLine(summary, t.duration)}
-        </Link>
-      )}
-    </p>
+    <span title={t.insights.overviewLine(summary, t.duration)}>
+      <Stat href={insightsHref({ range: "7d" })} prefetch={false}>
+        {t.status.stats.week} <b>{summary.merged}</b> {t.status.stats.merged}
+        {change !== null && (
+          <span className={change < 0 ? "ui-trend is-down" : "ui-trend"}>
+            {change > 0 ? "↑" : change < 0 ? "↓" : "→"} {Math.abs(change)}%
+          </span>
+        )}
+      </Stat>
+    </span>
   );
 }

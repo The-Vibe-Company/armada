@@ -100,12 +100,15 @@ export function Stat({
   label,
   hue,
   href,
+  prefetch = true,
   children,
 }: {
   value?: ReactNode;
   label?: ReactNode;
   hue?: Hue;
   href?: string;
+  /** Off for a page rendered on the server from Postgres (/insights). */
+  prefetch?: boolean;
   /** What follows the label (a trend). */
   children?: ReactNode;
 }) {
@@ -119,7 +122,7 @@ export function Stat({
   );
   const className = cx("ui-stat", hue && `is-${hue}`);
   return href ? (
-    <Link href={href} prefetch className={className}>
+    <Link href={href} prefetch={prefetch} className={className}>
       {body}
     </Link>
   ) : (
@@ -357,6 +360,11 @@ export function Columns({ children, side }: { children: ReactNode; side: ReactNo
   );
 }
 
+/** Two sections side by side on a wide screen, one under the other on a narrow one (Insights). */
+export function Pair({ children }: { children: ReactNode }) {
+  return <div className="ui-pair">{children}</div>;
+}
+
 /** What a section holds that is not rows (a form, a hint, cards), on the rows' left edge. */
 export function SectionBody({ children, className }: { children: ReactNode; className?: string }) {
   return <div className={cx("ui-section-body", className)}>{children}</div>;
@@ -461,17 +469,26 @@ export function Notice({
 export function CardGrid({
   children,
   wide = false,
+  thirds = false,
   long = false,
+  className,
 }: {
   children: ReactNode;
+  className?: string;
   wide?: boolean;
+  /** Three across a desk's page: the projects. */
+  thirds?: boolean;
   /** Over `LONG_LIST` cards. */
   long?: boolean;
 }) {
-  return <div className={cx("ui-cards", wide && "is-wide", long && "is-long")}>{children}</div>;
+  return (
+    <div className={cx("ui-cards", wide && "is-wide", thirds && "is-thirds", long && "is-long", className)}>
+      {children}
+    </div>
+  );
 }
 
-/** A card: the rows' padding, hairline and type, with a radius; a link when `href` is set. */
+/** A card: an instrument on the deck; a link when `href` is set, which j/k moves through like a row. */
 export function Card({
   children,
   href,
@@ -486,7 +503,7 @@ export function Card({
 }) {
   if (href)
     return (
-      <Link href={href} prefetch={prefetch} className={cx("ui-card is-link", className)}>
+      <Link href={href} prefetch={prefetch} className={cx("ui-card is-link", className)} data-row="">
         {children}
       </Link>
     );

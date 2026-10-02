@@ -8,7 +8,7 @@ import { splitQuestion } from "../Actions";
 import { Row, RowId, RowSide, RowText, RowTime } from "../page";
 import { useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
-import { HarnessBadge, PhasePill, RelativeTime, StatusDot, Steps, Tag, toneColor } from "../ui";
+import { HarnessBadge, PhasePill, ProjectChip, RelativeTime, StatusDot, Steps, Tag, toneColor } from "../ui";
 
 /** What a row says under its title: the open question, else the worker's last status. */
 export const rowLine = (r: FleetRow) =>
@@ -64,13 +64,22 @@ export function AgentRow({
       </Row>
     );
   return (
-    <Row href={paths.agent(r.id)}>
+    <Row href={paths.agent(r.id)} className="sc-agent">
       <StatusDot status={state.status} progress={rowProgress(r)} label={label} />
-      <RowId>{r.id}</RowId>
+      <RowId>
+        {r.id}
+        {/* A phone's second line: the id, then the phase in its tone (THE-899). */}
+        <span className="sc-agent-phase" style={{ color: toneColor(state.status) }} aria-hidden>
+          {" · "}
+          {label}
+        </span>
+      </RowId>
       <RowText title={r.title} line={rowLine(r) || <PhasePill tone={state.status}>{label}</PhasePill>} />
       {projectName && (
         <RowSide roomy>
-          <Tag>{projectName}</Tag>
+          <Tag>
+            <ProjectChip slug={r.project} name={projectName} />
+          </Tag>
         </RowSide>
       )}
       <RowSide roomy>

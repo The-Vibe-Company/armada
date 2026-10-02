@@ -11,7 +11,10 @@
 // read while the section is on screen and the overview changed): no rule is
 // decided here. Rows redraw every `STEP_MS` and on a new history only. The
 // drawing is for the eye; "Show as table" gives the same sessions, phases and
-// times as a table, for a screen reader or a keyboard (THE-891).
+// times as a table, for a screen reader or a keyboard (THE-891). Night watch
+// (THE-899) draws each session as a flight path: its earlier phases a thin
+// trail, its current phase a lit bar, the agent itself a ship at "now",
+// silences hatched in amber, under a glowing now line.
 import type { CoordinatorTrack, FleetRow, FleetTimeline, ProjectOverview, SessionTimeline } from "@armada/core/read";
 import Link from "next/link";
 import { type CSSProperties, memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -238,6 +241,12 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
             {t.timeline.legend.current}
           </span>
           <span>
+            <svg className="tl-swatch" width="10" height="10" viewBox="0 0 12 12" aria-hidden>
+              <path d="M11.5 6L1 11V1Z" fill="var(--frontier)" />
+            </svg>
+            {t.timeline.legend.ship}
+          </span>
+          <span>
             <i className="tl-swatch is-pr" />
             {t.timeline.legend.pr}
           </span>
@@ -363,14 +372,30 @@ function TimelineTable({
   );
 }
 
-/** The silences' hatching, defined once for every row. */
+/** The hues a current phase is lit in, by the token its phase's color names. */
+const LIT = {
+  "var(--frontier)": "flight",
+  "var(--accent)": "yours",
+  "var(--critical)": "fail",
+  "var(--done)": "done",
+  "var(--text-3)": "rest",
+} as const;
+const litOf = (color: string) => `url(#tl-lit-${LIT[color as keyof typeof LIT] ?? "flight"})`;
+
+/** The silences' hatching and the current phase's light, defined once for every row. */
 function Hatch() {
   return (
     <svg className="tl-defs" width="0" height="0" aria-hidden>
       <defs>
         <pattern id="tl-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-          <rect width="2" height="6" fill="rgba(255, 181, 71, 0.45)" />
+          <rect width="2" height="6" fill="rgba(255, 181, 71, 0.5)" />
         </pattern>
+        {Object.entries(LIT).map(([color, key]) => (
+          <linearGradient key={key} id={`tl-lit-${key}`} x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" style={{ stopColor: color, stopOpacity: 0.18 }} />
+            <stop offset="1" style={{ stopColor: color, stopOpacity: 0.55 }} />
+          </linearGradient>
+        ))}
       </defs>
     </svg>
   );
@@ -442,15 +467,28 @@ const SessionRow = memo(function SessionRow({
               ],
               color: PHASE_COLOR[s.phase],
             }));
-            return (
+            // The earlier phases are the path flown, a thin trail; the current one is lit, up to the ship.
+            return current ? (
               <rect
                 key={`${s.phase}-${s.from}`}
-                className={current ? "tl-phase is-current" : "tl-phase"}
+                className="tl-phase is-current"
                 x={pc(b.x)}
-                y={current ? MID - 7 : MID - 4}
+                y={MID - 4}
                 width={pc(b.width)}
-                height={current ? 14 : 8}
-                rx={current ? 4 : 3}
+                height={8}
+                rx={4}
+                fill={litOf(PHASE_COLOR[s.phase])}
+                {...tip}
+              />
+            ) : (
+              <rect
+                key={`${s.phase}-${s.from}`}
+                className="tl-phase"
+                x={pc(b.x)}
+                y={MID - 1}
+                width={pc(b.width)}
+                height={2}
+                rx={1}
                 fill={PHASE_COLOR[s.phase]}
                 {...tip}
               />
@@ -469,9 +507,10 @@ const SessionRow = memo(function SessionRow({
                 key={`${s.from}-${s.to}`}
                 className="tl-silence"
                 x={pc(b.x)}
-                y={MID - 7}
+                y={MID - 4}
                 width={pc(b.width)}
-                height="14"
+                height="8"
+                rx="4"
                 fill="url(#tl-hatch)"
                 {...tip}
               />
@@ -508,7 +547,7 @@ const SessionRow = memo(function SessionRow({
                 className="tl-report"
                 cx={pc(scale.x(at))}
                 cy={MID}
-                r="3"
+                r="2"
                 {...tipOf(clock, (c) => ({ lines: [t.timeline.report(c(at))] }))}
               />
             ),
@@ -522,13 +561,15 @@ const SessionRow = memo(function SessionRow({
               />
             </svg>
           )}
-          <circle
-            className={state.status === "running" ? "tl-cap is-live" : "tl-cap"}
-            cx="100%"
-            cy={MID}
-            r="4"
-            fill={color}
-          />
+          {/* The agent itself: a ship at now, in its state's color; dimmed while silent. */}
+          <svg x="100%" y={MID} overflow="visible" aria-hidden>
+            <path
+              className={r.silent ? "tl-ship is-silent" : "tl-ship"}
+              d="M5 0L-6.5 5.5V-5.5Z"
+              fill={color}
+              style={{ ["--c" as string]: color }}
+            />
+          </svg>
         </svg>
       </span>
       <span className="tl-side" style={{ color: r.silent ? "var(--active)" : undefined }}>

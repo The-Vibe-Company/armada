@@ -142,10 +142,35 @@ export function ticketHref(r: InsightsReading, project: string, ticket: string):
  * The bars of the shipped chart: one per day up to 30 days, one per ISO week
  * beyond (90 bars would be a texture, not a chart).
  */
-export function shippedBars(i: FleetInsights): { key: string; kind: "day" | "week"; count: number }[] {
-  return i.days.length > 31
-    ? i.weeks.map((w) => ({ key: w.week, kind: "week", count: w.tickets.length }))
-    : i.days.map((d) => ({ key: d.day, kind: "day", count: d.tickets.length }));
+/** The ISO week (its Monday) a UTC day falls in. */
+const mondayOf = (day: string): string => {
+  const t = Date.parse(`${day}T00:00:00Z`);
+  const back = (new Date(t).getUTCDay() + 6) % 7;
+  return new Date(t - back * 86_400_000).toISOString().slice(0, 10);
+};
+
+/**
+ * The shipped chart's bars, with `previous`: the merges of the period
+ * before at the same place (the ghost bars, THE-899), its days a period
+ * earlier summed into the same weeks.
+ */
+export function shippedBars(
+  i: FleetInsights,
+): { key: string; kind: "day" | "week"; count: number; previous: number }[] {
+  const before = (k: number) => i.merged.previousDaily?.[k] ?? 0;
+  if (i.days.length <= 31)
+    return i.days.map((d, k) => ({ key: d.day, kind: "day", count: d.tickets.length, previous: before(k) }));
+  const previous = new Map<string, number>();
+  i.days.forEach((d, k) => {
+    const week = mondayOf(d.day);
+    previous.set(week, (previous.get(week) ?? 0) + before(k));
+  });
+  return i.weeks.map((w) => ({
+    key: w.week,
+    kind: "week",
+    count: w.tickets.length,
+    previous: previous.get(w.week) ?? 0,
+  }));
 }
 
 /** The overview's insights line as its page reads it (THE-892): what `/api/fleet/insights?range=7d` answers, and its tag. */

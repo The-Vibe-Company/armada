@@ -83,6 +83,8 @@ describe("throughput", () => {
     expect(i.days.map((d) => d.tickets.length)).toEqual([2, 0, 0, 0, 0, 1, 0]);
     expect(i.merged.count).toBe(3);
     expect(i.merged.previous).toBe(1);
+    // Day by day, the previous period's first day beside this one's: W-4 on its fourth.
+    expect(i.merged.previousDaily).toEqual([0, 0, 0, 1, 0, 0, 0]);
     expect(ids(i.merged.tickets)).toEqual(["W-3", "W-2", "W-1"]);
   });
 
@@ -140,6 +142,7 @@ describe("cycle time", () => {
     expect(i.cycle.p90).toBe(9 * 24 * HOUR);
     expect(i.cycle.previousP50).toBe(HOUR);
     expect(i.cycle.daily).toEqual([HOUR, 4 * HOUR, null, null, null, null, null]);
+    expect(i.cycle.dailyP90).toEqual([HOUR, 9 * 24 * HOUR, null, null, null, null, null]);
   });
 });
 

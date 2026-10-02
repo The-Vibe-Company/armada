@@ -291,7 +291,7 @@ export function RelativeTime({ at, format = "ago" }: { at: string | null; format
   );
 }
 
-/** The six steps from plan to merge in a small bar; the current one in its tone. */
+/** The six steps from plan to merge in a small bar; the current one lit in its tone. */
 export function Steps({ step, tone, wide = false }: { step: number; tone: Tone; wide?: boolean }) {
   const { t } = useShell();
   return (
@@ -299,13 +299,10 @@ export function Steps({ step, tone, wide = false }: { step: number; tone: Tone; 
       className={cx("ui-steps", wide && "is-wide")}
       role="img"
       aria-label={`${t.shell.steps[step] ?? ""} (${step + 1}/${t.shell.steps.length})`}
+      style={{ ["--c" as string]: TONE_COLOR[tone] }}
     >
       {t.shell.steps.map((s, k) => (
-        <span
-          key={s}
-          className="ui-step"
-          style={{ background: k < step ? "rgba(240,239,236,.45)" : k === step ? TONE_COLOR[tone] : undefined }}
-        />
+        <span key={s} className={cx("ui-step", k < step && "is-done", k === step && "is-now")} />
       ))}
     </span>
   );

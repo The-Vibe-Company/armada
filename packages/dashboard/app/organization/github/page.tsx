@@ -16,6 +16,7 @@ import {
   RowTime,
   Section,
   SectionBody,
+  StatusHeader,
   Toolbar,
 } from "@/components/page";
 import { Dot, EmptyState } from "@/components/ui";
@@ -124,7 +125,15 @@ export default async function Github({ searchParams }: { searchParams: Params })
   const toLink = reachable?.filter((i) => !isLinked.has(i.id)) ?? [];
 
   return (
-    <Page toolbar={toolbar}>
+    <Page
+      status={
+        <StatusHeader
+          lead={t.status.org.github(linked.length)}
+          then={toLink.length ? t.status.org.toLink(toLink.length) : undefined}
+        />
+      }
+      toolbar={toolbar}
+    >
       {info && (
         <HeaderActions>
           {manager ? (

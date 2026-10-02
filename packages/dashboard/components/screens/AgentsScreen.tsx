@@ -17,8 +17,21 @@ import {
   harnessOf,
   paths,
 } from "@/lib/fleet-view";
+import { agentsNeeds } from "@/lib/status-view";
 import { FilterBar, useListFilters } from "../FilterBar";
-import { Button, DensityToggle, LONG_LIST, Page, Row, RowIcon, RowSide, RowText, Section, Toolbar } from "../page";
+import {
+  Button,
+  DensityToggle,
+  LONG_LIST,
+  Page,
+  Row,
+  RowIcon,
+  RowSide,
+  RowText,
+  Section,
+  StatusHeader,
+  Toolbar,
+} from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Dot, EmptyState, harnessColor, StatusDot, Tabs } from "../ui";
 import { AgentRow } from "./AgentRow";
@@ -52,9 +65,22 @@ export function AgentsScreen() {
             (!filters.q || `${p.name} ${p.slug}`.toLowerCase().includes(filters.q.toLowerCase())),
         );
   const decisions = decisionsOf(overview);
+  const needs = useMemo(() => agentsNeeds(overview.rows), [overview]);
 
   return (
     <Page
+      status={
+        <StatusHeader
+          lead={overview.rows.length ? t.status.flight(overview.rows.length) : t.status.rest}
+          then={
+            overview.rows.length === 0
+              ? undefined
+              : needs.length
+                ? `${needs.map((n) => t.status.groups[n.status](n.n)).join(t.status.and)}.`
+                : t.status.onCourse
+          }
+        />
+      }
       toolbar={
         <>
           <Toolbar end={<DensityToggle />}>
@@ -148,7 +174,7 @@ function CoordinatorRow({ project: p, waiting }: { project: ProjectOverview; wai
   const h = coordinatorHarness(c.harness);
   const ms = c.seenAt ? Math.max(0, now - Date.parse(c.seenAt)) : 0;
   return (
-    <Row href={paths.project(p.slug)}>
+    <Row href={paths.project(p.slug)} className="sc-coord-row">
       <RowIcon>
         <CoordinatorMark state={c.state} />
       </RowIcon>

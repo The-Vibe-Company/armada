@@ -1,18 +1,32 @@
 "use client";
 
-// /projects (THE-870): one row per project of the viewer's organization, as
-// the Agents page lists its sessions, with more columns: progress, name and
-// root, coordinator, health, agents, pull requests, owner and last activity.
+// /projects (THE-870, Night watch THE-899): the organization's projects in
+// one sentence ("3 projects, 56 of 79 tickets done. 2 are blocked."), then one
+// card per project, its progress a ring (components/ProjectCard.tsx).
 // Registering a project stays a terminal step: the header's button shows them.
-import type { FleetRow, ProjectHealth, ProjectOverview } from "@armada/core/read";
+import type { ProjectHealth, ProjectOverview } from "@armada/core/read";
 import { useMemo, useState } from "react";
 import { filterProjects, hasFilters } from "@/lib/filters";
-import { HARNESS_NAME, harnessOf, paths } from "@/lib/fleet-view";
-import { coordinatorHarness, lastActivity, prCounts, progressPercent, REGISTER_STEPS } from "@/lib/project-view";
+import { REGISTER_STEPS } from "@/lib/project-view";
 import { FilterBar, useListFilters } from "../FilterBar";
-import { Button, HeaderActions, Notice, Page, Row, RowIcon, RowSide, RowText, RowTime, Section } from "../page";
+import { ProjectCard } from "../ProjectCard";
+import {
+  Alert,
+  Button,
+  CardGrid,
+  HeaderActions,
+  LONG_LIST,
+  Notice,
+  Page,
+  Row,
+  RowIcon,
+  RowSide,
+  RowText,
+  Section,
+  StatusHeader,
+} from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Avatar, Dot, EmptyState, harnessColor, ProjectChip, RelativeTime } from "../ui";
+import { Avatar, Dot, EmptyState } from "../ui";
 
 /** A coordinator's state, in its color: "actif · il y a 2 min", "inactif depuis 24 min". */
 export function CoordinatorState({ project }: { project: ProjectOverview }) {
@@ -47,17 +61,6 @@ export function Figure({ label, value, dot }: { label: string; value: number; do
 export const projectLine = (p: Pick<ProjectOverview, "repository" | "programRoot">) =>
   `${p.repository}${p.programRoot ? ` · ${p.programRoot.id}` : ""}`;
 
-/** Done out of total as a ring: green for done, empty for the rest. Unknown progress draws an empty ring. */
-export function ProgressRing({ percent, size = 14 }: { percent: number | null; size?: number }) {
-  return (
-    <span
-      className="pj-ring"
-      aria-hidden
-      style={{ width: size, height: size, ["--p" as string]: `${percent ?? 0}%` }}
-    />
-  );
-}
-
 export const healthColor = (health: ProjectHealth | null) =>
   health === "blocked"
     ? "var(--critical)"
@@ -85,44 +88,6 @@ export function Owner({ name }: { name: string | null }) {
     <span className="pj-owner">
       <Avatar name={name} />
       <span className="pj-owner-name">{name}</span>
-    </span>
-  );
-}
-
-/** The coordinator in a list's column: its harness and whether it is at work. */
-function CoordinatorCell({ project }: { project: ProjectOverview }) {
-  const { t } = useShell();
-  const now = useNow();
-  const { state, seenAt, harness } = project.coordinator;
-  const h = coordinatorHarness(harness ?? null);
-  const color = state === "active" ? "var(--done)" : state === "idle" ? "var(--active)" : "var(--text-3)";
-  const ms = seenAt ? Math.max(0, now - Date.parse(seenAt)) : 0;
-  return (
-    <span className="sc-coord" title={t.shell.coordinator}>
-      <span className={`sc-coord-mark is-${state}`} style={{ color }} aria-hidden />
-      {h ? HARNESS_NAME[h] : <span className="faint">{t.shell.coordinator}</span>}
-      <span style={{ color }}>
-        {state === "active"
-          ? t.shell.coordinatorActive(t.ago(ms))
-          : state === "idle"
-            ? t.shell.coordinatorIdle(t.duration(ms))
-            : t.projectPages.stateUnknown}
-      </span>
-    </span>
-  );
-}
-
-/** One bar per agent in flight, in its harness's color, then their count. */
-export function AgentBars({ rows }: { rows: Pick<FleetRow, "id" | "runtime">[] }) {
-  const { t } = useShell();
-  return (
-    <span className="pj-agents" title={t.projectPages.agents(rows.length)}>
-      <span className="pj-bars" aria-hidden>
-        {rows.slice(0, 8).map((r) => (
-          <span key={r.id} className="pj-bar" style={{ background: harnessColor(harnessOf(r.runtime)) }} />
-        ))}
-      </span>
-      <span>{t.projectPages.agents(rows.length)}</span>
     </span>
   );
 }
@@ -172,8 +137,23 @@ export function ProjectsScreen() {
   const [register, setRegister] = useState(false);
   const { filters, go } = useListFilters("projects");
   const shown = useMemo(() => filterProjects(overview, filters), [overview, filters]);
+  const done = overview.projects.reduce((n, p) => n + (p.progress?.done ?? 0), 0);
+  const total = overview.projects.reduce((n, p) => n + (p.progress?.total ?? 0), 0);
+  const blocked = overview.projects.filter((p) => p.health === "blocked").length;
+  const watch = overview.projects.filter((p) => p.health === "watch").length;
   return (
-    <Page toolbar={overview.projects.length > 0 ? <FilterBar list="projects" /> : undefined}>
+    <Page
+      status={
+        overview.projects.length > 0 ? (
+          <StatusHeader
+            lead={t.status.projects(overview.projects.length, done, total)}
+            then={blocked ? t.status.blocked(blocked) : watch ? t.status.watch(watch) : t.status.onTrack}
+            line={t.projectPages.lead}
+          />
+        ) : undefined
+      }
+      toolbar={overview.projects.length > 0 ? <FilterBar list="projects" /> : undefined}
+    >
       <HeaderActions>
         <button type="button" className="ui-button" aria-expanded={register} onClick={() => setRegister(!register)}>
           {t.projectPages.register}
@@ -192,72 +172,22 @@ export function ProjectsScreen() {
           </Button>
         </EmptyState>
       ) : (
-        <Section
-          label={t.allProjects}
-          count={shown.length}
-          side={<span className="pj-lead">{t.projectPages.lead}</span>}
-        >
-          {shown.map((p) => (
-            <ProjectRow key={p.slug} project={p} rows={overview.rows.filter((r) => r.project === p.slug)} />
-          ))}
+        <Section label={t.allProjects} count={shown.length}>
+          <CardGrid thirds long={shown.length > LONG_LIST}>
+            {shown.map((p) => (
+              <ProjectCard key={p.slug} t={t} overview={overview} slug={p.slug} />
+            ))}
+          </CardGrid>
         </Section>
       )}
     </Page>
   );
 }
 
-function ProjectRow({ project: p, rows }: { project: ProjectOverview; rows: FleetRow[] }) {
-  const { t } = useShell();
-  const percent = progressPercent(p.progress);
-  const prs = prCounts(p.pullRequests);
-  const activity = lastActivity(p, rows);
-  const line = `${projectLine(p)}${p.progress ? ` · ${t.projectPages.tickets(p.progress.done, p.progress.total)}` : ""}`;
-  return (
-    <Row href={paths.project(p.slug)} className="pj-row">
-      <RowIcon>
-        <ProgressRing percent={percent} />
-      </RowIcon>
-      <span className="pj-percent">{percent === null ? "—" : `${percent} %`}</span>
-      <RowText
-        title={<ProjectChip slug={p.slug} name={p.name} />}
-        line={
-          p.error ? (
-            <span style={{ color: "var(--critical)" }}>{t.projectPages.unreadable(p.error)}</span>
-          ) : p.reading ? (
-            t.projectPages.reading
-          ) : (
-            <span className="mono">{line}</span>
-          )
-        }
-      />
-      <RowSide roomy width={230}>
-        <CoordinatorCell project={p} />
-      </RowSide>
-      <RowSide width={104}>
-        <Health health={p.health} />
-      </RowSide>
-      <RowSide width={110}>
-        <AgentBars rows={rows} />
-      </RowSide>
-      <RowSide roomy width={130}>
-        <span>{prs ? t.projectPages.prs(prs.open, prs.green) : t.projectPages.prsUnknown}</span>
-      </RowSide>
-      <RowSide roomy width={150}>
-        <Owner name={p.owner} />
-      </RowSide>
-      <RowTime>
-        <span title={t.projectPages.lastActivity}>
-          <RelativeTime at={activity} format="duration" />
-        </span>
-      </RowTime>
-    </Row>
-  );
-}
-
 /** A project that could not be read, or is read for the first time, as the top line of its page. */
 export function ProjectNotice({ project }: { project: ProjectOverview }) {
   const { t } = useShell();
-  if (project.error) return <Notice tone="critical">{t.projectPages.unreadable(project.error)}</Notice>;
+  if (project.error) return <Alert title={t.projectPages.unreadable(project.error)} />;
   if (project.reading) return <Notice>{t.projectPages.reading}</Notice>;
   return null;
 }

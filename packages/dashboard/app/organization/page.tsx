@@ -25,6 +25,7 @@ import {
   Section,
   SectionBody,
   Select,
+  StatusHeader,
   Toolbar,
 } from "@/components/page";
 import { Avatar, EmptyState, Tag } from "@/components/ui";
@@ -86,6 +87,13 @@ export default async function Organization({ searchParams }: { searchParams: Par
 
   return (
     <Page
+      status={
+        <StatusHeader
+          lead={t.status.org.members(viewer.organization.name, full?.members.length ?? 0)}
+          then={t.status.org.invitations(invitations.length)}
+          line={t.org.roleHint}
+        />
+      }
       toolbar={
         <Toolbar>
           <OrganizationTabs t={t} page="members" />

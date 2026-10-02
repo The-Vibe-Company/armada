@@ -27,7 +27,11 @@ const insights = (range: "7d" | "90d") =>
       {
         project: "widgets",
         silentAfterMinutes: 15,
-        events: [merge("W-1", "2026-03-10T09:00:00.000Z"), merge("W-2", "2026-03-11T09:00:00.000Z")],
+        events: [
+          merge("W-0", "2026-03-03T09:00:00.000Z"),
+          merge("W-1", "2026-03-10T09:00:00.000Z"),
+          merge("W-2", "2026-03-11T09:00:00.000Z"),
+        ],
         sessions: [],
         waits: [],
         validations: [],
@@ -95,18 +99,18 @@ describe("the tickets behind a number", () => {
     expect(ticketHref(reading, "widgets", "W-9")).toBeNull();
   });
 
-  test("the shipped chart draws days up to a month, weeks beyond", () => {
-    expect(shippedBars(insights("7d")).map((b) => [b.key, b.count])).toEqual([
-      ["2026-03-05", 0],
-      ["2026-03-06", 0],
-      ["2026-03-07", 0],
-      ["2026-03-08", 0],
-      ["2026-03-09", 0],
-      ["2026-03-10", 1],
-      ["2026-03-11", 1],
+  test("the shipped chart draws days up to a month, weeks beyond, each beside the period before's", () => {
+    expect(shippedBars(insights("7d")).map((b) => [b.key, b.count, b.previous])).toEqual([
+      ["2026-03-05", 0, 0],
+      ["2026-03-06", 0, 0],
+      ["2026-03-07", 0, 0],
+      ["2026-03-08", 0, 0],
+      ["2026-03-09", 0, 0],
+      ["2026-03-10", 1, 1],
+      ["2026-03-11", 1, 0],
     ]);
     const weeks = shippedBars(insights("90d"));
     expect(weeks.every((b) => b.kind === "week")).toBe(true);
-    expect(weeks.at(-1)).toEqual({ key: "2026-03-09", kind: "week", count: 2 });
+    expect(weeks.at(-1)).toEqual({ key: "2026-03-09", kind: "week", count: 2, previous: 0 });
   });
 });

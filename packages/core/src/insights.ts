@@ -138,8 +138,15 @@ export interface FleetInsights {
   days: { day: string; tickets: InsightTicket[] }[];
   /** ISO weeks (their Monday) the range touches. */
   weeks: { week: string; tickets: InsightTicket[] }[];
-  merged: { count: number; previous: number; tickets: InsightTicket[] };
-  cycle: DurationStat & { previousP50: number | null; tickets: InsightTicket[]; daily: (number | null)[] };
+  /** `previousDaily`: the previous period's merges, day by day, aligned with `days` (the ghost bars, THE-899). */
+  merged: { count: number; previous: number; previousDaily: number[]; tickets: InsightTicket[] };
+  /** `daily` and `dailyP90`: each day's median and p90 from claim to merge (the line and its band). */
+  cycle: DurationStat & {
+    previousP50: number | null;
+    tickets: InsightTicket[];
+    daily: (number | null)[];
+    dailyP90: (number | null)[];
+  };
   phases: PhaseTime[];
   waits: { coordinator: WaitStat; owner: WaitStat };
   firstPass: {
@@ -387,6 +394,7 @@ export function buildInsights(input: {
   const silences: Silence[] = [];
   const merges: InsightTicket[] = [];
   let previousMerged = 0;
+  const previousDaily: number[] = Array.from({ length: days }, () => 0);
   const hours = new Map<string, number>();
   const addHours = (key: string, h: number) => hours.set(key, (hours.get(key) ?? 0) + h);
   const biggest: BiggestWait[] = [];
@@ -409,7 +417,11 @@ export function buildInsights(input: {
         if (e.kind !== "merge") continue;
         const at = Date.parse(e.at);
         if (inRange(at)) merges.push(ticketOf(r.project, ticket, null, at));
-        else if (inPrevious(at)) previousMerged++;
+        else if (inPrevious(at)) {
+          previousMerged++;
+          const k = Math.floor((at - previousFrom) / DAY);
+          previousDaily[k] = (previousDaily[k] ?? 0) + 1;
+        }
       }
       cycles.push(...cyclesOf(r.project, ticket, list, held));
       silences.push(...silencesOf(r, ticket, list, held, now).filter((s) => inRange(s.to)));
@@ -538,6 +550,7 @@ export function buildInsights(input: {
     merged: {
       count: merges.length,
       previous: previousMerged,
+      previousDaily,
       tickets: [...merges].sort((a, b) => order(b.at, a.at)),
     },
     cycle: {
@@ -545,6 +558,7 @@ export function buildInsights(input: {
       previousP50: quantile(previous.map(cycleMs), 0.5),
       tickets: cycleTickets,
       daily: dayList.map((day) => quantile(byDay.get(day) ?? [], 0.5)),
+      dailyP90: dayList.map((day) => quantile(byDay.get(day) ?? [], 0.9)),
     },
     phases,
     waits: {

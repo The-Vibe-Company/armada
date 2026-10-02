@@ -23,11 +23,12 @@ import type { ActivityQuery, ActivityReading } from "@/lib/fleet-data";
 import type { Strings } from "@/lib/i18n";
 import { excerpt } from "@/lib/overview-view";
 import { SaveView } from "../FilterBar";
+import { LiveMark } from "../mark";
 import {
+  Alert,
   Button,
   Form,
   Input,
-  Notice,
   Page,
   Row,
   RowIcon,
@@ -38,6 +39,7 @@ import {
   Section,
   SectionBody,
   Select,
+  StatusHeader,
   Toolbar,
 } from "../page";
 import { Dot, EmptyState, ProjectChip } from "../ui";
@@ -69,15 +71,24 @@ export function ActivityScreen({
   const ctx: Ctx = { t, r, zone, many: q.project === null && r.projects.length > 1 };
   const { days, divider } = feedDays(t, r.entries, { zone, now, since });
   let dividerShown = false;
+  const fresh = days.reduce((n, d) => n + d.fresh.length, 0);
   return (
     <Page
+      status={
+        <StatusHeader
+          lead={
+            divider === null && fresh === 0 ? t.activity.leadAll : fresh ? t.activity.lead(fresh) : t.activity.leadNone
+          }
+          line={t.activity.line}
+        />
+      }
       toolbar={
         <Toolbar end={<SaveView list="activity" query={activityHref({ ...q, before: null }).split("?")[1] ?? ""} />}>
           {<Filters t={t} r={r} q={q} />}
         </Toolbar>
       }
     >
-      {!r.live && <Notice tone="warn">{t.activity.unreachable}</Notice>}
+      {!r.live && <Alert tone="warn" title={t.activity.unreachable} />}
       {r.live && r.entries.length === 0 && (
         <EmptyState title={filtered(q) || q.before ? t.activity.emptyFiltered : t.activity.empty} />
       )}
@@ -179,7 +190,14 @@ function Day({ ctx, day, divider }: { ctx: Ctx; day: FeedDay; divider: string | 
   return (
     <Section label={day.label} count={t.activity.shown(day.fresh.length + day.seen.length)}>
       {day.fresh.length > 0 && <Entries ctx={ctx} entries={day.fresh} />}
-      {clock && <h3 className="act-new">{t.activity.newSince(clock)}</h3>}
+      {clock && (
+        <h3 className="act-new">
+          <span className="act-new-pill">
+            <LiveMark size={12} />
+            {t.activity.newSince(clock)}
+          </span>
+        </h3>
+      )}
       {day.seen.length > 0 && <Entries ctx={ctx} entries={day.seen} />}
     </Section>
   );
@@ -207,7 +225,7 @@ function Entry({ ctx, e }: { ctx: Ctx; e: FeedEntry }) {
     timeStyle: "short",
   }).format(new Date(e.at));
   return (
-    <Row href={entryHref(e)} prefetch={false}>
+    <Row href={entryHref(e)} prefetch={false} className="act-row">
       <RowIcon>
         <Dot color={entryColor(e.kind)} />
       </RowIcon>

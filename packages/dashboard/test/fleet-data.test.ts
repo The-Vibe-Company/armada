@@ -726,8 +726,8 @@ describe("since the owner last looked (THE-894)", () => {
 
     const away = { since: w.at(-3 * 3_600_000), until: w.at(0) };
     const s = await loadCatchup(w.opts, HOME, away);
-    expect(s?.merged).toEqual([{ project: "widgets", ticket: "WID-5" }]);
-    expect(s?.started).toEqual([{ project: "widgets", ticket: "WID-2" }]);
+    expect(s?.merged).toEqual([{ project: "widgets", ticket: "WID-5", at: w.at(-1_800_000).toISOString() }]);
+    expect(s?.started).toEqual([{ project: "widgets", ticket: "WID-2", at: w.at(-2 * 3_600_000).toISOString() }]);
     // Silent two hours, past the template's threshold.
     expect(s?.stuck).toEqual([{ project: "widgets", ticket: "WID-2", reason: "silent", minutes: 120, ongoing: true }]);
     expect((await loadCatchup(w.opts, { organization: "org-other", home: "org-home" }, away))?.quiet).toBe(true);

@@ -15,8 +15,8 @@ const BEAT_MS = 5 * 60_000;
 export interface VisitState {
   /** Null until the first beacon answers. */
   answer: VisitAnswer | null;
-  /** Hides the summary until the next visit. */
-  dismiss: () => void;
+  /** Hides the summary until the next visit; `since` when the page read it before the beacon answered. */
+  dismiss: (since?: string) => void;
   setNotify: (notify: NotifySettings) => void;
 }
 
@@ -68,10 +68,11 @@ export function VisitProvider({ children }: { children: ReactNode }) {
   const value = useMemo<VisitState>(
     () => ({
       answer,
-      dismiss: () => {
-        if (!answer?.since) return;
-        setAnswer({ ...answer, since: null });
-        void post({ dismiss: answer.since });
+      dismiss: (since) => {
+        const start = answer?.since ?? since;
+        if (!start) return;
+        if (answer) setAnswer({ ...answer, since: null });
+        void post({ dismiss: start });
       },
       setNotify: (notify) => {
         setAnswer((a) => (a ? { ...a, notify } : { since: null, notify }));

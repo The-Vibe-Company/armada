@@ -109,6 +109,59 @@ const elapsed = (ms: number, day: string) => (ms < MIN ? `${Math.max(0, Math.rou
 
 const en = {
   htmlTitle: "Armada — fleet",
+  /** Each page's status sentence (THE-899): where things stand, in display type, then its quieter half. */
+  status: {
+    welcome: (merged: number) =>
+      merged === 0 ? "Welcome back." : `Welcome back. ${merged} merged while you were away.`,
+    flight: (n: number) => (n === 1 ? "1 agent in flight." : `${n} agents in flight.`),
+    rest: "No agent in flight.",
+    decide: (n: number) => (n === 1 ? "1 waits for you." : `${n} wait for you.`),
+    failing: (n: number) => (n === 1 ? "1 is failing." : `${n} are failing.`),
+    ready: (n: number) => (n === 1 ? "1 ticket is ready to start." : `${n} tickets are ready to start.`),
+    calm: "Nothing waits for you.",
+    stats: {
+      decide: "to decide",
+      failing: "failing",
+      silent: "silent",
+      merge: "ready to merge",
+      coordinators: "coordinators active",
+      week: "This week",
+      merged: "merged",
+    },
+    /** The Agents page's second half: its groups that need someone, in one sentence. */
+    groups: {
+      waiting: (n: number) => (n === 1 ? "1 waits for a decision" : `${n} wait for a decision`),
+      error: (n: number) => (n === 1 ? "1 is failing" : `${n} are failing`),
+      silent: (n: number) => (n === 1 ? "1 is silent" : `${n} are silent`),
+    },
+    projects: (n: number, done: number, total: number) =>
+      `${n === 1 ? "1 project" : `${n} projects`}, ${done} of ${total} tickets done.`,
+    blocked: (n: number) => (n === 1 ? "1 is blocked." : `${n} are blocked.`),
+    watch: (n: number) => (n === 1 ? "1 needs watching." : `${n} need watching.`),
+    onTrack: "All on track.",
+    project: (done: number, total: number) => `${done} of ${total} tickets done.`,
+    projectNext: (flying: number, ready: number) => `${flying} in flight, ${ready} ready to start.`,
+    /** The organization's pages. */
+    org: {
+      members: (org: string, n: number) => `${org} has ${n === 1 ? "1 member" : `${n} members`}.`,
+      invitations: (n: number) =>
+        n === 0 ? "No invitation open." : n === 1 ? "1 invitation open." : `${n} invitations open.`,
+      keys: (org: string) => `${org}'s keys, sealed in the vault.`,
+      workerSecrets: (n: number) =>
+        n === 0 ? "No secret for workers yet." : n === 1 ? "1 secret for workers." : `${n} secrets for workers.`,
+      github: (n: number) =>
+        n === 0
+          ? "No GitHub installation linked."
+          : n === 1
+            ? "1 GitHub installation linked."
+            : `${n} GitHub installations linked.`,
+      toLink: (n: number) => (n === 1 ? "1 more to link." : `${n} more to link.`),
+      workers: (n: number) =>
+        n === 0 ? "No worker session yet." : n === 1 ? "1 worker session." : `${n} worker sessions.`,
+    },
+    onCourse: "All on course.",
+    and: ", ",
+  },
   stats: { silent: "Silent", redCi: "Red CI" },
   projects: "Projects",
   allProjects: "All projects",
@@ -139,6 +192,8 @@ const en = {
   checked: (ms: number) => `checked ${elapsed(ms, "d")} ago`,
   refreshing: "updating…",
   refresh: "Refresh now",
+  /** Under the alert of a poll that failed (THE-899): the page keeps its last reading. */
+  staleReading: (ms: number) => `You're seeing the reading from ${elapsed(ms, "d")} ago.`,
   unreachableBanner: (error: string | null) =>
     `Live activity is unavailable: the database could not be read${error ? ` (${error})` : ""}. Showing Linear and GitHub; questions, hand-back notes and coordinator activity are hidden until it comes back.`,
   offBanner:
@@ -524,6 +579,7 @@ const en = {
     },
     decideTitle: "Yours to decide",
     decideEmpty: "Nothing waits for your decision.",
+    allValidations: "All validations",
     withCoordinator: (n: number, oldest: string) => `With the coordinator: ${n}, oldest ${oldest}`,
     kinds: { question: "Question", approval: "Plan to approve", "hand-back": "Ready to merge" } satisfies Record<
       DecisionKind,
@@ -566,6 +622,11 @@ const en = {
     decidedTitle: "Decided this week",
     empty: "Nothing waits for your check.",
     decidedEmpty: "Nothing decided this week.",
+    lead: (n: number) => (n === 1 ? "1 decision waits for you." : `${n} decisions wait for you.`),
+    oldest: (d: string) => `The oldest for ${d}.`,
+    line: "Each one stops a worker until you answer. Approve, pick a choice, or say what to change.",
+    emptyLine: "When an agent needs your eye on a design, a merge or a product choice, it lands here first.",
+    caughtUp: "You're all caught up",
     reason: "Why you",
     preview: "Try the preview",
     pr: (n: number) => `PR #${n}`,
@@ -599,6 +660,17 @@ const en = {
   },
   insights: {
     ranges: { "7d": "7 days", "30d": "30 days", "90d": "90 days" } satisfies Record<InsightRange, string>,
+    /** The page's status sentence (THE-899). */
+    lead: (n: number, days: number) =>
+      `${n === 1 ? "1 ticket" : `${n} tickets`} shipped ${days === 7 ? "this week" : `in ${days} days`}.`,
+    more: (p: number) => `${p}% more than the period before.`,
+    fewer: (p: number) => `${p}% fewer than the period before.`,
+    same: "As many as the period before.",
+    line: (median: string, days: number) => `Median ${median} from claim to merge over ${days} days. Days are UTC.`,
+    ghost: "the period before",
+    band: "to p90",
+    median: "median",
+    today: "today",
     rangeLabel: "Range",
     projectLabel: "Project",
     allProjects: "All projects",
@@ -888,7 +960,7 @@ const en = {
     noPr: "No PR",
     openPr: (n: number) => `PR #${n} ↗`,
     openLinear: "Linear ↗",
-    stepsHeading: "Steps",
+    stepsHeading: "Flight path",
     code: "Code",
     projectMissing: "This project is not on the dashboard.",
     projectMissingHint: "It may belong to another organization, or not be registered yet.",
@@ -900,6 +972,8 @@ const en = {
     noProjectsHint: "Run armada init in a repository to register it.",
     nothingReady: "Nothing is ready to start.",
     agent: {
+      /** "for 31 min", after an agent's phase on its page. */
+      forTime: "for",
       openIn: (harness: string) => `Open in ${harness}`,
       terminal: "Terminal",
       waitsAnswer: (ticket: string) => `${ticket} waits for your answer`,
@@ -1037,6 +1111,7 @@ const en = {
     legend: {
       past: "earlier phases",
       current: "current phase",
+      ship: "the agent, now",
       pr: "PR opened",
       report: "report",
       silence: "silence",
@@ -1046,6 +1121,11 @@ const en = {
   },
   /** Every event of the fleet (THE-894). */
   activity: {
+    /** The page's status sentence (THE-899). */
+    lead: (n: number) => (n === 1 ? "1 event since you last looked." : `${n} events since you last looked.`),
+    leadNone: "Nothing new since you last looked.",
+    leadAll: "The fleet's log, newest first.",
+    line: "Each line opens its agent, its validation or its project. Times are in your time zone.",
     filters: "Filter the activity",
     project: "Project",
     allProjects: "All projects",
@@ -1136,6 +1216,8 @@ const en = {
     all: "All activity",
     dismiss: "Dismiss",
     dismissLabel: "Dismiss what happened since you were away",
+    now: "now",
+    strip: (since: string, parts: string) => `Between ${since} and now: ${parts}`,
   },
   /** Browser notifications for what needs the owner (THE-894). */
   notify: {
@@ -1232,6 +1314,51 @@ export type Strings = typeof en;
 
 const fr: Strings = {
   htmlTitle: "Armada — flotte",
+  status: {
+    welcome: (merged) =>
+      merged === 0 ? "Bon retour." : `Bon retour. ${merged} fusionné${merged > 1 ? "s" : ""} pendant ton absence.`,
+    flight: (n) => `${n} agent${n > 1 ? "s" : ""} en vol.`,
+    rest: "Aucun agent en vol.",
+    decide: (n) => `${n} t'attend${n > 1 ? "ent" : ""}.`,
+    failing: (n) => (n > 1 ? `${n} échouent.` : `${n} échoue.`),
+    ready: (n) => `${n} ticket${n > 1 ? "s" : ""} prêt${n > 1 ? "s" : ""} à démarrer.`,
+    calm: "Rien ne t'attend.",
+    stats: {
+      decide: "à décider",
+      failing: "en échec",
+      silent: "silencieux",
+      merge: "prêts à fusionner",
+      coordinators: "coordinateurs actifs",
+      week: "Cette semaine",
+      merged: "fusionnés",
+    },
+    groups: {
+      waiting: (n) => (n > 1 ? `${n} attendent une décision` : `${n} attend une décision`),
+      error: (n) => (n > 1 ? `${n} échouent` : `${n} échoue`),
+      silent: (n) => (n > 1 ? `${n} sont silencieux` : `${n} est silencieux`),
+    },
+    projects: (n, done, total) => `${n} projet${n > 1 ? "s" : ""}, ${done} tickets terminés sur ${total}.`,
+    blocked: (n) => (n > 1 ? `${n} sont bloqués.` : `${n} est bloqué.`),
+    watch: (n) => `${n} ${n > 1 ? "sont" : "est"} à surveiller.`,
+    onTrack: "Tout est en bonne voie.",
+    project: (done, total) => `${done} tickets terminés sur ${total}.`,
+    projectNext: (flying, ready) => `${flying} en vol, ${ready} prêt${ready > 1 ? "s" : ""} à démarrer.`,
+    org: {
+      members: (org, n) => `${org} compte ${n} membre${n > 1 ? "s" : ""}.`,
+      invitations: (n) => (n === 0 ? "Aucune invitation en cours." : `${n} invitation${n > 1 ? "s" : ""} en cours.`),
+      keys: (org) => `Les clés de ${org}, scellées dans le coffre.`,
+      workerSecrets: (n) =>
+        n === 0 ? "Aucun secret pour les workers." : `${n} secret${n > 1 ? "s" : ""} pour les workers.`,
+      github: (n) =>
+        n === 0
+          ? "Aucune installation GitHub liée."
+          : `${n} installation${n > 1 ? "s" : ""} GitHub liée${n > 1 ? "s" : ""}.`,
+      toLink: (n) => `${n} de plus à lier.`,
+      workers: (n) => (n === 0 ? "Aucune session de worker." : `${n} session${n > 1 ? "s" : ""} de worker.`),
+    },
+    onCourse: "Tout suit son cours.",
+    and: ", ",
+  },
   stats: { silent: "Silencieux", redCi: "CI rouge" },
   projects: "Projets",
   allProjects: "Tous les projets",
@@ -1261,6 +1388,7 @@ const fr: Strings = {
   checked: (ms) => `vérifié il y a ${elapsed(ms, "j")}`,
   refreshing: "mise à jour…",
   refresh: "Rafraîchir maintenant",
+  staleReading: (ms) => `Tu vois la lecture d'il y a ${elapsed(ms, "j")}.`,
   unreachableBanner: (error) =>
     `Activité en direct indisponible : la base de données n'a pas pu être lue${error ? ` (${error})` : ""}. Affichage depuis Linear et GitHub ; questions, notes de remise et activité du coordinateur masquées jusqu'à son retour.`,
   offBanner:
@@ -1645,6 +1773,7 @@ const fr: Strings = {
     },
     decideTitle: "À toi de décider",
     decideEmpty: "Rien n'attend ta décision.",
+    allValidations: "Toutes les validations",
     withCoordinator: (n, oldest) => `Chez le coordinateur : ${n}, le plus ancien depuis ${oldest}`,
     kinds: { question: "Question", approval: "Plan à approuver", "hand-back": "Prêt à fusionner" },
     approvePlan: "Approuver le plan",
@@ -1679,6 +1808,12 @@ const fr: Strings = {
     decidedTitle: "Tranchées cette semaine",
     empty: "Rien n'attend ta vérification.",
     decidedEmpty: "Rien de tranché cette semaine.",
+    lead: (n) => `${n} décision${n > 1 ? "s" : ""} t'attend${n > 1 ? "ent" : ""}.`,
+    oldest: (d) => `La plus ancienne depuis ${d}.`,
+    line: "Chacune arrête un agent jusqu'à ta réponse. Approuve, choisis, ou dis quoi changer.",
+    emptyLine:
+      "Quand un agent a besoin de ton œil sur un design, une fusion ou un choix produit, ça arrive ici d'abord.",
+    caughtUp: "Tu es à jour",
     reason: "Pourquoi toi",
     preview: "Essayer la preview",
     pr: (n) => `PR #${n}`,
@@ -1709,6 +1844,16 @@ const fr: Strings = {
   },
   insights: {
     ranges: { "7d": "7 jours", "30d": "30 jours", "90d": "90 jours" },
+    lead: (n, days) =>
+      `${n} ticket${n > 1 ? "s" : ""} livré${n > 1 ? "s" : ""} ${days === 7 ? "cette semaine" : `en ${days} jours`}.`,
+    more: (p) => `${p} % de plus que la période précédente.`,
+    fewer: (p) => `${p} % de moins que la période précédente.`,
+    same: "Autant que la période précédente.",
+    line: (median, days) => `Médiane de ${median} du claim à la fusion sur ${days} jours. Jours en UTC.`,
+    ghost: "la période précédente",
+    band: "jusqu'au p90",
+    median: "médiane",
+    today: "aujourd'hui",
     rangeLabel: "Période",
     projectLabel: "Projet",
     allProjects: "Tous les projets",
@@ -1996,7 +2141,7 @@ const fr: Strings = {
     noPr: "Pas de PR",
     openPr: (n) => `PR #${n} ↗`,
     openLinear: "Linear ↗",
-    stepsHeading: "Étapes",
+    stepsHeading: "Plan de vol",
     code: "Code",
     projectMissing: "Ce projet n'est pas sur le tableau de bord.",
     projectMissingHint: "Il appartient peut-être à une autre organisation, ou n'est pas encore enregistré.",
@@ -2008,6 +2153,7 @@ const fr: Strings = {
     noProjectsHint: "Lance armada init dans un repo pour l'enregistrer.",
     nothingReady: "Rien n'est prêt à lancer.",
     agent: {
+      forTime: "depuis",
       openIn: (harness) => `Ouvrir dans ${harness}`,
       terminal: "Terminal",
       waitsAnswer: (ticket) => `${ticket} attend ta réponse`,
@@ -2140,6 +2286,7 @@ const fr: Strings = {
     legend: {
       past: "phases précédentes",
       current: "phase en cours",
+      ship: "l'agent, maintenant",
       pr: "PR ouverte",
       report: "rapport",
       silence: "silence",
@@ -2148,6 +2295,10 @@ const fr: Strings = {
     },
   },
   activity: {
+    lead: (n) => `${n} événement${n > 1 ? "s" : ""} depuis ta dernière visite.`,
+    leadNone: "Rien de neuf depuis ta dernière visite.",
+    leadAll: "Le journal de la flotte, du plus récent au plus ancien.",
+    line: "Chaque ligne ouvre son agent, sa validation ou son projet. Heures dans ton fuseau.",
     filters: "Filtrer l'activité",
     project: "Projet",
     allProjects: "Tous les projets",
@@ -2236,6 +2387,8 @@ const fr: Strings = {
     all: "Toute l'activité",
     dismiss: "Masquer",
     dismissLabel: "Masquer ce qui s'est passé pendant ton absence",
+    now: "maintenant",
+    strip: (since, parts) => `Entre ${since} et maintenant : ${parts}`,
   },
   notify: {
     title: "Notifications",

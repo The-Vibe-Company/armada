@@ -16,6 +16,7 @@ import {
   RowTime,
   Section,
   SectionBody,
+  StatusHeader,
   Toolbar,
 } from "@/components/page";
 import { Dot, EmptyState, PhasePill, type Tone } from "@/components/ui";
@@ -75,6 +76,7 @@ export default async function Workers({ searchParams }: { searchParams: Params }
 
   return (
     <Page
+      status={<StatusHeader lead={t.status.org.workers(workers.length)} line={w.lead} />}
       toolbar={
         <Toolbar>
           <OrganizationTabs t={t} page="workers" />

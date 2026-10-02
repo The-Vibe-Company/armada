@@ -11,8 +11,9 @@ import { useMemo } from "react";
 import { filterValidations, hasFilters } from "@/lib/filters";
 import type { ActionContext } from "../Actions";
 import { FilterBar, useListFilters } from "../FilterBar";
-import { CardGrid, LONG_LIST, Notice, Page, Section, SectionBody } from "../page";
+import { Alert, CardGrid, LONG_LIST, Notice, Page, Section, SectionBody, StatusHeader } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
+import { EmptyState } from "../ui";
 import { ValidationCard } from "./ValidationCard";
 
 function useActionContext(): ActionContext {
@@ -46,17 +47,36 @@ export function ValidationsScreen() {
   // A filter on what was decided leaves out what is still to decide, and the other way round.
   const showPending = !filters.state || filters.state === "pending";
   const showDecided = !filters.mine && filters.state !== "pending";
+  const waiting = (overview.validations ?? []).filter((v) => !v.decision);
+  const oldest = waiting.reduce<string | null>((o, v) => (o === null || v.createdAt < o ? v.createdAt : o), null);
   return (
-    <Page toolbar={<FilterBar list="validations" />}>
-      {overview.live.state === "unreachable" && <Notice tone="warn">{t.unreachableBanner(overview.live.error)}</Notice>}
+    <Page
+      status={
+        <StatusHeader
+          lead={waiting.length ? s.lead(waiting.length) : t.status.calm}
+          then={oldest ? s.oldest(t.duration(Math.max(0, ctx.now - Date.parse(oldest)))) : undefined}
+          line={waiting.length ? s.line : s.emptyLine}
+        />
+      }
+      toolbar={<FilterBar list="validations" />}
+    >
+      {overview.live.state === "unreachable" && (
+        <Alert tone="warn" title={t.live.unreachable}>
+          {t.unreachableBanner(overview.live.error)}
+        </Alert>
+      )}
       {showPending && (
         <Section label={s.pendingTitle} count={pending.length}>
           {pending.length === 0 ? (
-            <SectionBody>
-              <p>{filtered ? t.filters.noMatch : s.empty}</p>
-            </SectionBody>
+            filtered ? (
+              <SectionBody>
+                <p>{t.filters.noMatch}</p>
+              </SectionBody>
+            ) : (
+              <EmptyState title={s.caughtUp} hint={s.empty} />
+            )
           ) : (
-            <CardGrid wide>
+            <CardGrid wide className="vd-list">
               {pending.map((v) => (
                 <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
               ))}
@@ -71,7 +91,7 @@ export function ValidationsScreen() {
               <p>{filtered ? t.filters.noMatch : s.decidedEmpty}</p>
             </SectionBody>
           ) : (
-            <CardGrid wide long={decided.length > LONG_LIST}>
+            <CardGrid wide long={decided.length > LONG_LIST} className="vd-list is-decided">
               {decided.map((v) => (
                 <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
               ))}

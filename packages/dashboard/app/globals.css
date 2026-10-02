@@ -252,7 +252,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-3);
   min-width: 0;
 }
@@ -266,7 +266,7 @@ button {
 .source {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
   font-weight: 500;
   white-space: nowrap;
 }
@@ -279,17 +279,6 @@ button {
 }
 .source.is-offline {
   color: var(--critical);
-}
-.dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-  display: inline-block;
-  flex: none;
-}
-.dot.live {
-  animation: var(--livepulse);
 }
 .icon-btn {
   display: inline-grid;
@@ -360,13 +349,19 @@ button {
 .wait-detail.is-note {
   white-space: normal;
 }
+/* A quote: the worker's own words, in a well, its edge in the kind's hue. */
 .wait-detail.is-quote {
+  --q: var(--accent);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.5;
   white-space: normal;
-  padding-left: 10px;
-  border-left: 2px solid var(--accent);
+  padding: 10px 12px;
+  border-radius: var(--r-control);
+  background: var(--sunken);
+  box-shadow:
+    inset 2px 0 0 var(--q),
+    var(--ring);
 }
 
 /* ------------------------------------------------------------ requests: answer */
@@ -1590,25 +1585,31 @@ a.sh-item:hover {
 .ui-empty.is-compact .ui-empty-hint {
   font-size: var(--fs-small);
 }
+/* The phase bar: six steps, the done ones in grey, the current one lit in its tone. */
 .ui-steps {
   flex: none;
-  width: 60px;
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 2px;
+  display: inline-grid;
+  grid-template-columns: repeat(6, 8px);
+  gap: 3px;
 }
 .ui-steps.is-wide {
   width: 100%;
-  gap: 3px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 .ui-step {
-  height: 4px;
+  height: 3px;
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--track);
 }
 .ui-steps.is-wide .ui-step {
-  height: 5px;
-  border-radius: 3px;
+  height: 4px;
+}
+.ui-step.is-done {
+  background: var(--text-4);
+}
+.ui-step.is-now {
+  background: var(--c);
+  box-shadow: 0 0 6px color-mix(in oklab, var(--c) 70%, transparent);
 }
 
 /* -------------------------------------------------- the page's status (THE-899) */
@@ -2211,6 +2212,9 @@ a.ui-figure:hover {
 .ui-cards.is-wide {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr));
 }
+.ui-cards.is-thirds {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+}
 /* An instrument: a ring, a lit top edge and a long, soft drop; it floats on the deck. */
 .ui-card {
   position: relative;
@@ -2229,6 +2233,26 @@ a.ui-figure:hover {
 }
 .ui-card.is-link:hover {
   box-shadow: var(--ring-hover), var(--lit), var(--drop);
+}
+.ui-card[data-selected],
+.ui-card.is-link:focus-visible {
+  outline: 2px solid var(--frontier);
+  outline-offset: 2px;
+  border-radius: var(--r-card);
+}
+/* The oldest decision: an orange ring and a low glow, the one card to answer first. */
+.ui-card.is-oldest {
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent),
+    var(--lit),
+    var(--drop),
+    0 0 40px -16px var(--accent);
+}
+.ui-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
 }
 .ui-card-head {
   display: flex;
@@ -2409,11 +2433,28 @@ a.ui-figure:hover {
 /* ---------------------------------------------------- before the shell */
 /* components/AuthCard.tsx: sign in, welcome, a terminal's code, an
    invitation. Centered, the Armada mark over one card, the kit's controls. */
+/* The night sky the landing flies in: a horizon glow over the sign-in's one deck. */
 .au {
+  position: relative;
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 40px 20px;
+  isolation: isolate;
+  overflow: hidden;
+}
+.au::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -260px;
+  left: 50%;
+  width: min(1100px, 160vw);
+  height: 560px;
+  translate: -50% 0;
+  background: radial-gradient(50% 50% at 50% 50%, var(--frontier), transparent 72%);
+  opacity: 0.16;
+  pointer-events: none;
 }
 .au-column {
   width: 100%;
@@ -2433,17 +2474,27 @@ a.ui-figure:hover {
   letter-spacing: -0.01em;
 }
 .au-card {
+  position: relative;
   align-self: stretch;
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 26px 28px 24px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
+  padding: 28px 28px 24px;
+  border-radius: var(--r-deck);
   background: var(--surface);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.04) inset,
-    0 24px 48px -24px rgba(0, 0, 0, 0.8);
+  box-shadow: var(--deck-shadow);
+}
+/* Its lit edge, as the deck's. */
+.au-card::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 18%;
+  right: 18%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--frontier) 55%, white 10%), transparent);
+  opacity: 0.55;
+  pointer-events: none;
 }
 .au-kicker {
   margin-bottom: -6px;
@@ -2453,10 +2504,11 @@ a.ui-figure:hover {
 }
 .au-heading {
   margin: 0;
-  font-size: 20px;
+  font-size: 24px;
   font-weight: 600;
-  line-height: 1.25;
-  letter-spacing: -0.015em;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
 }
 .au-lead {
   margin: -4px 0 4px;
@@ -2478,9 +2530,6 @@ a.ui-figure:hover {
 .au-form .ui-button {
   height: 36px;
   font-size: 13px;
-}
-.au-form .ui-input[aria-invalid="true"] {
-  border-color: var(--critical);
 }
 .ui-button.au-submit {
   height: 36px;
@@ -2534,9 +2583,9 @@ a.ui-figure:hover {
 .au-code {
   margin: 0;
   padding: 14px;
-  border-radius: var(--r-md);
-  background: rgba(0, 0, 0, 0.25);
-  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--sunken);
+  box-shadow: var(--ring);
   text-align: center;
   font-size: 26px;
   letter-spacing: 0.18em;
@@ -2544,8 +2593,8 @@ a.ui-figure:hover {
 .au-list {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
+  border-radius: var(--r-card);
+  box-shadow: var(--ring);
   overflow: hidden;
 }
 .au-list-label {
@@ -2668,32 +2717,52 @@ a.ui-figure:hover {
 }
 
 /* ------------------------------------- projects and a project (THE-870) */
-.pj-ring {
-  display: inline-block;
-  flex: none;
-  border-radius: 50%;
-  background: conic-gradient(var(--done) var(--p), var(--track) 0);
-  -webkit-mask: radial-gradient(circle, transparent 0 42%, #000 46%);
-  mask: radial-gradient(circle, transparent 0 42%, #000 46%);
+.ui-card.sc-project-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 14px;
+}
+.sc-project-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.sc-project-name {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.sc-project-name .mono {
+  font-size: var(--fs-meta);
+}
+.sc-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: var(--fs-small);
+}
+.sc-facts dt {
+  color: var(--text-3);
+}
+.sc-facts dd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
 }
 .ui-row.pj-row .ui-row-title {
   flex: none;
   max-width: 60%;
 }
-.pj-percent {
-  width: 40px;
-  flex: none;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
 .pj-health {
   font-weight: 500;
 }
 .pj-owner,
-.pj-agents,
 .pj-sent,
 .pj-labels {
   display: inline-flex;
@@ -2706,31 +2775,10 @@ a.ui-figure:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pj-bars {
-  display: inline-flex;
-  gap: 2px;
-}
-.pj-bar {
-  width: 4px;
-  height: 12px;
-  border-radius: 2px;
-}
 .pj-lead {
   color: var(--text-2);
   font-weight: 400;
   white-space: normal;
-}
-.pj-progress {
-  display: inline-block;
-  width: 90px;
-  height: 4px;
-  border-radius: 2px;
-  background: var(--track);
-  overflow: hidden;
-}
-.pj-progress > span {
-  display: block;
-  height: 100%;
 }
 .ui-row-title a:hover {
   text-decoration: underline;
@@ -2862,72 +2910,129 @@ a.ui-figure:hover {
   }
 }
 
-/* ------------------------------------------------- an agent's page (THE-869) */
-.sc-stepper {
-  flex: 1;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  padding: 14px 0 12px;
-}
-.sc-stepper-step {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-}
-.sc-stepper-step::after {
-  content: "";
-  position: absolute;
-  top: 6px;
-  left: 20px;
-  right: 6px;
-  height: 2px;
-  border-radius: 1px;
-  background: rgba(255, 255, 255, 0.08);
-}
-.sc-stepper-step:last-child::after {
+/* On a phone an agent's row is two lines (THE-899): its title, then its id and phase. */
+.sc-agent-phase {
   display: none;
 }
-.sc-stepper-step.is-done::after {
-  background: rgba(240, 239, 236, 0.35);
+@media (max-width: 719px) {
+  .ui-row.sc-agent:not(.is-airy) {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "icon text side time"
+      "icon id side time";
+    column-gap: 12px;
+    row-gap: 2px;
+    min-height: 56px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+  .sc-agent:not(.is-airy) > .ui-status {
+    grid-area: icon;
+    align-self: start;
+    margin-top: 3px;
+  }
+  .sc-agent:not(.is-airy) > .ui-row-id {
+    grid-area: id;
+    width: auto;
+  }
+  .sc-agent:not(.is-airy) > .ui-row-text {
+    grid-area: text;
+  }
+  :is(.sc-agent:not(.is-airy), .sc-coord-row) .ui-row-line {
+    display: none;
+  }
+  .sc-agent:not(.is-airy) > .ui-row-side {
+    grid-area: side;
+  }
+  .sc-agent:not(.is-airy) > .ui-row-time {
+    grid-area: time;
+  }
+  .sc-agent-phase {
+    display: inline;
+    font-family: var(--font-sans);
+    font-size: var(--fs-small);
+    letter-spacing: 0;
+  }
+  /* Tabs scroll sideways inside the toolbar rather than wrap; the density stays a desk's choice. */
+  .ui-toolbar:has(> .ui-tabs) {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .ui-toolbar > .ui-tabs {
+    flex: none;
+    flex-wrap: nowrap;
+  }
+  .ui-toolbar-end:has(> .ui-tabs:only-child) {
+    display: none;
+  }
 }
-.sc-stepper-dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.14);
+
+/* ------------------------------------------------- an agent's page (THE-869) */
+/* The flight path: six legs, the done ones flown in lime, the current one lit, the rest dashed. */
+.sc-path {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin: 0;
+  padding: 22px var(--edge) 20px;
+  list-style: none;
+  border-bottom: 1px solid var(--line-soft);
 }
-.sc-stepper-step.is-done .sc-stepper-dot {
-  border-color: rgba(240, 239, 236, 0.6);
-  background: rgba(240, 239, 236, 0.6);
-}
-.sc-stepper-step.is-now .sc-stepper-dot {
-  border-color: var(--tone);
-  background: color-mix(in srgb, var(--tone) 25%, transparent);
-}
-.sc-stepper-label {
-  display: flex;
-  flex-direction: column;
+.sc-path-step {
+  position: relative;
+  display: grid;
   gap: 2px;
-  padding-right: 8px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--text-3);
-  white-space: nowrap;
+  min-width: 0;
+  padding-top: 26px;
+}
+.sc-path-step::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 22px;
+  right: 6px;
+  border-top: 1.5px dashed var(--text-4);
+}
+.sc-path-step:last-child::before {
+  display: none;
+}
+.sc-path-step.is-done::before {
+  border-top-style: solid;
+  border-color: color-mix(in oklab, var(--done) 55%, transparent);
+}
+.sc-path-step.is-now::before {
+  border-top-style: solid;
+  border-image: linear-gradient(90deg, var(--tone), transparent 70%) 1;
+}
+.sc-path-node {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 17px;
+  height: 17px;
+  display: grid;
+  place-items: center;
+}
+.sc-path-ship {
+  filter: drop-shadow(0 0 6px color-mix(in oklab, var(--tone) 80%, transparent));
+}
+.sc-path-label {
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.sc-stepper-step.is-done .sc-stepper-label {
+  white-space: nowrap;
+  font-weight: 500;
   color: var(--text-2);
 }
-.sc-stepper-step.is-now .sc-stepper-label {
+.sc-path-step.is-now .sc-path-label {
   color: var(--text);
 }
-.sc-stepper-sub {
-  font-size: 11.5px;
+.sc-path-step.is-next .sc-path-label {
   font-weight: 400;
+  color: var(--text-3);
+}
+.sc-path-sub {
+  font-size: var(--fs-small);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
@@ -2945,13 +3050,40 @@ a.ui-figure:hover {
   flex-direction: column;
   gap: 8px;
 }
+/* An agent's activity: one rail, a pin per event. */
 .ui-row.sc-activity {
   align-items: flex-start;
   padding-top: 10px;
   padding-bottom: 10px;
+  border-bottom: 0;
 }
 .ui-row.sc-activity .ui-row-icon {
+  position: relative;
+  z-index: 1;
   margin-top: 4px;
+}
+.ui-row.sc-activity .ui-dot {
+  box-shadow: 0 0 0 3px var(--surface);
+}
+/* The rail runs through every pin, from the first to the last (each pin's center 18 px down its row). */
+.ui-row.sc-activity::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--edge) + 7.5px);
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-strong);
+}
+.ui-row.sc-activity:not(.sc-activity + .sc-activity)::before {
+  top: 18px;
+}
+.ui-row.sc-activity:not(:has(+ .sc-activity))::before {
+  bottom: auto;
+  height: 18px;
+}
+.ui-row.sc-activity:not(.sc-activity + .sc-activity):not(:has(+ .sc-activity))::before {
+  display: none;
 }
 .ui-row.sc-activity .ui-row-text {
   flex-direction: column;
@@ -2996,6 +3128,40 @@ a.ui-figure:hover {
 }
 .sc-file-bar > .is-del {
   background: var(--critical);
+}
+/* Two sections side by side (Insights), one under the other below 1000 px. */
+.ui-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+.ui-pair > :nth-child(even) {
+  box-shadow: -1px 0 0 var(--line-soft);
+}
+/* A half is narrow: a row's title keeps its words, its grey line gives way. */
+.ui-pair :where(.ui-row-title) {
+  flex: none;
+}
+@media (max-width: 1000px) {
+  .ui-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ui-pair > :nth-child(even) {
+    box-shadow: none;
+  }
+}
+/* A coordinator's facts, three across on a desk. */
+.sc-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.sc-fact-grid .sc-fact-k {
+  width: 112px;
+}
+@media (max-width: 1000px) {
+  .sc-fact-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .ui-columns-side .sc-fact-k {
   width: 120px;
@@ -3154,22 +3320,29 @@ a.ui-figure:hover {
 }
 .tl-now {
   right: -14px;
-  color: var(--frontier);
+  color: var(--done);
 }
 .tl-grid {
   fill: rgba(255, 255, 255, 0.035);
 }
+/* Now: a lime line down every row, the edge the ships fly at. */
 .tl-nowline {
-  fill: rgba(126, 166, 255, 0.25);
+  fill: var(--done);
+  fill-opacity: 0.55;
 }
+/* The path flown: a thin trail, wide enough to hover. */
 .tl-phase {
-  fill-opacity: 0.22;
+  fill-opacity: 0.42;
+  stroke: transparent;
+  stroke-width: 8;
+  transition: fill-opacity var(--t-1) ease;
 }
 .tl-phase.is-current {
-  fill-opacity: 0.38;
+  fill-opacity: 1;
+  stroke-width: 0;
 }
 .tl-phase:hover {
-  fill-opacity: 0.55;
+  fill-opacity: 0.8;
 }
 .tl-report {
   fill: var(--text-2);
@@ -3181,11 +3354,15 @@ a.ui-figure:hover {
   stroke: var(--surface);
   stroke-width: 2;
 }
-.tl-cap.is-live {
-  animation: ui-breathe 2s infinite;
+.tl-ship {
+  filter: drop-shadow(0 0 4px color-mix(in oklab, var(--c) 80%, transparent));
+}
+.tl-ship.is-silent {
+  filter: none;
+  opacity: 0.7;
 }
 .tl-coord-line {
-  fill-opacity: 0.3;
+  fill-opacity: 0.6;
 }
 .ui-section-body.tl-legend {
   flex-direction: row;
@@ -3212,16 +3389,20 @@ a.ui-figure:hover {
   flex: none;
 }
 .tl-swatch.is-past {
-  width: 14px;
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(255, 255, 255, 0.1);
+  width: 16px;
+  height: 2px;
+  border-radius: 1px;
+  background: color-mix(in oklab, var(--frontier) 42%, transparent);
 }
 .tl-swatch.is-current {
-  width: 14px;
+  width: 16px;
   height: 8px;
-  border-radius: 3px;
-  background: rgba(126, 166, 255, 0.3);
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklab, var(--frontier) 18%, transparent),
+    color-mix(in oklab, var(--frontier) 55%, transparent)
+  );
 }
 .tl-swatch.is-pr {
   width: 6px;
@@ -3230,15 +3411,16 @@ a.ui-figure:hover {
   background: var(--text);
 }
 .tl-swatch.is-report {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: var(--text-2);
 }
 .tl-swatch.is-silence {
-  width: 14px;
+  width: 16px;
   height: 8px;
-  background: repeating-linear-gradient(135deg, rgba(255, 181, 71, 0.5) 0 2px, transparent 2px 5px);
+  border-radius: 4px;
+  background: repeating-linear-gradient(135deg, rgba(255, 181, 71, 0.5) 0 2px, transparent 2px 6px);
 }
 .tl-swatch.is-inbox {
   width: 14px;
@@ -3514,6 +3696,19 @@ a.ui-figure:hover {
 .vd-card.is-list {
   align-self: start;
 }
+/* The Validations page: one column of wide cards, read top to bottom. */
+.ui-cards.vd-list {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 980px;
+  gap: 14px;
+}
+.vd-list .vd-card.is-list {
+  padding: 20px;
+  gap: 12px;
+}
+.vd-list.is-decided .vd-card {
+  opacity: 0.86;
+}
 /* The shell keeps 720 px for its lists; the approval page alone is read on a phone, without the sidebar. */
 /* Under 720 px (a phone, or a laptop at 200% zoom, THE-891): the sidebar is
    a bar on top (home, organization, search, the four sections) and the page
@@ -3735,14 +3930,22 @@ a.ui-figure:hover {
     white-space: normal;
     overflow-wrap: anywhere;
   }
-  /* The steps keep their dots; only the current one keeps its label in sight. */
-  .sc-stepper-step:not(.is-now) .sc-stepper-label {
+  /* The path keeps its nodes; only the current step keeps its label in sight. */
+  .sc-path-step:not(.is-now) .sc-path-label,
+  .sc-path-step:not(.is-now) .sc-path-sub {
     position: absolute;
     width: 1px;
     height: 1px;
     overflow: hidden;
     clip: rect(0 0 0 0);
     white-space: nowrap;
+  }
+  .sc-path-step.is-now .sc-path-label {
+    overflow: visible;
+    font-size: var(--fs-small);
+  }
+  .sc-path-step {
+    min-height: 44px;
   }
   .ui-row:has(form) {
     flex-wrap: wrap;
@@ -3785,14 +3988,6 @@ a.ui-figure:hover {
 
 /* ------------------------------------------------------------------ insights (THE-893) */
 /* Small, honest charts: one hue per meaning, thin marks, recessive axes, the numbers in text beside them. */
-.ins-stat {
-  font-family: var(--font-mono);
-  font-size: 24px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
 .ui-section-body.ins-body {
   align-items: stretch;
   gap: 8px;
@@ -3806,16 +4001,38 @@ a.ui-figure:hover {
 .ins-chart {
   display: block;
   width: 100%;
-  height: 96px;
   overflow: visible;
+}
+.ins-chart {
+  height: 140px;
+}
+.ins-chart.is-line {
+  height: 110px;
 }
 .ins-axis {
   stroke: var(--line-strong);
   stroke-width: 1;
 }
+.ins-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+/* The period before, as a ghost behind each bar. */
+.ins-ghost {
+  stroke: rgba(255, 255, 255, 0.07);
+}
 .ins-bar {
   stroke: var(--frontier);
+  stroke-opacity: 0.85;
   transition: stroke 150ms var(--ease-out);
+}
+.ins-bar.is-today {
+  stroke: var(--done);
+  stroke-opacity: 1;
+}
+/* The median inside its band, up to the p90. */
+.ins-band {
+  fill: var(--frontier-dim);
 }
 .ins-bar.is-zero {
   stroke: var(--track);
@@ -3826,13 +4043,56 @@ a.ui-figure:hover {
 .ins-line {
   fill: none;
   stroke: var(--frontier);
-  stroke-width: 2;
+  stroke-width: 1.75;
   stroke-linejoin: round;
 }
 .ins-dot {
   stroke: var(--frontier);
-  stroke-width: 6;
+  stroke-width: 5;
   stroke-linecap: round;
+}
+.ins-key {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.ins-key > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ins-swatch {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 3px;
+}
+.ins-swatch.is-bar {
+  background: var(--frontier);
+}
+.ins-swatch.is-ghost {
+  background: rgba(255, 255, 255, 0.12);
+}
+.ins-swatch.is-band {
+  background: var(--frontier-dim);
+}
+/* Where time goes, in one bar. */
+.ui-section-body.ins-stack-body {
+  align-items: stretch;
+  padding-top: 18px;
+  padding-bottom: 6px;
+  border-bottom: 0;
+}
+.ins-stack {
+  display: flex;
+  gap: 2px;
+  height: 12px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ins-stack > i {
+  display: block;
+  min-width: 2px;
 }
 .ins-caption {
   display: flex;
@@ -3848,8 +4108,8 @@ a.ui-figure:hover {
 .ins-meter {
   display: block;
   width: 100%;
-  height: 6px;
-  border-radius: 3px;
+  height: 4px;
+  border-radius: 2px;
 }
 .ins-meter-track {
   fill: var(--track);
@@ -3891,22 +4151,9 @@ a.ui-figure:hover {
   font-family: var(--font-mono);
   color: var(--text);
 }
-.ins-summary {
-  color: var(--text-2);
-  text-decoration: none;
-}
-.ins-summary:hover {
-  color: var(--text);
-  text-decoration: underline;
-  text-decoration-color: var(--line-strong);
-  text-underline-offset: 3px;
-}
 .ins-table > summary:focus-visible {
   outline: 2px solid var(--frontier);
   outline-offset: 2px;
-}
-.ins-overview {
-  min-height: 1lh;
 }
 
 /* The timeline as a table (THE-891): the rows' type, a hairline under each session. */
@@ -3948,31 +4195,131 @@ a.ui-figure:hover {
 }
 
 /* ------------------------------------------------------------------ since you were away, activity (THE-894) */
-.ui-section-body.since > p {
-  line-height: 1.6;
+/* The absence on one strip, then its parts as links (THE-899). */
+.aw {
+  transition:
+    opacity var(--t-2) var(--ease-out),
+    translate var(--t-2) var(--ease-out);
 }
-.since-link {
-  color: var(--text);
-  text-decoration: underline;
-  text-decoration-color: var(--line-strong);
-  text-underline-offset: 3px;
-  transition: text-decoration-color var(--t-fast) var(--ease-out);
+.aw.is-leaving {
+  opacity: 0;
+  translate: 0 -4px;
 }
-.since-link:hover {
-  text-decoration-color: currentColor;
+.aw-all {
+  transition: color var(--t-1) ease;
 }
-.since-link.is-hot {
-  color: var(--accent);
+.aw-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px var(--edge);
 }
-.since-all {
+.aw-strip {
+  position: relative;
+  height: 40px;
+  margin: 0 6px;
+}
+.aw-strip > * {
+  position: absolute;
+}
+.aw-line {
+  left: 0;
+  right: 0;
+  top: 14px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--line), var(--line-strong));
+}
+.aw-ship {
+  top: 9px;
+  margin-left: -5px;
+  line-height: 0;
+  filter: drop-shadow(0 0 4px rgba(182, 241, 90, 0.7));
+}
+.aw-tick {
+  top: 8px;
+  width: 2px;
+  height: 13px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--frontier);
+}
+.aw-dot {
+  top: 10px;
+  right: 14px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow:
+    0 0 0 3px var(--surface),
+    0 0 10px var(--accent);
+}
+.aw-now {
+  right: 0;
+  top: 4px;
+  width: 1px;
+  height: 21px;
+  background: var(--done);
+  box-shadow: 0 0 6px rgba(182, 241, 90, 0.6);
+}
+.aw-t {
+  top: 26px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   color: var(--text-3);
   white-space: nowrap;
 }
-.since-all:hover {
-  color: var(--text-2);
+.aw-t.is-start {
+  left: 0;
 }
-.since-dismiss {
-  height: 24px;
+.aw-t.is-middle {
+  translate: -50% 0;
+}
+.aw-t.is-now {
+  right: 0;
+  color: var(--done);
+}
+.aw-parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.aw-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 4px 12px 4px 10px;
+  border-radius: var(--r-control);
+  background: var(--card);
+  box-shadow: var(--ring), var(--lit);
+  color: var(--text-2);
+  transition:
+    box-shadow var(--t-1) ease,
+    background-color var(--t-1) ease;
+}
+.aw-part:hover {
+  background: var(--panel-3);
+  box-shadow: var(--ring-hover), var(--lit);
+}
+.aw-part b {
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.aw-part.is-hot b {
+  color: var(--accent);
+}
+.aw-key {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 2px;
+}
+.aw-key.is-started {
+  background: var(--frontier);
+}
+.aw-key.is-stuck {
+  background: var(--active);
 }
 .act-filters .ui-input.act-ticket {
   width: 128px;
@@ -3989,10 +4336,33 @@ a.ui-figure:hover {
 .act-clear:hover {
   color: var(--text-2);
 }
+/* The log: one rail, the time on its left, a pin per event, one sentence each. */
 .act-list {
+  position: relative;
   margin: 0;
-  padding: 0;
+  padding: 4px 0 8px;
   list-style: none;
+}
+.act-list::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--edge) + 52px + 12px + 8px);
+  width: 1px;
+  background: var(--line);
+}
+.ui-row.act-row {
+  border-bottom: 0;
+}
+.act-row > .ui-row-time {
+  order: -1;
+  min-width: 52px;
+  width: 52px;
+  text-align: right;
+}
+.act-row > .ui-row-icon .ui-dot {
+  box-shadow: 0 0 0 3px var(--surface);
 }
 /* A long page stays cheap: rows off screen are not laid out (as THE-892's lists). */
 .act-list > li {
@@ -4007,23 +4377,41 @@ a.ui-figure:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The last visit: the newer rows above, a quiet accent line, the rest below. */
+/* The last visit: a blue line across the rail, the newer events above it. */
 .act-new {
-  margin: 0;
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px var(--edge);
-  font-size: 11.5px;
+  height: 36px;
+  margin: 0;
+  padding: 0 var(--edge) 0 calc(var(--edge) + 52px + 12px + 28px);
+  font-size: var(--fs-small);
   font-weight: 500;
-  color: var(--accent);
-  border-bottom: 1px solid var(--line-soft);
 }
-.act-new::after {
+.act-new::before {
   content: "";
-  flex: 1;
+  position: absolute;
+  left: var(--edge);
+  right: var(--edge);
+  top: 50%;
   height: 1px;
-  background: var(--accent-dim);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--frontier) 12%,
+    color-mix(in oklab, var(--frontier) 30%, transparent)
+  );
+}
+.act-new-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--frontier) 40%, transparent);
+  color: var(--frontier);
 }
 .ui-section-body.act-pages {
   flex-direction: row;
@@ -4114,8 +4502,7 @@ a.ui-figure:hover {
 }
 @media (prefers-reduced-motion: reduce) {
   .sh-switch,
-  .sh-switch::after,
-  .since-link {
+  .sh-switch::after {
     transition: none;
   }
 }
