@@ -37,12 +37,20 @@ const ratio = (a: Rgba, b: Rgba) => {
   return (hi + 0.05) / (lo + 0.05);
 };
 
-/** The opaque surfaces text sits on, and the fills drawn over the page and the sidebar (a tab bar, a field, the current entry). */
+/**
+ * Night watch's planes (THE-899): the sky (--bg), the deck (--surface), bands,
+ * instruments (--card, --panel-3) and wells (--sunken, --code); then the fills
+ * drawn over the sky, the deck and an instrument (a tab bar, a field, a stat
+ * chip, the current entry), and the menus' and toasts' glass over the sky.
+ */
 const SURFACES = ["bg", "surface", "card", "sunken", "code", "band", "panel-3"];
 const FILLS = ["hover", "fill", "fill-2"];
 const backgrounds = [
   ...SURFACES.map((s) => ({ name: s, rgb: color(s) })),
-  ...FILLS.flatMap((f) => ["bg", "surface"].map((s) => ({ name: `${f} over ${s}`, rgb: over(color(f), color(s)) }))),
+  ...FILLS.flatMap((f) =>
+    ["bg", "surface", "card"].map((s) => ({ name: `${f} over ${s}`, rgb: over(color(f), color(s)) })),
+  ),
+  ...["overlay", "overlay-glass"].map((o) => ({ name: `${o} over bg`, rgb: over(color(o), color("bg")) })),
 ];
 
 /** Every token text is written in. --raised (a selected tab, an avatar) takes --text and --text-2 only. */

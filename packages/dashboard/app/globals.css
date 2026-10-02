@@ -1,97 +1,141 @@
-/* Armada — fleet mission control. The v4 look (design/dashboard-v4): dark only,
-   Geist and Geist Mono. Every color, space, radius and motion is a token here;
-   the shared components (components/ui) and the shell use nothing else. */
+/* Armada — fleet mission control. "Night watch" (THE-899, design/dashboard-v5):
+   the dashboard is the night sky the landing flies in, seen from the bridge.
+   Dark only, Geist and Geist Mono. Every color, space, radius, depth and
+   motion is a token here; the shared components (components/ui), the page
+   kit (components/page.tsx) and the shell use nothing else. */
 :root {
   color-scheme: dark;
 
-  /* Surfaces, from the page down to code. */
-  --bg: #09090b;
-  --surface: #111113;
-  --card: #18181b;
-  --sunken: #0e0e10;
-  --code: #0c0c0e;
-  --band: #141416;
-  --raised: #2a2a2e;
-  --overlay: rgba(28, 28, 31, 0.92);
+  /* Planes: the sky (the page), the deck (the main panel, the one lit
+     surface), bands, instruments (cards, popovers), wells (fields, code). */
+  --bg: #060709;
+  --surface: #0c0d10;
+  --band: #101115;
+  --card: #14151a;
+  --panel-3: #1a1b21;
+  --raised: #202128;
+  --sunken: #08090b;
+  --code: #08090b;
+  --overlay: rgba(20, 21, 26, 0.94);
+  --overlay-glass: rgba(20, 21, 26, 0.86);
 
-  /* Text, four steps. WCAG 2.2 AA (THE-891, test/contrast.test.ts): every text
-     step reads at 4.5:1 at least on every surface below; --text-4 is for marks
+  /* Ink, four steps. WCAG 2.2 AA (THE-891, test/contrast.test.ts): every text
+     step reads at 4.5:1 at least on every surface above; --text-4 is for marks
      (a dot, a bar, a separator), never text, at 3:1. */
-  --text: #f0efec;
-  --text-2: #a1a1a6;
-  --text-3: #88888d;
+  --text: #f2f1ee;
+  --text-2: #b6b6bd;
+  --text-3: #8e8e97;
   --text-4: #6a6a6f;
 
-  /* Hairlines and fills over a surface. */
+  /* Hairlines and fills over a surface. Shadows draw depth, lines draw structure. */
   --line: rgba(255, 255, 255, 0.06);
-  --line-soft: rgba(255, 255, 255, 0.04);
-  --line-strong: rgba(255, 255, 255, 0.12);
-  --hover: rgba(255, 255, 255, 0.025);
+  --line-soft: rgba(255, 255, 255, 0.035);
+  --line-strong: rgba(255, 255, 255, 0.11);
+  --hover: rgba(255, 255, 255, 0.03);
   --fill: rgba(255, 255, 255, 0.05);
-  --fill-2: rgba(255, 255, 255, 0.07);
+  --fill-2: rgba(255, 255, 255, 0.08);
   --fill-3: rgba(255, 255, 255, 0.11);
-  --track: rgba(255, 255, 255, 0.08);
+  --track: rgba(255, 255, 255, 0.07);
 
-  /* States. */
+  /* One meaning per hue, always beside a word or a glyph: done and live
+     (lime), yours to decide (orange), silent or idle (amber), in flight
+     (blue), failing (red). */
   --done: #b6f15a;
-  --done-dim: rgba(182, 241, 90, 0.14);
-  --active: #ffb547;
-  --active-dim: rgba(255, 181, 71, 0.14);
-  --frontier: #7ea6ff;
-  --frontier-dim: rgba(126, 166, 255, 0.15);
-  --critical: #ff6b5b;
-  --critical-dim: rgba(255, 107, 91, 0.14);
+  --done-dim: rgba(182, 241, 90, 0.13);
   --accent: #ff8a4c;
-  --accent-dim: rgba(255, 138, 76, 0.12);
+  --accent-dim: rgba(255, 138, 76, 0.13);
+  --active: #ffb547;
+  --active-dim: rgba(255, 181, 71, 0.13);
+  --frontier: #7ea6ff;
+  --frontier-dim: rgba(126, 166, 255, 0.14);
+  --critical: #ff6b5b;
+  --critical-dim: rgba(255, 107, 91, 0.13);
 
-  /* Harnesses. */
+  /* Harnesses: dots only. */
   --h-conductor: #bb87fc;
-  --h-claude-code: #d97757;
-  --h-codex: #10a37f;
+  --h-claude-code: #e0835f;
+  --h-codex: #19b48c;
   --h-other: #6e6e73;
 
-  /* Space, radius, type. */
+  /* The horizon: the deck's top light takes the fleet's state (the shell's
+     data-horizon, lib/horizon.ts). */
+  --horizon: var(--frontier);
+
+  /* Type: five sizes. */
+  --fs-meta: 11px;
+  --fs-small: 12px;
+  --fs-body: 13px;
+  --fs-display: 28px;
+  --fs-figure: 32px;
+  /* The full font first: its unicode-range leaves out every character of the
+     preloaded Latin cut, which stays the first available font (THE-889). */
+  --font-sans: var(--font-geist-sans-full), var(--font-geist-sans), "Geist", ui-sans-serif, sans-serif;
+  --font-mono: var(--font-geist-mono-full), var(--font-geist-mono), "Geist Mono", ui-monospace, monospace;
+
+  /* Space and radius: concentric (an outer radius is the inner one plus its padding). */
   --s-1: 4px;
   --s-2: 8px;
   --s-3: 12px;
   --s-4: 16px;
   --s-5: 20px;
-  --s-6: 28px;
+  --s-6: 24px;
   --s-7: 32px;
-  --s-8: 44px;
+  --s-8: 48px;
+  --edge: 24px;
   --r-xs: 4px;
+  --r-chip: 5px;
   --r-sm: 6px;
   --r: 8px;
+  --r-control: 8px;
   --r-btn: 9px;
+  --r-seg: 10px;
   --r-md: 12px;
+  --r-card: 12px;
   --r-lg: 14px;
-  /* The full font first: its unicode-range leaves out every character of the
-     preloaded Latin cut, which stays the first available font (THE-889). */
-  --font-sans: var(--font-geist-sans-full), var(--font-geist-sans), "Geist", ui-sans-serif, sans-serif;
-  --font-mono: var(--font-geist-mono-full), var(--font-geist-mono), "Geist Mono", ui-monospace, monospace;
-  --sidebar: 216px;
+  --r-deck: 16px;
+  --sidebar: 228px;
   --rail: 56px;
+  --bar: 52px;
 
-  /* Motion. */
+  /* Depth: a ring instead of a border, a lit top edge, a long soft drop. */
+  --ring: 0 0 0 1px rgba(255, 255, 255, 0.07);
+  --ring-hover: 0 0 0 1px rgba(255, 255, 255, 0.12);
+  --lit: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --drop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px -12px rgba(0, 0, 0, 0.6);
+  --deck-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 30px 80px -30px rgba(0, 0, 0, 0.9);
+  --pop-shadow: var(--ring), var(--lit), 0 24px 60px -16px rgba(0, 0, 0, 0.85);
+  /* Shadows as borders (better-ui, dark): one white ring, brighter on hover. */
+  --shadow-border: var(--ring);
+  --shadow-border-hover: var(--ring-hover);
+
+  /* Motion: four durations, three curves, transform and opacity only.
+     --t-0: keyboard (j/k, Enter, Escape, ⌘K) never animates. */
+  --t-0: 0ms;
+  --t-1: 150ms;
+  --t-2: 220ms;
+  --t-3: 320ms;
+  --t-fast: var(--t-1);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-icon: cubic-bezier(0.2, 0, 0, 1);
   --pulse: ui-pulse 2s infinite;
   --livepulse: ui-livepulse 2.4s infinite;
   --breathe: ui-breathe 1.6s infinite;
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
-  /* Interactions (better-ui, emil-design-eng): a strong ease-out, 150 ms for a hover or a press. */
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --t-fast: 150ms;
-  /* Shadows as borders for a raised surface (better-ui, dark): one white ring, brighter on hover. */
-  --shadow-border: 0 0 0 1px oklch(1 0 0 / 0.08);
-  --shadow-border-hover: 0 0 0 1px oklch(1 0 0 / 0.13);
 
-  /* The names today's Fleet view and the account pages use, on the v4 values. */
+  /* Density: Compact by default; the main panel's data-density="airy" widens. */
+  --row: 36px;
+  --band-h: 34px;
+  --row-title: 13px;
+
+  /* The names today's Fleet view and the account pages use, on the v5 values. */
   --panel: var(--surface);
   --panel-2: var(--card);
-  --panel-3: #1f1f23;
   --line-2: rgba(255, 255, 255, 0.1);
   --muted: var(--text-2);
   --faint: var(--text-3);
-  --shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px -18px rgba(0, 0, 0, 0.8);
+  --shadow: var(--lit), 0 12px 32px -18px rgba(0, 0, 0, 0.8);
 }
 
 @keyframes ui-pulse {
@@ -134,7 +178,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
@@ -332,17 +376,20 @@ button {
   gap: 7px;
   height: 30px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: var(--r-control);
   border: 0;
-  box-shadow: var(--shadow-border);
-  background: var(--panel);
-  font-size: 12.5px;
+  box-shadow: var(--ring), var(--lit);
+  background: var(--fill);
+  font-size: var(--fs-body);
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
   transition-property: scale, background-color, box-shadow, color;
-  transition-duration: var(--t-fast);
+  transition-duration: var(--t-1);
   transition-timing-function: var(--ease-out);
+}
+.btn:hover:not(:disabled) {
+  background: var(--fill-2);
 }
 .btn:active:not(:disabled) {
   scale: 0.96;
@@ -353,10 +400,11 @@ button {
 }
 .btn.is-soft {
   color: var(--text);
-  background: var(--panel-2);
+  background: var(--card);
 }
-.btn.is-soft:hover {
-  box-shadow: var(--shadow-border-hover);
+.btn.is-soft:hover:not(:disabled) {
+  background: var(--panel-3);
+  box-shadow: var(--ring-hover), var(--lit);
 }
 .btn.is-ghost {
   box-shadow: none;
@@ -367,13 +415,14 @@ button {
   color: var(--text);
 }
 .btn.is-primary {
-  box-shadow: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.5);
   background: var(--text);
   color: var(--bg);
 }
 .btn.is-primary:hover:not(:disabled) {
-  background: var(--done);
-  color: #0a0b0d;
+  background: #fff;
 }
 .kbd {
   font-family: var(--font-mono);
@@ -902,16 +951,45 @@ a.sh-item:hover {
 .sh-live.is-failed {
   color: var(--critical);
 }
+/* The deck: the one lit surface, its top edge lit, the horizon behind its top. */
 .sh-main {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-radius: var(--r-md);
+  border-radius: var(--r-deck);
   background: var(--surface);
-  border: 1px solid var(--line);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  box-shadow: var(--deck-shadow);
   overflow: hidden;
+  isolation: isolate;
+}
+.sh-main[data-density="airy"] {
+  --row: 48px;
+  --band-h: 40px;
+  --row-title: 14px;
+}
+/* The lit edge: a hairline brightest above the glow, in the horizon's hue. */
+.sh-main::after {
+  content: "";
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  left: 18%;
+  right: 18%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--horizon) 55%, white 10%), transparent);
+  opacity: 0.55;
+  pointer-events: none;
+}
+.sh-main[data-horizon="yours"] {
+  --horizon: var(--accent);
+}
+.sh-main[data-horizon="fail"] {
+  --horizon: var(--critical);
+}
+.sh-main[data-horizon="clear"] {
+  --horizon: var(--done);
 }
 .sh-crumbs {
   display: flex;
@@ -956,9 +1034,25 @@ a.sh-item:hover {
   outline: none;
 }
 .sh-scroll {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  isolation: isolate;
+}
+/* The horizon: a wide, low glow from the deck's top, in the fleet's state;
+   it scrolls away with the page's status sentence it sits beside. */
+.sh-scroll::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -230px;
+  left: 6%;
+  right: 6%;
+  height: 400px;
+  background: radial-gradient(50% 50% at 50% 50%, var(--horizon), transparent 72%);
+  opacity: 0.2;
+  pointer-events: none;
 }
 /* Under 1180 px the sidebar is an icon rail, as in the mockup. */
 @media (max-width: 1179px) {
@@ -1368,9 +1462,12 @@ a.sh-item:hover {
 }
 .ui-tag {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 11.5px;
   padding: 1px 7px;
-  border-radius: var(--r-sm);
+  border-radius: var(--r-chip);
   background: var(--fill);
   color: var(--text-2);
   white-space: nowrap;
@@ -1404,51 +1501,61 @@ a.sh-item:hover {
   padding: 1px 5px;
   border-radius: var(--r-xs);
   background: var(--fill);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.06);
   color: inherit;
 }
 /* A key cap's fill darkens the panel's grey under it: its letters take the next step up. */
 .sh-palette .ui-kbd {
   color: var(--text-2);
 }
+/* A segmented control: tabs in a well, the chosen one lifted out of it. */
 .ui-tabs {
   display: inline-flex;
   flex-wrap: wrap;
   align-self: flex-start;
-  padding: 2px;
-  border-radius: var(--r-btn);
-  background: var(--fill);
+  gap: 2px;
+  padding: 3px;
+  border-radius: var(--r-seg);
+  background: var(--sunken);
+  box-shadow: var(--ring);
 }
 .ui-tab {
   display: flex;
   align-items: center;
   gap: 7px;
   border: 0;
-  height: 26px;
-  padding: 0 11px;
+  height: 24px;
+  padding: 0 10px;
+  /* Concentric: the well's 10 px less its 3 px padding. */
   border-radius: 7px;
   background: transparent;
-  font-size: 12.5px;
+  font-size: var(--fs-small);
+  font-weight: 500;
   color: var(--text-2);
   cursor: pointer;
   white-space: nowrap;
-  transition-property: color, background-color;
-  transition-duration: var(--t-fast);
-  transition-timing-function: var(--ease-out);
+  transition-property: color, background-color, box-shadow;
+  transition-duration: var(--t-1);
+  transition-timing-function: ease;
 }
 .ui-tabs.is-md .ui-tab {
-  height: 28px;
-  padding: 0 13px;
-  font-weight: 500;
+  height: 26px;
+  padding: 0 11px;
 }
 .ui-tab:hover {
   color: var(--text);
 }
 .ui-tab[aria-selected="true"] {
-  background: var(--raised);
+  background: var(--panel-3);
   color: var(--text);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  box-shadow:
+    var(--ring),
+    var(--lit),
+    0 1px 2px rgba(0, 0, 0, 0.5);
 }
 .ui-tab-count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   color: var(--text-3);
   font-weight: 400;
 }
@@ -1506,13 +1613,16 @@ a.sh-item:hover {
    page of the shell uses. Header bar 48 px, toolbar, section bands of 36 px,
    rows of 40 px (48 px airy), each with its hairline, all on a 20 px edge. */
 .ui-header {
+  position: relative;
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 48px;
+  height: var(--bar);
   flex: none;
-  padding: 0 20px;
-  border-bottom: 1px solid var(--line);
+  padding: 0 20px 0 var(--edge);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line-soft);
 }
 .ui-header-actions {
   display: flex;
@@ -1539,10 +1649,15 @@ a.sh-item:hover {
 .ui-toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px 10px;
   flex-wrap: wrap;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--line);
+  padding: 10px var(--edge);
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.ui-toolbar + .ui-section > .ui-section-h,
+.ui-toolbar + .ui-toolbar {
+  border-top: 0;
 }
 .ui-toolbar-end {
   margin-left: auto;
@@ -1555,6 +1670,7 @@ a.sh-item:hover {
   flex-direction: column;
   min-width: 0;
 }
+/* A band: lit from above, sticky under the header bar. */
 .ui-section-h {
   position: sticky;
   top: 0;
@@ -1562,11 +1678,15 @@ a.sh-item:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 36px;
+  height: var(--band-h);
   flex: none;
-  padding: 0 20px;
-  background: var(--band);
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 0 var(--edge);
+  background: linear-gradient(180deg, var(--band), color-mix(in oklab, var(--band) 60%, var(--surface)));
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+}
+.ui-section + .ui-section > .ui-section-h {
+  border-top-color: transparent;
 }
 .ui-section-icon {
   display: inline-flex;
@@ -1574,15 +1694,16 @@ a.sh-item:hover {
 }
 .ui-section-label {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
+  letter-spacing: -0.005em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .ui-count {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
@@ -1592,16 +1713,19 @@ a.sh-item:hover {
   align-items: center;
   gap: 12px;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-3);
   white-space: nowrap;
+}
+.ui-section-side a:hover {
+  color: var(--text);
 }
 .ui-section-body {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 10px;
-  padding: 14px 20px;
+  padding: 14px var(--edge);
   border-bottom: 1px solid var(--line-soft);
   color: var(--text-2);
 }
@@ -1620,7 +1744,7 @@ a.sh-item:hover {
   min-width: 0;
 }
 .ui-columns-side {
-  border-left: 1px solid var(--line);
+  border-left: 1px solid var(--line-soft);
 }
 @media (max-width: 900px) {
   .ui-columns {
@@ -1630,43 +1754,57 @@ a.sh-item:hover {
     border-left: 0;
   }
 }
+/* A row: a hairline under it; hover and selection are fills, nothing moves. */
 .ui-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 40px;
-  padding: 0 20px;
+  min-height: var(--row);
+  padding: 0 var(--edge);
   border-bottom: 1px solid var(--line-soft);
   color: var(--text);
   outline: none;
+  transition: background-color var(--t-1) ease;
 }
 .ui-row.is-static {
   padding-top: 5px;
   padding-bottom: 5px;
 }
-a.ui-row:hover {
-  background: rgba(255, 255, 255, 0.03);
+@media (hover: hover) and (pointer: fine) {
+  a.ui-row:hover {
+    background: var(--hover);
+  }
 }
 .ui-row[data-selected],
 .ui-row:focus-visible {
-  background: rgba(255, 255, 255, 0.045);
-  box-shadow: inset 2px 0 0 var(--frontier);
+  background: var(--fill);
   border-radius: 0;
+  transition-duration: var(--t-0);
 }
-.sh-main[data-density="airy"] .ui-row:not(.is-airy) {
-  min-height: 48px;
+/* The selected row's mark: the ink, on its left edge. */
+.ui-row[data-selected]::after,
+.ui-row:focus-visible::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--text);
 }
 .ui-row-icon {
-  width: 13px;
+  width: 16px;
   flex: none;
   display: grid;
   place-items: center;
 }
 .ui-row-id {
-  width: 58px;
+  width: 60px;
   flex: none;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
   white-space: nowrap;
   overflow: hidden;
@@ -1682,6 +1820,7 @@ a.ui-row:hover {
   overflow: hidden;
 }
 .ui-row-title {
+  font-size: var(--row-title);
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -1698,7 +1837,7 @@ a.ui-row:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-3);
   white-space: nowrap;
 }
@@ -1712,7 +1851,7 @@ a.ui-row:hover {
   min-width: 46px;
   text-align: right;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -1742,41 +1881,39 @@ a.ui-row:hover {
 }
 .ui-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  align-items: start;
   gap: 12px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--line-soft);
+  padding: 16px var(--edge) 20px;
 }
 .ui-cards.is-wide {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr));
 }
+/* An instrument: a ring, a lit top edge and a long, soft drop; it floats on the deck. */
 .ui-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  padding: 15px 21px;
-  border-radius: var(--r-lg);
+  padding: 16px;
+  border-radius: var(--r-card);
   background: var(--card);
-  box-shadow:
-    var(--shadow-border),
-    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  box-shadow: var(--ring), var(--lit), var(--drop);
   color: var(--text);
 }
 .ui-card.is-link {
-  transition: box-shadow var(--t-fast) var(--ease-out);
+  transition: box-shadow var(--t-1) ease;
 }
 .ui-card.is-link:hover {
-  box-shadow:
-    var(--shadow-border-hover),
-    0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  box-shadow: var(--ring-hover), var(--lit), var(--drop);
 }
 .ui-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-small);
 }
 .ui-card-kind {
   font-weight: 500;
@@ -1785,67 +1922,73 @@ a.ui-row:hover {
 .ui-card-side {
   margin-left: auto;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: var(--fs-meta);
   color: var(--text-3);
   white-space: nowrap;
 }
 .ui-card-title {
-  font-weight: 500;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
 }
 .ui-card-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px 10px;
+  gap: 4px 8px;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-3);
 }
 .ui-button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 11px;
+  justify-content: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 12px;
   border: 0;
-  border-radius: var(--r);
-  background: var(--fill-2);
+  border-radius: var(--r-control);
+  background: var(--fill);
+  box-shadow: var(--ring), var(--lit);
   color: var(--text);
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition-property: scale, background-color, opacity;
-  transition-duration: var(--t-fast);
+  transition-property: scale, background-color, box-shadow, opacity;
+  transition-duration: var(--t-1);
   transition-timing-function: var(--ease-out);
 }
 .ui-button:active:not(:disabled) {
   scale: 0.96;
 }
 .ui-button:hover {
-  background: var(--fill-3);
+  background: var(--fill-2);
 }
 .ui-button.is-disabled {
   color: var(--text-3);
   cursor: default;
 }
 .ui-button.is-disabled:hover {
-  background: var(--fill-2);
+  background: var(--fill);
 }
 .ui-button.is-primary {
   background: var(--text);
   color: var(--bg);
-  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.5);
 }
 .ui-button.is-primary:hover {
   background: #fff;
 }
 .ui-button.is-danger {
   background: transparent;
+  box-shadow: none;
   color: var(--critical);
 }
 .ui-button.is-danger:hover {
@@ -1855,23 +1998,30 @@ a.ui-row:hover {
   opacity: 0.55;
   cursor: default;
 }
+/* A well: sunk under the deck, a ring, and a blue halo when focused. */
 .ui-input {
-  height: 28px;
+  height: 30px;
   min-width: 0;
   padding: 0 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r);
-  background: rgba(0, 0, 0, 0.25);
+  border: 0;
+  border-radius: var(--r-control);
+  background: var(--sunken);
+  box-shadow: var(--ring);
   color: var(--text);
   font: inherit;
-  font-size: 12.5px;
+  font-size: var(--fs-body);
   outline: none;
+  transition: box-shadow var(--t-1) ease;
 }
 .ui-input::placeholder {
   color: var(--text-3);
 }
-.ui-input:focus {
-  border-color: var(--frontier);
+.ui-input:focus,
+.ui-input:focus-visible {
+  outline: 2px solid transparent;
+  box-shadow:
+    0 0 0 1px var(--frontier),
+    0 0 0 4px var(--frontier-dim);
 }
 .ui-select {
   padding-right: 6px;
@@ -1887,6 +2037,11 @@ a.ui-row:hover {
 }
 .ui-form .ui-input:not(.ui-select) {
   width: 220px;
+}
+.ui-input[aria-invalid="true"] {
+  box-shadow:
+    0 0 0 1px var(--critical),
+    0 0 0 4px var(--critical-dim);
 }
 .ui-form.is-grow {
   flex: 1;
@@ -1908,7 +2063,8 @@ a.ui-row:hover {
   display: block;
   padding: 8px 10px;
   border-radius: var(--r);
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--sunken);
+  box-shadow: var(--ring);
   font-size: 12px;
   color: var(--text);
   overflow-wrap: anywhere;
@@ -2103,7 +2259,7 @@ a.ui-row:hover {
   flex-wrap: wrap;
   align-items: flex-start;
   gap: 12px 28px;
-  padding: 18px 20px;
+  padding: 18px var(--edge);
 }
 .sc-agent.is-airy .ui-status {
   margin-top: 2px;
@@ -2586,14 +2742,14 @@ a.ui-row:hover {
   width: var(--tl-label);
   gap: 10px;
   min-width: 0;
-  padding: 0 12px 0 20px;
+  padding: 0 12px 0 var(--edge);
   font-size: 12.5px;
 }
 .tl-side {
   right: 0;
   width: var(--tl-side);
   justify-content: flex-end;
-  padding: 0 20px 0 12px;
+  padding: 0 var(--edge) 0 12px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
@@ -2699,7 +2855,7 @@ a.ui-row:hover {
   flex-direction: row;
   flex-wrap: wrap;
   gap: 16px;
-  padding: 10px 20px;
+  padding: 10px var(--edge);
   font-size: 11.5px;
   color: var(--text-3);
 }
@@ -3017,7 +3173,7 @@ a.ui-row:hover {
 /* The approval link, opened from a phone as often as a desk: one column, readable at 375 px. */
 .vd-approve {
   max-width: 760px;
-  padding: 16px 20px 32px;
+  padding: 16px var(--edge) 32px;
 }
 .vd-card.is-list {
   align-self: start;
@@ -3309,7 +3465,7 @@ a.ui-row:hover {
   color: var(--text-2);
 }
 .tl-cell:first-child {
-  padding-left: 20px;
+  padding-left: var(--edge);
 }
 .tl-cell.is-head {
   font-size: 11.5px;
@@ -3395,7 +3551,7 @@ a.ui-row:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 8px 20px;
+  padding: 8px var(--edge);
   font-size: 11.5px;
   font-weight: 500;
   color: var(--accent);
@@ -3507,7 +3663,7 @@ a.ui-row:hover {
    a row had once drawn. Last, over every other row and card rule. */
 .ui-section.is-long > .ui-row {
   content-visibility: auto;
-  contain-intrinsic-size: auto 40px;
+  contain-intrinsic-size: auto 36px;
 }
 .sh-main[data-density="airy"] .ui-section.is-long > .ui-row {
   contain-intrinsic-size: auto 48px;
