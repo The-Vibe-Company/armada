@@ -3261,6 +3261,10 @@ a.ui-figure:hover {
   align-items: center;
   gap: 12px;
 }
+/* Its time moves each minute: digits of one width, so nothing beside it moves (CLS 0). */
+.ov-group-state {
+  font-variant-numeric: tabular-nums;
+}
 @media (max-width: 720px) {
   .ov-group-side .ui-harness {
     display: none;

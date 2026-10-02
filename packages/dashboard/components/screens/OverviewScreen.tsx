@@ -202,7 +202,7 @@ function CoordinatorSection({
                   : t.shell.local(HARNESS_NAME[h])}
             </span>
           )}
-          <span style={{ color: COORDINATOR_COLOR[c.state] }}>
+          <span className="ov-group-state" style={{ color: COORDINATOR_COLOR[c.state] }}>
             {c.state === "active"
               ? t.shell.coordinatorActive(t.ago(ms))
               : c.state === "idle"
