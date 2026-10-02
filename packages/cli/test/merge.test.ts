@@ -277,6 +277,7 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
     "fleet/coordinator",
     "fleet/lease/acquire",
     "fleet/validations",
+    "fleet/inbox/ticket",
     "fleet/lease/renew",
     "fleet/merge",
     "fleet/lease/release",

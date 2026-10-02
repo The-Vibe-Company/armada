@@ -521,6 +521,73 @@ describe("the fleet through the Armada API", () => {
     ]);
   });
 
+  test("the inbox reconciles the stored snapshot before checking its ETag, without external reads", async () => {
+    const coordinator = fleetOf({ kind: "api-key", key: apiKey });
+    const store = fleetStore(client);
+    await store.putHandBack({
+      project: WIDGETS.slug,
+      ticket: "WID-101",
+      author: null,
+      body: "Agent status: ready-to-merge — PR #91, head abc",
+      at: now(),
+    });
+    await store.putHandBack({ project: WIDGETS.slug, ticket: "WID-102", author: null, body: "PR #92", at: now() });
+    const stale = (await coordinator.ticketItems("WID-101"))[0]?.id;
+    if (!stale) throw new Error("missing hand-back");
+    const before = await inboxOf(coordinator);
+    expect(before.items.some((i) => i.id === stale)).toBe(true);
+    const snapshots = dbSnapshots(client, memorySnapshots());
+    const lease = await snapshots.claim(WIDGETS.slug, now(), 60_000);
+    if (!lease) throw new Error("missing snapshot lease");
+    await snapshots.save(
+      WIDGETS.slug,
+      {
+        startedAt: now(),
+        config: parseConfig(configTemplate(WIDGETS)),
+        configWarning: null,
+        sources: {
+          program: {
+            rootId: WIDGETS.programRoot,
+            fetchedAt: now().toISOString(),
+            issues: [issue("WID-1"), issue("WID-101")],
+            comments: [],
+            warnings: [],
+          },
+          forge: {
+            repo: WIDGETS.repository,
+            fetchedAt: now().toISOString(),
+            prs: [
+              {
+                number: 91,
+                repo: WIDGETS.repository,
+                url: "https://github.com/acme/widgets/pull/91",
+                title: "Synthetic merge",
+                state: "merged",
+              },
+            ],
+            warnings: [],
+          },
+          forgeError: null,
+        },
+      },
+      lease,
+      { full: true, now: now() },
+    );
+    const healed = await coordinator.inbox({ ...read, etag: before.etag });
+    expect(healed).not.toBeNull();
+    expect(healed?.items.some((i) => i.id === stale)).toBe(false);
+    expect(healed?.items.some((i) => i.ticket === "WID-102")).toBe(true);
+    expect(await coordinator.inboxItem(stale)).toMatchObject({
+      resolution: "resolved: PR merged",
+      resolvedAt: now().toISOString(),
+    });
+    expect(await coordinator.inbox({ ...read, etag: healed?.etag ?? null })).toBeNull();
+    await coordinator.resolve({
+      id: (await coordinator.ticketItems("WID-102"))[0]?.id ?? 0,
+      resolution: "test complete",
+    });
+  });
+
   test("two coordinators taking the merge lock at once: one gets it, the other waits for it", async () => {
     const a = fleetOf({ kind: "api-key", key: apiKey });
     const b = fleetOf({ kind: "session", token: ownerToken });
