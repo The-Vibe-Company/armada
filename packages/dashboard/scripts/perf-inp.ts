@@ -11,8 +11,10 @@ const LONG_AGENT = "WID-400";
 /** A session the owner has to validate (a merge to approve), in every demo world. */
 const TO_VALIDATE = "WID-18";
 const RUNS = 5;
+/** How many sessions to validate the decision is measured on: each records its decision, so each runs once. */
+const DECISIONS = 3;
 /** The pages it opens; an agent's tabs are in its "Details", which `?tab=` opens (THE-916). */
-export const INP_PAGES = ["/", `/agents/${LONG_AGENT}?tab=activity`, `/agents/${TO_VALIDATE}`];
+export const INP_PAGES = ["/", `/agents/${LONG_AGENT}?tab=activity`, `/agents/${TO_VALIDATE}`, "/agents/GAD-9"];
 
 declare global {
   interface Window {
@@ -59,6 +61,21 @@ async function measure(page: Page, act: () => Promise<void>): Promise<number> {
     (t) => Math.max(0, ...(window.__interactions ?? []).filter((i) => i.start >= t).map((i) => i.duration)),
     since,
   );
+}
+
+/** The sessions in flight the owner has a validation open on, the demo's merge first. */
+async function toValidate(base: string, cookie: string): Promise<string[]> {
+  const res = await fetch(`${base}/api/fleet`, { headers: { cookie } });
+  if (!res.ok) return [TO_VALIDATE];
+  const fleet = (await res.json()) as {
+    rows: { id: string }[];
+    validations?: { ticket: string; decision: unknown }[];
+  };
+  const open = (fleet.validations ?? [])
+    .filter((v) => !v.decision && fleet.rows.some((r) => r.id === v.ticket))
+    .map((v) => v.ticket);
+  const tickets = [...new Set([TO_VALIDATE, ...open].filter((t) => open.includes(t)))];
+  return tickets.length ? tickets.slice(0, DECISIONS) : [TO_VALIDATE];
 }
 
 async function typical(page: Page, act: () => Promise<void>, reset?: () => Promise<void>): Promise<number> {
@@ -145,15 +162,21 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     });
     await agent.context().close();
 
-    // Once: the answer is recorded, and the card then says it was sent.
-    const session = await open(browser, `${base}/agents/${TO_VALIDATE}`, cookie, slowdown);
+    // A decision is recorded, so each session to validate is decided once: the median of a few of them.
+    const decided: number[] = [];
+    for (const ticket of await toValidate(base, cookie)) {
+      const session = await open(browser, `${base}/agents/${ticket}`, cookie, slowdown);
+      decided.push(
+        await measure(session, async () => {
+          await session.locator('button[name="choice"], button[name="action"][value="approve"]').first().click();
+        }),
+      );
+      await session.context().close();
+    }
     out.push({
-      name: "Approve a validation (session to validate)",
-      ms: await measure(session, async () => {
-        await session.locator('button[name="choice"], button[name="action"][value="approve"]').first().click();
-      }),
+      name: `Decide a validation (median of ${decided.length} sessions to validate)`,
+      ms: decided.sort((a, b) => a - b)[Math.floor(decided.length / 2)] ?? 0,
     });
-    await session.context().close();
     return out;
   } finally {
     await browser.close();

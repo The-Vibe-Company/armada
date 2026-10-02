@@ -14,14 +14,14 @@ They live in `packages/dashboard/perf/budgets.json`.
 | Cumulative Layout Shift | 0, as Lighthouse shows it (three decimals) | the same pages |
 | Largest Contentful Paint | under 2.5 s on mobile | the same pages |
 | First-load JS per route, gzipped | its baseline plus 5% | every route of `next build` |
-| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on the overview (`/`, 250 rows), filter the agents by harness, switch an agent's tab in its Details (both ways, on 350 activity rows), approve a validation on a session to validate (`/agents/WID-18`) |
+| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on the overview (`/`, 250 rows), filter the agents by harness, switch an agent's tab in its Details (both ways, on 350 activity rows), decide a validation on a session to validate (median of the demo's three: `/agents/WID-18`, `GAD-9`, `THE-862`) |
 
 How they are measured:
 
 - **Lighthouse 13**, three runs per page on mobile (the median counts) and one on desktop, with DevTools' own throttling: a slow 4G network and the CPU 4× slower, Lighthouse's and PageSpeed Insights' standard, on any machine. Lighthouse's default simulation estimates LCP from every script requested before the first paint: the pages render on the server, and that estimate read 2.1 to 2.9 s for text painted at the first paint (1.6 to 1.9 s measured). The pages poll every 5 s, so Lighthouse stops waiting for a quiet network after 15 s.
 - **The margin.** Lighthouse's own guidance scales the slowdown with the machine (4× for a benchmark index of 1500 to 2000); GitHub's runners and a recent laptop score about 2500, which would mean 5×. At 5× (`ARMADA_PERF_CPU=5`), on 1 October 2026, mobile performance read 95 to 97 on `/`, `/agents`, `/agents/WID-12`, `/projects` and `/insights`, but 94 on `/landing` (the hero's canvas and the framework's start-up), 94 on `/validations` and 93 on `/activity` (hydration): those three have the least room, and THE-899 revisits the last two.
 - **First-load JS** comes from `next build`'s `.next/diagnostics/route-bundle-stats.json` (Turbopack does not print sizes): each route's chunks, gzipped and summed.
-- **Interactions** run in Chrome through Playwright, with the CPU 4× slower. The Event Timing API gives each one's longest event, as INP counts it. Each runs five times and the median counts, so one run that meets a poll's re-render or a garbage collection does not decide; answering a decision runs once, since it records the answer. A keyup is not counted: one that changes nothing on screen gets no frame of its own, and headless Chrome reports it when something else draws next, up to a second later.
+- **Interactions** run in Chrome through Playwright, with the CPU 4× slower. The Event Timing API gives each one's longest event, as INP counts it. Each runs five times and the median counts, so one run that meets a poll's re-render or a garbage collection does not decide; deciding a validation records the decision, so it runs once on each session to validate (three in the demo world) and their median counts. A keyup is not counted: one that changes nothing on screen gets no frame of its own, and headless Chrome reports it when something else draws next, up to a second later.
 
 ## Running them locally
 
