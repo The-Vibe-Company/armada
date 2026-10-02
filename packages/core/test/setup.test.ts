@@ -4,6 +4,7 @@ import {
   type Check,
   checkRepository,
   planSetup,
+  planSkills,
   type RepoView,
   SetupError,
   type SetupPlan,
@@ -48,6 +49,29 @@ async function setUpRepo(extra: Record<string, string> = {}) {
 }
 
 describe("repository checks", () => {
+  test("skills update vendors nested dependencies, detects their drift and leaves project settings alone", async () => {
+    const repo = memoryRepo({
+      ".claude/settings.json": "{ deliberately untouched",
+      ".conductor/settings.toml": "custom settings",
+    });
+    repo.apply(await planSkills(repo.view, VERSION));
+    for (const name of ["ship-pr-dev", "review-code-dev", "capture-learning-tools"])
+      expect(repo.files.has(`.agents/skills/${name}/companion.json`)).toBe(true);
+    const script = ".agents/skills/review-code-dev/scripts/ocr.py";
+    expect(repo.files.get(script)).toContain("CHECKSUMS");
+    expect(repo.files.get(".agents/skills/review-code-dev/LICENSE")).toContain("Apache License");
+    expect(repo.files.get(".agents/skills/ship-pr-dev/LICENSE")).toContain("MIT License");
+    repo.files.set(script, "changed nested file");
+    expect((await skillsBehind(repo.view))?.differing).toEqual(["review-code-dev"]);
+    const repair = await planSkills(repo.view, VERSION);
+    expect(repair.updated).toEqual(["review-code-dev"]);
+    repo.apply(repair);
+    expect(await skillsBehind(repo.view)).toBeNull();
+    expect(repo.files.get(".claude/settings.json")).toBe("{ deliberately untouched");
+    expect(repo.files.get(".conductor/settings.toml")).toBe("custom settings");
+    expect(repo.files.has("armada.toml")).toBe(false);
+    expect((await planSkills(repo.view, VERSION)).writes).toEqual([]);
+  });
   test("an empty repository gets one error per missing piece, each with its fix", async () => {
     const checks = await checkRepository(memoryRepo().view, VERSION);
     const skills = BUNDLED_SKILLS.map((s) => s.name);

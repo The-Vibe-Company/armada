@@ -10,6 +10,7 @@ test("the bundle carries every file under skills/, byte for byte", async () => {
   for (const entry of await readdir(SKILLS_DIR, { recursive: true, withFileTypes: true }))
     if (entry.isFile()) {
       const full = join(entry.parentPath, entry.name);
+      if (full.split("/").includes("__pycache__")) continue;
       onDisk[full.slice(SKILLS_DIR.length + 1)] = await readFile(full, "utf8");
     }
   const bundled = Object.fromEntries(

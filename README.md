@@ -46,12 +46,13 @@ GitHub is read with `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login (`gh auth
 ```sh
 armada doctor                          # what this repository lacks, with the fix for each
 armada init --program-root ABC-1       # one pull request that adds it all
+armada skills update                  # update bundled skills locally on your current branch
 ```
 
 `armada doctor` checks, in the repository you are in:
 
 - `armada.toml` exists and is valid;
-- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`, `armada-runtime-claude-code`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
+- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`, `armada-runtime-claude-code`, `ship-pr-dev`, `review-code-dev`, `capture-learning-tools`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;
 - this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
@@ -62,11 +63,27 @@ armada init --program-root ABC-1       # one pull request that adds it all
 
 Each problem is an error or a warning, with its fix. A missing skill, or a CLI older than Armada expects, is an error: workers cannot run without it. A skill that differs from this Armada version, a missing ignore line, a missing sign-in or a leftover key is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
 
-`armada init` fixes everything doctor reports in one go:
+The shipping skills include every helper, reference, eval, companion manifest and license.
+`armada doctor` also checks Python 3.9+, Git 2.41+ and the checksum-pinned OCR 1.12.1
+cache without downloading or executing OCR. Its first bootstrap requires GitHub
+HTTPS access and a writable cache (`REVIEW_CODE_OCR_HOME` optionally overrides
+`~/.local/share/review-code-dev/ocr`). Delegation uses an isolated host reviewer;
+no additional API key, Alibaba service or OCR LLM endpoint is needed. See the
+vendored `review-code-dev` setup notes for supported platforms and exact fixes.
+
+`armada init` fixes the repository setup in one go:
 
 1. It creates the missing Linear labels (a missing group goes in the team of the program root).
 2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the branch `armada/init-<version>` and opens a pull request with `gh`. Your own checkout is not touched. Running it again rebuilds that branch and updates the same pull request. When the default branch already has everything, no pull request is opened.
 3. It registers the project (slug, name, repository, program root) on Armada, for the organization the terminal is signed in to, so `armada status --all` and the dashboard list it. A slug another organization already holds is refused.
+
+To update the bundled skills on an existing ticket branch, run `armada skills update`.
+It uses init's vendoring rules for skills, links, `skills-lock.json` and the shipping
+artifact ignore, in the current checkout. It requires Git, but no sign-in, Linear
+key or network. Review and commit its changes yourself; it does not open a setup PR
+or edit `armada.toml`, Conductor scripts or Claude hooks. It replaces locally edited
+bundled skills and removes files dropped by their current package; other skills and
+their lock entries stay. Use `armada init` for the full setup PR.
 
 On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the name comes from the GitHub repository unless you pass `--name`, and the slug from the name unless you pass `--slug`. An existing `armada.toml` is never replaced. `init` needs `git`, the GitHub CLI logged in (`gh auth login`), a sign-in to Armada (`armada login`), and the Linear key, from Armada or from `LINEAR_API_KEY`; on a terminal it asks for a missing key first.
 
@@ -489,17 +506,30 @@ bun run armada status   # run the CLI from source
 bun run verify          # lint, typecheck, tests
 ```
 
+When changing a package under `skills/`, run `bun run skills:bundle` to regenerate
+the text payload included in the published Node bundle, then `bun run armada skills
+update` to refresh this repository's vendored copies. The bundle test compares all
+source skill files byte for byte, including nested helpers and license notices.
+
 See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) for the layout and the rules.
 
 ## What it is made of
 
 - **`armada` CLI** (TypeScript). The coordinator and the workers call it to claim tickets, report progress, ask and answer questions, launch workers and merge.
-- **Skills** vendored into the managed repository by `armada init`: the coordinator loop, the worker protocol and one runtime guide per runtime. They live in [`skills/`](skills).
+- **Skills** vendored into the managed repository by `armada init`: the coordinator loop, the worker protocol, one runtime guide per runtime, and the shipping/review/learning workflow. They live in [`skills/`](skills).
 - **Linear** holds the plan: specs, tickets, dependencies and agent phases.
 - **The app's database** (Postgres, e.g. Neon) holds the accounts, the organizations' sealed keys and the fleet's live data: events, heartbeats, pending questions and locks. The CLI reaches it only through the Armada API, with its sign-in. Losing it loses live detail, never progress.
 - **Conductor Cloud** runs the workers in the first version. Other runtimes come later without changing the worker contract.
 - **Dashboard** (Next.js, `packages/dashboard`): the live Fleet view of every project. The program view comes later.
 
+Workers ship with the bundled `ship-pr-dev` by default. The hand-back command adds
+`--shipped-with "ship-pr-dev"`, or `--shipped-with "fallback: <exact reason>"` when the
+workflow cannot run. Linear and `armada inbox` show `shipped with ship-pr-dev` or
+`shipped with the fallback: <reason>` with the PR and full SHA. Older workers remain
+compatible and their hand-backs say `shipping path unreported`; this field records
+the worker's declaration, not an independent CLI verification of review artifacts.
+
 ## License
 
-MIT
+MIT. The bundled Alibaba review workflow retains Apache-2.0; each shipping skill
+includes its license and attribution notices.

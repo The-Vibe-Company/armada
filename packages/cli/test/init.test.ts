@@ -108,6 +108,12 @@ async function fixture() {
   const api = fakeArmada({ keys: { armada_coordinator_key: "coordinator" }, store: registry });
   const exec: Exec = async (command, args, { cwd }) => {
     if (command === "gh") return gh.run(args);
+    if (command === "python3")
+      return {
+        code: 0,
+        stdout: args[0] === "--version" ? "Python 3.11.0" : "OCR 1.12.1 cached binary verified",
+        stderr: "",
+      };
     const r = spawnSync(command, args, { cwd, env, encoding: "utf8" });
     return { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr };
   };
