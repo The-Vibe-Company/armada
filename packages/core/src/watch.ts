@@ -52,6 +52,7 @@ export function transientFailure(err: unknown): boolean {
 }
 
 export interface WatchOptions {
+  signal?: AbortSignal;
   facts?: import("./live.ts").CoordinatorFacts;
   project: string;
   coordinator: string | null;
@@ -89,6 +90,23 @@ export interface WatchReport {
   warnings: string[];
 }
 
+/** Stops even an outstanding request or an injected sleep; late answers cannot advance the watch. */
+async function untilAborted<T>(signal: AbortSignal | undefined, work: () => T | Promise<T>): Promise<T> {
+  signal?.throwIfAborted();
+  if (!signal) return await work();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve()
+      .then(() => {
+        signal.throwIfAborted();
+        return work();
+      })
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 /**
  * Watches the coordinator's inbox until something needs the coordinator, then
  * returns it. It asks Armada every `pollMs` (every `idlePollMs` when no worker
@@ -124,13 +142,13 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   for (;;) {
     let read: Awaited<ReturnType<Fleet["inbox"]>>;
     try {
-      read = await fleet.inbox({ ...query, etag });
+      read = await untilAborted(o.signal, () => fleet.inbox({ ...query, etag }));
     } catch (err) {
       if (!transientFailure(err)) throw err;
       const wait = WATCH_BACKOFF_MS[Math.min(failures, WATCH_BACKOFF_MS.length - 1)] ?? pollMs;
       failures++;
       o.onRetry?.(`${(err as Error).message}; still watching, next try in ${wait / 1000} s`);
-      await o.sleep(wait);
+      await untilAborted(o.signal, () => o.sleep(wait));
       continue;
     }
     failures = 0;
@@ -140,14 +158,14 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
       etag = read.etag;
       known = new Set(items.map(entryKey));
       for (const w of read.warnings) warnings.add(w);
-      await o.onRead?.({ items, inFlight });
+      await untilAborted(o.signal, () => o.onRead?.({ items, inFlight }));
     }
     // Not urgent: a release comes after the questions, plans and hand-backs already open.
-    const release = (await o.release?.()) ?? null;
+    const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
     if (release) items = [...items, { ...release, new: true }];
     if (items.some((e) => e.new)) return report("items");
     if (read && inFlight !== null && !inFlight.length && !items.length) return report("nothing");
-    await o.sleep(inFlight !== null && !inFlight.length ? idlePollMs : pollMs);
+    await untilAborted(o.signal, () => o.sleep(inFlight !== null && !inFlight.length ? idlePollMs : pollMs));
   }
 }
 

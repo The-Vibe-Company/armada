@@ -16,19 +16,22 @@ import {
   processAlive,
   type Rearm,
   Refusal,
+  readWatchLockInfo,
   readWatchState,
   rearm,
   releaseWatchLock,
   runningWatch,
+  sameWatchLock,
   stopHookDecision,
   takeWatchLock,
   updateWatchState,
+  type WatchIdentity,
   type WatchState,
   watchInbox,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import { renderEntries } from "./inbox.ts";
-import { type Io, UsageError } from "./io.ts";
+import { type Io, UsageError, type WatchSignal } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
 import { pendingRelease, rememberRelease } from "./release.ts";
@@ -101,6 +104,69 @@ export async function watch(io: Io, config: ArmadaConfig, credentials: Credentia
   }
 }
 
+/** Stops only a holder whose process identity still matches this project's lock. No network or credentials. */
+export async function stopWatch(io: Io, project: string, json: boolean): Promise<number> {
+  const paths = machinePaths(io.env);
+  const lock = paths ? await readWatchLockInfo(paths, project) : null;
+  const print = (pid: number | null) => {
+    const line = pid === null ? `no watch running for ${project}` : `Stopped armada watch for ${project} (pid ${pid}).`;
+    io.stdout(json ? `${JSON.stringify({ project, stopped: pid, line }, null, 2)}\n` : `${line}\n`);
+  };
+  if (!paths || !lock) {
+    print(null);
+    return 0;
+  }
+  if (!alive(io)(lock.pid)) {
+    await releaseWatchLock(paths, project, lock.pid, lock.identity ?? undefined);
+    print(null);
+    return 0;
+  }
+  const identity = lock.identity;
+  let configProject: string | null = null;
+  if (identity) {
+    try {
+      const text = await io.readFile(identity.configPath);
+      if (text !== null) configProject = parseConfig(text, identity.configPath).project.slug;
+    } catch {}
+  }
+  const process = identity ? await io.inspectProcess?.(lock.pid) : null;
+  // The command must be the CLI's watch, not a wrapper, heartbeat or stop command.
+  const isWatch =
+    identity &&
+    /(?:^|\s)(?:\S*\/)?(?:armada(?:\.js)?|packages\/cli\/src\/(?:main|bin)\.ts)\s+(?:(?:--json|--all)\s+|--config(?:=\S+|\s+\S+)\s+)*watch(?:\s|$)/.test(
+      identity.command,
+    ) &&
+    !/(?:^|\s)--stop(?:\s|$)/.test(identity.command);
+  if (
+    !identity ||
+    identity.project !== project ||
+    configProject !== project ||
+    !isWatch ||
+    !process ||
+    process.started !== identity.started ||
+    process.command !== identity.command ||
+    process.cwd !== identity.cwd ||
+    !io.signalProcess ||
+    !sameWatchLock(await readWatchLockInfo(paths, project), lock)
+  ) {
+    throw new Refusal(
+      `cannot verify armada watch for ${project} (pid ${lock.pid}); left the process and lock untouched`,
+      "armada watch --help",
+    );
+  }
+  try {
+    await io.signalProcess(lock.pid, "SIGTERM");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
+    await releaseWatchLock(paths, project, lock.pid, identity);
+    print(null);
+    return 0;
+  }
+  await releaseWatchLock(paths, project, lock.pid, identity);
+  print(lock.pid);
+  return 0;
+}
+
 async function watchUntil(
   io: Io,
   config: ArmadaConfig,
@@ -109,25 +175,53 @@ async function watchUntil(
   configPath: string,
 ): Promise<number> {
   requireSignIn(credentials);
-  const { fleet, warning } = liveFleet(io, config, credentials);
-  if (!fleet)
-    throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
   const project = config.project.slug;
   const paths: MachinePaths | null = machinePaths(io.env);
   const pid = io.pid ?? process.pid;
-  if (paths) {
-    const lock = await takeWatchLock(paths, project, pid, alive(io));
-    if (!lock.taken) {
-      const line = `armada watch is already running for ${project} (pid ${lock.pid}): its output arrives when it ends.`;
-      io.stdout(json ? `${JSON.stringify({ project, running: lock.pid, line }, null, 2)}\n` : `${line}\n`);
-      return 0;
-    }
-  }
+  const controller = new AbortController();
+  let stoppedBy: WatchSignal | null = null;
+  let unsubscribe: (() => void) | undefined;
+  let identity: WatchIdentity | undefined;
+  let taken = false;
   try {
+    unsubscribe = io.onSignal?.((signal) => {
+      if (stoppedBy) return;
+      stoppedBy = signal;
+      controller.abort(new Error("watch stopped"));
+    });
+    controller.signal.throwIfAborted();
+    const inspected = await io.inspectProcess?.(pid);
+    identity = inspected ? { ...inspected, project, configPath } : undefined;
+    controller.signal.throwIfAborted();
+    if (paths) {
+      const lock = await takeWatchLock(paths, project, pid, alive(io), identity);
+      taken = lock.taken;
+      controller.signal.throwIfAborted();
+      if (!lock.taken) {
+        const line = `armada watch is already running for ${project} (pid ${lock.pid}): its output arrives when it ends.`;
+        io.stdout(json ? `${JSON.stringify({ project, running: lock.pid, line }, null, 2)}\n` : `${line}\n`);
+        return 0;
+      }
+    }
+    const fetch = io.fetch;
+    const watchingIo: Io = {
+      ...io,
+      fetch: fetch
+        ? (url, init) =>
+            fetch(url, {
+              ...init,
+              signal: init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal,
+            })
+        : undefined,
+    };
+    const { fleet, warning } = liveFleet(watchingIo, config, credentials);
+    if (!fleet)
+      throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
     const before = paths ? await readWatchState(paths, project) : null;
     await remember(io, project, { root: dirname(configPath), stopped: null });
     const report = await watchInbox(fleet, {
       project,
+      signal: controller.signal,
       coordinator: coordinatorHandle(io),
       facts: detectCoordinator(io),
       silentAfterMinutes: config.policy.silentAfterMinutes,
@@ -135,15 +229,27 @@ async function watchUntil(
       notStartedMinutes: config.policy.notStartedMinutes,
       seen: before?.seen ?? [],
       now: io.now ?? (() => new Date()),
-      sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))),
+      sleep:
+        io.sleep ??
+        ((ms) =>
+          new Promise<void>((done) => {
+            const timer = setTimeout(finish, ms);
+            function finish() {
+              clearTimeout(timer);
+              controller.signal.removeEventListener("abort", finish);
+              done();
+            }
+            controller.signal.addEventListener("abort", finish, { once: true });
+          })),
       onRead: async ({ inFlight }) => {
         if (inFlight) await remember(io, project, { inFlight, readAt: now(io).toISOString() });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
-      release: pendingRelease(io, version, before?.seen ?? []),
+      release: pendingRelease(watchingIo, version, before?.seen ?? []),
     });
     await remember(io, project, shown(io, report.items, report.inFlight));
     for (const e of report.items) if (e.kind === "version" && e.version) await rememberRelease(io, e.version);
+    controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter((e) => e.kind !== "version").length;
     const next = rearm({ inFlight: report.inFlight, open, running: null, act: true });
@@ -156,10 +262,17 @@ async function watchUntil(
       io.stdout(`${out.join("\n")}\n`);
     }
     for (const w of report.warnings) io.stderr(`armada: warning: ${w}\n`);
-    return 0;
+  } catch (err) {
+    if (!stoppedBy) throw err;
   } finally {
-    if (paths) await releaseWatchLock(paths, project, pid).catch(() => {});
+    if (paths && taken) await releaseWatchLock(paths, project, pid, identity).catch(() => {});
+    unsubscribe?.();
   }
+  if (stoppedBy) {
+    io.stdout(`armada watch for ${project} stopped by ${stoppedBy} (pid ${pid})\n`);
+    return stoppedBy === "SIGINT" ? 130 : stoppedBy === "SIGTERM" ? 143 : 129;
+  }
+  return 0;
 }
 
 /**

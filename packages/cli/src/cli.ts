@@ -33,7 +33,7 @@ import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
-import { hookStop, watch } from "./watch.ts";
+import { hookStop, stopWatch, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
 
 export { authLogin } from "./auth.ts";
@@ -119,6 +119,8 @@ const COMMAND_HELP: Record<string, string> = {
                     when no worker is in flight and nothing is open. Armada being down or a
                     command time limit does not end it: it keeps asking. One per project on
                     this machine. Needs a sign-in to Armada
+  watch --stop      Stop only this project's verified watch and release its lock. Local,
+                    no sign-in needed. Never stop a watch just to read inbox or status
 `,
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: record an answer already delivered in the worker's
@@ -338,6 +340,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "stop",
   "background",
   "dry-run",
   "no-lock",
@@ -361,6 +364,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
+  watch: ["stop"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
@@ -593,6 +597,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch");
       const config = parseConfig(text, path);
+      if (args.options.stop === "true") {
+        if (args.rest.length) throw new UsageError(`unexpected argument ${args.rest[0]}`);
+        return await stopWatch(io, config.project.slug, args.json);
+      }
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       await recordPresence(io, config, credentials);
       return await watch(io, config, credentials, args, path);

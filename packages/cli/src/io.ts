@@ -25,6 +25,13 @@ export type Spawn = (
   options: { cwd: string; env: Record<string, string | undefined> },
 ) => Promise<number>;
 
+export type WatchSignal = "SIGTERM" | "SIGINT" | "SIGHUP";
+export interface ProcessIdentity {
+  started: string;
+  command: string;
+  cwd: string;
+}
+
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
   machineName?: string;
@@ -58,6 +65,12 @@ export interface Io {
   pid?: number;
   /** Whether a process still runs, for a watch lock left behind (default: signal 0). */
   processAlive?: (pid: number) => boolean;
+  /** Process start identity, command and cwd, or null when it cannot be inspected. Never logged. */
+  inspectProcess?: (pid: number) => Promise<ProcessIdentity | null>;
+  /** Signals exactly one verified watch PID. */
+  signalProcess?: (pid: number, signal: WatchSignal) => void | Promise<void>;
+  /** Subscribes to watch shutdown signals; returns a function that removes the handlers. */
+  onSignal?: (handler: (signal: WatchSignal) => void) => () => void;
   /** Replaces the Linear write adapter (tests use an in-memory fake). */
   linearWriter?: (options: LinearWriterOptions) => LinearWriter;
   /** Runs git and gh; required by doctor, init and merge. */
