@@ -1562,30 +1562,66 @@ a.sh-item:hover {
 .ui-tab[aria-selected="true"] .ui-tab-count {
   color: var(--text-2);
 }
+/* An empty state: the formation at rest, one sentence, what to do next. */
+.ui-rest {
+  flex: none;
+  display: block;
+}
 .ui-empty {
-  margin: 20px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 36px;
+  gap: 8px;
+  padding: 48px var(--edge) 56px;
   text-align: center;
-  border-radius: var(--r-lg);
-  background: var(--card);
-  color: var(--text-2);
+  color: var(--text-3);
 }
-.ui-empty.is-compact {
-  margin: 12px 20px;
-  padding: 16px 20px;
-  border-radius: var(--r-md);
+.ui-empty .ui-rest {
+  margin-bottom: 6px;
+  animation: ui-drift 6s ease-in-out infinite;
 }
 .ui-empty-title {
   color: var(--text);
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
 .ui-empty-hint {
-  font-size: 12.5px;
+  max-width: 44ch;
   color: var(--text-3);
+  text-wrap: pretty;
+}
+.ui-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.ui-empty.is-compact {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 12px;
+  padding: 12px var(--edge);
+  text-align: left;
+  border-bottom: 1px solid var(--line-soft);
+}
+.ui-empty.is-compact .ui-rest {
+  margin: 0;
+  animation: none;
+}
+.ui-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ui-empty.is-compact .ui-empty-title {
+  font-size: var(--fs-body);
+  font-weight: 500;
+}
+.ui-empty.is-compact .ui-empty-hint {
+  font-size: var(--fs-small);
 }
 .ui-steps {
   flex: none;
@@ -1606,6 +1642,327 @@ a.sh-item:hover {
 .ui-steps.is-wide .ui-step {
   height: 5px;
   border-radius: 3px;
+}
+
+/* -------------------------------------------------- the page's status (THE-899) */
+/* One display sentence, a quiet line, figures as chips: where things stand, first. */
+.ui-status-head {
+  display: grid;
+  gap: 20px;
+  padding: 28px var(--edge) 22px;
+}
+.ui-status-head.has-aside {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+}
+.ui-status-main {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.ui-status-kicker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+.ui-display {
+  margin: 0;
+  max-width: 38ch;
+  font-size: var(--fs-display);
+  line-height: 1.12;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+  color: var(--text);
+}
+.ui-display-then {
+  color: var(--text-3);
+}
+.ui-status-line {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+.ui-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.ui-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--fill);
+  box-shadow: var(--lit);
+  font-size: var(--fs-small);
+  color: var(--text-2);
+  white-space: nowrap;
+  transition: background-color var(--t-1) ease;
+}
+.ui-stat:has(.ui-stat-dot) {
+  padding-left: 8px;
+}
+a.ui-stat:hover {
+  background: var(--fill-2);
+  color: var(--text);
+}
+.ui-stat b {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  color: var(--hue, var(--text));
+  font-variant-numeric: tabular-nums;
+}
+.ui-stat-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--hue);
+}
+.ui-stat.is-yours {
+  --hue: var(--accent);
+}
+.ui-stat.is-fail {
+  --hue: var(--critical);
+}
+.ui-stat.is-silent {
+  --hue: var(--active);
+}
+.ui-stat.is-done {
+  --hue: var(--done);
+}
+.ui-stat.is-flight {
+  --hue: var(--frontier);
+}
+.ui-trend {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--done);
+}
+.ui-trend.is-down {
+  color: var(--text-2);
+}
+
+/* An alert: a reading failed. The page keeps its last reading under it. */
+.ui-alert {
+  --hue: var(--critical);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px var(--edge) 0;
+  padding: 10px 12px 10px 14px;
+  border-radius: var(--r-card);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--hue) 13%, transparent), transparent 80%);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--hue) 28%, transparent);
+}
+.ui-alert.is-warn {
+  --hue: var(--active);
+}
+.ui-alert + .ui-alert {
+  margin-top: 8px;
+}
+.ui-alert-glyph {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--bg) 0 2px, var(--hue) 2.5px);
+}
+.ui-alert.is-warn .ui-alert-glyph {
+  background: none;
+  border: 1.5px dashed var(--hue);
+}
+.ui-alert-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
+}
+.ui-alert-text b {
+  font-weight: 600;
+  color: var(--text);
+}
+.ui-alert-action {
+  flex: none;
+  display: flex;
+  gap: 8px;
+}
+
+/* Skeletons: rows and a status standing in while a page loads. */
+.ui-skel {
+  position: relative;
+  display: block;
+  height: 10px;
+  border-radius: 5px;
+  background: var(--fill);
+  overflow: hidden;
+}
+.ui-skel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  transform: translateX(-100%);
+  animation: ui-shimmer 1.4s linear infinite;
+}
+@keyframes ui-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+.ui-skel.is-display {
+  height: 26px;
+  border-radius: var(--r-control);
+}
+.ui-skel.is-round {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border-radius: 50%;
+}
+.ui-row.ui-skel-row {
+  min-height: var(--row);
+}
+
+/* A progress ring. */
+.ui-ring {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+}
+.ui-ring-svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+.ui-ring-track {
+  stroke: var(--track);
+}
+.ui-ring-n {
+  position: relative;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Big figures on one instrument, each with its trend line. */
+.ui-figures {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 4px var(--edge) 24px;
+  border-radius: var(--r-card);
+  background: var(--card);
+  box-shadow: var(--ring), var(--lit), var(--drop);
+  overflow: hidden;
+}
+.ui-figure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 16px 18px 14px;
+  box-shadow: -1px 0 0 var(--line-soft);
+  transition: background-color var(--t-1) ease;
+}
+.ui-figure:first-child {
+  box-shadow: none;
+}
+a.ui-figure:hover {
+  background: var(--hover);
+}
+.ui-figure-label {
+  color: var(--text-2);
+  font-weight: 500;
+}
+.ui-figure-value {
+  margin: 4px 0 2px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-figure);
+  font-weight: 500;
+  line-height: 1.1;
+  letter-spacing: -0.04em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ui-unit {
+  margin: 0 3px 0 1px;
+  font-size: 18px;
+  letter-spacing: -0.02em;
+  color: var(--text-3);
+}
+.ui-figure-sub {
+  font-size: var(--fs-small);
+  color: var(--text-3);
+}
+.ui-spark {
+  display: block;
+  width: 100%;
+  height: 28px;
+  margin-top: 8px;
+  overflow: visible;
+}
+
+/* The formation: the live mark and the formation at rest. */
+.ui-mark {
+  flex: none;
+  display: block;
+}
+.ui-mark-lead {
+  fill: var(--done);
+  filter: drop-shadow(0 0 3px rgba(182, 241, 90, 0.6));
+}
+.ui-mark.is-beat .ui-mark-lead {
+  animation: ui-beat 900ms var(--ease-out);
+}
+@keyframes ui-beat {
+  0% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+.ui-mark.is-paused .ui-mark-lead {
+  fill: var(--active);
+  filter: none;
+}
+.ui-mark.is-loading path {
+  animation: ui-assemble 1.4s var(--ease-out) infinite;
+}
+.ui-mark.is-loading path:nth-child(2) {
+  animation-delay: 90ms;
+}
+.ui-mark.is-loading path:nth-child(3) {
+  animation-delay: 180ms;
+}
+.ui-mark.is-loading path:nth-child(4) {
+  animation-delay: 270ms;
+}
+.ui-mark.is-loading path:nth-child(5) {
+  animation-delay: 360ms;
+}
+@keyframes ui-assemble {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+@keyframes ui-drift {
+  50% {
+    transform: translateY(-3px);
+  }
 }
 
 /* ------------------------------------------------------------ page kit */
@@ -1655,10 +2012,6 @@ a.sh-item:hover {
   border-top: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
 }
-.ui-toolbar + .ui-section > .ui-section-h,
-.ui-toolbar + .ui-toolbar {
-  border-top: 0;
-}
 .ui-toolbar-end {
   margin-left: auto;
   display: flex;
@@ -1685,7 +2038,9 @@ a.sh-item:hover {
   border-top: 1px solid var(--line-soft);
   border-bottom: 1px solid var(--line-soft);
 }
-.ui-section + .ui-section > .ui-section-h {
+/* Two hairlines never stack: a band under a toolbar or a band keeps one. */
+:where(.ui-toolbar + .ui-section, .ui-section + .ui-section) > .ui-section-h,
+:where(.ui-toolbar) + .ui-toolbar {
   border-top-color: transparent;
 }
 .ui-section-icon {
@@ -1997,6 +2352,20 @@ a.sh-item:hover {
 .ui-button:disabled {
   opacity: 0.55;
   cursor: default;
+}
+.ui-button.is-small {
+  height: 26px;
+  padding: 0 10px;
+  font-size: var(--fs-small);
+}
+.ui-button.is-quiet {
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+}
+.ui-button.is-quiet:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 /* A well: sunk under the deck, a ring, and a blue halo when focused. */
 .ui-input {

@@ -6,7 +6,9 @@
 // component in its states.
 import type { ReactNode } from "react";
 import { AGENT_STATUSES, HARNESS_NAME, HARNESSES, PROJECT_PALETTE } from "@/lib/fleet-view";
+import { FormationAtRest, LiveMark, Ship } from "../mark";
 import {
+  Alert,
   Button,
   Card,
   CardGrid,
@@ -15,11 +17,14 @@ import {
   CardTitle,
   Columns,
   DensityToggle,
+  Figure,
+  Figures,
   Form,
   Input,
   Notice,
   Page,
   PageHeader,
+  Ring,
   Row,
   RowIcon,
   RowId,
@@ -29,7 +34,13 @@ import {
   Section,
   SectionBody,
   Select,
+  SkeletonRows,
+  SkeletonStatus,
+  Sparkline,
+  Stat,
+  StatusHeader,
   Toolbar,
+  Unit,
 } from "../page";
 import { useNow, useShell } from "../shell/context";
 import {
@@ -87,6 +98,18 @@ export function DesignSheet() {
                   <Kbd>j k</Kbd>
                   {t.shell.navigate} <Kbd>↵</Kbd>
                   {t.shell.open}
+                </>
+              }
+            />
+            <StatusHeader
+              lead="11 agents in flight."
+              then="3 wait for your decision, 2 are failing."
+              stats={
+                <>
+                  <Stat value={3} label="to decide" hue="yours" href="/validations" />
+                  <Stat value={2} label="failing" hue="fail" href="/agents#error" />
+                  <Stat value={1} label="silent" hue="silent" />
+                  <Stat value={2} label="ready to merge" hue="done" />
                 </>
               }
             />
@@ -187,6 +210,77 @@ export function DesignSheet() {
             </p>
           ))}
         </SectionBody>
+      </Section>
+
+      <Specimen name="Alert">
+        <div className="ds-frame" style={{ paddingBottom: 16 }}>
+          <Alert
+            title="Armada can't reach Linear since 17:32."
+            action={
+              <Button type="button" small>
+                Retry
+              </Button>
+            }
+          >
+            You're seeing the reading from 8 min ago; answers and launches still go through.
+          </Alert>
+          <Alert tone="warn" title="GitHub is slow to answer.">
+            Pull requests may be a minute behind.
+          </Alert>
+        </div>
+      </Specimen>
+
+      <Specimen name="Ring · Figure · Sparkline">
+        <Ring value={0.89} size={44} />
+        <Ring value={0.55} size={64} stroke={4} color="var(--active)" />
+        <Ring value={0.4} size={14} stroke={2.2} bare color="var(--frontier)" />
+        <div className="ds-frame" style={{ flex: "1 1 100%" }}>
+          <Figures>
+            <Figure
+              label="Merged"
+              value={51}
+              sub={
+                <>
+                  <span className="ui-trend">↑ 43%</span> this week vs last
+                </>
+              }
+              spark={<Sparkline values={[0, 1, 0, 1, 1, 2, 1, 2, 1, 3, 5, 4, 6]} color="var(--done)" />}
+            />
+            <Figure
+              label="Claim to merge"
+              value={
+                <>
+                  5<Unit>h</Unit>21
+                </>
+              }
+              sub="median · p90 7 h 35"
+              spark={<Sparkline values={[6.2, null, 5.8, 6.4, 5.6, 5.1, 5.5, 4.9, 5.4, 4.6, 4.9]} />}
+            />
+          </Figures>
+        </div>
+      </Specimen>
+
+      <Specimen name="LiveMark · FormationAtRest · Ship">
+        <span className="ds-item">
+          <LiveMark size={28} beat={0} /> live
+        </span>
+        <span className="ds-item">
+          <LiveMark size={28} state="loading" /> loading
+        </span>
+        <span className="ds-item">
+          <LiveMark size={28} state="paused" /> paused
+        </span>
+        <span className="ds-item">
+          <FormationAtRest size={44} /> at rest
+        </span>
+        <span className="ds-item">
+          <Ship color="var(--done)" size={14} /> merged
+        </span>
+      </Specimen>
+
+      <Section label={<span className="mono">SkeletonStatus · SkeletonRows</span>}>
+        <SkeletonStatus />
+        <SkeletonRows count={3} />
       </Section>
 
       <Specimen name="Notice">
@@ -320,7 +414,12 @@ export function DesignSheet() {
       </Specimen>
 
       <Section label={<span className="mono">EmptyState</span>}>
-        <EmptyState title={t.shell.noAgents} hint={t.shell.noAgentsHint} />
+        <EmptyState title={t.shell.noAgents} hint={t.shell.noAgentsHint}>
+          <Button type="button" tone="primary">
+            {t.shell.nav.projects}
+          </Button>
+        </EmptyState>
+        <EmptyState compact title={t.org.noInvitations} hint={t.org.noInvitationsHint} />
       </Section>
     </Page>
   );

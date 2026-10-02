@@ -971,10 +971,12 @@ const en = {
       uses: {
         PageHeader:
           "The bar on top: breadcrumbs on the left, key hints on the right. The shell draws it; a page adds its buttons with HeaderActions and never a title of its own.",
+        StatusHeader:
+          "Where things stand, first: one sentence in display type, its quieter second half, a line, and Stat chips that open what they count. Rendered with the page, under the horizon.",
         Toolbar: "Tabs and filters, the density toggle in end. Left out when a page has none, never an empty row.",
         Section:
           "A band: an icon or status dot, a label, a count, a side. Rows go inside; anything else in a SectionBody.",
-        Row: "40 px compact, 48 px airy, a hairline. With href it opens a page and joins j/k; ids and times in Geist Mono (RowId, RowTime).",
+        Row: "36 px compact, 48 px airy, a hairline. With href it opens a page and joins j/k; ids and times in Geist Mono (RowId, RowTime).",
         Card: "Only where the design draws cards (decisions, projects): the rows' padding, hairline and type, in a CardGrid.",
         Columns:
           "An agent's page: its sections on the left, its facts on the right (side), one under the other on a narrow screen. Each column holds Sections and Rows only.",
@@ -2066,10 +2068,12 @@ const fr: Strings = {
       uses: {
         PageHeader:
           "La barre du haut : le fil d'Ariane à gauche, les raccourcis à droite. Le shell la dessine ; une page y ajoute ses boutons avec HeaderActions, jamais un titre à elle.",
+        StatusHeader:
+          "Où en sont les choses, d'abord : une phrase en grand, sa seconde moitié plus discrète, une ligne, et des Stat qui ouvrent ce qu'elles comptent. Rendue avec la page, sous l'horizon.",
         Toolbar: "Onglets et filtres, la densité dans end. Absente quand une page n'en a pas, jamais une ligne vide.",
         Section:
           "Une bande : une icône ou un point d'état, un libellé, un compte, un côté. Les lignes dedans ; le reste dans un SectionBody.",
-        Row: "40 px en compact, 48 px en aéré, un filet. Avec href elle ouvre une page et suit j/k ; ids et heures en Geist Mono (RowId, RowTime).",
+        Row: "36 px en compact, 48 px en aéré, un filet. Avec href elle ouvre une page et suit j/k ; ids et heures en Geist Mono (RowId, RowTime).",
         Card: "Seulement là où le design dessine des cartes (décisions, projets) : le padding, le filet et le texte des lignes, dans une CardGrid.",
         Columns:
           "La page d'un agent : ses sections à gauche, ses faits à droite (side), l'une sous l'autre sur un écran étroit. Chaque colonne ne tient que des Sections et des Rows.",

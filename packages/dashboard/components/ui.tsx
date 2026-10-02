@@ -9,6 +9,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { type AgentStatus, HARNESS_NAME, type Harness, projectColor } from "@/lib/fleet-view";
 import { tabStep } from "@/lib/keyboard";
+import { FormationAtRest } from "./mark";
 import { useNow, useShell } from "./shell/context";
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
@@ -239,7 +240,12 @@ export function Tabs<K extends string>({
   );
 }
 
-/** What a list or page shows when it has nothing; `compact` for a list among others on a page (a settings page). */
+/**
+ * What a list or page shows when it has nothing (THE-899): the formation at
+ * rest, one sentence, what to do next, and its action in `children`.
+ * `compact` for a list among others on a page (a settings page): one line,
+ * a small formation before it.
+ */
 export function EmptyState({
   title,
   hint,
@@ -251,11 +257,23 @@ export function EmptyState({
   compact?: boolean;
   children?: ReactNode;
 }) {
+  if (compact)
+    return (
+      <div className="ui-empty is-compact">
+        <FormationAtRest size={28} />
+        <span className="ui-empty-text">
+          <span className="ui-empty-title">{title}</span>
+          {hint && <span className="ui-empty-hint">{hint}</span>}
+        </span>
+        {children}
+      </div>
+    );
   return (
-    <div className={cx("ui-empty", compact && "is-compact")}>
+    <div className="ui-empty">
+      <FormationAtRest size={104} />
       <span className="ui-empty-title">{title}</span>
       {hint && <span className="ui-empty-hint">{hint}</span>}
-      {children}
+      {children && <span className="ui-empty-actions">{children}</span>}
     </div>
   );
 }
