@@ -272,7 +272,7 @@ describe("report", () => {
     expect(green.linear.writes.slice(-3)).toEqual([
       "link DEMO-7 https://github.com/acme/widgets/pull/9",
       'update DEMO-7 {"addLabelIds":["phase-ready-to-merge"],"removeLabelIds":["phase-shipping"]}',
-      `comment DEMO-7 Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
+      `comment DEMO-7 Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported`,
     ]);
     // Handing back again refreshes the coordinator's item instead of adding one.
     await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD });

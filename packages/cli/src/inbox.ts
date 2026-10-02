@@ -76,6 +76,8 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
       .filter(Boolean)
       .join(" · ");
     out.push(`${e.new ? "* " : "  "}${head}`, ...e.body.split("\n").map((l) => (l ? `    ${l}` : "")));
+    if (e.kind === "hand-back" && !/shipped with (?:ship-pr-dev|the fallback:)|shipping path unreported/.test(e.body))
+      out.push("    shipping path unreported");
   }
   if (items.some((e) => e.kind === "question" || e.kind === "plan"))
     out.push(

@@ -4,5 +4,15 @@
   "files": { "includes": ["**", "!**/node_modules", "!**/test/fixtures", "!design"] },
   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 120 },
   "linter": { "enabled": true, "rules": { "preset": "recommended" } },
-  "javascript": { "formatter": { "quoteStyle": "double" } }
+  "javascript": { "formatter": { "quoteStyle": "double" } },
+  "overrides": [
+    {
+      "includes": ["skills/**/companion.json", ".agents/skills/**/companion.json"],
+      "formatter": { "enabled": false }
+    },
+    {
+      "includes": ["packages/core/src/skills.generated.json"],
+      "formatter": { "enabled": false }
+    }
+  ]
 }

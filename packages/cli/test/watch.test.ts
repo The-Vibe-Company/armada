@@ -383,6 +383,7 @@ describe("armada watch", () => {
         "Inbox of widgets (1), oldest first:",
         `* #1 hand-back · DEMO-2 · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
         "    Agent status: ready-to-merge — PR #4",
+        "    shipping path unreported",
         "New items are marked *.",
         "2 workers in flight (DEMO-2, DEMO-3) — act on the items above, then keep watching: armada watch",
         "",
