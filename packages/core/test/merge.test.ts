@@ -359,6 +359,57 @@ describe("armada merge", () => {
     expect(db.events.filter((e) => e.ticket === "DEMO-7").map((e) => [e.kind, e.headSha])).toEqual([["merge", HEAD]]);
   });
 
+  test.each([1, 3])(
+    "post-merge clean-up failing %i times retries, then resolves or prints recovery",
+    async (failures) => {
+      let attempts = 0;
+      const live = tempFleet({
+        fail: (op) => (op === "merge" && ++attempts <= failures ? new Error("connection reset") : null),
+      });
+      const s = setup({ live });
+      await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #9", at: NOW });
+
+      const out = await mergePullRequest(s.ctx, { pr: 9 });
+
+      expect(out.merged).toBe(true);
+      expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+      expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+      expect(attempts).toBe(failures === 1 ? 2 : 3);
+      expect(s.sleeps).toEqual(failures === 1 ? [2000] : [2000, 4000]);
+      expect((await live.store.getInboxItem("widgets", 1))?.resolvedAt).toBe(failures === 1 ? NOW.toISOString() : null);
+      if (failures === 1) expect(out.lines).toContain("Hand-back resolved in the coordinator's inbox.");
+      else expect(out.lines).toContain('Next: armada answer 1 "resolved: PR merged"');
+    },
+  );
+
+  test("an inbox write failing after the merge event landed retries without recording a second merge", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    await live.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "Conductor",
+      handle: "ws-1/s-1",
+      branch: null,
+      at: NOW,
+    });
+    await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #9", at: NOW });
+    const resolve = live.store.resolveInboxItems;
+    let failed = false;
+    live.store.resolveInboxItems = async (q) => {
+      if (q.kind === "hand-back" && !failed) {
+        failed = true;
+        throw new Error("temporary write failure");
+      }
+      return resolve(q);
+    };
+    expect((await mergePullRequest(s.ctx, { pr: 9 })).merged).toBe(true);
+    expect((await live.store.getInboxItem("widgets", 1))?.resolvedAt).toBe(NOW.toISOString());
+    expect(live.store.events.filter((e) => e.kind === "merge")).toHaveLength(1);
+    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    expect(s.sleeps).toEqual([2000]);
+  });
+
   test("a GitHub 5xx is retried only after re-reading an unchanged open pull request", async () => {
     const s = setup();
     s.forge.answers = [{ ok: false, message: "HTTP 502: Bad Gateway", transient: true }];

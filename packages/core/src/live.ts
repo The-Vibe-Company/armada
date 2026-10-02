@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
 import { NEEDS_HUMAN } from "./fleet.ts";
 import type { RequestKind } from "./request-kinds.ts";
-import type { AgentPhase, LabelPhase } from "./types.ts";
+import type { AgentPhase, Issue, LabelPhase, PullRequest } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
 
 // ------------------------------------------------------------------ records
@@ -550,16 +550,19 @@ export async function recordMerge(
   at: Date,
 ): Promise<MergeRecorded> {
   const handle = await store.getRuntimeHandle(project, m.ticket);
-  await store.recordEvent({
-    project,
-    ticket: m.ticket,
-    kind: "merge",
-    phase: "merged",
-    message: `PR #${m.number} merged as ${m.mergeCommit ?? "unknown"}${m.decision ? `; ${m.decision}` : ""}`,
-    prUrl: m.url,
-    headSha: m.headSha,
-    at,
-  });
+  // A retry may follow a failed inbox write or a lost response after the event landed.
+  const previous = (await store.latestEvents(project, { since: new Date(handle?.claimedAt ?? at) }))[m.ticket];
+  if (previous?.kind !== "merge" || previous.prUrl !== m.url)
+    await store.recordEvent({
+      project,
+      ticket: m.ticket,
+      kind: "merge",
+      phase: "merged",
+      message: `PR #${m.number} merged as ${m.mergeCommit ?? "unknown"}${m.decision ? `; ${m.decision}` : ""}`,
+      prUrl: m.url,
+      headSha: m.headSha,
+      at,
+    });
   const resolved = await store.resolveInboxItems({
     project,
     ticket: m.ticket,
@@ -677,7 +680,48 @@ export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> 
         ? `not-started:${e.ticket}:expired@${digest(e.body)}`
         : `${e.kind}:${e.ticket}`;
 
+/** The stored project reading; inbox reconciliation never fetches external state. */
+export interface HandBackSnapshot {
+  repository: string;
+  issues: readonly Pick<Issue, "id" | "statusType">[];
+  prs: readonly Pick<PullRequest, "repo" | "number" | "state">[];
+}
+
+/** The PR named by the worker's generated hand-back status line. */
+export function handBackPr(body: string): number | null {
+  const match = body.split("\n", 1)[0]?.match(/\bPR #(\d+)\b/i);
+  const number = match ? Number(match[1]) : 0;
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+/** Resolve only hand-backs confirmed merged or completed in the stored reading. */
+async function reconcileHandBacks(
+  store: FleetStore,
+  items: InboxItem[],
+  snapshot: HandBackSnapshot | undefined,
+  now: Date,
+): Promise<InboxItem[]> {
+  if (!snapshot) return items;
+  const completed = new Set(snapshot.issues.filter((i) => i.statusType === "completed").map((i) => i.id));
+  const merged = new Set(
+    snapshot.prs
+      .filter((p) => p.repo.toLowerCase() === snapshot.repository.toLowerCase() && p.state === "merged")
+      .map((p) => p.number),
+  );
+  const open: InboxItem[] = [];
+  for (const item of items) {
+    if (
+      item.kind === "hand-back" &&
+      ((item.ticket && completed.has(item.ticket)) || merged.has(handBackPr(item.body) ?? 0))
+    ) {
+      await store.resolveInboxItem({ project: item.project, id: item.id, resolution: "resolved: PR merged", at: now });
+    } else open.push(item);
+  }
+  return open;
+}
+
 export interface InboxReadOptions {
+  snapshot?: HandBackSnapshot;
   project: string;
   /** The coordinator's own session, never reported silent. */
   coordinator?: string | null;
@@ -733,11 +777,12 @@ async function readInboxAndFlight(
   o: InboxReadOptions,
 ): Promise<{ items: InboxEntry[]; inFlight: string[] }> {
   const now = o.now.getTime();
-  const [items, handles, launches] = await Promise.all([
+  const [stored, handles, launches] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
     store.openRuntimeHandles(o.project),
     store.pendingLaunches(o.project, new Date(now - LAUNCH_WINDOW_MS)),
   ]);
+  const items = await reconcileHandBacks(store, stored, o.snapshot, o.now);
   const oldest = handles.reduce((min, h) => (h.claimedAt < min ? h.claimedAt : min), handles[0]?.claimedAt ?? "");
   const since = new Date(oldest);
   const [events, answered] = handles.length
@@ -861,6 +906,7 @@ export async function serveInbox(
   now: Date,
   /** The coordinator's CLI version, from the request's `x-armada-cli-version`. */
   cliVersion: string | null = null,
+  snapshot?: HandBackSnapshot,
 ): Promise<InboxRead | null> {
   const warnings: string[] = [];
   const expired = await store.expireUnusedLaunches(project, now);
@@ -878,6 +924,7 @@ export async function serveInbox(
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
   const { items, inFlight } = await readInboxAndFlight(store, {
+    snapshot,
     project,
     coordinator: q.coordinator,
     silentAfterMinutes: q.silentAfterMinutes,

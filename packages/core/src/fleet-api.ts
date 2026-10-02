@@ -14,6 +14,7 @@ import {
   type Fleet,
   type FleetStore,
   followedLaunches,
+  type HandBackSnapshot,
   type InboxItem,
   type InboxQuery,
   type InboxRead,
@@ -200,6 +201,8 @@ const refuse = (status: number, error: string, next: string): FleetAnswer => ({ 
 const NOT_MODIFIED = Symbol("not modified");
 
 export interface ServeFleetDeps {
+  /** Stored project facts, supplied by the host, never by the caller. */
+  snapshot?: HandBackSnapshot;
   now: () => Date;
   /** The dashboard's address, for the approval links (THE-885); a relative link without it. */
   appUrl?: string | null;
@@ -342,6 +345,7 @@ export async function serveFleet(
             },
             at,
             deps.cliVersion && CLI_VERSION.test(deps.cliVersion) ? deps.cliVersion : null,
+            deps.snapshot,
           );
           return read ?? NOT_MODIFIED;
         }

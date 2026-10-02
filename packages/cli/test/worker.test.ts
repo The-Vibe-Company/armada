@@ -297,6 +297,29 @@ describe("armada ask, inbox and answer", () => {
     });
   });
 
+  test("answer checks a hand-back's PR through the CLI and records only the recovery note", async () => {
+    const w = worker(SIGNED_IN);
+    w.linear.add("DEMO-7", { statusType: "started" });
+    await w.store.putHandBack({
+      project: "widgets",
+      ticket: "DEMO-7",
+      author: null,
+      body: `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
+      at: NOW,
+    });
+    expect(await run(["answer", "1", "already merged"], w.io)).toBe(1);
+    expect(w.err()).toContain("Next: armada merge 9 --ticket DEMO-7 --dry-run");
+    expect((await w.store.getInboxItem("widgets", 1))?.resolvedAt).toBeNull();
+    w.net.rest = async () => Response.json(pullResponse({ number: 9, headSha: HEAD, state: "MERGED", checks: [] }));
+    w.reset();
+    expect(await run(["answer", "1", "already merged"], w.io)).toBe(0);
+    expect(w.out()).toContain("Inbox item #1 resolved.");
+    expect(w.out()).not.toContain("The worker resumes");
+    expect(w.err()).toBe("");
+    expect((await w.store.getInboxItem("widgets", 1))?.resolution).toBe("already merged");
+    expect(w.linear.writes).toEqual([]);
+  });
+
   test("a worker asks, the coordinator reads its inbox and records the answer, the worker resumes", async () => {
     const w = worker(SIGNED_IN);
     w.linear.add("DEMO-7");
