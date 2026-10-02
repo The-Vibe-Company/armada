@@ -149,7 +149,7 @@ armada answer --note ABC-12 "main moved: bring it in before you ship"  # an unso
 
 ## What the owner validates
 
-The owner decides only what they asked to: a merge their rule keeps for them, the work of a kind of ticket they want to see first (a design), and a question the coordinator escalates. Each is one item on the dashboard's **Validations** page (with a count in the sidebar), opened from one link, `https://<dashboard>/approve/<id>`, readable on a phone. "Yours to decide" on the overview holds those items only (and a coordinator that stopped answering); the workers' questions, plans and hand-backs stay with the coordinator, in one line: "With the coordinator: n, oldest 4 min".
+The owner decides only what they asked to: a merge their rule keeps for them, the work of a kind of ticket they want to see first (a design), and a question the coordinator escalates. Each is one item on the dashboard's **Validations** page, opened from one link, `https://<dashboard>/approve/<id>`, readable on a phone, and the first thing on the page of the session it concerns, its images full width. The overview groups the sessions in flight by coordinator and marks those items "À valider" (to validate) on the session's row, its coordinator and the menu; the workers' questions, plans and hand-backs stay with the coordinator.
 
 ```sh
 armada merge 34 --reason "CLI only"                                         # coordinator: the rule lets it merge on its own

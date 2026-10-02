@@ -8,13 +8,13 @@ They live in `packages/dashboard/perf/budgets.json`.
 
 | What | Budget | Measured on |
 |---|---|---|
-| Lighthouse performance | 95 or more, mobile and desktop | `/landing`, `/`, `/agents`, `/agents/WID-12`, `/projects`, `/validations`, `/insights`, `/activity` (the `fleet` demo world) |
+| Lighthouse performance | 95 or more, mobile and desktop | `/landing`, `/`, `/agents/WID-12`, `/projects`, `/validations`, `/insights`, `/activity` (the `fleet` demo world) |
 | Lighthouse accessibility | 100 | the same pages (axe checks every page in its own job, THE-891) |
 | Lighthouse best practices | 95 or more | the same pages |
 | Cumulative Layout Shift | 0, as Lighthouse shows it (three decimals) | the same pages |
 | Largest Contentful Paint | under 2.5 s on mobile | the same pages |
 | First-load JS per route, gzipped | its baseline plus 5% | every route of `next build` |
-| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on `/agents` (250 rows), filter the agents by harness, switch an agent's tab (both ways, on 350 activity rows), answer a decision on the overview |
+| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on the overview (`/`, 250 rows), filter the agents by harness, switch an agent's tab in its Details (both ways, on 350 activity rows), approve a validation on a session to validate (`/agents/WID-18`) |
 
 How they are measured:
 

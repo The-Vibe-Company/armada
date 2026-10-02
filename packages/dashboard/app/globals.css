@@ -3000,6 +3000,10 @@ a.ui-figure:hover {
   .sc-agent:not(.is-airy) > .ui-row-side {
     grid-area: side;
   }
+  /* A session to validate (THE-916): its badge takes the side, the harness's dot gives way. */
+  .sc-agent:not(.is-airy):has(> .ui-row-side .ui-pill) > .ui-row-side:not(:has(.ui-pill)) {
+    display: none;
+  }
   .sc-agent:not(.is-airy) > .ui-row-time {
     grid-area: time;
   }
@@ -3810,7 +3814,7 @@ a.ui-figure:hover {
   padding: 0;
   border: 0;
   color: var(--text);
-  background: rgb(0 0 0 / 0.92);
+  background: var(--bg);
 }
 .vd-viewer[open] {
   display: flex;
@@ -3855,17 +3859,13 @@ a.ui-figure:hover {
   flex: 1;
   min-height: 0;
   display: grid;
-  place-items: center;
-  padding: 0 16px 16px;
+  padding: 0 84px 16px;
 }
 .vd-viewer-stage img {
   display: block;
-  max-width: 100%;
-  max-height: 100%;
-  width: auto;
-  height: auto;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
-  border-radius: var(--r-sm);
 }
 .vd-viewer-nav {
   position: absolute;

@@ -8,9 +8,11 @@ import type { Interaction } from "./perf";
 
 /** The agent of the `large` world with hundreds of activity entries. */
 const LONG_AGENT = "WID-400";
+/** A session the owner has to validate (a merge to approve), in every demo world. */
+const TO_VALIDATE = "WID-18";
 const RUNS = 5;
-/** The pages it opens. */
-export const INP_PAGES = ["/agents", `/agents/${LONG_AGENT}`, "/"];
+/** The pages it opens; an agent's tabs are in its "Details", which `?tab=` opens (THE-916). */
+export const INP_PAGES = ["/", `/agents/${LONG_AGENT}?tab=activity`, `/agents/${TO_VALIDATE}`];
 
 declare global {
   interface Window {
@@ -77,10 +79,11 @@ export async function measureInteractions(base: string, cookie: string, slowdown
   try {
     const out: Interaction[] = [];
 
-    const agents = await open(browser, `${base}/agents`, cookie, slowdown);
-    const rows = await agents.locator("a[data-row]").count();
+    // The overview is the agents list, grouped by coordinator (THE-916).
+    const agents = await open(browser, `${base}/`, cookie, slowdown);
+    const rows = await agents.locator("a.sc-agent[data-row]").count();
     out.push({
-      name: `Open the ⌘K palette (/agents, ${rows} rows)`,
+      name: `Open the ⌘K palette (overview, ${rows} rows)`,
       ms: await typical(
         agents,
         async () => {
@@ -98,20 +101,20 @@ export async function measureInteractions(base: string, cookie: string, slowdown
       ms: await typical(
         agents,
         async () => {
-          await agents.locator('a[role="tab"][href="/agents?harness=claude-code"]').click();
+          await agents.locator('a[role="tab"][href="/?harness=claude-code"]').click();
           await agents.waitForURL(/harness=claude-code/);
         },
         async () => {
-          await agents.locator('a[role="tab"][href="/agents"]').click();
-          await agents.waitForURL(/\/agents$/);
+          await agents.locator('a[role="tab"][href="/"]').click();
+          await agents.waitForURL((url) => url.pathname === "/" && !url.search);
         },
       ),
     });
     await agents.context().close();
 
-    const agent = await open(browser, `${base}/agents/${LONG_AGENT}`, cookie, slowdown);
+    const agent = await open(browser, `${base}/agents/${LONG_AGENT}?tab=activity`, cookie, slowdown);
     const entries = await agent.locator(".ui-columns-main .ui-row").count();
-    const tab = (to: string) => agent.locator(`a[role="tab"][href="/agents/${LONG_AGENT}${to}"]`);
+    const tab = (to: string) => agent.locator(`a[role="tab"][href="/agents/${LONG_AGENT}${to || "?tab=activity"}"]`);
     out.push({
       name: "Switch an agent's tab (to Files)",
       ms: await typical(
@@ -122,7 +125,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
         },
         async () => {
           await tab("").click();
-          await agent.waitForURL(new RegExp(`/agents/${LONG_AGENT}$`));
+          await agent.waitForURL(/tab=activity/);
         },
       ),
     });
@@ -132,7 +135,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
         agent,
         async () => {
           await tab("").click();
-          await agent.waitForURL(new RegExp(`/agents/${LONG_AGENT}$`));
+          await agent.waitForURL(/tab=activity/);
         },
         async () => {
           await tab("?tab=files").click();
@@ -143,14 +146,14 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     await agent.context().close();
 
     // Once: the answer is recorded, and the card then says it was sent.
-    const overview = await open(browser, `${base}/`, cookie, slowdown);
+    const session = await open(browser, `${base}/agents/${TO_VALIDATE}`, cookie, slowdown);
     out.push({
-      name: "Answer a decision (overview)",
-      ms: await measure(overview, async () => {
-        await overview.locator('button[name="choice"], button[name="action"][value="approve"]').first().click();
+      name: "Approve a validation (session to validate)",
+      ms: await measure(session, async () => {
+        await session.locator('button[name="choice"], button[name="action"][value="approve"]').first().click();
       }),
     });
-    await overview.context().close();
+    await session.context().close();
     return out;
   } finally {
     await browser.close();
