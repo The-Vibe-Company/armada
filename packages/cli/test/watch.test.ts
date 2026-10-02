@@ -280,7 +280,10 @@ describe("armada watch", () => {
             removed = true;
           };
         };
-        c.io.inspectProcess = async () => identity();
+        c.io.inspectProcess = async () => {
+          const { started, command, cwd } = identity();
+          return { started, command, cwd };
+        };
         const fire = async () => {
           expect(await readWatchLockInfo(c.paths, P)).toEqual({ pid: 4242, identity: identity() });
           listener?.(signal);

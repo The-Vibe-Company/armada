@@ -299,7 +299,13 @@ export async function readWatchLock(paths: MachinePaths, project: string): Promi
 
 /** Compares a captured lock with its current holder, including identity (a reused PID is another holder). */
 export function sameWatchLock(a: WatchLock | null, b: WatchLock): boolean {
-  return a?.pid === b.pid && JSON.stringify(a.identity) === JSON.stringify(b.identity);
+  if (a?.pid !== b.pid) return false;
+  const left = a.identity;
+  const right = b.identity;
+  if (!left || !right) return left === right;
+  return (["project", "configPath", "started", "command", "cwd"] as const).every(
+    (field) => left[field] === right[field],
+  );
 }
 
 /** True while the process `pid` exists. */
