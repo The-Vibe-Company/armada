@@ -58,6 +58,36 @@ function worker(
 }
 
 describe("armada claim, report and release", () => {
+  test("shipping paths reach the ticket and coordinator inbox, without inventing legacy review evidence", async () => {
+    const w = worker(SIGNED_IN);
+    w.linear.add("DEMO-7", { labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }] });
+    w.net.rest = async () =>
+      Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
+    const handBack = ["report", "ready-to-merge", "--pr", "9", "--sha", HEAD];
+    for (const [path, line] of [
+      ["ship-pr-dev", "shipped with ship-pr-dev"],
+      ["fallback: GitHub OCR download unavailable", "shipped with the fallback: GitHub OCR download unavailable"],
+      [null, "shipping path unreported"],
+    ] as const) {
+      w.reset();
+      expect(await run(path ? [...handBack, "--shipped-with", path] : handBack, w.io)).toBe(0);
+      expect(w.linear.bodies.at(-1)).toContain(line);
+      expect(await run(["inbox"], w.io)).toBe(0);
+      expect(w.out()).toContain(line);
+    }
+    for (const path of ["fallback:", "other", "fallback: first\nsecond"]) {
+      const before = w.linear.writes.length;
+      expect(await run([...handBack, "--shipped-with", path], w.io)).toBe(1);
+      expect(w.linear.writes.length).toBe(before);
+    }
+    const item = w.store.items.find((i) => i.kind === "hand-back");
+    if (!item) throw new Error("hand-back missing");
+    item.body = `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`;
+    w.reset();
+    expect(await run(["inbox"], w.io)).toBe(0);
+    expect(w.out()).toContain("shipping path unreported");
+    expect(await run(["report", "shipping", "--message", "working", "--shipped-with", "ship-pr-dev"], w.io)).toBe(1);
+  });
   test("a signed-in worker claims, reports on its branch and releases; Armada records every event", async () => {
     const w = worker(SIGNED_IN);
     w.linear.add("DEMO-7");
@@ -144,7 +174,9 @@ describe("armada claim, report and release", () => {
     w.net.rest = async () =>
       Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
     expect(await run(["report", "ready-to-merge", "--pr", "9", "--sha", HEAD], w.io)).toBe(0);
-    expect(w.linear.bodies).toEqual([`Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`]);
+    expect(w.linear.bodies).toEqual([
+      `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported`,
+    ]);
   });
 
   test("--plan-file posts the plan under a one-line status, from a file or standard input", async () => {
@@ -304,7 +336,7 @@ describe("armada ask, inbox and answer", () => {
       project: "widgets",
       ticket: "DEMO-7",
       author: null,
-      body: `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green`,
+      body: `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported`,
       at: NOW,
     });
     expect(await run(["answer", "1", "already merged"], w.io)).toBe(1);

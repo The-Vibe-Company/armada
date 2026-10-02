@@ -366,6 +366,8 @@ export interface ReportInput {
   pr?: string | null;
   /** Full head SHA; required for ready-to-merge. */
   sha?: string | null;
+  /** ship-pr-dev, or fallback: <reason>. Optional for older workers. */
+  shippedWith?: string | null;
 }
 
 /** The heading of the plan block in a status comment, which `armada status` and the dashboard look for. */
@@ -430,6 +432,24 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
   let pr = resolvePr(ticket, config.github.repository, input.pr);
   const sha = input.sha?.trim().toLowerCase() || null;
 
+  const shippedWith = input.shippedWith?.trim();
+  if (
+    input.shippedWith != null &&
+    (input.phase !== "ready-to-merge" ||
+      /[\r\n]/.test(input.shippedWith) ||
+      !(shippedWith === "ship-pr-dev" || /^fallback: \S.*$/.test(shippedWith ?? "")))
+  )
+    throw new Refusal(
+      "--shipped-with is for ready-to-merge: use ship-pr-dev or fallback: <nonempty reason>, on one line",
+      'armada report ready-to-merge --pr <number> --sha <full sha> --shipped-with "ship-pr-dev"',
+    );
+  const shippingPath =
+    shippedWith === "ship-pr-dev"
+      ? "shipped with ship-pr-dev"
+      : shippedWith
+        ? `shipped with the ${shippedWith}`
+        : "shipping path unreported";
+
   let summary: string;
   let body: string;
   if (input.phase === "ready-to-merge") {
@@ -459,7 +479,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
         `${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
         `fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
       );
-    summary = `PR #${pr?.number}, head ${sha}, CI green`;
+    summary = `PR #${pr?.number}, head ${sha}, CI green; ${shippingPath}`;
     body = message;
   } else {
     if (!message && !plan)

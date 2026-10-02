@@ -10,6 +10,7 @@ import {
   type ArmadaApi,
   ArmadaApiError,
   type ArmadaConfig,
+  BUNDLED_SKILLS,
   type Check,
   CONFIG_FILE,
   ConfigError,
@@ -245,6 +246,57 @@ async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Che
   ];
 }
 
+/** Read-only review setup checks. The bootstrap comes from the trusted CLI bundle. */
+export async function reviewRuntimeChecks(io: Io, root: string): Promise<Check[]> {
+  if (!io.exec)
+    return [
+      {
+        id: "review-runtime",
+        level: "warning",
+        message: "review-code-dev prerequisites could not be checked",
+        fix: "run doctor in a terminal with Python 3.9+ and Git 2.41+",
+      },
+    ];
+  const exec = io.exec;
+  const checks: Check[] = [];
+  let pythonReady = false;
+  for (const [command, id, minimum] of [
+    ["python3", "review-python", "3.9.0"],
+    ["git", "review-git", "2.41.0"],
+  ] as const) {
+    const result = await exec(command, ["--version"], { cwd: root }).catch(() => null);
+    const version =
+      result?.code === 0 ? `${result.stdout} ${result.stderr}`.match(/\b(\d+\.\d+(?:\.\d+)?)/)?.[1] : null;
+    const ready = !!version && compareVersions(version, minimum) >= 0;
+    if (command === "python3") pythonReady = ready;
+    checks.push({
+      id,
+      level: ready ? "ok" : "warning",
+      message: ready
+        ? `${command} ${version} supports review-code-dev`
+        : `review-code-dev needs ${command} ${minimum}+; ${version ? `found ${version}` : "not available"}`,
+      fix: ready ? null : `install ${command} ${minimum}+ on this worker before running ship-pr-dev`,
+    });
+  }
+  if (pythonReady) {
+    const bootstrap = BUNDLED_SKILLS.find((s) => s.name === "review-code-dev")?.files.find(
+      (f) => f.path === "scripts/ocr.py",
+    )?.content;
+    if (!bootstrap) throw new Error("the bundled review-code-dev bootstrap is missing");
+    const result = await exec("python3", ["-c", bootstrap, "check"], { cwd: root }).catch(() => null);
+    checks.push({
+      id: "review-ocr",
+      level: result?.code === 0 ? "ok" : "warning",
+      message: result ? (result.stdout || result.stderr).trim() : "review-code-dev OCR cache could not be checked",
+      fix:
+        result?.code === 0
+          ? null
+          : "follow review-code-dev setup notes; run `python3 .agents/skills/review-code-dev/scripts/ocr.py version` to bootstrap OCR 1.12.1 (GitHub HTTPS access and writable cache; no extra API key)",
+    });
+  }
+  return checks;
+}
+
 /** The secrets the project expects (`[secrets] names` in armada.toml) that Armada does not keep for it. Names only. */
 async function secretChecks(api: ArmadaApi, config: ArmadaConfig | null, credentials: Credentials): Promise<Check[]> {
   const expected = config?.secrets.names ?? [];
@@ -304,6 +356,7 @@ export async function buildDoctor(io: Io, armadaVersion: string): Promise<Doctor
     ...keyFileChecks(machine, credentials),
     ...(await labelChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
+    ...(config ? await reviewRuntimeChecks(io, root) : []),
     ...(await secretChecks(api, config, credentials)),
   ];
   return {

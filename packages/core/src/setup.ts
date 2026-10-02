@@ -491,18 +491,9 @@ export function lockText(lock: SkillsLock | null, armadaVersion: string): string
   return `${JSON.stringify({ version: lock?.version ?? 1, skills: sorted }, null, 2)}\n`;
 }
 
-/**
- * The smallest set of changes that makes checkRepository pass: missing or
- * outdated skills, links, lock entries, Conductor setup and the ignore line.
- * Never replaces an existing armada.toml. Throws SetupError when a file it
- * must edit cannot be read safely.
- */
-export async function planSetup(view: RepoView, opts: PlanOptions): Promise<SetupPlan> {
+/** Update only bundled skills, their links/lock and the shipping artifact ignore. */
+export async function planSkills(view: RepoView, armadaVersion: string): Promise<SetupPlan> {
   const plan: SetupPlan = { writes: [], removes: [], links: [], installed: [], updated: [], stopHook: false };
-
-  if (opts.configText !== null && (await view.readFile(CONFIG_FILE)) === null)
-    plan.writes.push({ path: CONFIG_FILE, content: opts.configText });
-
   const wholeDir = await linksWholeDir(view);
   for (const skill of BUNDLED_SKILLS) {
     const folder = await view.readFolder(skillDir(skill.name));
@@ -518,8 +509,31 @@ export async function planSetup(view: RepoView, opts: PlanOptions): Promise<Setu
   }
 
   const lockBefore = await view.readFile(SKILLS_LOCK_FILE);
-  const lockAfter = lockText(parseSkillsLock(lockBefore), opts.armadaVersion);
+  const lockAfter = lockText(parseSkillsLock(lockBefore), armadaVersion);
   if (lockAfter !== lockBefore) plan.writes.push({ path: SKILLS_LOCK_FILE, content: lockAfter });
+
+  const gitignore = await view.readFile(GITIGNORE);
+  if (!ignoresShipArtifacts(gitignore)) {
+    const base = gitignore === null || gitignore === "" ? "" : `${gitignore.replace(/\n*$/, "\n")}\n`;
+    plan.writes.push({
+      path: GITIGNORE,
+      content: `${base}# Local agent run artifacts (ship-pr-dev)\n${SHIP_ARTIFACTS}\n`,
+    });
+  }
+  return plan;
+}
+
+/**
+ * The smallest set of changes that makes checkRepository pass: missing or
+ * outdated skills, links, lock entries, Conductor setup and the ignore line.
+ * Never replaces an existing armada.toml. Throws SetupError when a file it
+ * must edit cannot be read safely.
+ */
+export async function planSetup(view: RepoView, opts: PlanOptions): Promise<SetupPlan> {
+  const plan = await planSkills(view, opts.armadaVersion);
+
+  if (opts.configText !== null && (await view.readFile(CONFIG_FILE)) === null)
+    plan.writes.push({ path: CONFIG_FILE, content: opts.configText });
 
   const settings = await view.readFile(CONDUCTOR_SETTINGS);
   if (settings === null)
@@ -542,14 +556,6 @@ export async function planSetup(view: RepoView, opts: PlanOptions): Promise<Setu
     }
   }
 
-  const gitignore = await view.readFile(GITIGNORE);
-  if (!ignoresShipArtifacts(gitignore)) {
-    const base = gitignore === null || gitignore === "" ? "" : `${gitignore.replace(/\n*$/, "\n")}\n`;
-    plan.writes.push({
-      path: GITIGNORE,
-      content: `${base}# Local agent run artifacts (ship-pr-dev)\n${SHIP_ARTIFACTS}\n`,
-    });
-  }
   return plan;
 }
 

@@ -8,6 +8,7 @@
     "packages/*"
   ],
   "scripts": {
+    "skills:bundle": "bun scripts/bundle-skills.ts",
     "armada": "bun packages/cli/src/main.ts",
     "lint": "biome check .",
     "format": "biome check --write .",

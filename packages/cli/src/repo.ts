@@ -14,7 +14,7 @@ async function collect(base: string, dir: string, out: { path: string; content: 
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (entry.name !== ".git" && entry.name !== "node_modules") await collect(base, full, out);
+      if (![".git", "node_modules", "__pycache__"].includes(entry.name)) await collect(base, full, out);
     } else if (entry.isFile())
       out.push({ path: relative(base, full).split(sep).join("/"), content: await readFile(full) });
   }
@@ -63,6 +63,9 @@ async function assertNoLinkedParent(root: string, path: string): Promise<void> {
 export async function applyPlan(root: string, plan: SetupPlan): Promise<void> {
   for (const path of [...plan.removes, ...plan.writes.map((w) => w.path), ...plan.links.map((l) => l.path)])
     await assertNoLinkedParent(root, path);
+  for (const w of plan.writes)
+    if ((await lstat(join(root, w.path)).catch(() => null))?.isSymbolicLink())
+      throw new CommandError(`${w.path} is a link; Armada does not write through it. Replace it with a file first.`);
   for (const path of plan.removes) await rm(join(root, path), { force: true });
   for (const w of plan.writes) {
     const full = join(root, w.path);

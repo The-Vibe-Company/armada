@@ -32,6 +32,7 @@ import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
+import { updateSkills } from "./skills.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
@@ -64,6 +65,10 @@ const COMMAND_HELP: Record<string, string> = {
                     It asks before adding the Claude Code stop hook to the repository's
                     .claude/settings.json (yes without a terminal); --no-stop-hook skips it
 `,
+  skills: `  skills update     Update all bundled skills, links and skills-lock.json in the current
+                    checkout, and ignore shipping artifacts. No sign-in required; review
+                    and commit the changes on your branch. Project settings stay as they are
+`,
   claim: `  claim <ticket> --runtime <name> --handle <id> [--branch <name>]
         [--profile <name> [--reason <why>]] [--validation <n,...> --validation-reason <why>]
                     Claim a ticket for this worker: In Progress, phase planning, runtime
@@ -73,7 +78,7 @@ const COMMAND_HELP: Record<string, string> = {
                     rules the coordinator judged apply. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
-        [--plan <text> | --plan-file <path|->]
+        [--plan <text> | --plan-file <path|->] [--shipped-with "ship-pr-dev"|"fallback: <reason>"]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge, awaiting-validation); the same phase again is a
                     status update; armada validate is how a worker enters awaiting-validation.
@@ -81,6 +86,7 @@ const COMMAND_HELP: Record<string, string> = {
                     message's first line, else the plan's); awaiting-approval sends it to
                     the coordinator's inbox.
                     ready-to-merge needs --sha (full 40 characters, the PR head) and green CI.
+                    --shipped-with names the shipping path in its hand-back and inbox.
                     Prints the ticket's state and what waits in this worker's inbox.
 `,
   release: `  release --reason <text>
@@ -230,6 +236,7 @@ const CONFIG_OPTION = new Set([
   "launch",
 ]);
 const JSON_OPTION = new Set([
+  "skills",
   ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach"),
   "doctor",
   "auth",
@@ -317,6 +324,7 @@ const VALUE_OPTIONS = [
   "plan-file",
   "pr",
   "sha",
+  "shipped-with",
   "reason",
   "program-root",
   "name",
@@ -357,7 +365,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
-  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha"],
+  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
@@ -625,6 +633,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.command === "doctor") {
       noExtra(args.rest);
       return await doctor(io, args.json, version);
+    }
+    if (args.command === "skills") {
+      if (args.rest.length !== 1 || args.rest[0] !== "update") throw new UsageError("skills needs a command: update");
+      return await updateSkills(io, version, args.json);
     }
     if (args.command === "init") {
       noExtra(args.rest);
