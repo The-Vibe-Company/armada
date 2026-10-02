@@ -767,6 +767,15 @@ const en = {
       insights: "Insights",
       activity: "Activity",
     } satisfies Record<NonNullable<Section>, string>,
+    /** The phone's tab bar: a word each, as short as the tab. */
+    tab: {
+      overview: "Overview",
+      validations: "Validations",
+      projects: "Projects",
+      agents: "Agents",
+      insights: "Insights",
+      activity: "Activity",
+    } satisfies Record<NonNullable<Section>, string>,
     projectsHeading: "Projects",
     harnessHeading: "Harness",
     local: (name: string) => `${name} · local`,
@@ -1861,6 +1870,14 @@ const fr: Strings = {
     search: "Rechercher",
     nav: {
       overview: "Vue d'ensemble",
+      validations: "Validations",
+      projects: "Projets",
+      agents: "Agents",
+      insights: "Tendances",
+      activity: "Activité",
+    },
+    tab: {
+      overview: "Accueil",
       validations: "Validations",
       projects: "Projets",
       agents: "Agents",

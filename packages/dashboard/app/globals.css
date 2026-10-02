@@ -661,8 +661,8 @@ button.chip:hover {
   width: var(--sidebar);
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 6px 10px;
+  gap: 18px;
+  padding: 6px 12px 4px;
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -670,7 +670,7 @@ button.chip:hover {
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 32px;
+  height: 34px;
   padding: 0 6px;
 }
 .sh-brand-home {
@@ -689,6 +689,12 @@ button.chip:hover {
   font-size: 14px;
   letter-spacing: -0.02em;
 }
+/* The phone's top bar only: the page's name and the way back. */
+.sh-top-title,
+.sh-back,
+.sh-tabbar {
+  display: none;
+}
 .sh-org {
   position: relative;
 }
@@ -701,10 +707,13 @@ button.chip:hover {
   min-height: 24px;
   border: 0;
   background: none;
-  padding: 2px 4px;
+  padding: 2px 6px;
   border-radius: var(--r-sm);
-  font-size: 12px;
+  font-size: var(--fs-small);
   color: var(--text-3);
+  transition:
+    background-color var(--t-1) ease,
+    color var(--t-1) ease;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -727,11 +736,9 @@ button.chip:hover {
   display: flex;
   flex-direction: column;
   padding: 6px;
-  border-radius: var(--r-md);
+  border-radius: var(--r-card);
   background: var(--overlay);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(10px);
+  box-shadow: var(--pop-shadow);
 }
 .sh-menu form {
   display: contents;
@@ -795,14 +802,18 @@ button.chip:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 30px;
-  padding: 0 8px;
+  height: 32px;
+  padding: 0 8px 0 10px;
   border: 0;
-  border-radius: var(--r);
-  background: rgba(255, 255, 255, 0.04);
+  border-radius: var(--r-control);
+  background: var(--fill);
+  box-shadow: var(--lit);
   color: var(--text-3);
   cursor: pointer;
   white-space: nowrap;
+  transition:
+    background-color var(--t-1) ease,
+    color var(--t-1) ease;
 }
 .sh-search:hover {
   background: var(--fill-2);
@@ -820,89 +831,43 @@ button.chip:hover {
   gap: 10px;
   height: 30px;
   padding: 0 8px;
-  border-radius: var(--r);
+  border-radius: var(--r-control);
   color: var(--text-2);
   white-space: nowrap;
+  transition:
+    background-color var(--t-1) ease,
+    color var(--t-1) ease;
 }
 .sh-item {
   height: 28px;
 }
 a.sh-nav-item:hover,
 a.sh-item:hover {
+  background: var(--hover);
   color: var(--text);
 }
-.sh-nav-item[aria-current="page"] {
-  background: var(--fill-2);
-  color: var(--text);
-}
+.sh-nav-item[aria-current="page"],
 .sh-item[aria-current="page"] {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--fill);
+  box-shadow: var(--lit);
+  color: var(--text);
+}
+.sh-icon {
+  flex: none;
+  color: var(--text-3);
+  transition: color var(--t-1) ease;
+}
+:is(a:hover, [aria-current="page"]) .sh-icon {
+  color: var(--text);
 }
 .sh-nav-label {
   font-weight: 500;
   flex: 1;
 }
-.sh-nav-icon {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  display: grid;
-  place-items: center;
-}
-.sh-nav-icon::before {
-  content: "";
-  border: 1.5px solid currentColor;
-}
-.sh-nav-icon.is-overview::before {
-  width: 11px;
-  height: 11px;
-  border-radius: 3px;
-}
-.sh-nav-icon.is-projects::before {
-  width: 12px;
-  height: 10px;
-  border-radius: 2.5px;
-}
-.sh-nav-icon.is-validations::before {
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-  rotate: 45deg;
-}
-.sh-nav-icon.is-agents::before {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-}
-/* Insights: a rising bar's corner, the chart's two axes. */
-.sh-nav-icon.is-insights::before {
-  width: 11px;
-  height: 11px;
-  border-width: 0 0 1.5px 1.5px;
-  border-radius: 0 0 0 2px;
-}
-/* Activity: a feed's lines, the middle one shorter. */
-.sh-nav-icon.is-activity::before,
-.sh-nav-icon.is-activity::after {
-  grid-area: 1 / 1;
-}
-.sh-nav-icon.is-activity::before {
-  width: 12px;
-  height: 10px;
-  border-width: 1.5px 0;
-  border-radius: 0;
-}
-.sh-nav-icon.is-activity::after {
-  content: "";
-  justify-self: start;
-  width: 8px;
-  height: 1.5px;
-  margin-left: 1px;
-  background: currentColor;
-}
 .sh-count {
   margin-left: auto;
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
@@ -916,12 +881,11 @@ a.sh-item:hover {
 }
 .sh-group-h {
   padding: 0 8px 6px;
-  font-size: 11.5px;
-  font-weight: 500;
+  font-size: var(--fs-small);
   color: var(--text-3);
 }
 .sh-item-icon {
-  width: 14px;
+  width: 16px;
   flex: none;
   display: grid;
   place-items: center;
@@ -942,14 +906,14 @@ a.sh-item:hover {
 .sh-live {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px;
-  font-size: 12px;
+  gap: 10px;
+  padding: 10px 8px;
+  font-size: var(--fs-small);
   color: var(--text-3);
   white-space: nowrap;
 }
 .sh-live.is-failed {
-  color: var(--critical);
+  color: var(--active);
 }
 /* The deck: the one lit surface, its top edge lit, the horizon behind its top. */
 .sh-main {
@@ -994,16 +958,19 @@ a.sh-item:hover {
 .sh-crumbs {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
 }
 .sh-crumb {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   white-space: nowrap;
   font-weight: 500;
   color: var(--text-3);
+}
+.sh-crumb a {
+  transition: color var(--t-1) ease;
 }
 .sh-crumb a:hover {
   color: var(--text);
@@ -3553,50 +3520,175 @@ a.ui-figure:hover {
    takes the whole width, so nothing scrolls sideways but the timeline. The
    projects and harnesses stay one tap away, on Projects and Agents. */
 @media (max-width: 719px) {
+  :root {
+    --edge: 16px;
+    --fs-display: 22px;
+    --fs-figure: 24px;
+  }
   .sh {
     min-width: 0;
     flex-direction: column;
     padding: 0;
     height: 100dvh;
   }
+  /* The top bar: the way back or the mark, the page's name, the organization, search. */
   .sh-side {
     width: auto;
+    height: var(--bar);
+    flex: none;
     flex-direction: row;
     align-items: center;
-    gap: 2px;
-    padding: 4px 8px;
+    gap: 6px;
+    padding: 0 12px 0 16px;
     overflow: visible;
+    background: var(--surface);
+    border-bottom: 1px solid var(--line-soft);
   }
   .sh-side > .sh-group,
+  .sh-side > .sh-nav,
   .sh-side > .spacer,
   .sh-side > .sh-live {
     display: none;
   }
   .sh-brand {
+    flex: 1;
+    min-width: 0;
     flex-direction: row;
-    gap: 2px;
+    gap: 10px;
+    height: auto;
     padding: 0;
   }
-  .sh-search,
-  .sh-nav-item {
+  .sh-back {
+    display: grid;
+    place-items: center;
     width: 32px;
     height: 32px;
+    margin-left: -8px;
+    border-radius: var(--r-control);
+    color: var(--text-3);
+  }
+  .sh-back + .sh-brand-home {
+    display: none;
+  }
+  .sh-top-title {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .sh-brand .sh-org-name {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: hidden;
+    clip: auto;
+  }
+  .sh-org-button {
+    height: 32px;
+    padding: 0 10px;
+    border-radius: var(--r-control);
+    background: var(--fill);
+    color: var(--text-2);
+  }
+  .sh-search {
+    flex: none;
+    width: 36px;
+    height: 36px;
     padding: 0;
     justify-content: center;
-  }
-  .sh-nav {
-    flex-direction: row;
-    gap: 2px;
-    margin-left: auto;
+    border-radius: var(--r-seg);
   }
   .sh-main {
     border-radius: 0;
-    border-width: 1px 0 0;
+    box-shadow: none;
   }
-  .ui-header,
-  .ui-toolbar {
-    padding-left: 12px;
-    padding-right: 12px;
+  .sh-main::after {
+    left: 0;
+    right: 0;
+  }
+  .sh-scroll {
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+  .sh-scroll::before {
+    left: -20%;
+    right: -20%;
+  }
+  /* The sections: a tab bar at the bottom, the one blurred surface with toasts (THE-892). */
+  .sh-tabbar {
+    position: fixed;
+    z-index: 20;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+    background: color-mix(in oklab, var(--bg) 88%, transparent);
+    backdrop-filter: blur(18px) saturate(1.3);
+    -webkit-backdrop-filter: blur(18px) saturate(1.3);
+    border-top: 1px solid var(--line);
+  }
+  .sh-tab {
+    position: relative;
+    display: grid;
+    justify-items: center;
+    gap: 3px;
+    min-width: 0;
+    padding: 6px 0 4px;
+    border-radius: var(--r-seg);
+    font-size: 10.5px;
+    color: var(--text-3);
+    transition:
+      color var(--t-1) ease,
+      scale var(--t-1) var(--ease-out);
+  }
+  .sh-tab:active {
+    scale: 0.96;
+  }
+  .sh-tab[aria-current="page"] {
+    color: var(--text);
+  }
+  .sh-tab[aria-current="page"] .sh-icon {
+    filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.35));
+  }
+  .sh-tab-label {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sh-tab-badge {
+    position: absolute;
+    top: 2px;
+    left: calc(50% + 5px);
+    display: grid;
+    place-items: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px var(--bg);
+    color: #160a03;
+    font-size: 10px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  /* The header bar keeps the page's actions; its name is in the top bar. */
+  .ui-header .sh-crumbs {
+    display: none;
+  }
+  .ui-header:has(.ui-header-actions:empty) {
+    height: 0;
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
   }
   .ui-header-hints {
     display: none;
@@ -3616,17 +3708,13 @@ a.ui-figure:hover {
   .ui-section-h {
     flex-wrap: wrap;
     height: auto;
-    min-height: 36px;
+    min-height: var(--band-h);
     row-gap: 2px;
-    padding: 6px 12px;
+    padding: 6px var(--edge);
   }
   .ui-section-side {
     flex-wrap: wrap;
     white-space: normal;
-  }
-  .ui-row {
-    padding-left: 12px;
-    padding-right: 12px;
   }
   /* A fact's name over its value, the value on as many lines as it needs. */
   .ui-row:has(> .sc-fact-k) {
@@ -3670,7 +3758,12 @@ a.ui-figure:hover {
   }
   .sh.is-focus .sh-main {
     border-radius: 0;
-    border: 0;
+  }
+  .sh.is-focus .sh-tabbar {
+    display: none;
+  }
+  .sh.is-focus .sh-scroll {
+    padding-bottom: 0;
   }
 }
 @media (max-width: 640px) {
