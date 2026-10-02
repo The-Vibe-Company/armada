@@ -7,7 +7,7 @@
 import type { ArmadaConfig } from "./config.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
-import type { Fleet, Lease, RuntimeHandle } from "./live.ts";
+import type { Fleet, Lease, MergeRecorded, RuntimeHandle } from "./live.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
@@ -158,6 +158,8 @@ const MERGE_BACKOFF_MS = [2_000, 4_000, 8_000];
 const CONFIRM_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000];
 /** Waits while GitHub computes mergeability (mergeStateStatus UNKNOWN). */
 const UNKNOWN_BACKOFF_MS = [2_000, 4_000];
+/** Two retries of the fleet clean-up after GitHub confirmed the merge. */
+const CLEANUP_BACKOFF_MS = [2_000, 4_000];
 /** Default of `armada merge --wait --timeout`. */
 export const MERGE_WAIT_DEFAULT_MS = 30 * 60_000;
 /** How often `--wait` reads the pull request again. */
@@ -1152,6 +1154,12 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
     const owner = await ownerDecision(ctx, input, c, false);
     c.lines.push(...owner.lines);
     c.decided = owner.decided;
+    const handBacks = c.ticket
+      ? await live(ctx, c.warnings, "read the hand-back for merge recovery", (fleet) =>
+          fleet.ticketItems(c.ticket?.id ?? ""),
+        )
+      : null;
+    const handBackId = handBacks?.find((item) => item.kind === "hand-back")?.id ?? null;
     await recheck(ctx, input, run, c);
     if (!(await renew()))
       throw new Refusal(
@@ -1173,7 +1181,7 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
         );
       }
     else lines.push("No ticket: nothing was written to Linear.");
-    return after(ctx, c, merged, lines);
+    return after(ctx, c, merged, lines, handBackId);
   };
   if (input.noLock) {
     early.push(`merged without the merge lock (--no-lock): make sure no other coordinator merges in ${slug} now`);
@@ -1206,10 +1214,18 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
 }
 
 /** The fleet's bookkeeping and the list of workers to tell, after the ticket is closed. */
-async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: string[]): Promise<MergeOutcome> {
+async function after(
+  ctx: MergeContext,
+  c: Checked,
+  merged: MergePull,
+  lines: string[],
+  handBackId: number | null,
+): Promise<MergeOutcome> {
   const ticket = c.ticket;
-  const live$ = ticket
-    ? await live(ctx, c.warnings, "record the merge", (fleet) =>
+  let live$: MergeRecorded | null = null;
+  if (ticket) {
+    for (let attempt = 0; ; attempt++) {
+      live$ = await live(ctx, c.warnings, "record the merge", (fleet) =>
         fleet.merge({
           ticket: ticket.id,
           number: merged.number,
@@ -1218,8 +1234,21 @@ async function after(ctx: MergeContext, c: Checked, merged: MergePull, lines: st
           headSha: merged.headSha,
           decision: c.decided ?? null,
         }),
-      )
-    : null;
+      );
+      if (live$) break;
+      if (!(await ctx.fleet()).fleet) {
+        if (ctx.lockRequired) lines.push(`Next: armada answer ${handBackId ?? "<hand-back id>"} "resolved: PR merged"`);
+        break;
+      }
+      const wait = CLEANUP_BACKOFF_MS[attempt];
+      if (wait === undefined) {
+        lines.push(`Next: armada answer ${handBackId ?? "<hand-back id>"} "resolved: PR merged"`);
+        break;
+      }
+      say(ctx, `#${merged.number} is merged; retrying Armada clean-up in ${wait / 1000} s…`);
+      await ctx.sleep(wait);
+    }
+  }
   if (live$?.resolved) lines.push(`Hand-back resolved in the coordinator's inbox.`);
 
   let workers: WorkerToTell[] = [];

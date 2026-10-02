@@ -3,7 +3,7 @@
 // The coordinator reads the inbox (`armada inbox`), delivers the answer in the
 // worker's session through the runtime guide, then records it (`armada answer`).
 // Armada never calls a runtime: these commands only record.
-import { entryKey, type Fleet, type InboxEntry, type InboxKind, type StoredInboxItem } from "./live.ts";
+import { entryKey, type Fleet, handBackPr, type InboxEntry, type InboxKind, type StoredInboxItem } from "./live.ts";
 import type { AgentPhase } from "./types.ts";
 import { live, type Outcome, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
 
@@ -210,11 +210,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       );
     if (item.resolvedAt)
       throw new Refusal(`inbox item #${itemId} was already resolved at ${item.resolvedAt}`, "armada inbox");
-    if (item.kind === "hand-back")
-      throw new Refusal(
-        `inbox item #${itemId} is a hand-back: armada merge resolves it once the pull request is merged`,
-        `armada merge <pr>${item.ticket ? ` --ticket ${item.ticket}` : ""} --dry-run`,
-      );
+    if (item.kind === "hand-back" && item.recipient === "coordinator") return answerHandBack(ctx, item, text, warnings);
     if (item.recipient !== "coordinator" || !ANSWERABLE.includes(item.kind))
       throw new Refusal(
         `inbox item #${itemId} is a ${item.kind} for the ${item.recipient}, not something to answer`,
@@ -303,4 +299,39 @@ async function declineLaunch(
             : `Launch request #${item.id} was already resolved.`,
         ];
   return { ticket: item.ticket ?? `#${item.id}`, url: "", lines, warnings: [...new Set(warnings)], inbox: null };
+}
+
+/** A stale hand-back is resolved directly; a departed worker has no phase to resume. */
+async function answerHandBack(
+  ctx: WorkerContext,
+  item: StoredInboxItem,
+  text: string,
+  warnings: string[],
+): Promise<Outcome> {
+  const ticket = item.ticket ? await ctx.linear.readTicket(item.ticket) : null;
+  const number = handBackPr(item.body);
+  let stale = ticket?.statusType === "completed" || ticket?.statusType === "canceled";
+  if (!stale && number !== null && ctx.readPull) {
+    const pull = await ctx.readPull(number);
+    stale =
+      pull?.number === number &&
+      pull.repo.toLowerCase() === ctx.config.github.repository.toLowerCase() &&
+      (pull.state === "merged" || pull.state === "closed");
+  }
+  if (!stale)
+    throw new Refusal(
+      `inbox item #${item.id} is a hand-back: armada merge resolves it once the pull request is merged`,
+      `armada merge ${number ?? "<pr>"}${item.ticket ? ` --ticket ${item.ticket}` : ""} --dry-run`,
+    );
+  warnings.push(...(ticket?.warnings ?? []));
+  const recorded = await live(ctx, warnings, "resolve the stale hand-back", (fleet) =>
+    fleet.answer({ text, note: false, ticket: item.ticket, item: item.id }),
+  );
+  return {
+    ticket: item.ticket ?? `#${item.id}`,
+    url: ticket?.url ?? "",
+    lines: recorded ? [recorded] : [],
+    warnings: [...new Set(warnings)],
+    inbox: null,
+  };
 }

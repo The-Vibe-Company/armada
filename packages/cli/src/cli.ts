@@ -123,7 +123,8 @@ const COMMAND_HELP: Record<string, string> = {
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: record an answer already delivered in the worker's
                     session (runtime guide): resolves the question or plan and posts it on
-                    the ticket. A ticket id answers its open questions and plans. Never calls a runtime
+                    the ticket. A ticket id answers its open questions and plans. A hand-back id can
+                    clear a merged/closed PR or a Done/Canceled ticket. Never calls a runtime
   answer --note <ticket|plan item> "<message>"
                     Coordinator: record a delivered note; an open plan is resolved
 `,

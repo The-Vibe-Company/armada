@@ -21,6 +21,7 @@ import {
   CLI_VERSION_HEADER,
   compareVersions,
   type FleetCaller,
+  type HandBackSnapshot,
   installCommand,
   isMaskedLaunchToken,
   MASKED_LAUNCH_TOKEN_REFUSAL,
@@ -625,18 +626,35 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       `the project ${project.slug} belongs to another organization`,
       `another slug in armada.toml ([project] slug), or sign in to the organization of ${project.slug}`,
     );
+  let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
-  if (op === "request" && caller.kind === "organization") {
+  if ((op === "request" || op === "inbox") && caller.kind === "organization") {
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
-    if (snapshot?.config.project.slug === project.slug && snapshot.config.github.repository === project.repository)
+    if (
+      snapshot?.config.project.slug === project.slug &&
+      snapshot.config.github.repository === project.repository &&
+      snapshot.config.tracker.programRoot === project.programRoot
+    ) {
       openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
+      handBackSnapshot = {
+        repository: project.repository,
+        issues: snapshot.sources.program.issues,
+        prs: snapshot.sources.forge?.prs ?? [],
+      };
+    }
   }
   const answer = await serveFleet(
     fleetStore(a.client),
     { op, project, caller, input: body.input },
-    { now, openPrs, cliVersion: request.headers.get(CLI_VERSION_HEADER), appUrl: a.settings.baseUrl },
+    {
+      now,
+      openPrs,
+      snapshot: handBackSnapshot,
+      cliVersion: request.headers.get(CLI_VERSION_HEADER),
+      appUrl: a.settings.baseUrl,
+    },
   );
   // An unchanged inbox: nothing to send.
   if (answer.status === 304) return new Response(null, { status: 304, headers: NO_STORE });

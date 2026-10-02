@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, askCoordinator, checkInbox } from "../src/inbox.ts";
-import { type FleetStore, readInbox, serveInbox } from "../src/live.ts";
+import { type FleetStore, type HandBackSnapshot, readInbox, serveInbox } from "../src/live.ts";
 import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_TOML, FakeLinear, fakeClock, NOW, tempFleet } from "./support.ts";
@@ -155,6 +155,51 @@ describe("ask and answer", () => {
     );
   });
 
+  test.each(["merged", "closed", "open", "unknown", "completed", "canceled"] as const)(
+    "answer resolves only a confirmed stale hand-back (%s)",
+    async (state) => {
+      const live = tempFleet();
+      const { linear, ctx } = setup(live);
+      linear.add("DEMO-7", { statusType: state === "completed" || state === "canceled" ? state : "started" });
+      await live.store.putHandBack({
+        project: P,
+        ticket: "DEMO-7",
+        author: null,
+        body: "Agent status: ready-to-merge — PR #9, head abc",
+        at: NOW,
+      });
+      const reads: number[] = [];
+      ctx.readPull = async (number) => {
+        reads.push(number);
+        return {
+          number,
+          repo: "acme/widgets",
+          url: "https://github.com/acme/widgets/pull/9",
+          title: "Synthetic PR",
+          state: state === "merged" || state === "closed" ? state : "open",
+        };
+      };
+      if (state === "unknown") ctx.readPull = null;
+      if (state === "open" || state === "unknown") {
+        expect(await refusal(answerItem(ctx, { target: "1", text: "already handled" }))).toContain(
+          "Next: armada merge 9 --ticket DEMO-7 --dry-run",
+        );
+        expect((await live.store.getInboxItem(P, 1))?.resolvedAt).toBeNull();
+      } else {
+        expect((await answerItem(ctx, { target: "1", text: "already handled" })).lines).toContain(
+          "Inbox item #1 resolved.",
+        );
+        expect(await live.store.getInboxItem(P, 1)).toMatchObject({
+          resolution: "already handled",
+          resolvedAt: NOW.toISOString(),
+        });
+        if (state === "completed" || state === "canceled") expect(reads).toEqual([]);
+      }
+      expect(linear.writes).toEqual([]);
+      expect(await live.store.openInboxItems({ project: P, recipient: "worker" })).toEqual([]);
+    },
+  );
+
   test("without Armada a question still blocks the ticket; an item id cannot be answered, a ticket can", async () => {
     const { linear, ctx } = setup(null);
     await working(ctx, linear, "DEMO-7");
@@ -177,6 +222,43 @@ describe("ask and answer", () => {
 });
 
 describe("the coordinator's inbox", () => {
+  test("an inbox read heals merged and completed hand-backs using only its project snapshot", async () => {
+    const db = memoryFleet();
+    for (const [project, ticket, body] of [
+      [P, "DEMO-7", "Agent status: ready-to-merge — PR #9, head abc"],
+      [P, "DEMO-8", "handed back"],
+      [P, "DEMO-9", "PR #10"],
+      [P, "DEMO-10", "PR #11"],
+      [P, "DEMO-11", "PR #12"],
+      [P, "DEMO-12", "PR #13"],
+      ["gadgets", "GAD-1", "PR #9"],
+    ] as const)
+      await db.putHandBack({ project, ticket, body, author: null, at: NOW });
+    const snapshot: HandBackSnapshot = {
+      repository: "acme/widgets",
+      issues: [
+        { id: "DEMO-8", statusType: "completed" },
+        { id: "DEMO-10", statusType: "canceled" },
+      ],
+      prs: [
+        { repo: "acme/widgets", number: 9, state: "merged" },
+        { repo: "acme/widgets", number: 10, state: "open" },
+        { repo: "acme/widgets", number: 11, state: "closed" },
+        { repo: "acme/gadgets", number: 12, state: "merged" },
+      ],
+    };
+    const options = { project: P, silentAfterMinutes: 15, now: NOW };
+    expect((await readInbox(db, options)).map((i) => i.id)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect((await readInbox(db, { ...options, snapshot })).map((i) => i.id)).toEqual([3, 4, 5, 6]);
+    for (const id of [1, 2])
+      expect(await db.getInboxItem(P, id)).toMatchObject({
+        resolution: "resolved: PR merged",
+        resolvedAt: NOW.toISOString(),
+      });
+    expect((await db.getInboxItem("gadgets", 7))?.resolvedAt).toBeNull();
+    expect((await readInbox(db, { ...options, snapshot })).map((i) => i.id)).toEqual([3, 4, 5, 6]);
+  });
+
   test("only the reading coordinator's exact nonempty handle is excluded from silence, not open items", async () => {
     const db = memoryFleet();
     for (const [ticket, handle] of [
