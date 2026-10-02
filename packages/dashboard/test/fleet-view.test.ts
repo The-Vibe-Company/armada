@@ -10,6 +10,7 @@ import {
   fileShape,
   harnessOf,
   PROJECT_PALETTE,
+  paths,
   placeOf,
   projectColor,
   sectionOf,
@@ -71,29 +72,38 @@ test("a project keeps its color whatever other projects exist", () => {
 });
 
 describe("places", () => {
-  test("an agent's page belongs to where it was opened from", () => {
+  test("an agent's page sits under the overview, or under the project it was opened from", () => {
     const agent = placeOf("/agents/WID-15");
     expect(agent).toEqual({ kind: "agent", ticket: "WID-15" });
     const project = placeOf("/projects/widgets");
-    expect(sectionOf(agent, project)).toBe("projects");
-    expect(sectionOf(agent, placeOf("/"))).toBe("overview");
-    expect(sectionOf(agent, null)).toBe("agents");
     expect(crumbsOf(agent, project).map((c) => c.kind)).toEqual(["projects", "project", "agent"]);
     expect(crumbsOf(agent, null)).toEqual([
-      { kind: "agents", href: "/agents" },
+      { kind: "overview", href: "/" },
       { kind: "agent", ticket: "WID-15", href: null },
     ]);
     expect(placeOf("/organization/keys")).toEqual({ kind: "organization", page: "keys" });
   });
 
-  test("Esc leads to where an agent was opened from, else to the parent, never out of the app", () => {
+  test("the menu has the overview, Activity, Insights and the organization; the other pages are the overview's", () => {
+    // THE-916: the Agents page is the overview, and the pages out of the menu belong to it.
+    expect(placeOf("/agents")).toEqual({ kind: "overview" });
+    for (const path of ["/", "/agents/WID-15", "/projects", "/projects/widgets", "/validations", "/approve/3"])
+      expect(sectionOf(placeOf(path))).toBe("overview");
+    expect(sectionOf(placeOf("/activity"))).toBe("activity");
+    expect(sectionOf(placeOf("/insights"))).toBe("insights");
+    expect(sectionOf(placeOf("/organization/keys"))).toBe("organization");
+    expect(sectionOf(placeOf("/design"))).toBeNull();
+    expect(paths.coordinator("widgets")).toBe("/?coordinator=widgets");
+  });
+
+  test("Esc leads to where an agent was opened from, else to the overview, never out of the app", () => {
     const agent = placeOf("/agents/WID-15");
     expect(escapeTarget(agent, "/projects/widgets")).toBe("/projects/widgets");
     expect(escapeTarget(agent, "/")).toBe("/");
-    expect(escapeTarget(agent, null)).toBe("/agents");
-    expect(escapeTarget(agent, "/organization/keys")).toBe("/agents");
+    expect(escapeTarget(agent, null)).toBe("/");
+    expect(escapeTarget(agent, "/organization/keys")).toBe("/");
     expect(escapeTarget(placeOf("/projects/widgets"), "/agents/WID-15")).toBe("/projects");
-    expect(escapeTarget(placeOf("/agents"), "/")).toBeNull();
+    expect(escapeTarget(placeOf("/"), "/agents/WID-15")).toBeNull();
   });
 });
 

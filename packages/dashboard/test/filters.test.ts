@@ -9,7 +9,7 @@ import {
   filterProjects,
   filterQuery,
   filterValidations,
-  isCurrentView,
+  LISTS,
   type ListFilters,
   listOfPath,
   NO_FILTERS,
@@ -70,15 +70,23 @@ describe("filters in the address", () => {
       ["validations", NO_FILTERS],
     ];
     for (const [list, view] of views) {
-      const query = filterQuery(view);
+      const query = filterQuery(list, view);
       expect(parseFilters(list, new URLSearchParams(query))).toEqual(view);
-      expect(filterHref(list, view)).toBe(query ? `/${list}?${query}` : `/${list}`);
+      expect(filterHref(list, view)).toBe(query ? `${LISTS[list].path}?${query}` : LISTS[list].path);
     }
-    expect(filterQuery(f({ sort: "age", q: "a  b ", project: "widgets", mine: true }))).toBe(
+    expect(filterQuery("projects", f({ sort: "age", q: "a  b ", project: "widgets", mine: true }))).toBe(
       "project=widgets&mine=1&q=a++b+&sort=age",
     );
     // The same view typed in another order is the same address.
-    expect(canonicalQuery("agents", "?sort=age&q=x&project=widgets")).toBe("project=widgets&q=x&sort=age");
+    expect(canonicalQuery("projects", "?sort=age&q=x&project=widgets")).toBe("project=widgets&q=x&sort=age");
+  });
+
+  test("the overview (THE-916) is the agents list, filtered on a coordinator; its old `project=` still reads", () => {
+    expect(listOfPath("/")).toBe("agents");
+    expect(filterHref("agents", f({ project: "widgets", state: "error" }))).toBe("/?coordinator=widgets&state=error");
+    expect(parseFilters("agents", new URLSearchParams("project=widgets")).project).toBe("widgets");
+    expect(parseFilters("agents", new URLSearchParams("coordinator=gadgets&project=widgets")).project).toBe("gadgets");
+    expect(canonicalQuery("agents", "sort=age&project=widgets")).toBe("coordinator=widgets&sort=age");
   });
 
   test("what a list does not understand is dropped: unknown keys and values, another list's states, a phase sort on validations", () => {
@@ -93,9 +101,8 @@ describe("filters in the address", () => {
     expect(parseFilters("projects", new URLSearchParams("state=on-track")).state).toBe("on-track");
     // A profile is named as armada.toml names it.
     const spaced = f({ profile: "opus 4" });
-    expect(parseFilters("agents", new URLSearchParams(filterQuery(spaced)))).toEqual(spaced);
+    expect(parseFilters("agents", new URLSearchParams(filterQuery("agents", spaced)))).toEqual(spaced);
     expect(parseFilters("agents", new URLSearchParams("profile=a%0Ab")).profile).toBeNull();
-    expect(listOfPath("/agents")).toBe("agents");
     expect(listOfPath("/agents/WID-1")).toBeNull();
   });
 });
@@ -185,7 +192,7 @@ describe("applied to the lists", () => {
 });
 
 describe("saved views", () => {
-  test("a view is named, checked and kept canonical; it opens its list with its filters, and knows when it is shown", () => {
+  test("a view is named, checked and kept canonical; it opens its list with its filters", () => {
     expect(checkView({ name: "  Red   CI ", list: "agents", query: "sort=age&state=error&bogus=1" })).toEqual({
       ok: true,
       view: { name: "Red CI", list: "agents", query: "state=error&sort=age" },
@@ -194,10 +201,9 @@ describe("saved views", () => {
     expect(checkView({ name: "x".repeat(41), list: "agents", query: "" })).toEqual({ ok: false, problem: "name" });
     expect(checkView({ name: "Mine", list: "settings", query: "" })).toEqual({ ok: false, problem: "list" });
     const view = { list: "agents" as const, query: "state=error&sort=age" };
-    expect(viewHref(view)).toBe("/agents?state=error&sort=age");
-    expect(isCurrentView(view, "/agents", "sort=age&state=error")).toBe(true);
-    expect(isCurrentView(view, "/agents", "state=error")).toBe(false);
-    expect(isCurrentView(view, "/projects", "state=error&sort=age")).toBe(false);
+    expect(viewHref(view)).toBe("/?state=error&sort=age");
+    // A view saved on /agents before THE-916 opens the overview on the same coordinator.
+    expect(viewHref({ list: "agents", query: "project=widgets" })).toBe("/?coordinator=widgets");
   });
 
   test("/activity (THE-894) keeps its own address: a view of it is canonical, without the page cursor", () => {
@@ -207,7 +213,6 @@ describe("saved views", () => {
     });
     const view = { list: "activity" as const, query: "project=widgets&ticket=WID-2" };
     expect(viewHref(view)).toBe("/activity?project=widgets&ticket=WID-2");
-    expect(isCurrentView(view, "/activity", "ticket=wid-2&project=widgets")).toBe(true);
     expect(listOfPath("/activity")).toBe("activity");
   });
 });

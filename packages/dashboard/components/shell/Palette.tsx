@@ -31,6 +31,7 @@ import { Kbd, ProjectChip, StatusDot } from "../ui";
 import { useFleet, useNow, useShell } from "./context";
 import { SearchIcon } from "./Logo";
 import { stateLabel } from "./labels";
+import { useViews } from "./views";
 
 // ------------------------------------------------------------ the index
 
@@ -90,12 +91,14 @@ export function Palette({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDivElement>(null);
   const p = t.shell.palette;
   const live = overview.live.state === "ok" && !failed;
+  const { views } = useViews();
 
   useEffect(() => setRecent(readRecent()), []);
 
   const items = useMemo(
-    () => searchItems(overview, index ?? EMPTY_INDEX, { t, lang, density, organization: account !== null, live }),
-    [overview, index, t, lang, density, account, live],
+    () =>
+      searchItems(overview, index ?? EMPTY_INDEX, { t, lang, density, organization: account !== null, live, views }),
+    [overview, index, t, lang, density, account, live, views],
   );
   const groups = useMemo(() => search(items, query, { recent }), [items, query, recent]);
   const flat = useMemo(() => flatten(groups), [groups]);

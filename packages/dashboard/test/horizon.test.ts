@@ -45,7 +45,7 @@ const fleet = {
 describe("the horizon", () => {
   test("is orange on the fleet's pages while something waits for the owner, red once nothing does but a session fails", () => {
     expect(horizonOf(fleet, { kind: "overview" })).toBe("yours");
-    expect(horizonOf(fleet, { kind: "agents" })).toBe("yours");
+    expect(horizonOf(fleet, { kind: "projects" })).toBe("yours");
     expect(horizonOf({ ...fleet, validations: [] }, { kind: "overview" })).toBe("fail");
   });
 

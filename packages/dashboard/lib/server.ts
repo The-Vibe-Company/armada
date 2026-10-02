@@ -12,18 +12,14 @@
 import { createHash } from "node:crypto";
 import "server-only";
 import {
-  awayWindow,
   CONFIG_FILE,
   type FleetOverview,
   fetchDefaultBranchFile,
-  insightsSummary,
   parseConfig,
   readProjectConfig,
   readStatusSources,
   refreshStatusSources,
   resolveCredentials,
-  type SinceSummary,
-  showSummary,
 } from "@armada/core/read";
 import { after } from "next/server";
 import { cache } from "react";
@@ -36,8 +32,6 @@ import {
   type FleetCache,
   type LoadOptions,
   loadAgentActivity,
-  loadCatchup,
-  loadInsights,
   loadOverview,
   MARK_GAP_MS,
   newCache,
@@ -58,12 +52,9 @@ import {
   repositoryToken,
 } from "./github-app";
 import { isLanguage, type Language } from "./i18n";
-import type { InsightsLineReading } from "./insights-view";
 import { jsonTag, withoutTimeline } from "./live-http";
 import { dbSnapshots } from "./snapshots";
 import { vaultModeOf } from "./vault";
-import { viewerKey } from "./viewer";
-import { readVisit } from "./visits";
 import { isTicketId } from "./workers";
 
 /** Comma- or space-separated owner/name list, shown when the registry cannot be read. */
@@ -294,38 +285,6 @@ const overviewOfRequest = cache(async () => {
   const fleet = await fleetOf();
   return loadOverview(fleet.opts, fleet.scope);
 });
-
-/** The overview's insights line for its first render, so it neither arrives late nor moves the page (THE-892). */
-export async function initialInsightsLine(): Promise<InsightsLineReading | null> {
-  const { opts, scope } = await fleetOf();
-  const reading = await loadInsights(opts, scope, { range: "7d", project: null }).catch(() => null);
-  if (!reading) return null;
-  const body = { range: "7d" as const, project: null, live: reading.live, summary: insightsSummary(reading.insights) };
-  return { body, tag: jsonTag(body) };
-}
-
-/**
- * "Since you were away" for the overview's first render (THE-899, after
- * THE-894): read with the page, before the shell's beacon records this
- * visit, so the welcome sentence and its strip are there at once and move
- * nothing (THE-892's CLS 0). Null when there is none to show; never throws.
- */
-export async function initialSince(): Promise<SinceSummary | null> {
-  try {
-    const access = await requireFleetAccess();
-    const db = await appDatabase();
-    const key = db && (await viewerKey(access, false));
-    if (!db || !key) return null;
-    const now = new Date();
-    const visit = await readVisit(db, key);
-    const window = showSummary(visit, now) ? awayWindow(visit, now) : null;
-    if (!window) return null;
-    const { opts, scope } = await fleetOf(access);
-    return await loadCatchup(opts, scope, { since: new Date(window.since), until: new Date(window.until) });
-  } catch {
-    return null;
-  }
-}
 
 /** The ticket's activity for its page's first render; null when the viewer cannot see it or it cannot be read. */
 export async function initialActivity(ticket: string): Promise<TaggedActivity | null> {

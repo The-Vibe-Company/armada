@@ -265,24 +265,26 @@ function Actions({ list, filters, onClear }: { list: BarList; filters: ListFilte
           {t.filters.clear}
         </Button>
       )}
-      <SaveView list={list} query={filterQuery(filters)} />
+      <SaveView list={list} query={filterQuery(list, filters)} />
     </>
   );
 }
 
 /**
- * "Save view": names the list's filters (`query`, canonical) and pins them in
- * the sidebar. Shown on the list's own page, once a filter is set; /activity
+ * "Save view": names the list's filters (`query`, canonical), which ⌘K then
+ * finds (THE-916). Shown on the list's own page, once a filter is set;
+ * "Remove the view" instead while the page shows a saved one. /activity
  * (THE-894) uses it with its own address.
  */
 export function SaveView({ list, query }: { list: FilterList; query: string }) {
   const { t } = useShell();
-  const { save } = useViews();
+  const { save, remove, views } = useViews();
   const pathname = usePathname();
   const [naming, setNaming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ViewError | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [removed, setRemoved] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
   const opener = useRef<HTMLButtonElement>(null);
 
@@ -345,22 +347,38 @@ export function SaveView({ list, query }: { list: FilterList; query: string }) {
     );
   // The page this sits on is the list's own: a view of it opens it again.
   const shown = pathname === LISTS[list].path && query !== "";
+  const current = shown ? views.find((v) => v.list === list && v.query === query) : undefined;
   return (
     <>
       <span className="sr-only" role="status">
-        {saved ? t.views.saved(saved) : ""}
+        {saved ? t.views.saved(saved) : removed ? t.views.removed(removed) : ""}
       </span>
-      {shown && (
+      {current ? (
         <Button
           ref={opener}
           type="button"
           onClick={() => {
             setSaved(null);
-            setNaming(true);
+            setRemoved(current.name);
+            void remove(current.id);
           }}
         >
-          {t.views.save}
+          {t.views.remove(current.name)}
         </Button>
+      ) : (
+        shown && (
+          <Button
+            ref={opener}
+            type="button"
+            onClick={() => {
+              setSaved(null);
+              setRemoved(null);
+              setNaming(true);
+            }}
+          >
+            {t.views.save}
+          </Button>
+        )
       )}
     </>
   );

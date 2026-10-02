@@ -90,7 +90,7 @@ export function DesignSheet() {
               sample
               title={
                 <span className="sh-crumb">
-                  <span aria-current="page">{t.shell.nav.agents}</span>
+                  <span aria-current="page">{t.shell.nav.overview}</span>
                 </span>
               }
               hints={

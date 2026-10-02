@@ -1,6 +1,6 @@
 {
   "lighthouse": {
-    "pages": ["/landing", "/", "/agents", "/agents/WID-12", "/projects", "/validations", "/insights", "/activity"],
+    "pages": ["/landing", "/", "/agents/WID-12", "/projects", "/validations", "/insights", "/activity"],
     "runs": {
       "mobile": 3,
       "desktop": 1
@@ -41,7 +41,7 @@
       "/_not-found": 135591,
       "/activity": 185822,
       "/agents": 189590,
-      "/agents/[ticket]": 199068,
+      "/agents/[ticket]": 208465,
       "/approve/[id]": 196398,
       "/design": 186172,
       "/device": 172264,
