@@ -6,14 +6,14 @@
       "sourceType": "github",
       "skillPath": "skills/armada-coordinator/SKILL.md",
       "ref": "v0.2.31",
-      "computedHash": "d8d886e8e191bbcfa43963d6536396402b55ed0cc5c36a76e7662ca2035be4ac"
+      "computedHash": "b457175eefa8ed959434bb34f67ed2d938723ef2905d00caa9b1f19b31b5a908"
     },
     "armada-runtime-claude-code": {
       "source": "The-Vibe-Company/armada",
       "sourceType": "github",
       "skillPath": "skills/armada-runtime-claude-code/SKILL.md",
       "ref": "v0.2.31",
-      "computedHash": "44a349463c5841bb08a8591610fc35efb161ba8d6e61fd35336288cf49a15361"
+      "computedHash": "b83b7122bdf30e6eecf9a7103c7daba3f6c7f5c74247e8dddf785f9850010a25"
     },
     "armada-runtime-conductor": {
       "source": "The-Vibe-Company/armada",
