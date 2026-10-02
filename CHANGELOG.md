@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.32](https://github.com/The-Vibe-Company/armada/compare/v0.2.31...v0.2.32) (2026-10-02)
+
+
+### Features
+
+* **cli:** bundle shipping skills for every managed project ([#131](https://github.com/The-Vibe-Company/armada/issues/131)) ([f645ae6](https://github.com/The-Vibe-Company/armada/commit/f645ae6b036b41502109353bcc640d2f8e14e824))
+
 ## [0.2.31](https://github.com/The-Vibe-Company/armada/compare/v0.2.30...v0.2.31) (2026-10-02)
 
 
