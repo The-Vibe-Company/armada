@@ -1,12 +1,7 @@
-import { Fleet } from "@/components/Fleet";
-import { InsightsLine } from "@/components/insights/InsightsLine";
-import { initialInsightsLine, initialSince } from "@/lib/server";
+import { OverviewScreen } from "@/components/screens/OverviewScreen";
 
-// The overview (THE-867): what waits for the owner, what is broken, and each
-// project; this week's delivery (THE-893) and what happened while the viewer
-// was away (THE-894) are read with the page, so they are there at once and
-// move nothing (THE-892, THE-899).
-export default async function Home() {
-  const [line, since] = await Promise.all([initialInsightsLine(), initialSince()]);
-  return <Fleet insights={<InsightsLine initial={line} />} since={since} />;
+// The overview (THE-916): the sessions in flight, grouped by coordinator.
+// Renders from the overview the shell polls: no server data here, so it opens without waiting.
+export default function Home() {
+  return <OverviewScreen />;
 }

@@ -265,7 +265,7 @@ function Actions({ list, filters, onClear }: { list: BarList; filters: ListFilte
           {t.filters.clear}
         </Button>
       )}
-      <SaveView list={list} query={filterQuery(filters)} />
+      <SaveView list={list} query={filterQuery(list, filters)} />
     </>
   );
 }

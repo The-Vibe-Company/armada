@@ -8,6 +8,7 @@
 // typing. Pure: ranking, grouping and the recent picks are tested here, and
 // a query over thousands of items stays far under 50 ms.
 import type { FleetOverview, Issue, PullRequest, StatusSources, StatusType } from "@armada/core/read";
+import { type SavedView, viewHref } from "./filters";
 import { type AgentState, agentState, DENSITIES, type Density, paths } from "./fleet-view";
 import { LANGUAGES, type Language, type Strings } from "./i18n";
 import { decisionCards } from "./overview-view";
@@ -185,6 +186,8 @@ export interface SearchContext {
   organization: boolean;
   /** The live data answers: a launch or an answer can be sent. */
   live: boolean;
+  /** The viewer's saved views (THE-895), found here since the menu lost them (THE-916). */
+  views?: readonly Pick<SavedView, "id" | "name" | "list" | "query">[];
 }
 
 type Overview = Pick<FleetOverview, "rows" | "projects" | "ready" | "waiting"> &
@@ -340,7 +343,7 @@ export function searchItems(overview: Overview, index: SearchIndex | null, ctx: 
           key: `project:${x.slug}`,
           label: x.name,
           detail: x.repository,
-          href: paths.project(x.slug),
+          href: paths.coordinator(x.slug),
           project: x.slug,
         },
         [x.slug, x.programRoot?.id, x.programRoot?.title],
@@ -502,7 +505,6 @@ function pages(ctx: SearchContext): SearchItem[] {
     ["overview", paths.overview, t.shell.nav.overview],
     ["validations", paths.validations, t.shell.nav.validations],
     ["projects", paths.projects, t.shell.nav.projects],
-    ["agents", paths.agents(), t.shell.nav.agents],
     ["insights", paths.insights, t.shell.nav.insights],
     ["activity", paths.activity, t.shell.nav.activity],
     ...(ctx.organization
@@ -514,19 +516,36 @@ function pages(ctx: SearchContext): SearchItem[] {
         ] as const)
       : []),
   ] as const;
-  return nav.map(([key, href, name]) =>
-    item(
-      {
-        kind: "page",
-        key: `page:${key}`,
-        label: t.shell.palette.goTo(name),
-        detail: "",
-        href,
-        project: null,
-      },
-      [key, name, "go", "page"],
+  // The Agents page is the overview since THE-916: it still answers to "agents".
+  const words = (key: string) => (key === "overview" ? ["agents", "coordinators", t.shell.coordinators] : []);
+  return [
+    ...nav.map(([key, href, name]) =>
+      item(
+        {
+          kind: "page",
+          key: `page:${key}`,
+          label: t.shell.palette.goTo(name),
+          detail: "",
+          href,
+          project: null,
+        },
+        [key, name, "go", "page", ...words(key)],
+      ),
     ),
-  );
+    ...(ctx.views ?? []).map((v) =>
+      item(
+        {
+          kind: "page",
+          key: `view:${v.id}`,
+          label: v.name,
+          detail: t.views.heading,
+          href: viewHref(v),
+          project: null,
+        },
+        ["view", "saved", t.views.heading],
+      ),
+    ),
+  ];
 }
 
 // ------------------------------------------------------------------- ranking

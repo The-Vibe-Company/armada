@@ -59,14 +59,18 @@ const HEALTHS = ["blocked", "watch", "on-track"] as const satisfies readonly Pro
 
 interface ListRule {
   path: string;
+  /** The address's name for the project filter: the overview's groups are coordinators (THE-916). */
+  projectParam?: string;
   fields: readonly FilterField[];
   states: readonly string[];
   sorts: readonly SortKey[];
 }
 
 export const LISTS = {
+  // The overview (THE-916): the sessions in flight, grouped by coordinator.
   agents: {
-    path: "/agents",
+    path: "/",
+    projectParam: "coordinator",
     fields: ["project", "harness", "state", "profile", "mine", "q", "sort"],
     states: [...AGENT_STATUSES, ...LABEL_PHASES],
     sorts: SORTS,
@@ -125,8 +129,10 @@ export function parseFilters(list: FilterList, params: Params): ListFilters {
   const harness = params.get("harness");
   const state = params.get("state");
   const sort = params.get("sort");
+  // `?project=` still reads on the overview: the links and views from before THE-916.
+  const param = rule.projectParam ?? "project";
   return {
-    project: has("project") ? token("project") : null,
+    project: has("project") ? (token(param) ?? (param === "project" ? null : token("project"))) : null,
     harness: has("harness") && (HARNESSES as readonly string[]).includes(harness ?? "") ? (harness as Harness) : null,
     state: has("state") && state && rule.states.includes(state) ? state : null,
     profile: has("profile") ? token("profile", PROFILE) : null,
@@ -137,9 +143,10 @@ export function parseFilters(list: FilterList, params: Params): ListFilters {
 }
 
 /** The filters as a query string, without "?": one order, defaults left out, so equal views have equal URLs. */
-export function filterQuery(f: ListFilters): string {
+export function filterQuery(list: FilterList, f: ListFilters): string {
   const out = new URLSearchParams();
-  if (f.project) out.set("project", f.project);
+  const rule: ListRule = LISTS[list];
+  if (f.project) out.set(rule.projectParam ?? "project", f.project);
   if (f.harness) out.set("harness", f.harness);
   if (f.state) out.set("state", f.state);
   if (f.profile) out.set("profile", f.profile);
@@ -150,7 +157,7 @@ export function filterQuery(f: ListFilters): string {
 }
 
 export function filterHref(list: FilterList, f: ListFilters): string {
-  const q = filterQuery(f);
+  const q = filterQuery(list, f);
   return q ? `${LISTS[list].path}?${q}` : LISTS[list].path;
 }
 
@@ -158,10 +165,10 @@ export function filterHref(list: FilterList, f: ListFilters): string {
 export function canonicalQuery(list: FilterList, query: string): string {
   const q = query.replace(/^\?/, "");
   const own = OWN_ADDRESS[list];
-  return own ? own(q) : filterQuery(parseFilters(list, new URLSearchParams(q)));
+  return own ? own(q) : filterQuery(list, parseFilters(list, new URLSearchParams(q)));
 }
 
-export const hasFilters = (f: ListFilters): boolean => filterQuery(f) !== "";
+export const hasFilters = (f: ListFilters): boolean => filterQuery("agents", f) !== "";
 
 /** Every word of the query in the text, whatever the case. */
 function holds(text: string, q: string): boolean {
@@ -196,14 +203,20 @@ const PHASE_ORDER: readonly AgentPhase[] = [
  * The sessions a view keeps, in its order: by age the longest in flight
  * first, by last report the freshest first, by phase from plan to merge.
  */
-export function filterAgents(rows: FleetRow[], f: ListFilters, names: Map<string, string> = new Map()): FleetRow[] {
+export function filterAgents(
+  rows: FleetRow[],
+  f: ListFilters,
+  names: Map<string, string> = new Map(),
+  /** What "needs me" keeps; the overview's (THE-916) is what the owner has to validate. */
+  needsMe: (r: FleetRow) => boolean = (r) => agentState(r).status === "waiting",
+): FleetRow[] {
   const kept = rows.filter((r) => {
     const s = agentState(r);
     if (f.project && r.project !== f.project) return false;
     if (f.harness && harnessOf(r.runtime) !== f.harness) return false;
     if (f.state && s.status !== f.state && r.phase !== f.state) return false;
     if (f.profile && profileOf(r) !== f.profile) return false;
-    if (f.mine && s.status !== "waiting") return false;
+    if (f.mine && !needsMe(r)) return false;
     const text = [r.id, r.title, names.get(r.project) ?? r.project, r.runtime, profileOf(r), r.session?.branch];
     return holds(text.filter(Boolean).join(" "), f.q);
   });
@@ -281,7 +294,7 @@ export function filterValidations(
 
 // --------------------------------------------------------------- saved views
 
-/** A view the viewer named: a list and its filters, pinned in the sidebar. */
+/** A view the viewer named: a list and its filters, found in ⌘K. */
 export interface SavedView {
   id: string;
   name: string;
@@ -311,9 +324,8 @@ export function checkView(input: {
   return { ok: true, view: { name, list: input.list, query } };
 }
 
-export const viewHref = (v: Pick<SavedView, "list" | "query">) =>
-  v.query ? `${LISTS[v.list].path}?${v.query}` : LISTS[v.list].path;
-
-/** The view the page shows right now: same list, same filters. */
-export const isCurrentView = (v: Pick<SavedView, "list" | "query">, pathname: string, search: string) =>
-  LISTS[v.list].path === pathname && canonicalQuery(v.list, search) === v.query;
+export const viewHref = (v: Pick<SavedView, "list" | "query">) => {
+  // A view saved before THE-916 keeps `project=`: the overview reads it as its coordinator.
+  const query = canonicalQuery(v.list, v.query);
+  return query ? `${LISTS[v.list].path}?${query}` : LISTS[v.list].path;
+};

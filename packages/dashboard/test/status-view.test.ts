@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { FleetRow } from "@armada/core/read";
-import { agentsNeeds, overviewStatus } from "../lib/status-view.ts";
+import { overviewStatus } from "../lib/status-view.ts";
 
 const figures = (inFlight: number, decide: number, failing: number) => ({ inFlight, decide, failing });
 
@@ -16,24 +15,5 @@ describe("the overview's status sentence", () => {
     expect(overviewStatus(figures(11, 0, 2), null, 0).then).toEqual({ kind: "failing", n: 2 });
     expect(overviewStatus(figures(0, 0, 0), null, 3).then).toEqual({ kind: "ready", n: 3 });
     expect(overviewStatus(figures(5, 0, 0), null, 3).then).toEqual({ kind: "calm" });
-  });
-});
-
-describe("the Agents page's status sentence", () => {
-  const row = (over: Partial<FleetRow>) =>
-    ({ phase: "implementing", pr: null, silent: false, question: null, flags: [], ...over }) as FleetRow;
-
-  test("names the groups that need someone, in the page's order, and leaves out the empty ones", () => {
-    const rows = [
-      row({ silent: true }),
-      row({ phase: "awaiting-approval" }),
-      row({ phase: "awaiting-approval" }),
-      row({}),
-    ];
-    expect(agentsNeeds(rows)).toEqual([
-      { status: "waiting", n: 2 },
-      { status: "silent", n: 1 },
-    ]);
-    expect(agentsNeeds([row({})])).toEqual([]);
   });
 });

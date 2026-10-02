@@ -1,7 +1,8 @@
 "use client";
 
 // The frame every screen lives in (THE-866, Night watch THE-899): the
-// sidebar, the deck (the main panel, its horizon in the state of what the
+// sidebar (THE-916: the coordinators, then Activity, Insights and the
+// organization), the deck (the main panel, its horizon in the state of what the
 // page shows, lib/horizon.ts) with its header bar (the page kit's
 // PageHeader: breadcrumbs, key hints, the page's actions), ⌘K search and the
 // keyboard (j/k move through the rows of the page, Enter opens, Esc goes
@@ -12,30 +13,27 @@ import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signOut, switchOrganization } from "@/app/auth-actions";
-import { isCurrentView, type SavedView, viewHref } from "@/lib/filters";
+import { projectChecks } from "@/lib/coordinator-view";
+import type { SavedView } from "@/lib/filters";
 import {
   type Crumb,
   crumbsOf,
   type Density,
   escapeTarget,
-  HARNESS_NAME,
-  HARNESSES,
-  harnessCounts,
   type Place,
   paths,
   placeOf,
-  projectColor,
   type Section,
   sectionOf,
 } from "@/lib/fleet-view";
 import { horizonOf } from "@/lib/horizon";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
 import { ownsKeys } from "@/lib/keyboard";
-import { decideCount, pendingValidations } from "@/lib/overview-view";
+import { pendingValidations } from "@/lib/overview-view";
 import { LiveMark } from "../mark";
-import { Alert, Button, Ring } from "../page";
+import { Alert, Button } from "../page";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
-import { Dot, harnessColor, Kbd } from "../ui";
+import { Kbd } from "../ui";
 import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
@@ -44,7 +42,7 @@ import { Logo, SearchIcon } from "./Logo";
 import { MergeMoment } from "./MergeMoment";
 import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
-import { useViews, ViewsProvider } from "./views";
+import { ViewsProvider } from "./views";
 import { VisitProvider } from "./visit";
 
 // ⌘K and its index load apart from every page, as soon as the browser is idle (THE-892).
@@ -179,13 +177,9 @@ function Frame({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [palette, menu, place, fromPath, router, rows, select]);
 
-  const section = sectionOf(place, from);
+  const section = sectionOf(place);
   const listPage =
-    place.kind === "overview" ||
-    place.kind === "agents" ||
-    place.kind === "projects" ||
-    place.kind === "validations" ||
-    place.kind === "activity";
+    place.kind === "overview" || place.kind === "projects" || place.kind === "validations" || place.kind === "activity";
   const detailPage = place.kind === "agent" || place.kind === "project" || place.kind === "validation";
   const crumbs = crumbsOf(place, from);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
@@ -238,7 +232,6 @@ function crumbLabel(t: Strings, c: Crumb, names: Map<string, string>) {
   switch (c.kind) {
     case "overview":
     case "projects":
-    case "agents":
     case "validations":
     case "insights":
     case "activity":
@@ -282,24 +275,36 @@ function Crumbs({ crumbs, names }: { crumbs: Crumb[]; names: Map<string, string>
   );
 }
 
-/** The six sections, each with what it counts; `hot` when the count waits for the viewer. */
+/**
+ * The coordinator a page is about, for its menu item: the one the overview is
+ * filtered on, a project's, an agent's own.
+ */
+function useCoordinator(place: Place): string | null {
+  const { overview } = useFleet();
+  const params = useSearchParams();
+  if (place.kind === "overview") return params.get("coordinator") ?? params.get("project");
+  if (place.kind === "project") return place.slug;
+  if (place.kind === "agent")
+    return overview.rows.find((r) => r.id.toLowerCase() === place.ticket.toLowerCase())?.project ?? null;
+  return null;
+}
+
+/** The menu's sections (THE-916): the overview, then Activity, Insights and, with accounts, the organization. */
 function useNav() {
   const { overview } = useFleet();
-  const decisions = decideCount(overview);
+  const { account } = useShell();
   const checks = pendingValidations(overview).length;
   const nav: { key: NonNullable<Section>; href: string; count: number | null; hot: boolean }[] = [
-    { key: "overview", href: paths.overview, count: decisions, hot: decisions > 0 },
-    { key: "validations", href: paths.validations, count: checks, hot: checks > 0 },
-    { key: "projects", href: paths.projects, count: overview.projects.length, hot: false },
-    { key: "agents", href: paths.agents(), count: overview.rows.length, hot: false },
+    { key: "overview", href: paths.overview, count: checks || null, hot: checks > 0 },
     { key: "activity", href: paths.activity, count: null, hot: false },
     { key: "insights", href: paths.insights, count: null, hot: false },
   ];
+  if (account) nav.push({ key: "organization", href: paths.organization, count: null, hot: false });
   return nav;
 }
 
-// Insights and Activity render on the server from Postgres: opened on demand, not on every page's load.
-const prefetched = (key: NonNullable<Section>) => key !== "insights" && key !== "activity";
+// Insights, Activity and the organization render on the server from Postgres: opened on demand, not on every page's load.
+const prefetched = (key: NonNullable<Section>) => key === "overview";
 
 /**
  * The sections on a phone (THE-899): a tab bar at the bottom, each with its
@@ -324,7 +329,7 @@ function TabBar({ section }: { section: Section }) {
           {n.hot && n.count !== null && (
             <span className="sh-tab-badge">
               {n.count}
-              <span className="sr-only"> · {t.shell.waitingForYou}</span>
+              <span className="sr-only"> · {t.overview.toValidateBadge}</span>
             </span>
           )}
         </Link>
@@ -332,6 +337,8 @@ function TabBar({ section }: { section: Section }) {
     </nav>
   );
 }
+
+const COORDINATOR_COLOR = { active: "var(--done)", idle: "var(--active)", unknown: "var(--text-3)" } as const;
 
 function Sidebar({
   section,
@@ -348,8 +355,9 @@ function Sidebar({
 }) {
   const { t, account } = useShell();
   const { overview } = useFleet();
-  const counts = harnessCounts(overview.rows);
   const nav = useNav();
+  const coordinator = useCoordinator(place);
+  const [home, ...more] = nav;
   return (
     <aside className="sh-side" aria-label={t.a11y.sidebar}>
       <div className="sh-brand">
@@ -366,76 +374,57 @@ function Sidebar({
         <span className="spacer sh-label" />
         <Kbd>⌘K</Kbd>
       </button>
-      <nav className="sh-nav" aria-label={t.a11y.sections}>
-        {nav.map((n) => (
+      <nav className="sh-nav" aria-label={t.shell.coordinators}>
+        {home && (
+          <Link
+            href={home.href}
+            prefetch
+            className="sh-nav-item"
+            aria-current={place.kind === "overview" && coordinator === null ? "page" : undefined}
+            title={t.shell.coordinators}
+          >
+            <SectionIcon section="overview" />
+            <span className="sh-label sh-nav-label">{t.shell.coordinators}</span>
+            <span className="sh-count">{overview.rows.length}</span>
+            <Badge n={home.count ?? 0} />
+          </Link>
+        )}
+        {overview.projects.map((p) => (
+          <Link
+            key={p.slug}
+            href={paths.coordinator(p.slug)}
+            prefetch={false}
+            className="sh-item"
+            title={p.name}
+            aria-current={coordinator === p.slug ? "page" : undefined}
+          >
+            <span className="sh-item-icon">
+              <span
+                className={`sc-coord-mark is-${p.coordinator.state}`}
+                style={{ color: COORDINATOR_COLOR[p.coordinator.state] }}
+                aria-hidden
+              />
+            </span>
+            <span className="sh-label">{p.name}</span>
+            <span className="sh-count">{overview.rows.filter((r) => r.project === p.slug).length}</span>
+            <Badge n={projectChecks(overview, p.slug)} />
+          </Link>
+        ))}
+      </nav>
+      <nav className="sh-group" aria-label={t.a11y.sections}>
+        {more.map((n) => (
           <Link
             key={n.key}
             href={n.href}
             prefetch={prefetched(n.key)}
-            className="sh-nav-item"
+            className="sh-item"
             aria-current={section === n.key ? "page" : undefined}
-            title={t.shell.nav[n.key]}
+            title={t.shell.tab[n.key]}
           >
-            <SectionIcon section={n.key} />
-            <span className="sh-label sh-nav-label">{t.shell.nav[n.key]}</span>
-            {n.count !== null && <span className={`sh-count ${n.hot ? "is-hot" : ""}`}>{n.count}</span>}
+            <SectionIcon section={n.key} size={14} />
+            <span className="sh-label">{t.shell.tab[n.key]}</span>
           </Link>
         ))}
-      </nav>
-      {overview.projects.length > 0 && (
-        <nav className="sh-group" aria-labelledby="sh-projects-h">
-          <div className="sh-group-h sh-label" id="sh-projects-h">
-            {t.shell.projectsHeading}
-          </div>
-          {overview.projects.map((p) => (
-            <Link
-              key={p.slug}
-              href={paths.project(p.slug)}
-              prefetch
-              className="sh-item"
-              title={p.name}
-              aria-current={place.kind === "project" && place.slug === p.slug ? "page" : undefined}
-            >
-              <span className="sh-item-icon">
-                <Ring
-                  value={p.progress?.total ? p.progress.done / p.progress.total : 0}
-                  size={14}
-                  stroke={2.2}
-                  bare
-                  color={projectColor(p.slug)}
-                />
-              </span>
-              <span className="sh-label">{p.name}</span>
-              <span className="sh-count">{p.inFlight}</span>
-            </Link>
-          ))}
-        </nav>
-      )}
-      <ViewsGroup />
-      <nav className="sh-group" aria-labelledby="sh-harness-h">
-        <div className="sh-group-h sh-label" id="sh-harness-h">
-          {t.shell.harnessHeading}
-        </div>
-        {HARNESSES.map((h) => {
-          const name = h === "conductor" ? HARNESS_NAME[h] : t.shell.local(HARNESS_NAME[h]);
-          return (
-            <Link key={h} href={paths.agents(h)} prefetch className="sh-item" title={name}>
-              <span className="sh-item-icon">
-                <Dot color={harnessColor(h)} />
-              </span>
-              <span className="sh-label">{name}</span>
-              <span className="sh-count">{counts[h]}</span>
-            </Link>
-          );
-        })}
-        <div className="sh-item is-soon sh-label">
-          <span className="sh-item-icon">
-            <span className="sh-soon-dot" aria-hidden />
-          </span>
-          <span>boat.dev</span>
-          <span className="spacer" />
-          <span className="sh-soon">{t.shell.soon}</span>
-        </div>
       </nav>
       <span className="spacer" />
       <LiveStatus />
@@ -443,43 +432,15 @@ function Sidebar({
   );
 }
 
-/** The views the viewer saved (THE-895), under the projects: each opens its list with its filters. */
-function ViewsGroup() {
+/** What the owner has to validate, in orange; "2 · To validate" to a screen reader. */
+function Badge({ n }: { n: number }) {
   const { t } = useShell();
-  const { views, remove } = useViews();
-  const pathname = usePathname();
-  const search = useSearchParams().toString();
-  if (!views.length) return null;
+  if (!n) return null;
   return (
-    <nav className="sh-group" aria-labelledby="sh-views-h">
-      <div className="sh-group-h sh-label" id="sh-views-h">
-        {t.views.heading}
-      </div>
-      {views.map((v) => (
-        <div key={v.id} className="sh-view">
-          <Link
-            href={viewHref(v)}
-            className="sh-item"
-            title={v.name}
-            aria-current={isCurrentView(v, pathname, search) ? "page" : undefined}
-          >
-            <span className="sh-item-icon">
-              <SectionIcon section={v.list} size={14} />
-            </span>
-            <span className="sh-label">{v.name}</span>
-          </Link>
-          <button
-            type="button"
-            className="sh-view-remove"
-            aria-label={t.views.remove(v.name)}
-            title={t.views.remove(v.name)}
-            onClick={() => void remove(v.id)}
-          >
-            <span aria-hidden>×</span>
-          </button>
-        </div>
-      ))}
-    </nav>
+    <span className="sh-badge" title={t.overview.toValidate(n)}>
+      {n}
+      <span className="sr-only"> · {t.overview.toValidateBadge}</span>
+    </span>
   );
 }
 

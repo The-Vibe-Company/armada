@@ -143,13 +143,13 @@ export function harnessCounts(rows: Pick<FleetRow, "runtime">[]): Record<Harness
 // ------------------------------------------------------------------ addresses
 
 export const paths = {
+  /** The sessions in flight, grouped by coordinator (THE-916). */
   overview: "/",
+  /** The overview filtered to one coordinator's group. */
+  coordinator: (slug: string) => `/?coordinator=${encodeURIComponent(slug)}`,
   projects: "/projects",
   project: (slug: string) => `/projects/${encodeURIComponent(slug)}`,
-  agents: (harness?: Harness | null) => (harness ? `/agents?harness=${harness}` : "/agents"),
   agent: (ticket: string) => `/agents/${encodeURIComponent(ticket)}`,
-  /** The Agents page scrolled to one of its groups. */
-  agentGroup: (status: AgentStatus) => `/agents#${status}`,
   validations: "/validations",
   /** One validation, the link the CLI prints (THE-885). */
   validation: (id: number) => `/approve/${id}`,
@@ -158,6 +158,7 @@ export const paths = {
   insights: "/insights",
   /** Every event of the fleet, newest first (THE-894). */
   activity: "/activity",
+  organization: "/organization",
 } as const;
 
 /** A page of the shell, read from its path. */
@@ -165,7 +166,6 @@ export type Place =
   | { kind: "overview" }
   | { kind: "projects" }
   | { kind: "project"; slug: string }
-  | { kind: "agents" }
   | { kind: "agent"; ticket: string }
   | { kind: "validations" }
   | { kind: "validation"; id: number }
@@ -178,9 +178,10 @@ export type Place =
 export function placeOf(pathname: string): Place {
   const parts = pathname.split("/").filter(Boolean).map(decodeURIComponent);
   const [a, b] = parts;
-  if (!a) return { kind: "overview" };
+  // `/agents` is the overview since THE-916 (its page redirects there).
+  if (!a || (a === "agents" && !b)) return { kind: "overview" };
   if (a === "projects") return b ? { kind: "project", slug: b } : { kind: "projects" };
-  if (a === "agents") return b ? { kind: "agent", ticket: b } : { kind: "agents" };
+  if (a === "agents" && b) return { kind: "agent", ticket: b };
   if (a === "design") return { kind: "design" };
   if (a === "insights" && !b) return { kind: "insights" };
   if (a === "activity" && !b) return { kind: "activity" };
@@ -193,30 +194,38 @@ export function placeOf(pathname: string): Place {
   return { kind: "other" };
 }
 
-/** The sidebar entry a page belongs to. An agent's page belongs to where it was opened from. */
-export type Section = "overview" | "validations" | "projects" | "agents" | "insights" | "activity" | null;
+/**
+ * The menu's sections (THE-916): the overview, whose items are the
+ * coordinators, then Activity, Insights and the organization. A page out of
+ * the menu (an agent, a project, the validations) belongs to the overview.
+ */
+export const SECTIONS = ["overview", "activity", "insights", "organization"] as const;
+export type Section = (typeof SECTIONS)[number] | null;
 
-export function sectionOf(place: Place, from: Place | null): Section {
-  if (place.kind === "overview") return "overview";
-  if (place.kind === "validations" || place.kind === "validation") return "validations";
-  if (place.kind === "projects" || place.kind === "project") return "projects";
-  if (place.kind === "agents") return "agents";
-  if (place.kind === "insights") return "insights";
-  if (place.kind === "activity") return "activity";
-  if (place.kind === "agent") {
-    if (from?.kind === "overview") return "overview";
-    if (from?.kind === "project" || from?.kind === "projects") return "projects";
-    return "agents";
+export function sectionOf(place: Place): Section {
+  switch (place.kind) {
+    case "overview":
+    case "agent":
+    case "projects":
+    case "project":
+    case "validations":
+    case "validation":
+      return "overview";
+    case "insights":
+    case "activity":
+    case "organization":
+      return place.kind;
+    default:
+      return null;
   }
-  return null;
 }
+
+/** The pages a breadcrumb names. */
+export type PageKind = "overview" | "projects" | "validations" | "insights" | "activity";
 
 /** One step of the breadcrumbs; the last has no link. */
 export type Crumb =
-  | {
-      kind: "overview" | "projects" | "agents" | "validations" | "insights" | "activity" | "organization" | "design";
-      href: string | null;
-    }
+  | { kind: PageKind | "organization" | "design"; href: string | null }
   | { kind: "validation"; id: number; href: null }
   | { kind: "project"; slug: string; href: string | null }
   | { kind: "agent"; ticket: string; href: null }
@@ -233,8 +242,6 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
         { kind: "projects", href: paths.projects },
         { kind: "project", slug: place.slug, href: null },
       ];
-    case "agents":
-      return [{ kind: "agents", href: null }];
     case "validations":
       return [{ kind: "validations", href: null }];
     case "validation":
@@ -250,14 +257,13 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
           { kind: "project", slug: from.slug, href: paths.project(from.slug) },
           last,
         ];
-      if (from?.kind === "overview") return [{ kind: "overview", href: paths.overview }, last];
-      return [{ kind: "agents", href: paths.agents() }, last];
+      return [{ kind: "overview", href: paths.overview }, last];
     }
     case "organization":
       return place.page === "members"
         ? [{ kind: "organization", href: null }]
         : [
-            { kind: "organization", href: "/organization" },
+            { kind: "organization", href: paths.organization },
             { kind: "organization-page", page: place.page, href: null },
           ];
     case "design":
@@ -272,8 +278,8 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
 }
 
 /**
- * Where Esc leads from a page: an agent's page back to the list, project or
- * overview it was opened from (else the agents), a project's page to the
+ * Where Esc leads from a page: an agent's page back to the overview, project
+ * or list it was opened from (else the overview), a project's page to the
  * projects; a list stays. Always a page of the app, never the browser's history.
  */
 export function escapeTarget(place: Place, fromPath: string | null): string | null {
@@ -282,8 +288,8 @@ export function escapeTarget(place: Place, fromPath: string | null): string | nu
   if (place.kind !== "agent") return null;
   const from = fromPath === null ? null : placeOf(fromPath);
   const back =
-    from?.kind === "overview" || from?.kind === "projects" || from?.kind === "project" || from?.kind === "agents";
-  return back && fromPath ? fromPath : paths.agents();
+    from?.kind === "overview" || from?.kind === "projects" || from?.kind === "project" || from?.kind === "validations";
+  return back && fromPath ? fromPath : paths.overview;
 }
 
 // --------------------------------------------------------------------- density
