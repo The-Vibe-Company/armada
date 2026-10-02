@@ -6,10 +6,13 @@ import {
   checkPublished,
   machinePaths,
   NPM_REGISTRY_URL,
+  readWatchLock,
+  readWatchLockInfo,
   readWatchState,
   type ServerCli,
   takeWatchLock,
   updateWatchState,
+  type WatchIdentity,
   watchFiles,
 } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
@@ -97,6 +100,211 @@ async function hook(c: Awaited<ReturnType<typeof coordinator>>, cwd: string, env
 }
 
 describe("armada watch", () => {
+  const identity = (project = P): WatchIdentity => ({
+    project,
+    configPath: `${COORDINATOR_ROOT}/armada.toml`,
+    started: "synthetic-start-1",
+    command: "/usr/bin/node /usr/local/bin/armada watch",
+    cwd: COORDINATOR_ROOT,
+  });
+
+  test("stop verifies the holder and signals only this project's watch, without sign-in or network", async () => {
+    const c = await coordinator();
+    await takeWatchLock(c.paths, P, 101, () => false, identity());
+    await takeWatchLock(c.paths, "gears", 202, () => false, identity("gears"));
+    c.alive.add(101);
+    c.alive.add(202);
+    const killed: number[] = [];
+    const io: Io = {
+      ...c.io,
+      env: { XDG_CONFIG_HOME: c.io.env.XDG_CONFIG_HOME },
+      fetch: async () => {
+        throw new Error("stop must not use the network");
+      },
+      ghToken: () => {
+        throw new Error("stop must not resolve credentials");
+      },
+      inspectProcess: async (pid) => {
+        expect(pid).toBe(101);
+        return identity();
+      },
+      signalProcess: (pid, signal) => {
+        expect(signal).toBe("SIGTERM");
+        killed.push(pid);
+      },
+    };
+    expect(await run(["watch", "--stop"], io)).toBe(0);
+    expect(killed).toEqual([101]);
+    expect(c.out()).toBe("Stopped armada watch for widgets (pid 101).\n");
+    expect(await readWatchLock(c.paths, P)).toBeNull();
+    expect(await readWatchLock(c.paths, "gears")).toBe(202);
+    c.reset();
+    expect(await run(["watch", "--stop", "--json"], io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ project: P, stopped: null, line: "no watch running for widgets" });
+  });
+
+  test("stop recognizes source and bundled watches with global options before the command", async () => {
+    for (const command of [
+      "/usr/bin/bun packages/cli/src/main.ts --json watch",
+      "/usr/bin/node /usr/local/bin/armada --config /work/widgets/armada.toml watch",
+    ]) {
+      const c = await coordinator();
+      const held = { ...identity(), command };
+      await takeWatchLock(c.paths, P, 101, () => false, held);
+      c.alive.add(101);
+      c.io.inspectProcess = async () => held;
+      const killed: number[] = [];
+      c.io.signalProcess = (pid) => {
+        killed.push(pid);
+      };
+      expect(await run(["watch", "--stop"], c.io)).toBe(0);
+      expect(killed).toEqual([101]);
+    }
+  });
+
+  test("stop clears a dead lock, but never signals a legacy, reused, other-project or non-watch PID", async () => {
+    for (const kind of [
+      "dead",
+      "legacy",
+      "reused",
+      "project",
+      "command",
+      "cwd",
+      "unknown",
+      "config",
+      "non-watch",
+    ] as const) {
+      const c = await coordinator();
+      await takeWatchLock(c.paths, P, 101, () => false, kind === "legacy" ? undefined : identity());
+      if (kind !== "dead") c.alive.add(101);
+      const io: Io = {
+        ...c.io,
+        inspectProcess: async () =>
+          kind === "unknown"
+            ? null
+            : {
+                ...identity(),
+                ...(kind === "reused" ? { started: "synthetic-start-2" } : {}),
+                ...(kind === "command" ? { command: "/usr/bin/node service.js" } : {}),
+                ...(kind === "cwd" ? { cwd: "/work/gears" } : {}),
+              },
+        signalProcess: () => {
+          throw new Error("must never signal this PID");
+        },
+      };
+      if (kind === "config" || kind === "non-watch") {
+        await writeFile(
+          watchFiles(c.paths, P).lock,
+          JSON.stringify({
+            pid: 101,
+            identity: {
+              ...identity(),
+              ...(kind === "config"
+                ? { configPath: "/work/gears/armada.toml" }
+                : { command: "/usr/bin/node service.js" }),
+            },
+          }),
+        );
+        if (kind === "non-watch")
+          io.inspectProcess = async () => ({ ...identity(), command: "/usr/bin/node service.js" });
+      }
+      if (kind === "project") {
+        await writeFile(watchFiles(c.paths, P).lock, JSON.stringify({ pid: 101, identity: identity("gears") }));
+      }
+      expect(await run(["watch", "--stop"], io)).toBe(kind === "dead" ? 0 : 1);
+      if (kind === "dead") {
+        expect(c.out()).toBe("no watch running for widgets\n");
+        expect(await readWatchLock(c.paths, P)).toBeNull();
+      } else {
+        expect(c.err()).toContain("cannot verify armada watch for widgets (pid 101)");
+        expect(await readWatchLock(c.paths, P)).toBe(101);
+      }
+    }
+  });
+
+  test("stop keeps the lock on kill failure and preserves a replacement holder", async () => {
+    const c = await coordinator();
+    await takeWatchLock(c.paths, P, 101, () => false, identity());
+    c.alive.add(101);
+    c.io.inspectProcess = async () => identity();
+    c.io.signalProcess = () => {
+      throw Object.assign(new Error("denied"), { code: "EPERM" });
+    };
+    expect(await run(["watch", "--stop"], c.io)).toBe(1);
+    expect(await readWatchLock(c.paths, P)).toBe(101);
+    c.io.signalProcess = async () => {
+      await writeFile(
+        watchFiles(c.paths, P).lock,
+        JSON.stringify({ pid: 101, identity: { ...identity(), started: "replacement-start" } }),
+      );
+    };
+    expect(await run(["watch", "--stop"], c.io)).toBe(0);
+    expect((await readWatchLockInfo(c.paths, P))?.identity?.started).toBe("replacement-start");
+  });
+
+  test("stop refuses a holder replaced during inspection and handles a process gone before signalling", async () => {
+    const c = await coordinator();
+    await takeWatchLock(c.paths, P, 101, () => false, identity());
+    c.alive.add(101);
+    c.io.inspectProcess = async () => {
+      await writeFile(watchFiles(c.paths, P).lock, JSON.stringify({ pid: 202, identity: identity() }));
+      return identity();
+    };
+    c.io.signalProcess = () => {
+      throw new Error("must never signal the replaced holder");
+    };
+    expect(await run(["watch", "--stop"], c.io)).toBe(1);
+    expect(await readWatchLock(c.paths, P)).toBe(202);
+    await writeFile(watchFiles(c.paths, P).lock, JSON.stringify({ pid: 101, identity: identity() }));
+    c.io.inspectProcess = async () => identity();
+    c.io.signalProcess = () => {
+      throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    };
+    c.reset();
+    expect(await run(["watch", "--stop"], c.io)).toBe(0);
+    expect(c.out()).toBe("no watch running for widgets\n");
+    expect(await readWatchLock(c.paths, P)).toBeNull();
+  });
+
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+    for (const during of ["request", "sleep"] as const) {
+      test(`${signal} during ${during} prints one shutdown line and releases only its lock`, async () => {
+        const c = await coordinator();
+        await c.hold("DEMO-2");
+        await takeWatchLock(c.paths, "gears", 202, () => false);
+        let listener: ((signal: "SIGTERM" | "SIGINT" | "SIGHUP") => void) | undefined;
+        let removed = false;
+        c.io.onSignal = (handler) => {
+          listener = handler;
+          return () => {
+            removed = true;
+          };
+        };
+        c.io.inspectProcess = async () => {
+          const { started, command, cwd } = identity();
+          return { started, command, cwd };
+        };
+        const fire = async () => {
+          expect(await readWatchLockInfo(c.paths, P)).toEqual({ pid: 4242, identity: identity() });
+          listener?.(signal);
+          listener?.(signal);
+          return new Promise<never>(() => {});
+        };
+        if (during === "request") {
+          const fetch = c.io.fetch;
+          if (!fetch) throw new Error("missing fake fetch");
+          c.io.fetch = async (url, init) => (url.endsWith("/fleet/inbox") ? fire() : fetch(url, init));
+        } else c.io.sleep = fire;
+        expect(await run(["watch"], c.io)).toBe(signal === "SIGINT" ? 130 : signal === "SIGTERM" ? 143 : 129);
+        expect(c.out()).toBe(`armada watch for widgets stopped by ${signal} (pid 4242)\n`);
+        expect(c.err()).toBe("");
+        expect(await readWatchLock(c.paths, P)).toBeNull();
+        expect(await readWatchLock(c.paths, "gears")).toBe(202);
+        expect(removed).toBe(true);
+      });
+    }
+  }
+
   test("a release with a delayed tarball ends the watch only after verification, once, and no notice repeats it", async () => {
     const server = { minimum: "0.0.1", latest: version };
     const c = await coordinator({ cli: server });

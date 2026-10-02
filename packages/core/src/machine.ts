@@ -251,15 +251,61 @@ export async function updateWatchState(
   return state;
 }
 
-/** The pid in the project's watch lock, or null when there is no lock. */
-export async function readWatchLock(paths: MachinePaths, project: string): Promise<number | null> {
+/** The process identity captured by the watch that owns the lock. Legacy locks have none. */
+export interface WatchIdentity {
+  project: string;
+  configPath: string;
+  started: string;
+  command: string;
+  cwd: string;
+}
+
+export interface WatchLock {
+  pid: number;
+  identity: WatchIdentity | null;
+}
+
+/** Reads both legacy PID locks and locks with a process identity; malformed locks are unverified. */
+export async function readWatchLockInfo(paths: MachinePaths, project: string): Promise<WatchLock | null> {
   try {
-    const pid = Number((await readFile(watchFiles(paths, project).lock, "utf8")).trim());
-    return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+    const raw = JSON.parse(await readFile(watchFiles(paths, project).lock, "utf8"));
+    const pid = typeof raw === "number" ? raw : raw?.pid;
+    if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+    const i = raw?.identity;
+    const verified =
+      i && [i.project, i.configPath, i.started, i.command, i.cwd].every((v) => typeof v === "string" && v);
+    return {
+      pid,
+      identity: verified
+        ? {
+            project: i.project,
+            configPath: i.configPath,
+            started: i.started,
+            command: i.command,
+            cwd: i.cwd,
+          }
+        : null,
+    };
   } catch (err) {
-    if (missing(err)) return null;
+    if (missing(err) || err instanceof SyntaxError) return null;
     throw err;
   }
+}
+
+/** The pid in the project's watch lock, including a legacy PID-only lock. */
+export async function readWatchLock(paths: MachinePaths, project: string): Promise<number | null> {
+  return (await readWatchLockInfo(paths, project))?.pid ?? null;
+}
+
+/** Compares a captured lock with its current holder, including identity (a reused PID is another holder). */
+export function sameWatchLock(a: WatchLock | null, b: WatchLock): boolean {
+  if (a?.pid !== b.pid) return false;
+  const left = a.identity;
+  const right = b.identity;
+  if (!left || !right) return left === right;
+  return (["project", "configPath", "started", "command", "cwd"] as const).every(
+    (field) => left[field] === right[field],
+  );
 }
 
 /** True while the process `pid` exists. */
@@ -283,12 +329,13 @@ export async function takeWatchLock(
   project: string,
   pid: number,
   alive: (pid: number) => boolean = processAlive,
+  identity?: WatchIdentity,
 ): Promise<{ taken: true } | { taken: false; pid: number }> {
   const { lock } = watchFiles(paths, project);
   await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
   // The pid is written first, then linked into place: the lock never exists empty.
   const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(tmp, `${pid}\n`, { mode: 0o600 });
+  await writeFile(tmp, `${identity ? JSON.stringify({ pid, identity }) : pid}\n`, { mode: 0o600 });
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -309,8 +356,14 @@ export async function takeWatchLock(
 }
 
 /** Gives the lock back, unless another watch holds it now. */
-export async function releaseWatchLock(paths: MachinePaths, project: string, pid: number): Promise<void> {
-  if ((await readWatchLock(paths, project).catch(() => null)) === pid)
+export async function releaseWatchLock(
+  paths: MachinePaths,
+  project: string,
+  pid: number,
+  identity?: WatchIdentity,
+): Promise<void> {
+  const held = await readWatchLockInfo(paths, project).catch(() => null);
+  if (identity ? sameWatchLock(held, { pid, identity }) : held?.pid === pid)
     await rm(watchFiles(paths, project).lock, { force: true });
 }
 

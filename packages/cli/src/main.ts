@@ -8,6 +8,7 @@ import { run } from "./cli.ts";
 import type { Exec } from "./io.ts";
 import { UsageError } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
+import { inspectProcess } from "./process.ts";
 import { spawnInherited, startBackground } from "./spawn.ts";
 
 function gitBranch(): string | null {
@@ -148,6 +149,19 @@ const code = await run(process.argv.slice(2), {
   },
   stderr: (t) => process.stderr.write(t),
   ghToken,
+  fetch: (url, init) => fetch(url, init),
+  inspectProcess: (pid) => inspectProcess(exec, pid),
+  signalProcess: (pid, signal) => {
+    process.kill(pid, signal);
+  },
+  onSignal: (handler) => {
+    const signals = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
+    const listeners = signals.map((signal) => ({ signal, listener: () => handler(signal) }));
+    for (const { signal, listener } of listeners) process.on(signal, listener);
+    return () => {
+      for (const { signal, listener } of listeners) process.off(signal, listener);
+    };
+  },
   interactive: isatty(0) && isatty(2),
   prompt,
   gitBranch,
