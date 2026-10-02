@@ -1,6 +1,6 @@
 # Dashboard v5 mockup: "Night watch"
 
-The proposed visual direction for the Armada dashboard (THE-898, 2026-10-01). Once the owner approves it, it is the reference for THE-899, "Build the approved new look across the dashboard".
+The visual direction for the Armada dashboard (THE-898), approved by the owner on 2026-10-02. It is the reference for THE-899, "Build the approved new look across the dashboard".
 
 The idea: the dashboard is the night sky the landing flies in, seen from the bridge. It keeps the Agents page's structure and the live fleet. The craft goes into light, type and the live feeling:
 
