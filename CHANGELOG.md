@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.29](https://github.com/The-Vibe-Company/armada/compare/v0.2.28...v0.2.29) (2026-10-02)
+
+
+### Bug Fixes
+
+* **core:** clear stale hand-backs after pull requests merge ([#126](https://github.com/The-Vibe-Company/armada/issues/126)) ([aba8ff8](https://github.com/The-Vibe-Company/armada/commit/aba8ff8aa83badaf29457d4e4d1a111c3b917497))
+
 ## [0.2.28](https://github.com/The-Vibe-Company/armada/compare/v0.2.27...v0.2.28) (2026-10-01)
 
 
