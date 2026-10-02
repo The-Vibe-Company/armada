@@ -147,7 +147,7 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
   type Fleet = {
     rows: { id: string }[];
     projects: { slug: string }[];
-    validations?: { id: number; ticket: string; decision: unknown }[];
+    validations?: { id: number; ticket: string; decision: unknown; gallery?: { kind: string }[] }[];
   };
   // A fresh server reads the demo world after its first answer: ask again until it shows.
   let fleet: Fleet = { rows: [], projects: [] };
@@ -159,7 +159,9 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
   }
   const agent = fleet.rows[0]?.id;
   const project = fleet.projects[0]?.slug;
-  const open = fleet.validations?.find((v) => !v.decision && fleet.rows.some((r) => r.id === v.ticket));
+  // A pending validation on a session in flight, one with images first: the large gallery and its viewer (THE-916).
+  const pending = (fleet.validations ?? []).filter((v) => !v.decision && fleet.rows.some((r) => r.id === v.ticket));
+  const open = pending.find((v) => v.gallery?.some((a) => a.kind === "image")) ?? pending[0];
   const validation = open?.id;
   if (!agent || !project || !open || validation === undefined)
     throw new Error("the demo world has no agent, project or validation");
