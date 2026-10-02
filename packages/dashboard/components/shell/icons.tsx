@@ -60,23 +60,6 @@ export function SectionIcon({ section, size = 16 }: { section: NonNullable<Secti
   );
 }
 
-/** The phone's back arrow, to the page a detail page belongs to. */
-export function BackIcon() {
-  return (
-    <svg
-      width={18}
-      height={18}
-      viewBox="0 0 16 16"
-      aria-hidden
-      {...STROKE}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M10 3L5 8l5 5" />
-    </svg>
-  );
-}
-
 /** The organization menu's chevron. */
 export function ChevronIcon() {
   return (

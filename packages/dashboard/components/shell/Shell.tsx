@@ -5,8 +5,8 @@
 // page shows, lib/horizon.ts) with its header bar (the page kit's
 // PageHeader: breadcrumbs, key hints, the page's actions), ⌘K search and the
 // keyboard (j/k move through the rows of the page, Enter opens, Esc goes
-// back). On a phone the sidebar is a top bar and the sections a tab bar at
-// the bottom. Pages render inside it from the overview it polls (`useFleet`).
+// back). On a phone the sidebar is THE-891's top bar (the mark, the
+// organization, search) and the sections a tab bar at the bottom. Pages render inside it from the overview it polls (`useFleet`).
 import type { FleetOverview } from "@armada/core/read";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -39,7 +39,7 @@ import { Dot, harnessColor, Kbd } from "../ui";
 import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
-import { BackIcon, ChevronIcon, SectionIcon } from "./icons";
+import { ChevronIcon, SectionIcon } from "./icons";
 import { Logo, SearchIcon } from "./Logo";
 import { MergeMoment } from "./MergeMoment";
 import { Notifier } from "./Notifier";
@@ -190,7 +190,6 @@ function Frame({ children }: { children: ReactNode }) {
   const crumbs = crumbsOf(place, from);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
   const here = crumbs.at(-1);
-  const up = crumbs.at(-2)?.href ?? null;
   const horizon = useMemo(() => horizonOf(overview, place, failed), [overview, place, failed]);
 
   return (
@@ -199,15 +198,7 @@ function Frame({ children }: { children: ReactNode }) {
       <a className="sh-skip" href="#content">
         {t.a11y.skip}
       </a>
-      <Sidebar
-        section={section}
-        place={place}
-        menu={menu}
-        setMenu={setMenu}
-        onSearch={() => setPalette(true)}
-        title={here ? crumbLabel(t, here, names) : ""}
-        up={detailPage ? up : null}
-      />
+      <Sidebar section={section} place={place} menu={menu} setMenu={setMenu} onSearch={() => setPalette(true)} />
       <main className="sh-main" id="content" tabIndex={-1} data-density={density} data-horizon={horizon}>
         <HeaderSlotProvider>
           <PageHeader
@@ -348,18 +339,12 @@ function Sidebar({
   menu,
   setMenu,
   onSearch,
-  title,
-  up,
 }: {
   section: Section;
   place: Place;
   menu: boolean;
   setMenu: (open: boolean) => void;
   onSearch: () => void;
-  /** The page's name, in the phone's top bar. */
-  title: string;
-  /** Where a detail page goes back to, the phone's back arrow. */
-  up: string | null;
 }) {
   const { t, account } = useShell();
   const { overview } = useFleet();
@@ -368,18 +353,10 @@ function Sidebar({
   return (
     <aside className="sh-side" aria-label={t.a11y.sidebar}>
       <div className="sh-brand">
-        {up ? (
-          <Link href={up} prefetch className="sh-back" aria-label={t.shell.back}>
-            <BackIcon />
-          </Link>
-        ) : null}
         <Link href={paths.overview} prefetch className="sh-brand-home" title="Armada">
           <Logo />
           <span className="sh-label sh-brand-name">Armada</span>
         </Link>
-        <span className="sh-top-title" aria-hidden>
-          {title}
-        </span>
         <span className="spacer sh-label" />
         <OrgMenu open={menu} setOpen={setMenu} label={account?.organization.name ?? ""} />
       </div>

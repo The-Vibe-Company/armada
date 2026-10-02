@@ -91,7 +91,6 @@ export default async function Organization({ searchParams }: { searchParams: Par
         <StatusHeader
           lead={t.status.org.members(viewer.organization.name, full?.members.length ?? 0)}
           then={t.status.org.invitations(invitations.length)}
-          line={t.org.roleHint}
         />
       }
       toolbar={
