@@ -614,14 +614,24 @@ button.chip:hover {
     display: none;
   }
 }
+/* Reduced motion is calm, not still (THE-899): crossfades and color changes
+   stay; nothing travels, pulses, scales or shimmers. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     /* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over every animation */
     animation: none !important;
-    /* biome-ignore lint/complexity/noImportantStyles: reduced motion must win over every transition */
-    transition: none !important;
+    /* biome-ignore lint/complexity/noImportantStyles: only fades and colors may change over time */
+    transition-property: opacity, color, background-color, border-color, box-shadow, fill, stroke !important;
+  }
+  *:active {
+    /* biome-ignore lint/complexity/noImportantStyles: a press does not shrink anything */
+    scale: none !important;
+  }
+  .aw.is-leaving,
+  .merge-toast.is-leaving {
+    translate: none;
   }
 }
 
@@ -910,6 +920,13 @@ a.sh-item:hover {
 .sh-live.is-failed {
   color: var(--active);
 }
+/* The horizon's hue changes over 320 ms when the fleet's state does: a registered color can be transitioned. */
+@property --horizon {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #7ea6ff;
+}
+
 /* The deck: the one lit surface, its top edge lit, the horizon behind its top. */
 .sh-main {
   position: relative;
@@ -922,6 +939,7 @@ a.sh-item:hover {
   box-shadow: var(--deck-shadow);
   overflow: hidden;
   isolation: isolate;
+  transition: --horizon var(--t-3) ease;
 }
 .sh-main[data-density="airy"] {
   --row: 48px;
@@ -2907,6 +2925,81 @@ a.ui-figure:hover {
   .sc-key .ui-row-side {
     flex-basis: 100%;
     justify-content: flex-start;
+  }
+}
+
+/* A row that just reported glows blue from its left, once, then fades (opacity only). */
+.sc-agent.is-fresh::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(90deg, var(--frontier-dim), transparent 60%);
+  animation: ui-fade-out 1600ms ease-out forwards;
+  pointer-events: none;
+}
+.ui-row.sc-agent {
+  isolation: isolate;
+}
+@keyframes ui-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* The merge moment: a ship leaving the formation, then a confirmation from below. */
+.merge-ship {
+  position: fixed;
+  z-index: 70;
+  line-height: 0;
+  fill: var(--done);
+  pointer-events: none;
+  filter: drop-shadow(0 0 6px rgba(182, 241, 90, 0.8));
+}
+.merge-toasts {
+  position: fixed;
+  z-index: 50;
+  left: 50%;
+  bottom: 24px;
+  display: grid;
+  gap: 8px;
+  translate: -50% 0;
+  pointer-events: none;
+}
+.merge-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 10px 12px;
+  border-radius: var(--r-card);
+  background: var(--overlay-glass);
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  box-shadow: var(--pop-shadow);
+  transition:
+    translate var(--t-2) var(--ease-out),
+    opacity var(--t-2) var(--ease-out);
+}
+@starting-style {
+  .merge-toast {
+    translate: 0 16px;
+    opacity: 0;
+  }
+}
+.merge-toast.is-leaving {
+  translate: 0 8px;
+  opacity: 0;
+}
+.merge-toast b {
+  font-weight: 500;
+}
+@media (max-width: 719px) {
+  .merge-toasts {
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    width: calc(100% - 32px);
   }
 }
 

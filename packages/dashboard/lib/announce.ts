@@ -1,7 +1,8 @@
 // What the shell's live region says (THE-891): from one overview to the next,
 // only what matters to someone who cannot see the page change. A new item
 // waiting for the viewer (a validation, a worker's question, plan or
-// hand-back, a coordinator that stopped), and an agent's phase change. Pure:
+// hand-back, a coordinator that stopped), an agent's phase change, and a
+// merge (THE-899: a ticket ready to merge that left the fleet). Pure:
 // the shell's Announcer keeps the last snapshot, debounces and speaks.
 import type { AgentPhase, FleetOverview } from "@armada/core/read";
 import { decisionsOf } from "./fleet-view";
@@ -16,7 +17,10 @@ export interface Watched {
   phases: Map<string, { ticket: string; phase: AgentPhase }>;
 }
 
-export type Change = { kind: "waiting"; title: string } | { kind: "phase"; ticket: string; phase: AgentPhase };
+export type Change =
+  | { kind: "waiting"; title: string }
+  | { kind: "phase"; ticket: string; phase: AgentPhase }
+  | { kind: "merged"; ticket: string; project: string };
 
 type Watchable = Pick<FleetOverview, "rows" | "waiting" | "projects"> & Partial<Pick<FleetOverview, "validations">>;
 
@@ -32,9 +36,10 @@ export function watched(o: Watchable): Watched {
 }
 
 /**
- * What changed from `before` to `after`: items that started waiting, and
- * agents still in flight whose phase moved. An agent that appears or leaves
- * is not a phase change; an item that stops waiting is not news.
+ * What changed from `before` to `after`: items that started waiting, agents
+ * still in flight whose phase moved, and agents ready to merge that left the
+ * fleet: merged. Any other agent that appears or leaves is not a phase
+ * change; an item that stops waiting is not news.
  */
 export function changes(before: Watched, after: Watched): Change[] {
   const out: Change[] = [];
@@ -43,6 +48,9 @@ export function changes(before: Watched, after: Watched): Change[] {
     const was = before.phases.get(key);
     if (was && was.phase !== now.phase) out.push({ kind: "phase", ticket: now.ticket, phase: now.phase });
   }
+  for (const [key, was] of before.phases)
+    if (was.phase === "ready-to-merge" && !after.phases.has(key))
+      out.push({ kind: "merged", ticket: was.ticket, project: key.slice(0, key.lastIndexOf("/")) });
   return out;
 }
 
@@ -50,6 +58,7 @@ export function changes(before: Watched, after: Watched): Change[] {
 export function sentence(t: Strings, list: Change[]): string | null {
   const waiting = list.filter((c) => c.kind === "waiting");
   const phases = list.filter((c) => c.kind === "phase");
+  const merged = list.filter((c) => c.kind === "merged");
   const parts: string[] = [];
   const [first] = waiting;
   if (waiting.length === 1 && first) parts.push(t.a11y.waiting(first.title));
@@ -57,5 +66,8 @@ export function sentence(t: Strings, list: Change[]): string | null {
   const [one] = phases;
   if (phases.length === 1 && one) parts.push(t.a11y.phase(one.ticket, t.shell.phases[one.phase]));
   else if (phases.length > 1) parts.push(t.a11y.phaseMany(phases.length));
+  const [done] = merged;
+  if (merged.length === 1 && done) parts.push(t.a11y.merged(done.ticket));
+  else if (merged.length > 1) parts.push(t.a11y.mergedMany(merged.length));
   return parts.length ? parts.join(". ") : null;
 }

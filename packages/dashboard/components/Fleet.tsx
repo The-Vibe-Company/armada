@@ -30,7 +30,6 @@ import { LiveMark } from "./mark";
 import { ProjectCard } from "./ProjectCard";
 import {
   Alert,
-  Button,
   Card,
   CardGrid,
   CardHead,
@@ -143,18 +142,6 @@ export function Fleet({ insights, since }: { insights?: ReactNode; since?: Since
           onRefresh={refresh}
         />
       </HeaderActions>
-      {failed && (
-        <Alert
-          title={t.shell.offline}
-          action={
-            <Button type="button" small onClick={refresh}>
-              {t.refresh}
-            </Button>
-          }
-        >
-          {checkedAt !== null && t.staleReading(now - checkedAt)}
-        </Alert>
-      )}
       {overview.live.state === "unreachable" && (
         <Alert tone="warn" title={t.live.unreachable}>
           {t.unreachableBanner(overview.live.error)}

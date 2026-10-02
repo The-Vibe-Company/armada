@@ -109,6 +109,11 @@ const elapsed = (ms: number, day: string) => (ms < MIN ? `${Math.max(0, Math.rou
 
 const en = {
   htmlTitle: "Armada — fleet",
+  /** The merge moment's confirmation (THE-899). */
+  merge: {
+    done: (ticket: string) => `${ticket} merged.`,
+    onMain: (pr: number) => `PR #${pr} is on main.`,
+  },
   /** Each page's status sentence (THE-899): where things stand, in display type, then its quieter half. */
   status: {
     welcome: (merged: number) =>
@@ -1079,6 +1084,8 @@ const en = {
     waitingMany: (n: number) => `${n} new items waiting for you`,
     phase: (ticket: string, phase: string) => `${ticket} is now ${phase}`,
     phaseMany: (n: number) => `${n} agents changed phase`,
+    merged: (ticket: string) => `${ticket} merged`,
+    mergedMany: (n: number) => `${n} tickets merged`,
     coordinator: { active: "active", idle: "idle", unknown: "not seen" } satisfies Record<CoordinatorState, string>,
     criticalPath: "On the critical path",
     timelineScroll: "Live fleet timeline, the last 24 hours. Arrow keys scroll it.",
@@ -1314,6 +1321,10 @@ export type Strings = typeof en;
 
 const fr: Strings = {
   htmlTitle: "Armada — flotte",
+  merge: {
+    done: (ticket) => `${ticket} fusionné.`,
+    onMain: (pr) => `La PR #${pr} est sur main.`,
+  },
   status: {
     welcome: (merged) =>
       merged === 0 ? "Bon retour." : `Bon retour. ${merged} fusionné${merged > 1 ? "s" : ""} pendant ton absence.`,
@@ -2254,6 +2265,8 @@ const fr: Strings = {
     waitingMany: (n) => `${n} nouveaux éléments vous attendent`,
     phase: (ticket, phase) => `${ticket} passe en ${phase}`,
     phaseMany: (n) => `${n} agents ont changé de phase`,
+    merged: (ticket) => `${ticket} fusionné`,
+    mergedMany: (n) => `${n} tickets fusionnés`,
     coordinator: { active: "actif", idle: "inactif", unknown: "jamais vu" },
     criticalPath: "Sur le chemin critique",
     timelineScroll: "Chronologie de la flotte en direct, les dernières 24 heures. Les flèches la font défiler.",

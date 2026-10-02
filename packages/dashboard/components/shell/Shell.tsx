@@ -33,7 +33,7 @@ import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
 import { ownsKeys } from "@/lib/keyboard";
 import { decideCount, pendingValidations } from "@/lib/overview-view";
 import { LiveMark } from "../mark";
-import { Ring } from "../page";
+import { Alert, Button, Ring } from "../page";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
 import { Dot, harnessColor, Kbd } from "../ui";
 import { useLazy } from "../use-lazy";
@@ -41,6 +41,7 @@ import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
 import { BackIcon, ChevronIcon, SectionIcon } from "./icons";
 import { Logo, SearchIcon } from "./Logo";
+import { MergeMoment } from "./MergeMoment";
 import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
 import { useViews, ViewsProvider } from "./views";
@@ -228,6 +229,7 @@ function Frame({ children }: { children: ReactNode }) {
             }
           />
           <div className="sh-scroll" ref={main}>
+            <FleetAlert />
             {children}
           </div>
         </HeaderSlotProvider>
@@ -235,6 +237,7 @@ function Frame({ children }: { children: ReactNode }) {
       <TabBar section={section} />
       {palette && Palette && <Palette onClose={() => setPalette(false)} />}
       <Announcer />
+      <MergeMoment />
       <Notifier />
     </div>
   );
@@ -500,6 +503,29 @@ function ViewsGroup() {
         </div>
       ))}
     </nav>
+  );
+}
+
+/**
+ * A poll that failed, on every page (THE-899): the page keeps the last
+ * reading under it, says since when, and offers to try again.
+ */
+function FleetAlert() {
+  const { t } = useShell();
+  const { checkedAt, failed, refresh } = useFleet();
+  const now = useNow();
+  if (!failed) return null;
+  return (
+    <Alert
+      title={t.shell.offline}
+      action={
+        <Button type="button" small onClick={refresh}>
+          {t.refresh}
+        </Button>
+      }
+    >
+      {checkedAt !== null && t.staleReading(now - checkedAt)}
+    </Alert>
   );
 }
 
