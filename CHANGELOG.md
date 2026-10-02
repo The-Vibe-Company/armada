@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.33](https://github.com/The-Vibe-Company/armada/compare/v0.2.32...v0.2.33) (2026-10-02)
+
+
+### Bug Fixes
+
+* **cli:** stop only the current project watch ([#133](https://github.com/The-Vibe-Company/armada/issues/133)) ([c9b594a](https://github.com/The-Vibe-Company/armada/commit/c9b594a280fd6b5121c71d2783373c9577e8db2a))
+
 ## [0.2.32](https://github.com/The-Vibe-Company/armada/compare/v0.2.31...v0.2.32) (2026-10-02)
 
 
