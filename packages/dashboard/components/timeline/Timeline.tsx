@@ -62,8 +62,12 @@ const coordinatorName = (h: ProjectOverview["coordinator"]["harness"]) => {
 
 const pc = (n: number) => `${n.toFixed(3)}%`;
 
-/** The timeline of the projects shown: every one, or the one the overview is filtered on. */
-export function LiveTimeline({ project = null }: { project?: string | null }) {
+/**
+ * The timeline of the projects shown: every one, or the one the overview is
+ * filtered on. `compact` caps its height under the overview's list (THE-916):
+ * its rows scroll inside.
+ */
+export function LiveTimeline({ project = null, compact = false }: { project?: string | null; compact?: boolean }) {
   // A showcase (the landing's replica, THE-887) gives the history; the shell's reads it from the server.
   const { overview, timeline: given } = useFleet();
   const { t, lang } = useShell();
@@ -167,7 +171,7 @@ export function LiveTimeline({ project = null }: { project?: string | null }) {
         </>
       }
     >
-      <div className="tl" ref={setBox} id="tl-view">
+      <div className={compact ? "tl is-compact" : "tl"} ref={setBox} id="tl-view">
         {table && (
           <TimelineTable projects={projects} rows={rows} history={history} t={t} clock={clock} end={scale.end} />
         )}

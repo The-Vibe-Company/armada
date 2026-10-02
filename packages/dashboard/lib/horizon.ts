@@ -48,7 +48,6 @@ export function horizonOf(o: Fleet, place: Place, failed = false): Horizon {
     case "project":
       return fleetHorizon(scoped(o, place.slug));
     case "overview":
-    case "agents":
     case "projects":
     case "validations":
     case "validation":

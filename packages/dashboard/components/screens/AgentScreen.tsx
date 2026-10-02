@@ -1,9 +1,11 @@
 "use client";
 
-// /agents/[ticket] (THE-869): one session from plan to merge. Its status and
-// steps, what waits for the owner with the same requests as the overview, its
-// activity and its pull request's files, and its session, coordinator and
-// code facts. Renders from the overview the shell polls and the ticket's
+// /agents/[ticket] (THE-869): one session from plan to merge. When the owner
+// has something to validate on it (THE-916), that comes first: the text to
+// check, its images full width and the buttons to decide. Otherwise its steps,
+// what waits on it and its last reports. Its activity, its pull request's
+// files, its attachments and its session, coordinator and code facts are in
+// one "Details" disclosure, closed until opened or asked for by `?tab=`. Renders from the overview the shell polls and the ticket's
 // history its page read with it; that history is read again when the ticket
 // moves (`/api/fleet/activity`, Postgres only).
 import {
@@ -17,6 +19,7 @@ import {
 import { useParams, useSearchParams } from "next/navigation";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { releaseTicket } from "@/app/actions";
+import { checksOf, ownerChecks } from "@/lib/coordinator-view";
 import type { TaggedActivity } from "@/lib/fleet-data";
 import {
   type AgentState,
@@ -66,6 +69,7 @@ import { RequestAction } from "./AgentActions";
 import { rowLine, rowProgress } from "./AgentRow";
 import { Attachments, useAttachments } from "./Attachments";
 import { DecisionActions } from "./DecisionCard";
+import { ValidationCard } from "./ValidationCard";
 
 /** A key and its value, as a static row. */
 function Fact({ k, children, color }: { k: ReactNode; children: ReactNode; color?: string }) {
@@ -444,6 +448,11 @@ function Stepper({ row, color }: { row: FleetRow; color: string }) {
 const TABS = ["activity", "files", "attachments"] as const;
 type Tab = (typeof TABS)[number];
 
+/** What a session's last reports are made of: its reports, its phase changes, its hand-back. */
+const REPORT_KINDS: readonly ActivityEntry["kind"][] = ["report", "phase", "hand-back"];
+/** How many of them its page shows outside "Details". */
+const LAST_REPORTS = 3;
+
 export function AgentScreen({ initialActivity = null }: { initialActivity?: TaggedActivity | null }) {
   const { t, author, setAuthor, account } = useShell();
   const { overview, failed, refresh, version } = useFleet();
@@ -451,6 +460,11 @@ export function AgentScreen({ initialActivity = null }: { initialActivity?: Tagg
   const ticket = decodeURIComponent(String(useParams<{ ticket: string }>().ticket ?? ""));
   const asked = useSearchParams().get("tab");
   const tab: Tab = asked === "files" || asked === "attachments" ? asked : "activity";
+  // "Details" opens when the address asks for one of its tabs (⌘K's files and attachments, the tabs themselves).
+  const [details, setDetails] = useState(asked !== null);
+  useEffect(() => {
+    if (asked !== null) setDetails(true);
+  }, [asked]);
   const row = overview.rows.find((r) => r.id.toLowerCase() === ticket.toLowerCase());
   const project = overview.projects.find((p) => p.slug === row?.project);
   const requests = useMemo(() => project?.requests ?? [], [project]);
@@ -469,7 +483,16 @@ export function AgentScreen({ initialActivity = null }: { initialActivity?: Tagg
     refresh,
   };
   return (
-    <Agent row={row} project={project} requests={requests} tab={tab} ctx={ctx} initialActivity={initialActivity} />
+    <Agent
+      row={row}
+      project={project}
+      requests={requests}
+      tab={tab}
+      ctx={ctx}
+      initialActivity={initialActivity}
+      details={details}
+      setDetails={setDetails}
+    />
   );
 }
 
@@ -480,6 +503,8 @@ function Agent({
   tab,
   ctx,
   initialActivity,
+  details,
+  setDetails,
 }: {
   row: FleetRow;
   project: ProjectOverview | undefined;
@@ -487,8 +512,12 @@ function Agent({
   tab: Tab;
   ctx: ActionContext;
   initialActivity: TaggedActivity | null;
+  details: boolean;
+  setDetails: (open: boolean) => void;
 }) {
   const { t } = ctx;
+  const { overview } = useFleet();
+  const checks = checksOf(ownerChecks(overview), row);
   const a = t.shell.agent;
   const state = agentState(row);
   const label = stateLabel(t, state, row.phase);
@@ -502,7 +531,9 @@ function Agent({
   const files = row.pr?.files ?? null;
   const coordinator = project?.coordinator;
   const coordHarness: Harness | null = coordinatorHarness(coordinator?.harness);
-  const tabPath = (k: Tab) => `${paths.agent(row.id)}${k !== "activity" ? `?tab=${k}` : ""}`;
+  // Every tab names itself, so moving between them keeps "Details" open.
+  const tabPath = (k: Tab) => `${paths.agent(row.id)}?tab=${k}`;
+  const reports = activity.entries.filter((e) => REPORT_KINDS.includes(e.kind)).slice(0, LAST_REPORTS);
   const session = row.session;
 
   const line = rowLine(row);
@@ -555,176 +586,212 @@ function Agent({
           <span className="ui-button is-disabled">{t.shell.noPr}</span>
         )}
       </HeaderActions>
-      <Section label={t.shell.stepsHeading} count={`${row.pipeline.step + 1}/${t.shell.steps.length}`}>
-        <Stepper row={row} color={color} />
-      </Section>
-      <Columns
-        side={
-          <>
-            <Section label={t.shell.session}>
-              <Fact k={t.shell.harness}>
-                <Dot color={harnessColor(harness)} />
-                {HARNESS_NAME[harness]}
-              </Fact>
-              <Fact k={t.shell.profile}>
-                <span className="mono">{session?.profile ?? row.profile ?? "—"}</span>
-                {row.profileReason && <span> · {row.profileReason}</span>}
-              </Fact>
-              <Fact k={a.model}>
-                <span className="mono">
-                  {session?.model ? [session.model, session.effort].filter(Boolean).join(" · ") : "—"}
-                </span>
-              </Fact>
-              <Fact k={a.sessionId}>
-                <span className="mono" title={handle ?? undefined}>
-                  {handle ?? "—"}
-                </span>
-              </Fact>
-              <Fact k={t.shell.started}>
-                {session ? (
-                  <span className="mono">
-                    <Clock at={session.claimedAt} /> · <RelativeTime at={session.claimedAt} format="duration" />
-                  </span>
-                ) : (
-                  "—"
-                )}
-              </Fact>
-              <Fact k={t.shell.lastReportKey} color={row.silent ? "var(--active)" : undefined}>
-                {row.lastReport ? <RelativeTime at={row.lastReport} /> : t.shell.neverReported}
-              </Fact>
-            </Section>
-            <Section label={t.shell.coordinator}>
-              <Fact k={project?.name ?? row.project}>
-                {coordHarness ? (
-                  <>
-                    <Dot color={harnessColor(coordHarness)} />
-                    {coordHarness === "other" ? a.terminal : HARNESS_NAME[coordHarness]}
-                  </>
-                ) : (
-                  "—"
-                )}
-              </Fact>
-              <Fact
-                k={a.state}
-                color={
-                  coordinator?.state === "active"
-                    ? "var(--done)"
-                    : coordinator?.state === "idle"
-                      ? "var(--active)"
-                      : "var(--text-3)"
-                }
-              >
-                {coordinator?.state === "active"
-                  ? t.shell.coordinatorActive(t.ago(Math.max(0, ctx.now - Date.parse(coordinator.seenAt ?? ""))))
-                  : coordinator?.state === "idle"
-                    ? t.shell.coordinatorIdle(t.duration(Math.max(0, ctx.now - Date.parse(coordinator.seenAt ?? ""))))
-                    : t.shell.coordinatorUnknown}
-              </Fact>
-            </Section>
-            <Section label={t.shell.code}>
-              <Fact k={t.shell.branch}>
-                <span className="mono" title={branch ?? undefined}>
-                  {branch ?? "—"}
-                </span>
-              </Fact>
-              <Fact k={t.shell.pr}>
-                {row.pr ? (
-                  <a className="mono" href={row.pr.url} target="_blank" rel="noreferrer">
-                    <Dot color={ciColor(row.pr.ci)} /> #{row.pr.number}
-                  </a>
-                ) : (
-                  "—"
-                )}
-              </Fact>
-              {row.pr?.ci && (
-                <Fact k={a.checks} color={ciColor(row.pr.ci)}>
-                  {a.checkStates[row.pr.ci]}
-                </Fact>
-              )}
-              {row.pr && (
-                <Fact k={a.mergeable} color={row.pr.mergeable === "CONFLICTING" ? "var(--critical)" : undefined}>
-                  {row.pr.mergeable === "CONFLICTING" ? a.conflict : row.pr.mergeable === "MERGEABLE" ? a.yes : "—"}
-                </Fact>
-              )}
-              <Fact k={a.changes}>
-                {row.pr?.additions != null ? (
-                  <span className="sc-file-delta">
-                    <span className="sc-add">+{row.pr.additions}</span>{" "}
-                    <span className="sc-del">−{row.pr.deletions ?? 0}</span>
-                  </span>
-                ) : (
-                  "—"
-                )}
-              </Fact>
-            </Section>
-            <SectionBody>
-              <RequestAction
-                ctx={ctx}
-                label={a.askRelease}
-                what={a.requests["release-request"]}
-                send={releaseTicket}
-                fields={{ project: row.project, ticket: row.id }}
-                pending={openRequest(project, "release-request", (i) => i.ticket === row.id)}
-                coordinator={coordinator?.state ?? "unknown"}
-                hint={a.releaseHint}
-              />
-            </SectionBody>
-          </>
-        }
-      >
-        <Decision ctx={ctx} row={row} state={state} label={label} project={project} />
+      {checks.length > 0 ? (
         <Section
-          id="agent-tab"
-          long={tab === "activity" && activity.entries.length > LONG_LIST}
-          label={tab === "attachments" ? a.attachments : tab === "files" ? a.files : a.activity}
-          count={
-            tab === "attachments"
-              ? (attachments?.items.length ?? 0)
-              : tab === "files"
-                ? (files?.length ?? 0)
-                : activity.entries.length
-          }
+          icon={<Dot color="var(--accent)" />}
+          label={<span style={{ color: "var(--accent)" }}>{t.overview.toValidateBadge}</span>}
+          count={checks.length}
+        >
+          <SectionBody className="sc-validate">
+            {checks.map((v) => (
+              <ValidationCard key={v.id} ctx={ctx} v={v} projectName={project?.name ?? row.project} mode="full" />
+            ))}
+          </SectionBody>
+        </Section>
+      ) : (
+        <>
+          <Section label={t.shell.stepsHeading} count={`${row.pipeline.step + 1}/${t.shell.steps.length}`}>
+            <Stepper row={row} color={color} />
+          </Section>
+          <Decision ctx={ctx} row={row} state={state} label={label} project={project} />
+          <Section label={a.lastReports} count={reports.length}>
+            {reports.length === 0 ? (
+              <SectionBody>
+                <p>{a.noReports}</p>
+              </SectionBody>
+            ) : (
+              reports.map((e, k) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id; the list is rebuilt whole
+                <ActivityRow key={`${e.kind}-${e.at}-${k}`} e={e} row={row} t={t} />
+              ))
+            )}
+          </Section>
+        </>
+      )}
+      <details className="sc-details" open={details} onToggle={(e) => setDetails(e.currentTarget.open)}>
+        <summary className="sc-details-h">
+          <svg className="sc-details-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+            <path d="M4.5 3l3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
+          {a.details}
+        </summary>
+        <Columns
           side={
-            <Tabs
-              label={a.tabs}
-              value={tab}
-              size="sm"
-              controls="agent-tab"
-              items={TABS.map((k) => ({
-                key: k,
-                label: k === "attachments" ? a.attachments : k === "files" ? a.files : a.activity,
-                count:
-                  k === "attachments" ? attachments?.items.length : k === "files" ? (files?.length ?? 0) : undefined,
-                href: tabPath(k),
-              }))}
-            />
+            <>
+              <Section label={t.shell.session}>
+                <Fact k={t.shell.harness}>
+                  <Dot color={harnessColor(harness)} />
+                  {HARNESS_NAME[harness]}
+                </Fact>
+                <Fact k={t.shell.profile}>
+                  <span className="mono">{session?.profile ?? row.profile ?? "—"}</span>
+                  {row.profileReason && <span> · {row.profileReason}</span>}
+                </Fact>
+                <Fact k={a.model}>
+                  <span className="mono">
+                    {session?.model ? [session.model, session.effort].filter(Boolean).join(" · ") : "—"}
+                  </span>
+                </Fact>
+                <Fact k={a.sessionId}>
+                  <span className="mono" title={handle ?? undefined}>
+                    {handle ?? "—"}
+                  </span>
+                </Fact>
+                <Fact k={t.shell.started}>
+                  {session ? (
+                    <span className="mono">
+                      <Clock at={session.claimedAt} /> · <RelativeTime at={session.claimedAt} format="duration" />
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </Fact>
+                <Fact k={t.shell.lastReportKey} color={row.silent ? "var(--active)" : undefined}>
+                  {row.lastReport ? <RelativeTime at={row.lastReport} /> : t.shell.neverReported}
+                </Fact>
+              </Section>
+              <Section label={t.shell.coordinator}>
+                <Fact k={project?.name ?? row.project}>
+                  {coordHarness ? (
+                    <>
+                      <Dot color={harnessColor(coordHarness)} />
+                      {coordHarness === "other" ? a.terminal : HARNESS_NAME[coordHarness]}
+                    </>
+                  ) : (
+                    "—"
+                  )}
+                </Fact>
+                <Fact
+                  k={a.state}
+                  color={
+                    coordinator?.state === "active"
+                      ? "var(--done)"
+                      : coordinator?.state === "idle"
+                        ? "var(--active)"
+                        : "var(--text-3)"
+                  }
+                >
+                  {coordinator?.state === "active"
+                    ? t.shell.coordinatorActive(t.ago(Math.max(0, ctx.now - Date.parse(coordinator.seenAt ?? ""))))
+                    : coordinator?.state === "idle"
+                      ? t.shell.coordinatorIdle(t.duration(Math.max(0, ctx.now - Date.parse(coordinator.seenAt ?? ""))))
+                      : t.shell.coordinatorUnknown}
+                </Fact>
+              </Section>
+              <Section label={t.shell.code}>
+                <Fact k={t.shell.branch}>
+                  <span className="mono" title={branch ?? undefined}>
+                    {branch ?? "—"}
+                  </span>
+                </Fact>
+                <Fact k={t.shell.pr}>
+                  {row.pr ? (
+                    <a className="mono" href={row.pr.url} target="_blank" rel="noreferrer">
+                      <Dot color={ciColor(row.pr.ci)} /> #{row.pr.number}
+                    </a>
+                  ) : (
+                    "—"
+                  )}
+                </Fact>
+                {row.pr?.ci && (
+                  <Fact k={a.checks} color={ciColor(row.pr.ci)}>
+                    {a.checkStates[row.pr.ci]}
+                  </Fact>
+                )}
+                {row.pr && (
+                  <Fact k={a.mergeable} color={row.pr.mergeable === "CONFLICTING" ? "var(--critical)" : undefined}>
+                    {row.pr.mergeable === "CONFLICTING" ? a.conflict : row.pr.mergeable === "MERGEABLE" ? a.yes : "—"}
+                  </Fact>
+                )}
+                <Fact k={a.changes}>
+                  {row.pr?.additions != null ? (
+                    <span className="sc-file-delta">
+                      <span className="sc-add">+{row.pr.additions}</span>{" "}
+                      <span className="sc-del">−{row.pr.deletions ?? 0}</span>
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </Fact>
+              </Section>
+              <SectionBody>
+                <RequestAction
+                  ctx={ctx}
+                  label={a.askRelease}
+                  what={a.requests["release-request"]}
+                  send={releaseTicket}
+                  fields={{ project: row.project, ticket: row.id }}
+                  pending={openRequest(project, "release-request", (i) => i.ticket === row.id)}
+                  coordinator={coordinator?.state ?? "unknown"}
+                  hint={a.releaseHint}
+                />
+              </SectionBody>
+            </>
           }
         >
-          {tab === "attachments" ? (
-            <Attachments items={attachments?.items ?? null} failed={attachments?.failed ?? false} t={t} />
-          ) : tab === "files" ? (
-            <FilesList row={row} t={t} />
-          ) : (
-            <>
-              {!activity.live && (
-                <SectionBody>
-                  <p>{a.activityPartial}</p>
-                </SectionBody>
-              )}
-              {activity.entries.length === 0 ? (
-                <SectionBody>
-                  <p>{a.noActivity}</p>
-                </SectionBody>
-              ) : (
-                activity.entries.map((e, k) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id; the list is rebuilt whole
-                  <ActivityRow key={`${e.kind}-${e.at}-${k}`} e={e} row={row} t={t} />
-                ))
-              )}
-            </>
-          )}
-        </Section>
-      </Columns>
+          <Section
+            id="agent-tab"
+            long={tab === "activity" && activity.entries.length > LONG_LIST}
+            label={tab === "attachments" ? a.attachments : tab === "files" ? a.files : a.activity}
+            count={
+              tab === "attachments"
+                ? (attachments?.items.length ?? 0)
+                : tab === "files"
+                  ? (files?.length ?? 0)
+                  : activity.entries.length
+            }
+            side={
+              <Tabs
+                label={a.tabs}
+                value={tab}
+                size="sm"
+                controls="agent-tab"
+                items={TABS.map((k) => ({
+                  key: k,
+                  label: k === "attachments" ? a.attachments : k === "files" ? a.files : a.activity,
+                  count:
+                    k === "attachments" ? attachments?.items.length : k === "files" ? (files?.length ?? 0) : undefined,
+                  href: tabPath(k),
+                }))}
+              />
+            }
+          >
+            {tab === "attachments" ? (
+              <Attachments items={attachments?.items ?? null} failed={attachments?.failed ?? false} t={t} />
+            ) : tab === "files" ? (
+              <FilesList row={row} t={t} />
+            ) : (
+              <>
+                {!activity.live && (
+                  <SectionBody>
+                    <p>{a.activityPartial}</p>
+                  </SectionBody>
+                )}
+                {activity.entries.length === 0 ? (
+                  <SectionBody>
+                    <p>{a.noActivity}</p>
+                  </SectionBody>
+                ) : (
+                  activity.entries.map((e, k) => (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id; the list is rebuilt whole
+                    <ActivityRow key={`${e.kind}-${e.at}-${k}`} e={e} row={row} t={t} />
+                  ))
+                )}
+              </>
+            )}
+          </Section>
+        </Columns>
+      </details>
     </Page>
   );
 }

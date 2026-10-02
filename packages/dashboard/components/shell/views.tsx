@@ -1,6 +1,6 @@
 "use client";
 
-// The viewer's saved views (THE-895), as the sidebar pins them and the
+// The viewer's saved views (THE-895), as ⌘K lists them (THE-916) and the
 // FilterBar saves them. With accounts they are the person's, in the app's
 // database (app/views-actions.ts); under the shared-password gate, where
 // nobody is a person, they stay in this browser.

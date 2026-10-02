@@ -5,8 +5,9 @@
 // what to check and why, the pull request with its files, CI and preview, the
 // screenshots and links, and the owner's buttons. Each button is a request:
 // the decision lands in the coordinator's inbox, which merges or relays it.
-// `compact` is the overview's card (the first screenshots, a link to the rest);
-// `full` is the approval page (every file, every attachment).
+// `compact` is the landing's overview card (the first screenshots, a link to
+// the rest); `full` is the approval page and a session to validate (every
+// file, every attachment, its images full width, THE-916).
 import type { Attachment, CiState, OwnerValidation } from "@armada/core/read";
 import Image from "next/image";
 import Link from "next/link";
@@ -109,12 +110,16 @@ export function ValidationCard({
           <span aria-hidden>↗</span>
         </a>
       )}
-      <Gallery
-        t={t}
-        items={v.gallery}
-        compact={mode === "compact" || v.decision !== null}
-        more={paths.validation(v.id)}
-      />
+      {mode === "full" && v.decision === null ? (
+        <LargeGallery t={t} items={v.gallery} />
+      ) : (
+        <Gallery
+          t={t}
+          items={v.gallery}
+          compact={mode === "compact" || v.decision !== null}
+          more={paths.validation(v.id)}
+        />
+      )}
       {v.decision ? (
         <p className="vd-decided">
           <Dot color={v.decision.outcome === "approved" ? "var(--done)" : "var(--text-3)"} size={6} />
@@ -251,6 +256,156 @@ function Gallery({ t, items, compact, more }: { t: Strings; items: Attachment[];
               unoptimized
             />
             {selected.caption && <p>{selected.caption}</p>}
+          </>
+        )}
+      </dialog>
+    </div>
+  );
+}
+
+/**
+ * What a session asks the owner to validate, large (THE-916): each image the
+ * card's full width, its caption under it. A click opens it full screen: the
+ * arrow keys move between the images, Esc or Close leaves, and the focus goes
+ * back to the image it was opened from. Then the links.
+ */
+function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
+  const s = t.validations;
+  const images = items.filter((a) => a.kind === "image");
+  const links = items.filter((a) => a.kind === "link" && a.url);
+  const [open, setOpen] = useState<number | null>(null);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const shots = useRef<(HTMLButtonElement | null)[]>([]);
+  const from = useRef(0);
+  useEffect(() => {
+    const element = dialog.current;
+    if (open !== null && element && !element.open) element.showModal();
+    if (open === null && element?.open) element.close();
+  }, [open]);
+  if (!images.length && !links.length) return <p className="calm">{s.noGallery}</p>;
+  const show = (k: number) => {
+    from.current = k;
+    setOpen(k);
+  };
+  const close = () => {
+    setOpen(null);
+    shots.current[from.current]?.focus();
+  };
+  const move = (step: number) => setOpen((k) => (k === null ? k : (k + step + images.length) % images.length));
+  const current = open === null ? null : images[open];
+  return (
+    <div className="vd-gallery">
+      {images.length > 0 && (
+        <ul className="vd-large">
+          {images.map((a, k) => (
+            <li key={a.id}>
+              <figure>
+                <button
+                  type="button"
+                  className="vd-large-shot"
+                  ref={(el) => {
+                    shots.current[k] = el;
+                  }}
+                  onClick={() => show(k)}
+                  aria-label={s.enlarge(a.caption ?? s.screenshot)}
+                >
+                  <Image
+                    src={`/api/attachments/${a.id}`}
+                    alt={a.caption ?? s.screenshot}
+                    width={1600}
+                    height={1000}
+                    unoptimized
+                  />
+                </button>
+                {a.caption && <figcaption className="vd-caption">{a.caption}</figcaption>}
+              </figure>
+            </li>
+          ))}
+        </ul>
+      )}
+      {links.map((a) => (
+        <a key={a.id} href={a.url ?? undefined} target="_blank" rel="noreferrer" className="vd-link">
+          {a.caption ?? a.url}
+          <span aria-hidden>↗</span>
+        </a>
+      ))}
+      <dialog
+        ref={dialog}
+        className="vd-viewer"
+        aria-label={current?.caption ?? s.screenshot}
+        onCancel={(e) => {
+          e.preventDefault();
+          close();
+        }}
+        onKeyDown={(e) => {
+          if (images.length < 2 || (e.key !== "ArrowRight" && e.key !== "ArrowLeft")) return;
+          e.preventDefault();
+          move(e.key === "ArrowRight" ? 1 : -1);
+        }}
+      >
+        {current && open !== null && (
+          <>
+            <div className="vd-viewer-bar">
+              <span className="vd-viewer-count" aria-live="polite">
+                {s.viewer.position(open + 1, images.length)}
+              </span>
+              <span className="vd-viewer-caption">{current.caption}</span>
+              <span className="spacer" />
+              <span className="vd-viewer-hint">{images.length > 1 ? s.viewer.hint : null}</span>
+              <button type="button" className="btn" onClick={close}>
+                {t.shell.agent.closeAttachment}
+              </button>
+            </div>
+            <div className="vd-viewer-stage">
+              {images.length > 1 && (
+                <button
+                  type="button"
+                  className="vd-viewer-nav is-prev"
+                  onClick={() => move(-1)}
+                  aria-label={s.viewer.previous}
+                  title={s.viewer.previous}
+                >
+                  <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden>
+                    <path
+                      d="M10 3.5L5.5 8l4.5 4.5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+              )}
+              <Image
+                key={current.id}
+                src={`/api/attachments/${current.id}`}
+                alt={current.caption ?? s.screenshot}
+                width={1600}
+                height={1000}
+                unoptimized
+              />
+              {images.length > 1 && (
+                <button
+                  type="button"
+                  className="vd-viewer-nav is-next"
+                  onClick={() => move(1)}
+                  aria-label={s.viewer.next}
+                  title={s.viewer.next}
+                >
+                  <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden>
+                    <path
+                      d="M6 3.5L10.5 8 6 12.5"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </button>
+              )}
+            </div>
           </>
         )}
       </dialog>

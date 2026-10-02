@@ -629,7 +629,6 @@ button.chip:hover {
     /* biome-ignore lint/complexity/noImportantStyles: a press does not shrink anything */
     scale: none !important;
   }
-  .aw.is-leaving,
   .merge-toast.is-leaving {
     translate: none;
   }
@@ -877,34 +876,34 @@ a.sh-item:hover {
 .sh-count.is-hot {
   color: var(--accent);
 }
+/* What the owner has to validate (THE-916): the orange of "yours", on a coordinator's item. */
+.sh-badge {
+  display: grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: #160a03;
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+:is(.sh-nav-item, .sh-item) .sh-count + .sh-badge {
+  margin-left: -4px;
+}
 .sh-group {
   display: flex;
   flex-direction: column;
   gap: 1px;
-}
-.sh-group-h {
-  padding: 0 8px 6px;
-  font-size: var(--fs-small);
-  color: var(--text-3);
 }
 .sh-item-icon {
   width: 16px;
   flex: none;
   display: grid;
   place-items: center;
-}
-.sh-item.is-soon {
-  color: var(--text-3);
-}
-.sh-soon-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  border: 1px dashed var(--text-3);
-}
-.sh-soon {
-  font-size: 10.5px;
-  color: var(--text-3);
 }
 .sh-live {
   display: flex;
@@ -1040,13 +1039,6 @@ a.sh-item:hover {
   .sh-search .ui-kbd {
     display: none;
   }
-  /* The rail shows each view's mark only: removing one waits for the full sidebar. */
-  .sh-side .sh-view-remove {
-    display: none;
-  }
-  .sh-side .sh-view > .sh-item {
-    padding-right: 8px;
-  }
   /* Hidden from sight, still each link's name for a screen reader (THE-891). */
   .sh-label,
   .sh-side .sh-count {
@@ -1061,6 +1053,21 @@ a.sh-item:hover {
     flex-direction: column;
     height: auto;
     gap: 6px;
+  }
+  /* On the rail, what waits for the owner is a dot on the item's mark; its number stays for a screen reader. */
+  :is(.sh-nav-item, .sh-item):has(.sh-badge) {
+    position: relative;
+  }
+  .sh-side .sh-badge {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    min-width: 0;
+    width: 7px;
+    height: 7px;
+    padding: 0;
+    overflow: hidden;
+    color: transparent;
   }
 }
 
@@ -1301,50 +1308,7 @@ a.sh-item:hover {
   font-size: 13.5px;
 }
 
-/* ------------------------------------------------- saved views, filters */
-.sh-view {
-  position: relative;
-  display: flex;
-}
-.sh-view > .sh-item {
-  flex: 1;
-  min-width: 0;
-  padding-right: 28px;
-}
-.sh-view-remove {
-  position: absolute;
-  top: 50%;
-  right: 4px;
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: var(--r-xs);
-  background: transparent;
-  color: var(--text-3);
-  cursor: pointer;
-  translate: 0 -50%;
-  opacity: 0;
-}
-.sh-view-remove:focus-visible,
-.sh-view:focus-within .sh-view-remove {
-  opacity: 1;
-}
-@media (hover: hover) and (pointer: fine) {
-  .sh-view:hover .sh-view-remove {
-    opacity: 1;
-  }
-  .sh-view-remove:hover {
-    background: var(--fill-2);
-    color: var(--text);
-  }
-}
-@media (hover: none) {
-  .sh-view-remove {
-    opacity: 1;
-  }
-}
+/* ------------------------------------------------- filters */
 .fb-search {
   width: 200px;
 }
@@ -3030,11 +2994,15 @@ a.ui-figure:hover {
   .sc-agent:not(.is-airy) > .ui-row-text {
     grid-area: text;
   }
-  :is(.sc-agent:not(.is-airy), .sc-coord-row) .ui-row-line {
+  .sc-agent:not(.is-airy) .ui-row-line {
     display: none;
   }
   .sc-agent:not(.is-airy) > .ui-row-side {
     grid-area: side;
+  }
+  /* A session to validate (THE-916): its badge takes the side, the harness's dot gives way. */
+  .sc-agent:not(.is-airy):has(> .ui-row-side .ui-pill) > .ui-row-side:not(:has(.ui-pill)) {
+    display: none;
   }
   .sc-agent:not(.is-airy) > .ui-row-time {
     grid-area: time;
@@ -3278,6 +3246,72 @@ a.ui-figure:hover {
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
   scrollbar-color: var(--fill-3) transparent;
+}
+/* The overview (THE-916): what the owner has to validate, in its orange. */
+.ov-yours {
+  color: var(--accent);
+}
+.ov-group-link:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+}
+.ov-group-side {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+/* Its time moves each minute: digits of one width, so nothing beside it moves (CLS 0). */
+.ov-group-state {
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 720px) {
+  .ov-group-side .ui-harness {
+    display: none;
+  }
+}
+/* A session to validate: its validation, full width, first on its page. */
+.ui-section-body.sc-validate {
+  align-items: stretch;
+}
+.sc-validate .vd-card {
+  max-width: 1100px;
+}
+/* A session's activity, files and facts, closed until asked for. */
+.sc-details-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--band-h);
+  padding: 0 var(--edge);
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-2);
+  cursor: pointer;
+  list-style: none;
+}
+.sc-details-h::-webkit-details-marker {
+  display: none;
+}
+.sc-details-h:hover {
+  color: var(--text);
+}
+.sc-details-h:focus-visible {
+  outline: 2px solid var(--frontier);
+  outline-offset: -2px;
+}
+.sc-details-chevron {
+  color: var(--text-3);
+  transition: rotate var(--t-1) var(--ease-out);
+}
+.sc-details[open] .sc-details-chevron {
+  rotate: 90deg;
+}
+/* Under the overview's list (THE-916): about six sessions high, the rest scrolls inside. */
+.tl.is-compact .tl-scroll {
+  max-height: 320px;
+  overflow-y: auto;
 }
 .tl-scroll.is-dragging {
   cursor: grabbing;
@@ -3730,6 +3764,170 @@ a.ui-figure:hover {
   outline: 1px solid oklch(1 0 0 / 0.1);
   outline-offset: -1px;
   border-radius: 6px;
+}
+/* A session to validate (THE-916): each image the card's full width, its caption under it. */
+.vd-large {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.vd-large figure {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+}
+.vd-large-shot {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r);
+  overflow: hidden;
+  background: var(--bg);
+  cursor: zoom-in;
+  transition-property: scale;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
+}
+.vd-large-shot:active {
+  scale: 0.99;
+}
+.vd-large-shot:focus-visible {
+  outline: 2px solid var(--frontier);
+  outline-offset: 2px;
+}
+.vd-large-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  outline: 1px solid oklch(1 0 0 / 0.1);
+  outline-offset: -1px;
+  border-radius: var(--r);
+}
+/* Full screen: the image as large as the screen allows, the arrow keys between images. */
+.vd-viewer {
+  width: 100vw;
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--text);
+  background: var(--bg);
+}
+.vd-viewer[open] {
+  display: flex;
+  flex-direction: column;
+  opacity: 1;
+  scale: 1;
+  transition-property: opacity, scale;
+  transition-duration: 200ms;
+  transition-timing-function: var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    scale: 0.98;
+  }
+}
+.vd-viewer::backdrop {
+  background: rgb(0 0 0 / 0.6);
+}
+.vd-viewer-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  font-size: var(--fs-small);
+  color: var(--text-2);
+}
+.vd-viewer-count {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.vd-viewer-caption {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vd-viewer-hint {
+  color: var(--text-3);
+}
+.vd-viewer-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  padding: 0 84px 16px;
+}
+.vd-viewer-stage img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.vd-viewer-nav {
+  position: absolute;
+  top: 50%;
+  translate: 0 -50%;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  color: var(--text);
+  background: var(--overlay-glass);
+  box-shadow: var(--shadow-border);
+  cursor: pointer;
+  transition-property: scale, background-color;
+  transition-duration: var(--t-fast);
+  transition-timing-function: var(--ease-out);
+}
+.vd-viewer-nav:active {
+  scale: 0.96;
+}
+.vd-viewer-nav:focus-visible {
+  outline: 2px solid var(--frontier);
+  outline-offset: 2px;
+}
+.vd-viewer-nav.is-prev {
+  left: 20px;
+}
+.vd-viewer-nav.is-next {
+  right: 20px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .vd-viewer-nav:hover {
+    background: var(--raised);
+  }
+}
+@media (max-width: 640px) {
+  .vd-viewer-hint {
+    display: none;
+  }
+  .vd-viewer-stage {
+    padding: 0 0 12px;
+  }
+  .vd-viewer-nav {
+    top: auto;
+    bottom: 20px;
+    translate: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vd-viewer[open] {
+    scale: 1;
+    @starting-style {
+      opacity: 0;
+      scale: 1;
+    }
+  }
 }
 .vd-more {
   cursor: pointer;
@@ -4261,133 +4459,7 @@ a.ui-figure:hover {
   list-style: none;
 }
 
-/* ------------------------------------------------------------------ since you were away, activity (THE-894) */
-/* The absence on one strip, then its parts as links (THE-899). */
-.aw {
-  transition:
-    opacity var(--t-2) var(--ease-out),
-    translate var(--t-2) var(--ease-out);
-}
-.aw.is-leaving {
-  opacity: 0;
-  translate: 0 -4px;
-}
-.aw-all {
-  transition: color var(--t-1) ease;
-}
-.aw-body {
-  display: grid;
-  gap: 14px;
-  padding: 18px var(--edge);
-}
-.aw-strip {
-  position: relative;
-  height: 40px;
-  margin: 0 6px;
-}
-.aw-strip > * {
-  position: absolute;
-}
-.aw-line {
-  left: 0;
-  right: 0;
-  top: 14px;
-  height: 1px;
-  background: linear-gradient(90deg, var(--line), var(--line-strong));
-}
-.aw-ship {
-  top: 9px;
-  margin-left: -5px;
-  line-height: 0;
-  filter: drop-shadow(0 0 4px rgba(182, 241, 90, 0.7));
-}
-.aw-tick {
-  top: 8px;
-  width: 2px;
-  height: 13px;
-  margin-left: -1px;
-  border-radius: 1px;
-  background: var(--frontier);
-}
-.aw-dot {
-  top: 10px;
-  right: 14px;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--accent);
-  box-shadow:
-    0 0 0 3px var(--surface),
-    0 0 10px var(--accent);
-}
-.aw-now {
-  right: 0;
-  top: 4px;
-  width: 1px;
-  height: 21px;
-  background: var(--done);
-  box-shadow: 0 0 6px rgba(182, 241, 90, 0.6);
-}
-.aw-t {
-  top: 26px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  color: var(--text-3);
-  white-space: nowrap;
-}
-.aw-t.is-start {
-  left: 0;
-}
-.aw-t.is-middle {
-  translate: -50% 0;
-}
-.aw-t.is-now {
-  right: 0;
-  color: var(--done);
-}
-.aw-parts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.aw-part {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 30px;
-  padding: 4px 12px 4px 10px;
-  border-radius: var(--r-control);
-  background: var(--card);
-  box-shadow: var(--ring), var(--lit);
-  color: var(--text-2);
-  transition:
-    box-shadow var(--t-1) ease,
-    background-color var(--t-1) ease;
-}
-.aw-part:hover {
-  background: var(--panel-3);
-  box-shadow: var(--ring-hover), var(--lit);
-}
-.aw-part b {
-  font-weight: 600;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-.aw-part.is-hot b {
-  color: var(--accent);
-}
-.aw-key {
-  width: 8px;
-  height: 8px;
-  flex: none;
-  border-radius: 2px;
-}
-.aw-key.is-started {
-  background: var(--frontier);
-}
-.aw-key.is-stuck {
-  background: var(--active);
-}
+/* ------------------------------------------------------------------ activity (THE-894) */
 .act-filters .ui-input.act-ticket {
   width: 128px;
   font-family: var(--font-mono);

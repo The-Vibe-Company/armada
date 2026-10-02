@@ -111,7 +111,10 @@ export interface Breach {
 
 interface Lhr {
   categories: Record<string, { score: number | null }>;
-  audits: Record<string, { numericValue?: number }>;
+  audits: Record<
+    string,
+    { numericValue?: number; details?: { items?: { score?: number; node?: { selector?: string } }[] } }
+  >;
   environment: { benchmarkIndex: number };
 }
 
@@ -366,6 +369,10 @@ async function lighthouse(base: string): Promise<boolean> {
       for (let k = 0; k < config.runs[formFactor]; k++) {
         const lhr = await lighthouseRun(`${base}${page}`, formFactor, formFactor === "mobile" ? slowdown : 1, cookie);
         runs.push(resultOf(lhr, page, formFactor));
+        // What moved, in the log: a layout shift is easier to fix once named.
+        for (const shift of lhr.audits["layout-shifts"]?.details?.items ?? [])
+          if ((shift.score ?? 0) >= 0.0005)
+            console.log(`  shift ${formFactor} ${page} ${shift.score?.toFixed(4)} ${shift.node?.selector ?? "?"}`);
       }
       const r = medianRun(runs);
       results.push(r);

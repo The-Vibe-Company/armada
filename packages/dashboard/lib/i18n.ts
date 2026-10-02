@@ -18,7 +18,7 @@ import type {
   WaitingKind,
 } from "@armada/core/read";
 import type { ViewError } from "./filters";
-import type { AgentStatus, DecisionKind, Density, Section, StatusReason } from "./fleet-view";
+import type { AgentStatus, DecisionKind, Density, PageKind, Section, StatusReason } from "./fleet-view";
 import type { BlockerReason, PrState, RegisterStep } from "./project-view";
 import type { IndexPr, SearchKind } from "./search";
 
@@ -569,6 +569,18 @@ const en = {
   } satisfies Record<RequestError, string>,
   overview: {
     locale: "en-GB",
+    /** The overview's one line (THE-916): "2 coordinators · 6 sessions in flight · 1 to validate". */
+    line: {
+      coordinators: (n: number) => (n === 1 ? "1 coordinator" : `${n} coordinators`),
+      running: (n: number) => (n === 1 ? "1 session in flight" : `${n} sessions in flight`),
+      toValidate: (n: number) => `${n} to validate`,
+      nothing: "nothing to validate",
+    },
+    /** A coordinator's count of what the owner has to validate, in orange. */
+    toValidate: (n: number) => `${n} to validate`,
+    /** A session the owner has something to validate on. */
+    toValidateBadge: "To validate",
+    nothingRunning: "Nothing in flight.",
     headline: (inFlight: number, decide: number) =>
       `${inFlight === 1 ? "1 agent" : `${inFlight} agents`} in flight, ${decide} waiting for your decision`,
     subline: (f: { projects: number; harnesses: number; failing: number; silent: number }) =>
@@ -660,6 +672,13 @@ const en = {
     gallery: "What to look at",
     noGallery: "No screenshot or link was attached.",
     enlarge: (caption: string) => `Enlarge ${caption}`,
+    /** The full-screen viewer of a session to validate (THE-916). */
+    viewer: {
+      position: (n: number, total: number) => `Image ${n} of ${total}`,
+      previous: "Previous image",
+      next: "Next image",
+      hint: "Arrow keys move between images · Esc closes",
+    },
     more: (n: number) => `+${n}`,
     screenshot: "Screenshot",
   },
@@ -822,9 +841,10 @@ const en = {
     save: "Save view",
     name: "View name",
     namePlaceholder: "Name this view",
-    pin: "Pin",
+    pin: "Save",
     cancel: "Cancel",
-    saved: (name: string) => `“${name}” is pinned in the sidebar.`,
+    saved: (name: string) => `“${name}” is saved: find it with ⌘K.`,
+    removed: (name: string) => `“${name}” is removed.`,
     remove: (name: string) => `Remove the view ${name}`,
     errors: {
       name: "Give it a name of 40 characters or fewer.",
@@ -836,27 +856,23 @@ const en = {
   },
   shell: {
     search: "Search",
+    /** The pages a breadcrumb or ⌘K names. */
     nav: {
       overview: "Overview",
       validations: "Validations",
       projects: "Projects",
-      agents: "Agents",
       insights: "Insights",
       activity: "Activity",
-    } satisfies Record<NonNullable<Section>, string>,
-    /** The phone's tab bar: a word each, as short as the tab. */
+    } satisfies Record<PageKind, string>,
+    /** The menu's sections, and the phone's tab bar: a word each, as short as the tab. */
     tab: {
       overview: "Overview",
-      validations: "Validations",
-      projects: "Projects",
-      agents: "Agents",
-      insights: "Insights",
       activity: "Activity",
+      insights: "Insights",
+      organization: "Organization",
     } satisfies Record<NonNullable<Section>, string>,
-    projectsHeading: "Projects",
     harnessHeading: "Harness",
     local: (name: string) => `${name} · local`,
-    soon: "soon",
     live: (ms: number) => `Live · ${elapsed(ms, "d")} ago`,
     liveWaiting: "Live",
     offline: "Offline · retrying",
@@ -1010,6 +1026,10 @@ const en = {
       closeAttachment: "Close image",
       tabs: "What the agent did",
       noActivity: "Nothing recorded yet.",
+      /** A session's page (THE-916): its last reports, and the rest in one disclosure. */
+      lastReports: "Last reports",
+      noReports: "No report yet.",
+      details: "Details",
       activityPartial: "Linear's comments only: the live data could not be read.",
       noPrYet: "No pull request yet: its changed files show here once it opens.",
       noFiles: "No changed file recorded for this pull request yet.",
@@ -1769,6 +1789,15 @@ const fr: Strings = {
   },
   overview: {
     locale: "fr-FR",
+    line: {
+      coordinators: (n) => `${n} coordinateur${n > 1 ? "s" : ""}`,
+      running: (n) => `${n} session${n > 1 ? "s" : ""} en cours`,
+      toValidate: (n) => `${n} à valider`,
+      nothing: "rien à valider",
+    },
+    toValidate: (n) => `${n} à valider`,
+    toValidateBadge: "À valider",
+    nothingRunning: "Rien en cours.",
     headline: (inFlight, decide) =>
       `${inFlight} agent${inFlight > 1 ? "s" : ""} en vol, ${decide} ${decide > 1 ? "attendent" : "attend"} ta décision`,
     subline: (f) =>
@@ -1850,6 +1879,12 @@ const fr: Strings = {
     gallery: "À regarder",
     noGallery: "Aucune capture ni lien joint.",
     enlarge: (caption) => `Agrandir ${caption}`,
+    viewer: {
+      position: (n, total) => `Image ${n} sur ${total}`,
+      previous: "Image précédente",
+      next: "Image suivante",
+      hint: "Flèches pour changer d'image · Échap pour fermer",
+    },
     more: (n) => `+${n}`,
     screenshot: "Capture",
   },
@@ -2010,9 +2045,10 @@ const fr: Strings = {
     save: "Enregistrer la vue",
     name: "Nom de la vue",
     namePlaceholder: "Nommer cette vue",
-    pin: "Épingler",
+    pin: "Enregistrer",
     cancel: "Annuler",
-    saved: (name) => `« ${name} » est épinglée dans la barre latérale.`,
+    saved: (name) => `« ${name} » est enregistrée : retrouve-la avec ⌘K.`,
+    removed: (name) => `« ${name} » est retirée.`,
     remove: (name) => `Retirer la vue ${name}`,
     errors: {
       name: "Donne-lui un nom de 40 caractères au plus.",
@@ -2028,22 +2064,17 @@ const fr: Strings = {
       overview: "Vue d'ensemble",
       validations: "Validations",
       projects: "Projets",
-      agents: "Agents",
       insights: "Tendances",
       activity: "Activité",
     },
     tab: {
       overview: "Accueil",
-      validations: "Validations",
-      projects: "Projets",
-      agents: "Agents",
-      insights: "Tendances",
       activity: "Activité",
+      insights: "Tendances",
+      organization: "Organisation",
     },
-    projectsHeading: "Projets",
     harnessHeading: "Harness",
     local: (name) => `${name} · local`,
-    soon: "bientôt",
     live: (ms) => `En direct · il y a ${elapsed(ms, "j")}`,
     liveWaiting: "En direct",
     offline: "Hors ligne · nouvel essai",
@@ -2196,6 +2227,9 @@ const fr: Strings = {
       closeAttachment: "Fermer l'image",
       tabs: "Ce que l'agent a fait",
       noActivity: "Rien d'enregistré pour l'instant.",
+      lastReports: "Derniers rapports",
+      noReports: "Aucun rapport pour l'instant.",
+      details: "Détails",
       activityPartial: "Commentaires Linear seulement : les données en direct n'ont pas pu être lues.",
       noPrYet: "Pas encore de pull request : ses fichiers modifiés apparaîtront ici à son ouverture.",
       noFiles: "Aucun fichier modifié enregistré pour cette pull request pour l'instant.",

@@ -147,7 +147,7 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
   type Fleet = {
     rows: { id: string }[];
     projects: { slug: string }[];
-    validations?: { id: number; decision: unknown }[];
+    validations?: { id: number; ticket: string; decision: unknown; gallery?: { kind: string }[] }[];
   };
   // A fresh server reads the demo world after its first answer: ask again until it shows.
   let fleet: Fleet = { rows: [], projects: [] };
@@ -159,16 +159,22 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
   }
   const agent = fleet.rows[0]?.id;
   const project = fleet.projects[0]?.slug;
-  const validation = fleet.validations?.find((v) => !v.decision)?.id;
-  if (!agent || !project || validation === undefined)
+  // A pending validation on a session in flight, one with images first: the large gallery and its viewer (THE-916).
+  const pending = (fleet.validations ?? []).filter((v) => !v.decision && fleet.rows.some((r) => r.id === v.ticket));
+  const open = pending.find((v) => v.gallery?.some((a) => a.kind === "image")) ?? pending[0];
+  const validation = open?.id;
+  if (!agent || !project || !open || validation === undefined)
     throw new Error("the demo world has no agent, project or validation");
   const fleetPages = [
     "/",
-    "/agents",
+    // The overview on one coordinator (THE-916).
+    `/?coordinator=${project}`,
     `/agents/${agent}`,
     `/agents/${agent}?tab=files`,
+    // A session to validate: its images large, first (THE-916).
+    `/agents/${open.ticket}`,
     // Filters in the address (THE-895): a list as a shared link opens it.
-    "/agents?state=running&sort=report",
+    "/?state=running&sort=report",
     "/projects",
     "/projects?sort=phase",
     `/projects/${project}`,
@@ -274,10 +280,10 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
   const who = seeded ? "owner" : "none";
   const context = await contextFor(browser, cookiesFor(seeded, who));
   const page = await context.newPage();
-  const agent = list.find((t) => t.path.startsWith("/agents/"))?.path ?? "/agents";
+  const agent = list.find((t) => t.path.startsWith("/agents/"))?.path ?? "/";
   const approve = list.find((t) => t.path.startsWith("/approve/"))?.path ?? "/validations";
 
-  await open(page, "/agents");
+  await open(page, "/");
   await check("the first Tab stop is “Skip to content”, and it moves the focus to the page", async () => {
     await page.keyboard.press("Tab");
     const first = await focused(page);
@@ -328,7 +334,7 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
     return groups > 0 && selected === "true" && result.violations.length === 0;
   });
 
-  await open(page, "/agents");
+  await open(page, "/");
   await check("a list's filters live in its address, and Back brings the view before back", async () => {
     const state = page.getByRole("combobox", { name: "State" });
     await state.selectOption("running");
@@ -345,24 +351,27 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
   });
 
   if (seeded) {
-    await open(page, "/agents?state=running");
-    await check("a saved view is pinned in the sidebar, opens its filters, and goes on Remove", async () => {
+    await open(page, "/?state=running");
+    await check("a saved view is found with ⌘K, opens its filters, and goes on Remove", async () => {
       await page.getByRole("button", { name: "Save view" }).click();
       await page.getByRole("textbox", { name: "View name" }).fill("Running now");
       await page.keyboard.press("Enter");
-      const link = page.locator(".sh-view a", { hasText: "Running now" });
-      await link.waitFor();
-      await open(page, "/agents");
-      await page.locator(".sh-view a", { hasText: "Running now" }).click();
+      const removal = page.getByRole("button", { name: "Remove the view Running now" });
+      await removal.waitFor();
+      await open(page, "/");
+      await page.keyboard.press("ControlOrMeta+k");
+      await page.locator(".sh-palette input").waitFor();
+      await page.keyboard.type("Running now");
+      await page.keyboard.press("Enter");
       await page.waitForURL((url) => url.searchParams.get("state") === "running", { timeout: 5_000 });
-      const current = (await link.getAttribute("aria-current")) === "page";
-      await page.getByRole("button", { name: "Remove the view Running now" }).click();
-      await link.waitFor({ state: "detached" });
-      return current;
+      await removal.click();
+      await page.getByRole("button", { name: "Save view" }).waitFor();
+      return true;
     });
   }
 
-  await open(page, agent);
+  // A session's tabs are in its "Details", which the address opens.
+  await open(page, `${agent.split("?")[0]}?tab=activity`);
   await check("the arrows move between tabs", async () => {
     await page.locator(".ui-tab[aria-selected='true']").first().focus();
     const before = await focused(page);
@@ -388,14 +397,20 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
   });
 
   await open(page, approve);
-  await check("a screenshot's dialog gives the focus back when it closes", async () => {
-    const shot = page.locator(".vd-shot").first();
-    if (!(await shot.count())) return true;
+  await check("an image opens full screen, the arrows move between images, and Esc gives the focus back", async () => {
+    const shot = page.locator(".vd-large-shot").first();
+    if (!(await shot.count())) return false;
     await shot.focus();
     await page.keyboard.press("Enter");
-    await page.locator("dialog[open]").waitFor();
+    const count = page.locator("dialog[open] .vd-viewer-count");
+    await count.waitFor();
+    const first = await count.textContent();
+    await page.keyboard.press("ArrowRight");
+    const moved = (await page.locator(".vd-large-shot").count()) < 2 || (await count.textContent()) !== first;
     await page.keyboard.press("Escape");
-    return (await page.locator("dialog[open]").count()) === 0 && (await focused(page)).includes("vd-shot");
+    return (
+      moved && (await page.locator("dialog[open]").count()) === 0 && (await focused(page)).includes("vd-large-shot")
+    );
   });
 
   if (seeded) {

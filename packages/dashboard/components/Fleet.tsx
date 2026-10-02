@@ -1,20 +1,17 @@
 "use client";
 
-// The overview (THE-867, Night watch THE-899): what needs the owner and what
-// the fleet is doing. Its status sentence ("11 agents in flight. 4 wait for
-// you.", "Welcome back. 6 merged while you were away." when the viewer
-// returns) and its figures as chips (failing and silent open their group on
-// /agents), what happened while the viewer was away, the decisions as cards
-// the owner acts on (a coordinator that stopped answering first), the live
-// timeline (THE-868) and one card per project. A failing or
-// silent agent shows in the timeline and on /agents, not in a list of its own
-// (THE-880). It renders the overview core builds, as the shell polls it
-// (components/shell/context.tsx), on the page kit (components/page.tsx),
-// through the view rules of lib/overview-view.ts.
-import type { FleetOverview, SinceSummary } from "@armada/core/read";
+// The overview as it was before THE-916 (THE-867, Night watch THE-899), kept
+// for the landing's replica (components/landing/Replica.tsx, THE-887), whose
+// script answers one of its decision cards; the dashboard's overview is
+// components/screens/OverviewScreen.tsx. Its status sentence and figures as
+// chips, the decisions as cards the owner acts on (a coordinator that stopped
+// answering first), the live timeline (THE-868) and one card per project, on
+// the page kit (components/page.tsx), through the view rules of
+// lib/overview-view.ts.
+import type { FleetOverview } from "@armada/core/read";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { type ReactNode, useMemo } from "react";
+import { useMemo } from "react";
 import { agentState, paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import {
@@ -43,7 +40,6 @@ import {
   Stat,
   StatusHeader,
 } from "./page";
-import { SinceAway, useSince } from "./SinceAway";
 import { ValidationCard } from "./screens/ValidationCard";
 import { useFleet, useNow, useShell } from "./shell/context";
 import { Dot, EmptyState, ProjectChip, Tag } from "./ui";
@@ -52,12 +48,7 @@ import { Dot, EmptyState, ProjectChip, Tag } from "./ui";
 // so nothing moves, but the rest of the overview does not wait for its code.
 const LiveTimeline = dynamic(() => import("./timeline/Timeline").then((m) => m.LiveTimeline));
 
-/**
- * `insights`: this week's delivery (THE-893), a chip of the status, and
- * `since`: what happened while the viewer was away (THE-894), both read with
- * the overview's page; the landing's replica has neither.
- */
-export function Fleet({ insights, since }: { insights?: ReactNode; since?: SinceSummary | null } = {}) {
+export function Fleet() {
   const { overview, checkedAt, failed, pending, refresh, version } = useFleet();
   const { t, author, setAuthor, account } = useShell();
   const now = useNow();
@@ -75,10 +66,9 @@ export function Fleet({ insights, since }: { insights?: ReactNode; since?: Since
     refresh,
   };
   const unread = overview.projects.filter((p) => p.error || p.reading);
-  const away = useSince(since);
   const ready = overview.ready.filter((r) => r.readyForAgent && !r.launch).length;
   const merge = overview.rows.filter((r) => agentState(r).status === "done").length;
-  const status = overviewStatus(figures, away.summary && { merged: away.summary.merged.length }, ready);
+  const status = overviewStatus(figures, null, ready);
 
   return (
     <Page
@@ -103,29 +93,13 @@ export function Fleet({ insights, since }: { insights?: ReactNode; since?: Since
                 hue={figures.decide ? "yours" : undefined}
                 href={figures.decide ? paths.validations : undefined}
               />
-              <Stat
-                value={figures.failing}
-                label={t.status.stats.failing}
-                hue={figures.failing ? "fail" : undefined}
-                href={figures.failing ? paths.agentGroup("error") : undefined}
-              />
-              <Stat
-                value={figures.silent}
-                label={t.status.stats.silent}
-                hue={figures.silent ? "silent" : undefined}
-                href={figures.silent ? paths.agentGroup("silent") : undefined}
-              />
-              <Stat
-                value={merge}
-                label={t.status.stats.merge}
-                hue={merge ? "done" : undefined}
-                href={merge ? paths.agentGroup("done") : undefined}
-              />
+              <Stat value={figures.failing} label={t.status.stats.failing} hue={figures.failing ? "fail" : undefined} />
+              <Stat value={figures.silent} label={t.status.stats.silent} hue={figures.silent ? "silent" : undefined} />
+              <Stat value={merge} label={t.status.stats.merge} hue={merge ? "done" : undefined} />
               <Stat
                 value={`${figures.coordinators.active}/${figures.coordinators.total}`}
                 label={t.status.stats.coordinators}
               />
-              {insights}
             </>
           }
         />
@@ -157,7 +131,6 @@ export function Fleet({ insights, since }: { insights?: ReactNode; since?: Since
           <Notice key={p.slug}>{t.readingProject(p.name)}</Notice>
         ),
       )}
-      {away.summary && <SinceAway summary={away.summary} onDismiss={away.dismiss} />}
 
       {overview.projects.length === 0 ? (
         <Section label={t.overview.projectsTitle} count={0}>

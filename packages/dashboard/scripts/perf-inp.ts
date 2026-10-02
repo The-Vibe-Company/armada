@@ -8,9 +8,13 @@ import type { Interaction } from "./perf";
 
 /** The agent of the `large` world with hundreds of activity entries. */
 const LONG_AGENT = "WID-400";
+/** A session the owner has to validate (a merge to approve), in every demo world. */
+const TO_VALIDATE = "WID-18";
 const RUNS = 5;
-/** The pages it opens. */
-export const INP_PAGES = ["/agents", `/agents/${LONG_AGENT}`, "/"];
+/** How many sessions to validate the decision is measured on: each records its decision, so each runs once. */
+const DECISIONS = 3;
+/** The pages it opens; an agent's tabs are in its "Details", which `?tab=` opens (THE-916). */
+export const INP_PAGES = ["/", `/agents/${LONG_AGENT}?tab=activity`, `/agents/${TO_VALIDATE}`, "/agents/GAD-9"];
 
 declare global {
   interface Window {
@@ -59,6 +63,21 @@ async function measure(page: Page, act: () => Promise<void>): Promise<number> {
   );
 }
 
+/** The sessions in flight the owner has a validation open on, the demo's merge first. */
+async function toValidate(base: string, cookie: string): Promise<string[]> {
+  const res = await fetch(`${base}/api/fleet`, { headers: { cookie } });
+  if (!res.ok) return [TO_VALIDATE];
+  const fleet = (await res.json()) as {
+    rows: { id: string }[];
+    validations?: { ticket: string; decision: unknown }[];
+  };
+  const open = (fleet.validations ?? [])
+    .filter((v) => !v.decision && fleet.rows.some((r) => r.id === v.ticket))
+    .map((v) => v.ticket);
+  const tickets = [...new Set([TO_VALIDATE, ...open].filter((t) => open.includes(t)))];
+  return tickets.length ? tickets.slice(0, DECISIONS) : [TO_VALIDATE];
+}
+
 async function typical(page: Page, act: () => Promise<void>, reset?: () => Promise<void>): Promise<number> {
   const runs: number[] = [];
   for (let k = 0; k < RUNS; k++) {
@@ -77,10 +96,11 @@ export async function measureInteractions(base: string, cookie: string, slowdown
   try {
     const out: Interaction[] = [];
 
-    const agents = await open(browser, `${base}/agents`, cookie, slowdown);
-    const rows = await agents.locator("a[data-row]").count();
+    // The overview is the agents list, grouped by coordinator (THE-916).
+    const agents = await open(browser, `${base}/`, cookie, slowdown);
+    const rows = await agents.locator("a.sc-agent[data-row]").count();
     out.push({
-      name: `Open the ⌘K palette (/agents, ${rows} rows)`,
+      name: `Open the ⌘K palette (overview, ${rows} rows)`,
       ms: await typical(
         agents,
         async () => {
@@ -98,20 +118,20 @@ export async function measureInteractions(base: string, cookie: string, slowdown
       ms: await typical(
         agents,
         async () => {
-          await agents.locator('a[role="tab"][href="/agents?harness=claude-code"]').click();
+          await agents.locator('a[role="tab"][href="/?harness=claude-code"]').click();
           await agents.waitForURL(/harness=claude-code/);
         },
         async () => {
-          await agents.locator('a[role="tab"][href="/agents"]').click();
-          await agents.waitForURL(/\/agents$/);
+          await agents.locator('a[role="tab"][href="/"]').click();
+          await agents.waitForURL((url) => url.pathname === "/" && !url.search);
         },
       ),
     });
     await agents.context().close();
 
-    const agent = await open(browser, `${base}/agents/${LONG_AGENT}`, cookie, slowdown);
+    const agent = await open(browser, `${base}/agents/${LONG_AGENT}?tab=activity`, cookie, slowdown);
     const entries = await agent.locator(".ui-columns-main .ui-row").count();
-    const tab = (to: string) => agent.locator(`a[role="tab"][href="/agents/${LONG_AGENT}${to}"]`);
+    const tab = (to: string) => agent.locator(`a[role="tab"][href="/agents/${LONG_AGENT}${to || "?tab=activity"}"]`);
     out.push({
       name: "Switch an agent's tab (to Files)",
       ms: await typical(
@@ -122,7 +142,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
         },
         async () => {
           await tab("").click();
-          await agent.waitForURL(new RegExp(`/agents/${LONG_AGENT}$`));
+          await agent.waitForURL(/tab=activity/);
         },
       ),
     });
@@ -132,7 +152,7 @@ export async function measureInteractions(base: string, cookie: string, slowdown
         agent,
         async () => {
           await tab("").click();
-          await agent.waitForURL(new RegExp(`/agents/${LONG_AGENT}$`));
+          await agent.waitForURL(/tab=activity/);
         },
         async () => {
           await tab("?tab=files").click();
@@ -142,15 +162,21 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     });
     await agent.context().close();
 
-    // Once: the answer is recorded, and the card then says it was sent.
-    const overview = await open(browser, `${base}/`, cookie, slowdown);
+    // A decision is recorded, so each session to validate is decided once: the median of a few of them.
+    const decided: number[] = [];
+    for (const ticket of await toValidate(base, cookie)) {
+      const session = await open(browser, `${base}/agents/${ticket}`, cookie, slowdown);
+      decided.push(
+        await measure(session, async () => {
+          await session.locator('button[name="choice"], button[name="action"][value="approve"]').first().click();
+        }),
+      );
+      await session.context().close();
+    }
     out.push({
-      name: "Answer a decision (overview)",
-      ms: await measure(overview, async () => {
-        await overview.locator('button[name="choice"], button[name="action"][value="approve"]').first().click();
-      }),
+      name: `Decide a validation (median of ${decided.length} sessions to validate)`,
+      ms: decided.sort((a, b) => a - b)[Math.floor(decided.length / 2)] ?? 0,
     });
-    await overview.context().close();
     return out;
   } finally {
     await browser.close();
