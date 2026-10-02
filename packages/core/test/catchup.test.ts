@@ -77,11 +77,11 @@ describe("since you were away", () => {
       ],
     });
     expect(s.merged).toEqual([
-      { project: "widgets", ticket: "W-3" },
-      { project: "gadgets", ticket: "G-1" },
-      { project: "widgets", ticket: "W-1" },
+      { project: "widgets", ticket: "W-3", at: iso(90) },
+      { project: "gadgets", ticket: "G-1", at: iso(60) },
+      { project: "widgets", ticket: "W-1", at: iso(40) },
     ]);
-    expect(s.started).toEqual([{ project: "widgets", ticket: "W-4" }]);
+    expect(s.started).toEqual([{ project: "widgets", ticket: "W-4", at: iso(70) }]);
     expect(s.quiet).toBe(false);
   });
 
@@ -134,7 +134,7 @@ describe("since you were away", () => {
         }),
       ],
     });
-    expect(s.merged).toEqual([{ project: "widgets", ticket: "W-1" }]);
+    expect(s.merged).toEqual([{ project: "widgets", ticket: "W-1", at: iso(40) }]);
     expect(s.stuck.map((x) => [x.ticket, x.minutes])).toEqual([["W-6", 15]]);
   });
 

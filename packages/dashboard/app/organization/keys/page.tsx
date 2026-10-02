@@ -16,6 +16,7 @@ import {
   RowTime,
   Section,
   SectionBody,
+  StatusHeader,
   Toolbar,
 } from "@/components/page";
 import { EmptyState, PhasePill, Tabs, Tag } from "@/components/ui";
@@ -206,6 +207,12 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
 
   return (
     <Page
+      status={
+        <StatusHeader
+          lead={t.status.org.keys(project?.name ?? viewer.organization.name)}
+          then={t.status.org.workerSecrets(workerSecrets.length + fromOrganization.length)}
+        />
+      }
       toolbar={
         <Toolbar
           end={

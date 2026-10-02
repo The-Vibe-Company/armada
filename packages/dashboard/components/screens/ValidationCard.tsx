@@ -16,7 +16,7 @@ import { fileShape, paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import { type ActionContext, ErrorLine, PendingNote, SignerField, signerOf, useRequest, useSent } from "../Actions";
 import { Card, CardHead, CardMeta, CardTitle } from "../page";
-import { Dot, Tag } from "../ui";
+import { Dot, ProjectChip, Tag } from "../ui";
 
 const KIND_COLOR: Record<OwnerValidation["kind"], string> = {
   merge: "var(--done)",
@@ -84,13 +84,19 @@ export function ValidationCard({
         )}
       </CardTitle>
       <CardMeta>
-        <Tag>{projectName}</Tag>
+        <Tag>
+          <ProjectChip slug={v.project} name={projectName} />
+        </Tag>
         <Link href={paths.agent(v.ticket)} prefetch className="mono">
           {v.ticket}
         </Link>
         {v.author && <span>{s.askedBy(v.author, ago(v.createdAt))}</span>}
       </CardMeta>
-      {body && <p className={mode === "compact" ? "wait-detail is-quote vd-clamp" : "wait-detail is-quote"}>{body}</p>}
+      {body && (
+        <p className="wait-detail is-quote" style={{ ["--q" as string]: color }}>
+          {mode === "compact" ? <span className="vd-clamp">{body}</span> : body}
+        </p>
+      )}
       {v.reason && (
         <p className="vd-reason">
           <span className="faint">{s.reason}</span> {v.reason}

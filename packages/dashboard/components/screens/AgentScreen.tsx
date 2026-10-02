@@ -33,6 +33,7 @@ import {
 import type { Strings } from "@/lib/i18n";
 import { decisionCards, handBackPr, sentRequest } from "@/lib/overview-view";
 import { type ActionContext, splitQuestion } from "../Actions";
+import { Ship } from "../mark";
 import {
   Columns,
   HeaderActions,
@@ -40,12 +41,13 @@ import {
   Page,
   Row,
   RowIcon,
-  RowId,
   RowSide,
   RowText,
   RowTime,
   Section,
   SectionBody,
+  Stat,
+  StatusHeader,
 } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
@@ -390,33 +392,52 @@ function Decision({
   return null;
 }
 
+/**
+ * The flight path (THE-899): the six steps from plan to merge as legs flown,
+ * the done ones checked, the agent a ship on the current one, in its tone,
+ * the rest dashed ahead.
+ */
 function Stepper({ row, color }: { row: FleetRow; color: string }) {
   const { t } = useShell();
   const states = stepStates(row.pipeline.step);
   return (
-    <span className="sc-stepper" style={{ ["--tone" as string]: color }}>
+    <ol className="sc-path" style={{ ["--tone" as string]: color }}>
       {t.shell.steps.map((s, k) => (
-        <span
-          key={s}
-          className={`sc-stepper-step is-${states[k]}`}
-          aria-current={states[k] === "now" ? "step" : undefined}
-        >
-          <span className="sc-stepper-dot" aria-hidden />
-          <span className="sc-stepper-label">
-            {s}
-            <span className="sc-stepper-sub">
-              {states[k] === "now" ? (
-                <RelativeTime at={row.since} format="duration" />
-              ) : states[k] === "done" ? (
-                t.shell.agent.done
-              ) : (
-                " "
-              )}
-            </span>
+        <li key={s} className={`sc-path-step is-${states[k]}`} aria-current={states[k] === "now" ? "step" : undefined}>
+          <span className="sc-path-node" aria-hidden>
+            {states[k] === "done" ? (
+              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
+                <circle cx="8" cy="8" r="7" fill="var(--done)" />
+                <path
+                  d="M5 8.2l2 2 4-4.2"
+                  fill="none"
+                  stroke="#0b1203"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            ) : states[k] === "now" ? (
+              <Ship color={color} size={15} className="sc-path-ship" />
+            ) : (
+              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+                <circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--text-4)" strokeWidth="1.5" />
+              </svg>
+            )}
           </span>
-        </span>
+          <b className="sc-path-label">{s}</b>
+          <span className="sc-path-sub">
+            {states[k] === "now" ? (
+              <RelativeTime at={row.since} format="duration" />
+            ) : states[k] === "done" ? (
+              t.shell.agent.done
+            ) : (
+              " "
+            )}
+          </span>
+        </li>
       ))}
-    </span>
+    </ol>
   );
 }
 
@@ -484,8 +505,39 @@ function Agent({
   const tabPath = (k: Tab) => `${paths.agent(row.id)}${k !== "activity" ? `?tab=${k}` : ""}`;
   const session = row.session;
 
+  const line = rowLine(row);
   return (
-    <Page>
+    <Page
+      status={
+        <StatusHeader
+          kicker={
+            <>
+              <StatusDot status={state.status} progress={rowProgress(row)} size={14} />
+              <span style={{ color }}>{label}</span>
+              <span className="mono faint">
+                {a.forTime} <RelativeTime at={row.since} format="duration" />
+              </span>
+            </>
+          }
+          lead={row.title}
+          line={line ? <span style={row.question ? { color: "var(--accent)" } : undefined}>{line}</span> : undefined}
+          stats={
+            <>
+              <Stat>
+                <ProjectChip slug={row.project} name={project?.name ?? row.project} />
+              </Stat>
+              <Stat value={row.id} />
+              <Stat>
+                <HarnessBadge harness={harness} />
+              </Stat>
+              {(session?.profile ?? row.profile) && (
+                <Stat>{[session?.profile ?? row.profile, session?.effort].filter(Boolean).join(" · ")}</Stat>
+              )}
+            </>
+          }
+        />
+      }
+    >
       <HeaderActions>
         {link && (
           <a className="ui-button is-primary" href={link}>
@@ -503,32 +555,8 @@ function Agent({
           <span className="ui-button is-disabled">{t.shell.noPr}</span>
         )}
       </HeaderActions>
-      <Section
-        icon={<StatusDot status={state.status} progress={rowProgress(row)} />}
-        label={<span style={{ color }}>{label}</span>}
-        side={
-          <span className="mono">
-            <RelativeTime at={row.since} format="duration" />
-          </span>
-        }
-      >
-        <Row>
-          <RowIcon />
-          <RowId>{row.id}</RowId>
-          <RowText title={row.title} line={rowLine(row)} lineColor={row.question ? "var(--accent)" : undefined} />
-          <RowSide roomy>
-            <ProjectChip slug={row.project} name={project?.name ?? row.project} />
-          </RowSide>
-          <RowSide>
-            <HarnessBadge harness={harness} />
-          </RowSide>
-        </Row>
-      </Section>
       <Section label={t.shell.stepsHeading} count={`${row.pipeline.step + 1}/${t.shell.steps.length}`}>
-        <Row>
-          <RowIcon />
-          <Stepper row={row} color={color} />
-        </Row>
+        <Stepper row={row} color={color} />
       </Section>
       <Columns
         side={

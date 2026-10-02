@@ -22,14 +22,13 @@ import {
   ticketHref,
   ticketsBehind,
 } from "@/lib/insights-view";
-import { Bars, ChartTable, Meter, Sparkline } from "../insights/Charts";
+import { Bars, ChartTable, Meter, Sparkline, StackBar, Swatch } from "../insights/Charts";
 import {
-  Card,
-  CardGrid,
-  CardHead,
-  CardMeta,
-  Notice,
+  Alert,
+  Figure,
+  Figures as FigureRow,
   Page,
+  Pair,
   Row,
   RowIcon,
   RowId,
@@ -38,7 +37,10 @@ import {
   RowTime,
   Section,
   SectionBody,
+  Sparkline as Spark,
+  StatusHeader,
   Toolbar,
+  Unit,
 } from "../page";
 import { Dot, EmptyState, ProjectChip, Tabs, Tag } from "../ui";
 
@@ -63,9 +65,26 @@ export function InsightsScreen({
   const ctx: Ctx = { t, r, q, open: (b) => `${insightsHref({ ...q, show: showOf(b) })}#behind` };
   const behind = behindOf(q.show);
   const shown = (r.project ? r.projects.filter((p) => p.slug === r.project) : r.projects).length;
+  const change =
+    i.merged.previous > 0 ? Math.round(((i.merged.count - i.merged.previous) / i.merged.previous) * 100) : null;
 
   return (
     <Page
+      status={
+        <StatusHeader
+          lead={t.insights.lead(i.merged.count, i.days.length)}
+          then={
+            change === null
+              ? undefined
+              : change > 0
+                ? t.insights.more(change)
+                : change < 0
+                  ? t.insights.fewer(-change)
+                  : t.insights.same
+          }
+          line={i.cycle.p50 === null ? undefined : t.insights.line(t.duration(i.cycle.p50), i.days.length)}
+        />
+      }
       toolbar={
         <Toolbar>
           <Tabs
@@ -96,7 +115,7 @@ export function InsightsScreen({
         </Toolbar>
       }
     >
-      {!r.live && <Notice tone="warn">{t.insights.unreachable}</Notice>}
+      {!r.live && <Alert tone="warn" title={t.insights.unreachable} />}
       <Figures ctx={ctx} />
       {behind && <BehindSection ctx={ctx} behind={behind} />}
       {shown === 0 ? (
@@ -105,12 +124,18 @@ export function InsightsScreen({
         <>
           <Shipped ctx={ctx} />
           <CycleTime ctx={ctx} />
-          <WhereTimeGoes ctx={ctx} />
+          <Pair>
+            <WhereTimeGoes ctx={ctx} />
+            <div>
+              <People ctx={ctx} />
+              <Quality ctx={ctx} />
+            </div>
+          </Pair>
           <WhereTicketsWait ctx={ctx} />
-          <People ctx={ctx} />
-          <Quality ctx={ctx} />
-          <Compared ctx={ctx} kind="profile" list={i.profiles} />
-          <Compared ctx={ctx} kind="harness" list={i.harnesses} />
+          <Pair>
+            <Compared ctx={ctx} kind="profile" list={i.profiles} />
+            <Compared ctx={ctx} kind="harness" list={i.harnesses} />
+          </Pair>
         </>
       )}
     </Page>
@@ -132,40 +157,85 @@ function dayLabel(t: Strings, day: string): string {
   }).format(new Date(`${day}T00:00:00Z`));
 }
 
-/** The four headline figures, each a card that opens its tickets. */
+/** A duration as a big figure: its numbers in mono, its units small and grey ("5<small>h</small>21"). */
+function durationFigure(t: Strings, ms: number | null) {
+  if (ms === null) return t.insights.none;
+  return t
+    .duration(ms)
+    .split(/(\d+)/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part, k) =>
+      /^\d+$/.test(part) ? (
+        // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one short string, in order.
+        <span key={k}>{part}</span>
+      ) : (
+        // biome-ignore lint/suspicious/noArrayIndexKey: the parts of one short string, in order.
+        <Unit key={k}>{part}</Unit>
+      ),
+    );
+}
+
+/** The four headline figures on one instrument, each with its trend line, each opening its tickets. */
 function Figures({ ctx }: { ctx: Ctx }) {
   const { t, r, q, open } = ctx;
   const i = r.insights;
-  const days = i.days.length;
   const change = i.merged.previous > 0 ? (i.merged.count - i.merged.previous) / i.merged.previous : null;
+  const trend = t.insights.trend(change, q.range);
   return (
-    <Section label={t.insights.period(days)}>
-      <CardGrid>
-        <Card prefetch={false} href={open({ kind: "merged" })}>
-          <CardHead label={t.insights.figures.merged} />
-          <span className="ins-stat">{i.merged.count}</span>
-          <CardMeta>{t.insights.trend(change, q.range)}</CardMeta>
-        </Card>
-        <Card prefetch={false} href={open({ kind: "cycle" })}>
-          <CardHead label={t.insights.figures.cycle} />
-          <span className="ins-stat">{dash(t, i.cycle.p50)}</span>
-          <CardMeta>
+    <FigureRow>
+      <Figure
+        href={open({ kind: "merged" })}
+        label={t.insights.figures.merged}
+        value={i.merged.count}
+        sub={
+          change !== null && change > 0 ? (
+            <>
+              <span className="ui-trend">{trend.split(" ").slice(0, 2).join(" ")}</span>{" "}
+              {trend.split(" ").slice(2).join(" ")}
+            </>
+          ) : (
+            trend
+          )
+        }
+        spark={<Spark values={i.days.map((d) => d.tickets.length)} color="var(--done)" />}
+      />
+      <Figure
+        href={open({ kind: "cycle" })}
+        label={t.insights.figures.cycle}
+        value={durationFigure(t, i.cycle.p50)}
+        sub={
+          <>
             {i.cycle.p90 !== null && `${t.insights.p90(t.duration(i.cycle.p90))} · `}
             {t.insights.previousMedian(i.cycle.previousP50 === null ? null : t.duration(i.cycle.previousP50))}
-          </CardMeta>
-        </Card>
-        <Card prefetch={false} href={open({ kind: "first-pass" })}>
-          <CardHead label={t.insights.figures.firstPass} />
-          <span className="ins-stat">{percent(i.firstPass.rate)}</span>
-          <CardMeta>{t.insights.firstPassLine(i.firstPass.green, i.firstPass.handedBack)}</CardMeta>
-        </Card>
-        <Card prefetch={false} href={open({ kind: "silences" })}>
-          <CardHead label={t.insights.figures.silences} />
-          <span className="ins-stat">{rate(i.silences.perWorkerHour)}</span>
-          <CardMeta>{t.insights.silencesLine(i.silences.count, Math.round(i.silences.workerHours))}</CardMeta>
-        </Card>
-      </CardGrid>
-    </Section>
+          </>
+        }
+        spark={<Spark values={i.cycle.daily} />}
+      />
+      <Figure
+        href={open({ kind: "first-pass" })}
+        label={t.insights.figures.firstPass}
+        value={
+          i.firstPass.rate === null ? (
+            "—"
+          ) : (
+            <>
+              {Math.round(i.firstPass.rate * 100)}
+              <Unit>%</Unit>
+            </>
+          )
+        }
+        sub={t.insights.firstPassLine(i.firstPass.green, i.firstPass.handedBack)}
+        spark={<Spark values={[]} />}
+      />
+      <Figure
+        href={open({ kind: "silences" })}
+        label={t.insights.figures.silences}
+        value={rate(i.silences.perWorkerHour)}
+        sub={t.insights.silencesLine(i.silences.count, Math.round(i.silences.workerHours))}
+        spark={<Spark values={[]} />}
+      />
+    </FigureRow>
   );
 }
 
@@ -275,13 +345,23 @@ function Shipped({ ctx }: { ctx: Ctx }) {
           bars={bars.map((b) => ({
             key: b.key,
             value: b.count,
+            previous: b.previous,
             label: t.insights.bar(label(b), b.count),
             href: open({ kind: b.kind, day: b.key }),
           }))}
           caption={
             <>
-              <span>{label(bars[0] ?? { key: i.days[0]?.day ?? "", kind: "day", count: 0 })}</span>
-              <span>{t.insights.shippedChart(i.merged.count, Math.max(0, ...bars.map((b) => b.count)), weekly)}</span>
+              <span>{label(bars[0] ?? { key: i.days[0]?.day ?? "", kind: "day", count: 0, previous: 0 })}</span>
+              <span className="ins-key">
+                <span>
+                  <Swatch className="is-bar" />
+                  {t.insights.shippedChart(i.merged.count, Math.max(0, ...bars.map((b) => b.count)), weekly)}
+                </span>
+                <span>
+                  <Swatch className="is-ghost" />
+                  {t.insights.ghost}
+                </span>
+              </span>
               <span>{bars.length ? label(bars[bars.length - 1] as (typeof bars)[number]) : ""}</span>
             </>
           }
@@ -324,7 +404,25 @@ function CycleTime({ ctx }: { ctx: Ctx }) {
         </SectionBody>
       ) : (
         <SectionBody className="ins-body">
-          <Sparkline values={c.daily} caption={<span>{t.insights.cycleChart(days.length, dash(t, c.p50))}</span>} />
+          <Sparkline
+            values={c.daily}
+            band={c.dailyP90}
+            caption={
+              <>
+                <span>{t.insights.cycleChart(days.length, dash(t, c.p50))}</span>
+                <span className="ins-key">
+                  <span>
+                    <Swatch className="is-bar" />
+                    {t.insights.median}
+                  </span>
+                  <span>
+                    <Swatch className="is-band" />
+                    {t.insights.band}
+                  </span>
+                </span>
+              </>
+            }
+          />
           <ChartTable
             summary={t.insights.table}
             head={[t.insights.columns.day, t.insights.columns.median]}
@@ -357,6 +455,7 @@ function WhereTimeGoes({ ctx }: { ctx: Ctx }) {
   const { t, r, open } = ctx;
   const phases = r.insights.phases.filter((p) => p.totalMs > 0);
   const max = Math.max(0, ...phases.map((p) => p.totalMs));
+  const hue = (phase: LabelPhase) => (WAITING.includes(phase) ? "var(--active)" : "var(--frontier)");
   return (
     <Section label={t.insights.where} side={t.insights.whereSide}>
       {phases.length === 0 ? (
@@ -364,21 +463,33 @@ function WhereTimeGoes({ ctx }: { ctx: Ctx }) {
           <p>{t.insights.empty}</p>
         </SectionBody>
       ) : (
-        phases.map((p) => (
-          <Row key={p.phase} prefetch={false} href={open({ kind: "phase", phase: p.phase })}>
-            <RowIcon>
-              <Dot color={WAITING.includes(p.phase) ? "var(--active)" : "var(--frontier)"} />
-            </RowIcon>
-            <RowText
-              title={t.insights.phases[p.phase]}
-              line={t.insights.phaseLine(dash(t, p.medianMs), p.tickets.length)}
+        <>
+          <SectionBody className="ins-stack-body">
+            <StackBar
+              parts={phases.map((p) => ({
+                key: p.phase,
+                value: p.totalMs,
+                color: hue(p.phase),
+                label: t.insights.phases[p.phase],
+              }))}
             />
-            <RowSide width={180}>
-              <Meter value={p.totalMs} max={max} tone={WAITING.includes(p.phase) ? "var(--active)" : undefined} />
-            </RowSide>
-            <RowTime>{t.insights.total(p.totalMs)}</RowTime>
-          </Row>
-        ))
+          </SectionBody>
+          {phases.map((p) => (
+            <Row key={p.phase} prefetch={false} href={open({ kind: "phase", phase: p.phase })}>
+              <RowIcon>
+                <Dot color={hue(p.phase)} />
+              </RowIcon>
+              <RowText
+                title={t.insights.phases[p.phase]}
+                line={t.insights.phaseLine(dash(t, p.medianMs), p.tickets.length)}
+              />
+              <RowSide width={180}>
+                <Meter value={p.totalMs} max={max} tone={hue(p.phase)} />
+              </RowSide>
+              <RowTime>{t.insights.total(p.totalMs)}</RowTime>
+            </Row>
+          ))}
+        </>
       )}
     </Section>
   );

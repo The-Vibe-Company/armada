@@ -157,10 +157,15 @@ export interface StuckTicket extends CatchupTicket {
   ongoing: boolean;
 }
 
+/** A ticket merged or started while the viewer was away, and when (the overview's strip, THE-899). */
+export interface CatchupEvent extends CatchupTicket {
+  at: string;
+}
+
 export interface SinceSummary {
   since: string;
-  merged: CatchupTicket[];
-  started: CatchupTicket[];
+  merged: CatchupEvent[];
+  started: CatchupEvent[];
   stuck: StuckTicket[];
   waiting: (CatchupTicket & { id: number; kind: ValidationKind })[];
   /** Nothing merged, started, got stuck or waits. */
@@ -169,13 +174,9 @@ export interface SinceSummary {
 
 const MIN = 60_000;
 
-function distinct<T extends { ticket: string; at: string }>(
-  project: string,
-  list: T[],
-  since: number,
-): CatchupTicket[] {
+function distinct<T extends { ticket: string; at: string }>(project: string, list: T[], since: number): CatchupEvent[] {
   const seen = new Set<string>();
-  const out: (CatchupTicket & { at: string })[] = [];
+  const out: CatchupEvent[] = [];
   for (const e of [...list].sort((a, b) => b.at.localeCompare(a.at))) {
     if (Date.parse(e.at) < since || seen.has(e.ticket)) continue;
     seen.add(e.ticket);
@@ -203,13 +204,13 @@ export function sinceSummary(input: {
   const now = input.now.getTime();
   const until = input.until ? Date.parse(input.until) : now;
   const during = <T extends { at: string }>(list: T[]) => list.filter((e) => Date.parse(e.at) <= until);
-  const merged: (CatchupTicket & { at: string })[] = [];
-  const started: (CatchupTicket & { at: string })[] = [];
+  const merged: CatchupEvent[] = [];
+  const started: CatchupEvent[] = [];
   const stuck: StuckTicket[] = [];
   const waiting: SinceSummary["waiting"] = [];
   for (const r of input.records) {
-    merged.push(...(distinct(r.project, during(r.merged), since) as (CatchupTicket & { at: string })[]));
-    started.push(...(distinct(r.project, during(r.claimed), since) as (CatchupTicket & { at: string })[]));
+    merged.push(...distinct(r.project, during(r.merged), since));
+    started.push(...distinct(r.project, during(r.claimed), since));
     const byTicket = new Map<string, StuckTicket>();
     for (const g of r.gaps) {
       const from = Date.parse(g.from);
@@ -238,7 +239,6 @@ export function sinceSummary(input: {
     waiting.push(...r.waiting.map((w) => ({ project: r.project, ticket: w.ticket, id: w.id, kind: w.kind })));
   }
   const byTime = (a: { at: string }, b: { at: string }) => b.at.localeCompare(a.at);
-  const plain = ({ project, ticket }: CatchupTicket): CatchupTicket => ({ project, ticket });
   stuck.sort(
     (a, b) =>
       Number(b.ongoing) - Number(a.ongoing) ||
@@ -248,8 +248,8 @@ export function sinceSummary(input: {
   waiting.sort((a, b) => a.id - b.id);
   return {
     since: new Date(since).toISOString(),
-    merged: merged.sort(byTime).map(plain),
-    started: started.sort(byTime).map(plain),
+    merged: merged.sort(byTime),
+    started: started.sort(byTime),
     stuck,
     waiting,
     quiet: merged.length + started.length + stuck.length + waiting.length === 0,

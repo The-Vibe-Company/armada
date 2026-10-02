@@ -9,6 +9,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { type AgentStatus, HARNESS_NAME, type Harness, projectColor } from "@/lib/fleet-view";
 import { tabStep } from "@/lib/keyboard";
+import { FormationAtRest } from "./mark";
 import { useNow, useShell } from "./shell/context";
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
@@ -239,7 +240,12 @@ export function Tabs<K extends string>({
   );
 }
 
-/** What a list or page shows when it has nothing; `compact` for a list among others on a page (a settings page). */
+/**
+ * What a list or page shows when it has nothing (THE-899): the formation at
+ * rest, one sentence, what to do next, and its action in `children`.
+ * `compact` for a list among others on a page (a settings page): one line,
+ * a small formation before it.
+ */
 export function EmptyState({
   title,
   hint,
@@ -251,11 +257,23 @@ export function EmptyState({
   compact?: boolean;
   children?: ReactNode;
 }) {
+  if (compact)
+    return (
+      <div className="ui-empty is-compact">
+        <FormationAtRest size={28} />
+        <span className="ui-empty-text">
+          <span className="ui-empty-title">{title}</span>
+          {hint && <span className="ui-empty-hint">{hint}</span>}
+        </span>
+        {children}
+      </div>
+    );
   return (
-    <div className={cx("ui-empty", compact && "is-compact")}>
+    <div className="ui-empty">
+      <FormationAtRest size={104} />
       <span className="ui-empty-title">{title}</span>
       {hint && <span className="ui-empty-hint">{hint}</span>}
-      {children}
+      {children && <span className="ui-empty-actions">{children}</span>}
     </div>
   );
 }
@@ -273,7 +291,7 @@ export function RelativeTime({ at, format = "ago" }: { at: string | null; format
   );
 }
 
-/** The six steps from plan to merge in a small bar; the current one in its tone. */
+/** The six steps from plan to merge in a small bar; the current one lit in its tone. */
 export function Steps({ step, tone, wide = false }: { step: number; tone: Tone; wide?: boolean }) {
   const { t } = useShell();
   return (
@@ -281,13 +299,10 @@ export function Steps({ step, tone, wide = false }: { step: number; tone: Tone; 
       className={cx("ui-steps", wide && "is-wide")}
       role="img"
       aria-label={`${t.shell.steps[step] ?? ""} (${step + 1}/${t.shell.steps.length})`}
+      style={{ ["--c" as string]: TONE_COLOR[tone] }}
     >
       {t.shell.steps.map((s, k) => (
-        <span
-          key={s}
-          className="ui-step"
-          style={{ background: k < step ? "rgba(240,239,236,.45)" : k === step ? TONE_COLOR[tone] : undefined }}
-        />
+        <span key={s} className={cx("ui-step", k < step && "is-done", k === step && "is-now")} />
       ))}
     </span>
   );

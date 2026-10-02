@@ -1,10 +1,12 @@
 "use client";
 
-// The v4 frame every screen lives in (THE-866): the sidebar, the header bar
-// (the page kit's PageHeader: breadcrumbs, key hints, the page's actions),
-// ⌘K search and the keyboard (j/k move through the rows of the page, Enter
-// opens, Esc goes back). Pages render inside it from the overview it polls
-// (`useFleet`).
+// The frame every screen lives in (THE-866, Night watch THE-899): the
+// sidebar, the deck (the main panel, its horizon in the state of what the
+// page shows, lib/horizon.ts) with its header bar (the page kit's
+// PageHeader: breadcrumbs, key hints, the page's actions), ⌘K search and the
+// keyboard (j/k move through the rows of the page, Enter opens, Esc goes
+// back). On a phone the sidebar is THE-891's top bar (the mark, the
+// organization, search) and the sections a tab bar at the bottom. Pages render inside it from the overview it polls (`useFleet`).
 import type { FleetOverview } from "@armada/core/read";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -22,18 +24,24 @@ import {
   type Place,
   paths,
   placeOf,
+  projectColor,
   type Section,
   sectionOf,
 } from "@/lib/fleet-view";
+import { horizonOf } from "@/lib/horizon";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
 import { ownsKeys } from "@/lib/keyboard";
 import { decideCount, pendingValidations } from "@/lib/overview-view";
+import { LiveMark } from "../mark";
+import { Alert, Button, Ring } from "../page";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
-import { Dot, harnessColor, Kbd, ProjectChip } from "../ui";
+import { Dot, harnessColor, Kbd } from "../ui";
 import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
+import { ChevronIcon, SectionIcon } from "./icons";
 import { Logo, SearchIcon } from "./Logo";
+import { MergeMoment } from "./MergeMoment";
 import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
 import { useViews, ViewsProvider } from "./views";
@@ -101,7 +109,7 @@ function Frame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { t, density } = useShell();
-  const { overview } = useFleet();
+  const { overview, failed } = useFleet();
   const place = useMemo(() => placeOf(pathname), [pathname]);
   const fromPath = useFrom(pathname);
   const from = useMemo(() => (fromPath === null ? null : placeOf(fromPath)), [fromPath]);
@@ -182,6 +190,7 @@ function Frame({ children }: { children: ReactNode }) {
   const crumbs = crumbsOf(place, from);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
   const here = crumbs.at(-1);
+  const horizon = useMemo(() => horizonOf(overview, place, failed), [overview, place, failed]);
 
   return (
     // The approval link is opened from a phone as often as a desk: on a narrow screen it takes the whole width.
@@ -190,7 +199,7 @@ function Frame({ children }: { children: ReactNode }) {
         {t.a11y.skip}
       </a>
       <Sidebar section={section} place={place} menu={menu} setMenu={setMenu} onSearch={() => setPalette(true)} />
-      <main className="sh-main" id="content" tabIndex={-1} data-density={density}>
+      <main className="sh-main" id="content" tabIndex={-1} data-density={density} data-horizon={horizon}>
         <HeaderSlotProvider>
           <PageHeader
             heading={here ? crumbLabel(t, here, names) : t.htmlTitle}
@@ -211,12 +220,15 @@ function Frame({ children }: { children: ReactNode }) {
             }
           />
           <div className="sh-scroll" ref={main}>
+            <FleetAlert />
             {children}
           </div>
         </HeaderSlotProvider>
       </main>
+      <TabBar section={section} />
       {palette && Palette && <Palette onClose={() => setPalette(false)} />}
       <Announcer />
+      <MergeMoment />
       <Notifier />
     </div>
   );
@@ -254,7 +266,7 @@ function Crumbs({ crumbs, names }: { crumbs: Crumb[]; names: Map<string, string>
         <span key={c.kind} className="sh-crumb">
           {i > 0 && (
             <span className="sh-crumb-sep" aria-hidden>
-              ›
+              /
             </span>
           )}
           {c.href ? (
@@ -270,8 +282,55 @@ function Crumbs({ crumbs, names }: { crumbs: Crumb[]; names: Map<string, string>
   );
 }
 
-function NavIcon({ section }: { section: NonNullable<Section> }) {
-  return <span className={`sh-nav-icon is-${section}`} aria-hidden />;
+/** The six sections, each with what it counts; `hot` when the count waits for the viewer. */
+function useNav() {
+  const { overview } = useFleet();
+  const decisions = decideCount(overview);
+  const checks = pendingValidations(overview).length;
+  const nav: { key: NonNullable<Section>; href: string; count: number | null; hot: boolean }[] = [
+    { key: "overview", href: paths.overview, count: decisions, hot: decisions > 0 },
+    { key: "validations", href: paths.validations, count: checks, hot: checks > 0 },
+    { key: "projects", href: paths.projects, count: overview.projects.length, hot: false },
+    { key: "agents", href: paths.agents(), count: overview.rows.length, hot: false },
+    { key: "activity", href: paths.activity, count: null, hot: false },
+    { key: "insights", href: paths.insights, count: null, hot: false },
+  ];
+  return nav;
+}
+
+// Insights and Activity render on the server from Postgres: opened on demand, not on every page's load.
+const prefetched = (key: NonNullable<Section>) => key !== "insights" && key !== "activity";
+
+/**
+ * The sections on a phone (THE-899): a tab bar at the bottom, each with its
+ * label and, when something waits for the viewer, its count. Shown under
+ * 720 px only, where the sidebar's sections are hidden.
+ */
+function TabBar({ section }: { section: Section }) {
+  const { t } = useShell();
+  const nav = useNav();
+  return (
+    <nav className="sh-tabbar" aria-label={t.a11y.sections}>
+      {nav.map((n) => (
+        <Link
+          key={n.key}
+          href={n.href}
+          prefetch={prefetched(n.key)}
+          className="sh-tab"
+          aria-current={section === n.key ? "page" : undefined}
+        >
+          <SectionIcon section={n.key} size={18} />
+          <span className="sh-tab-label">{t.shell.tab[n.key]}</span>
+          {n.hot && n.count !== null && (
+            <span className="sh-tab-badge">
+              {n.count}
+              <span className="sr-only"> · {t.shell.waitingForYou}</span>
+            </span>
+          )}
+        </Link>
+      ))}
+    </nav>
+  );
 }
 
 function Sidebar({
@@ -290,16 +349,7 @@ function Sidebar({
   const { t, account } = useShell();
   const { overview } = useFleet();
   const counts = harnessCounts(overview.rows);
-  const decisions = decideCount(overview);
-  const checks = pendingValidations(overview).length;
-  const nav: { key: NonNullable<Section>; href: string; count: number | null; hot: boolean }[] = [
-    { key: "overview", href: paths.overview, count: decisions, hot: decisions > 0 },
-    { key: "validations", href: paths.validations, count: checks, hot: checks > 0 },
-    { key: "projects", href: paths.projects, count: overview.projects.length, hot: false },
-    { key: "agents", href: paths.agents(), count: overview.rows.length, hot: false },
-    { key: "insights", href: paths.insights, count: null, hot: false },
-    { key: "activity", href: paths.activity, count: null, hot: false },
-  ];
+  const nav = useNav();
   return (
     <aside className="sh-side" aria-label={t.a11y.sidebar}>
       <div className="sh-brand">
@@ -321,13 +371,12 @@ function Sidebar({
           <Link
             key={n.key}
             href={n.href}
-            // Insights and Activity render on the server from Postgres: opened on demand, not on every page's load.
-            prefetch={n.key !== "insights" && n.key !== "activity"}
+            prefetch={prefetched(n.key)}
             className="sh-nav-item"
             aria-current={section === n.key ? "page" : undefined}
             title={t.shell.nav[n.key]}
           >
-            <NavIcon section={n.key} />
+            <SectionIcon section={n.key} />
             <span className="sh-label sh-nav-label">{t.shell.nav[n.key]}</span>
             {n.count !== null && <span className={`sh-count ${n.hot ? "is-hot" : ""}`}>{n.count}</span>}
           </Link>
@@ -348,7 +397,13 @@ function Sidebar({
               aria-current={place.kind === "project" && place.slug === p.slug ? "page" : undefined}
             >
               <span className="sh-item-icon">
-                <ProjectChip slug={p.slug} bare />
+                <Ring
+                  value={p.progress?.total ? p.progress.done / p.progress.total : 0}
+                  size={14}
+                  stroke={2.2}
+                  bare
+                  color={projectColor(p.slug)}
+                />
               </span>
               <span className="sh-label">{p.name}</span>
               <span className="sh-count">{p.inFlight}</span>
@@ -409,7 +464,7 @@ function ViewsGroup() {
             aria-current={isCurrentView(v, pathname, search) ? "page" : undefined}
           >
             <span className="sh-item-icon">
-              <NavIcon section={v.list} />
+              <SectionIcon section={v.list} size={14} />
             </span>
             <span className="sh-label">{v.name}</span>
           </Link>
@@ -428,6 +483,30 @@ function ViewsGroup() {
   );
 }
 
+/**
+ * A poll that failed, on every page (THE-899): the page keeps the last
+ * reading under it, says since when, and offers to try again.
+ */
+function FleetAlert() {
+  const { t } = useShell();
+  const { checkedAt, failed, refresh } = useFleet();
+  const now = useNow();
+  if (!failed) return null;
+  return (
+    <Alert
+      title={t.shell.offline}
+      action={
+        <Button type="button" small onClick={refresh}>
+          {t.refresh}
+        </Button>
+      }
+    >
+      {checkedAt !== null && t.staleReading(now - checkedAt)}
+    </Alert>
+  );
+}
+
+/** The fleet's pulse: the formation, its lead ship lit on each poll, amber while a poll fails. */
 function LiveStatus() {
   const { t } = useShell();
   const { checkedAt, failed } = useFleet();
@@ -435,7 +514,7 @@ function LiveStatus() {
   const label = failed ? t.shell.offline : checkedAt === null ? t.shell.liveWaiting : t.shell.live(now - checkedAt);
   return (
     <div className={`sh-live ${failed ? "is-failed" : ""}`} title={label}>
-      <Dot color={failed ? "var(--critical)" : "var(--done)"} pulse={failed ? undefined : "live"} />
+      <LiveMark size={16} state={failed ? "paused" : "live"} beat={checkedAt ?? undefined} />
       <span className="sh-label tnum">{label}</span>
     </div>
   );
@@ -483,7 +562,7 @@ function OrgMenu({ open, setOpen, label }: { open: boolean; setOpen: (open: bool
         onClick={() => setOpen(!open)}
       >
         <span className="sh-label sh-org-name">{label}</span>
-        <span aria-hidden>▾</span>
+        <ChevronIcon />
       </button>
       {open && (
         <div className="sh-menu" id="sh-menu">

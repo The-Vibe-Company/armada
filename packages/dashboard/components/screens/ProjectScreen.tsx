@@ -1,14 +1,15 @@
 "use client";
 
 // /projects/[slug] (THE-870): one project as a whole, on the Agents page's
-// anatomy. Its header section (progress, root, health, owner), its
+// anatomy. Its status (THE-899: its progress as a ring, "31 of 35 tickets
+// done. 2 in flight, 2 ready to start.", root, health, owner), its
 // coordinator, its agents in flight, the tickets ready to launch (a launch is
 // a request to the coordinator), what blocks it and its open pull requests.
 // Health and progress are core's; each section's count is its figure.
 import type { ProjectOverview, ReadyTicket } from "@armada/core/read";
 import { useParams } from "next/navigation";
 import type { ReactNode } from "react";
-import { decisionsOf, HARNESS_NAME, paths } from "@/lib/fleet-view";
+import { decisionsOf, HARNESS_NAME, paths, projectColor } from "@/lib/fleet-view";
 import {
   type Blocker,
   coordinatorHarness,
@@ -20,12 +21,26 @@ import {
   projectSlice,
   prState,
 } from "@/lib/project-view";
-import { HeaderActions, Page, Row, RowIcon, RowId, RowSide, RowText, RowTime, Section, SectionBody } from "../page";
+import {
+  HeaderActions,
+  Page,
+  Ring,
+  Row,
+  RowIcon,
+  RowId,
+  RowSide,
+  RowText,
+  RowTime,
+  Section,
+  SectionBody,
+  Stat,
+  StatusHeader,
+} from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Dot, EmptyState, harnessColor, ProjectChip, RelativeTime, Tag, toneColor } from "../ui";
 import { AgentRow } from "./AgentRow";
 import { LaunchControl, useLaunch } from "./Launch";
-import { Health, healthColor, Owner, ProgressRing, ProjectNotice, projectLine } from "./ProjectsScreen";
+import { Health, Owner, ProjectNotice, projectLine } from "./ProjectsScreen";
 
 const PR_COLOR: Record<PrState, string> = {
   green: "var(--done)",
@@ -68,7 +83,44 @@ export function ProjectScreen() {
   const prs = prCounts(project.pullRequests);
   const percent = progressPercent(project.progress);
   return (
-    <Page>
+    <Page
+      status={
+        <StatusHeader
+          aside={
+            <Ring
+              value={(percent ?? 0) / 100}
+              size={64}
+              stroke={4}
+              color={projectColor(project.slug)}
+              label={percent === null ? undefined : `${percent}%`}
+            />
+          }
+          lead={project.progress ? t.status.project(project.progress.done, project.progress.total) : project.name}
+          then={t.status.projectNext(rows.length, ready.length)}
+          line={
+            <>
+              {project.programRoot?.title && <>{project.programRoot.title} · </>}
+              <span className="mono">{projectLine(project)}</span>
+            </>
+          }
+          stats={
+            <>
+              <Stat>
+                <ProjectChip slug={project.slug} name={project.name} />
+              </Stat>
+              <Stat>
+                <Health health={project.health} />
+              </Stat>
+              {project.owner && (
+                <Stat>
+                  <Owner name={project.owner} />
+                </Stat>
+              )}
+            </>
+          }
+        />
+      }
+    >
       <HeaderActions>
         {project.programRoot && (
           <a className="ui-button" href={project.programRoot.url} target="_blank" rel="noreferrer">
@@ -80,39 +132,6 @@ export function ProjectScreen() {
         </a>
       </HeaderActions>
       <ProjectNotice project={project} />
-      <Section
-        icon={<ProjectChip slug={project.slug} bare />}
-        label={project.name}
-        count={project.progress ? t.projectPages.tickets(project.progress.done, project.progress.total) : undefined}
-        side={
-          <>
-            <Health health={project.health} />
-            <Owner name={project.owner} />
-          </>
-        }
-      >
-        <Row>
-          <RowIcon>
-            <ProgressRing percent={percent} />
-          </RowIcon>
-          <span className="pj-percent">{percent === null ? "—" : `${percent} %`}</span>
-          <RowText
-            title={project.programRoot?.title ?? project.name}
-            line={<span className="mono">{projectLine(project)}</span>}
-          />
-          {project.progress && (
-            <RowSide>
-              <span className="pj-progress" aria-hidden>
-                <span style={{ width: `${percent ?? 0}%`, background: healthColor("on-track") }} />
-              </span>
-              <span className="mono">
-                {project.progress.done}/{project.progress.total}
-              </span>
-              <span>{t.projectPages.doneLabel}</span>
-            </RowSide>
-          )}
-        </Row>
-      </Section>
       <CoordinatorSection project={project} decisions={decisions} />
       <Section label={t.projectPages.agentsInFlight} count={rows.length}>
         {rows.length === 0 ? (
@@ -138,9 +157,7 @@ export function ProjectScreen() {
         count={blockers.length}
       >
         {blockers.length === 0 ? (
-          <SectionBody>
-            <p>{t.projectPages.nothingBlocks}</p>
-          </SectionBody>
+          <EmptyState compact title={t.projectPages.nothingBlocks} />
         ) : (
           blockers.map((b) => <BlockerRow key={`${b.reason}-${b.ticket ?? ""}-${b.pr ?? ""}`} blocker={b} />)
         )}
@@ -221,38 +238,40 @@ function CoordinatorSection({ project, decisions }: { project: ProjectOverview; 
         </>
       }
     >
-      <Fact k={t.shell.harness}>
-        {harness ? (
-          <>
-            <Dot color={harnessColor(harness)} />
-            {HARNESS_NAME[harness]}
-          </>
-        ) : (
-          "—"
-        )}
-      </Fact>
-      <Fact k={t.shell.session}>
-        <span className="mono">{c.handle ?? "—"}</span>
-      </Fact>
-      <Fact k={t.projectPages.model}>
-        <span className="mono">{c.model ?? "—"}</span>
-      </Fact>
-      <Fact k={t.projectPages.state} color={c.state === "active" ? undefined : color}>
-        <Dot color={color} />
-        {state}
-      </Fact>
-      <Fact k={t.projectPages.inbox} color={decisions ? "var(--accent)" : undefined}>
-        {decisions ? t.projectPages.inboxWaiting(decisions) : t.projectPages.inboxEmpty}
-      </Fact>
-      <Fact k={t.projectPages.onDuty}>
-        {c.startedAt ? (
-          <span className="mono" suppressHydrationWarning>
-            {t.projectPages.onDutyAt(clock(c.startedAt), t.duration(since(c.startedAt)))}
-          </span>
-        ) : (
-          "—"
-        )}
-      </Fact>
+      <div className="sc-fact-grid">
+        <Fact k={t.shell.harness}>
+          {harness ? (
+            <>
+              <Dot color={harnessColor(harness)} />
+              {HARNESS_NAME[harness]}
+            </>
+          ) : (
+            "—"
+          )}
+        </Fact>
+        <Fact k={t.shell.session}>
+          <span className="mono">{c.handle ?? "—"}</span>
+        </Fact>
+        <Fact k={t.projectPages.model}>
+          <span className="mono">{c.model ?? "—"}</span>
+        </Fact>
+        <Fact k={t.projectPages.state} color={c.state === "active" ? undefined : color}>
+          <Dot color={color} />
+          {state}
+        </Fact>
+        <Fact k={t.projectPages.inbox} color={decisions ? "var(--accent)" : undefined}>
+          {decisions ? t.projectPages.inboxWaiting(decisions) : t.projectPages.inboxEmpty}
+        </Fact>
+        <Fact k={t.projectPages.onDuty}>
+          {c.startedAt ? (
+            <span className="mono" suppressHydrationWarning>
+              {t.projectPages.onDutyAt(clock(c.startedAt), t.duration(since(c.startedAt)))}
+            </span>
+          ) : (
+            "—"
+          )}
+        </Fact>
+      </div>
     </Section>
   );
 }

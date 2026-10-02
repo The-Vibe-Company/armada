@@ -1,10 +1,12 @@
 import { Fleet } from "@/components/Fleet";
 import { InsightsLine } from "@/components/insights/InsightsLine";
-import { initialInsightsLine } from "@/lib/server";
+import { initialInsightsLine, initialSince } from "@/lib/server";
 
 // The overview (THE-867): what waits for the owner, what is broken, and each
-// project; under its summary, this week's delivery (THE-893), read with the
-// page so it is there at once and moves nothing (THE-892).
+// project; this week's delivery (THE-893) and what happened while the viewer
+// was away (THE-894) are read with the page, so they are there at once and
+// move nothing (THE-892, THE-899).
 export default async function Home() {
-  return <Fleet insights={<InsightsLine initial={await initialInsightsLine()} />} />;
+  const [line, since] = await Promise.all([initialInsightsLine(), initialSince()]);
+  return <Fleet insights={<InsightsLine initial={line} />} since={since} />;
 }

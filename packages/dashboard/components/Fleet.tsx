@@ -1,31 +1,35 @@
 "use client";
 
-// The overview (THE-867): what needs the owner and what the fleet is doing.
-// A summary band (how many agents run, what waits, what fails, the active
-// coordinators; failing and silent open their group on /agents), the
-// decisions as cards the owner acts on (a coordinator that stopped answering
-// first), the live timeline (THE-868) and one card per project. A failing or
+// The overview (THE-867, Night watch THE-899): what needs the owner and what
+// the fleet is doing. Its status sentence ("11 agents in flight. 4 wait for
+// you.", "Welcome back. 6 merged while you were away." when the viewer
+// returns) and its figures as chips (failing and silent open their group on
+// /agents), what happened while the viewer was away, the decisions as cards
+// the owner acts on (a coordinator that stopped answering first), the live
+// timeline (THE-868) and one card per project. A failing or
 // silent agent shows in the timeline and on /agents, not in a list of its own
 // (THE-880). It renders the overview core builds, as the shell polls it
 // (components/shell/context.tsx), on the page kit (components/page.tsx),
 // through the view rules of lib/overview-view.ts.
-import type { FleetOverview, ProjectHealth } from "@armada/core/read";
+import type { FleetOverview, SinceSummary } from "@armada/core/read";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { type ReactNode, useMemo } from "react";
-import { HARNESS_NAME, paths } from "@/lib/fleet-view";
+import { agentState, paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import {
   type CoordinatorAlert,
   coordinatorAlerts,
   overviewFigures,
   pendingValidations,
-  projectFacts,
   withCoordinator,
 } from "@/lib/overview-view";
-import { coordinatorHarness } from "@/lib/project-view";
+import { type OverviewLead, type OverviewThen, overviewStatus } from "@/lib/status-view";
 import type { ActionContext } from "./Actions";
+import { LiveMark } from "./mark";
+import { ProjectCard } from "./ProjectCard";
 import {
+  Alert,
   Card,
   CardGrid,
   CardHead,
@@ -36,24 +40,24 @@ import {
   Page,
   Section,
   SectionBody,
+  Stat,
+  StatusHeader,
 } from "./page";
-import { SinceAway } from "./SinceAway";
+import { SinceAway, useSince } from "./SinceAway";
 import { ValidationCard } from "./screens/ValidationCard";
 import { useFleet, useNow, useShell } from "./shell/context";
-import { Dot, EmptyState, ProjectChip, RelativeTime, Tag } from "./ui";
+import { Dot, EmptyState, ProjectChip, Tag } from "./ui";
 
 // The timeline is its own chunk (THE-892): rendered on the server as before,
 // so nothing moves, but the rest of the overview does not wait for its code.
 const LiveTimeline = dynamic(() => import("./timeline/Timeline").then((m) => m.LiveTimeline));
 
-const HEALTH_COLOR: Record<ProjectHealth, string> = {
-  blocked: "var(--critical)",
-  watch: "var(--active)",
-  "on-track": "var(--done)",
-};
-
-/** `insights`: the line under the summary (THE-893), which the overview page reads; the landing's replica has none. */
-export function Fleet({ insights }: { insights?: ReactNode } = {}) {
+/**
+ * `insights`: this week's delivery (THE-893), a chip of the status, and
+ * `since`: what happened while the viewer was away (THE-894), both read with
+ * the overview's page; the landing's replica has neither.
+ */
+export function Fleet({ insights, since }: { insights?: ReactNode; since?: SinceSummary | null } = {}) {
   const { overview, checkedAt, failed, pending, refresh, version } = useFleet();
   const { t, author, setAuthor, account } = useShell();
   const now = useNow();
@@ -71,9 +75,62 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
     refresh,
   };
   const unread = overview.projects.filter((p) => p.error || p.reading);
+  const away = useSince(since);
+  const ready = overview.ready.filter((r) => r.readyForAgent && !r.launch).length;
+  const merge = overview.rows.filter((r) => agentState(r).status === "done").length;
+  const status = overviewStatus(figures, away.summary && { merged: away.summary.merged.length }, ready);
 
   return (
-    <Page>
+    <Page
+      status={
+        <StatusHeader
+          lead={leadText(t, status.lead)}
+          then={thenText(t, status.then)}
+          line={
+            <>
+              <time className="tnum" dateTime={new Date(now).toISOString()} suppressHydrationWarning>
+                {dateLabel(now, t.overview.locale)}
+              </time>
+              {" · "}
+              {t.overview.subline(figures)}
+            </>
+          }
+          stats={
+            <>
+              <Stat
+                value={figures.decide}
+                label={t.status.stats.decide}
+                hue={figures.decide ? "yours" : undefined}
+                href={figures.decide ? paths.validations : undefined}
+              />
+              <Stat
+                value={figures.failing}
+                label={t.status.stats.failing}
+                hue={figures.failing ? "fail" : undefined}
+                href={figures.failing ? paths.agentGroup("error") : undefined}
+              />
+              <Stat
+                value={figures.silent}
+                label={t.status.stats.silent}
+                hue={figures.silent ? "silent" : undefined}
+                href={figures.silent ? paths.agentGroup("silent") : undefined}
+              />
+              <Stat
+                value={merge}
+                label={t.status.stats.merge}
+                hue={merge ? "done" : undefined}
+                href={merge ? paths.agentGroup("done") : undefined}
+              />
+              <Stat
+                value={`${figures.coordinators.active}/${figures.coordinators.total}`}
+                label={t.status.stats.coordinators}
+              />
+              {insights}
+            </>
+          }
+        />
+      }
+    >
       <HeaderActions>
         <LiveLine
           t={t}
@@ -85,62 +142,27 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
           onRefresh={refresh}
         />
       </HeaderActions>
-      <SinceAway />
-      {overview.live.state === "unreachable" && <Notice tone="warn">{t.unreachableBanner(overview.live.error)}</Notice>}
+      {overview.live.state === "unreachable" && (
+        <Alert tone="warn" title={t.live.unreachable}>
+          {t.unreachableBanner(overview.live.error)}
+        </Alert>
+      )}
       {overview.live.state === "off" && <Notice>{t.offBanner}</Notice>}
       {unread.map((p) =>
         p.error ? (
-          <Notice key={p.slug} tone="critical">
-            {t.projectError(p.name)} {p.error}
-          </Notice>
+          <Alert key={p.slug} title={t.projectError(p.name)}>
+            {p.error}
+          </Alert>
         ) : (
           <Notice key={p.slug}>{t.readingProject(p.name)}</Notice>
         ),
       )}
-
-      <Section
-        label={t.overview.headline(figures.inFlight, figures.decide)}
-        side={
-          <>
-            <Figure label={t.overview.figures.inFlight} value={figures.inFlight} />
-            <Figure
-              label={t.overview.figures.decide}
-              value={figures.decide}
-              dot={figures.decide ? "var(--accent)" : undefined}
-            />
-            <Figure
-              label={t.overview.figures.failing}
-              value={figures.failing}
-              dot={figures.failing ? "var(--critical)" : undefined}
-              href={figures.failing ? paths.agentGroup("error") : undefined}
-            />
-            <Figure
-              label={t.overview.figures.silent}
-              value={figures.silent}
-              dot={figures.silent ? "var(--active)" : undefined}
-              href={figures.silent ? paths.agentGroup("silent") : undefined}
-            />
-            <Figure
-              label={t.overview.figures.coordinators}
-              value={`${figures.coordinators.active}/${figures.coordinators.total}`}
-            />
-          </>
-        }
-      >
-        <SectionBody>
-          <p>
-            <time className="tnum" dateTime={new Date(now).toISOString()} suppressHydrationWarning>
-              {dateLabel(now, t.overview.locale)}
-            </time>
-            {" · "}
-            {t.overview.subline(figures)}
-          </p>
-          {insights}
-        </SectionBody>
-      </Section>
+      {away.summary && <SinceAway summary={away.summary} onDismiss={away.dismiss} />}
 
       {overview.projects.length === 0 ? (
-        <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
+        <Section label={t.overview.projectsTitle} count={0}>
+          <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
+        </Section>
       ) : (
         <>
           <Section
@@ -148,8 +170,8 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
             count={figures.decide}
             side={
               checks.length > 0 && (
-                <Link href={paths.validations} prefetch className="sc-figure is-link">
-                  <span className="faint">{t.shell.nav.validations}</span> <span className="mono">{checks.length}</span>
+                <Link href={paths.validations} prefetch>
+                  {t.overview.allValidations}
                 </Link>
               )
             }
@@ -160,8 +182,15 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
               </SectionBody>
             ) : (
               <CardGrid>
-                {alerts.map((a) => (
-                  <StoppedCard key={a.project} t={t} a={a} now={now} projectName={names.get(a.project) ?? a.project} />
+                {alerts.map((a, i) => (
+                  <StoppedCard
+                    key={a.project}
+                    t={t}
+                    a={a}
+                    now={now}
+                    projectName={names.get(a.project) ?? a.project}
+                    oldest={i === 0}
+                  />
                 ))}
                 {checks.map((v) => (
                   <ValidationCard
@@ -186,7 +215,7 @@ export function Fleet({ insights }: { insights?: ReactNode } = {}) {
           <LiveTimeline />
 
           <Section label={t.overview.projectsTitle} count={overview.projects.length}>
-            <CardGrid>
+            <CardGrid thirds>
               {overview.projects.map((p) => (
                 <ProjectCard key={p.slug} t={t} overview={overview} slug={p.slug} />
               ))}
@@ -206,21 +235,19 @@ function dateLabel(now: number, locale: string): string {
   return `${day.charAt(0).toUpperCase()}${day.slice(1)} · ${time}`;
 }
 
-/** A figure of a section's side, its label in grey: "En vol 10"; with `href`, a link to what it counts. */
-function Figure({ label, value, dot, href }: { label: string; value: number | string; dot?: string; href?: string }) {
-  const body = (
-    <>
-      {dot && <Dot color={dot} size={6} />}
-      <span className="faint">{label}</span> <span className="mono">{value}</span>
-    </>
-  );
-  return href ? (
-    <Link href={href} prefetch className="sc-figure is-link">
-      {body}
-    </Link>
-  ) : (
-    <span className="sc-figure">{body}</span>
-  );
+/** The status sentence's first half, in the viewer's language. */
+function leadText(t: Strings, lead: OverviewLead): string {
+  if (lead.kind === "away") return t.status.welcome(lead.merged);
+  if (lead.kind === "flight") return t.status.flight(lead.agents);
+  return t.status.rest;
+}
+
+/** Its quieter second half. */
+function thenText(t: Strings, then: OverviewThen): string {
+  if (then.kind === "decide") return t.status.decide(then.n);
+  if (then.kind === "failing") return t.status.failing(then.n);
+  if (then.kind === "ready") return t.status.ready(then.n);
+  return t.status.calm;
 }
 
 /** A coordinator that stopped answering while items wait for it: what the owner does to bring it back. */
@@ -229,15 +256,18 @@ function StoppedCard({
   a,
   now,
   projectName,
+  oldest,
 }: {
   t: Strings;
   a: CoordinatorAlert;
   now: number;
   projectName: string;
+  /** The oldest decision: its card glows (THE-899). */
+  oldest: boolean;
 }) {
   const seen = a.seenAt === null ? null : t.duration(Math.max(0, now - Date.parse(a.seenAt)));
   return (
-    <Card>
+    <Card className={oldest ? "is-oldest" : undefined}>
       <CardHead
         icon={<Dot color="var(--active)" />}
         label={t.overview.stopped.kind}
@@ -250,71 +280,19 @@ function StoppedCard({
         </Link>
       </CardTitle>
       <CardMeta>
-        <Tag>{projectName}</Tag>
+        <Tag>
+          <ProjectChip slug={a.project} name={projectName} />
+        </Tag>
         <span className="late">{t.overview.stopped.waiting(a.waiting)}</span>
         <span>{t.overview.stopped.seen(seen)}</span>
       </CardMeta>
       <p className="wait-detail is-note">{t.overview.stopped.what}</p>
-      <Link href={paths.project(a.project)} prefetch className="link">
-        {t.overview.stopped.open}
-      </Link>
-    </Card>
-  );
-}
-
-/** A project's card: its progress, health, coordinator, agents, pull requests and last activity. */
-function ProjectCard({ t, overview, slug }: { t: Strings; overview: FleetOverview; slug: string }) {
-  const p = overview.projects.find((x) => x.slug === slug);
-  const facts = useMemo(() => projectFacts(overview, slug), [overview, slug]);
-  if (!p) return null;
-  const harness = coordinatorHarness(p.coordinator.harness);
-  const coordColor =
-    p.coordinator.state === "active"
-      ? "var(--done)"
-      : p.coordinator.state === "idle"
-        ? "var(--active)"
-        : "var(--text-3)";
-  return (
-    <Card href={paths.project(p.slug)}>
-      <CardHead
-        icon={<ProjectChip slug={p.slug} bare />}
-        label={p.name}
-        color="var(--text)"
-        side={facts.progress === null ? "—" : `${facts.progress}%`}
-      />
-      <CardMeta>
-        <span className="mono">{p.repository}</span>
-      </CardMeta>
-      <Fact label={t.overview.healthKey}>
-        {p.health ? <span style={{ color: HEALTH_COLOR[p.health] }}>{t.overview.health[p.health]}</span> : "—"}
-      </Fact>
-      <Fact label={t.overview.coordinatorKey}>
-        <Dot color={coordColor} size={6} />
-        {harness ? HARNESS_NAME[harness] : t.shell.coordinatorUnknown}
-        {/* The dot's color in words (THE-891): seen when the coordinator is not at work. */}
-        {p.coordinator.state === "active" ? (
-          <span className="sr-only"> · {t.a11y.coordinator.active}</span>
-        ) : (
-          harness && ` · ${t.a11y.coordinator[p.coordinator.state]}`
-        )}
-      </Fact>
-      <Fact label={t.overview.agentsKey}>{t.overview.agents(facts.inFlight, facts.ready)}</Fact>
-      <Fact label={t.overview.prsKey}>{facts.prs ? t.overview.prs(facts.prs.open, facts.prs.green) : "—"}</Fact>
-      <Fact label={t.overview.activityKey}>
-        <RelativeTime at={facts.lastActivity} />
-      </Fact>
-    </Card>
-  );
-}
-
-/** A line of a project's card: its name in grey, its value after. */
-function Fact({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <CardMeta>
-      <span className="sc-figure">
-        <span className="faint">{label}</span> {children}
+      <span className="ui-card-actions">
+        <Link href={paths.project(a.project)} prefetch className="ui-button is-small">
+          {t.overview.stopped.open}
+        </Link>
       </span>
-    </CardMeta>
+    </Card>
   );
 }
 
@@ -348,7 +326,11 @@ function LiveLine({
     <span className="refresh">
       {/* Read, not announced: the shell's one live region says what changed (THE-891). */}
       <span className={`source is-${state}`}>
-        <span className={`dot ${state === "ok" ? "live" : ""}`} />
+        <LiveMark
+          size={14}
+          state={state === "ok" ? "live" : pending && !checkedAt ? "loading" : "paused"}
+          beat={checkedAt ?? undefined}
+        />
         {label}
       </span>
       <span className="refresh-text">

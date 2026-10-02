@@ -44,6 +44,14 @@ describe("the live region", () => {
     );
   });
 
+  test("names a merge: an agent ready to merge that left the fleet, not one that left from another phase", () => {
+    expect(say({ rows: [row("WID-1", "ready-to-merge")] }, {})).toBe("WID-1 merged");
+    expect(say({ rows: [row("WID-1", "implementing")] }, {})).toBeNull();
+    expect(say({ rows: [row("WID-1", "ready-to-merge"), row("WID-2", "ready-to-merge")] }, {})).toBe(
+      "2 tickets merged",
+    );
+  });
+
   test("collapses a burst into counts, one sentence per kind", () => {
     const before = { rows: [row("WID-1", "planning"), row("WID-2", "implementing")] };
     const after = {
