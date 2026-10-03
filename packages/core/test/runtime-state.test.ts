@@ -84,6 +84,51 @@ describe("runtime readings", () => {
     expect((await fleet.runtimeHandles()).length).toBe(1);
   });
 
+  test("a new runtime sequence resurfaces the next approval even when both readings say blocked", async () => {
+    const { fleet, store, clock } = tempFleet();
+    await fleet.claim(claim);
+    const input = {
+      ticket: claim.ticket,
+      handle: claim.handle,
+      claimedAt: NOW.toISOString(),
+      state: "blocked" as const,
+      sequence: 4,
+    };
+    const inbox = () => readInbox(store, { project: "widgets", now: clock.now(), silentAfterMinutes: 15 });
+    await fleet.observeRuntime(input);
+    expect((await inbox()).map((entry) => entry.kind)).toEqual(["runtime-blocked"]);
+    clock.advance(60_000);
+    await fleet.answer({ text: "Proceed", note: false, ticket: claim.ticket, item: null });
+    clock.advance(60_000);
+    await fleet.observeRuntime(input);
+    expect(await inbox()).toEqual([]);
+    clock.advance(60_000);
+    await fleet.observeRuntime({ ...input, sequence: 6 });
+    expect((await inbox()).map((entry) => entry.kind)).toEqual(["runtime-blocked"]);
+    expect((await fleet.runtimeHandles())[0]?.runtimeState).toEqual({
+      state: "blocked",
+      sequence: 6,
+      at: advance(3).toISOString(),
+      since: advance(3).toISOString(),
+    });
+    for (const sequence of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "6", null]) {
+      expect(
+        (
+          await serveFleet(
+            store,
+            {
+              op: "runtime/observe",
+              project: DEMO_PROJECT,
+              caller: { kind: "organization" },
+              input: { ...input, sequence },
+            },
+            { now: () => clock.now() },
+          )
+        ).status,
+      ).toBe(400);
+    }
+  });
+
   test("an open persisted claim puts a stale unstarted tracker leaf in flight and newer end events still remove it", () => {
     const handle = {
       ...claim,

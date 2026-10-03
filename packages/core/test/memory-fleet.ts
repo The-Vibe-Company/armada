@@ -296,11 +296,17 @@ export function memoryFleet(): FleetStore & {
         (h.runtimeState && h.runtimeState.at > input.at.toISOString())
       )
         return false;
+      const sequence = input.sequence ?? h.runtimeState?.sequence;
+      const sameTransition =
+        h.runtimeState?.state === input.state &&
+        (input.sequence === undefined || input.sequence === h.runtimeState?.sequence);
       h.runtimeState = {
+        ...(sequence === undefined ? {} : { sequence }),
         state: input.state,
         at: input.at.toISOString(),
-        since:
-          h.runtimeState?.state === input.state ? (h.runtimeState.since ?? h.runtimeState.at) : input.at.toISOString(),
+        since: sameTransition
+          ? (h.runtimeState?.since ?? h.runtimeState?.at ?? input.at.toISOString())
+          : input.at.toISOString(),
       };
       return true;
     },

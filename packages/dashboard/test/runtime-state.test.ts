@@ -21,7 +21,7 @@ test("runtime readings and stop are scoped to an exact claim, preserve transitio
       at: at(0),
     };
     await store.saveRuntimeHandle(claim);
-    const input = { ...claim, claimedAt: at(0).toISOString(), state: "blocked" as const, at: at(1) };
+    const input = { ...claim, claimedAt: at(0).toISOString(), state: "blocked" as const, sequence: 4, at: at(1) };
     expect(await store.observeRuntime(input)).toBe(true);
     expect(await store.observeRuntime({ ...input, project: "another-project" })).toBe(false);
     expect(await store.observeRuntime({ ...input, claimedAt: at(-1).toISOString() })).toBe(false);
@@ -29,11 +29,21 @@ test("runtime readings and stop are scoped to an exact claim, preserve transitio
     expect(await store.observeRuntime({ ...input, state: "working", at: at(1) })).toBe(false);
     expect((await store.getRuntimeHandle(claim.project, claim.ticket))?.runtimeState).toEqual({
       state: "blocked",
+      sequence: 4,
       at: at(2).toISOString(),
       since: at(1).toISOString(),
     });
+    await store.observeRuntime({ ...input, sequence: 6, at: at(2.5) });
+    expect((await store.getRuntimeHandle(claim.project, claim.ticket))?.runtimeState).toEqual({
+      state: "blocked",
+      sequence: 6,
+      at: at(2.5).toISOString(),
+      since: at(2.5).toISOString(),
+    });
     await store.saveRuntimeHandle({ ...claim, at: at(3) });
-    expect((await store.getRuntimeHandle(claim.project, claim.ticket))?.runtimeState?.since).toBe(at(1).toISOString());
+    expect((await store.getRuntimeHandle(claim.project, claim.ticket))?.runtimeState?.since).toBe(
+      at(2.5).toISOString(),
+    );
     await store.releaseRuntimeHandle(claim.project, claim.ticket, at(4));
     expect(await store.observeRuntime({ ...input, at: at(4) })).toBe(false);
     expect(await store.stopRuntime({ ...input, at: at(5) })).toBe(true);

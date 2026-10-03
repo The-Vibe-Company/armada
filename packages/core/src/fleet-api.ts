@@ -325,7 +325,17 @@ export async function serveFleet(
           const input = { project: slug, ticket: ticketOf(b), handle: text(b, "handle", LINE_MAX), claimedAt, at };
           if (op === "runtime/stop") return store.stopRuntime(input);
           if (!RUNTIME_STATES.includes(b.state as RuntimeState)) throw new Invalid("unknown runtime state");
-          return store.observeRuntime({ ...input, state: b.state as RuntimeState });
+          const sequence = b.sequence;
+          if (
+            sequence !== undefined &&
+            (typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 0)
+          )
+            throw new Invalid("sequence must be a nonnegative safe integer");
+          return store.observeRuntime({
+            ...input,
+            state: b.state as RuntimeState,
+            ...(sequence === undefined ? {} : { sequence }),
+          });
         }
         case "heartbeat": {
           const claimedAt = optText(b, "claimedAt", 40);

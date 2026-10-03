@@ -18,8 +18,8 @@ export async function observeHerdr(io: Io, fleet: Fleet): Promise<RuntimeHandle[
     local.map(async (h) => {
       try {
         await verifyProvenance(io, h);
-        const state = await new Herdr(io).state(parseHerdrHandle(h.handle));
-        await fleet.observeRuntime({ ticket: h.ticket, handle: h.handle, claimedAt: h.claimedAt, state });
+        const reading = await new Herdr(io).reading(parseHerdrHandle(h.handle));
+        await fleet.observeRuntime({ ticket: h.ticket, handle: h.handle, claimedAt: h.claimedAt, ...reading });
       } catch {
         // A claim can belong to another machine. Keep its last observation until
         // the server's freshness window expires; do not invent a local state.

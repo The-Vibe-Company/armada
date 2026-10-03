@@ -29,6 +29,7 @@ async function fixture() {
     out: string[] = [],
     err: string[] = [];
   let state = "blocked",
+    sequence = 1,
     dirty = "",
     left = "",
     upstream = "origin\0refs/heads/feature/demo-7",
@@ -94,6 +95,7 @@ async function fixture() {
                     workspace_id: handle.workspace,
                     pane_id: handle.pane,
                     agent_status: state,
+                    state_change_seq: sequence,
                   },
                 };
       return { code: 0, stdout: JSON.stringify({ result }), stderr: "" };
@@ -122,8 +124,16 @@ async function fixture() {
     clock,
     out,
     err,
-    change: (changes: { state?: string; dirty?: string; left?: string; upstream?: string; failure?: boolean }) => {
+    change: (changes: {
+      state?: string;
+      sequence?: number;
+      dirty?: string;
+      left?: string;
+      upstream?: string;
+      failure?: boolean;
+    }) => {
       state = changes.state ?? state;
+      sequence = changes.sequence ?? sequence;
       dirty = changes.dirty ?? dirty;
       left = changes.left ?? left;
       upstream = changes.upstream ?? upstream;
@@ -419,4 +429,16 @@ test("stop retains the checkout when cancellation does not settle the active tur
   expect(await run(["stop", "DEMO-7"], f.io)).toBe(2);
   expect(f.calls.some((c) => c[0] === "herdr" && c[1] === "worktree" && c[2] === "remove")).toBe(false);
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+});
+
+test("a second native approval between polls reappears without any worker report", async () => {
+  const f = await fixture();
+  expect(await run(["inbox", "--json"], f.io)).toBe(0);
+  expect(await run(["answer", "DEMO-7", "yes"], f.io)).toBe(0);
+  expect(await run(["inbox", "--json"], f.io)).toBe(0);
+  expect(JSON.parse(f.out.at(-1) ?? "{}").items).toEqual([]);
+  f.clock.advance(1000);
+  f.change({ sequence: 3 });
+  expect(await run(["inbox", "--json"], f.io)).toBe(0);
+  expect(JSON.parse(f.out.at(-1) ?? "{}").items.map((i: { kind: string }) => i.kind)).toEqual(["runtime-blocked"]);
 });

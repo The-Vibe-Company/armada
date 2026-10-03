@@ -63,6 +63,8 @@ export const RUNTIME_STATES = ["working", "blocked", "idle", "done", "unknown"] 
 export type RuntimeState = (typeof RUNTIME_STATES)[number];
 
 export interface RuntimeObservation {
+  /** Runtime transition counter, including changes between observations. */
+  sequence?: number;
   state: RuntimeState;
   at: string;
   /** When this state began, so an answer suppresses a block until its next transition. */
@@ -285,6 +287,7 @@ export interface FleetStore {
     handle: string;
     claimedAt: string;
     state: RuntimeState;
+    sequence?: number;
     at: Date;
   }): Promise<boolean>;
   stopRuntime(input: {
@@ -1049,7 +1052,13 @@ export interface Fleet {
   heartbeat(input: HeartbeatRecord): Promise<HeartbeatResult>;
   runtimeHandles(): Promise<RuntimeHandle[]>;
   runtimeHandle(ticket: string): Promise<RuntimeHandle | null>;
-  observeRuntime(input: { ticket: string; handle: string; claimedAt: string; state: RuntimeState }): Promise<boolean>;
+  observeRuntime(input: {
+    ticket: string;
+    handle: string;
+    claimedAt: string;
+    state: RuntimeState;
+    sequence?: number;
+  }): Promise<boolean>;
   stopRuntime(input: { ticket: string; handle: string; claimedAt: string }): Promise<boolean>;
   /** Launches no claim followed yet, within the last day (`armada status`). */
   pendingLaunches(): Promise<PendingLaunch[]>;

@@ -691,6 +691,13 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE runtime_handles ADD COLUMN runtime_changed_at timestamptz",
     ],
   },
+  {
+    // Herdr detects transitions that happen between coordinator readings.
+    version: 18,
+    statements: [
+      "ALTER TABLE runtime_handles ADD COLUMN runtime_state_sequence bigint CHECK (runtime_state_sequence >= 0 AND runtime_state_sequence <= 9007199254740991)",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

@@ -262,11 +262,18 @@ export class Herdr {
   }
 
   async state(handle: HerdrClaimHandle): Promise<RuntimeState> {
+    return (await this.reading(handle)).state;
+  }
+
+  async reading(handle: HerdrClaimHandle): Promise<{ state: RuntimeState; sequence?: number }> {
     const agent = this.checkAgent(await this.call(["agent", "get", handle.pane], 5_000), handle);
     const state = agent.agent_status;
     if (!["working", "blocked", "idle", "done", "unknown"].includes(String(state)))
       throw new UsageError("invalid herdr agent state");
-    return state as RuntimeState;
+    const sequence = agent.state_change_seq;
+    if (sequence !== undefined && (!Number.isSafeInteger(sequence) || Number(sequence) < 0))
+      throw new UsageError("invalid herdr state-change sequence");
+    return { state: state as RuntimeState, ...(sequence === undefined ? {} : { sequence: Number(sequence) }) };
   }
 
   async message(handle: HerdrClaimHandle, text: string): Promise<void> {
