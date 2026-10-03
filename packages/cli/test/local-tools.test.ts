@@ -275,7 +275,13 @@ test("doctor lists all configured gaps and JSON/read-only reports never offer in
   const config = { herdr: { profiles: { a: { harness: "codex" as const }, b: { harness: "deepseek" as const } } } };
   const t = terminal({}, ["yes", "yes", "yes"]);
   const checks = await localRuntimeChecks(t.io, config);
-  expect(checks.map((check) => check.id)).toEqual(["local-herdr", "local-codex", "local-opencode", "local-dsh"]);
+  expect(checks.map((check) => check.id)).toEqual([
+    "local-herdr",
+    "local-codex",
+    "local-opencode",
+    "local-opencode-effort",
+    "local-dsh",
+  ]);
   const report = { schemaVersion: 1 as const, root: t.io.cwd, armadaVersion: "0.0.0", checks, errors: 3, warnings: 0 };
   expect(renderDoctor(report)).toContain("information only");
   expect(renderDoctor(report)).not.toContain("npm i -g @deepseek-ai/dsh");
@@ -373,7 +379,13 @@ test("doctor's missing dsh is informational, never an install offer or plugin ca
     { herdr: { profiles: { deep: { harness: "deepseek", model: "opencode/deepseek-v4-pro" } } } },
     { readOnly: false },
   );
-  expect(checks.every((check) => check.level === "ok")).toBe(true);
+  expect(checks.filter((check) => check.id !== "local-opencode-effort").every((check) => check.level === "ok")).toBe(
+    true,
+  );
+  expect(checks.find((check) => check.id === "local-opencode-effort")).toMatchObject({
+    level: "warning",
+    message: expect.stringContaining("effort is not applied for OpenCode"),
+  });
   expect(checks.at(-1)).toMatchObject({ id: "local-dsh", level: "ok", fix: null });
   expect(checks.at(-1)?.message).toContain("dsh is not installed; information only");
   expect(t.calls.filter((call) => call.startsWith("dsh"))).toEqual(["dsh --version"]);
@@ -416,6 +428,7 @@ function modelTerminal(harness: "opencode" | "deepseek", line: string, answer: s
     },
     [answer],
   );
+  t.io.codexModels = async () => ["other-model"];
   let text = selectionConfig(harness, line);
   const writes: [string, string][] = [];
   t.io.readFile = async () => text;
@@ -445,7 +458,13 @@ test("doctor asks and saves a missing or unavailable OpenCode model, preserving 
             ),
       );
       expect(t.output.join("")).toContain(`Wrote model = ${JSON.stringify(chosen)}`);
-      expect(checks.every((check) => check.level === "ok")).toBe(true);
+      expect(
+        checks.filter((check) => check.id !== "local-opencode-effort").every((check) => check.level === "ok"),
+      ).toBe(true);
+      expect(checks.find((check) => check.id === "local-opencode-effort")).toMatchObject({
+        level: "warning",
+        message: expect.stringContaining("effort is not applied for OpenCode"),
+      });
       expect(t.output.join("").includes("3. openai/model-a")).toBe(harness === "opencode");
       expect(t.calls.some((call) => call.includes("auth"))).toBe(false);
     }
@@ -527,7 +546,13 @@ test("model choice preserves CRLF, quoted section names and literal-string quoti
   };
   const checks = await localRuntimeChecks(t.io, parseConfig(original), { readOnly: false });
   expect(text).toBe(original.replace("'opencode/deepseek-old'", "'opencode/deepseek-v4.1-flash'"));
-  expect(checks.every((check) => check.level === "ok")).toBe(true);
+  expect(checks.filter((check) => check.id !== "local-opencode-effort").every((check) => check.level === "ok")).toBe(
+    true,
+  );
+  expect(checks.find((check) => check.id === "local-opencode-effort")).toMatchObject({
+    level: "warning",
+    message: expect.stringContaining("effort is not applied for OpenCode"),
+  });
 });
 
 test("the shared OpenCode preflight validates the supplied exact model without credentials", async () => {
@@ -539,4 +564,132 @@ test("the shared OpenCode preflight validates the supplied exact model without c
   expect(await ensureLocalTools(t.io, "opencode", "openai/model-a")).toBe(true);
   expect(await ensureLocalTools(t.io, "deepseek", "opencode/deepseek-v4.1-flash#high")).toBe(false);
   expect(t.calls.some((call) => call.includes("auth"))).toBe(false);
+});
+
+test("doctor verifies Claude help examples without treating them as a complete catalog", async () => {
+  const t = terminal({
+    "herdr --version": ok("0.9.1"),
+    "claude --version": ok("2.1.266"),
+    "claude auth status": ok('{"loggedIn":true}'),
+    "claude --help": ok(
+      "Options:\n  --model <model> Model for the session. Provide an alias\n    (e.g. 'sonnet' or 'opus') or a full name (e.g. 'claude-sonnet-4-6').\n  --other <value> ignored\n",
+    ),
+  });
+  const checks = await localRuntimeChecks(t.io, {
+    herdr: {
+      profiles: {
+        old: { harness: "claude", model: "claude-opus-5-5" },
+        alias: { harness: "claude", model: "opus" },
+        example: { harness: "claude", model: "claude-sonnet-4-6" },
+      },
+    },
+  });
+  expect(checks.find((c) => c.id === "local-claude-model:old")).toMatchObject({ level: "error" });
+  expect(checks.find((c) => c.id === "local-claude-model:old")?.fix).toContain('model = "opus"');
+  expect(checks.find((c) => c.id === "local-claude-model:old")?.fix).toContain("claude update");
+  expect(checks.find((c) => c.id === "local-claude-model:alias")?.level).toBe("ok");
+  expect(checks.find((c) => c.id === "local-claude-model:example")?.level).toBe("ok");
+  expect(t.calls.filter((c) => c === "claude --help")).toHaveLength(1);
+  expect(t.prompts).toEqual([]);
+});
+
+test("doctor flags a Codex model absent for this sign-in and keeps harness catalogs separate", async () => {
+  const t = terminal({
+    "herdr --version": ok("0.9.1"),
+    "codex --version": ok("0.128.0"),
+    "codex login status": ok("", `Logged in using ChatGPT ${CANARY}`),
+    "opencode --version": ok("1.2.0"),
+    "opencode models": ok("openai/gpt-example\n"),
+  });
+  let catalogs = 0;
+  t.io.codexModels = async () => {
+    catalogs++;
+    return ["gpt-example"];
+  };
+  const checks = await localRuntimeChecks(t.io, {
+    herdr: {
+      profiles: {
+        unavailable: { harness: "codex", model: "gpt-6.1-sol" },
+        available: { harness: "codex", model: "gpt-example" },
+        wrongHarness: { harness: "codex", model: "openai/gpt-example" },
+        open: { harness: "opencode", model: "openai/gpt-example" },
+      },
+    },
+  });
+  const missing = checks.find((c) => c.id === "local-codex-model:unavailable");
+  expect(missing?.level).toBe("error");
+  expect(missing?.message).toContain("for this sign-in");
+  expect(missing?.fix).toContain("codex login --with-api-key");
+  expect(missing?.fix).toContain("the owner");
+  expect(checks.find((c) => c.id === "local-codex-model:available")?.level).toBe("ok");
+  expect(checks.find((c) => c.id === "local-codex-model:wrongHarness")?.level).toBe("error");
+  expect(checks.find((c) => c.id === "local-opencode-opencode:open")?.level).toBe("ok");
+  expect(catalogs).toBe(1);
+  expect(JSON.stringify(checks)).not.toContain(CANARY);
+});
+
+test("doctor saves only a numbered Codex catalog pick; read-only modes and failures never write", async () => {
+  for (const mode of ["interactive", "json", "ci", "non-tty", "unavailable", "throws"] as const) {
+    const t = terminal(
+      {
+        "herdr --version": ok("0.9.1"),
+        "codex --version": ok("0.128.0"),
+        "codex login status": ok(""),
+      },
+      ["2"],
+    );
+    let text = `${DEMO_TOML}\n[herdr.profiles.worker]\nharness = "codex"\nmodel = "gpt-missing" # keep\neffort = "high"\n`;
+    const original = text;
+    t.io.codexModels = async () => {
+      if (mode === "throws") throw new Error(CANARY);
+      return mode === "unavailable" ? null : ["gpt-example", "gpt-other"];
+    };
+    t.io.readFile = async () => text;
+    t.io.writeFile = async (_path, next) => {
+      text = next;
+    };
+    if (mode === "ci") t.io.env.CI = "true";
+    if (mode === "non-tty") t.io.interactive = false;
+    const checks = await localRuntimeChecks(t.io, parseConfig(text), { readOnly: mode === "json" });
+    expect(text).toBe(mode === "interactive" ? original.replace('"gpt-missing"', '"gpt-other"') : original);
+    expect(checks.some((c) => c.level === "error")).toBe(mode !== "interactive");
+    expect(t.output.join("")).not.toContain(CANARY);
+    expect(t.installs).toEqual([]);
+  }
+});
+
+test("doctor bounds the Claude help probe and never reads a Codex catalog after known missing sign-in", async () => {
+  const t = terminal({
+    "herdr --version": ok("0.9.1"),
+    "claude --version": ok("2.1.266"),
+    "claude auth status": ok('{"loggedIn":true}'),
+    "claude --help": { code: 1, stdout: "", stderr: CANARY },
+    "codex --version": ok("0.128.0"),
+    "codex login status": { code: 1, stdout: "Not logged in", stderr: "" },
+  });
+  const exec = t.io.exec;
+  if (!exec) throw new Error("fixture requires exec");
+  let helpOptions: { timeoutMs?: number; maxOutputBytes?: number } = {};
+  t.io.exec = async (command, args, options) => {
+    if (command === "claude" && args[0] === "--help") helpOptions = options;
+    return exec(command, args, options);
+  };
+  let catalogs = 0;
+  t.io.codexModels = async () => {
+    catalogs++;
+    return ["gpt-example"];
+  };
+  const checks = await localRuntimeChecks(t.io, {
+    herdr: {
+      profiles: {
+        claude: { harness: "claude", model: "opus" },
+        codex: { harness: "codex", model: "gpt-example" },
+      },
+    },
+  });
+  expect(helpOptions).toMatchObject({ timeoutMs: 5_000, maxOutputBytes: 262_144 });
+  expect(catalogs).toBe(0);
+  expect(checks.find((c) => c.id === "local-claude-model:claude")?.level).toBe("error");
+  expect(checks.find((c) => c.id === "local-codex-sign-in")?.level).toBe("error");
+  expect(JSON.stringify(checks)).not.toContain(CANARY);
 });

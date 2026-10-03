@@ -1,6 +1,6 @@
 {
   "name": "@the-vibe-company/armada",
-  "version": "0.2.40",
+  "version": "0.2.42",
   "type": "module",
   "description": "Run a fleet of coding agents on one project: the armada command line.",
   "license": "MIT",

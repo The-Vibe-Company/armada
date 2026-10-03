@@ -210,6 +210,36 @@ effort = "high"
       ["DEMO-3", []],
     ]);
   });
+
+  test("a parked ticket is listed neither as ready to start nor as unblocked but not marked ready", () => {
+    const config = demoConfig();
+    const program = {
+      rootId: "DEMO-1",
+      fetchedAt: NOW.toISOString(),
+      comments: [],
+      warnings: [],
+      issues: [
+        issue("DEMO-1"),
+        issue("DEMO-2", { parentId: "DEMO-1", labels: [config.tracker.parkedLabel, config.tracker.readyLabel] }),
+        issue("DEMO-3", { parentId: "DEMO-1", labels: [config.tracker.parkedLabel] }),
+        issue("DEMO-4", { parentId: "DEMO-1" }),
+      ],
+    };
+    const r = buildStatus({ config, program, forge: null, now: NOW });
+    // Both status lists are this one frontier, split by `readyForAgent`.
+    expect(r.frontier.map((t) => t.id)).toEqual(["DEMO-4"]);
+    const parkedElsewhere = buildStatus({
+      config: { ...config, tracker: { ...config.tracker, parkedLabel: "on-hold" } },
+      program,
+      forge: null,
+      now: NOW,
+    });
+    expect(parkedElsewhere.frontier.map((t) => t.id).sort()).toEqual(["DEMO-2", "DEMO-3", "DEMO-4"]);
+    // The dashboard keeps whole configs in its snapshots: one written before
+    // this field existed still parks, instead of parking nothing.
+    const old = { ...config, tracker: { ...config.tracker, parkedLabel: undefined as unknown as string } };
+    expect(buildStatus({ config: old, program, forge: null, now: NOW }).frontier.map((t) => t.id)).toEqual(["DEMO-4"]);
+  });
 });
 
 describe("refreshStatusSources", () => {
