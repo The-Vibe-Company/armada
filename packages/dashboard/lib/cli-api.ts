@@ -16,12 +16,14 @@
 // an outdated CLI tells its person to upgrade. Everything is injected so tests
 // run it on PGlite.
 import {
+  type ArmadaConfig,
   CLI_LATEST_HEADER,
   CLI_MINIMUM_HEADER,
   CLI_VERSION_HEADER,
   compareVersions,
   type FleetCaller,
   type HandBackSnapshot,
+  type Issue,
   installCommand,
   isMaskedLaunchToken,
   MASKED_LAUNCH_TOKEN_REFUSAL,
@@ -37,8 +39,9 @@ import { AttachmentRefusal, attachmentProjectAllowed, saveAttachment } from "./a
 import { type Holder, releaseCredentials, releaseWorkerSecrets } from "./broker";
 import type { PublishedCli } from "./cli-version";
 import type { Database, Queryable } from "./db";
+import type { Scope } from "./fleet-data";
 import { fleetStore, holdProject, projectsOf } from "./fleet-store";
-import { dbSnapshots, memorySnapshots } from "./snapshots";
+import { addSnapshotIssue, dbSnapshots, memorySnapshots } from "./snapshots";
 import {
   checkWorkerSecret,
   deleteSecret,
@@ -83,6 +86,8 @@ export interface CliApiDeps {
   now?: () => Date;
   publishedCli?: PublishedCli;
   after?: (work: () => Promise<void>) => void;
+  /** Linear-backed membership check for attachment cache misses, using this scope's project keys. */
+  readAttachmentTicket?: (config: ArmadaConfig, scope: Scope, ticket: string) => Promise<Issue | null>;
 }
 
 /** Who a terminal is signed in as. Carries no secret. */
@@ -527,7 +532,7 @@ async function endWorkers(a: CliAccounts, request: Request, now: Date): Promise<
 
 const UPDATE_CLI = "update the CLI: npm install -g @the-vibe-company/armada";
 
-async function attach(a: CliAccounts, request: Request, now: Date): Promise<Response> {
+async function attach(a: CliAccounts, request: Request, now: Date, deps: CliApiDeps): Promise<Response> {
   const identity = await identify(a, credentialOf(request), now);
   if (identity instanceof Response) return identity;
   if (!identity.organization) return noOrganization(a);
@@ -551,10 +556,9 @@ async function attach(a: CliAccounts, request: Request, now: Date): Promise<Resp
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
-    const issue = snapshot?.sources.program.issues.find((issue) => issue.id === ticket);
+    let issue = snapshot?.sources.program.issues.find((issue) => issue.id === ticket);
     if (
       !snapshot ||
-      !issue ||
       snapshot.config.project.slug !== project.slug ||
       snapshot.config.github.repository.toLowerCase() !== project.repository.toLowerCase() ||
       snapshot.config.tracker.programRoot !== project.programRoot
@@ -563,6 +567,24 @@ async function attach(a: CliAccounts, request: Request, now: Date): Promise<Resp
         `attachment ticket limit: ${ticket} is not in the cached project reading; refresh the dashboard first`,
         403,
       );
+    if (!issue) {
+      try {
+        if (!deps.readAttachmentTicket) throw new Error("Linear lookup is unavailable");
+        issue = (await deps.readAttachmentTicket(snapshot.config, scope, ticket)) ?? undefined;
+      } catch {
+        return refuse(
+          503,
+          "Armada cannot check this attachment's ticket in Linear right now",
+          "try armada attach again in a moment",
+        );
+      }
+      if (!issue)
+        throw new AttachmentRefusal(
+          `attachment ticket limit: ${ticket} is not in the cached project reading; refresh the dashboard first`,
+          403,
+        );
+      await addSnapshotIssue(a.client, snapshot.config, issue);
+    }
     for (const key of ["caption", "reference"])
       if (body[key] != null && typeof body[key] !== "string")
         throw new AttachmentRefusal(`attachment ${key} must be text`);
@@ -935,7 +957,7 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps, lat
   if (route === "POST workers/end") return endWorkers(a, request, now);
   if (route === "POST workers/revoke") return revokeLaunch(a, request, now);
   if (route === "GET projects") return projects(a, request, now);
-  if (route === "POST attachments") return attach(a, request, now);
+  if (route === "POST attachments") return attach(a, request, now, deps);
   if (request.method === "POST" && path[0] === "secrets" && path.length === 2)
     return secrets(a, request, path[1] ?? "", deps, now);
   if (request.method === "POST" && path[0] === "fleet" && path.length > 1)

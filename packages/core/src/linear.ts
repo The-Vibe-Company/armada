@@ -362,6 +362,51 @@ async function readComments(opts: LinearRequestOptions, issues: Issue[], warning
   return comments;
 }
 
+/**
+ * Checks one ticket against its current ancestry, independent of a cached
+ * program. The first query follows as many levels as the whole program read;
+ * deeper ancestry is followed in bounded batches without reading the ticket again.
+ * A foreign or missing ticket returns null; a failed read remains an error.
+ */
+export async function fetchProgramIssue(opts: FetchProgramOptions, ticket: string): Promise<Issue | null> {
+  const ancestry = (depth: number): string => `identifier${depth > 0 ? ` parent { ${ancestry(depth - 1)} }` : ""}`;
+  const query = `${FIELDS(false)} query ProgramIssue($id: String!) {
+    issue(id: $id) { ...F parent { ${ancestry(MAX_DEPTH - 1)} } }
+  }`;
+  type Ancestor = { identifier: string; parent?: Ancestor | null };
+  const { issue } = await gql<{ issue: (RawIssue & { parent: Ancestor | null }) | null }>(opts, query, {
+    id: ticket,
+  }).catch((err: unknown) => {
+    if (err instanceof LinearError && /entity not found/i.test(err.message)) return { issue: null };
+    throw err;
+  });
+  if (!issue) return null;
+  let belongs = issue.identifier === opts.rootId;
+  let parent = issue.parent;
+  const seen = new Set([issue.identifier]);
+  while (!belongs && parent) {
+    if (seen.has(parent.identifier)) return null;
+    seen.add(parent.identifier);
+    belongs = parent.identifier === opts.rootId;
+    if (belongs) break;
+    if (parent.parent === undefined) {
+      const data = await gql<{ issue: Ancestor | null }>(
+        opts,
+        `query ProgramAncestors($id: String!) { issue(id: $id) { ${ancestry(MAX_DEPTH)} } }`,
+        { id: parent.identifier },
+      );
+      parent = data.issue?.parent ?? null;
+    } else parent = parent.parent;
+  }
+  if (!belongs) return null;
+  // The snapshot is marked for a whole read by the caller; complete any
+  // connections here so the ticket's labels and blockers are usable meanwhile.
+  const warnings: string[] = [];
+  for (const field of ["inverseRelations", "labels", "attachments"] as const)
+    await readRest(opts, issue.identifier, MORE[field], issue[field] as Connection<unknown>, warnings);
+  return normalizeIssue(issue, opts.labels);
+}
+
 /** Reads the whole program under `rootId` plus the comments of every ticket an agent may hold. */
 export async function fetchProgram(opts: FetchProgramOptions): Promise<ProgramData> {
   try {

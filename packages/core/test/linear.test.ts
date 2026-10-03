@@ -3,6 +3,7 @@ import {
   type Fetch,
   fetchProgram,
   fetchProgramChanges,
+  fetchProgramIssue,
   LINEAR_ENDPOINT,
   parseClaim,
   parseStatusLine,
@@ -344,5 +345,67 @@ describe("fetchProgramChanges", () => {
       ...previous.comments.filter((c) => c.issueId === "DEMO-11").map((c) => c.id),
     ]);
     expect(of("DEMO-30")).toEqual(["c30"]);
+  });
+});
+
+describe("fetchProgramIssue", () => {
+  const reading = (ancestors: string[] | null) =>
+    recordedFetch({
+      linear: (r) => {
+        const raw = structuredClone(r.Root[0]?.data.issue);
+        if (!raw) throw new Error("missing synthetic issue");
+        let parent: { identifier: string; parent: unknown } | null = null;
+        for (const id of [...(ancestors ?? [])].reverse()) parent = { identifier: id, parent };
+        Object.assign(raw, { identifier: "DEMO-99", parent });
+        (r as unknown as Record<string, unknown[]>).ProgramIssue = [
+          { data: { issue: ancestors === null ? null : raw } },
+        ];
+      },
+    });
+  test("one lookup verifies the current parent chain, including a fresh intermediate parent", async () => {
+    const { fetch, calls } = reading(["DEMO-98", "DEMO-1"]);
+    const found = await fetchProgramIssue({ apiKey: "lin_test", rootId: "DEMO-1", labels, fetch }, "DEMO-99");
+    expect(found).toMatchObject({ id: "DEMO-99", parentId: "DEMO-98" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.variables).toEqual({ id: "DEMO-99" });
+    expect(calls[0]?.authorization).toBe("lin_test");
+  });
+  test("foreign, parentless and missing tickets are refused", async () => {
+    for (const ancestors of [["OTHER-1"], [], null]) {
+      const { fetch } = reading(ancestors);
+      expect(await fetchProgramIssue({ apiKey: "lin_test", rootId: "DEMO-1", labels, fetch }, "DEMO-99")).toBeNull();
+    }
+  });
+  test("deep ancestry continues without rereading the ticket, and cycles are refused", async () => {
+    for (const tail of ["DEMO-1", "DEMO-99"]) {
+      const { fetch, calls } = recordedFetch({
+        linear: (r) => {
+          const raw = structuredClone(r.Root[0]?.data.issue);
+          if (!raw) throw new Error("missing synthetic issue");
+          type Parent = { identifier: string; parent?: Parent | null };
+          let parent: Parent = { identifier: "DEMO-107" };
+          for (let n = 106; n >= 100; n--) parent = { identifier: `DEMO-${n}`, parent };
+          Object.assign(raw, { identifier: "DEMO-99", parent });
+          const responses = r as unknown as Record<string, unknown[]>;
+          responses.ProgramIssue = [{ data: { issue: raw } }];
+          responses.ProgramAncestors = [
+            { data: { issue: { identifier: "DEMO-107", parent: { identifier: tail, parent: null } } } },
+          ];
+        },
+      });
+      const found = await fetchProgramIssue({ apiKey: "lin_test", rootId: "DEMO-1", labels, fetch }, "DEMO-99");
+      expect(found?.id ?? null).toBe(tail === "DEMO-1" ? "DEMO-99" : null);
+      expect(calls.map((c) => c.operation)).toEqual(["ProgramIssue", "ProgramAncestors"]);
+    }
+  });
+  test("Linear failures propagate instead of becoming a membership refusal", async () => {
+    const { fetch } = recordedFetch({
+      linear: (r) => {
+        (r as unknown as Record<string, unknown[]>).ProgramIssue = [{ errors: [{ message: "service unavailable" }] }];
+      },
+    });
+    await expect(fetchProgramIssue({ apiKey: "lin_test", rootId: "DEMO-1", labels, fetch }, "DEMO-99")).rejects.toThrow(
+      "service unavailable",
+    );
   });
 });
