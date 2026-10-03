@@ -23,7 +23,7 @@ const FRESH_MS = 1_600;
  * True for a moment after `at` moves while the row is on screen: a row that
  * just reported glows once. Never on the first render.
  */
-function useFresh(at: string | null): boolean {
+export function useFresh(at: string | null): boolean {
   const first = useRef(at);
   const [fresh, setFresh] = useState<string | null>(null);
   useEffect(() => {

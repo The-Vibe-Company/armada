@@ -64,6 +64,39 @@ export function coordinatorGroups(
   return groups.sort((a, b) => (a.toValidate ? 0 : 1) - (b.toValidate ? 0 : 1));
 }
 
+/**
+ * The board's columns (THE-968), left to right: the steps a session goes
+ * through, then what needs the owner and what is stuck.
+ */
+export const BOARD_COLUMNS = ["plan", "approval", "implementing", "delivery", "validate", "blocked"] as const;
+export type BoardColumn = (typeof BOARD_COLUMNS)[number];
+
+/** Core's pipeline steps (plan, approval, implement, pr, ci, merge) on the board's columns. */
+const STEP_COLUMN: readonly BoardColumn[] = ["plan", "approval", "implementing", "delivery", "delivery", "validate"];
+
+/**
+ * A session's column: an open owner validation, else a session waiting for
+ * the owner's validation or handed back, in "To validate" (its badge and its
+ * lane's count stay the open validations only); a blocked or silent one in
+ * "Blocked"; else core's pipeline step (red CI stays in "Delivery").
+ */
+export function boardColumn(
+  checks: Map<string, OwnerValidation[]>,
+  row: Pick<FleetRow, "project" | "id" | "phase" | "silent" | "pipeline">,
+): BoardColumn {
+  if (checksOf(checks, row).length) return "validate";
+  if (row.phase === "awaiting-validation" || row.phase === "ready-to-merge") return "validate";
+  if (row.phase === "blocked" || row.silent) return "blocked";
+  return STEP_COLUMN[row.pipeline.step] ?? "implementing";
+}
+
+/** A lane's sessions by column, each in its group's order. */
+export function laneColumns(checks: Map<string, OwnerValidation[]>, rows: FleetRow[]): Record<BoardColumn, FleetRow[]> {
+  const out = Object.fromEntries(BOARD_COLUMNS.map((c) => [c, [] as FleetRow[]])) as Record<BoardColumn, FleetRow[]>;
+  for (const r of rows) out[boardColumn(checks, r)].push(r);
+  return out;
+}
+
 /** The overview's one line: "2 coordinators · 6 sessions in flight · 1 to validate". */
 export function overviewLine(o: Pick<FleetOverview, "projects" | "rows"> & Validations) {
   return { coordinators: o.projects.length, running: o.rows.length, toValidate: pendingValidations(o).length };
