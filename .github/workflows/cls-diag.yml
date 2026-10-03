@@ -7,11 +7,11 @@ on:
 jobs:
   diag:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     services:
       postgres:
         image: postgres:17
@@ -44,13 +44,26 @@ jobs:
       - run: bun run build
       - run: |
           set -euo pipefail
-          psql -h localhost -U postgres -c "create database fleet"
-          ARMADA_DEMO_DATABASE_URL="postgres://postgres:postgres@localhost:5432/fleet" bun run demo:seed fleet
+          for world in fleet large; do
+            psql -h localhost -U postgres -c "create database $world"
+            ARMADA_DEMO_DATABASE_URL="postgres://postgres:postgres@localhost:5432/$world" bun run demo:seed "$world"
+          done
           ARMADA_DATABASE_URL=postgres://postgres:postgres@localhost:5432/fleet ARMADA_DASHBOARD_DEMO=fleet \
             nohup bunx next start --port 4822 > "$RUNNER_TEMP/fleet.log" 2>&1 &
-          for _ in $(seq 1 60); do curl -sf -o /dev/null localhost:4822/landing && exit 0; sleep 1; done
+          ARMADA_DATABASE_URL=postgres://postgres:postgres@localhost:5432/large ARMADA_DASHBOARD_DEMO=large \
+            nohup bunx next start --port 4823 > "$RUNNER_TEMP/large.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -sf -o /dev/null localhost:4822/landing && curl -sf -o /dev/null localhost:4823/landing && exit 0
+            sleep 1
+          done
           exit 1
-      - name: Lighthouse on / (mobile x3, desktop x1), six times
-        run: for i in 1 2 3 4 5 6; do ARMADA_PERF_PAGES="/" bun run perf lighthouse http://localhost:4822 | grep -E "trace|shift|mobile|desktop|benchmark" || true; done
-      - name: Playwright overflow watch on /, 25 loads
-        run: bun scripts/_cls-diag.ts http://localhost:4822 / 25
+      - run: bun run perf inp http://localhost:4823
+        continue-on-error: true
+      - name: The real Lighthouse pass
+        run: bun run perf lighthouse http://localhost:4822 | grep -E "trace|shift|mobile|desktop|benchmark|FAIL" || true
+      - name: Lighthouse with the overflow watcher, /landing then / x3, twelve rounds
+        run: |
+          C="armada-session=$(bun -e 'import {issueSession} from "./lib/auth"; console.log(issueSession(process.env.ARMADA_DASHBOARD_PASSWORD, Date.now()))')"
+          for i in $(seq 1 12); do
+            for p in /landing / / /; do node scripts/_lh-watch.mjs "http://localhost:4822$p" .perf/lighthouse-mobile.config.mjs "$C" || true; done
+          done
