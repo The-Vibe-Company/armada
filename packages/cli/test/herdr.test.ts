@@ -12,9 +12,108 @@ const created = {
     worktree: { path: "/work/worktrees/widgets", branch: "feature/demo-7" },
   },
 };
-const agent = (status = "idle") => ({
+const agent = (status = "idle", kind = "codex") => ({
   id: "cli:agent",
-  result: { agent: { name: "demo-7", workspace_id: "w8", pane_id: "w8:p9", agent_status: status } },
+  result: { agent: { agent: kind, name: "demo-7", workspace_id: "w8", pane_id: "w8:p9", agent_status: status } },
+});
+
+// Identity/status fields recorded from the failing herdr 0.9.1 Codex launch.
+// The ticket/name is synthetic; the pane and state sequence reproduce the report.
+const unnamedCodex = {
+  agent: "codex",
+  agent_status: "idle",
+  name: null,
+  pane_id: "w1H:p2",
+  workspace_id: "w1H",
+  state_change_seq: 41,
+};
+const codexHandle = { workspace: "w1H", pane: "w1H:p2", agent: "demo-7", path: "/work/worktrees/demo-7" };
+const codexProfile = { harness: "codex" as const, model: "model-a", effort: "high", extraArgs: [] };
+const agentReply = (value: unknown) => ({ result: { agent: value } });
+
+test("recorded Codex name loss is repaired by pane at start and readiness checks before delivering the brief", async () => {
+  for (const name of [null, undefined]) {
+    const unnamed = agentReply({ ...unnamedCodex, name });
+    const renamed = agentReply({ ...unnamedCodex, name: codexHandle.agent });
+    const f = fake([
+      unnamed,
+      renamed,
+      unnamed,
+      renamed,
+      "Ready\n> ",
+      unnamed,
+      renamed,
+      "Ready\n> ",
+      agentReply({ ...unnamedCodex, name: codexHandle.agent, agent_status: "working" }),
+    ]);
+    const runtime = new Herdr(f.io);
+    await runtime.startChecked(codexHandle, codexProfile);
+    await runtime.promptChecked(codexHandle, codexProfile, "synthetic brief");
+    expect(f.calls.filter((call) => call[2] === "rename")).toEqual(
+      Array(3).fill(["herdr", "agent", "rename", codexHandle.pane, codexHandle.agent]),
+    );
+    expect(f.calls.filter((call) => call[2] === "get")).toEqual(
+      Array(2).fill(["herdr", "agent", "get", codexHandle.pane]),
+    );
+    expect(f.calls.at(-1)).toEqual([
+      "herdr",
+      "agent",
+      "prompt",
+      codexHandle.pane,
+      "synthetic brief",
+      "--wait",
+      "--until",
+      "working",
+      "--timeout",
+      "30000",
+    ]);
+  }
+});
+
+test("launch never renames, reads or prompts an empty pane or mismatched worker", async () => {
+  for (const occupant of [
+    null,
+    { ...unnamedCodex, agent: null },
+    { ...unnamedCodex, agent: undefined },
+    { ...unnamedCodex, agent: "claude" },
+    { ...unnamedCodex, pane_id: "w1H:p3" },
+    { ...unnamedCodex, workspace_id: "w2" },
+    { ...unnamedCodex, name: "other-worker" },
+    { ...unnamedCodex, name: "" },
+    { ...unnamedCodex, name: codexHandle.agent, agent: null },
+    { ...unnamedCodex, name: codexHandle.agent, agent: "claude" },
+  ]) {
+    for (const atStart of [true, false]) {
+      const f = fake([agentReply(occupant)]);
+      const runtime = new Herdr(f.io);
+      await expect(
+        atStart
+          ? runtime.startChecked(codexHandle, codexProfile)
+          : runtime.promptChecked(codexHandle, codexProfile, "brief"),
+      ).rejects.toThrow("herdr");
+      expect(f.calls).toHaveLength(1);
+    }
+  }
+});
+
+test("failed or invalid name recovery fails closed without sending a brief", async () => {
+  for (const response of [
+    { error: { code: "name_in_use", message: "CANARY_private" } },
+    agentReply(null),
+    agentReply(unnamedCodex),
+    ...[
+      { name: "other-worker" },
+      { pane_id: "w1H:p3" },
+      { workspace_id: "w2" },
+      { agent: null },
+      { agent: "claude" },
+    ].map((fields) => agentReply({ ...unnamedCodex, name: codexHandle.agent, ...fields })),
+  ]) {
+    const f = fake([agentReply(unnamedCodex), response]);
+    await expect(new Herdr(f.io).startChecked(codexHandle, codexProfile)).rejects.toThrow("herdr");
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls.at(-1)).toEqual(["herdr", "agent", "rename", codexHandle.pane, codexHandle.agent]);
+  }
 });
 const tab = { result: { tab: { tab_id: "w8:t2" }, root_pane: { pane_id: "w8:p9", workspace_id: "w8" } } };
 function fake(replies: unknown[]) {
@@ -270,13 +369,13 @@ test("real herdr terminal-write acknowledgments are empty on success, while read
 // DeepSeek uses Herdr's real OpenCode kind, so later agent prompts stay interactive.
 test("DeepSeek fallback starts OpenCode with its provider and delivers follow-up prompts", async () => {
   const f = fake([
-    agent(),
+    agent("idle", "opencode"),
     modelMetadata("deepseek/deepseek-reasoner", "DeepSeek Reasoner"),
     JSON.stringify({ providers: [{ id: "deepseek", name: "DeepSeek" }] }),
     "{}",
     "Build DeepSeek Reasoner DeepSeek\n╹",
-    agent("working"),
-    agent("working"),
+    agent("working", "opencode"),
+    agent("working", "opencode"),
   ]);
   const runtime = new Herdr(f.io);
   const handle = { workspace: "w8", pane: "w8:p9", agent: "demo-7", path: "/work" };
@@ -344,7 +443,7 @@ test("OpenCode verifies its recorded footer before a brief, including older UI l
     recordedPane.replace("Build auto ·", "Build"),
     recordedPane.replace("Build auto", "Plan"),
   ]) {
-    const f = fake([agent(), metadata, providerCatalog, "{}", pane, agent("working")]);
+    const f = fake([agent("idle", "opencode"), metadata, providerCatalog, "{}", pane, agent("working", "opencode")]);
     const handle = { ...claim, path: "/work" };
     await new Herdr(f.io).start(handle, opencodeProfile);
     await new Herdr(f.io).prompt(handle, "synthetic brief");
@@ -360,7 +459,7 @@ test("OpenCode fallback or model-not-found closes only the new pane and sends no
     [recordedPane.replace("Big Pickle OpenCode Zen", "Model B Demo"), "differs from profile"],
     [`ProviderModelNotFoundError: Model not found: opencode/big-pickle#high\n${recordedPane}`, "could not load"],
   ]) {
-    const f = fake([agent(), metadata, providerCatalog, "{}", pane, { result: { type: "ok" } }]);
+    const f = fake([agent("idle", "opencode"), metadata, providerCatalog, "{}", pane, { result: { type: "ok" } }]);
     await expect(new Herdr(f.io).start({ ...claim, path: "/work" }, opencodeProfile)).rejects.toThrow(reason);
     expect(f.calls.at(-1)).toEqual(["herdr", "pane", "close", claim.pane]);
     expect(f.calls.some((call) => call[2] === "prompt")).toBe(false);
@@ -374,7 +473,14 @@ test("unverifiable and ambiguous panes fail closed with bounded injected polling
     recordedPane.replace("Big Pickle", "Unknown Model"),
     "",
   ]) {
-    const f = fake([agent(), metadata, providerCatalog, "{}", ...Array(20).fill(pane), { result: { type: "ok" } }]);
+    const f = fake([
+      agent("idle", "opencode"),
+      metadata,
+      providerCatalog,
+      "{}",
+      ...Array(20).fill(pane),
+      { result: { type: "ok" } },
+    ]);
     let clock = 0;
     f.io.now = () => new Date(clock);
     f.io.sleep = async (ms) => {
@@ -387,7 +493,7 @@ test("unverifiable and ambiguous panes fail closed with bounded injected polling
     expect(f.calls.at(-1)).toEqual(["herdr", "pane", "close", claim.pane]);
   }
   const ambiguous = fake([
-    agent(),
+    agent("idle", "opencode"),
     metadata + modelMetadata("other/big-pickle", "Big Pickle"),
     providerCatalog,
     "{}",
@@ -401,12 +507,16 @@ test("unverifiable and ambiguous panes fail closed with bounded injected polling
 });
 
 test("pane and metadata failures are sanitized, even when pane cleanup also fails", async () => {
-  const f = fake([agent(), new Error("CANARY_private_provider_key"), new Error("CANARY_private_provider_key")]);
+  const f = fake([
+    agent("idle", "opencode"),
+    new Error("CANARY_private_provider_key"),
+    new Error("CANARY_private_provider_key"),
+  ]);
   await expect(new Herdr(f.io).start({ ...claim, path: "/work" }, opencodeProfile)).rejects.toThrow(
     "could not close worker pane",
   );
   const g = fake([
-    agent(),
+    agent("idle", "opencode"),
     metadata,
     providerCatalog,
     "{}",
