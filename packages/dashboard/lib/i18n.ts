@@ -17,7 +17,7 @@ import type {
   ValidationOutcome,
   WaitingKind,
 } from "@armada/core/read";
-import type { BoardColumn } from "./coordinator-view";
+import type { BoardColumn, CardBadge } from "./coordinator-view";
 import type { ViewError } from "./filters";
 import type { AgentStatus, DecisionKind, Density, PageKind, Section, StatusReason } from "./fleet-view";
 import type { BlockerReason, PrState, RegisterStep } from "./project-view";
@@ -567,15 +567,24 @@ const en = {
     /** A session the owner has something to validate on. */
     toValidateBadge: "To validate",
     nothingRunning: "Nothing in flight.",
-    /** The board's columns (THE-968), left to right. */
+    /** The board's columns (THE-968, THE-988), left to right: the owner's names for a ticket's flow. */
     columns: {
       plan: "Plan",
-      approval: "Plan to approve",
-      implementing: "In progress",
-      delivery: "Delivery",
+      implementing: "Implementing",
+      review: "Code Review",
+      ci: "CI",
+      merged: "Merged",
+    } satisfies Record<BoardColumn, string>,
+    /** A card's badges (THE-988), in place of columns. */
+    badges: {
       validate: "To validate",
       blocked: "Blocked",
-    } satisfies Record<BoardColumn, string>,
+      silent: "Silent",
+      approval: "Plan to approve",
+      ready: "Ready to merge",
+    } satisfies Record<CardBadge, string>,
+    /** Before a merged ticket's time, for a screen reader. */
+    mergedAgo: "Merged",
     kinds: { question: "Question", approval: "Plan to approve", "hand-back": "Ready to merge" } satisfies Record<
       DecisionKind,
       string
@@ -1748,12 +1757,19 @@ const fr: Strings = {
     nothingRunning: "Rien en cours.",
     columns: {
       plan: "Plan",
-      approval: "Plan à approuver",
-      implementing: "En cours",
-      delivery: "Livraison",
+      implementing: "Implementing",
+      review: "Code Review",
+      ci: "CI",
+      merged: "Merged",
+    },
+    badges: {
       validate: "À valider",
       blocked: "Bloqué",
+      silent: "Silencieux",
+      approval: "Plan à approuver",
+      ready: "Prêt à merger",
     },
+    mergedAgo: "Mergé",
     kinds: { question: "Question", approval: "Plan à approuver", "hand-back": "Prêt à fusionner" },
     approvePlan: "Approuver le plan",
     requestChanges: "Demander des changements",

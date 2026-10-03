@@ -256,7 +256,8 @@ const TICKETS: DemoTicket[] = [
     lastReport: 2,
     summary: "Rebasing on main after the catalogue change",
     files: [f("src/search/query.ts", 45, 61), f("src/search/index.ts", 12, 3), f("src/catalogue/schema.sql", 4, 1)],
-    pr: { number: 12, ci: "pending", mergeable: "CONFLICTING", opened: 25 },
+    // No checks on its head yet: still in code review (THE-988).
+    pr: { number: 12, ci: "none", mergeable: "CONFLICTING", opened: 25 },
     quiet: [95, 45],
   },
   {
@@ -723,17 +724,37 @@ export function demoSnapshot(
       statusType: "started",
     }),
   ];
-  // The tickets already done under the root, so the project's progress reads as in the mockup.
+  // The tickets already done under the root, so the project's progress reads as in the mockup,
+  // each closed when its pull request merged in the history `demo:seed` writes (the board's Merged column).
   const done = scenario !== "empty" ? (DEMO_PROJECT_FACTS[project.slug]?.done ?? 1) : 1;
-  for (let k = 0; k < done; k++)
+  const mergedAgo = new Map(
+    demoHistory()
+      .filter((h) => h.project === project.slug)
+      .map((h) => [h.ticket, h.claimed - (h.steps.find((s) => s.kind === "merge")?.at ?? 0)]),
+  );
+  for (let k = 0; k < done; k++) {
+    const id = `${prefix}-${100 + k}`;
+    const closed = ago(now, mergedAgo.get(id) ?? 600 + k * 90);
     issues.push(
-      issue(`${prefix}-${100 + k}`, {
+      issue(id, {
         title: historyTitle(k),
         parentId: specId,
         statusType: "completed",
-        completedAt: ago(now, 600 + k * 90),
+        completedAt: closed,
+        prs: [
+          {
+            url: `https://github.com/${project.repository}/pull/${100 + k}`,
+            number: 100 + k,
+            repo: project.repository,
+            title: historyTitle(k),
+            state: "merged",
+            headRef: `feature/${id.toLowerCase()}`,
+            mergedAt: closed,
+          },
+        ],
       }),
     );
+  }
   if (scenario !== "empty")
     for (const r of READY.filter((t) => t.project === project.slug))
       issues.push(

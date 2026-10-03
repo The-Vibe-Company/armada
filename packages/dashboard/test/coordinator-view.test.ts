@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { FleetRow, OwnerValidation, ProjectOverview } from "@armada/core/read";
 import {
   BOARD_COLUMNS,
-  boardColumn,
+  cardBadges,
   checksOf,
   coordinatorGroups,
   laneColumns,
@@ -108,62 +108,67 @@ describe("the overview's groups", () => {
   });
 });
 
-describe("the board (THE-968)", () => {
+describe("the board (THE-968, THE-988)", () => {
   const none = ownerChecks({ validations: [] });
-  const pr = (ci: "success" | "failure" | "pending" | "none") => ({ ci }) as FleetRow["pr"];
 
-  test("puts each session in the column of its phase", () => {
-    const column = (over: Partial<FleetRow>) => boardColumn(none, row("WID-1", over));
-    expect(column({ phase: "planning" })).toBe("plan");
-    expect(column({ phase: "awaiting-approval" })).toBe("approval");
-    expect(column({ phase: "implementing" })).toBe("implementing");
-    expect(column({ phase: "shipping", pr: pr("none") })).toBe("delivery");
-    expect(column({ phase: "shipping", pr: pr("pending") })).toBe("delivery");
-    // Red CI is still delivery's to fix, in its red tone.
-    expect(column({ phase: "shipping", pr: pr("failure") })).toBe("delivery");
-    expect(column({ phase: "awaiting-validation" })).toBe("validate");
-    expect(column({ phase: "ready-to-merge", pr: pr("success") })).toBe("validate");
-    expect(column({ phase: "blocked" })).toBe("blocked");
-    // Merged, its ticket not closed yet: delivered, nothing left for the owner.
-    expect(column({ phase: "merged" })).toBe("delivery");
-    expect(column({ phase: "implementing", silent: true })).toBe("blocked");
-    // A worker that handed back may go quiet: its hand-back still waits in "To validate".
-    expect(column({ phase: "ready-to-merge", silent: true })).toBe("validate");
-  });
-
-  test("an open owner validation wins over a blocked or silent session", () => {
-    const checks = ownerChecks({ validations: [validation(1, "WID-1", { kind: "question" })] });
-    expect(boardColumn(checks, row("WID-1", { phase: "blocked", silent: true }))).toBe("validate");
-    expect(boardColumn(checks, row("WID-2", { phase: "blocked" }))).toBe("blocked");
-  });
-
-  test("keeps the lane's order in each column", () => {
+  test("puts each session in the column of its step, keeping the lane's order", () => {
     const rows = [
-      row("WID-1", { phase: "implementing" }),
-      row("WID-2", { phase: "planning" }),
-      row("WID-3", { phase: "implementing" }),
+      row("WID-1", { phase: "implementing", step: "implementing" }),
+      row("WID-2", { phase: "planning", step: "plan" }),
+      row("WID-3", { phase: "blocked", step: "implementing" }),
+      row("WID-4", { phase: "ready-to-merge", step: "ci" }),
     ];
-    const columns = laneColumns(none, rows);
-    expect(Object.keys(columns)).toEqual([...BOARD_COLUMNS]);
+    const columns = laneColumns(rows);
+    expect(Object.keys(columns)).toEqual(["plan", "implementing", "review", "ci", "merged"]);
     expect(ids(columns.implementing)).toEqual(["WID-1", "WID-3"]);
     expect(ids(columns.plan)).toEqual(["WID-2"]);
-    expect(columns.blocked).toEqual([]);
+    expect(ids(columns.ci)).toEqual(["WID-4"]);
+    expect(columns.review).toEqual([]);
   });
 
-  test("on the demo world, every session in flight sits in one column, and what the owner validates in theirs", () => {
+  test("badges say what columns no longer do, most urgent first", () => {
+    const checks = ownerChecks({ validations: [validation(1, "WID-1", { kind: "question" })] });
+    const badges = (id: string, over: Partial<FleetRow>) => cardBadges(checks, row(id, over));
+    expect(badges("WID-1", { phase: "blocked", silent: true })).toEqual(["validate", "blocked", "silent"]);
+    expect(badges("WID-2", { phase: "implementing", silent: true })).toEqual(["silent"]);
+    expect(badges("WID-2", { phase: "awaiting-approval" })).toEqual(["approval"]);
+    expect(badges("WID-2", { phase: "ready-to-merge" })).toEqual(["ready"]);
+    expect(badges("WID-2", { phase: "implementing" })).toEqual([]);
+    expect(cardBadges(none, row("WID-1", { phase: "awaiting-validation" }))).toEqual([]);
+  });
+
+  test("on the demo world, every session sits in its step's column, and the lane counts are the open validations", () => {
     const o = demoOverview(new Date("2026-10-01T13:42:00Z"));
     const checks = ownerChecks(o);
     const groups = coordinatorGroups(o, o.rows);
-    const placed = groups.flatMap((g) => Object.values(laneColumns(checks, g.rows)).flat());
+    const placed = groups.flatMap((g) => Object.values(laneColumns(g.rows)).flat());
     expect(ids(placed).sort()).toEqual(ids(o.rows).sort());
+    const step = (id: string) => o.rows.find((r) => r.id === id)?.step;
+    expect([step("GAD-6"), step("GAD-3"), step("WID-12"), step("WID-15"), step("GAD-5"), step("WID-14")]).toEqual([
+      "plan",
+      "plan",
+      "implementing",
+      // Blocked and awaiting a design's validation: in the step they left.
+      "implementing",
+      "review",
+      "ci",
+    ]);
+    expect([step("WID-18"), step("GAD-9")]).toEqual(["ci", "implementing"]);
     for (const g of groups) {
-      const columns = laneColumns(checks, g.rows);
       const mine = g.rows.filter((r) => checksOf(checks, r).length);
-      expect(mine.every((r) => columns.validate.includes(r))).toBe(true);
+      expect(mine.every((r) => cardBadges(checks, r)[0] === "validate")).toBe(true);
       expect(g.toValidate).toBe(mine.reduce((n, r) => n + checksOf(checks, r).length, 0));
+      // The Merged column: the coordinator's last ten merged tickets, newest first.
+      const merged = g.project.merged;
+      expect(merged.length).toBe(Math.min(10, g.project.progress?.done ?? 0));
+      expect(merged.map((m) => m.mergedAt)).toEqual(
+        merged
+          .map((m) => m.mergedAt)
+          .sort()
+          .reverse(),
+      );
     }
-    // Every column but one holds a session somewhere in the demo.
-    const used = BOARD_COLUMNS.filter((c) => groups.some((g) => laneColumns(checks, g.rows)[c].length));
-    expect(used.length).toBeGreaterThanOrEqual(5);
+    const used = BOARD_COLUMNS.filter((c) => groups.some((g) => laneColumns(g.rows)[c].length));
+    expect(used).toEqual(["plan", "implementing", "review", "ci"]);
   });
 });

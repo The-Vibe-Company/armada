@@ -1,8 +1,11 @@
 "use client";
 
 // The overview (THE-916): the Agents page's filters and density (THE-869),
-// its sessions in flight as a board (THE-968): one lane per coordinator, six
-// columns, the steps a session goes through (lib/coordinator-view.ts). Each
+// its sessions in flight as a board (THE-968): one lane per coordinator, five
+// columns, a ticket's flow from its plan to its merge (THE-988,
+// lib/coordinator-view.ts); what needs the owner, what is stuck or silent are
+// badges on the cards, and the Merged column ends on the coordinator's last
+// merged tickets. Each
 // lane's header says the project, its coordinator's harness, active or idle
 // and since when, how many sessions run and, in orange, how many the owner has
 // to validate; the lanes with something to validate come first. On a desk the
@@ -13,14 +16,16 @@
 // (THE-868) sits under the board, compact.
 // `Overview` draws it on the filters it is given: the landing's replica
 // (components/landing/Replica.tsx, THE-931), which has no router, plays it.
-import type { FleetRow, ProjectOverview } from "@armada/core/read";
+import type { FleetRow, MergedTicket, ProjectOverview } from "@armada/core/read";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { type CSSProperties, type ReactNode, useCallback, useId, useMemo } from "react";
 import {
   BOARD_COLUMNS,
   type BoardColumn,
+  type CardBadge,
   type CoordinatorGroup,
+  cardBadges,
   checksOf,
   coordinatorGroups,
   laneColumns,
@@ -45,7 +50,7 @@ import {
 } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Dot, EmptyState, harnessColor, PhasePill, Steady, Tabs } from "../ui";
-import { SessionCard } from "./SessionCard";
+import { MergedCard, SessionCard } from "./SessionCard";
 
 // The timeline is its own chunk (THE-892): the list does not wait for its code.
 const LiveTimeline = dynamic(() => import("../timeline/Timeline").then((m) => m.LiveTimeline));
@@ -77,12 +82,17 @@ export function Overview({ filters, go, hrefFor }: ListFilterControl) {
   }, [overview, filters, names, mine]);
   const line = overviewLine(overview);
   const shown = groups.reduce((n, g) => n + g.rows.length, 0);
+  // The last merges show on the whole board, or one coordinator's: a filter on sessions keeps sessions only.
+  const merges = !hasFilters({ ...filters, project: null, sort: null });
   const lanes = useMemo(
-    () => groups.map((g) => ({ group: g, columns: laneColumns(checks, g.rows) })),
-    [groups, checks],
+    () => groups.map((g) => ({ group: g, columns: laneColumns(g.rows), merged: merges ? g.project.merged : [] })),
+    [groups, merges],
   );
   // A desk's columns line up from lane to lane: those no lane fills are narrow.
-  const filled = useMemo(() => BOARD_COLUMNS.filter((c) => lanes.some((l) => l.columns[c].length)), [lanes]);
+  const filled = useMemo(
+    () => BOARD_COLUMNS.filter((c) => lanes.some((l) => l.columns[c].length || (c === "merged" && l.merged.length))),
+    [lanes],
+  );
   const unread = overview.projects.filter((p) => p.error || p.reading);
 
   return (
@@ -155,19 +165,20 @@ export function Overview({ filters, go, hrefFor }: ListFilterControl) {
           </Button>
         </EmptyState>
       ) : (
-        lanes.map(({ group: g, columns }) => (
+        lanes.map(({ group: g, columns, merged }) => (
           <CoordinatorSection key={g.project.slug} group={g}>
-            {g.rows.length === 0 ? (
+            {g.rows.length === 0 && merged.length === 0 ? (
               <SectionBody>
                 <p>{t.overview.nothingRunning}</p>
               </SectionBody>
             ) : (
               <Board
                 columns={columns}
+                merged={merged}
                 filled={filled}
                 long={all.length > LONG_LIST}
                 airy={density === "airy"}
-                toValidate={(r) => checksOf(checks, r).length > 0}
+                badges={(r) => cardBadges(checks, r)}
               />
             )}
           </CoordinatorSection>
@@ -183,27 +194,31 @@ const tracks = (wide: readonly BoardColumn[]) =>
   BOARD_COLUMNS.map((c) => (wide.includes(c) ? "var(--ov-wide)" : "var(--ov-narrow)")).join(" ");
 
 /**
- * One lane's board: its six columns, each a group named by its heading (the
- * column and its count) and holding its cards in a list. On a desk the
- * columns some lane fills (`filled`) are wide in every lane; on a phone, those
- * this lane fills.
+ * One lane's board: its five columns, each a group named by its heading (the
+ * column and its count) and holding its cards in a list; Merged holds the
+ * sessions whose pull request merged, then the coordinator's last merged
+ * tickets (`merged`). On a desk the columns some lane fills (`filled`) are
+ * wide in every lane; on a phone, those this lane fills.
  */
 function Board({
   columns,
+  merged,
   filled,
   long,
   airy,
-  toValidate,
+  badges,
 }: {
   columns: Record<BoardColumn, FleetRow[]>;
+  merged: readonly MergedTicket[];
   filled: readonly BoardColumn[];
   long: boolean;
   airy: boolean;
-  toValidate: (r: FleetRow) => boolean;
+  badges: (r: FleetRow) => CardBadge[];
 }) {
   const { t } = useShell();
   const id = useId();
-  const lane = tracks(BOARD_COLUMNS.filter((c) => columns[c].length));
+  const count = (c: BoardColumn) => columns[c].length + (c === "merged" ? merged.length : 0);
+  const lane = tracks(BOARD_COLUMNS.filter((c) => count(c)));
   return (
     <div className="ov-lane">
       <div
@@ -212,23 +227,29 @@ function Board({
       >
         {BOARD_COLUMNS.map((c) => {
           const cards = columns[c];
+          const done = c === "merged" ? merged : [];
+          const n = cards.length + done.length;
           return (
             // biome-ignore lint/a11y/useSemanticElements: a column of cards, named by its heading; a fieldset would mean form fields
             <div
               key={c}
               role="group"
               aria-labelledby={`${id}-${c}`}
-              className={`ov-col is-${c}${cards.length ? "" : " is-empty"}${filled.includes(c) ? "" : " is-narrow"}`}
+              className={`ov-col is-${c}${n ? "" : " is-empty"}${filled.includes(c) ? "" : " is-narrow"}`}
             >
               <h3 className="ov-col-h" id={`${id}-${c}`}>
-                <span className="ov-col-name">{t.overview.columns[c]}</span>{" "}
-                <span className="ui-count">{cards.length}</span>
+                <span className="ov-col-name">{t.overview.columns[c]}</span> <span className="ui-count">{n}</span>
               </h3>
-              {cards.length > 0 && (
+              {n > 0 && (
                 <ol className="ov-cards">
                   {cards.map((r) => (
                     <li key={`${r.project}-${r.id}`}>
-                      <SessionCard row={r} airy={airy} toValidate={toValidate(r)} />
+                      <SessionCard row={r} airy={airy} badges={badges(r)} />
+                    </li>
+                  ))}
+                  {done.map((m) => (
+                    <li key={`merged-${m.id}`}>
+                      <MergedCard ticket={m} />
                     </li>
                   ))}
                 </ol>

@@ -1447,7 +1447,7 @@
   -webkit-mask-image: linear-gradient(180deg, #000 85%, transparent);
   mask-image: linear-gradient(180deg, #000 85%, transparent);
 }
-/* The board (THE-968) fits the window: its six columns share it, never scroll. */
+/* The board (THE-968, THE-988) fits the window: its five columns share it, never scroll. */
 .lp-replica .ov-board {
   --ov-wide: minmax(0, 1fr);
   justify-content: stretch;

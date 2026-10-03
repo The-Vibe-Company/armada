@@ -15,7 +15,7 @@ import {
   type RuntimeHandle,
   type RuntimeState,
 } from "./live.ts";
-import { buildModel, isDone } from "./model.ts";
+import { buildModel, isDone, type Model } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
 import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 
@@ -27,6 +27,15 @@ export interface TicketRef {
   url: string;
   spec: string | null;
 }
+
+/** A ticket out of flight whose pull request merged, with when (THE-988). */
+export interface MergedTicket extends TicketRef {
+  mergedAt: string;
+  pr: { number: number; url: string };
+}
+
+/** How many merged tickets a report keeps: the board's Merged column. */
+export const MERGED_SHOWN = 10;
 
 export interface PrRef {
   files?: PullRequest["files"];
@@ -126,6 +135,8 @@ export interface StatusReport {
   frontier: FrontierTicket[];
   /** Open pull requests of the repository; null when GitHub could not be read. */
   pullRequests: WaitingPullRequest[] | null;
+  /** The last tickets merged (THE-988), newest first; absent from a report built before it existed. */
+  merged?: MergedTicket[];
   /** Reads cut short by a cap; the lists above may be incomplete where these say. */
   warnings: string[];
 }
@@ -291,9 +302,52 @@ export function buildStatus({
             : null,
         }))
       : null,
+    merged: mergedTickets(m, phaseOf, live),
     warnings: [...program.warnings, ...(forge?.warnings ?? []), ...extraWarnings],
   };
 }
+
+/**
+ * The last `MERGED_SHOWN` tickets merged, newest first: Done leaves out of
+ * flight with a pull request GitHub read as merged, at its merge time (else
+ * when the ticket closed), and those Armada saw merged since the reading, at
+ * that time. A Done ticket without a merged pull request is left out.
+ */
+export function mergedTickets(
+  m: Model,
+  inFlight: ReadonlyMap<string, unknown>,
+  live?: LaneOptions["live"],
+): MergedTicket[] {
+  const out: MergedTicket[] = [];
+  for (const issue of m.program) {
+    if (!m.isLeaf(issue) || inFlight.has(issue.id)) continue;
+    const event = live?.events[issue.id];
+    const fresh = live && event?.kind === "merge" && event.at > live.after ? event : null;
+    const merged = issue.prs
+      .filter((p) => p.state === "merged")
+      .sort(byMergeTime)
+      .at(-1);
+    const pr = merged ?? (fresh ? issue.prs.at(-1) : undefined);
+    if (!pr || !(isDone(issue) || fresh)) continue;
+    const mergedAt = fresh?.at ?? merged?.mergedAt ?? issue.completedAt;
+    if (!mergedAt) continue;
+    const spec = m.specOf(issue.id);
+    out.push({
+      id: issue.id,
+      title: issue.title,
+      url: issue.url,
+      spec: spec ? `Spec ${spec.ordinal}` : null,
+      mergedAt,
+      pr: { number: pr.number, url: pr.url },
+    });
+  }
+  return out
+    .sort((a, b) => b.mergedAt.localeCompare(a.mergedAt) || b.id.localeCompare(a.id, "en", { numeric: true }))
+    .slice(0, MERGED_SHOWN);
+}
+
+const byMergeTime = (a: PullRequest, b: PullRequest) =>
+  (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
 export interface LoadStatusOptions {
   linearApiKey: string;
