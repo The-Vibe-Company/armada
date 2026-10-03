@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.35](https://github.com/The-Vibe-Company/armada/compare/v0.2.34...v0.2.35) (2026-10-03)
+
+
+### Features
+
+* **cli:** offer local runtime prerequisite installs ([#138](https://github.com/The-Vibe-Company/armada/issues/138)) ([5a09f2a](https://github.com/The-Vibe-Company/armada/commit/5a09f2ac96a11289651ecc582aab3edb38fb4295))
+
 ## [0.2.34](https://github.com/The-Vibe-Company/armada/compare/v0.2.33...v0.2.34) (2026-10-03)
 
 
