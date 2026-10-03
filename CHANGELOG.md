@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.49](https://github.com/The-Vibe-Company/armada/compare/v0.2.48...v0.2.49) (2026-10-03)
+
+
+### Features
+
+* **merge:** leave ticket open with a no-ticket reason ([#177](https://github.com/The-Vibe-Company/armada/issues/177)) ([a3d8ff7](https://github.com/The-Vibe-Company/armada/commit/a3d8ff76b615bd9fedcfed079b79abec22d226f0))
+
 ## [0.2.48](https://github.com/The-Vibe-Company/armada/compare/v0.2.47...v0.2.48) (2026-10-03)
 
 
