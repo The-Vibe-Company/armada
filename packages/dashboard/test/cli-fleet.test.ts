@@ -1,10 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
+  type ArmadaConfig,
   type ArmadaSignIn,
   armadaApi,
   configTemplate,
   type Fleet,
   fleetClient,
+  type Issue,
   type ProjectInput,
   parseConfig,
 } from "@armada/core/read";
@@ -13,6 +15,7 @@ import { type Auth, createAuth, type EmailMessage, recordApiKeyCreator } from ".
 import { accountsModeOf } from "../lib/accounts-settings.ts";
 import { type CliAccounts, type CliApiDeps, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
+import type { Scope } from "../lib/fleet-data.ts";
 import { fleetStore, liveStore } from "../lib/fleet-store.ts";
 import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
 import { vaultModeOf } from "../lib/vault.ts";
@@ -105,6 +108,7 @@ const fetch = async (url: string, init: RequestInit) =>
   handleCli(new Request(url, init), new URL(url).pathname.replace(/^\/api\/cli\//, "").split("/"), {
     accounts: async () => accounts,
     ...deps,
+    readAttachmentTicket: async () => null,
   });
 const CLI = "9.9.9";
 const api = armadaApi({ url: BASE, fetch, version: CLI });
@@ -168,6 +172,133 @@ describe("private attachments through the authenticated CLI API", () => {
         }),
       ),
     ).toEqual([413, expect.stringContaining("2 MB")]);
+  });
+
+  const freshTarget = (ticket: string) => ({
+    project: WIDGETS,
+    ticket,
+    caption: "Fresh ticket evidence",
+    reference: null,
+    input: { kind: "image" as const, contentType: "image/png", data: "iVBORw0KGgo=" },
+  });
+  const withLookup = (lookup: (config: ArmadaConfig, scope: Scope, ticket: string) => Promise<Issue | null>) =>
+    armadaApi({
+      url: BASE,
+      version: CLI,
+      fetch: async (url, init) =>
+        handleCli(new Request(url, init), ["attachments"], {
+          accounts: async () => accounts,
+          ...deps,
+          readAttachmentTicket: lookup,
+        }),
+    });
+
+  test("a scoped worker attaches a fresh ticket once checked in Linear, and subsequent uploads use the snapshot", async () => {
+    const ticket = "WID-73";
+    const session = await worker(ticket);
+    const completedAt = now().toISOString();
+    const fresh = issue(ticket, { parentId: "WID-1", statusType: "completed", completedAt });
+    const calls: string[] = [];
+    const attaching = withLookup(async (config, scope, id) => {
+      expect(config.tracker.programRoot).toBe(WIDGETS.programRoot);
+      expect(scope.organization).toBe(
+        String(
+          (await client.query("SELECT organization_id FROM projects WHERE slug = $1", [WIDGETS.slug])).rows[0]
+            ?.organization_id,
+        ),
+      );
+      calls.push(id);
+      return fresh;
+    });
+    const result = await attaching.attach(session, freshTarget(ticket));
+    expect(result.attachment.ticket).toBe(ticket);
+    const snapshot = (await dbSnapshots(client, memorySnapshots()).entries([WIDGETS.slug])).get(WIDGETS.slug);
+    expect(snapshot?.snapshot?.sources.program.issues).toContainEqual(fresh);
+    expect(snapshot?.dirty).toBe(true);
+    const done = await client.query("SELECT done_at FROM attachments WHERE id = $1", [result.attachment.id]);
+    expect(new Date(String(done.rows[0]?.done_at)).toISOString()).toBe(completedAt);
+    await attaching.attach(session, {
+      ...freshTarget(ticket),
+      input: { kind: "link", url: "https://example.test/fresh" },
+    });
+    expect(calls).toEqual([ticket]);
+  });
+
+  test("concurrent fresh-ticket uploads preserve both cache additions and existing snapshot metadata", async () => {
+    const tickets = ["WID-76", "WID-77"];
+    const sessions = await Promise.all(tickets.map(worker));
+    const store = dbSnapshots(client, memorySnapshots());
+    const before = (await store.entries([WIDGETS.slug])).get(WIDGETS.slug);
+    const attaching = withLookup(async (_, __, id) => issue(id, { parentId: "WID-1" }));
+    await Promise.all(sessions.map((session, n) => attaching.attach(session, freshTarget(tickets[n] ?? ""))));
+    const after = (await store.entries([WIDGETS.slug])).get(WIDGETS.slug);
+    for (const ticket of tickets)
+      expect(after?.snapshot?.sources.program.issues.some((i) => i.id === ticket)).toBe(true);
+    expect(after?.snapshot?.config).toEqual(before?.snapshot?.config);
+    expect(after?.snapshot?.sources.forge).toEqual(before?.snapshot?.sources.forge);
+    expect(after?.snapshot?.startedAt).toEqual(before?.snapshot?.startedAt);
+    expect(after?.readAt).toEqual(before?.readAt);
+    expect(after?.fullAt).toEqual(before?.fullAt);
+    expect(after?.version).toBe((before?.version ?? 0) + 2);
+    expect(after?.dirty).toBe(true);
+  });
+
+  test("a foreign ticket keeps the existing refusal and is neither cached nor stored", async () => {
+    const ticket = "WID-74";
+    let calls = 0;
+    const attaching = withLookup(async () => {
+      calls++;
+      return null;
+    });
+    expect(await refusal(attaching.attach(await worker(ticket), freshTarget(ticket)))).toEqual([
+      403,
+      `Armada did not attach this item: attachment ticket limit: ${ticket} is not in the cached project reading; refresh the dashboard first`,
+    ]);
+    expect(calls).toBe(1);
+    expect((await client.query("SELECT id FROM attachments WHERE ticket = $1", [ticket])).rows).toEqual([]);
+    expect(
+      (await dbSnapshots(client, memorySnapshots()).entries([WIDGETS.slug]))
+        .get(WIDGETS.slug)
+        ?.snapshot?.sources.program.issues.some((i) => i.id === ticket),
+    ).toBe(false);
+  });
+
+  test("a Linear error is retryable, reveals no upstream details and stores nothing", async () => {
+    const ticket = "WID-75";
+    let calls = 0;
+    const attaching = withLookup(async () => {
+      calls++;
+      throw new Error("synthetic upstream details");
+    });
+    expect(await refusal(attaching.attach(await worker(ticket), freshTarget(ticket)))).toEqual([
+      503,
+      "Armada did not attach this item: Armada cannot check this attachment's ticket in Linear right now",
+    ]);
+    expect(calls).toBe(1);
+    expect((await client.query("SELECT id FROM attachments WHERE ticket = $1", [ticket])).rows).toEqual([]);
+  });
+
+  test("cached tickets and scope refusals do not call Linear", async () => {
+    let calls = 0;
+    const attaching = withLookup(async () => {
+      calls++;
+      throw new Error("must not read Linear");
+    });
+    const session = await worker("WID-71");
+    await attaching.attach(session, freshTarget("WID-71"));
+    expect((await refusal(attaching.attach(session, freshTarget("WID-99"))))[0]).toBe(403);
+    expect((await refusal(attaching.attach({ kind: "api-key", key: otherKey }, freshTarget("WID-99"))))[0]).toBe(403);
+    expect(
+      (
+        await refusal(
+          attaching.attach(
+            { kind: "api-key", key: apiKey },
+            { ...freshTarget("WID-99"), project: { ...WIDGETS, programRoot: "WID-999" } },
+          ),
+        )
+      )[0],
+    ).toBe(403);
+    expect(calls).toBe(0);
   });
 });
 
