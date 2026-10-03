@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.41](https://github.com/The-Vibe-Company/armada/compare/v0.2.40...v0.2.41) (2026-10-03)
+
+
+### Bug Fixes
+
+* **core:** keep parked tickets off the frontier ([#155](https://github.com/The-Vibe-Company/armada/issues/155)) ([744aa2b](https://github.com/The-Vibe-Company/armada/commit/744aa2b4d06023e3cadf0df2f4e8d136e4e6ee4d))
+
 ## [0.2.40](https://github.com/The-Vibe-Company/armada/compare/v0.2.39...v0.2.40) (2026-10-03)
 
 

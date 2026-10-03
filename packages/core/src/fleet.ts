@@ -313,12 +313,20 @@ export interface Candidate {
   score: number;
 }
 
+/** The label names the frontier reads, from `[tracker]` in `armada.toml`. */
+export interface FrontierLabels {
+  /** `ready_label`: the ticket is specified enough for an agent to take. */
+  ready: string;
+  /** `parked_label`: the ticket waits on purpose, so it is no work to start. */
+  parked: string;
+}
+
 /**
- * The frontier: leaves not started, not held by an agent, with every
- * blocked-by ticket closed and no open pull request. Ranked: ready label
+ * The frontier: leaves not started, not held by an agent, not parked, with
+ * every blocked-by ticket closed and no open pull request. Ranked: ready label
  * first, then critical path, then how much work each one unlocks.
  */
-export function frontier(m: Model, readyLabel: string): Candidate[] {
+export function frontier(m: Model, labels: FrontierLabels): Candidate[] {
   const dependents = new Map<string, Issue[]>();
   for (const i of m.program) for (const b of i.blockedBy) dependents.set(b.id, [...(dependents.get(b.id) ?? []), i]);
   const transitive = (id: string, seen = new Set<string>()): Set<string> => {
@@ -336,6 +344,7 @@ export function frontier(m: Model, readyLabel: string): Candidate[] {
         m.isLeaf(i) &&
         isNotStarted(i) &&
         !i.agentPhase &&
+        !i.labels.includes(labels.parked) &&
         m.openBlockersOf(i).length === 0 &&
         !i.prs.some((p) => p.state === "open"),
     )
@@ -345,7 +354,7 @@ export function frontier(m: Model, readyLabel: string): Candidate[] {
       const unlocksNow = (dependents.get(issue.id) ?? [])
         .filter((d) => !isClosed(d) && m.openBlockersOf(d).every((b) => b === issue.id))
         .map((d) => d.id);
-      const readyForAgent = issue.labels.includes(readyLabel) && issue.statusType !== "triage";
+      const readyForAgent = issue.labels.includes(labels.ready) && issue.statusType !== "triage";
       const onCriticalPath = critical.has(issue.id);
       const score =
         (readyForAgent ? 1000 : 0) +

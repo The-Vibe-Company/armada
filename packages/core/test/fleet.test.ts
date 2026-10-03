@@ -12,6 +12,8 @@ const program = (...children: Issue[]) =>
 
 const ids = (xs: { issue: Issue }[]) => xs.map((x) => x.issue.id);
 
+const labels = { ready: "ready-for-agent", parked: "parked" };
+
 describe("frontier", () => {
   test("a ticket is ready when it is not started and every blocked-by ticket is closed", () => {
     const m = program(
@@ -28,7 +30,7 @@ describe("frontier", () => {
       issue("P-7", { statusType: "unstarted" }),
       issue("P-8", { statusType: "triage" }),
     );
-    expect(ids(frontier(m, "ready-for-agent")).sort()).toEqual(["P-4", "P-7", "P-8"]);
+    expect(ids(frontier(m, labels)).sort()).toEqual(["P-4", "P-7", "P-8"]);
   });
 
   test("a blocker outside the program counts by the state recorded on the relation", () => {
@@ -36,7 +38,7 @@ describe("frontier", () => {
       issue("P-2", { blockedBy: [{ id: "EXT-1", statusType: "started" }] }),
       issue("P-3", { blockedBy: [{ id: "EXT-2", statusType: "completed" }] }),
     );
-    expect(ids(frontier(m, "ready-for-agent"))).toEqual(["P-3"]);
+    expect(ids(frontier(m, labels))).toEqual(["P-3"]);
   });
 
   test("tickets held by an agent, with an open PR, or with sub-issues are not on the frontier", () => {
@@ -46,7 +48,18 @@ describe("frontier", () => {
       issue("P-4"),
       issue("P-5", { parentId: "P-4" }),
     );
-    expect(ids(frontier(m, "ready-for-agent"))).toEqual(["P-5"]);
+    expect(ids(frontier(m, labels))).toEqual(["P-5"]);
+  });
+
+  test("a ticket carrying the configured parked label is off the frontier, ready label or not", () => {
+    const m = program(
+      issue("P-2", { labels: ["parked"] }),
+      issue("P-3", { labels: ["ready-for-agent", "parked"] }),
+      issue("P-4", { labels: ["on-hold"] }),
+    );
+    expect(ids(frontier(m, labels))).toEqual(["P-4"]);
+    // The label name is configuration: another one parks, and "parked" stops doing so.
+    expect(ids(frontier(m, { ready: "ready-for-agent", parked: "on-hold" })).sort()).toEqual(["P-2", "P-3"]);
   });
 
   test("ranking puts the ready label first, then what a ticket unlocks", () => {
@@ -56,7 +69,7 @@ describe("frontier", () => {
       issue("P-4", { labels: ["ready-for-agent"] }),
       issue("P-5", { labels: ["ready-for-agent"], statusType: "triage" }),
     );
-    const ranked = frontier(m, "ready-for-agent");
+    const ranked = frontier(m, labels);
     expect(ranked.map((c) => [c.issue.id, c.readyForAgent, c.unlocksAll])).toEqual([
       ["P-4", true, []],
       ["P-2", false, ["P-3"]],
