@@ -10,6 +10,40 @@ import {
 } from "../src/armada-api.ts";
 import { ARMADA_URL, fakeArmada, NOW } from "./support.ts";
 
+test("Armada retries only safe reads, including fleet reads; token consumption and fleet writes are sent once", async () => {
+  const signIn = { kind: "session" as const, token: "synthetic-token" };
+  const actions = [
+    { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.whoami(signIn) },
+    { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "events/latest", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "inbox", {}) },
+    {
+      retry: false,
+      run: (api: ReturnType<typeof armadaApi>) =>
+        api.releaseSecrets(signIn, {
+          slug: "widgets",
+          name: "Widgets",
+          repository: "acme/widgets",
+          programRoot: "DEMO-1",
+        }),
+    },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "report", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.exchangeLaunchToken("synthetic-token") },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.pollDeviceLogin("synthetic-code") },
+  ];
+  for (const action of actions) {
+    let calls = 0;
+    const api = armadaApi({
+      url: ARMADA_URL,
+      fetch: async () => {
+        calls++;
+        throw new DOMException("timed out", "TimeoutError");
+      },
+    });
+    await expect(action.run(api)).rejects.toBeInstanceOf(ArmadaApiError);
+    expect(calls).toBe(action.retry ? 2 : 1);
+  }
+});
+
 /** A clock that moves only when the code sleeps. */
 function clock() {
   let t = NOW.getTime();

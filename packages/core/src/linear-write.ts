@@ -190,14 +190,16 @@ function ensure(ok: boolean | undefined, what: string) {
 export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
   return {
     async viewer() {
-      return (await gql<{ viewer: { id: string; name: string } }>(opts, VIEWER_QUERY, {})).viewer;
+      return (await gql<{ viewer: { id: string; name: string } }>({ ...opts, retry: true }, VIEWER_QUERY, {})).viewer;
     },
     async readTicket(id) {
-      const data = await gql<{ issue: RawTicket | null }>(opts, TICKET_QUERY, { id }).catch((err: unknown) => {
-        // Linear answers an unknown identifier with an "Entity not found" error.
-        if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
-        throw err;
-      });
+      const data = await gql<{ issue: RawTicket | null }>({ ...opts, retry: true }, TICKET_QUERY, { id }).catch(
+        (err: unknown) => {
+          // Linear answers an unknown identifier with an "Entity not found" error.
+          if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
+          throw err;
+        },
+      );
       const raw = data.issue;
       if (!raw) return null;
       const warnings: string[] = [];
@@ -208,7 +210,7 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
     },
     async groupLabels(group, teamId) {
       const data = await gql<{ issueLabels: { nodes: { id: string; name: string; team: { id: string } | null }[] } }>(
-        opts,
+        { ...opts, retry: true },
         GROUP_LABELS_QUERY,
         { group },
       );
@@ -226,12 +228,15 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
       if (change.addLabelIds?.length) input.addedLabelIds = change.addLabelIds;
       if (change.removeLabelIds?.length) input.removedLabelIds = change.removeLabelIds;
       if (!Object.keys(input).length) return;
-      const data = await gql<{ issueUpdate: { success: boolean } }>(opts, UPDATE_MUTATION, { id: uuid, input });
+      const data = await gql<{ issueUpdate: { success: boolean } }>({ ...opts, retry: false }, UPDATE_MUTATION, {
+        id: uuid,
+        input,
+      });
       ensure(data.issueUpdate?.success, "update the ticket");
     },
     async comment(uuid, body) {
       const data = await gql<{ commentCreate: { success: boolean; comment: { id: string } | null } }>(
-        opts,
+        { ...opts, retry: false },
         COMMENT_MUTATION,
         { input: { issueId: uuid, body } },
       );
@@ -239,11 +244,15 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
       return { id: data.commentCreate.comment?.id ?? "" };
     },
     async deleteComment(id) {
-      const data = await gql<{ commentDelete: { success: boolean } }>(opts, DELETE_COMMENT_MUTATION, { id });
+      const data = await gql<{ commentDelete: { success: boolean } }>(
+        { ...opts, retry: false },
+        DELETE_COMMENT_MUTATION,
+        { id },
+      );
       ensure(data.commentDelete?.success, "delete the comment");
     },
     async linkUrl(uuid, url, title) {
-      const data = await gql<{ attachmentLinkURL: { success: boolean } }>(opts, LINK_MUTATION, {
+      const data = await gql<{ attachmentLinkURL: { success: boolean } }>({ ...opts, retry: false }, LINK_MUTATION, {
         issueId: uuid,
         url,
         title,
