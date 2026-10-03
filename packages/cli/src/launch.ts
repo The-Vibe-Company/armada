@@ -204,7 +204,7 @@ async function launchLocal(
     if (handle) io.stderr(`armada: local workspace retained: ${herdrClaimHandle(handle)}\n`);
     let revoked = false;
     try {
-      await api.revokeLaunch(signIn, { project: config.project.slug, ticket: ticketId });
+      await api.revokePendingLaunch(signIn, { project: config.project.slug, ticket: ticketId, id: launch.worker.id });
       revoked = true;
       io.stderr(`armada: revoked the pending launch of ${ticketId}.\n`);
     } catch {

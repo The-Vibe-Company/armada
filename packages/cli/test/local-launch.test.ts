@@ -96,7 +96,8 @@ async function fixture(
     now: () => NOW,
     linearWriter: () => linear,
     fetch: (url, init) => {
-      if (url.endsWith("/workers/revoke")) {
+      if (url.endsWith("/workers/revoke-pending")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ project: "widgets", ticket: "DEMO-13", id: "wk-1" });
         if (options.revokeFailure)
           return Promise.resolve(Response.json({ error: "CANARY_revoke_private" }, { status: 500 }));
         const pending = armada.launches.get("armada_launch_CANARY_1");
