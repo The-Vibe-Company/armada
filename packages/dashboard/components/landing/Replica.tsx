@@ -1,12 +1,12 @@
 "use client";
 
 // The fleet, live (THE-887, THE-931): the dashboard's own overview
-// (components/screens/OverviewScreen.tsx: its sessions grouped by coordinator,
-// its filters, its live timeline) drawn from the demo world's overview, built
+// (components/screens/OverviewScreen.tsx: its board, a lane per coordinator,
+// THE-968; its filters, its live timeline) drawn from the demo world's overview, built
 // at build time, in a window. It plays replica-script.ts: the coordinator
 // answers a question and the worker goes back to work, a hand-back arrives,
 // then its merge waits for the owner and a pointer rests on its "To validate"
-// row; the clock runs fifteen times faster, so the timeline moves. It plays
+// card; the clock runs fifteen times faster, so the timeline moves. It plays
 // only while on screen; it is inert (nothing in it can be clicked or focused)
 // and reads nothing from any server.
 import type { FleetOverview } from "@armada/core/read";
@@ -70,10 +70,10 @@ export function Replica({ base }: { base: FleetOverview }) {
       setShown({ overview: next, now: clock(), stage });
     };
 
-    /** Where the hand-back's "To validate" badge is (else its row), in the replica's coordinates. */
+    /** Where the hand-back's "To validate" badge is (else its card), in the replica's coordinates. */
     const target = () => {
-      const row = el.querySelector<HTMLElement>(`a[href="${paths.agent(HANDED_BACK)}"]`);
-      const badge = row?.querySelector<HTMLElement>(".ui-pill") ?? row;
+      const card = el.querySelector<HTMLElement>(`a[href="${paths.agent(HANDED_BACK)}"]`);
+      const badge = card?.querySelector<HTMLElement>(".ui-pill") ?? card;
       if (!badge) return null;
       const r = el.getBoundingClientRect();
       const b = badge.getBoundingClientRect();
