@@ -27,6 +27,11 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   { name: "attach", role: "worker", what: "Attach screenshots and links for the owner to check" },
   { name: "heartbeat", role: "worker", what: "Keep a worker's session alive in the background" },
   { name: "status", role: "both", what: "Tickets in flight, ready to start, pull requests waiting" },
+  {
+    name: "setup",
+    role: "you",
+    what: "Set up local harnesses, choose permissions and answer their first-run questions",
+  },
   { name: "doctor", role: "you", what: "What the repository lacks, with the fix for each" },
   { name: "init", role: "you", what: "One pull request that sets the repository up" },
   { name: "skills", role: "you", what: "Update the bundled skills on the current branch" },

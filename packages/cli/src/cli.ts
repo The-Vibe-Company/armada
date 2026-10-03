@@ -24,6 +24,7 @@ import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
 import { launch } from "./launch.ts";
+import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
 import { recordPresence } from "./presence.ts";
@@ -56,10 +57,15 @@ const COMMAND_HELP: Record<string, string> = {
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
   status --all      The same for every project registered by \`armada init\`
 `,
+  setup: `  setup local       Open local harness panes for the owner to answer first-run questions,
+                    choose ask/full permissions once, and check the selected models.
+                    Requires an interactive terminal; --json reports that requirement
+`,
   doctor: `  doctor            What this repository lacks to be run by Armada, with the fix for each,
                     and whether this terminal is signed in to Armada. Local herdr profiles
                     check tools and harness sign-in; offers official installs with y/N.
-                    No terminal, CI and --json only print fixes and never install
+                    No terminal, CI and --json only print fixes and never install.
+                    For harness first-run questions, the owner runs armada setup local
 `,
   init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook]
                     Open one pull request that installs or updates it all, create the
@@ -167,6 +173,11 @@ const COMMAND_HELP: Record<string, string> = {
                     [--profile <name> [--reason <why>]] [--validation <n|none>]
                     Create the ticket's worktree and start a persistent local worker
                     with its launch-token brief. Profiles follow [[herdr.routing]]
+  launch <ticket> --runtime herdr --dry-run [--json]
+                    Print the launch plan (profile and why, harness and exact model,
+                    branch and worktree path, preflight) and create nothing: no
+                    worktree, token, pane or install. Exits 0 when the preflight
+                    passes, else non-zero, listing every gap
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
@@ -248,6 +259,7 @@ const CONFIG_OPTION = new Set([
   "merge",
   "brief",
   "launch",
+  "setup",
 ]);
 const JSON_OPTION = new Set([
   "skills",
@@ -390,7 +402,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug", "no-stop-hook"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason"],
+  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
@@ -643,6 +655,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       if (args.options.prompt === "true") await recordPresence(io, config, credentials);
       return await brief(io, config, credentials, args, version, path);
+    }
+    if (args.command === "setup") {
+      const { path, text } = await findConfig(io, args.config, "setup");
+      return await setupLocal(io, parseConfig(text, path), path, args);
     }
     if (args.command === "launch") {
       const { path, text } = await findConfig(io, args.config, "launch");

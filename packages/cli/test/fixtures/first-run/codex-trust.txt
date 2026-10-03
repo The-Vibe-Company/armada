@@ -1,0 +1,5 @@
+Do you trust the contents of this directory?
+/work/widgets
+❯ 1. Yes, continue
+  2. No, quit
+Press enter to continue

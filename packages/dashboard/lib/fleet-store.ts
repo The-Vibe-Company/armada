@@ -754,7 +754,7 @@ export async function resolveInboxItem(
   return rs.rowCount > 0;
 }
 
-/** When the newest question or plan of each ticket was resolved, by ticket id; with `since`, only answers since then. */
+/** Newest resolved question, plan or relayed validation decision per ticket; with `since`, only answers since then. */
 export async function lastAnsweredAt(
   db: Queryable,
   project: string,
@@ -762,7 +762,7 @@ export async function lastAnsweredAt(
 ): Promise<Record<string, string>> {
   const rs = await db.query(
     `SELECT ticket, max(resolved_at) AS at FROM inbox_items
-     WHERE project = $1 AND kind IN ('question', 'plan') AND ticket IS NOT NULL AND resolved_at >= $2
+     WHERE project = $1 AND kind IN ('question', 'plan', 'decision') AND ticket IS NOT NULL AND resolved_at >= $2
      ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
      GROUP BY ticket`,
     opts.tickets ? [project, opts.since ?? new Date(0), opts.tickets] : [project, opts.since ?? new Date(0)],

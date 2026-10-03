@@ -466,7 +466,7 @@ async function exchange(a: CliAccounts, request: Request, now: Date): Promise<Re
   );
 }
 
-async function revokeLaunch(a: CliAccounts, request: Request, now: Date): Promise<Response> {
+async function revokeLaunch(a: CliAccounts, request: Request, now: Date, specific = false): Promise<Response> {
   const identity = await identify(a, credentialOf(request), now);
   if (identity instanceof Response) return identity;
   if (identity.via === "worker") return refuse(403, `${WORKER_SCOPE}: it revokes no launch`, "the coordinator does it");
@@ -481,10 +481,13 @@ async function revokeLaunch(a: CliAccounts, request: Request, now: Date): Promis
   const body = await jsonBody(request);
   if (!isProjectSlug(body.project) || !isTicketId(body.ticket))
     return refuse(400, "revoking a launch needs the project and ticket", "armada launch revoke <ticket>");
+  if (specific && (typeof body.id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(body.id)))
+    return refuse(400, "revoking this launch needs its id", "update Armada and retry");
   const result = await revokePendingLaunch(a.client, {
     organization: holder.organization.id,
     project: body.project,
     ticket: body.ticket,
+    ...(specific ? { id: body.id as string } : {}),
     by: holder.actor,
     now,
   });
@@ -956,6 +959,7 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps, lat
   if (route === "POST launch-tokens/exchange") return exchange(a, request, now);
   if (route === "POST workers/end") return endWorkers(a, request, now);
   if (route === "POST workers/revoke") return revokeLaunch(a, request, now);
+  if (route === "POST workers/revoke-pending") return revokeLaunch(a, request, now, true);
   if (route === "GET projects") return projects(a, request, now);
   if (route === "POST attachments") return attach(a, request, now, deps);
   if (request.method === "POST" && path[0] === "secrets" && path.length === 2)

@@ -41,7 +41,12 @@ async function fixture(
     state?: string;
     unpublished?: boolean;
     models?: string;
+    screen?: string;
+    startFailure?: boolean;
+    revokeFailure?: boolean;
     pane?: string;
+    herdrConfig?: string;
+    noGit?: boolean;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "armada-local-"));
@@ -75,13 +80,15 @@ async function fixture(
   let workerConfig = DEMO_TOML;
   const io: Io = {
     cwd: "/work/widgets/subfolder",
-    env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL },
+    env: { XDG_CONFIG_HOME: home, HOME: home, ARMADA_API_URL: ARMADA_URL },
     readFile: async (p) =>
       p === "/work/widgets/armada.toml"
         ? configText
         : p === "/work/worktrees/demo-13/armada.toml"
           ? workerConfig
-          : null,
+          : p === join(home, "herdr", "config.toml")
+            ? (options.herdrConfig ?? null)
+            : null,
     writeFile: async (path, text) => {
       if (path === "/work/widgets/armada.toml") configText = text;
       else if (path === "/work/worktrees/demo-13/armada.toml") workerConfig = text;
@@ -93,12 +100,21 @@ async function fixture(
     ghToken: () => null,
     now: () => NOW,
     linearWriter: () => linear,
-    fetch: (url, init) =>
-      url === "https://registry.npmjs.org/old.tgz"
+    fetch: (url, init) => {
+      if (url.endsWith("/workers/revoke-pending")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ project: "widgets", ticket: "DEMO-13", id: "wk-1" });
+        if (options.revokeFailure)
+          return Promise.resolve(Response.json({ error: "CANARY_revoke_private" }, { status: 500 }));
+        const pending = armada.launches.get("armada_launch_CANARY_1");
+        if (pending) pending.used = true;
+        return Promise.resolve(Response.json({ id: "wk-1", ticket: "DEMO-13" }));
+      }
+      return url === "https://registry.npmjs.org/old.tgz"
         ? Promise.resolve(new Response(null, { status: 200 }))
         : url.startsWith(ARMADA_URL)
           ? armada.fetch(url, init)
-          : recorded.fetch(url, init),
+          : recorded.fetch(url, init);
+    },
     exec: async (command, args) => {
       calls.push([command, ...args]);
       if (args[0] === "--version") return { code: options.missing ? 1 : 0, stdout: `${command} 0.9.1`, stderr: "" };
@@ -106,6 +122,13 @@ async function fixture(
         return {
           code: options.unsigned ? 1 : 0,
           stdout: options.unsigned ? "Not logged in" : "Logged in using ChatGPT",
+          stderr: "",
+        };
+      if (command === "opencode" && args[0] === "debug")
+        return {
+          code: 0,
+          stdout:
+            args[1] === "config" ? "{}" : JSON.stringify({ providers: [{ id: "opencode", name: "OpenCode Zen" }] }),
           stderr: "",
         };
       if (command === "opencode" && args.includes("--verbose")) {
@@ -130,7 +153,7 @@ async function fixture(
         const id = start?.[start.indexOf("--model") + 1] ?? "";
         return {
           code: 0,
-          stdout: options.pane ?? `Build auto · ${id.slice(id.indexOf("/") + 1)} OpenCode Zen\n╹`,
+          stdout: options.screen ?? options.pane ?? `Build auto · ${id.slice(id.indexOf("/") + 1)} OpenCode Zen\n╹`,
           stderr: "",
         };
       }
@@ -144,8 +167,13 @@ async function fixture(
         };
       if (command === "git")
         return {
-          code: 0,
-          stdout: args[0] === "rev-parse" ? "/work/widgets\n" : "ref: refs/heads/trunk\tHEAD\n",
+          code: options.noGit && args[0] === "rev-parse" ? 128 : 0,
+          stdout:
+            args[0] === "rev-parse"
+              ? args.includes("--git-common-dir")
+                ? "/work/widgets/.git\n"
+                : "/work/widgets\n"
+              : "ref: refs/heads/trunk\tHEAD\n",
           stderr: "",
         };
       let reply: unknown;
@@ -158,10 +186,14 @@ async function fixture(
             worktree: { path: "/work/worktrees/demo-13" },
           },
         };
+      else if (args[0] === "pane" && args[1] === "read")
+        return { code: 0, stdout: options.screen ?? "Ready\n> ", stderr: "" };
       else if (args[0] === "pane") reply = { result: { type: "ok" } };
       else if (args[0] === "tab")
         reply = { result: { root_pane: { workspace_id: handle.workspace, pane_id: handle.pane } } };
       else {
+        if (args[1] === "start" && options.startFailure)
+          return { code: 1, stdout: JSON.stringify({ error: { code: "agent_not_ready" } }), stderr: "" };
         if (args[1] === "prompt") {
           prompt = args[3] ?? "";
           if (options.promptFailure) throw new Error(prompt);
@@ -269,11 +301,12 @@ test("policy decisions and completed tickets are rejected before token creation"
   }
 });
 
-test("a failed prompt retains the workspace, tells how to revoke and never leaks its token", async () => {
+test("a failed prompt retains the workspace, revokes its token and never leaks it", async () => {
   const f = await fixture({ promptFailure: true });
   expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
   expect(f.errors()).toContain("local workspace retained");
-  expect(f.errors()).toContain("armada launch revoke DEMO-13");
+  expect(f.errors()).toContain("revoked the pending launch of DEMO-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
   expect(f.output() + f.errors()).not.toContain("armada_launch_CANARY_1");
 });
 
@@ -427,13 +460,170 @@ test("failed worker config delivery prevents the harness from starting and never
   expect(f.errors()).not.toContain("CANARY_private_config");
 });
 
+test("known first-run questions stop launch with recovery, retaining the worktree and revoking the token", async () => {
+  for (const [harness, screen, message] of [
+    [
+      "claude",
+      "Is this a project you created or one you trust? Yes, I trust this folder",
+      "Claude Code asks to trust this folder",
+    ],
+    ["claude", "2 new MCP servers found in this project", "project MCP servers"],
+    ["codex", "Update available! 1. Update now 2. Skip 3. Skip until next version", "Codex asks whether to update"],
+    ["codex", "Do you trust the contents of this directory? 1. Yes, continue", "Codex asks to trust this repository"],
+    ["codex", "not supported when using Codex with a ChatGPT account", "configured model is not supported"],
+  ]) {
+    const f = await fixture({
+      screen,
+      startFailure: true,
+      toml: local.replace('harness = "codex"', `harness = "${harness}"`),
+    });
+    expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+    expect(f.errors()).toContain(message ?? "");
+    expect(f.errors()).toContain("armada setup local");
+    expect(f.errors()).toContain("herdr agent attach demo-13");
+    expect(f.errors()).toContain("workspace retained");
+    expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
+    expect(f.calls.some((c) => c.includes("prompt") || c.includes("send-keys") || c.includes("remove"))).toBe(false);
+  }
+});
+
+test("a failed token revocation names its recovery without echoing server diagnostics", async () => {
+  const f = await fixture({
+    screen: "Do you trust the contents of this directory?",
+    startFailure: true,
+    revokeFailure: true,
+  });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(f.errors()).toContain("armada launch revoke DEMO-13");
+  expect(f.errors()).not.toContain("CANARY_revoke_private");
+});
+
 test("launch refuses an OpenCode fallback before delivering the worker token", async () => {
   const f = await fixture({ toml: deepseekLocal, pane: "Build auto · deepseek-v4-flash OpenCode Zen\n╹" });
   expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
   expect(f.errors()).toContain("model differs from profile opencode/deepseek-v4-pro");
-  expect(f.errors()).toContain("worker pane closed");
-  expect(f.errors()).toContain("armada launch revoke DEMO-13");
+  expect(f.errors()).toContain("armada setup local");
+  expect(f.errors()).toContain("herdr agent attach demo-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
   expect(f.prompt()).toBe("");
-  expect(f.calls.at(-1)).toEqual(["herdr", "pane", "close", f.handle.pane]);
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
   expect(f.errors()).not.toContain("armada_launch_CANARY_1");
+});
+
+const dryWorktree = (home: string, directory = join(home, ".herdr", "worktrees")) =>
+  join(directory, "widgets", "feature-demo-13");
+
+test("dry-run prints the plan and creates nothing", async () => {
+  const f = await fixture();
+  let installs = 0;
+  f.io.spawn = async () => {
+    installs++;
+    return 0;
+  };
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], f.io), f.errors()).toBe(0);
+  const text = f.output();
+  expect(text).toContain("Launch plan for DEMO-13 (dry run: nothing is created)");
+  expect(text).toContain("Profile    backend — herdr.default_profile");
+  expect(text).toContain("Harness    codex (exact model: model-a, effort high)");
+  expect(text).toContain("Branch     feature/demo-13");
+  expect(text).toContain(`Worktree   ${dryWorktree(f.home)}`);
+  expect(text).toContain("Base       trunk");
+  expect(text).toContain("Preflight  ready");
+  // Nothing was created: no token, no runtime, no write, no install, no prompt.
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.writes).toEqual([]);
+  expect(installs).toBe(0);
+  expect(f.prompt()).toBe("");
+  // Only read-only herdr and git probes ran.
+  expect(f.calls.filter((call) => call[0] === "herdr").every((call) => call[1] === "--version")).toBe(true);
+  expect(
+    f.calls.filter((call) => call[0] === "git").every((call) => ["rev-parse", "ls-remote"].includes(call[1] ?? "")),
+  ).toBe(true);
+  expect(f.errors()).not.toContain("armada_launch_CANARY_1");
+});
+
+test("dry-run --json gives the same plan as JSON", async () => {
+  const f = await fixture();
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run", "--json"], f.io), f.errors()).toBe(0);
+  expect(JSON.parse(f.output())).toMatchObject({
+    ticket: "DEMO-13",
+    runtime: "herdr",
+    dryRun: true,
+    profile: "backend",
+    routed: "backend",
+    harness: "codex",
+    actualHarness: "codex",
+    model: "model-a",
+    effort: "high",
+    branch: "feature/demo-13",
+    worktree: dryWorktree(f.home),
+    base: "trunk",
+    preflight: { ready: true, gaps: [] },
+  });
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[0] === "herdr" && call[1] !== "--version")).toBe(false);
+});
+
+test("dry-run exits non-zero and lists every gap without creating anything", async () => {
+  const f = await fixture({ missing: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], f.io)).toBe(1);
+  expect(f.errors()).toContain("herdr could not report a usable version");
+  expect(f.errors()).toContain("codex could not report a usable version");
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[0] === "herdr" && call[1] !== "--version")).toBe(false);
+});
+
+test("dry-run lists a missing harness sign-in and an unpublished CLI as gaps", async () => {
+  const unsigned = await fixture({ unsigned: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], unsigned.io)).toBe(1);
+  expect(unsigned.errors()).toContain("codex is not signed in");
+  expect(unsigned.armada.launches.size).toBe(0);
+
+  const unpublished = await fixture({ unpublished: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], unpublished.io)).toBe(1);
+  expect(unpublished.errors()).toContain("is not on npm yet");
+  expect(unpublished.armada.launches.size).toBe(0);
+});
+
+test("dry-run honors herdr's configured worktrees directory", async () => {
+  const f = await fixture({ herdrConfig: '[worktrees]\ndirectory = "~/custom/trees"\n' });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run", "--json"], f.io), f.errors()).toBe(0);
+  expect(JSON.parse(f.output()).worktree).toBe(join(f.home, "custom", "trees", "widgets", "feature-demo-13"));
+});
+
+test("dry-run names the deepseek OpenCode fallback and its exact model", async () => {
+  const f = await fixture({ toml: deepseekLocal });
+  expect(
+    await run(["launch", "DEMO-13", "--runtime", "herdr", "--harness", "deepseek", "--dry-run", "--json"], f.io),
+    f.errors(),
+  ).toBe(0);
+  expect(JSON.parse(f.output())).toMatchObject({
+    harness: "deepseek",
+    actualHarness: "opencode",
+    harnessDescription: "deepseek (OpenCode + DeepSeek model)",
+    model: "opencode/deepseek-v4-pro",
+    preflight: { ready: true },
+  });
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[0] === "herdr" && call[1] !== "--version")).toBe(false);
+});
+
+test("dry-run lists a missing repository as a gap and still reports the preflight", async () => {
+  const f = await fixture({ noGit: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run", "--json"], f.io)).toBe(1);
+  const plan = JSON.parse(f.output());
+  expect(plan.worktree).toBeNull();
+  expect(plan.preflight.gaps).toContain("local launch must run in a git repository");
+  expect(f.armada.launches.size).toBe(0);
+});
+
+test("OpenCode first-run provider questions retain the worker pane before model verification", async () => {
+  const f = await fixture({ toml: deepseekLocal, screen: "Select a provider to connect" });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(f.errors()).toContain("OpenCode asks the owner to connect a provider");
+  expect(f.errors()).toContain("herdr agent attach demo-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
+  expect(f.calls.some((c) => c[0] === "opencode" && c.includes("--verbose"))).toBe(false);
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
+  expect(f.prompt()).toBe("");
 });

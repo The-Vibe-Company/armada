@@ -4,7 +4,7 @@ Armada runs a fleet of coding agents on one project and keeps every piece of wor
 
 It imposes one method: grill the decisions, write a spec, cut it into tickets, let one worker agent ship each ticket as a green pull request, and let a coordinator agent merge. The tracker is the source of truth for progress; Armada adds live telemetry, contention rules and a fleet dashboard on top.
 
-**Status:** early. `armada status`, `armada auth`, `armada doctor`, `armada init`, `armada brief`, `armada claim`, `armada report`, `armada release`, `armada ask`, `armada inbox`, `armada answer`, `armada merge`, `armada validate`, `armada ask-owner` and `armada done` work; the other commands are being built.
+**Status:** early. `armada status`, `armada auth`, `armada doctor`, `armada init`, `armada brief`, `armada launch`, `armada claim`, `armada report`, `armada release`, `armada ask`, `armada inbox`, `armada answer`, `armada merge`, `armada validate`, `armada ask-owner` and `armada done` work; the other commands are being built.
 
 ## Install
 
@@ -91,7 +91,7 @@ On a repository without `armada.toml`, pass `--program-root <ISSUE-ID>`; the nam
 
 ## Launch a worker (coordinators)
 
-Armada starts persistent local workers through herdr; Conductor and Claude Code subagents follow their runtime guides. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands; the `armada-runtime-claude-code` skill launches a worker as a background subagent of a coordinator running in Claude Code, in its own git worktree (it dies with the coordinator's session, so long runs go to Conductor). [`docs/runbook.md`](docs/runbook.md) says how to start a coordinator on a laptop or in Conductor Cloud, what the owner sets up once, and how one coordinator hands over to the next.
+Armada starts [persistent local workers through herdr](#run-workers-on-your-own-machine); Conductor and Claude Code subagents follow their runtime guides. The `armada-runtime-conductor` skill gives the exact Conductor Cloud commands; the `armada-runtime-claude-code` skill launches a worker as a background subagent of a coordinator running in Claude Code, in its own git worktree (it dies with the coordinator's session, so long runs go to Conductor or a persistent herdr worker). [`docs/runbook.md`](docs/runbook.md) says how to start a coordinator on a laptop or in Conductor Cloud, what the owner sets up once, and how one coordinator hands over to the next.
 
 ```sh
 armada brief ABC-12                    # read-only settings and prompt preview; no launch
@@ -111,6 +111,26 @@ armada launch revoke ABC-12            # cancel the newest pending launch throug
 - A profile with `runtime = "claude-code"` routes the launch to the `armada-runtime-claude-code` skill: the `Runtime:` line names the skill, the claim runs `--runtime claude-code` with the subagent's name as its handle (the ticket id in lowercase), and the prompt first makes the worker check it runs in its own worktree. The Agent tool applies no effort; the brief says so.
 - Label rules win: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored) selects its profile. Otherwise, profiles with `when = "front end: dashboard pages, components, styles, design, UI copy"` or `when = "back end: CLI, core rules, API, database, migrations, tests, docs"` ask the coordinator to choose. `armada brief ABC-12` prints **Choose a profile**, the ticket's title and In short, and every profile's rule; it creates no launch token or watch entry. `--json` returns the choice information; `--prompt` refuses until a profile is chosen. Read the ticket and parent spec, choose the rule covering most files/work (explain mixed work), then run `armada brief ABC-12 --profile codex --reason "mostly CLI and core rules" --prompt`. Armada does not call a model to classify tickets. Projects without `when` keep their old `conductor.default_profile` or only-profile fallback.
 - `--profile` also overrides a label route. `--reason` is required for semantic choices and, when routing rules exist, overrides of the routed profile. Keep both flags on subsequent `--prompt` calls. The generated claim command carries the reason; the claim comment, `armada status` and dashboard agent Profile row show it. An unknown profile exits 2. The dashboard's ready-to-launch row shows a label-routed profile or "chosen by the coordinator"; Launch still sends an inbox request, not a runtime call.
+
+## Run workers on your own machine
+
+Workers do not have to run in Conductor Cloud. With [herdr](https://herdr.dev) 0.9.1 or newer, the coordinator runs each worker on this machine, in its own git worktree and terminal, and the worker keeps going when the coordinator disconnects (the machine must stay awake). Four harnesses are supported: `claude`, `codex`, `opencode`, and `deepseek`, which runs a persistent OpenCode session with the DeepSeek model you configure. Add a local profile to the project's `armada.toml`:
+
+```toml
+[herdr.profiles.backend]
+harness = "codex" # claude, codex, opencode or deepseek (OpenCode + DeepSeek model)
+model = "your-model-id" # exact id: `opencode models` lists them for opencode and deepseek
+effort = "high"
+extra_args = ["--sandbox", "workspace-write"] # arguments for this harness only
+```
+
+Label routing follows the same rules as the Conductor profiles (`[[herdr.routing]]`). Launch from the signed-in coordinator; the worker's brief carries a one-time launch token, so it needs no key:
+
+```sh
+armada launch ABC-12 --runtime herdr --profile backend --reason "back end work"
+```
+
+`armada doctor` checks what the local profiles need: herdr (0.9.1 or newer), each harness CLI, the Claude and Codex sign-ins, and every OpenCode or DeepSeek profile's exact model against `opencode models`. On a terminal it offers the official installs and a numbered model pick, each only with your consent; `--json` and CI only print the fixes. Armada never runs a sign-in and never handles a provider key. The runbook's [Launch a persistent local worker](docs/runbook.md#launch-a-persistent-local-worker) has the rest: routing and model choice, messaging the worker, and safe archival with `armada stop`.
 
 ## Work on a ticket (workers)
 

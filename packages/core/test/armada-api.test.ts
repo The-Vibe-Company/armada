@@ -93,6 +93,24 @@ test("a revoked credential is signed out with the server's next step; an address
   expect(() => armadaApi({ url: "http://localhost:4822" })).not.toThrow();
 });
 
+test("specific launch cleanup never falls back to ticket-wide revocation on an older server", async () => {
+  const seen: string[] = [];
+  const api = armadaApi({
+    url: ARMADA_URL,
+    fetch: async (url) => {
+      seen.push(url);
+      return Response.json({ error: "unknown route" }, { status: 404 });
+    },
+  });
+  await expect(
+    api.revokePendingLaunch(
+      { kind: "session", token: "synthetic-session" },
+      { project: "widgets", ticket: "WID-83", id: "synthetic-launch-id" },
+    ),
+  ).rejects.toBeInstanceOf(ArmadaApiError);
+  expect(seen).toEqual([`${ARMADA_URL}/api/cli/workers/revoke-pending`]);
+});
+
 test("a CLI older than the server expects gets one upgrade line instead of an answer it cannot read", async () => {
   const armada = fakeArmada({ cli: { minimum: "0.2.0", latest: "0.2.5" } });
   const signIn = { kind: "session" as const, token: "t" };

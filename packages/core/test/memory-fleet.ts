@@ -464,7 +464,7 @@ export function memoryFleet(): FleetStore & {
       for (const i of items)
         if (
           i.project === project &&
-          ["question", "plan"].includes(i.kind) &&
+          ["question", "plan", "decision"].includes(i.kind) &&
           i.ticket &&
           i.resolvedAt &&
           i.resolvedAt >= since &&

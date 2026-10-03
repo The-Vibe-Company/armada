@@ -315,7 +315,7 @@ export interface FleetStore {
   getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
   /** Resolves one open item; false when it was already resolved. */
   resolveInboxItem(q: { project: string; id: number; resolution: string; at: Date }): Promise<boolean>;
-  /** Newest answer per ticket, optionally bounded to given tickets and a time. */
+  /** Newest resolved question, plan or relayed validation decision per ticket, bounded to tickets and a time. */
   lastAnsweredAt(
     project: string,
     opts?: { since?: Date; tickets?: readonly string[] },
@@ -815,11 +815,10 @@ export const notStartedLaunches = (launches: readonly PendingLaunch[], now: Date
 /**
  * What waits for the coordinator, oldest first: open questions, requests and
  * hand-backs, workers launched that never claimed (`not-started`), and silent workers. A worker is silent when it holds a ticket
- * (open runtime handle), its last heartbeat is older than the silence threshold
- * (its newest report for old clients),
+ * (open runtime handle), its newest heartbeat or report is older than the silence threshold,
  * and its phase does not wait on someone else (awaiting-approval, blocked,
- * ready-to-merge). An answer given after its newest event means it owes a
- * report: old-client silence then counts from the answer, whatever the phase. Events and
+ * awaiting-validation, ready-to-merge). An answer given after its newest event means it owes a
+ * report: silence then counts from the answer or a newer heartbeat, whatever the phase. Events and
  * answers are read only since the oldest open claim (each claim records an
  * event), so the read stays bounded by the work in flight, not the history.
  */
@@ -921,19 +920,21 @@ async function readInboxAndFlight(
     const owesReport = !!answer && answer > reported;
     if (!owesReport && NEEDS_HUMAN.includes(e?.phase as AgentPhase)) continue;
     const last = owesReport ? answer : reported;
-    const alive = h.lastHeartbeatAt ?? last;
+    // A waiting turn may lose its heartbeat process. An answer or resumed report
+    // grants a full silence window before the next heartbeat has to arrive.
+    const heartbeat = h.lastHeartbeatAt && h.lastHeartbeatAt > last ? h.lastHeartbeatAt : null;
+    const alive = heartbeat ?? last;
     const silence = now - Date.parse(alive);
     const quiet = now - Date.parse(last);
     const silent = silence > o.silentAfterMinutes * MIN;
-    if (!silent && (!h.lastHeartbeatAt || quiet <= (o.quietAfterMinutes ?? CONFIG_DEFAULTS.quietAfterMinutes) * MIN))
-      continue;
+    if (!silent && (!heartbeat || quiet <= (o.quietAfterMinutes ?? CONFIG_DEFAULTS.quietAfterMinutes) * MIN)) continue;
     entries.push({
       id: null,
       kind: silent ? "silent" : "quiet",
       ticket: h.ticket,
       author: h.handle,
       body: silent
-        ? `no ${h.lastHeartbeatAt ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${owesReport && !h.lastHeartbeatAt ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
+        ? `no ${heartbeat ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${owesReport && !heartbeat ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
         : `${h.ticket} has been working ${Math.floor(quiet / MIN)} min without a report (heartbeats are arriving, phase ${e?.phase ?? "unknown"})`,
       createdAt: silent ? alive : last,
       new: false,

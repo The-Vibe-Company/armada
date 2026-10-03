@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.2.47](https://github.com/The-Vibe-Company/armada/compare/v0.2.46...v0.2.47) (2026-10-03)
+
+
+### Features
+
+* **cli:** preview a local launch without creating anything ([#169](https://github.com/The-Vibe-Company/armada/issues/169)) ([c6313be](https://github.com/The-Vibe-Company/armada/commit/c6313bec129549a4db8d4798e60b67c2e29c6924))
+
+## [0.2.46](https://github.com/The-Vibe-Company/armada/compare/v0.2.45...v0.2.46) (2026-10-03)
+
+
+### Features
+
+* **cli:** set up local harnesses and explain first-run questions ([#160](https://github.com/The-Vibe-Company/armada/issues/160)) ([a32c262](https://github.com/The-Vibe-Company/armada/commit/a32c262df2db197f613c2948609f30206dce5a05))
+
+## [0.2.45](https://github.com/The-Vibe-Company/armada/compare/v0.2.44...v0.2.45) (2026-10-03)
+
+
+### Bug Fixes
+
+* **core:** renew worker liveness after waiting turns ([#161](https://github.com/The-Vibe-Company/armada/issues/161)) ([9ced0b7](https://github.com/The-Vibe-Company/armada/commit/9ced0b7d36d55b5ed5b123258a961532eb604d8b))
+
+## [0.2.44](https://github.com/The-Vibe-Company/armada/compare/v0.2.43...v0.2.44) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** recognize OpenCode model and provider footer names ([#165](https://github.com/The-Vibe-Company/armada/issues/165)) ([048492d](https://github.com/The-Vibe-Company/armada/commit/048492d0ea484b9b6d910f8a720fb5b48ed93a77))
+
 ## [0.2.43](https://github.com/The-Vibe-Company/armada/compare/v0.2.42...v0.2.43) (2026-10-03)
 
 

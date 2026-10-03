@@ -1,4 +1,4 @@
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   type ArmadaConfig,
   armadaAddress,
@@ -28,9 +28,9 @@ import {
   ValidationChoiceError,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
-import { Herdr, type HerdrHandle } from "./herdr.ts";
+import { Herdr, type HerdrHandle, herdrWorktreePath, herdrWorktreesDirectory } from "./herdr.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
-import { ensureLocalProfile } from "./local-tools.ts";
+import { detectLocalTools, ensureLocalProfile } from "./local-tools.ts";
 import { requireSignIn } from "./login.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
@@ -135,6 +135,7 @@ async function launchLocal(
     throw new UsageError(
       `profile "${choice.name}" uses ${choice.profile.harness}; choose a matching --profile with --reason to change harness`,
     );
+  if (o["dry-run"] === "true") return await launchPlan(io, args.json, { ticketId, choice, branch, version });
   const execute = io.exec;
   const preflight: Io = {
     ...io,
@@ -197,14 +198,28 @@ async function launchLocal(
       },
       herdr: { choice, handle: herdrClaimHandle(handle) },
     });
-    await runtime.start(handle, choice.profile);
-    await runtime.prompt(handle, b.prompt);
+    await runtime.startChecked(handle, choice.profile);
+    await runtime.promptChecked(handle, choice.profile, b.prompt);
   } catch (error) {
     // Keep the workspace for recovery; deletion could lose the worker's unpushed work.
     if (handle) io.stderr(`armada: local workspace retained: ${herdrClaimHandle(handle)}\n`);
+    let revoked = false;
+    try {
+      await api.revokePendingLaunch(signIn, { project: config.project.slug, ticket: ticketId, id: launch.worker.id });
+      revoked = true;
+      io.stderr(`armada: revoked the pending launch of ${ticketId}.\n`);
+    } catch {
+      io.stderr(
+        `armada: could not revoke the pending launch; run armada launch revoke ${ticketId} before retrying (a claimed worker must release).\n`,
+      );
+    }
     throw new UsageError(
       error instanceof UsageError || error instanceof BriefError ? error.message : "local worker launch failed",
-      `inspect herdr agent list; revoke the pending token with armada launch revoke ${ticketId} before retrying`,
+      !revoked
+        ? `armada launch revoke ${ticketId}`
+        : handle
+          ? `herdr agent attach ${handle.agent}`
+          : "herdr agent list",
     );
   }
   const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];
@@ -230,4 +245,86 @@ async function launchLocal(
       : `Launched ${ticketId} with ${result.harnessDescription} on profile ${choice.name}.\nWorktree: ${handle.path}\nHandle: ${result.handle}\nThe worker signs in and claims its ticket from the brief.\n${watch.line}\n`,
   );
   return 0;
+}
+
+/**
+ * `launch --dry-run` (THE-972): print the routing, the machine and the preflight
+ * without creating anything. Every probe and git read is read-only: no token is
+ * minted, no worktree or pane is created, nothing is installed and no config is
+ * written. The worktree path is a prediction of herdr's own layout.
+ */
+async function launchPlan(
+  io: Io,
+  json: boolean,
+  input: { ticketId: string; choice: HerdrProfileChoice; branch: string; version: string },
+): Promise<number> {
+  // The same read-only preflight launch runs, without install offers, prompts or writes.
+  const openCode = herdrHarnessKind(input.choice.profile.harness) === "opencode";
+  const detected = await detectLocalTools(
+    io,
+    [input.choice.profile.harness],
+    openCode
+      ? [{ name: input.choice.name, harness: input.choice.profile.harness, model: input.choice.profile.model }]
+      : [],
+  );
+  const npm = await checkPublished(input.version, io.fetch ?? fetch);
+  const describe = (checks: typeof detected.checks) =>
+    checks.map((check) => `${check.message}${check.fix ? `: ${check.fix}` : ""}`);
+  const gaps = describe(detected.checks.filter((check) => check.level === "error"));
+  const warnings = describe(detected.checks.filter((check) => check.level === "warning"));
+  if (npm.state === "missing")
+    gaps.push(`armada ${input.version} is not on npm yet; publish this version before launching local workers`);
+  // Predict the worktree path from read-only git state; a missing repository is a gap too.
+  let worktree: string | null = null;
+  let base: string | null = null;
+  try {
+    const execute = io.exec;
+    if (!execute) throw new UsageError("local launch needs process execution");
+    const root = await execute("git", ["rev-parse", "--show-toplevel"], { cwd: io.cwd, timeoutMs: 10_000 });
+    if (root.code !== 0 || !root.stdout.trim().startsWith("/"))
+      throw new UsageError("local launch must run in a git repository");
+    const repo = root.stdout.trim();
+    // Herdr names the worktree folder after the main repository, even from a linked worktree.
+    const common = await execute("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd: repo,
+      timeoutMs: 10_000,
+    });
+    const mainRoot = common.code === 0 && common.stdout.trim().startsWith("/") ? dirname(common.stdout.trim()) : repo;
+    const remote = await execute("git", ["ls-remote", "--symref", "origin", "HEAD"], { cwd: repo, timeoutMs: 20_000 });
+    base = remote.code === 0 ? (remote.stdout.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m)?.[1] ?? null) : null;
+    if (!base) throw new UsageError("could not read the default branch of origin");
+    const configHome = io.env.XDG_CONFIG_HOME ?? (io.env.HOME ? join(io.env.HOME, ".config") : null);
+    const herdrConfigPath = io.env.HERDR_CONFIG_PATH ?? (configHome ? join(configHome, "herdr", "config.toml") : null);
+    const herdrConfig = herdrConfigPath ? await io.readFile(herdrConfigPath).catch(() => null) : null;
+    worktree = herdrWorktreePath(herdrWorktreesDirectory(io.env, herdrConfig), basename(mainRoot), input.branch);
+  } catch (error) {
+    gaps.push(error instanceof UsageError ? error.message : "could not read the repository state");
+  }
+  const ready = gaps.length === 0;
+  const plan = {
+    ticket: input.ticketId,
+    runtime: "herdr",
+    dryRun: true,
+    profile: input.choice.name,
+    profileWhy: input.choice.why,
+    routed: input.choice.routed,
+    reason: input.choice.reason,
+    harness: input.choice.profile.harness,
+    actualHarness: herdrHarnessKind(input.choice.profile.harness),
+    harnessDescription: herdrHarnessLabel(input.choice.profile.harness),
+    model: input.choice.profile.model,
+    effort: input.choice.profile.effort,
+    branch: input.branch,
+    worktree,
+    base,
+    preflight: { ready, gaps, warnings },
+  };
+  io.stdout(
+    json
+      ? `${JSON.stringify(plan, null, 2)}\n`
+      : `Launch plan for ${input.ticketId} (dry run: nothing is created)\n\nProfile    ${input.choice.name} — ${input.choice.why}\nHarness    ${plan.harnessDescription} (exact model: ${plan.model || "not set"}, effort ${plan.effort})\nBranch     ${plan.branch}\nWorktree   ${worktree ?? "unknown"}\nBase       ${base ?? "unknown"}\nPreflight  ${ready ? "ready" : "blocked"}\n`,
+  );
+  for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
+  for (const gap of gaps) io.stderr(`armada: ${gap}\n`);
+  return ready ? 0 : 1;
 }
