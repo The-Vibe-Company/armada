@@ -10,6 +10,7 @@ import {
   REPORT_MARKER,
   resultOf,
   routeBytes,
+  shiftLines,
 } from "../scripts/perf.ts";
 
 const page = (over: Partial<PageResult>): PageResult => ({
@@ -79,6 +80,22 @@ describe("the Lighthouse budgets", () => {
     expect(r).toEqual(
       page({ page: "/", performance: 95, accessibility: 96, "best-practices": 100, lcp: 1612, tbt: 88 }),
     );
+  });
+
+  test("name what each layout shift moved, with its box before and after", () => {
+    const tabbar = { node: "body > div.sh > nav.sh-tabbar", before: [0, 782, 412, 41], after: [0, 763, 412, 60] };
+    expect(
+      shiftLines(
+        [
+          { ms: 1798, score: 0.00168, input: true, nodes: [tabbar] },
+          { ms: 4100, score: 0, input: false, nodes: [] },
+        ],
+        "mobile",
+        "/",
+      ),
+    ).toEqual([
+      "  shift mobile / 0.00168 at 1798 ms (after input): body > div.sh > nav.sh-tabbar [0,782,412,41] -> [0,763,412,60]",
+    ]);
   });
 
   test("keep the median run of performance", () => {
