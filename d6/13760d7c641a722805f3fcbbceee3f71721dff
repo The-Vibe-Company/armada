@@ -1,0 +1,80 @@
+packages/core/src/armada-api.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 569-579
+packages/dashboard/lib/cli-api.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 469,484-485,490,962
+packages/dashboard/components/landing/content.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 30-34
+packages/dashboard/lib/workers.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 323,327,329,334-339
+packages/cli/test/herdr.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 102-103,111,302-311
+packages/core/test/herdr-profile.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-94
+packages/cli/test/fixtures/first-run/codex-model.txt
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1
+packages/core/test/armada-api.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 96-113
+packages/cli/src/cli.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 27,59-62,67-68,262,659-661
+  s_d72998640459eb::t_7d7d00ec670865 662
+packages/cli/src/doctor.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 440-443
+packages/cli/test/local-setup.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-283
+packages/cli/test/fixtures/first-run/claude-trust.txt
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-5
+packages/cli/test/fixtures/first-run/codex-update.txt
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-5
+packages/cli/test/herdr-first-run.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-80
+skills-lock.json
+  s_d72998640459eb::t_0ce3d9e0b5dc92 8,15,22,29,36,49,86,93
+docs/runbook.md
+  s_d72998640459eb::t_0ce3d9e0b5dc92 132,136-144
+packages/cli/src/herdr.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 3,5-13,47-51,164-165,182,234,250,292-423,433,438,458-597,603
+  s_d72998640459eb::t_5307241d88da15 4
+packages/dashboard/test/cli-fleet.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 604-636
+packages/cli/src/first-run.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-43
+armada.toml
+  s_d72998640459eb::t_0ce3d9e0b5dc92 75,81,87-88,94
+packages/cli/test/first-run.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-32
+packages/core/test/config.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 169,291-336
+  s_d72998640459eb::t_1877e679773430 337-338
+packages/cli/test/fixtures/first-run/claude-mcp.txt
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-4
+packages/cli/test/fixtures/first-run/codex-trust.txt
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-5
+packages/cli/test/local-launch.test.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 44-46,103-112,116-117,156,189-190,195-196,304,308-309,463-500,505-507,509,620-629
+  s_d72998640459eb::t_0375f3a3fca0aa 619
+packages/cli/src/launch.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 201-202,206-215,218-222
+packages/cli/src/local-setup.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 1-150
+packages/core/src/herdr-profile.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 2-8,42-382
+  s_d72998640459eb::t_509d3f61bdd590 383
+packages/core/src/config.ts
+  s_d72998640459eb::t_0ce3d9e0b5dc92 153-164,172-173,412,427-435,447,754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "d613760d7c641a722805f3fcbbceee3f71721dff",
+  "prompts": {},
+  "sessions": {
+    "s_d72998640459eb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_efda06d6effe5UjXSX5TTzoqFh",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
