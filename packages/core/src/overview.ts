@@ -5,6 +5,7 @@
 import { newerRelease } from "./armada-api.ts";
 import type { Attachment } from "./attachments.ts";
 import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
+import { workerLivenessAt } from "./fleet.ts";
 import type { CoordinatorPresence, InboxItem, InboxReadEvent, SessionRecord } from "./live.ts";
 import { REQUEST_KINDS } from "./request-kinds.ts";
 import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
@@ -346,7 +347,7 @@ export function buildOverview(input: {
         url: t.statusLine?.url ?? t.url,
         detail: t.statusLine?.summary ?? null,
         author: t.agent,
-        since: kind === "silent" ? (t.lastHeartbeat ?? t.lastReport ?? t.lastUpdate) : t.since,
+        since: kind === "silent" ? workerLivenessAt(t) : t.since,
         item: null,
         answer: null,
         coordinatorSince: null,

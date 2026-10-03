@@ -95,7 +95,7 @@ describe("fleet overview", () => {
     ]);
   });
 
-  test("a live worker without a report is not an owner item; silence starts at its last heartbeat", () => {
+  test("a live worker without a report is not an owner item; silence starts at its newest heartbeat or report", () => {
     const overview = buildOverview({
       projects: [
         reading(
@@ -103,6 +103,7 @@ describe("fleet overview", () => {
           [
             ticket("W-1", { lastReport: at("09:00"), lastHeartbeat: at("09:58") }),
             ticket("W-2", { silent: true, lastReport: at("09:00"), lastHeartbeat: at("09:40") }),
+            ticket("W-3", { silent: true, lastReport: at("09:40"), lastHeartbeat: at("09:00") }),
           ],
           null,
         ),
@@ -110,7 +111,10 @@ describe("fleet overview", () => {
       live: { state: "ok", error: null },
       now: NOW,
     });
-    expect(overview.waiting).toEqual([expect.objectContaining({ ticket: "W-2", kind: "silent", since: at("09:40") })]);
+    expect(overview.waiting).toEqual([
+      expect.objectContaining({ ticket: "W-2", kind: "silent", since: at("09:40") }),
+      expect.objectContaining({ ticket: "W-3", kind: "silent", since: at("09:40") }),
+    ]);
   });
 
   test("one waiting list across projects, one reason per ticket, most urgent kind first", () => {

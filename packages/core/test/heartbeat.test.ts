@@ -146,6 +146,65 @@ describe("worker heartbeats", () => {
     ).toEqual({ active: false, claimedAt: null });
   });
 
+  test.each(["awaiting-approval", "blocked", "awaiting-validation"])(
+    "%s tolerates a stopped heartbeat while waiting and grants a fresh silence window on resume",
+    async (phase) => {
+      const store = memoryFleet();
+      const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
+      const query = (minutes: number) =>
+        readInbox(store, { project: "widgets", now: at(minutes), silentAfterMinutes: 15, quietAfterMinutes: 45 });
+      await recordClaim(store, "widgets", claim, NOW);
+      await store.recordHeartbeat({
+        project: "widgets",
+        ticket: claim.ticket,
+        handle: claim.handle,
+        workerSessionId: "worker-one",
+        at: at(5),
+      });
+      // The last heartbeat belongs to the turn that posted its waiting report.
+      await store.recordEvent({ project: "widgets", ticket: claim.ticket, kind: "report", phase, at: at(6) });
+      expect(await query(60)).toEqual([]);
+      {
+        const id = await store.addInboxItem({
+          project: "widgets",
+          ticket: claim.ticket,
+          kind: phase === "blocked" ? "question" : phase === "awaiting-approval" ? "plan" : "decision",
+          recipient: "coordinator",
+          author: claim.handle,
+          body: "A synthetic decision",
+          at: at(6),
+        });
+        await store.resolveInboxItem({ project: "widgets", id, resolution: "Go on", at: at(60) });
+        expect(await query(60)).toEqual([]);
+        expect(await query(75)).toEqual([]);
+        // An answered worker that never resumes must still eventually need attention.
+        expect((await query(76)).map((item) => [item.kind, item.createdAt])).toEqual([
+          ["silent", at(60).toISOString()],
+        ]);
+      }
+      // Every kind of answered waiting turn resumes with a working-phase report.
+      await store.recordEvent({
+        project: "widgets",
+        ticket: claim.ticket,
+        kind: "report",
+        phase: "implementing",
+        at: at(80),
+      });
+      expect(await query(80)).toEqual([]);
+      // Independently configured thresholds must not call a stale heartbeat "arriving".
+      expect(
+        await readInbox(store, {
+          project: "widgets",
+          now: at(86),
+          silentAfterMinutes: 15,
+          quietAfterMinutes: 5,
+        }),
+      ).toEqual([]);
+      expect(await query(95)).toEqual([]);
+      expect((await query(96)).map((item) => [item.kind, item.createdAt])).toEqual([["silent", at(80).toISOString()]]);
+    },
+  );
+
   test("quiet respects configured thresholds and suppresses human-waiting phases without resolving anything", async () => {
     const store = memoryFleet();
     await recordClaim(store, "widgets", { ...claim, phase: "awaiting-approval" }, NOW);

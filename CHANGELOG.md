@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.45](https://github.com/The-Vibe-Company/armada/compare/v0.2.44...v0.2.45) (2026-10-03)
+
+
+### Bug Fixes
+
+* **core:** renew worker liveness after waiting turns ([#161](https://github.com/The-Vibe-Company/armada/issues/161)) ([9ced0b7](https://github.com/The-Vibe-Company/armada/commit/9ced0b7d36d55b5ed5b123258a961532eb604d8b))
+
 ## [0.2.44](https://github.com/The-Vibe-Company/armada/compare/v0.2.43...v0.2.44) (2026-10-03)
 
 
