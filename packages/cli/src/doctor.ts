@@ -348,7 +348,21 @@ export async function localRuntimeChecks(
     options,
   );
   const selected = await offerLocalModels(io, result, options.configPath ?? join(io.cwd, CONFIG_FILE), options);
-  return [...selected.checks, ...(harnesses.includes("deepseek") ? [await dshInformation(io)] : [])];
+  return [
+    ...selected.checks,
+    ...(harnesses.some((harness) => harness === "opencode" || harness === "deepseek")
+      ? [
+          {
+            id: "local-opencode-effort",
+            level: "warning" as const,
+            message:
+              "effort is not applied for OpenCode (including DeepSeek); the interactive UI uses its default variant",
+            fix: null,
+          },
+        ]
+      : []),
+    ...(harnesses.includes("deepseek") ? [await dshInformation(io)] : []),
+  ];
 }
 
 export async function buildDoctor(
