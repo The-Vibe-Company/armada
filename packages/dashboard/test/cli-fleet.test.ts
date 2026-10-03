@@ -128,7 +128,7 @@ describe("private attachments through the authenticated CLI API", () => {
           program: {
             rootId: "WID-1",
             fetchedAt: now().toISOString(),
-            issues: [issue("WID-1"), issue("WID-71"), issue("WID-72")],
+            issues: [issue("WID-1"), issue("WID-71", { parentId: "WID-1" }), issue("WID-72", { parentId: "WID-1" })],
             comments: [],
             warnings: [],
           },
@@ -534,8 +534,17 @@ describe("the fleet through the Armada API", () => {
     await store.putHandBack({ project: WIDGETS.slug, ticket: "WID-102", author: null, body: "PR #92", at: now() });
     const stale = (await coordinator.ticketItems("WID-101"))[0]?.id;
     if (!stale) throw new Error("missing hand-back");
+    await store.saveRuntimeHandle({
+      project: WIDGETS.slug,
+      ticket: "WID-101",
+      runtime: "conductor",
+      handle: "ws/stale-merge",
+      branch: null,
+      at: now(),
+    });
     const before = await inboxOf(coordinator);
     expect(before.items.some((i) => i.id === stale)).toBe(true);
+    expect(before.inFlight).toContain("WID-101");
     const snapshots = dbSnapshots(client, memorySnapshots());
     const lease = await snapshots.claim(WIDGETS.slug, now(), 60_000);
     if (!lease) throw new Error("missing snapshot lease");
@@ -549,7 +558,7 @@ describe("the fleet through the Armada API", () => {
           program: {
             rootId: WIDGETS.programRoot,
             fetchedAt: now().toISOString(),
-            issues: [issue("WID-1"), issue("WID-101")],
+            issues: [issue("WID-1"), issue("WID-101", { parentId: "WID-1", statusType: "completed" })],
             comments: [],
             warnings: [],
           },
@@ -576,6 +585,8 @@ describe("the fleet through the Armada API", () => {
     const healed = await coordinator.inbox({ ...read, etag: before.etag });
     expect(healed).not.toBeNull();
     expect(healed?.items.some((i) => i.id === stale)).toBe(false);
+    expect(healed?.inFlight).not.toContain("WID-101");
+    expect((await store.getRuntimeHandle(WIDGETS.slug, "WID-101"))?.releasedAt).toBeNull();
     expect(healed?.items.some((i) => i.ticket === "WID-102")).toBe(true);
     expect(await coordinator.inboxItem(stale)).toMatchObject({
       resolution: "resolved: PR merged",

@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, askCoordinator, checkInbox } from "../src/inbox.ts";
 import { type FleetStore, type HandBackSnapshot, readInbox, serveInbox } from "../src/live.ts";
+import { buildStatus } from "../src/status.ts";
+import type { ProgramData } from "../src/types.ts";
+import { watchInbox } from "../src/watch.ts";
 import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
 import { memoryFleet } from "./memory-fleet.ts";
-import { DEMO_TOML, FakeLinear, fakeClock, NOW, tempFleet } from "./support.ts";
+import { DEMO_TOML, FakeLinear, fakeClock, issue, NOW, tempFleet } from "./support.ts";
 
 const config = parseConfig(DEMO_TOML);
 const P = "widgets";
@@ -222,6 +225,180 @@ describe("ask and answer", () => {
 });
 
 describe("the coordinator's inbox", () => {
+  test("inbox and status ignore a completed merge's stale handle and agree on live work", async () => {
+    const db = memoryFleet();
+    const program: ProgramData = {
+      rootId: "DEMO-1",
+      fetchedAt: at(10).toISOString(),
+      issues: [
+        issue("DEMO-1"),
+        issue("DEMO-2", { parentId: "DEMO-1", statusType: "completed" }),
+        issue("DEMO-3", { parentId: "DEMO-1", statusType: "canceled" }),
+        issue("DEMO-4", { parentId: "DEMO-1", statusType: "started", agentPhase: "implementing" }),
+        issue("DEMO-5", { parentId: "DEMO-1", statusType: "started", agentPhase: "implementing" }),
+        issue("DEMO-6", { parentId: "DEMO-1", statusType: "started", agentPhase: "ready-to-merge" }),
+        issue("DEMO-7", { parentId: "DEMO-1" }),
+        issue("DEMO-8", { parentId: "DEMO-1", statusType: "started", agentPhase: "implementing" }),
+        issue("DEMO-9", { parentId: "DEMO-1", statusType: "started", agentPhase: "implementing" }),
+      ],
+      comments: [],
+      warnings: [],
+    };
+    // The merge updated Linear, but a network failure left the runtime handle open.
+    // A later report can also hide the merge in the latest-event reading.
+    for (const ticket of ["DEMO-2", "DEMO-3", "DEMO-4", "DEMO-5", "DEMO-6", "DEMO-7"])
+      await db.saveRuntimeHandle({
+        project: P,
+        ticket,
+        runtime: "Conductor",
+        handle: `ws/${ticket}`,
+        branch: null,
+        at: at(20),
+      });
+    await db.recordEvent({ project: P, ticket: "DEMO-2", kind: "report", phase: "ready-to-merge", at: at(5) });
+    await db.recordEvent({ project: P, ticket: "DEMO-5", kind: "release", at: at(5) });
+    await db.releaseRuntimeHandle(P, "DEMO-5", at(5));
+    await db.recordEvent({ project: P, ticket: "DEMO-6", kind: "merge", phase: "merged", at: at(5) });
+    await db.recordEvent({ project: P, ticket: "DEMO-7", kind: "claim", phase: "planning", at: at(5) });
+    // A replacement claim must survive an older merge in the same reading.
+    await db.recordEvent({ project: P, ticket: "DEMO-9", kind: "merge", phase: "merged", at: at(5) });
+    await db.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-9",
+      runtime: "Conductor",
+      handle: "ws/new-claim",
+      branch: null,
+      at: at(3),
+    });
+    const snapshot: HandBackSnapshot = {
+      repository: "acme/widgets",
+      issues: program.issues,
+      prs: [],
+      flight: { program, forge: null, after: program.fetchedAt },
+    };
+    const query = { coordinator: null, silentAfterMinutes: 15, etag: null };
+    const before = await serveInbox(db, P, query, NOW);
+    expect(before?.inFlight).toContain("DEMO-2");
+    const read = await serveInbox(db, P, { ...query, etag: before?.etag ?? null }, NOW, null, snapshot);
+    const events = await db.latestEvents(P);
+    const handles = Object.fromEntries((await db.openRuntimeHandles(P)).map((h) => [h.ticket, h]));
+    const status = buildStatus({
+      config,
+      program,
+      forge: null,
+      live: { after: program.fetchedAt, events, handles },
+      now: NOW,
+    });
+    expect(read?.inFlight).toEqual(status.inFlight.map((t) => t.id).sort());
+    expect(read?.inFlight).toEqual(["DEMO-4", "DEMO-7", "DEMO-8", "DEMO-9"]);
+    expect(read?.items.some((entry) => ["DEMO-2", "DEMO-3", "DEMO-5", "DEMO-6"].includes(entry.ticket ?? ""))).toBe(
+      false,
+    );
+    expect((await db.getRuntimeHandle(P, "DEMO-2"))?.releasedAt).toBeNull();
+    expect(await serveInbox(db, P, { ...query, etag: read?.etag ?? null }, NOW, null, snapshot)).toBeNull();
+    const own = await serveInbox(db, P, { ...query, coordinator: "ws/DEMO-4" }, NOW, null, snapshot);
+    expect(own?.inFlight).toEqual(["DEMO-7", "DEMO-8", "DEMO-9"]);
+  });
+
+  test("closed tickets cannot return through pending launches; fresh launches and uncached claims stay followed", async () => {
+    const db = memoryFleet();
+    const program: ProgramData = {
+      rootId: "DEMO-1",
+      fetchedAt: at(10).toISOString(),
+      issues: [
+        issue("DEMO-1"),
+        issue("DEMO-2", { parentId: "DEMO-1", statusType: "completed" }),
+        issue("DEMO-3", { parentId: "DEMO-1", statusType: "canceled" }),
+      ],
+      comments: [],
+      warnings: [],
+    };
+    for (const [ticket, minutes] of [
+      ["DEMO-2", 5],
+      ["DEMO-3", 30],
+      ["DEMO-4", 5],
+    ] as const)
+      db.launches.push({
+        project: P,
+        ticket,
+        launchedAt: at(minutes).toISOString(),
+        tokenUsedAt: null,
+        handle: null,
+        endedAt: null,
+      });
+    await db.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-5",
+      runtime: "Conductor",
+      handle: "ws/uncached",
+      branch: null,
+      at: at(2),
+    });
+    const snapshot: HandBackSnapshot = {
+      repository: "acme/widgets",
+      issues: program.issues,
+      prs: [],
+      flight: { program, forge: null, after: program.fetchedAt },
+    };
+    const read = await serveInbox(
+      db,
+      P,
+      { coordinator: null, silentAfterMinutes: 15, etag: null },
+      NOW,
+      null,
+      snapshot,
+    );
+    expect(read).toMatchObject({ inFlight: ["DEMO-4", "DEMO-5"], items: [] });
+  });
+
+  test("watch finishes after the last ticket closes even when its handle remains open", async () => {
+    const live = tempFleet();
+    await live.store.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-2",
+      runtime: "Conductor",
+      handle: "ws/stale",
+      branch: null,
+      at: at(30),
+    });
+    const program: ProgramData = {
+      rootId: "DEMO-1",
+      fetchedAt: at(10).toISOString(),
+      issues: [issue("DEMO-1"), issue("DEMO-2", { parentId: "DEMO-1", statusType: "completed" })],
+      comments: [],
+      warnings: [],
+    };
+    const snapshot: HandBackSnapshot = {
+      repository: "acme/widgets",
+      issues: program.issues,
+      prs: [],
+      flight: { program, forge: null, after: program.fetchedAt },
+    };
+    const idleStore: FleetStore = {
+      ...live.store,
+      latestEvents: async () => {
+        throw new Error("idle project must not read event history");
+      },
+      lastAnsweredAt: async () => {
+        throw new Error("idle project must not read answer history");
+      },
+    };
+    const report = await watchInbox(
+      { ...live.fleet, inbox: (q) => serveInbox(idleStore, P, q, NOW, null, snapshot) },
+      {
+        project: P,
+        coordinator: null,
+        silentAfterMinutes: 15,
+        now: () => NOW,
+        seen: [],
+        sleep: async () => {
+          throw new Error("nothing remains to watch");
+        },
+      },
+    );
+    expect(report).toMatchObject({ outcome: "nothing", inFlight: [], items: [] });
+  });
+
   test("an inbox read heals merged and completed hand-backs using only its project snapshot", async () => {
     const db = memoryFleet();
     for (const [project, ticket, body] of [
