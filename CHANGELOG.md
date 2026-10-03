@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.51](https://github.com/The-Vibe-Company/armada/compare/v0.2.50...v0.2.51) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** avoid stale HTTP connections and retry safe reads ([#181](https://github.com/The-Vibe-Company/armada/issues/181)) ([757d17d](https://github.com/The-Vibe-Company/armada/commit/757d17dfb723d7774f31225233dd8008637880a5))
+
 ## [0.2.50](https://github.com/The-Vibe-Company/armada/compare/v0.2.49...v0.2.50) (2026-10-03)
 
 
