@@ -38,6 +38,8 @@ export interface ProcessIdentity {
 
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
+  /** Host platform; local runtime install offers support macOS and Linux. */
+  platform?: NodeJS.Platform;
   machineName?: string;
   ttyName?: string | null;
   cwd: string;
@@ -77,7 +79,7 @@ export interface Io {
   onSignal?: (handler: (signal: WatchSignal) => void) => () => void;
   /** Replaces the Linear write adapter (tests use an in-memory fake). */
   linearWriter?: (options: LinearWriterOptions) => LinearWriter;
-  /** Runs git and gh; required by doctor, init and merge. */
+  /** Runs read-only local tool probes as well as git and gh. */
   exec?: Exec;
   /** Starts a persistent runtime server without a terminal, independent of this command. */
   detach?: (
@@ -85,7 +87,7 @@ export interface Io {
     args: string[],
     options: { cwd: string; env: Record<string, string | undefined> },
   ) => Promise<boolean>;
-  /** Runs the command of `armada run`, attached to this terminal. */
+  /** Runs `armada run` or an explicitly accepted official installer, attached to this terminal. */
   spawn?: Spawn;
   startBackground?: (args: string[]) => Promise<boolean>;
   backgroundReady?: (ready: boolean) => void;

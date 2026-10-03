@@ -29,6 +29,7 @@ import {
 import { apiOf } from "./api.ts";
 import { loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
+import { detectLocalTools, localHarnesses, offerLocalInstalls } from "./local-tools.ts";
 import { describeIdentity, hostOf } from "./login.ts";
 import { fsRepoView, gitRoot } from "./repo.ts";
 
@@ -325,7 +326,22 @@ async function secretChecks(api: ArmadaApi, config: ArmadaConfig | null, credent
   );
 }
 
-export async function buildDoctor(io: Io, armadaVersion: string): Promise<DoctorReport> {
+/** Same diagnostics and offers as launch; cloud-only projects require no local tools. */
+export async function localRuntimeChecks(
+  io: Io,
+  config: Parameters<typeof localHarnesses>[0] | null,
+  options: { readOnly?: boolean } = { readOnly: true },
+): Promise<Check[]> {
+  const harnesses = config ? localHarnesses(config) : [];
+  if (!harnesses.length) return [];
+  return (await offerLocalInstalls(io, await detectLocalTools(io, harnesses), options)).checks;
+}
+
+export async function buildDoctor(
+  io: Io,
+  armadaVersion: string,
+  options: { readOnly?: boolean } = { readOnly: true },
+): Promise<DoctorReport> {
   const root = (io.exec ? await gitRoot(io.exec, io.cwd) : null) ?? io.cwd;
   // Older than Armada expects, it gets no keys from it: the checks go on with this machine's.
   const upgrade = (err: unknown) => (err instanceof ArmadaApiError && err.upgrade ? err : null);
@@ -356,6 +372,7 @@ export async function buildDoctor(io: Io, armadaVersion: string): Promise<Doctor
     ...keyFileChecks(machine, credentials),
     ...(await labelChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
+    ...(await localRuntimeChecks(io, config, options)),
     ...(config ? await reviewRuntimeChecks(io, root) : []),
     ...(await secretChecks(api, config, credentials)),
   ];
@@ -396,7 +413,7 @@ export function renderDoctor(r: DoctorReport): string {
 }
 
 export async function doctor(io: Io, json: boolean, armadaVersion: string): Promise<number> {
-  const report = await buildDoctor(io, armadaVersion);
+  const report = await buildDoctor(io, armadaVersion, { readOnly: json });
   io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : renderDoctor(report));
   return report.errors ? 1 : 0;
 }
