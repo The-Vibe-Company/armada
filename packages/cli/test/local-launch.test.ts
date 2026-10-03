@@ -33,7 +33,14 @@ const rawTicket = () => ({
   inverseRelations: { nodes: [], pageInfo: { hasNextPage: false } },
 });
 async function fixture(
-  options: { toml?: string; missing?: boolean; promptFailure?: boolean; state?: string; unpublished?: boolean } = {},
+  options: {
+    toml?: string;
+    missing?: boolean;
+    promptFailure?: boolean;
+    unsigned?: boolean;
+    state?: string;
+    unpublished?: boolean;
+  } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "armada-local-"));
   homes.push(home);
@@ -79,6 +86,12 @@ async function fixture(
     exec: async (command, args) => {
       calls.push([command, ...args]);
       if (args[0] === "--version") return { code: options.missing ? 1 : 0, stdout: `${command} 0.9.1`, stderr: "" };
+      if (command === "codex" && args[0] === "login")
+        return {
+          code: options.unsigned ? 1 : 0,
+          stdout: options.unsigned ? "Not logged in" : "Logged in using ChatGPT",
+          stderr: "",
+        };
       if (command === "git")
         return {
           code: 0,
@@ -217,4 +230,32 @@ test("an unpublished CLI never launches a worker with an older package's profile
   expect(f.errors()).toContain("publish this version");
   expect(f.armada.launches.size).toBe(0);
   expect(f.calls.some((call) => call[1] === "worktree" || call[1] === "status")).toBe(false);
+});
+
+test("shared preflight blocks known missing sign-in before token/runtime creation", async () => {
+  const f = await fixture({ unsigned: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(1);
+  expect(f.errors()).toContain("codex is not signed in");
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[1] === "status" || call[1] === "worktree")).toBe(false);
+});
+
+test("JSON launch never prompts or installs even on an interactive terminal", async () => {
+  const f = await fixture({ missing: true });
+  f.io.interactive = true;
+  let questions = 0,
+    installs = 0;
+  f.io.prompt = async () => {
+    questions++;
+    return "y";
+  };
+  f.io.spawn = async () => {
+    installs++;
+    return 0;
+  };
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--json"], f.io)).toBe(1);
+  expect(f.armada.launches.size).toBe(0);
+  expect(questions).toBe(0);
+  expect(installs).toBe(0);
+  expect(f.calls.some((call) => call[1] === "status" || call[1] === "worktree" || call[1] === "agent")).toBe(false);
 });

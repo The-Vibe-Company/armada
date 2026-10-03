@@ -26,6 +26,7 @@ import {
 import { apiOf } from "./api.ts";
 import { Herdr, type HerdrHandle } from "./herdr.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
+import { ensureLocalTools } from "./local-tools.ts";
 import { requireSignIn } from "./login.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
@@ -57,33 +58,6 @@ export async function launch(
       : `Revoked the pending launch of ${revoked.ticket}.\n${watch.line}\n`,
   );
   return 0;
-}
-
-/** Temporary boundary until THE-945's checkLocalTools lands; no installs or sign-ins here. */
-async function checkLocalTools(io: Io, { harness }: { harness: HerdrHarness }): Promise<boolean> {
-  if (!io.exec) throw new UsageError("local launch needs process execution");
-  for (const tool of ["herdr", harness]) {
-    let output = "";
-    try {
-      const result = await io.exec(tool, ["--version"], { cwd: io.cwd, timeoutMs: 10_000 });
-      if (result.code === 0) output = result.stdout;
-    } catch {
-      /* A missing executable is a prerequisite failure. */
-    }
-    const version = output.match(/\b(\d+)\.(\d+)\.(\d+)\b/);
-    const old =
-      tool === "herdr" &&
-      version &&
-      Number(version[1]) === 0 &&
-      (Number(version[2]) < 9 || (Number(version[2]) === 9 && Number(version[3]) < 1));
-    if (!version || old) {
-      io.stderr(
-        `armada: ${tool} is missing or too old${tool === "herdr" ? " (need 0.9.1+)" : ""}; install it and run its own login before launching\n`,
-      );
-      return false;
-    }
-  }
-  return true;
 }
 
 async function launchLocal(
@@ -157,7 +131,13 @@ async function launchLocal(
     throw new UsageError(
       `profile "${choice.name}" uses ${choice.profile.harness}; choose a matching --profile with --reason to change harness`,
     );
-  if (!(await checkLocalTools(io, { harness: choice.profile.harness }))) return 1;
+  const execute = io.exec;
+  const preflight: Io = {
+    ...io,
+    interactive: args.json ? false : io.interactive,
+    exec: (command, argv, options) => execute(command, argv, { ...options, timeoutMs: options.timeoutMs ?? 10_000 }),
+  };
+  if (!(await ensureLocalTools(preflight, choice.profile.harness))) return 1;
   const root = await io.exec("git", ["rev-parse", "--show-toplevel"], { cwd: io.cwd, timeoutMs: 10_000 });
   if (root.code !== 0 || !root.stdout.trim().startsWith("/"))
     throw new UsageError("local launch must run in a git repository");
