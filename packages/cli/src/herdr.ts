@@ -1,5 +1,6 @@
 // Herdr's JSON CLI is the runtime boundary. Never surface arbitrary CLI output:
 // agent prompt may include a one-time launch token in its arguments or errors.
+import { join } from "node:path";
 import { type HerdrProfile, herdrHarnessKind, herdrHarnessLabel, type RuntimeState } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 import { verifyOpenCodeModel } from "./opencode-model.ts";
@@ -40,6 +41,49 @@ export const harnessArgs = (p: HerdrProfile): string[] => [
 const object = (v: unknown): Record<string, unknown> | null =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 const id = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9:_-]{0,127}$/.test(v);
+
+/**
+ * Herdr's `[worktrees] directory` from its config, else the documented default
+ * `~/.herdr/worktrees` (THE-972). Read-only: a preview only, herdr still decides
+ * the real path when it creates the worktree.
+ */
+export function herdrWorktreesDirectory(env: Record<string, string | undefined>, configText: string | null): string {
+  const configured = configText ? worktreesDirectoryOf(configText) : null;
+  const directory = configured ?? "~/.herdr/worktrees";
+  const home = env.HOME;
+  if (directory === "~") return home ?? directory;
+  if (directory.startsWith("~/")) return home ? join(home, directory.slice(2)) : directory;
+  return directory;
+}
+
+/** Where herdr puts a managed worktree for `branch`: `<directory>/<repo>/<branch with "/" as "-">`. */
+export function herdrWorktreePath(directory: string, repoName: string, branch: string): string {
+  return join(directory, repoName, branch.replaceAll("/", "-"));
+}
+
+/** The `directory` of herdr's `[worktrees]` table, or null when unset. */
+function worktreesDirectoryOf(text: string): string | null {
+  let inWorktrees = false;
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const table = line.match(/^\[([^\]]+)\]\s*(?:#.*)?$/);
+    if (table) {
+      inWorktrees = table[1]?.trim() === "worktrees";
+      continue;
+    }
+    if (!inWorktrees) continue;
+    const value = line.match(/^directory\s*=\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*(?:#.*)?$/)?.[1];
+    if (!value) continue;
+    if (value.startsWith("'")) return value.slice(1, -1);
+    try {
+      return JSON.parse(value) as string;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
 
 /** Only persisted IDs, never arbitrary options, are accepted as runtime targets. */
 export function parseHerdrHandle(raw: string): HerdrClaimHandle {
