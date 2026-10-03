@@ -240,70 +240,8 @@ button {
     opacity: 0.45;
   }
 }
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
 
 /* ------------------------------------------------------------ top bar */
-/* The overview's live line, in the header bar. */
-.refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  font-size: var(--fs-small);
-  color: var(--text-3);
-  min-width: 0;
-}
-.refresh-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* Its seconds tick: digits of one width keep the header still (THE-892). */
-  font-variant-numeric: tabular-nums;
-}
-.source {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-.source.is-ok {
-  color: var(--done);
-}
-.source.is-unreachable,
-.source.is-off {
-  color: var(--active);
-}
-.source.is-offline {
-  color: var(--critical);
-}
-.icon-btn {
-  display: inline-grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: var(--r);
-  background: var(--fill-2);
-  color: var(--text-2);
-  cursor: pointer;
-  transition-property: scale, background-color, color;
-  transition-duration: var(--t-fast);
-  transition-timing-function: var(--ease-out);
-}
-.icon-btn:active {
-  scale: 0.96;
-}
-.icon-btn:hover {
-  background: var(--fill-3);
-  color: var(--text);
-}
-.icon-btn.spin svg {
-  animation: spin 0.9s linear infinite;
-}
 .lang {
   display: inline-flex;
   margin: 0;
@@ -333,11 +271,6 @@ button {
   margin: 0;
 }
 
-/* An inbox item the coordinator has not acted on for policy.coordinator_minutes. */
-.late {
-  color: var(--accent);
-  font-weight: 500;
-}
 .wait-detail {
   margin: 0;
   font-size: 12.5px;
@@ -345,9 +278,6 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.wait-detail.is-note {
-  white-space: normal;
 }
 /* A quote: the worker's own words, in a well, its edge in the kind's hue. */
 .wait-detail.is-quote {
@@ -607,9 +537,6 @@ button.chip:hover {
 }
 
 @media (max-width: 640px) {
-  .refresh-text {
-    display: none;
-  }
   .kbd {
     display: none;
   }
@@ -2219,20 +2146,6 @@ a.ui-figure:hover {
   outline: 2px solid var(--frontier);
   outline-offset: 2px;
   border-radius: var(--r-card);
-}
-/* The oldest decision: an orange ring and a low glow, the one card to answer first. */
-.ui-card.is-oldest {
-  box-shadow:
-    0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent),
-    var(--lit),
-    var(--drop),
-    0 0 40px -16px var(--accent);
-}
-.ui-card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
 }
 .ui-card-head {
   display: flex;

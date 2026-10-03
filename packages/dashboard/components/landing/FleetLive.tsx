@@ -1,6 +1,6 @@
 import { LazyReplica } from "./LazyReplica";
 
-// The fleet, live (THE-887): the dashboard's overview, playing the demo world.
+// The fleet, live (THE-887, THE-931): the dashboard's overview, playing the demo world.
 export function FleetLive() {
   return (
     <section className="lp-section lp-fleet" id="fleet" aria-labelledby="lp-fleet-title">
@@ -11,22 +11,23 @@ export function FleetLive() {
           Every agent, every phase, one screen.
         </h2>
         <p className="lp-body lp-reveal">
-          Questions, plans to approve and finished pull requests come first. Answer them right there: the project's
-          coordinator carries the answer to the agent. Below, every session's day on one timeline.
+          Every session in flight, grouped under the coordinator that runs it. The coordinators answer their workers and
+          merge their pull requests; what only you can decide is marked To validate and comes first. Below, every
+          session's day on one timeline.
         </p>
       </div>
       <div className="lp-fleet-stage lp-reveal is-tilt">
         <LazyReplica />
       </div>
       <ol className="lp-fleet-beats" aria-label="What the replica shows">
-        <li data-beat="answered">
-          <span className="lp-mono">01</span>A question gets answered from its card
-        </li>
         <li data-beat="delivered">
-          <span className="lp-mono">02</span>The coordinator delivers it; the worker is back at work
+          <span className="lp-mono">01</span>The coordinator answers a question; the worker is back at work
         </li>
         <li data-beat="handed-back">
-          <span className="lp-mono">03</span>A green pull request is handed back to merge
+          <span className="lp-mono">02</span>A green pull request is handed back to the coordinator
+        </li>
+        <li data-beat="to-validate">
+          <span className="lp-mono">03</span>Its merge needs you: the session is To validate
         </li>
       </ol>
       <p className="lp-fleet-note">

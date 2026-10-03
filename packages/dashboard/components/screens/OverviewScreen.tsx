@@ -7,14 +7,16 @@
 // the sessions to validate come first, and so do their groups. The filters
 // live in the address (THE-895: ?coordinator=, ?harness=, ?state=, ?q=,
 // ?sort=…), and the live timeline (THE-868) sits under the list, compact.
+// `Overview` draws it on the filters it is given: the landing's replica
+// (components/landing/Replica.tsx, THE-931), which has no router, plays it.
 import type { FleetRow, ProjectOverview } from "@armada/core/read";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { type ReactNode, useCallback, useMemo } from "react";
 import { type CoordinatorGroup, checksOf, coordinatorGroups, overviewLine, ownerChecks } from "@/lib/coordinator-view";
-import { filterAgents, hasFilters } from "@/lib/filters";
+import { filterAgents, filterHref, hasFilters, type ListFilters } from "@/lib/filters";
 import { coordinatorHarness, HARNESS_NAME, HARNESSES, harnessOf, paths } from "@/lib/fleet-view";
-import { FilterBar, useListFilters } from "../FilterBar";
+import { FilterFields, type ListFilterControl, useListFilters } from "../FilterBar";
 import {
   Alert,
   Button,
@@ -35,9 +37,18 @@ import { AgentRow } from "./AgentRow";
 const LiveTimeline = dynamic(() => import("../timeline/Timeline").then((m) => m.LiveTimeline));
 
 export function OverviewScreen() {
+  const { filters, go } = useListFilters("agents");
+  return <Overview filters={filters} go={go} />;
+}
+
+/** The overview on the filters it is given, and how to change them. */
+export function Overview({ filters, go }: ListFilterControl) {
   const { t, density } = useShell();
   const { overview, failed } = useFleet();
-  const { filters, go, hrefFor } = useListFilters("agents");
+  const hrefFor = useCallback(
+    (patch: Partial<ListFilters>) => filterHref("agents", { ...filters, ...patch }),
+    [filters],
+  );
   const { harness } = filters;
   const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
   const checks = useMemo(() => ownerChecks(overview), [overview]);
@@ -98,7 +109,7 @@ export function OverviewScreen() {
               ]}
             />
           </Toolbar>
-          <FilterBar list="agents" omit={["harness"]} />
+          <FilterFields list="agents" omit={["harness"]} filters={filters} go={go} />
         </>
       }
     >

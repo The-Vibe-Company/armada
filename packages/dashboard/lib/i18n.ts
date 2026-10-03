@@ -116,23 +116,7 @@ const en = {
   },
   /** Each page's status sentence (THE-899): where things stand, in display type, then its quieter half. */
   status: {
-    welcome: (merged: number) =>
-      merged === 0 ? "Welcome back." : `Welcome back. ${merged} merged while you were away.`,
-    flight: (n: number) => (n === 1 ? "1 agent in flight." : `${n} agents in flight.`),
-    rest: "No agent in flight.",
-    decide: (n: number) => (n === 1 ? "1 waits for you." : `${n} wait for you.`),
-    failing: (n: number) => (n === 1 ? "1 is failing." : `${n} are failing.`),
-    ready: (n: number) => (n === 1 ? "1 ticket is ready to start." : `${n} tickets are ready to start.`),
     calm: "Nothing waits for you.",
-    stats: {
-      decide: "to decide",
-      failing: "failing",
-      silent: "silent",
-      merge: "ready to merge",
-      coordinators: "coordinators active",
-      week: "This week",
-      merged: "merged",
-    },
     /** The Agents page's second half: its groups that need someone, in one sentence. */
     groups: {
       waiting: (n: number) => (n === 1 ? "1 waits for a decision" : `${n} wait for a decision`),
@@ -194,8 +178,6 @@ const en = {
   ago: (ms: number) => (ms < MIN ? "just now" : `${duration(ms, "d")} ago`),
   live: { ok: "Live", unreachable: "Linear + GitHub only", off: "Linear + GitHub only" },
   offline: "Offline",
-  checked: (ms: number) => `checked ${elapsed(ms, "d")} ago`,
-  refreshing: "updating…",
   refresh: "Refresh now",
   /** Under the alert of a poll that failed (THE-899): the page keeps its last reading. */
   staleReading: (ms: number) => `You're seeing the reading from ${elapsed(ms, "d")} ago.`,
@@ -208,9 +190,6 @@ const en = {
   footerRefresh:
     "Refreshes every 5 s while work is in flight, every 30 s otherwise, and pauses while this tab is hidden",
   linearRead: (ago: string) => `Linear read ${ago} ago`,
-  dataRead: (ms: number) => `Linear and GitHub read ${elapsed(ms, "d")} ago`,
-  dataReadHint:
-    "The oldest reading of Linear and GitHub on this page. Webhooks refresh it within seconds when they are set up, otherwise every minute while someone looks.",
   readingProject: (name: string) => `${name}: reading Linear and GitHub for the first time…`,
   githubMissing: "GitHub not read",
   language: "Language",
@@ -581,23 +560,6 @@ const en = {
     /** A session the owner has something to validate on. */
     toValidateBadge: "To validate",
     nothingRunning: "Nothing in flight.",
-    headline: (inFlight: number, decide: number) =>
-      `${inFlight === 1 ? "1 agent" : `${inFlight} agents`} in flight, ${decide} waiting for your decision`,
-    subline: (f: { projects: number; harnesses: number; failing: number; silent: number }) =>
-      `${f.projects === 1 ? "1 project" : `${f.projects} projects`}, each with its coordinator, on ${
-        f.harnesses === 1 ? "1 harness" : `${f.harnesses} harnesses`
-      }. ${f.failing === 1 ? "1 session" : `${f.failing} sessions`} failing, ${f.silent} silent.`,
-    figures: {
-      inFlight: "In flight",
-      decide: "To decide",
-      failing: "Failing",
-      silent: "Silent",
-      coordinators: "Active coordinators",
-    },
-    decideTitle: "Yours to decide",
-    decideEmpty: "Nothing waits for your decision.",
-    allValidations: "All validations",
-    withCoordinator: (n: number, oldest: string) => `With the coordinator: ${n}, oldest ${oldest}`,
     kinds: { question: "Question", approval: "Plan to approve", "hand-back": "Ready to merge" } satisfies Record<
       DecisionKind,
       string
@@ -609,15 +571,6 @@ const en = {
     readPlan: "Read the whole plan ↗",
     sent: (project: string) => `Sent to the ${project} coordinator`,
     sentBy: (author: string | null, ago: string) => `by ${author ?? "you"}, ${ago}`,
-    stopped: {
-      kind: "Coordinator stopped",
-      title: (project: string) => `Bring back the ${project} coordinator`,
-      waiting: (n: number) => (n === 1 ? "1 item waits for it" : `${n} items wait for it`),
-      seen: (d: string | null) => (d === null ? "it never ran a command" : `its last command ${d} ago`),
-      what: "Open its session and have it run armada watch again, or start a new coordinator.",
-      open: "Open the project",
-    },
-    projectsTitle: "Projects",
     health: { blocked: "Blocked", watch: "Needs watching", "on-track": "On track" } satisfies Record<
       ProjectHealth,
       string
@@ -1346,23 +1299,7 @@ const fr: Strings = {
     onMain: (pr) => `La PR #${pr} est sur main.`,
   },
   status: {
-    welcome: (merged) =>
-      merged === 0 ? "Bon retour." : `Bon retour. ${merged} fusionné${merged > 1 ? "s" : ""} pendant ton absence.`,
-    flight: (n) => `${n} agent${n > 1 ? "s" : ""} en vol.`,
-    rest: "Aucun agent en vol.",
-    decide: (n) => `${n} t'attend${n > 1 ? "ent" : ""}.`,
-    failing: (n) => (n > 1 ? `${n} échouent.` : `${n} échoue.`),
-    ready: (n) => `${n} ticket${n > 1 ? "s" : ""} prêt${n > 1 ? "s" : ""} à démarrer.`,
     calm: "Rien ne t'attend.",
-    stats: {
-      decide: "à décider",
-      failing: "en échec",
-      silent: "silencieux",
-      merge: "prêts à fusionner",
-      coordinators: "coordinateurs actifs",
-      week: "Cette semaine",
-      merged: "fusionnés",
-    },
     groups: {
       waiting: (n) => (n > 1 ? `${n} attendent une décision` : `${n} attend une décision`),
       error: (n) => (n > 1 ? `${n} échouent` : `${n} échoue`),
@@ -1416,8 +1353,6 @@ const fr: Strings = {
   ago: (ms) => (ms < MIN ? "à l'instant" : `il y a ${duration(ms, "j")}`),
   live: { ok: "En direct", unreachable: "Linear + GitHub seulement", off: "Linear + GitHub seulement" },
   offline: "Hors ligne",
-  checked: (ms) => `vérifié il y a ${elapsed(ms, "j")}`,
-  refreshing: "mise à jour…",
   refresh: "Rafraîchir maintenant",
   staleReading: (ms) => `Tu vois la lecture d'il y a ${elapsed(ms, "j")}.`,
   unreachableBanner: (error) =>
@@ -1429,9 +1364,6 @@ const fr: Strings = {
   footerRefresh:
     "Se rafraîchit toutes les 5 s quand du travail est en cours, toutes les 30 s sinon, et s'arrête quand l'onglet est caché",
   linearRead: (ago) => `Linear lu il y a ${ago}`,
-  dataRead: (ms) => `Linear et GitHub lus il y a ${elapsed(ms, "j")}`,
-  dataReadHint:
-    "La plus ancienne lecture de Linear et GitHub de cette page. Les webhooks la rafraîchissent en quelques secondes s'ils sont configurés, sinon chaque minute tant que quelqu'un regarde.",
   readingProject: (name) => `${name} : première lecture de Linear et GitHub…`,
   githubMissing: "GitHub non lu",
   language: "Langue",
@@ -1798,23 +1730,6 @@ const fr: Strings = {
     toValidate: (n) => `${n} à valider`,
     toValidateBadge: "À valider",
     nothingRunning: "Rien en cours.",
-    headline: (inFlight, decide) =>
-      `${inFlight} agent${inFlight > 1 ? "s" : ""} en vol, ${decide} ${decide > 1 ? "attendent" : "attend"} ta décision`,
-    subline: (f) =>
-      `${f.projects} projet${f.projects > 1 ? "s" : ""}, ${f.projects > 1 ? "chacun avec son" : "avec son"} coordinateur, sur ${
-        f.harnesses
-      } harness. ${f.failing} session${f.failing > 1 ? "s" : ""} en erreur, ${f.silent} silencieuse${f.silent > 1 ? "s" : ""}.`,
-    figures: {
-      inFlight: "En vol",
-      decide: "À décider",
-      failing: "En erreur",
-      silent: "Silencieux",
-      coordinators: "Coordinateurs actifs",
-    },
-    decideTitle: "À toi de décider",
-    decideEmpty: "Rien n'attend ta décision.",
-    allValidations: "Toutes les validations",
-    withCoordinator: (n, oldest) => `Chez le coordinateur : ${n}, le plus ancien depuis ${oldest}`,
     kinds: { question: "Question", approval: "Plan à approuver", "hand-back": "Prêt à fusionner" },
     approvePlan: "Approuver le plan",
     requestChanges: "Demander des changements",
@@ -1823,15 +1738,6 @@ const fr: Strings = {
     readPlan: "Lire tout le plan ↗",
     sent: (project) => `Transmis au coordinateur ${project}`,
     sentBy: (author, ago) => `par ${author ?? "toi"}, ${ago}`,
-    stopped: {
-      kind: "Coordinateur arrêté",
-      title: (project) => `Relance le coordinateur de ${project}`,
-      waiting: (n) => (n === 1 ? "1 élément l'attend" : `${n} éléments l'attendent`),
-      seen: (d) => (d === null ? "il n'a jamais lancé de commande" : `sa dernière commande remonte à ${d}`),
-      what: "Ouvre sa session et fais-lui relancer armada watch, ou démarre un nouveau coordinateur.",
-      open: "Ouvrir le projet",
-    },
-    projectsTitle: "Projets",
     health: { blocked: "Bloqué", watch: "À surveiller", "on-track": "En bonne voie" },
     healthKey: "Santé",
     coordinatorKey: "Coordinateur",

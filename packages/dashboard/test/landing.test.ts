@@ -3,7 +3,11 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { CIPHER, COMMANDS, LAUNCH_TOKEN_HOURS, SETUP } from "../components/landing/content";
 import { BREAK_AT, createSky, INTRO, LIME, step } from "../components/landing/flock";
+import { ASKED, delivered, HANDED_BACK, handedBack, opening, toValidate } from "../components/landing/replica-script";
 import { TRANSCRIPT } from "../components/landing/transcript";
+import { checksOf, coordinatorGroups, ownerChecks } from "../lib/coordinator-view";
+import { demoOverview } from "../lib/demo/overview";
+import { agentState } from "../lib/fleet-view";
 import { LAUNCH_TOKEN_MS } from "../lib/workers";
 import { landingTranscript, SHARE_IMAGE_FILE, shareImage } from "../scripts/landing";
 
@@ -77,7 +81,7 @@ describe("the landing page", () => {
 
   test("reads no cookie, database, session, Linear or GitHub", () => {
     const rel = modules.map((f) => relative(ROOT, f));
-    expect(rel).toContain("components/Fleet.tsx");
+    expect(rel).toContain("components/screens/OverviewScreen.tsx");
     const data =
       /^lib\/(server|db|app-db|access|fleet-data|fleet-store|snapshots|accounts|accounts-server|broker|github-app)\.ts$/;
     expect(rel.filter((f) => data.test(f))).toEqual([]);
@@ -89,6 +93,34 @@ describe("the landing page", () => {
     // They read the server only in the shell: its poll (FleetProvider), and the timeline's history when
     // none is given. The replica runs in ShowcaseProvider, which gives the history and never polls.
     expect(offenders.sort()).toEqual(["components/shell/context.tsx", "components/timeline/Timeline.tsx"]);
+  });
+});
+
+describe("the replica of the overview (THE-931)", () => {
+  const base = demoOverview(new Date("2026-10-01T13:42:00Z"));
+  const at = Date.parse(base.generatedAt);
+  const toCheck = (o: typeof base) => {
+    const checks = ownerChecks(o);
+    return o.rows.filter((r) => checksOf(checks, r).length).map((r) => r.id);
+  };
+
+  test("opens on the seeded demo: its sessions to validate, WID-15 asking, WID-18 still shipping", () => {
+    const o = opening(base);
+    expect(toCheck(o).sort()).toEqual(["GAD-9", "THE-862"]);
+    const asked = o.rows.find((r) => r.id === ASKED);
+    expect(asked && agentState(asked).reason).toBe("question");
+    expect(o.rows.find((r) => r.id === HANDED_BACK)?.phase).toBe("shipping");
+  });
+
+  test("ends on WID-18 to validate, first in the first group", () => {
+    const o = opening(base);
+    const end = toValidate(handedBack(delivered(o, at + 1), base, at + 2), base, at + 3);
+    expect(end.rows.find((r) => r.id === ASKED)).toMatchObject({ phase: "implementing", question: null });
+    expect(end.rows.find((r) => r.id === HANDED_BACK)?.phase).toBe("ready-to-merge");
+    expect(toCheck(end).sort()).toEqual(["GAD-9", "THE-862", HANDED_BACK]);
+    const [first] = coordinatorGroups(end, end.rows);
+    expect(first?.project.slug).toBe("widgets");
+    expect(first?.rows[0]?.id).toBe(HANDED_BACK);
   });
 });
 
