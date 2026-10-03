@@ -1,6 +1,6 @@
 // Herdr's JSON CLI is the runtime boundary. Never surface arbitrary CLI output:
 // agent prompt may include a one-time launch token in its arguments or errors.
-import type { HerdrProfile } from "@armada/core";
+import { type HerdrProfile, herdrHarnessKind } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 
 export interface HerdrHandle {
@@ -12,7 +12,7 @@ export interface HerdrHandle {
 
 export const harnessArgs = (p: HerdrProfile): string[] => [
   "--model",
-  p.harness === "opencode" ? `${p.model.split("#")[0]}#${p.effort}` : p.model,
+  herdrHarnessKind(p.harness) === "opencode" ? `${p.model.split("#")[0]}#${p.effort}` : p.model,
   ...(p.harness === "codex"
     ? ["-c", `model_reasoning_effort=${JSON.stringify(p.effort)}`]
     : p.harness === "claude"
@@ -173,7 +173,7 @@ export class Herdr {
       "start",
       handle.agent,
       "--kind",
-      profile.harness,
+      herdrHarnessKind(profile.harness),
       "--pane",
       handle.pane,
       "--timeout",

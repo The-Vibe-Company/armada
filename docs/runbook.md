@@ -113,7 +113,7 @@ Install herdr 0.9.1 or newer and sign in to your chosen harness yourself. The co
 default_profile = "backend"
 
 [herdr.profiles.backend]
-harness = "codex" # claude, codex or opencode
+harness = "codex" # claude, codex, opencode or deepseek (OpenCode + DeepSeek model)
 model = "your-model-id"
 effort = "high"
 extra_args = ["--sandbox", "workspace-write"] # arguments for this harness only
@@ -132,6 +132,28 @@ Launch starts a headless herdr server if none is running, creates the ticket bra
 The worker signs in, claims with `--runtime herdr`, and starts its heartbeat. Its claim stores a JSON handle containing `workspace`, `pane` and `agent`, which `armada status` shows with its last report. Herdr keeps the worker's terminal running when the coordinator disconnects; the machine must remain awake. `--json` returns the launch handle and worktree path, without the prompt or token.
 
 If startup or prompt delivery fails, launch retains the worktree for inspection. Run `herdr agent list`, inspect the returned handle, and cancel an unused token with `armada launch revoke DEMO-13` before retrying. Once claimed, use the worker release protocol. Never delete a retained worktree without checking for unpushed work.
+
+For DeepSeek, add this profile (or choose another available DeepSeek model, such as `openrouter/deepseek/deepseek-chat` or `deepseek/deepseek-reasoner`):
+
+```toml
+[herdr.profiles.deepseek]
+harness = "deepseek"
+model = "opencode/deepseek-v4.1-flash"
+effort = "high"
+```
+
+Select it explicitly when launching alongside other profiles:
+
+```sh
+armada launch DEMO-13 --runtime herdr --profile deepseek --reason "DeepSeek worker" --harness deepseek
+```
+
+`--harness` checks the selected profile; it does not change routing. The worker is **deepseek (OpenCode + DeepSeek model)**: Herdr starts its built-in `opencode` kind, with a persistent session that receives later plan approvals and answers. OpenCode discovers the worktree's `.agents/skills`. Launch, the brief, claim and status explicitly name this fallback; launch JSON keeps `harness: "deepseek"` and adds `actualHarness: "opencode"` and `harnessDescription`.
+
+Doctor and launch check that each profile's exact model ID appears in the read-only `opencode models` output. DeepSeek models may be served by OpenCode Zen (`opencode/deepseek-v4.1-flash`), OpenRouter (`openrouter/deepseek/deepseek-chat`), or another provider; a `deepseek/` prefix is not required. When the model is missing or unavailable, interactive `armada doctor` and launch preflight ask the owner to choose a numbered model from `opencode models` (filtered to DeepSeek models for `harness = "deepseek"`). The chosen exact ID is saved in the profile in `armada.toml`, preserving formatting and comments, and the command reports the line written. Before starting an OpenCode-based worker, launch copies this configuration into its new worktree so the worker claims with the same profile and model, even when the coordinator’s config change is uncommitted. Without a TTY, with `--json`, or in CI, Armada changes nothing and shows the matching IDs and the config lines to add. The repository’s own DeepSeek profile uses the owner-selected `opencode/deepseek-v4.1-flash`. If no suitable models are available, the owner runs `opencode`, then `/connect`, or selects a DeepSeek model listed by `opencode models`. Armada never runs sign-in, reads provider credentials or handles the key. Missing OpenCode uses the existing explicit-consent install offer. Doctor reports dsh's presence/version as information only; missing dsh never prevents launch or produces an install offer, and no dsh-herdr plugin is installed.
+
+Native dsh is parked in [THE-949 — revisit native dsh when it can resume](https://linear.app/thevibecompany/issue/THE-949). The inspected npm package `@deepseek-ai/dsh@0.1.5-rc.2` can read `.agents/skills` and run a task headlessly, but its headless runner creates a fresh agent, accepts one task, prints the answer and exits. It exposes neither follow-up input nor `--resume`, and its shipped profiles have no TUI. A worker that ends its turn to await a plan approval or an answer cannot receive the reply through that mode. Native dsh can replace the fallback once it provides an interactive or resumable headless session that supports those replies; no dsh version is installed or launched by this fallback.
+
 
 ## Start a coordinator in Conductor Cloud
 

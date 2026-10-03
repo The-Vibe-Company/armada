@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { spawn, spawnSync } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { open, readFile } from "node:fs/promises";
+import { open, readFile, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { isatty } from "node:tty";
 import { run } from "./cli.ts";
@@ -131,6 +131,7 @@ const code = await run(process.argv.slice(2), {
       if (err.code === "ENOENT" || err.code === "ENOTDIR") return null;
       throw err;
     }),
+  writeFile: (path, text) => writeFile(path, text, "utf8"),
   stdout: (t) => process.stdout.write(t),
   readBinaryFile: async (path, maxBytes) => {
     const file = await open(path, "r").catch((err: NodeJS.ErrnoException) => {
