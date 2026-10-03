@@ -29,6 +29,7 @@ import {
 } from "@/lib/coordinator-view";
 import { filterAgents, hasFilters } from "@/lib/filters";
 import { coordinatorHarness, HARNESS_NAME, HARNESSES, harnessOf, paths } from "@/lib/fleet-view";
+import { LONGEST_TIMES } from "@/lib/i18n";
 import { FilterFields, type ListFilterControl, useListFilters } from "../FilterBar";
 import {
   Alert,
@@ -43,7 +44,7 @@ import {
   Toolbar,
 } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Dot, EmptyState, harnessColor, PhasePill, Tabs } from "../ui";
+import { Dot, EmptyState, harnessColor, PhasePill, Steady, Tabs } from "../ui";
 import { SessionCard } from "./SessionCard";
 
 // The timeline is its own chunk (THE-892): the list does not wait for its code.
@@ -287,11 +288,19 @@ function CoordinatorSection({
             </span>
           )}
           <span className="ov-group-state" style={{ color: COORDINATOR_COLOR[c.state] }}>
-            {c.state === "active"
-              ? t.shell.coordinatorActive(t.ago(ms))
-              : c.state === "idle"
-                ? t.shell.coordinatorIdle(t.duration(ms))
-                : t.shell.coordinatorUnknown}
+            {c.state === "unknown" ? (
+              t.shell.coordinatorUnknown
+            ) : (
+              // Active and idle share one box: a coordinator that turns idle as the clock moves moves nothing either.
+              <Steady
+                widest={LONGEST_TIMES.flatMap((n) => [
+                  t.shell.coordinatorActive(t.ago(n)),
+                  t.shell.coordinatorIdle(t.duration(n)),
+                ])}
+              >
+                {c.state === "active" ? t.shell.coordinatorActive(t.ago(ms)) : t.shell.coordinatorIdle(t.duration(ms))}
+              </Steady>
+            )}
           </span>
           {toValidate > 0 && <PhasePill tone="waiting">{t.overview.toValidate(toValidate)}</PhasePill>}
         </span>

@@ -6,6 +6,7 @@
 // component in its states.
 import type { ReactNode } from "react";
 import { AGENT_STATUSES, HARNESS_NAME, HARNESSES, PROJECT_PALETTE } from "@/lib/fleet-view";
+import { LONGEST_TIMES } from "@/lib/i18n";
 import { FormationAtRest, LiveMark, Ship } from "../mark";
 import {
   Alert,
@@ -54,6 +55,7 @@ import {
   ProjectChip,
   RelativeTime,
   StatusDot,
+  Steady,
   Steps,
   Tabs,
   Tag,
@@ -397,6 +399,16 @@ export function DesignSheet() {
         <span className="ds-item" style={{ flex: 1 }}>
           <Steps step={3} tone="running" wide />
         </span>
+      </Specimen>
+
+      <Specimen name="Steady">
+        {[0, 12, 185].map((m) => (
+          <span key={m} className="ds-item mono">
+            <Steady widest={LONGEST_TIMES.map((n) => t.duration(n))}>
+              <RelativeTime at={ago(m)} format="duration" />
+            </Steady>
+          </span>
+        ))}
       </Specimen>
 
       <Specimen name="RelativeTime">
