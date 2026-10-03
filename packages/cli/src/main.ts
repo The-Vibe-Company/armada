@@ -111,6 +111,7 @@ if (process.argv.includes("heartbeat") && !process.argv.includes("--background")
     });
 
 const code = await run(process.argv.slice(2), {
+  platform: process.platform,
   machineName: hostname(),
   ttyName: process.stdin.isTTY
     ? spawnSync("tty", [], { encoding: "utf8", stdio: ["inherit", "pipe", "ignore"] }).stdout?.trim() || null
