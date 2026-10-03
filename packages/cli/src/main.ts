@@ -5,6 +5,7 @@ import { open, readFile, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { isatty } from "node:tty";
 import { run } from "./cli.ts";
+import { readCodexModels } from "./codex-models.ts";
 import type { Exec } from "./io.ts";
 import { UsageError } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
@@ -88,17 +89,28 @@ function openUrl(url: string): boolean {
 }
 
 /** Runs git or gh without a shell; stdin is closed so nothing waits for input. */
-const exec: Exec = (command, args, { cwd, timeoutMs }) =>
+const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes }) =>
   new Promise((done, fail) => {
     const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     const timer = timeoutMs ? setTimeout(() => child.kill("SIGKILL"), timeoutMs) : null;
     let stdout = "";
     let stderr = "";
+    let bytes = 0;
+    let oversized = false;
+    const accept = (text: string) => {
+      bytes += Buffer.byteLength(text);
+      if (maxOutputBytes !== undefined && bytes > maxOutputBytes) {
+        oversized = true;
+        stdout = stderr = "";
+        child.kill("SIGKILL");
+      }
+      return !oversized;
+    };
     child.stdout.setEncoding("utf8").on("data", (d: string) => {
-      stdout += d;
+      if (accept(d)) stdout += d;
     });
     child.stderr.setEncoding("utf8").on("data", (d: string) => {
-      stderr += d;
+      if (accept(d)) stderr += d;
     });
     child.on("error", (err) => {
       if (timer) clearTimeout(timer);
@@ -106,7 +118,7 @@ const exec: Exec = (command, args, { cwd, timeoutMs }) =>
     });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      done({ code: code ?? 1, stdout, stderr });
+      done({ code: oversized ? 1 : (code ?? 1), stdout, stderr });
     });
   });
 
@@ -118,6 +130,7 @@ if (process.argv.includes("heartbeat") && !process.argv.includes("--background")
     });
 
 const code = await run(process.argv.slice(2), {
+  codexModels: readCodexModels,
   platform: process.platform,
   machineName: hostname(),
   ttyName: process.stdin.isTTY
