@@ -31,6 +31,8 @@ export interface MergeForge {
   diff(number: number): Promise<string>;
   /** Squash-merges only if the head is still `sha`. Never deletes the branch. */
   merge(number: number, sha: string): Promise<MergeAttempt>;
+  /** Posts an audit comment on the pull request; rejects if it could not be recorded. */
+  comment(number: number, body: string): Promise<void>;
   /** A commit's parents and tree; null when GitHub does not know it. */
   commit(sha: string): Promise<CommitShape | null>;
   /** GitHub's "update branch": merges the base into the head with a merge commit, only if the head is still `sha`. */
@@ -99,7 +101,7 @@ export interface MergeInput {
   pr: number;
   /** Defaults to the ticket named by the pull request's branch. */
   ticket?: string | null;
-  /** A pull request no ticket owns (an `armada init` or release pull request): no hand-back, nothing written to Linear. */
+  /** No hand-back or Linear writes. A program ticket-named branch requires `reason` to leave its ticket open. */
   noTicket?: boolean;
   /** Run the checklist only. */
   dryRun?: boolean;
@@ -110,7 +112,8 @@ export interface MergeInput {
   /**
    * The coordinator's judgement of `[policy] merge_approval` (THE-885): why it
    * merges on its own, required when the project has the rule and the owner
-   * approved nothing; with `askOwner`, why the owner must see it.
+   * approved nothing; with `askOwner`, why the owner must see it. With
+   * `noTicket`, why its ticket stays open, recorded as a PR comment.
    */
   reason?: string | null;
 }
@@ -230,6 +233,8 @@ export interface ChecklistInput {
   ticket: Ticket | null;
   handBack: HandBack | null;
   requiredChecks: readonly string[];
+  /** Ticket-branch overrides require CI, even though no ticket is read or closed. */
+  requireChecks?: boolean;
   /** How the head stands on the handed-back SHA, when it is another commit. */
   lineage?: Lineage | null;
   /** With --no-ticket, a head with no check at all passes once it is older than NO_CHECKS_GRACE_MS. */
@@ -248,7 +253,15 @@ export interface Assessment {
 }
 
 /** Every rule GitHub and Linear can decide on their own, sorted into what refuses and what time may settle. */
-export function assess({ pull, ticket, handBack, requiredChecks, lineage, now }: ChecklistInput): Assessment {
+export function assess({
+  pull,
+  ticket,
+  handBack,
+  requiredChecks,
+  requireChecks,
+  lineage,
+  now,
+}: ChecklistInput): Assessment {
   const n = `#${pull.number}`;
   const problems: string[] = [];
   const waits: string[] = [];
@@ -281,7 +294,7 @@ export function assess({ pull, ticket, handBack, requiredChecks, lineage, now }:
   if (!COMMITIZEN_TITLE.test(pull.title))
     problems.push(`the title "${pull.title}" is not in Commitizen format, e.g. "feat(cli): add a command"`);
 
-  const checks = checkStates(pull, requiredChecks, !ticket && !lineage?.updates, now);
+  const checks = checkStates(pull, requiredChecks, !ticket && !requireChecks && !lineage?.updates, now);
   problems.push(...checks.failed);
   waits.push(...checks.pending);
   notes.push(...checks.notes);
@@ -539,16 +552,23 @@ async function readSettled(ctx: MergeContext, number: number): Promise<MergePull
   return pull;
 }
 
+const mergeReason = (input: MergeInput) => input.reason?.replace(/\s+/g, " ").trim() || null;
+
+/** Only the program's team counts: armada/init-0.2.2 names no program ticket. */
+function programTicket(config: ArmadaConfig, pull: MergePull): string | null {
+  const named = pull.headRef ? ticketFromBranch(pull.headRef, config.tracker.programRoot) : null;
+  const team = config.tracker.programRoot.split("-")[0]?.toUpperCase();
+  return named && named.split("-")[0] === team ? named : null;
+}
+
 async function readTicketFor(ctx: MergeContext, pull: MergePull, input: MergeInput): Promise<Ticket | null> {
   const named = pull.headRef ? ticketFromBranch(pull.headRef, ctx.config.tracker.programRoot) : null;
   if (input.noTicket) {
     if (input.ticket) throw new Refusal("--no-ticket and --ticket cannot go together", `armada merge ${pull.number}`);
-    // Only an id of the program's team counts: `armada/init-0.2.2` names no ticket, `feature/abc-12-…` does.
-    const team = ctx.config.tracker.programRoot.split("-")[0]?.toUpperCase();
-    if (named && named.split("-")[0] === team)
+    if (programTicket(ctx.config, pull) && !mergeReason(input))
       throw new Refusal(
-        `the branch of #${pull.number} (${pull.headRef}) names ${named}: merge it on its worker's hand-back, not with --no-ticket`,
-        `armada merge ${pull.number}`,
+        `the branch of #${pull.number} (${pull.headRef}) names ${named}: merge it on its worker's hand-back, or use --no-ticket --reason "<why the ticket stays open>"`,
+        `armada merge ${pull.number}, or armada merge ${pull.number} --no-ticket --reason "<why the ticket stays open>"`,
       );
     return null;
   }
@@ -638,6 +658,7 @@ async function look(ctx: MergeContext, input: MergeInput, run: Run): Promise<Loo
     ticket,
     handBack,
     requiredChecks: ctx.config.gates.requiredChecks,
+    requireChecks: !!input.noTicket && !!programTicket(ctx.config, pull),
     lineage,
     now: ctx.now(),
   });
@@ -815,7 +836,7 @@ async function ownerDecision(
   const n = c.pull.number;
   // The rule judges a ticket's merge; a pull request no ticket owns (a release) is still held by an approval asked for it.
   const rule = c.ticket ? (ctx.config.policy.mergeApproval ?? null) : null;
-  const reason = input.reason?.replace(/\s+/g, " ").trim() || null;
+  const reason = mergeReason(input);
   const lines = rule ? [`Merge rule (armada.toml [policy] merge_approval): "${rule}"`] : [];
   let approval: MergeApproval = { state: "none" };
   let unreadable: string | null = null;
@@ -1161,6 +1182,20 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
       : null;
     const handBackId = handBacks?.find((item) => item.kind === "hand-back")?.id ?? null;
     await recheck(ctx, input, run, c);
+    const reason = input.noTicket ? mergeReason(input) : null;
+    if (reason) {
+      const named = programTicket(config, c.pull);
+      const body = `Armada merge --no-ticket at ${c.sha}: ${reason}.${named ? ` ${named} stays open; its ticket and worker are left unchanged.` : " No ticket is closed."}`;
+      try {
+        await ctx.forge.comment(c.pull.number, body);
+      } catch (err) {
+        throw new Refusal(
+          `could not record the --no-ticket reason on #${c.pull.number} (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
+          `armada merge ${input.pr} --no-ticket --reason "<why the ticket stays open>" again once GitHub answers`,
+        );
+      }
+      c.lines.push(`Recorded --no-ticket reason on #${c.pull.number}: ${reason}`);
+    }
     if (!(await renew()))
       throw new Refusal(
         "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged",
