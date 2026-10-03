@@ -72,18 +72,22 @@ profile = "debug"
 harness = "deepseek" # deepseek (OpenCode + DeepSeek model)
 model = "opencode/deepseek-v4.1-flash" # exact ID selected by the owner
 effort = "high"
+extra_args = ["--auto"] # owner: local workers run with every permission
 
 [herdr.profiles.claude]
 harness = "claude"
-model = "claude-opus-5-5"
+model = "opus"
 effort = "high"
+extra_args = ["--dangerously-skip-permissions"] # owner: local workers run with every permission
 
 [herdr.profiles.codex]
 harness = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
+extra_args = ["--dangerously-bypass-approvals-and-sandbox", "-c", "check_for_update_on_startup=false"] # owner: every permission; no update prompt
 
 [herdr.profiles.opencode]
 harness = "opencode"
 model = "opencode/gemini-3.1-pro" # exact ID from `opencode models`
 effort = "high"
+extra_args = ["--auto"] # owner: local workers run with every permission
