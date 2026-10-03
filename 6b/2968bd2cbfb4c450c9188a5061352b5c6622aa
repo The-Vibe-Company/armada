@@ -1,0 +1,24 @@
+.agents/skills/armada-coordinator/SKILL.md
+  h_ecee222750141d 10,27
+.agents/skills/armada-runtime-claude-code/SKILL.md
+  h_ecee222750141d 6
+.agents/skills/armada-runtime-conductor/SKILL.md
+  h_ecee222750141d 6
+.agents/skills/armada-runtime-herdr/SKILL.md
+  h_ecee222750141d 1-50
+.claude/skills/armada-runtime-herdr
+  h_ecee222750141d 1
+skills-lock.json
+  h_ecee222750141d 8-9,15-16,22-30,36,49,86,93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "6b2968bd2cbfb4c450c9188a5061352b5c6622aa",
+  "prompts": {},
+  "humans": {
+    "h_ecee222750141d": {
+      "author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
