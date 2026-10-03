@@ -72,3 +72,18 @@ profile = "debug"
 harness = "deepseek" # deepseek (OpenCode + DeepSeek model)
 model = "opencode/deepseek-v4.1-flash" # exact ID selected by the owner
 effort = "high"
+
+[herdr.profiles.claude]
+harness = "claude"
+model = "opus"
+effort = "high"
+
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt-6.1-sol"
+effort = "high"
+
+[herdr.profiles.opencode]
+harness = "opencode"
+model = "opencode/gemini-3.1-pro" # exact ID from `opencode models`
+effort = "high"
