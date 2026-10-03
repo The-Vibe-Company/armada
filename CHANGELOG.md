@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.46](https://github.com/The-Vibe-Company/armada/compare/v0.2.45...v0.2.46) (2026-10-03)
+
+
+### Features
+
+* **cli:** set up local harnesses and explain first-run questions ([#160](https://github.com/The-Vibe-Company/armada/issues/160)) ([a32c262](https://github.com/The-Vibe-Company/armada/commit/a32c262df2db197f613c2948609f30206dce5a05))
+
 ## [0.2.45](https://github.com/The-Vibe-Company/armada/compare/v0.2.44...v0.2.45) (2026-10-03)
 
 
