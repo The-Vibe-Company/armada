@@ -1,14 +1,14 @@
-// What the landing's replica of the fleet plays (THE-887), as changes to the
-// demo world's overview, the way the dashboard's polls would bring them:
-// the owner answers a question, the coordinator delivers it and the worker
-// goes back to work, then a hand-back arrives. Pure: each beat is a new
-// overview, built from the one before, the dashboard's components draw it.
+// What the landing's replica of the fleet plays (THE-887, THE-931), as
+// changes to the demo world's overview, the way the dashboard's polls would
+// bring them: the coordinator answers a worker's question and the worker goes
+// back to work, a hand-back arrives, then its merge waits for the owner, "To
+// validate". Pure: each beat is a new overview, built from the one before,
+// the dashboard's overview draws it.
 import type { AgentPhase, FleetOverview, FleetRow, WaitingItem } from "@armada/core/read";
 
-/** The question the owner answers on the replica, and the hand-back that arrives. */
+/** The question the coordinator answers, and the hand-back whose merge the owner validates. */
 export const ASKED = "WID-15";
 export const HANDED_BACK = "WID-18";
-export const ANSWER = "15 minutes (recommended)";
 export const OWNER = "Léa Martin";
 
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -36,14 +36,18 @@ function movePhase(o: FleetOverview, id: string, phase: AgentPhase, at: number, 
   }
 }
 
+const isOpen = (v: FleetOverview["validations"][number]) => v.ticket === HANDED_BACK && !v.decision;
+
 /**
  * The opening state: the demo world, with WID-18 still shipping, so its
- * hand-back can arrive later. Times move with `now`, the replica's clock.
+ * hand-back and its merge to validate can arrive later. Times move with
+ * `now`, the replica's clock.
  */
 export function opening(base: FleetOverview): FleetOverview {
   const o = structuredClone(base);
   const back = o.waiting.find((w) => w.ticket === HANDED_BACK);
   o.waiting = o.waiting.filter((w) => w !== back);
+  o.validations = o.validations.filter((v) => !isOpen(v));
   const row = rowOf(o, HANDED_BACK);
   if (row) {
     row.phase = "shipping";
@@ -58,17 +62,7 @@ export function opening(base: FleetOverview): FleetOverview {
   return o;
 }
 
-/** The owner picked an answer on the card: it waits for the coordinator to deliver it. */
-export function answered(prev: FleetOverview, at: number): FleetOverview {
-  const o = structuredClone(prev);
-  const answer = { id: 900, body: ANSWER, author: OWNER, at: iso(at) };
-  for (const w of o.waiting) if (w.ticket === ASKED && w.kind === "question") w.answer = answer;
-  const row = rowOf(o, ASKED);
-  if (row?.question) row.question.answer = answer;
-  return o;
-}
-
-/** The coordinator delivered the answer: the question closes and the worker reports implementing. */
+/** The coordinator answered: the question closes and the worker reports implementing. */
 export function delivered(prev: FleetOverview, at: number): FleetOverview {
   const o = structuredClone(prev);
   o.waiting = o.waiting.filter((w) => !(w.ticket === ASKED && w.kind === "question"));
@@ -81,7 +75,7 @@ export function delivered(prev: FleetOverview, at: number): FleetOverview {
   return o;
 }
 
-/** WID-18's worker hands back its green pull request: a new decision for the owner. */
+/** WID-18's worker hands back its green pull request: the coordinator's to merge. */
 export function handedBack(prev: FleetOverview, base: FleetOverview, at: number): FleetOverview {
   const o = structuredClone(prev);
   const item = base.waiting.find((w) => w.ticket === HANDED_BACK);
@@ -89,5 +83,14 @@ export function handedBack(prev: FleetOverview, base: FleetOverview, at: number)
   const row = rowOf(o, HANDED_BACK);
   if (row) row.waiting = "hand-back";
   movePhase(o, HANDED_BACK, "ready-to-merge", at, "Handed back: CI green on the final head");
+  return o;
+}
+
+/** The project's rule keeps WID-18's merge for the owner: the coordinator asks, and the session is "To validate". */
+export function toValidate(prev: FleetOverview, base: FleetOverview, at: number): FleetOverview {
+  const o = structuredClone(prev);
+  const asked = base.validations.filter(isOpen).map((v) => ({ ...structuredClone(v), createdAt: iso(at) }));
+  // The open ones come first, oldest first, as the overview lists them.
+  o.validations = [...o.validations.filter((v) => !v.decision), ...asked, ...o.validations.filter((v) => v.decision)];
   return o;
 }

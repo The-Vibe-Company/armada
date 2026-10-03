@@ -47,6 +47,9 @@ export function useListFilters(list: BarList) {
   return { filters, go, hrefFor };
 }
 
+/** A list's filters, their links and how to change them: the address's (`useListFilters`), or a still view's. */
+export type ListFilterControl = ReturnType<typeof useListFilters>;
+
 export function FilterBar({
   list,
   omit = [],
@@ -55,9 +58,19 @@ export function FilterBar({
   /** Fields the page already shows another way (the Agents page's harness tabs). */
   omit?: FilterField[];
 }) {
+  const { filters, go } = useListFilters(list);
+  return <FilterFields list={list} omit={omit} filters={filters} go={go} />;
+}
+
+/** The bar itself, on the filters it is given: the landing's replica (no router) shows it on none. */
+export function FilterFields({
+  list,
+  omit = [],
+  filters,
+  go,
+}: { list: BarList; omit?: FilterField[] } & Pick<ListFilterControl, "filters" | "go">) {
   const { t } = useShell();
   const { overview } = useFleet();
-  const { filters, go } = useListFilters(list);
   const f = t.filters;
   const fields = (LISTS[list].fields as readonly FilterField[]).filter((x) => !omit.includes(x));
   const has = (x: FilterField) => fields.includes(x);

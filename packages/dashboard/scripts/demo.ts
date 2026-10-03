@@ -24,9 +24,9 @@ import {
   DEMO_VALIDATIONS,
   demoCoordinatorFacts,
   demoEvents,
-  demoFiles,
   demoHistory,
   demoInboxReads,
+  demoValidationPr,
   projectOfTicket,
   scenarioOf,
 } from "../lib/demo/world";
@@ -208,19 +208,7 @@ async function seedValidations(db: Awaited<ReturnType<typeof openDatabase>>) {
       what: v.what,
       reason: v.reason,
       choices: v.choices,
-      pr: v.pr
-        ? {
-            number: v.pr.number,
-            url: `https://github.com/acme/${v.project}/pull/${v.pr.number}`,
-            title: v.what,
-            headSha: v.pr.headSha,
-            files: demoFiles(v.ticket),
-            additions: demoFiles(v.ticket).reduce((n, f) => n + f.additions, 0),
-            deletions: demoFiles(v.ticket).reduce((n, f) => n + f.deletions, 0),
-            ci: "success",
-            preview: v.pr.preview,
-          }
-        : null,
+      pr: demoValidationPr(v),
       attachments: v.kind === "merge" ? [] : attachments,
       author: v.author,
       at: ago(v.ago),

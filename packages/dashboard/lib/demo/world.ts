@@ -13,6 +13,7 @@ import type {
   ProgramData,
   ProjectInput,
   PullRequest,
+  ValidationPr,
 } from "@armada/core/read";
 
 export const DEMO_PROJECTS: ProjectInput[] = [
@@ -496,6 +497,23 @@ export const DEMO_VALIDATIONS: DemoValidation[] = [
     decided: { outcome: "approved", by: "Ada Lovelace", note: "Looks right on mobile too.", ago: 40 },
   },
 ];
+
+/** The pull request a demo validation holds, as GitHub showed it when the coordinator asked. */
+export function demoValidationPr(v: DemoValidation): ValidationPr | null {
+  if (!v.pr) return null;
+  const files = demoFiles(v.ticket);
+  return {
+    number: v.pr.number,
+    url: `https://github.com/acme/${v.project}/pull/${v.pr.number}`,
+    title: v.what,
+    headSha: v.pr.headSha,
+    files,
+    additions: files.reduce((n, f) => n + f.additions, 0),
+    deletions: files.reduce((n, f) => n + f.deletions, 0),
+    ci: "success",
+    preview: v.pr.preview,
+  };
+}
 
 /** Minutes ago the coordinator of each project last read its inbox; absent = never. */
 export const DEMO_COORDINATOR_SEEN: Record<string, number> = Object.fromEntries(

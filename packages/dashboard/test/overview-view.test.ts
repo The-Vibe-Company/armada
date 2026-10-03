@@ -20,7 +20,6 @@ import {
   pendingValidations,
   projectFacts,
   sentRequest,
-  withCoordinator,
 } from "../lib/overview-view.ts";
 
 // A synthetic fleet: two projects, every state the overview shows.
@@ -179,8 +178,6 @@ describe("yours to decide (THE-885)", () => {
     expect(pendingValidations({ validations }).map((v) => v.id)).toEqual([1, 2]);
     expect(decidedValidations({ validations }).map((v) => v.id)).toEqual([3]);
     expect(decideCount({ ...overview, validations })).toBe(2);
-    expect(withCoordinator(overview)).toEqual({ count: 3, since: at(18) });
-    expect(withCoordinator({ waiting: [] })).toBeNull();
     // An overview from before validations has none.
     expect(decideCount(overview)).toBe(0);
   });

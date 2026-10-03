@@ -85,17 +85,6 @@ export const decideCount = (
   o: Pick<FleetOverview, "projects" | "waiting"> & Partial<Pick<FleetOverview, "validations">>,
 ) => pendingValidations(o).length + coordinatorAlerts(o).length;
 
-/**
- * What the coordinator handles, in one line on the overview: the workers'
- * questions, plans and hand-backs, how many and since when the oldest waits.
- * Null when nothing waits for it.
- */
-export function withCoordinator(o: Pick<FleetOverview, "waiting">): { count: number; since: string } | null {
-  const items = decisionsOf(o);
-  if (!items.length) return null;
-  return { count: items.length, since: items.map((w) => w.since).sort()[0] as string };
-}
-
 /** The decisions an agent's page offers, oldest first: a question to answer, a plan to approve. */
 export const decisionCards = (o: Pick<FleetOverview, "waiting">): Decision[] =>
   [...decisionsOf(o)].sort((a, b) => a.since.localeCompare(b.since));

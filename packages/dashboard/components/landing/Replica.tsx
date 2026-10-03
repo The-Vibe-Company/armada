@@ -1,27 +1,38 @@
 "use client";
 
-// The fleet, live (THE-887): the dashboard's own overview (components/Fleet.tsx,
-// its decision cards and its live timeline) drawn from the demo world's
-// overview, built at build time, in a window. It plays replica-script.ts: a
-// pointer answers a question, the coordinator delivers it and the worker goes
-// back to work, then a hand-back arrives; the clock runs fifteen times faster,
-// so the timeline moves. It plays only while on screen; it is inert (nothing
-// in it can be clicked or focused) and reads nothing from any server.
+// The fleet, live (THE-887, THE-931): the dashboard's own overview
+// (components/screens/OverviewScreen.tsx: its sessions grouped by coordinator,
+// its filters, its live timeline) drawn from the demo world's overview, built
+// at build time, in a window. It plays replica-script.ts: the coordinator
+// answers a question and the worker goes back to work, a hand-back arrives,
+// then its merge waits for the owner and a pointer rests on its "To validate"
+// row; the clock runs fifteen times faster, so the timeline moves. It plays
+// only while on screen; it is inert (nothing in it can be clicked or focused)
+// and reads nothing from any server.
 import type { FleetOverview } from "@armada/core/read";
 // The context Next's Link reads its router from: without one, a Link prefetches nothing (see below).
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Fleet } from "@/components/Fleet";
 import { HeaderSlotProvider, PageHeader } from "@/components/page-client";
+import { Overview } from "@/components/screens/OverviewScreen";
 import { ShowcaseProvider } from "@/components/shell/context";
+import { filterHref, type ListFilters, parseFilters } from "@/lib/filters";
+import { paths } from "@/lib/fleet-view";
 import { prefersReducedMotion, whileVisible } from "./frames";
 import { Mark } from "./Mark";
-import { ANSWER, answered, delivered, handedBack, OWNER, opening } from "./replica-script";
+import { delivered, HANDED_BACK, handedBack, OWNER, opening, toValidate } from "./replica-script";
 
 /** The replica's clock runs this many times faster than the viewer's. */
 const SPEED = 15;
 /** The beats, in seconds from the start of a loop. */
-const BEATS = { point: 2.2, press: 3.3, deliver: 6.6, handBack: 9.6, loop: 15.5 };
+const BEATS = { deliver: 2.6, handBack: 5.6, validate: 8.6, point: 9.4, loop: 15.5 };
+
+/** No filter, and none to set: the replica has no address of its own. */
+const FILTERS = {
+  filters: parseFilters("agents", new URLSearchParams()),
+  go: () => {},
+  hrefFor: (patch: Partial<ListFilters>) => filterHref("agents", { ...FILTERS.filters, ...patch }),
+};
 
 /** The demo world's owner, signed in: requests are signed with her name. */
 const VIEWER = {
@@ -31,7 +42,7 @@ const VIEWER = {
   organizations: [{ id: "acme", name: "Acme" }],
 };
 
-type Stage = "opening" | "answered" | "delivered" | "handed-back";
+type Stage = "opening" | "delivered" | "handed-back" | "to-validate";
 
 export function Replica({ base }: { base: FleetOverview }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -42,7 +53,7 @@ export function Replica({ base }: { base: FleetOverview }) {
     now: start,
     stage: "opening",
   });
-  const [pointer, setPointer] = useState<{ x: number; y: number; on: boolean; press: boolean } | null>(null);
+  const [pointer, setPointer] = useState<{ x: number; y: number; on: boolean } | null>(null);
 
   useEffect(() => {
     const el = ref.current;
@@ -59,15 +70,14 @@ export function Replica({ base }: { base: FleetOverview }) {
       setShown({ overview: next, now: clock(), stage });
     };
 
-    /** Where the answer's button is, in the replica's coordinates. */
+    /** Where the hand-back's "To validate" badge is (else its row), in the replica's coordinates. */
     const target = () => {
-      const button = [...el.querySelectorAll<HTMLButtonElement>("button.btn")].find((b) =>
-        b.textContent?.includes(ANSWER.split(" (")[0] ?? ANSWER),
-      );
-      if (!button) return null;
+      const row = el.querySelector<HTMLElement>(`a[href="${paths.agent(HANDED_BACK)}"]`);
+      const badge = row?.querySelector<HTMLElement>(".ui-pill") ?? row;
+      if (!badge) return null;
       const r = el.getBoundingClientRect();
-      const b = button.getBoundingClientRect();
-      return { x: b.left - r.left + b.width * 0.6, y: b.top - r.top + b.height * 0.62, button };
+      const b = badge.getBoundingClientRect();
+      return { x: b.left - r.left + b.width * 0.55, y: b.top - r.top + b.height * 0.6 };
     };
 
     const play = () => {
@@ -75,23 +85,18 @@ export function Replica({ base }: { base: FleetOverview }) {
       show(first, "opening");
       setPointer(null);
       tick = setInterval(() => setShown((s) => ({ ...s, now: clock() })), 1000);
-      at(BEATS.point, () => {
-        const t = target();
-        if (t) setPointer({ x: t.x, y: t.y, on: true, press: false });
-      });
-      at(BEATS.press, () => {
-        const t = target();
-        t?.button.setAttribute("data-pressed", "");
-        setPointer((p) => (p ? { ...p, press: true } : p));
-        at(0.18, () => {
-          t?.button.removeAttribute("data-pressed");
-          show(answered(overview, clock()), "answered");
-          setPointer((p) => (p ? { ...p, press: false } : p));
-        });
-        at(0.9, () => setPointer((p) => (p ? { ...p, on: false } : p)));
-      });
       at(BEATS.deliver, () => show(delivered(overview, clock()), "delivered"));
       at(BEATS.handBack, () => show(handedBack(overview, base, clock()), "handed-back"));
+      at(BEATS.validate, () => show(toValidate(overview, base, clock()), "to-validate"));
+      // The pointer comes in from below and to the right, and rests on the badge until the loop ends.
+      at(BEATS.point, () => {
+        const t = target();
+        if (t) setPointer({ x: t.x + 140, y: t.y + 90, on: true });
+      });
+      at(BEATS.point + 0.1, () => {
+        const t = target();
+        if (t) setPointer({ x: t.x, y: t.y, on: true });
+      });
       at(BEATS.loop, () => {
         stop();
         play();
@@ -100,7 +105,6 @@ export function Replica({ base }: { base: FleetOverview }) {
     const stop = () => {
       for (const t of timers) clearTimeout(t);
       timers = [];
-      for (const b of el.querySelectorAll("[data-pressed]")) b.removeAttribute("data-pressed");
       if (tick) clearInterval(tick);
       tick = null;
     };
@@ -129,7 +133,7 @@ export function Replica({ base }: { base: FleetOverview }) {
               <HeaderSlotProvider>
                 <PageHeader title={<span className="lp-replica-crumb">Overview</span>} />
                 <div className="lp-replica-scroll">
-                  <Fleet />
+                  <Overview {...FILTERS} />
                 </div>
               </HeaderSlotProvider>
             </ShowcaseProvider>
@@ -140,11 +144,10 @@ export function Replica({ base }: { base: FleetOverview }) {
         <span
           className="lp-pointer"
           data-on={pointer.on || undefined}
-          data-press={pointer.press || undefined}
           style={{ transform: `translate(${pointer.x}px, ${pointer.y}px)` }}
           aria-hidden
         >
-          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden className="lp-pointer-arrow">
+          <svg viewBox="0 0 20 20" width="20" height="20" aria-hidden>
             <path
               d="M4 2.5l11.5 9.2-5.2.6 3 6.1-2.3 1.1-3-6.1L4 17z"
               fill="#f0efec"
