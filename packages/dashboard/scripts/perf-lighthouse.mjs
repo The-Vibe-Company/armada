@@ -56,6 +56,21 @@ try {
   const result = await lighthouse(url, { port: chrome.port, output: "json", logLevel: "error" }, config);
   if (!result) throw new Error(`Lighthouse returned nothing for ${url}`);
   await writeFile(out, result.report);
+  // TEMPORARY (THE-982): every layout shift of the trace, with the rects of the nodes it moved.
+  const events = result.artifacts?.Trace?.traceEvents ?? [];
+  const start = events.find((e) => e.name === "navigationStart")?.ts ?? events[0]?.ts ?? 0;
+  const shifts = events
+    .filter((e) => e.name === "LayoutShift")
+    .map((e) => ({
+      ms: Math.round((e.ts - start) / 1000),
+      score: e.args?.data?.score,
+      recent: e.args?.data?.had_recent_input,
+      nodes: (e.args?.data?.impacted_nodes ?? []).map((n) => ({ id: n.node_id, old: n.old_rect, now: n.new_rect })),
+    }));
+  const names = Object.fromEntries(
+    (result.artifacts?.TraceElements ?? []).map((t) => [t.nodeId, t.node?.selector ?? t.node?.nodeLabel]),
+  );
+  await writeFile(`${out}.shifts.json`, JSON.stringify({ shifts, names }));
 } finally {
   chrome.kill();
 }

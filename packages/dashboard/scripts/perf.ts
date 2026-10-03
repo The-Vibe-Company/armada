@@ -370,6 +370,15 @@ async function lighthouse(base: string): Promise<boolean> {
         const lhr = await lighthouseRun(`${base}${page}`, formFactor, formFactor === "mobile" ? slowdown : 1, cookie);
         runs.push(resultOf(lhr, page, formFactor));
         // What moved, in the log: a layout shift is easier to fix once named.
+        // TEMPORARY (THE-982): every shift of the trace, its nodes' rects before and after.
+        try {
+          const { shifts, names } = JSON.parse(await readFile(join(OUT, "run.json.shifts.json"), "utf8"));
+          for (const s of shifts)
+            if (s.score > 0)
+              console.log(
+                `  trace ${formFactor} ${page} at ${s.ms} ms score ${s.score.toFixed(5)}${s.recent ? " (input)" : ""}: ${s.nodes.map((n: { id: number; old: number[]; now: number[] }) => `${names[n.id] ?? `#${n.id}`} [${n.old}] -> [${n.now}]`).join(" | ")}`,
+              );
+        } catch {}
         for (const shift of lhr.audits["layout-shifts"]?.details?.items ?? [])
           if ((shift.score ?? 0) >= 0.0005)
             console.log(`  shift ${formFactor} ${page} ${shift.score?.toFixed(4)} ${shift.node?.selector ?? "?"}`);
