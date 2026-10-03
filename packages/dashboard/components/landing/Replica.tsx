@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { HeaderSlotProvider, PageHeader } from "@/components/page-client";
 import { Overview } from "@/components/screens/OverviewScreen";
 import { ShowcaseProvider } from "@/components/shell/context";
-import { parseFilters } from "@/lib/filters";
+import { filterHref, type ListFilters, parseFilters } from "@/lib/filters";
 import { paths } from "@/lib/fleet-view";
 import { prefersReducedMotion, whileVisible } from "./frames";
 import { Mark } from "./Mark";
@@ -28,8 +28,11 @@ const SPEED = 15;
 const BEATS = { deliver: 2.6, handBack: 5.6, validate: 8.6, point: 9.4, loop: 15.5 };
 
 /** No filter, and none to set: the replica has no address of its own. */
-const FILTERS = parseFilters("agents", new URLSearchParams());
-const still = () => {};
+const FILTERS = {
+  filters: parseFilters("agents", new URLSearchParams()),
+  go: () => {},
+  hrefFor: (patch: Partial<ListFilters>) => filterHref("agents", { ...FILTERS.filters, ...patch }),
+};
 
 /** The demo world's owner, signed in: requests are signed with her name. */
 const VIEWER = {
@@ -130,7 +133,7 @@ export function Replica({ base }: { base: FleetOverview }) {
               <HeaderSlotProvider>
                 <PageHeader title={<span className="lp-replica-crumb">Overview</span>} />
                 <div className="lp-replica-scroll">
-                  <Overview filters={FILTERS} go={still} />
+                  <Overview {...FILTERS} />
                 </div>
               </HeaderSlotProvider>
             </ShowcaseProvider>

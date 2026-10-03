@@ -3559,12 +3559,6 @@ a.ui-figure:hover {
   font-size: 15px;
   white-space: normal;
 }
-.vd-clamp {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
 .vd-reason {
   margin: 0;
   font-size: 12.5px;

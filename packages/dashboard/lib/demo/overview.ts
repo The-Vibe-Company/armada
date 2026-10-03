@@ -49,7 +49,8 @@ export function demoValidations(now: Date): OwnerValidation[] {
 
 export function demoOverview(now: Date, scenario: Scenario = "fleet"): FleetOverview {
   const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
-  const validations = demoValidations(now);
+  // The empty world has no session, so nothing to validate either.
+  const validations = scenario === "empty" ? [] : demoValidations(now);
   return buildOverview({
     projects: DEMO_PROJECTS.map((p) => {
       const config = parseConfig(configTemplate(p));

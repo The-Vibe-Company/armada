@@ -14,7 +14,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { type ReactNode, useCallback, useMemo } from "react";
 import { type CoordinatorGroup, checksOf, coordinatorGroups, overviewLine, ownerChecks } from "@/lib/coordinator-view";
-import { filterAgents, filterHref, hasFilters, type ListFilters } from "@/lib/filters";
+import { filterAgents, hasFilters } from "@/lib/filters";
 import { coordinatorHarness, HARNESS_NAME, HARNESSES, harnessOf, paths } from "@/lib/fleet-view";
 import { FilterFields, type ListFilterControl, useListFilters } from "../FilterBar";
 import {
@@ -37,18 +37,13 @@ import { AgentRow } from "./AgentRow";
 const LiveTimeline = dynamic(() => import("../timeline/Timeline").then((m) => m.LiveTimeline));
 
 export function OverviewScreen() {
-  const { filters, go } = useListFilters("agents");
-  return <Overview filters={filters} go={go} />;
+  return <Overview {...useListFilters("agents")} />;
 }
 
-/** The overview on the filters it is given, and how to change them. */
-export function Overview({ filters, go }: ListFilterControl) {
+/** The overview on the filters it is given, their links, and how to change them. */
+export function Overview({ filters, go, hrefFor }: ListFilterControl) {
   const { t, density } = useShell();
   const { overview, failed } = useFleet();
-  const hrefFor = useCallback(
-    (patch: Partial<ListFilters>) => filterHref("agents", { ...filters, ...patch }),
-    [filters],
-  );
   const { harness } = filters;
   const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
   const checks = useMemo(() => ownerChecks(overview), [overview]);

@@ -1,13 +1,12 @@
 "use client";
 
-// One thing the owner validates (THE-885), as the overview's "Yours to
-// decide", the Validations page and the approval link (/approve/<id>) show it:
+// One thing the owner validates (THE-885), as the Validations page, the
+// approval link (/approve/<id>) and a session's page show it:
 // what to check and why, the pull request with its files, CI and preview, the
 // screenshots and links, and the owner's buttons. Each button is a request:
 // the decision lands in the coordinator's inbox, which merges or relays it.
-// `compact` is the landing's overview card (the first screenshots, a link to
-// the rest); `full` is the approval page and a session to validate (every
-// file, every attachment, its images full width, THE-916).
+// `full` is the approval page and a session to validate (every file, every
+// attachment, its images full width, THE-916).
 import type { Attachment, CiState, OwnerValidation } from "@armada/core/read";
 import Image from "next/image";
 import Link from "next/link";
@@ -52,8 +51,8 @@ export function ValidationCard({
   ctx: ActionContext;
   v: OwnerValidation;
   projectName: string;
-  /** `compact`: the overview's card; `list`: the Validations page; `full`: the approval page. */
-  mode?: "compact" | "list" | "full";
+  /** `list`: the Validations page; `full`: the approval page. */
+  mode?: "list" | "full";
 }) {
   const { t, now } = ctx;
   const s = t.validations;
@@ -95,7 +94,7 @@ export function ValidationCard({
       </CardMeta>
       {body && (
         <p className="wait-detail is-quote" style={{ ["--q" as string]: color }}>
-          {mode === "compact" ? <span className="vd-clamp">{body}</span> : body}
+          {body}
         </p>
       )}
       {v.reason && (
@@ -113,12 +112,7 @@ export function ValidationCard({
       {mode === "full" && v.decision === null ? (
         <LargeGallery t={t} items={v.gallery} />
       ) : (
-        <Gallery
-          t={t}
-          items={v.gallery}
-          compact={mode === "compact" || v.decision !== null}
-          more={paths.validation(v.id)}
-        />
+        <Gallery t={t} items={v.gallery} compact={v.decision !== null} more={paths.validation(v.id)} />
       )}
       {v.decision ? (
         <p className="vd-decided">

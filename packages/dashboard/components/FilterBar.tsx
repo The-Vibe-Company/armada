@@ -47,8 +47,8 @@ export function useListFilters(list: BarList) {
   return { filters, go, hrefFor };
 }
 
-/** A list's filters and how to change them: the address's (`useListFilters`), or a still view's. */
-export type ListFilterControl = Pick<ReturnType<typeof useListFilters>, "filters" | "go">;
+/** A list's filters, their links and how to change them: the address's (`useListFilters`), or a still view's. */
+export type ListFilterControl = ReturnType<typeof useListFilters>;
 
 export function FilterBar({
   list,
@@ -68,7 +68,7 @@ export function FilterFields({
   omit = [],
   filters,
   go,
-}: { list: BarList; omit?: FilterField[] } & ListFilterControl) {
+}: { list: BarList; omit?: FilterField[] } & Pick<ListFilterControl, "filters" | "go">) {
   const { t } = useShell();
   const { overview } = useFleet();
   const f = t.filters;

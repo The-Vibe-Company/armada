@@ -176,8 +176,7 @@ const en = {
   lastReport: "last report",
   duration: (ms: number) => duration(ms, "d"),
   ago: (ms: number) => (ms < MIN ? "just now" : `${duration(ms, "d")} ago`),
-  live: { ok: "Live", unreachable: "Linear + GitHub only", off: "Linear + GitHub only" },
-  offline: "Offline",
+  live: { unreachable: "Linear + GitHub only" },
   refresh: "Refresh now",
   /** Under the alert of a poll that failed (THE-899): the page keeps its last reading. */
   staleReading: (ms: number) => `You're seeing the reading from ${elapsed(ms, "d")} ago.`,
@@ -1351,8 +1350,7 @@ const fr: Strings = {
   lastReport: "dernier rapport",
   duration: (ms) => duration(ms, "j"),
   ago: (ms) => (ms < MIN ? "à l'instant" : `il y a ${duration(ms, "j")}`),
-  live: { ok: "En direct", unreachable: "Linear + GitHub seulement", off: "Linear + GitHub seulement" },
-  offline: "Hors ligne",
+  live: { unreachable: "Linear + GitHub seulement" },
   refresh: "Rafraîchir maintenant",
   staleReading: (ms) => `Tu vois la lecture d'il y a ${elapsed(ms, "j")}.`,
   unreachableBanner: (error) =>
