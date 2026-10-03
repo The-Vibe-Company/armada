@@ -5,6 +5,7 @@
 // command the runtime guide launches workers with is found, and which
 // secrets the project expects (`[secrets] names`) are not set in Armada, by
 // name only. Exit 1 when anything is an error.
+import { join } from "node:path";
 import {
   API_KEY_VARIABLE,
   type ArmadaApi,
@@ -29,7 +30,14 @@ import {
 import { apiOf } from "./api.ts";
 import { loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
-import { detectLocalTools, dshInformation, localHarnesses, offerLocalInstalls } from "./local-tools.ts";
+import {
+  detectLocalTools,
+  dshInformation,
+  localHarnesses,
+  localModelProfiles,
+  offerLocalInstalls,
+  offerLocalModels,
+} from "./local-tools.ts";
 import { describeIdentity, hostOf } from "./login.ts";
 import { fsRepoView, gitRoot } from "./repo.ts";
 
@@ -330,12 +338,17 @@ async function secretChecks(api: ArmadaApi, config: ArmadaConfig | null, credent
 export async function localRuntimeChecks(
   io: Io,
   config: Parameters<typeof localHarnesses>[0] | null,
-  options: { readOnly?: boolean } = { readOnly: true },
+  options: { readOnly?: boolean; configPath?: string } = { readOnly: true },
 ): Promise<Check[]> {
   const harnesses = config ? localHarnesses(config) : [];
   if (!harnesses.length) return [];
-  const result = await offerLocalInstalls(io, await detectLocalTools(io, harnesses), options);
-  return [...result.checks, ...(harnesses.includes("deepseek") ? [await dshInformation(io)] : [])];
+  const result = await offerLocalInstalls(
+    io,
+    await detectLocalTools(io, harnesses, config ? localModelProfiles(config) : []),
+    options,
+  );
+  const selected = await offerLocalModels(io, result, options.configPath ?? join(io.cwd, CONFIG_FILE), options);
+  return [...selected.checks, ...(harnesses.includes("deepseek") ? [await dshInformation(io)] : [])];
 }
 
 export async function buildDoctor(
@@ -373,7 +386,7 @@ export async function buildDoctor(
     ...keyFileChecks(machine, credentials),
     ...(await labelChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
-    ...(await localRuntimeChecks(io, config, options)),
+    ...(await localRuntimeChecks(io, config, { ...options, configPath: join(root, CONFIG_FILE) })),
     ...(config ? await reviewRuntimeChecks(io, root) : []),
     ...(await secretChecks(api, config, credentials)),
   ];

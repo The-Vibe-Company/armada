@@ -145,7 +145,7 @@ effort = "high"
     });
     expect(report.inFlight[0]).toMatchObject({
       profile: "backend",
-      harness: "deepseek (OpenCode + DeepSeek provider)",
+      harness: "deepseek (OpenCode + DeepSeek model)",
       agent: "Ada Worker",
     });
   });

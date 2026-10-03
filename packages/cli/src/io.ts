@@ -45,6 +45,8 @@ export interface Io {
   cwd: string;
   env: Record<string, string | undefined>;
   readFile: (path: string) => Promise<string | null>;
+  /** Save a model chosen by the owner in the existing repository configuration. */
+  writeFile?: (path: string, text: string) => Promise<void>;
   readBinaryFile?: (path: string, maxBytes: number) => Promise<Uint8Array | null>;
   stdout: (text: string) => void;
   stderr: (text: string) => void;

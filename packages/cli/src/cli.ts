@@ -159,7 +159,7 @@ const COMMAND_HELP: Record<string, string> = {
                     that exact head (or it with only the base merged in).
 `,
   launch: `  launch <ticket> --runtime herdr [--harness claude|codex|opencode|deepseek]
-    deepseek runs OpenCode with the DeepSeek provider (persistent session)
+    deepseek (OpenCode + DeepSeek model) runs a persistent session
                     [--profile <name> [--reason <why>]] [--validation <n|none>]
                     Create the ticket's worktree and start a persistent local worker
                     with its launch-token brief. Profiles follow [[herdr.routing]]

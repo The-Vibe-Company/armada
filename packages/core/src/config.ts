@@ -407,9 +407,11 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     }
     if (harness === "deepseek" && extraArgs.some((arg) => /^(?:--model(?:=|$)|-m)/.test(arg.trim())))
       problems.push(`"${path}.extra_args" must not override the DeepSeek model; use "${path}.model"`);
-    const model = str(p, path, "model");
-    if (harness === "deepseek" && !/^deepseek\/[^\s#]+(?:#[^\s#]+)?$/.test(model))
-      problems.push(`"${path}.model" must use the DeepSeek provider: "deepseek/<model>"`);
+    const model =
+      (harness === "opencode" || harness === "deepseek") &&
+      (p.model === undefined || (typeof p.model === "string" && !p.model.trim()))
+        ? ""
+        : str(p, path, "model");
     herdrProfiles[name] = {
       ...(p.when !== undefined ? { when: str(p, path, "when") } : {}),
       harness,
@@ -717,7 +719,7 @@ profile = "debug"
 # default_profile = "claude"
 
 # [herdr.profiles.claude]
-# harness = "claude"       # "claude", "codex", "opencode" or "deepseek" (OpenCode + DeepSeek provider)
+# harness = "claude"       # "claude", "codex", "opencode" or "deepseek" (OpenCode + DeepSeek model)
 # model = "sonnet"
 # effort = "high"
 # extra_args = ["--verbose"]

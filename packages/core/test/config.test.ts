@@ -281,23 +281,31 @@ effort = "high"
     expect(defaults?.extraArgs).toEqual([]);
   });
 
-  test("DeepSeek profiles require the DeepSeek provider model", () => {
+  test("DeepSeek profiles accept DeepSeek models across providers", () => {
     const profile = (model: string) => `${DEMO_TOML}
 [herdr.profiles.deepseek]
 harness = "deepseek"
 model = "${model}"
 effort = "high"
 `;
-    expect(parseConfig(profile("deepseek/deepseek-reasoner")).herdr.profiles.deepseek?.harness).toBe("deepseek");
+    for (const model of [
+      "deepseek/deepseek-reasoner",
+      "opencode/deepseek-v4-pro",
+      "openrouter/deepseek/deepseek-chat",
+      "opencode/deepseek-v4.1-flash#high",
+    ])
+      expect(parseConfig(profile(model)).herdr.profiles.deepseek?.harness).toBe("deepseek");
     for (const arg of ["--model", "--model=openai/model-a", "-m", "-mopenai/model-a"])
       expect(problemsOf(`${profile("deepseek/deepseek-reasoner")}extra_args = ["${arg}"]`)).toContain(
         '"herdr.profiles.deepseek.extra_args" must not override the DeepSeek model; use "herdr.profiles.deepseek.model"',
       );
-    for (const model of ["deepseek-reasoner", "openai/model-a", "deepseek/", "deepseek/ "]) {
-      expect(problemsOf(profile(model))).toContain(
-        '"herdr.profiles.deepseek.model" must use the DeepSeek provider: "deepseek/<model>"',
-      );
+    for (const harness of ["opencode", "deepseek"]) {
+      const text = profile("").replace('harness = "deepseek"', `harness = "${harness}"`);
+      expect(parseConfig(text).herdr.profiles.deepseek?.model).toBe("");
+      expect(parseConfig(text.replace('model = ""', "")).herdr.profiles.deepseek?.model).toBe("");
     }
+    // The interactive preflight repairs unavailable and wrong-family selections.
+    expect(parseConfig(profile("openai/model-a")).herdr.profiles.deepseek?.model).toBe("openai/model-a");
   });
 
   test("Herdr profile and routing values name their invalid keys", () => {

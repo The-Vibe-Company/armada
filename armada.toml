@@ -66,3 +66,9 @@ profile = "codex"
 [[conductor.routing]]
 labels = ["Bug"]
 profile = "debug"
+
+# Local DeepSeek worker: a persistent OpenCode session (native dsh: THE-949).
+[herdr.profiles.deepseek]
+harness = "deepseek" # deepseek (OpenCode + DeepSeek model)
+model = "opencode/deepseek-v4.1-flash" # exact ID selected by the owner
+effort = "high"
