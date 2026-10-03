@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.40](https://github.com/The-Vibe-Company/armada/compare/v0.2.39...v0.2.40) (2026-10-03)
+
+
+### Features
+
+* **dashboard:** show each coordinator's sessions as a kanban board ([#154](https://github.com/The-Vibe-Company/armada/issues/154)) ([ec5cd19](https://github.com/The-Vibe-Company/armada/commit/ec5cd1917fd9bbd26a1f6d2ae538a762aa0c179b))
+
+
+### Bug Fixes
+
+* **dashboard:** allow attachments on fresh program tickets ([#147](https://github.com/The-Vibe-Company/armada/issues/147)) ([a9accb0](https://github.com/The-Vibe-Company/armada/commit/a9accb0c997cad49af2259ea91314d4f71208b41))
+
 ## [0.2.39](https://github.com/The-Vibe-Company/armada/compare/v0.2.38...v0.2.39) (2026-10-03)
 
 

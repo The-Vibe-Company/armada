@@ -12,7 +12,7 @@
 // newer reading. The webhooks' marks (`markIssues`, `markRepository`,
 // `markEveryProject`) stay until a reading that saw them is written: a refresh
 // that fails or is cut short loses none of them.
-import { type ArmadaConfig, CONFIG_DEFAULTS, type StatusSources } from "@armada/core/read";
+import { type ArmadaConfig, CONFIG_DEFAULTS, type Issue, type StatusSources } from "@armada/core/read";
 import { pruneAttachments } from "./attachments";
 import { type Database, iso, type Queryable, transaction } from "./db";
 
@@ -427,4 +427,33 @@ export async function markRepository(db: Queryable, repository: string, now: Dat
 export async function markEveryProject(db: Queryable): Promise<number> {
   const rs = await db.query("UPDATE fleet_snapshots SET full_due = true, marked = marked + 1 WHERE body IS NOT NULL");
   return rs.rowCount;
+}
+
+/**
+ * Keeps a ticket verified during an upload without replacing the rest of a
+ * concurrent reading. Versioning invalidates every server's body cache; the
+ * mark survives an ongoing refresh and asks the next one to read Linear whole.
+ * The upload does not advance read times or clear existing webhook marks.
+ */
+export async function addSnapshotIssue(db: Queryable, config: ArmadaConfig, issue: Issue): Promise<void> {
+  await db.query(
+    `UPDATE fleet_snapshots SET
+       body = jsonb_set(body, '{sources,program,issues}', (body #> '{sources,program,issues}') || $2::jsonb),
+       version = version + 1,
+       issue_ids = ARRAY(SELECT DISTINCT unnest(issue_ids || ARRAY[$3]::text[])),
+       touched = ARRAY(SELECT DISTINCT unnest(touched || ARRAY[$3]::text[])),
+       linear_dirty = true, full_due = true, marked = marked + 1
+     WHERE key = $1 AND body #>> '{config,project,slug}' = $1
+       AND lower(body #>> '{config,github,repository}') = lower($4)
+       AND body #>> '{config,tracker,programRoot}' = $5
+       AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(body #> '{sources,program,issues}') AS i WHERE i->>'id' = $6)`,
+    [
+      config.project.slug,
+      JSON.stringify([issue]),
+      issue.uuid,
+      config.github.repository,
+      config.tracker.programRoot,
+      issue.id,
+    ],
+  );
 }

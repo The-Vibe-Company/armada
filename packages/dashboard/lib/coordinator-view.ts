@@ -4,7 +4,7 @@
 // approve or a question escalated to the owner). A worker's question, plan or
 // hand-back is the coordinator's to handle, not the owner's. Pure: it reads
 // the overview the shell polls.
-import type { FleetOverview, FleetRow, OwnerValidation, ProjectOverview } from "@armada/core/read";
+import type { AgentPhase, FleetOverview, FleetRow, OwnerValidation, ProjectOverview } from "@armada/core/read";
 import { AGENT_STATUSES, agentState } from "./fleet-view";
 import { pendingValidations } from "./overview-view";
 
@@ -62,6 +62,48 @@ export function coordinatorGroups(
     return [{ project, rows: ordered, toValidate: projectChecks(o, project.slug) }];
   });
   return groups.sort((a, b) => (a.toValidate ? 0 : 1) - (b.toValidate ? 0 : 1));
+}
+
+/**
+ * The board's columns (THE-968), left to right: the steps a session goes
+ * through, then what needs the owner and what is stuck.
+ */
+export const BOARD_COLUMNS = ["plan", "approval", "implementing", "delivery", "validate", "blocked"] as const;
+export type BoardColumn = (typeof BOARD_COLUMNS)[number];
+
+/** Where each phase sits when nothing else decides: core's pipeline steps on the board. */
+const PHASE_COLUMN: Record<AgentPhase, BoardColumn> = {
+  planning: "plan",
+  "awaiting-approval": "approval",
+  implementing: "implementing",
+  shipping: "delivery",
+  "awaiting-validation": "validate",
+  "ready-to-merge": "validate",
+  merged: "delivery",
+  blocked: "blocked",
+  released: "plan",
+};
+
+/**
+ * A session's column: an open owner validation on it, else a session waiting
+ * for the owner's validation or handed back, in "To validate" (its badge and
+ * its lane's count stay the open validations only); a blocked or silent one in
+ * "Blocked"; else its phase's (red CI stays in "Delivery", in its red).
+ */
+export function boardColumn(
+  checks: Map<string, OwnerValidation[]>,
+  row: Pick<FleetRow, "project" | "id" | "phase" | "silent">,
+): BoardColumn {
+  if (checksOf(checks, row).length) return "validate";
+  const column = PHASE_COLUMN[row.phase];
+  return column !== "validate" && row.silent ? "blocked" : column;
+}
+
+/** A lane's sessions by column, each in its group's order. */
+export function laneColumns(checks: Map<string, OwnerValidation[]>, rows: FleetRow[]): Record<BoardColumn, FleetRow[]> {
+  const out = Object.fromEntries(BOARD_COLUMNS.map((c) => [c, [] as FleetRow[]])) as Record<BoardColumn, FleetRow[]>;
+  for (const r of rows) out[boardColumn(checks, r)].push(r);
+  return out;
 }
 
 /** The overview's one line: "2 coordinators · 6 sessions in flight · 1 to validate". */

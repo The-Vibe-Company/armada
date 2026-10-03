@@ -11,9 +11,9 @@ export function FleetLive() {
           Every agent, every phase, one screen.
         </h2>
         <p className="lp-body lp-reveal">
-          Every session in flight, grouped under the coordinator that runs it. The coordinators answer their workers and
-          merge their pull requests; what only you can decide is marked To validate and comes first. Below, every
-          session's day on one timeline.
+          Every session in flight on one board: a lane for the coordinator that runs it, a column for each step. The
+          coordinators answer their workers and merge their pull requests; what only you can decide is marked To
+          validate, and its lane comes first. Below, every session's day on one timeline.
         </p>
       </div>
       <div className="lp-fleet-stage lp-reveal is-tilt">

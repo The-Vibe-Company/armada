@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import type { FleetRow, OwnerValidation, ProjectOverview } from "@armada/core/read";
-import { checksOf, coordinatorGroups, overviewLine, ownerChecks, projectChecks } from "../lib/coordinator-view.ts";
+import {
+  BOARD_COLUMNS,
+  boardColumn,
+  checksOf,
+  coordinatorGroups,
+  laneColumns,
+  overviewLine,
+  ownerChecks,
+  projectChecks,
+} from "../lib/coordinator-view.ts";
+import { demoOverview } from "../lib/demo/overview.ts";
 
 // The overview by coordinator (THE-916): synthetic fleet, invented tickets and people.
 
@@ -95,5 +105,65 @@ describe("the overview's groups", () => {
       running: 5,
       toValidate: 2,
     });
+  });
+});
+
+describe("the board (THE-968)", () => {
+  const none = ownerChecks({ validations: [] });
+  const pr = (ci: "success" | "failure" | "pending" | "none") => ({ ci }) as FleetRow["pr"];
+
+  test("puts each session in the column of its phase", () => {
+    const column = (over: Partial<FleetRow>) => boardColumn(none, row("WID-1", over));
+    expect(column({ phase: "planning" })).toBe("plan");
+    expect(column({ phase: "awaiting-approval" })).toBe("approval");
+    expect(column({ phase: "implementing" })).toBe("implementing");
+    expect(column({ phase: "shipping", pr: pr("none") })).toBe("delivery");
+    expect(column({ phase: "shipping", pr: pr("pending") })).toBe("delivery");
+    // Red CI is still delivery's to fix, in its red tone.
+    expect(column({ phase: "shipping", pr: pr("failure") })).toBe("delivery");
+    expect(column({ phase: "awaiting-validation" })).toBe("validate");
+    expect(column({ phase: "ready-to-merge", pr: pr("success") })).toBe("validate");
+    expect(column({ phase: "blocked" })).toBe("blocked");
+    // Merged, its ticket not closed yet: delivered, nothing left for the owner.
+    expect(column({ phase: "merged" })).toBe("delivery");
+    expect(column({ phase: "implementing", silent: true })).toBe("blocked");
+    // A worker that handed back may go quiet: its hand-back still waits in "To validate".
+    expect(column({ phase: "ready-to-merge", silent: true })).toBe("validate");
+  });
+
+  test("an open owner validation wins over a blocked or silent session", () => {
+    const checks = ownerChecks({ validations: [validation(1, "WID-1", { kind: "question" })] });
+    expect(boardColumn(checks, row("WID-1", { phase: "blocked", silent: true }))).toBe("validate");
+    expect(boardColumn(checks, row("WID-2", { phase: "blocked" }))).toBe("blocked");
+  });
+
+  test("keeps the lane's order in each column", () => {
+    const rows = [
+      row("WID-1", { phase: "implementing" }),
+      row("WID-2", { phase: "planning" }),
+      row("WID-3", { phase: "implementing" }),
+    ];
+    const columns = laneColumns(none, rows);
+    expect(Object.keys(columns)).toEqual([...BOARD_COLUMNS]);
+    expect(ids(columns.implementing)).toEqual(["WID-1", "WID-3"]);
+    expect(ids(columns.plan)).toEqual(["WID-2"]);
+    expect(columns.blocked).toEqual([]);
+  });
+
+  test("on the demo world, every session in flight sits in one column, and what the owner validates in theirs", () => {
+    const o = demoOverview(new Date("2026-10-01T13:42:00Z"));
+    const checks = ownerChecks(o);
+    const groups = coordinatorGroups(o, o.rows);
+    const placed = groups.flatMap((g) => Object.values(laneColumns(checks, g.rows)).flat());
+    expect(ids(placed).sort()).toEqual(ids(o.rows).sort());
+    for (const g of groups) {
+      const columns = laneColumns(checks, g.rows);
+      const mine = g.rows.filter((r) => checksOf(checks, r).length);
+      expect(mine.every((r) => columns.validate.includes(r))).toBe(true);
+      expect(g.toValidate).toBe(mine.reduce((n, r) => n + checksOf(checks, r).length, 0));
+    }
+    // Every column but one holds a session somewhere in the demo.
+    const used = BOARD_COLUMNS.filter((c) => groups.some((g) => laneColumns(checks, g.rows)[c].length));
+    expect(used.length).toBeGreaterThanOrEqual(5);
   });
 });
