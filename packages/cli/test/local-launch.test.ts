@@ -120,6 +120,13 @@ async function fixture(
           stdout: options.unsigned ? "Not logged in" : "Logged in using ChatGPT",
           stderr: "",
         };
+      if (command === "opencode" && args[0] === "debug")
+        return {
+          code: 0,
+          stdout:
+            args[1] === "config" ? "{}" : JSON.stringify({ providers: [{ id: "opencode", name: "OpenCode Zen" }] }),
+          stderr: "",
+        };
       if (command === "opencode" && args.includes("--verbose")) {
         const ids = (
           options.models ?? "opencode/deepseek-v4-pro\nopencode/deepseek-v4-flash\nopenrouter/deepseek/deepseek-chat"

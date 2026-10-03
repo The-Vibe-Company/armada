@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.44](https://github.com/The-Vibe-Company/armada/compare/v0.2.43...v0.2.44) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** recognize OpenCode model and provider footer names ([#165](https://github.com/The-Vibe-Company/armada/issues/165)) ([048492d](https://github.com/The-Vibe-Company/armada/commit/048492d0ea484b9b6d910f8a720fb5b48ed93a77))
+
 ## [0.2.43](https://github.com/The-Vibe-Company/armada/compare/v0.2.42...v0.2.43) (2026-10-03)
 
 
