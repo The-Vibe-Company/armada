@@ -163,7 +163,7 @@ describe("fetchProgram", () => {
       return recorded.fetch(url, init);
     };
     await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch })).rejects.toThrow(
-      "Linear API unreachable: no answer within 30 s",
+      "Linear API unreachable: no answer within 10 s; failed after 2 attempts (one retry)",
     );
   });
 
@@ -173,7 +173,7 @@ describe("fetchProgram", () => {
       throw new DOMException("The operation timed out.", "TimeoutError");
     };
     await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch: timedOut })).rejects.toThrow(
-      "Linear API unreachable: no answer within 30 s",
+      "Linear API unreachable: no answer within 10 s; failed after 2 attempts (one retry)",
     );
   });
 

@@ -84,6 +84,33 @@ async function machine(over: Partial<FakeVault> = {}, env: Record<string, string
 }
 
 describe("the organization's keys from Armada", () => {
+  test("a credential timeout retries, and exhaustion reports Armada's failure before any Linear call", async () => {
+    const m = await machine();
+    expect(await run(["login"], m.io)).toBe(0);
+    m.printed();
+    const transport = m.io.fetch as Fetch;
+    let attempts = 0;
+    let fail = 1;
+    m.io.fetch = async (url, init) => {
+      if (url.endsWith("/credentials") && ++attempts <= fail) throw new DOMException("timed out", "TimeoutError");
+      return transport(url, init);
+    };
+    expect(await run(["status", "--json"], m.io)).toBe(0);
+    expect(attempts).toBe(2);
+    m.printed();
+    const linearCalls = m.linear.calls.length;
+    attempts = 0;
+    fail = 2;
+    expect(await run(["status"], m.io)).toBe(1);
+    const failed = m.printed();
+    expect(attempts).toBe(2);
+    expect(failed).toContain("Armada (armada.example.test) unreachable");
+    expect(failed).toContain("POST credentials");
+    expect(failed).toContain("no answer within 10 s; failed after 2 attempts (one retry)");
+    expect(failed).not.toContain("LINEAR_API_KEY is not set");
+    expect(m.linear.calls).toHaveLength(linearCalls);
+  });
+
   test("on a machine with no local keys, armada login then armada status works with the organization's keys", async () => {
     const m = await machine();
     expect(await run(["status"], m.io)).toBe(2);

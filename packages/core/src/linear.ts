@@ -1,8 +1,12 @@
 // Linear read adapter: walks the program tree from its root issue at any depth,
 // then reads the comments of the tickets an agent may hold. The normalizers are
 // pure and exported so they can be tested on recorded responses.
+
+import { type Fetch, HttpRequestError, httpRequest } from "./http.ts";
 import type { AgentClaim, AgentPhase, Blocker, Comment, Issue, LabelPhase, ProgramData, StatusType } from "./types.ts";
 import { LABEL_PHASES } from "./types.ts";
+
+export { type Fetch, networkReason } from "./http.ts";
 
 export const LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 const MAX_DEPTH = 8;
@@ -14,8 +18,6 @@ const COMMENT_BATCH = 25;
 const MAX_COMMENTS = 100;
 const MORE_PAGE = 100;
 export const REQUEST_TIMEOUT_MS = 30_000;
-
-export type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 export interface LabelGroups {
   phaseGroup: string;
@@ -304,35 +306,41 @@ export interface LinearRequestOptions {
   apiKey: string;
   fetch?: Fetch;
   timeoutMs?: number;
+  /** Explicitly opt a query into retry; mutations must never be replayed. */
+  retry?: boolean;
 }
 
 /** One GraphQL request to Linear; every failure becomes a LinearError that never quotes the key. */
 export async function gql<T>(opts: LinearRequestOptions, query: string, variables: object): Promise<T> {
-  const doFetch = opts.fetch ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  const res = await doFetch(LINEAR_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: opts.apiKey },
-    body: JSON.stringify({ query, variables }),
-    signal: AbortSignal.timeout(timeoutMs),
-  }).catch((err: unknown) => {
-    throw new LinearError(`Linear API unreachable: ${networkReason(err, timeoutMs)}`, true);
+  return httpRequest<T>(
+    LINEAR_ENDPOINT,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: opts.apiKey },
+      body: JSON.stringify({ query, variables }),
+    },
+    opts,
+    async (res) => {
+      if (res.status === 401)
+        throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY", true);
+      // GraphQL validation errors come back with HTTP 400 and a JSON body worth reporting.
+      const json = (await res.json().catch((err) => {
+        if (err instanceof SyntaxError) return {};
+        throw err;
+      })) as { data?: T; errors?: { message: string }[] };
+      if (json.errors?.length) throw new LinearError(`Linear API: ${json.errors.map((e) => e.message).join("; ")}`);
+      if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`, true);
+      if (!json.data) throw new LinearError("Linear API: empty response");
+      return json.data;
+    },
+  ).catch((err: unknown) => {
+    if (err instanceof HttpRequestError) throw new LinearError(`Linear API unreachable: ${err.message}`, true);
+    throw err;
   });
-  if (res.status === 401) throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY", true);
-  // GraphQL validation errors come back with HTTP 400 and a JSON body worth reporting.
-  const json = (await res.json().catch(() => ({}))) as { data?: T; errors?: { message: string }[] };
-  if (json.errors?.length) throw new LinearError(`Linear API: ${json.errors.map((e) => e.message).join("; ")}`);
-  if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`, true);
-  if (!json.data) throw new LinearError("Linear API: empty response");
-  return json.data;
 }
 
-/** "no answer within 30 s" for a timeout or abort, else the underlying message. */
-export function networkReason(err: unknown, timeoutMs: number): string {
-  if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"))
-    return `no answer within ${timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`}`;
-  return err instanceof Error ? err.message : String(err);
-}
+const readGql = <T>(opts: LinearRequestOptions, query: string, variables: object) =>
+  gql<T>({ ...opts, retry: true }, query, variables);
 
 const chunks = <T>(xs: T[], n: number) =>
   Array.from({ length: Math.ceil(xs.length / n) }, (_, k) => xs.slice(k * n, k * n + n));
@@ -349,7 +357,7 @@ async function readComments(opts: LinearRequestOptions, issues: Issue[], warning
     issues.map((i) => i.uuid),
     COMMENT_BATCH,
   )) {
-    const data = await gql<{ issues: { nodes: { identifier: string; comments: Connection<RawComment> }[] } }>(
+    const data = await readGql<{ issues: { nodes: { identifier: string; comments: Connection<RawComment> }[] } }>(
       opts,
       COMMENTS_QUERY,
       { ids: batch },
@@ -374,7 +382,7 @@ export async function fetchProgramIssue(opts: FetchProgramOptions, ticket: strin
     issue(id: $id) { ...F parent { ${ancestry(MAX_DEPTH - 1)} } }
   }`;
   type Ancestor = { identifier: string; parent?: Ancestor | null };
-  const { issue } = await gql<{ issue: (RawIssue & { parent: Ancestor | null }) | null }>(opts, query, {
+  const { issue } = await readGql<{ issue: (RawIssue & { parent: Ancestor | null }) | null }>(opts, query, {
     id: ticket,
   }).catch((err: unknown) => {
     if (err instanceof LinearError && /entity not found/i.test(err.message)) return { issue: null };
@@ -390,7 +398,7 @@ export async function fetchProgramIssue(opts: FetchProgramOptions, ticket: strin
     belongs = parent.identifier === opts.rootId;
     if (belongs) break;
     if (parent.parent === undefined) {
-      const data = await gql<{ issue: Ancestor | null }>(
+      const data = await readGql<{ issue: Ancestor | null }>(
         opts,
         `query ProgramAncestors($id: String!) { issue(id: $id) { ${ancestry(MAX_DEPTH)} } }`,
         { id: parent.identifier },
@@ -419,7 +427,7 @@ export async function fetchProgram(opts: FetchProgramOptions): Promise<ProgramDa
 }
 
 async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<ProgramData> {
-  const root = (await gql<{ issue: RawIssue | null }>(opts, ROOT_QUERY(delegate), { id: opts.rootId })).issue;
+  const root = (await readGql<{ issue: RawIssue | null }>(opts, ROOT_QUERY(delegate), { id: opts.rootId })).issue;
   if (!root) throw new LinearError(`Linear: program root ${opts.rootId} not found`);
 
   const all: RawIssue[] = [root];
@@ -430,7 +438,7 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
     let after: string | null = null;
     for (;;) {
       const data: { issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: RawIssue[] } } =
-        await gql(opts, CHILDREN_QUERY(delegate), { parents, after });
+        await readGql(opts, CHILDREN_QUERY(delegate), { parents, after });
       all.push(...data.issues.nodes);
       next.push(...data.issues.nodes.map((n) => n.id));
       const { hasNextPage, endCursor } = data.issues.pageInfo;
@@ -482,7 +490,7 @@ export async function readRest<T>(
     const after = conn.pageInfo.endCursor;
     try {
       if (!after) throw new LinearError("Linear gave no cursor for the next page");
-      const data = await gql<{ issue: Record<string, Connection<T> | undefined> | null }>(opts, MORE_QUERY(more), {
+      const data = await readGql<{ issue: Record<string, Connection<T> | undefined> | null }>(opts, MORE_QUERY(more), {
         id: identifier,
         after,
       });
@@ -543,7 +551,7 @@ async function readPages<T>(
   const nodes: T[] = [];
   let after: string | null = null;
   for (let page = 0; ; page++) {
-    const data: Record<string, Connection<T>> = await gql(opts, query, { filter, after });
+    const data: Record<string, Connection<T>> = await readGql(opts, query, { filter, after });
     const conn = data[field];
     if (!conn) break;
     nodes.push(...conn.nodes);
