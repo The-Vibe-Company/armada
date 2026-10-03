@@ -566,6 +566,17 @@ export function armadaApi(opts: ArmadaApiOptions) {
       return { id: body.id, ticket: body.ticket };
     },
 
+    /** Failure cleanup targets its own launch; older servers safely refuse this distinct route. */
+    async revokePendingLaunch(
+      signIn: ArmadaSignIn,
+      target: { project: string; ticket: string; id: string },
+    ): Promise<void> {
+      const { status, body } = await call("POST", "workers/revoke-pending", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, "Armada did not revoke this pending launch");
+      if (body.id !== target.id || body.ticket !== target.ticket)
+        throw new ArmadaApiError(`Armada (${host}) answered a different revoked launch`);
+    },
+
     /** Revokes the session of `armada login` on the server; a worker session ends as released. */
     async signOut(signIn: ArmadaSignIn): Promise<void> {
       const { status, body } = await call("DELETE", "session", { signIn });

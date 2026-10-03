@@ -320,17 +320,23 @@ export async function endWorker(
 
 export async function revokePendingLaunch(
   client: Database,
-  input: { organization: string; project: string; ticket: string; by: Actor; now: Date },
+  input: { organization: string; project: string; ticket: string; id?: string; by: Actor; now: Date },
 ): Promise<{ worker: Worker } | { reason: "claimed" | "gone" }> {
   return transaction(client, async (tx) => {
     const found = await tx.query(
-      `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 AND "project" = $2 AND "ticket" = $3
+      `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 AND "project" = $2 AND "ticket" = $3${input.id ? ' AND "id" = $4' : ""}
        ORDER BY "createdAt" DESC, "id" DESC LIMIT 1 FOR UPDATE`,
-      [input.organization, input.project, input.ticket.toUpperCase()],
+      [input.organization, input.project, input.ticket.toUpperCase(), ...(input.id ? [input.id] : [])],
     );
     const row = found.rows[0];
     if (!row || row.endedAt) return { reason: "gone" };
     const worker = workerOf(row);
+    // An unused specific token cannot have claimed. Another launch's claim must
+    // not prevent ending it. Exchange and revoke lock the same worker row.
+    if (input.id && !worker.tokenUsedAt) {
+      const ended = await endWorker(tx, { ...input, id: worker.id, reason: "revoked" });
+      return ended ? { worker: ended } : { reason: "gone" };
+    }
     const held = await tx.query(
       `SELECT 1 FROM runtime_handles WHERE project = $1 AND ticket = $2 AND released_at IS NULL
        UNION ALL SELECT 1 FROM events WHERE project = $1 AND ticket = $2 AND kind = 'claim' AND created_at >= $3 LIMIT 1`,

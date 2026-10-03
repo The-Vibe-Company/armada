@@ -99,6 +99,8 @@ test("starts an absent server, uses returned topology and sends a long brief ver
     "model-a",
     "-c",
     'model_reasoning_effort="high"',
+    "-c",
+    "check_for_update_on_startup=false",
     "--sandbox",
     "workspace-write",
   ]);
@@ -106,7 +108,7 @@ test("starts an absent server, uses returned topology and sends a long brief ver
     "herdr",
     "agent",
     "prompt",
-    "demo-7",
+    "w8:p9",
     prompt,
     "--wait",
     "--until",
@@ -297,7 +299,16 @@ test("DeepSeek fallback starts OpenCode with its provider and delivers follow-up
 test("Codex and DeepSeek preserve their model IDs and extra arguments", () => {
   expect(
     harnessArgs({ harness: "codex", model: "model-a", effort: "high", extraArgs: ["--sandbox", "workspace-write"] }),
-  ).toEqual(["--model", "model-a", "-c", 'model_reasoning_effort="high"', "--sandbox", "workspace-write"]);
+  ).toEqual([
+    "--model",
+    "model-a",
+    "-c",
+    'model_reasoning_effort="high"',
+    "-c",
+    "check_for_update_on_startup=false",
+    "--sandbox",
+    "workspace-write",
+  ]);
   expect(
     harnessArgs({ harness: "deepseek", model: "opencode/deepseek-v4.1-flash", effort: "high", extraArgs: ["--auto"] }),
   ).toEqual(["--model", "opencode/deepseek-v4.1-flash", "--auto"]);
