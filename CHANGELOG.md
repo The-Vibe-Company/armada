@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.42](https://github.com/The-Vibe-Company/armada/compare/v0.2.41...v0.2.42) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** preserve OpenCode and DeepSeek worker models ([#159](https://github.com/The-Vibe-Company/armada/issues/159)) ([0c352ab](https://github.com/The-Vibe-Company/armada/commit/0c352abec10dea83396ebb5a4520dcc92d9472e0))
+
 ## [0.2.41](https://github.com/The-Vibe-Company/armada/compare/v0.2.40...v0.2.41) (2026-10-03)
 
 
