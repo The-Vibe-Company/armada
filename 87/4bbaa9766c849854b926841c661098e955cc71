@@ -1,0 +1,41 @@
+packages/cli/src/merge.ts
+  s_ad1e61c3c769b3::t_219e0a98f5e96a 241-247
+  s_ad1e61c3c769b3::t_e136923c7ff37e 239-240,248-250
+packages/cli/test/merge.test.ts
+  s_ad1e61c3c769b3::t_e78f2650fa4c40 96-99,384-389,399-402,405-406
+  s_ad1e61c3c769b3::t_219e0a98f5e96a 390-398,403-404
+  s_ad1e61c3c769b3::t_7ab13e162857f9 407
+skills/armada-coordinator/MERGE.md
+  s_ad1e61c3c769b3::t_e136923c7ff37e 25
+packages/core/test/merge.test.ts
+  s_ad1e61c3c769b3::t_219e0a98f5e96a 961-969,979-986,988-989,1001-1006,1010,1026-1031,1061-1063
+  s_ad1e61c3c769b3::t_9f3595cc0df4dd 60-63,970-978,990-1000,1007-1009,1011-1014,1016-1025,1032-1037,1042-1043,1045-1047,1057-1060,1064-1066
+  s_ad1e61c3c769b3::t_3ad986f7f84686 701-704,1038,1040-1041,1044,1048-1053,1055-1056
+  s_ad1e61c3c769b3::t_a0216762c69764 987,1039
+packages/cli/src/cli.ts
+  s_ad1e61c3c769b3::t_3ad986f7f84686 165
+  s_ad1e61c3c769b3::t_e136923c7ff37e 164
+packages/core/src/merge.ts
+  s_ad1e61c3c769b3::t_e136923c7ff37e 34-35,104,115-116,236-237,297,555-563,568,570-571,661,839,1185-1198
+  s_ad1e61c3c769b3::t_219e0a98f5e96a 256-264
+README.md
+  s_ad1e61c3c769b3::t_e136923c7ff37e 222
+packages/core/src/skills.generated.json
+  s_ad1e61c3c769b3::t_35add2272fa4e3 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "874bbaa9766c849854b926841c661098e955cc71",
+  "prompts": {},
+  "sessions": {
+    "s_ad1e61c3c769b3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1030e-f448-7062-9d0b-f5943b0be9a7",
+        "model": "gpt-5.6-luna"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
