@@ -30,7 +30,7 @@ describe("armada.toml", () => {
         labels: {
           phaseGroup: "Agent phase",
           runtimeGroup: "Agent runtime",
-          runtimes: ["Claude Code", "Codex", "Conductor"],
+          runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
         },
       },
       github: { repository: "acme/widgets" },
@@ -52,6 +52,7 @@ describe("armada.toml", () => {
       brief: { extra: null },
       secrets: { names: [] },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
+      herdr: { defaultProfile: null, profiles: {}, routing: [] },
     });
   });
 
@@ -156,6 +157,9 @@ describe("armada.toml", () => {
     expect(text).toContain("[brief]\n# extra = ");
     expect(text).toContain("\n# merge_approval = ");
     expect(text).toContain("\n# [[policy.validation]]\n# when = ");
+    expect(text).toContain('runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]');
+    expect(text).toContain("# [herdr]");
+    expect(text).toContain("# [herdr.profiles.claude]");
     const { conductor, ...rest } = parseConfig(text);
     const { conductor: _none, ...demo } = parseConfig(DEMO_TOML);
     expect(rest).toEqual(demo);
@@ -237,6 +241,64 @@ describe("armada.toml", () => {
     expect(problemsOf(text)).toEqual([
       '"conductor.profiles.local.agent" must be "claude" with runtime = "claude-code"',
       '"conductor.profiles.cloud.runtime" must be one of "conductor", "claude-code"',
+    ]);
+  });
+
+  test("Herdr profiles require a supported harness and default extra arguments to an empty list", () => {
+    const config = parseConfig(
+      `${DEMO_TOML}
+[herdr]
+default_profile = "codex"
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt"
+effort = "high"
+extra_args = [" --json ", "--verbose"]
+when = "back end work"
+`,
+    );
+    expect(config.herdr).toEqual({
+      defaultProfile: "codex",
+      profiles: {
+        codex: {
+          harness: "codex",
+          model: "gpt",
+          effort: "high",
+          extraArgs: [" --json ", "--verbose"],
+          when: "back end work",
+        },
+      },
+      routing: [],
+    });
+    const defaults = parseConfig(
+      `${DEMO_TOML}
+[herdr.profiles.claude]
+harness = "claude"
+model = "sonnet"
+effort = "high"
+`,
+    ).herdr.profiles.claude;
+    expect(defaults?.extraArgs).toEqual([]);
+  });
+
+  test("Herdr profile and routing values name their invalid keys", () => {
+    const text = `${DEMO_TOML}
+[herdr]
+default_profile = "missing"
+[herdr.profiles.codex]
+harness = "gemini"
+model = "gpt"
+effort = "high"
+extra_args = ["", 1]
+[[herdr.routing]]
+labels = ["api"]
+profile = "missing"
+`;
+    expect(problemsOf(text)).toEqual([
+      '"herdr.profiles.codex.harness" must be one of "claude", "codex", "opencode"',
+      '"herdr.profiles.codex.extra_args" must be a list of non-empty argument strings',
+      '"herdr.default_profile" is "missing", but there is no [herdr.profiles.missing]',
+      '"herdr.routing[1].profile" is "missing", but there is no [herdr.profiles.missing]',
     ]);
   });
 

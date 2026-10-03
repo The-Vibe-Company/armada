@@ -89,6 +89,14 @@ export interface ArmadaConfig {
     /** `[[conductor.routing]]` in file order: the first rule matching a ticket's labels picks its profile. */
     routing: RoutingRule[];
   };
+  herdr: {
+    /** Profile `armada launch --runtime herdr` uses without `--profile`; null when none is declared. */
+    defaultProfile: string | null;
+    /** Launch settings by profile name, from `[herdr.profiles.<name>]`. */
+    profiles: Record<string, HerdrProfile>;
+    /** `[[herdr.routing]]` in file order: the first rule matching a ticket's labels picks its profile. */
+    routing: RoutingRule[];
+  };
 }
 
 export const PLAN_POLICIES = ["approve", "pre-approved"] as const;
@@ -120,7 +128,7 @@ export interface RoutingRule {
 
 /** Where a profile's workers run, each with its runtime guide skill (`armada-runtime-<runtime>`). */
 export const PROFILE_RUNTIMES = ["conductor", "claude-code"] as const;
-export type ProfileRuntime = (typeof PROFILE_RUNTIMES)[number];
+export type ProfileRuntime = (typeof PROFILE_RUNTIMES)[number] | "herdr";
 
 /** How a worker is launched: every value is passed explicitly, never left to the runtime's defaults. */
 export interface ConductorProfile {
@@ -136,12 +144,25 @@ export interface ConductorProfile {
   fastMode: boolean;
 }
 
+/** Harnesses Herdr can use to run a worker. */
+export const HERDR_HARNESSES = ["claude", "codex", "opencode"] as const;
+export type HerdrHarness = (typeof HERDR_HARNESSES)[number];
+
+/** How a Herdr worker is launched. */
+export interface HerdrProfile {
+  when?: string;
+  harness: HerdrHarness;
+  model: string;
+  effort: string;
+  extraArgs: string[];
+}
+
 export const CONFIG_DEFAULTS = {
   language: "en",
   readyLabel: "ready-for-agent",
   phaseGroup: "Agent phase",
   runtimeGroup: "Agent runtime",
-  runtimes: ["Claude Code", "Codex", "Conductor"],
+  runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
   silentAfterMinutes: 15,
   quietAfterMinutes: 45,
   coordinatorMinutes: 10,
@@ -254,6 +275,12 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const profilesRaw = conductorT.profiles === undefined ? {} : conductorT.profiles;
   if (!isTable(profilesRaw)) problems.push(`"conductor.profiles" must be a table of profiles`);
   const profilesT = isTable(profilesRaw) ? profilesRaw : {};
+  const herdr = raw.herdr === undefined ? {} : raw.herdr;
+  if (!isTable(herdr)) problems.push(`"herdr" must be a table`);
+  const herdrT = isTable(herdr) ? herdr : {};
+  const herdrProfilesRaw = herdrT.profiles === undefined ? {} : herdrT.profiles;
+  if (!isTable(herdrProfilesRaw)) problems.push(`"herdr.profiles" must be a table of profiles`);
+  const herdrProfilesT = isTable(herdrProfilesRaw) ? herdrProfilesRaw : {};
 
   // Unknown keys inside known tables are typos; unknown top-level tables are
   // left alone so newer sections do not break older readers.
@@ -285,6 +312,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["brief", briefT, ["extra"]],
     ["secrets", secretsT, ["names"]],
     ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
+    ["herdr", herdrT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
   for (const [name, p] of Object.entries(profilesT)) {
@@ -301,13 +329,15 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     if (p.fast_mode !== undefined && typeof p.fast_mode !== "boolean")
       problems.push(`"${path}.fast_mode" must be true or false`);
     const runtime = p.runtime ?? "conductor";
-    if (!PROFILE_RUNTIMES.includes(runtime as ProfileRuntime))
+    if (!PROFILE_RUNTIMES.includes(runtime as (typeof PROFILE_RUNTIMES)[number]))
       problems.push(`"${path}.runtime" must be one of ${PROFILE_RUNTIMES.map((r) => `"${r}"`).join(", ")}`);
     if (runtime === "claude-code" && p.agent !== undefined && p.agent !== "claude")
       problems.push(`"${path}.agent" must be "claude" with runtime = "claude-code"`);
     profiles[name] = {
       ...(p.when !== undefined ? { when: str(p, path, "when") } : {}),
-      runtime: PROFILE_RUNTIMES.includes(runtime as ProfileRuntime) ? (runtime as ProfileRuntime) : "conductor",
+      runtime: PROFILE_RUNTIMES.includes(runtime as (typeof PROFILE_RUNTIMES)[number])
+        ? (runtime as ProfileRuntime)
+        : "conductor",
       agent: str(p, path, "agent"),
       model: str(p, path, "model"),
       effort: str(p, path, "effort"),
@@ -350,6 +380,75 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(profiles).some((profile) => profile.when)
   )
     problems.push(`"conductor.default_profile" is required with [[conductor.routing]], for tickets no rule matches`);
+
+  const herdrProfiles: Record<string, HerdrProfile> = {};
+  for (const [name, p] of Object.entries(herdrProfilesT)) {
+    const path = `herdr.profiles.${name}`;
+    if (!isTable(p)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    if (name === "__proto__") {
+      problems.push(`"${path}" is not a usable profile name`);
+      continue;
+    }
+    known.push([path, p, ["harness", "model", "effort", "extra_args", "when"]]);
+
+    let harness: HerdrHarness = "claude";
+    if (p.harness === undefined) problems.push(`missing required key "${path}.harness"`);
+    else if (HERDR_HARNESSES.includes(p.harness as HerdrHarness)) harness = p.harness as HerdrHarness;
+    else problems.push(`"${path}.harness" must be one of ${HERDR_HARNESSES.map((h) => `"${h}"`).join(", ")}`);
+
+    let extraArgs: string[] = [];
+    if (p.extra_args !== undefined) {
+      if (Array.isArray(p.extra_args) && p.extra_args.every((arg) => typeof arg === "string" && arg.trim()))
+        extraArgs = [...p.extra_args];
+      else problems.push(`"${path}.extra_args" must be a list of non-empty argument strings`);
+    }
+    herdrProfiles[name] = {
+      ...(p.when !== undefined ? { when: str(p, path, "when") } : {}),
+      harness,
+      model: str(p, path, "model"),
+      effort: str(p, path, "effort"),
+      extraArgs,
+    };
+  }
+  let herdrDefaultProfile: string | null = null;
+  if (herdrT.default_profile !== undefined) {
+    herdrDefaultProfile = str(herdrT, "herdr", "default_profile") || null;
+    if (herdrDefaultProfile && !Object.hasOwn(herdrProfiles, herdrDefaultProfile))
+      problems.push(
+        `"herdr.default_profile" is "${herdrDefaultProfile}", but there is no [herdr.profiles.${herdrDefaultProfile}]`,
+      );
+  }
+  const herdrRouting: RoutingRule[] = [];
+  const herdrRoutingRaw = herdrT.routing ?? [];
+  if (!Array.isArray(herdrRoutingRaw)) problems.push(`"herdr.routing" must be a list of [[herdr.routing]] rules`);
+  else
+    for (const [i, r] of herdrRoutingRaw.entries()) {
+      const path = `herdr.routing[${i + 1}]`;
+      if (!isTable(r)) {
+        problems.push(`"${path}" must be a table`);
+        continue;
+      }
+      known.push([path, r, ["labels", "profile"]]);
+      const labels = r.labels;
+      const ok =
+        Array.isArray(labels) && labels.length && labels.every((l) => typeof l === "string" && routingLabelKey(l));
+      if (!ok)
+        problems.push(`"${path}.labels" must be a non-empty list of Linear label names, each with a letter or digit`);
+      const profile = str(r, path, "profile");
+      if (profile && !Object.hasOwn(herdrProfiles, profile))
+        problems.push(`"${path}.profile" is "${profile}", but there is no [herdr.profiles.${profile}]`);
+      if (ok && profile) herdrRouting.push({ labels: labels.map((l: string) => l.trim()), profile });
+    }
+  if (
+    Array.isArray(herdrRoutingRaw) &&
+    herdrRoutingRaw.length &&
+    herdrT.default_profile === undefined &&
+    !Object.values(herdrProfiles).some((profile) => profile.when)
+  )
+    problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
 
@@ -503,6 +602,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     brief: { extra },
     secrets: { names: secretNames },
     conductor: { defaultProfile, profiles, routing },
+    herdr: { defaultProfile: herdrDefaultProfile, profiles: herdrProfiles, routing: herdrRouting },
   };
   if (problems.length) throw new ConfigError(source, problems);
   config.tracker.programRoot = config.tracker.programRoot.toUpperCase();
@@ -527,7 +627,7 @@ ready_label = "ready-for-agent"
 [tracker.labels]
 phase_group = "Agent phase"
 runtime_group = "Agent runtime"
-runtimes = ["Claude Code", "Codex", "Conductor"]
+runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 
 [github]
 repository = ${q(p.repository)}
@@ -604,6 +704,23 @@ profile = "codex"
 [[conductor.routing]]
 labels = ["Bug"]
 profile = "debug"
+
+# Herdr profiles use one of its supported harnesses and are selected with the
+# same label and \`when\` rules as Conductor. Every extra argument is passed to
+# the selected harness exactly as written.
+# [herdr]
+# default_profile = "claude"
+
+# [herdr.profiles.claude]
+# harness = "claude"       # "claude", "codex" or "opencode"
+# model = "sonnet"
+# effort = "high"
+# extra_args = ["--verbose"]
+# when = "a ticket best handled by Claude"
+
+# [[herdr.routing]]
+# labels = ["herdr"]
+# profile = "claude"
 `;
 }
 

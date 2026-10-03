@@ -228,6 +228,7 @@ export const LABELS: TicketLabel[] = [
   ...LABEL_PHASES.map((name) => ({ id: `phase-${name}`, name, group: "Agent phase" })),
   { id: "rt-conductor", name: "Conductor", group: "Agent runtime" },
   { id: "rt-claude", name: "Claude Code", group: "Agent runtime" },
+  { id: "rt-herdr", name: "Herdr", group: "Agent runtime" },
   { id: "ready", name: "ready-for-agent", group: null },
 ];
 

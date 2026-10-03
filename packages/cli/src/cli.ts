@@ -156,7 +156,11 @@ const COMMAND_HELP: Record<string, string> = {
                     A pull request the owner was asked about merges only once they approved
                     that exact head (or it with only the base merged in).
 `,
-  launch: `  launch revoke <ticket>
+  launch: `  launch <ticket> --runtime herdr [--harness claude|codex|opencode]
+                    [--profile <name> [--reason <why>]] [--validation <n|none>]
+                    Create the ticket's worktree and start a persistent local worker
+                    with its launch-token brief. Profiles follow [[herdr.routing]]
+  launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
 `,
@@ -317,6 +321,7 @@ const VALUE_OPTIONS = [
   "every",
   "parent",
   "runtime",
+  "harness",
   "handle",
   "branch",
   "ticket",
@@ -377,6 +382,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug", "no-stop-hook"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
@@ -632,7 +638,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { path, text } = await findConfig(io, args.config, "launch");
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
-      return await launch(io, config, credentials, args);
+      return await launch(io, config, credentials, args, version, path);
     }
     if (args.command === "status") {
       noExtra(args.rest);

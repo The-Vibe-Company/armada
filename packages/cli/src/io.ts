@@ -13,7 +13,11 @@ export interface ExecResult {
 }
 
 /** Runs a program (git, gh) without a shell and returns its exit code and output. */
-export type Exec = (command: string, args: string[], options: { cwd: string }) => Promise<ExecResult>;
+export type Exec = (
+  command: string,
+  args: string[],
+  options: { cwd: string; timeoutMs?: number },
+) => Promise<ExecResult>;
 
 /**
  * Runs a command with its own standard input and output and the environment
@@ -75,6 +79,12 @@ export interface Io {
   linearWriter?: (options: LinearWriterOptions) => LinearWriter;
   /** Runs git and gh; required by doctor, init and merge. */
   exec?: Exec;
+  /** Starts a persistent runtime server without a terminal, independent of this command. */
+  detach?: (
+    command: string,
+    args: string[],
+    options: { cwd: string; env: Record<string, string | undefined> },
+  ) => Promise<boolean>;
   /** Runs the command of `armada run`, attached to this terminal. */
   spawn?: Spawn;
   startBackground?: (args: string[]) => Promise<boolean>;

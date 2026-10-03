@@ -102,7 +102,34 @@ The laptop must stay awake and online while the coordinator runs: when it sleeps
 
 Workers launched from a laptop need no key either: the brief's prompt carries their launch token.
 
-A coordinator in Claude Code can also run short tickets as its own background subagents, each in its own git worktree: give those tickets a profile with `runtime = "claude-code"` and follow the `armada-runtime-claude-code` skill. They die with the coordinator's session, so anything long goes to Conductor.
+A coordinator in Claude Code can also run short tickets as its own background subagents, each in its own git worktree: give those tickets a profile with `runtime = "claude-code"` and follow the `armada-runtime-claude-code` skill. They die with the coordinator's session. Use herdr for persistent local workers, or Conductor for cloud workers.
+
+### Launch a persistent local worker
+
+Install herdr 0.9.1 or newer and sign in to your chosen harness yourself. The coordinator must be signed in to Armada (`armada login`) so the worker receives a one-time launch token. Add a local profile to the project's committed `armada.toml`:
+
+```toml
+[herdr]
+default_profile = "backend"
+
+[herdr.profiles.backend]
+harness = "codex" # claude, codex or opencode
+model = "your-model-id"
+effort = "high"
+extra_args = ["--sandbox", "workspace-write"] # arguments for this harness only
+
+[[herdr.routing]]
+labels = ["api"]
+profile = "backend"
+```
+
+Run `armada launch DEMO-13 --runtime herdr --harness codex`. The harness flag checks the selected profile; omit it to use the profile's harness. Routing follows the same rules as Conductor: first matching label, otherwise the default or sole profile. A profile with a plain-language `when` requires the coordinator to choose it with `--profile backend --reason "back end work"`; overriding a matching label rule also needs a reason. If the project has owner-validation rules, judge them with `--validation none` or `--validation <n> --validation-reason "<why>"` as with `armada brief`.
+
+Launch starts a headless herdr server if none is running, creates the ticket branch's worktree from the repository's default branch, and starts the harness in the returned shell pane. Model and effort are passed explicitly: Claude's `--effort`, Codex's `model_reasoning_effort`, and OpenCode's [model variant suffix](https://opencode.ai/v2/docs/models) (`provider/model#high`). `extra_args` are preserved as individual arguments. The complete brief reaches `herdr agent prompt` without shell interpolation; the token never appears in launch output or errors. New projects include the `Herdr` runtime label; existing projects need that value in their configured Linear runtime group before a worker can claim.
+
+The worker signs in, claims with `--runtime herdr`, and starts its heartbeat. Its claim stores a JSON handle containing `workspace`, `pane` and `agent`, which `armada status` shows with its last report. Herdr keeps the worker's terminal running when the coordinator disconnects; the machine must remain awake. `--json` returns the launch handle and worktree path, without the prompt or token.
+
+If startup or prompt delivery fails, launch retains the worktree for inspection. Run `herdr agent list`, inspect the returned handle, and cancel an unused token with `armada launch revoke DEMO-13` before retrying. Once claimed, use the worker release protocol. Never delete a retained worktree without checking for unpushed work.
 
 ## Start a coordinator in Conductor Cloud
 

@@ -88,9 +88,10 @@ function openUrl(url: string): boolean {
 }
 
 /** Runs git or gh without a shell; stdin is closed so nothing waits for input. */
-const exec: Exec = (command, args, { cwd }) =>
+const exec: Exec = (command, args, { cwd, timeoutMs }) =>
   new Promise((done, fail) => {
     const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const timer = timeoutMs ? setTimeout(() => child.kill("SIGKILL"), timeoutMs) : null;
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (d: string) => {
@@ -99,8 +100,14 @@ const exec: Exec = (command, args, { cwd }) =>
     child.stderr.setEncoding("utf8").on("data", (d: string) => {
       stderr += d;
     });
-    child.on("error", fail);
-    child.on("close", (code) => done({ code: code ?? 1, stdout, stderr }));
+    child.on("error", (err) => {
+      if (timer) clearTimeout(timer);
+      fail(err);
+    });
+    child.on("close", (code) => {
+      if (timer) clearTimeout(timer);
+      done({ code: code ?? 1, stdout, stderr });
+    });
   });
 
 let stopped = false;
@@ -167,6 +174,15 @@ const code = await run(process.argv.slice(2), {
   gitBranch,
   readStdin,
   exec,
+  detach: (command, args, { cwd, env }) =>
+    new Promise((resolve) => {
+      const child = spawn(command, args, { cwd, env, stdio: "ignore", detached: true });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => {
+        child.unref();
+        resolve(true);
+      });
+    }),
   spawn: spawnInherited,
   startBackground,
   stopped: () => stopped,

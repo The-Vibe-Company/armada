@@ -196,7 +196,7 @@ describe("claim", () => {
     const { linear, ctx } = setup();
     linear.add("DEMO-7");
     expect(await refusal(claimTicket(ctx, { ticket: "DEMO-7", runtime: "pi", handle: "x" }))).toBe(
-      'no "pi" label in the "Agent runtime" label group (available: Conductor, Claude Code)\nNext: armada claim DEMO-7 --runtime "<one of: Conductor, Claude Code>" --handle x',
+      'no "pi" label in the "Agent runtime" label group (available: Conductor, Claude Code, Herdr)\nNext: armada claim DEMO-7 --runtime "<one of: Conductor, Claude Code, Herdr>" --handle x',
     );
   });
 });

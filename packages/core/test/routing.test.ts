@@ -110,4 +110,66 @@ describe("choosing a worker's profile", () => {
     expect(pick(DEMO_TOML + profile("a"))).toMatchObject({ name: "a", source: "only" });
     expect(pick(DEMO_TOML)).toBeNull();
   });
+
+  test("Herdr uses the same label routing and reason rules, with Herdr-specific descriptions", () => {
+    const herdr = parseConfig(`${DEMO_TOML}
+[herdr]
+default_profile = "claude"
+[herdr.profiles.claude]
+harness = "claude"
+model = "sonnet"
+effort = "high"
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt"
+effort = "high"
+[[herdr.routing]]
+labels = ["api"]
+profile = "codex"
+`);
+    const pick = (labels: string[], requested: string | null = null, reason: string | null = null) =>
+      chooseProfile(herdr, { ticket: "DEMO-7", labels, requested, reason }, "herdr");
+
+    expect(pick(["API"])).toMatchObject({
+      name: "codex",
+      profile: { harness: "codex", extraArgs: [] },
+      source: "rule",
+      why: 'rule 1 of [[herdr.routing]] (label "API")',
+    });
+    expect(pick(["docs"])).toMatchObject({
+      name: "claude",
+      source: "default",
+      why: "herdr.default_profile (no routing rule matched)",
+    });
+    expect(() => pick(["api"], "claude")).toThrow(
+      'DEMO-7 is routed to "codex" by rule 1 of [[herdr.routing]] (label "api"); say why "claude" instead with --reason "<why>"',
+    );
+    expect(pick(["api"], "claude", "a UI dependency is actually a Claude task")).toMatchObject({
+      name: "claude",
+      profile: { harness: "claude" },
+      source: "requested",
+      routed: "codex",
+      reason: "a UI dependency is actually a Claude task",
+    });
+    expect(() => pick([], "unknown")).toThrow('no Herdr profile "unknown" (available: claude, codex)');
+  });
+
+  test("Herdr when rules require a reason for an unmatched ticket", () => {
+    const semantic = parseConfig(`${DEMO_TOML}
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt"
+effort = "high"
+when = "back end work"
+`);
+    const pick = (requested: string | null = null, reason: string | null = null) =>
+      chooseProfile(semantic, { ticket: "DEMO-7", labels: [], requested, reason }, "herdr");
+    expect(() => pick()).toThrow('run armada launch DEMO-7 --runtime herdr --profile <name> --reason "<why>"');
+    expect(() => pick("codex")).toThrow("Choose a Herdr profile");
+    expect(pick("codex", "the ticket is a backend migration")).toMatchObject({
+      name: "codex",
+      reason: "the ticket is a backend migration",
+      why: "Chosen by the coordinator: the ticket is a backend migration",
+    });
+  });
 });
