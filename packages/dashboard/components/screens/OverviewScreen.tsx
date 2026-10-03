@@ -288,16 +288,18 @@ function CoordinatorSection({
             </span>
           )}
           <span className="ov-group-state" style={{ color: COORDINATOR_COLOR[c.state] }}>
-            {c.state === "active" ? (
-              <Steady widest={LONGEST_TIMES.map((n) => t.shell.coordinatorActive(t.ago(n)))}>
-                {t.shell.coordinatorActive(t.ago(ms))}
-              </Steady>
-            ) : c.state === "idle" ? (
-              <Steady widest={LONGEST_TIMES.map((n) => t.shell.coordinatorIdle(t.duration(n)))}>
-                {t.shell.coordinatorIdle(t.duration(ms))}
-              </Steady>
-            ) : (
+            {c.state === "unknown" ? (
               t.shell.coordinatorUnknown
+            ) : (
+              // Active and idle share one box: a coordinator that turns idle as the clock moves moves nothing either.
+              <Steady
+                widest={LONGEST_TIMES.flatMap((n) => [
+                  t.shell.coordinatorActive(t.ago(n)),
+                  t.shell.coordinatorIdle(t.duration(n)),
+                ])}
+              >
+                {c.state === "active" ? t.shell.coordinatorActive(t.ago(ms)) : t.shell.coordinatorIdle(t.duration(ms))}
+              </Steady>
             )}
           </span>
           {toValidate > 0 && <PhasePill tone="waiting">{t.overview.toValidate(toValidate)}</PhasePill>}
