@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.39](https://github.com/The-Vibe-Company/armada/compare/v0.2.38...v0.2.39) (2026-10-03)
+
+
+### Bug Fixes
+
+* **core:** exclude closed tickets from watch flight counts ([#146](https://github.com/The-Vibe-Company/armada/issues/146)) ([7773678](https://github.com/The-Vibe-Company/armada/commit/7773678f5f6f54cf0c655e101197e53449c093b5))
+
 ## [0.2.38](https://github.com/The-Vibe-Company/armada/compare/v0.2.37...v0.2.38) (2026-10-03)
 
 
