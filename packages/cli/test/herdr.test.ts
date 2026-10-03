@@ -270,6 +270,8 @@ test("DeepSeek fallback starts OpenCode with its provider and delivers follow-up
   const f = fake([
     agent(),
     modelMetadata("deepseek/deepseek-reasoner", "DeepSeek Reasoner"),
+    JSON.stringify({ providers: [{ id: "deepseek", name: "DeepSeek" }] }),
+    "{}",
     "Build DeepSeek Reasoner DeepSeek\n╹",
     agent("working"),
     agent("working"),
@@ -288,8 +290,8 @@ test("DeepSeek fallback starts OpenCode with its provider and delivers follow-up
   const brief = `Follow .agents/skills/armada-worker/SKILL.md\n${"quotes ' \" $(touch never)\n".repeat(100)}`;
   await runtime.prompt(handle, brief);
   await runtime.prompt(handle, "Plan approved. Continue.");
-  expect(f.calls[3]?.[4]).toBe(brief);
-  expect(f.calls[4]?.[4]).toBe("Plan approved. Continue.");
+  expect(f.calls[5]?.[4]).toBe(brief);
+  expect(f.calls[6]?.[4]).toBe("Plan approved. Continue.");
 });
 
 test("Codex and DeepSeek preserve their model IDs and extra arguments", () => {
@@ -316,6 +318,13 @@ const recordedPane = `
                                       tab agents  ctrl+p commands
 `;
 const opencodeProfile = { harness: "opencode" as const, model: "opencode/big-pickle", effort: "high", extraArgs: [] };
+const providerCatalog = JSON.stringify({
+  providers: [
+    { id: "opencode", name: "OpenCode Zen" },
+    { id: "demo", name: "Demo" },
+    { id: "other", name: "OpenCode Zen" },
+  ],
+});
 const metadata = modelMetadata("opencode/big-pickle", "Big Pickle") + modelMetadata("demo/model-b", "Model B");
 
 test("OpenCode verifies its recorded footer before a brief, including older UI layout", async () => {
@@ -324,12 +333,14 @@ test("OpenCode verifies its recorded footer before a brief, including older UI l
     recordedPane.replace("Build auto ·", "Build"),
     recordedPane.replace("Build auto", "Plan"),
   ]) {
-    const f = fake([agent(), metadata, pane, agent("working")]);
+    const f = fake([agent(), metadata, providerCatalog, "{}", pane, agent("working")]);
     const handle = { ...claim, path: "/work" };
     await new Herdr(f.io).start(handle, opencodeProfile);
     await new Herdr(f.io).prompt(handle, "synthetic brief");
-    expect(f.calls[2]).toEqual(["herdr", "pane", "read", claim.pane, "--source", "visible"]);
-    expect(f.calls[3]?.[2]).toBe("prompt");
+    expect(f.calls[2]).toEqual(["opencode", "debug", "v2"]);
+    expect(f.calls[3]).toEqual(["opencode", "debug", "config"]);
+    expect(f.calls[4]).toEqual(["herdr", "pane", "read", claim.pane, "--source", "visible"]);
+    expect(f.calls[5]?.[2]).toBe("prompt");
   }
 });
 
@@ -338,7 +349,7 @@ test("OpenCode fallback or model-not-found closes only the new pane and sends no
     [recordedPane.replace("Big Pickle OpenCode Zen", "Model B Demo"), "differs from profile"],
     [`ProviderModelNotFoundError: Model not found: opencode/big-pickle#high\n${recordedPane}`, "could not load"],
   ]) {
-    const f = fake([agent(), metadata, pane, { result: { type: "ok" } }]);
+    const f = fake([agent(), metadata, providerCatalog, "{}", pane, { result: { type: "ok" } }]);
     await expect(new Herdr(f.io).start({ ...claim, path: "/work" }, opencodeProfile)).rejects.toThrow(reason);
     expect(f.calls.at(-1)).toEqual(["herdr", "pane", "close", claim.pane]);
     expect(f.calls.some((call) => call[2] === "prompt")).toBe(false);
@@ -352,7 +363,7 @@ test("unverifiable and ambiguous panes fail closed with bounded injected polling
     recordedPane.replace("Big Pickle", "Unknown Model"),
     "",
   ]) {
-    const f = fake([agent(), metadata, ...Array(20).fill(pane), { result: { type: "ok" } }]);
+    const f = fake([agent(), metadata, providerCatalog, "{}", ...Array(20).fill(pane), { result: { type: "ok" } }]);
     let clock = 0;
     f.io.now = () => new Date(clock);
     f.io.sleep = async (ms) => {
@@ -367,6 +378,8 @@ test("unverifiable and ambiguous panes fail closed with bounded injected polling
   const ambiguous = fake([
     agent(),
     metadata + modelMetadata("other/big-pickle", "Big Pickle"),
+    providerCatalog,
+    "{}",
     ...Array(20).fill(recordedPane),
     { result: { type: "ok" } },
   ]);
@@ -381,7 +394,14 @@ test("pane and metadata failures are sanitized, even when pane cleanup also fail
   await expect(new Herdr(f.io).start({ ...claim, path: "/work" }, opencodeProfile)).rejects.toThrow(
     "could not close worker pane",
   );
-  const g = fake([agent(), metadata, new Error("CANARY_private_pane_text"), { result: { type: "ok" } }]);
+  const g = fake([
+    agent(),
+    metadata,
+    providerCatalog,
+    "{}",
+    new Error("CANARY_private_pane_text"),
+    { result: { type: "ok" } },
+  ]);
   await expect(new Herdr(g.io).start({ ...claim, path: "/work" }, opencodeProfile)).rejects.toThrow(
     "No worker brief was sent",
   );
