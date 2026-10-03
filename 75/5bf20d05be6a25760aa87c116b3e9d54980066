@@ -1,0 +1,21 @@
+README.md
+  s_5fe9d63526d841::t_717b42b8ce1b2c 7
+  s_5fe9d63526d841::t_34d9fb24b5f99f 94
+  s_5fe9d63526d841::t_425636a69a0f62 115-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "755bf20d05be6a25760aa87c116b3e9d54980066",
+  "prompts": {},
+  "sessions": {
+    "s_5fe9d63526d841": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_efe3235feffeL68W1DxAcquLuG",
+        "model": "glm-5.3-flash"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
