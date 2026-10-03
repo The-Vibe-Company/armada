@@ -28,7 +28,7 @@ export interface LocalTool {
 export interface LocalTools {
   harnesses: LocalHarness[];
   profiles: LocalModelProfile[];
-  availableModels: string[] | null;
+  availableModels: Partial<Record<Exclude<LocalHarness, "deepseek">, string[] | null>>;
   tools: LocalTool[];
   checks: Check[];
   /** Unknown sign-in is a warning; a missing model or sign-in prevents launch. */
@@ -45,21 +45,26 @@ export function localHarnesses(config: {
 
 export interface LocalModelProfile {
   name: string;
-  harness: "opencode" | "deepseek";
+  harness: LocalHarness;
   model: string;
 }
 
 export function localModelProfiles(config: Parameters<typeof localHarnesses>[0]): LocalModelProfile[] {
   return Object.entries(config.herdr?.profiles ?? {}).flatMap(([name, profile]) =>
-    profile.harness === "opencode" || profile.harness === "deepseek"
+    profile.model || profile.harness === "opencode" || profile.harness === "deepseek"
       ? [{ name, harness: profile.harness, model: profile.model ?? "" }]
       : [],
   );
 }
 
-async function probe(io: Io, command: string, args: string[]): Promise<ExecResult | null> {
+async function probe(
+  io: Io,
+  command: string,
+  args: string[],
+  limits: { timeoutMs?: number; maxOutputBytes?: number } = {},
+): Promise<ExecResult | null> {
   if (!io.exec) return null;
-  return io.exec(command, args, { cwd: io.cwd }).catch(() => null);
+  return io.exec(command, args, { cwd: io.cwd, ...limits }).catch(() => null);
 }
 
 /** Keep only the numeric version, never arbitrary stdout or a prerelease suffix. */
@@ -189,8 +194,51 @@ async function openCodeModels(io: Io): Promise<string[] | null> {
   ];
 }
 
+/** Help examples confirm only those exact values, never a complete Claude catalog. */
+async function claudeModels(io: Io): Promise<string[] | null> {
+  const result = await probe(io, "claude", ["--help"], { timeoutMs: 5_000, maxOutputBytes: 262_144 });
+  if (result?.code !== 0) return null;
+  const help = stripVTControlCharacters(result.stdout);
+  const option = help.match(/(?:^|\n)\s+--model\s+<model>([\s\S]*?)(?=\n\s+--?[a-zA-Z]|$)/)?.[1];
+  if (!option) return null;
+  return [
+    ...new Set([...option.matchAll(/['"]([a-z][a-z0-9.[\]-]*)['"]/g)].flatMap((match) => (match[1] ? [match[1]] : []))),
+  ];
+}
+
+function modelsFor(detected: LocalTools, profile: LocalModelProfile): string[] | null {
+  return detected.availableModels[profile.harness === "deepseek" ? "opencode" : profile.harness] ?? null;
+}
+
 function modelCheck(profile: LocalModelProfile, available: string[] | null): Check {
   const model = profile.model;
+  if (profile.harness === "claude" || profile.harness === "codex") {
+    const claude = profile.harness === "claude";
+    const ready = !!model && !!available?.includes(model);
+    const section = profile.name ? ` under [herdr.profiles.${profile.name}]` : "";
+    const suggested = claude ? (available?.find((id) => id === "opus") ?? available?.[0]) : available?.[0];
+    const line = `model = ${JSON.stringify(suggested ?? "<exact model id>")}${section}`;
+    return {
+      id: `local-${profile.harness}-model:${profile.name || model}`,
+      level: ready ? "ok" : "error",
+      message: `${profile.harness}${profile.name ? ` profile ${profile.name}` : ""}: ${
+        ready
+          ? claude
+            ? `the installed CLI advertises ${model} in --help`
+            : `model/list lists ${model} for this sign-in (catalog check only)`
+          : claude
+            ? `could not verify ${model} with the installed CLI; --help is not a complete model catalog`
+            : available === null
+              ? "could not read the installed CLI's model/list catalog for this sign-in"
+              : `${model} is not listed by the installed CLI for this sign-in`
+      }${!claude && !ready && available?.length ? `\nAvailable models: ${available.map((id, i) => `${i + 1}. ${id} — model = ${JSON.stringify(id)}`).join("; ")}` : ""}`,
+      fix: ready
+        ? null
+        : claude
+          ? `add ${line}${suggested ? " (an advertised alias or model)" : "; choose an alias from `claude --help` or the owner's `/model` picker"}; or run \`claude update\` and retry doctor`
+          : `pick a listed model and add ${line}; or update with \`npm i -g @openai/codex\`; if the model requires API access, the owner signs in using \`codex login --with-api-key\` and retries doctor; Armada never runs sign-in`,
+    };
+  }
   const matching = available?.filter((id) => profile.harness !== "deepseek" || isDeepseekModel(id)) ?? [];
   const ready = !!model && matching.includes(model);
   const label = profile.harness === "deepseek" ? "deepseek (OpenCode + DeepSeek model)" : "opencode";
@@ -218,11 +266,12 @@ export async function offerLocalModels(
   configPath?: string,
   options: { readOnly?: boolean } = {},
 ): Promise<LocalTools> {
-  if (detected.availableModels === null) return detected;
   let changed = false;
   for (const profile of detected.profiles) {
-    if (modelCheck(profile, detected.availableModels).level === "ok") continue;
-    const models = detected.availableModels.filter((id) => profile.harness !== "deepseek" || isDeepseekModel(id));
+    if (profile.harness === "claude") continue;
+    const available = modelsFor(detected, profile);
+    if (!available || modelCheck(profile, available).level === "ok") continue;
+    const models = available.filter((id) => profile.harness !== "deepseek" || isDeepseekModel(id));
     if (
       !models.length ||
       options.readOnly ||
@@ -289,7 +338,7 @@ export async function detectLocalTools(
     if ((harness === "opencode" || harness === "deepseek") && !profiles.some((profile) => profile.harness === harness))
       profiles.push({ name: "", harness, model: "" });
   }
-  let availableModels: string[] | null = null;
+  const availableModels: LocalTools["availableModels"] = {};
   const tools: LocalTool[] = [];
   const checks: Check[] = [];
   const binaries = new Set(harnesses.map((harness) => (harness === "deepseek" ? "opencode" : harness)));
@@ -298,10 +347,21 @@ export async function detectLocalTools(
     tools.push(tool);
     checks.push(toolCheck(tool));
     if (name !== "herdr" && tool.state === "ready") {
-      if (name !== "opencode") checks.push(await signInCheck(io, name));
-      else {
-        availableModels = await openCodeModels(io);
-        checks.push(...profiles.map((profile) => modelCheck(profile, availableModels)));
+      const signIn = name !== "opencode" ? await signInCheck(io, name) : null;
+      if (signIn) checks.push(signIn);
+      const selected = profiles.filter(
+        (profile) => (profile.harness === "deepseek" ? "opencode" : profile.harness) === name,
+      );
+      if (selected.length) {
+        availableModels[name] =
+          name === "opencode"
+            ? await openCodeModels(io)
+            : name === "claude"
+              ? await claudeModels(io)
+              : signIn?.level === "error"
+                ? null
+                : ((await io.codexModels?.(io.cwd).catch(() => null)) ?? null);
+        checks.push(...selected.map((profile) => modelCheck(profile, availableModels[name] ?? null)));
       }
     }
   }
