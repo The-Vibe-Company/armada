@@ -204,6 +204,24 @@ describe("the coordinator's inbox", () => {
     at: at(21),
   });
 
+  test("relayed validation decisions renew the bounded answer clock", async () => {
+    const id = await addInboxItem(db, {
+      project: P,
+      ticket: "WID-5",
+      kind: "decision",
+      recipient: "coordinator",
+      author: "Ada",
+      body: "Approved the synthetic validation",
+      at: at(20),
+    });
+    expect(await lastAnsweredAt(db, P, { tickets: ["WID-5"] })).toEqual({});
+    await resolveInboxItem(db, { project: P, id, resolution: "Delivered to the worker", at: at(22) });
+    expect(await lastAnsweredAt(db, P, { tickets: ["WID-5"] })).toEqual({ "WID-5": at(22).toISOString() });
+    expect(await lastAnsweredAt(db, "other-project", { tickets: ["WID-5"] })).toEqual({});
+    expect(await lastAnsweredAt(db, P, { since: at(23), tickets: ["WID-5"] })).toEqual({});
+    expect(await lastAnsweredAt(db, P, { tickets: ["WID-999"] })).toEqual({});
+  });
+
   test("one open answer per question, even from two requests at once; none to a closed question", async () => {
     const q = await question();
     const both = await Promise.all([addRequest(db, answer(q, "users")), addRequest(db, answer(q, "accounts"))]);

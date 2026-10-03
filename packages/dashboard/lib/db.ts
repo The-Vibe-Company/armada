@@ -698,6 +698,15 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE runtime_handles ADD COLUMN runtime_state_sequence bigint CHECK (runtime_state_sequence >= 0 AND runtime_state_sequence <= 9007199254740991)",
     ],
   },
+  {
+    // Relayed owner-validation decisions renew liveness just like plan and question answers.
+    version: 19,
+    statements: [
+      "DROP INDEX inbox_answered",
+      `CREATE INDEX inbox_answered ON inbox_items (project, resolved_at)
+        WHERE kind IN ('question', 'plan', 'decision') AND resolved_at IS NOT NULL`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

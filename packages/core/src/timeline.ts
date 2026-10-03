@@ -4,7 +4,7 @@
 // Armada's events, so drawing it never reads Linear. The row's own reading
 // (its phase, since when, silent or not) always wins over the history, so the
 // timeline and the rest of the dashboard never disagree.
-import { NEEDS_HUMAN } from "./fleet.ts";
+import { NEEDS_HUMAN, workerLivenessAt } from "./fleet.ts";
 import type { InFlightTicket } from "./status.ts";
 import { type AgentPhase, type Comment, LABEL_PHASES } from "./types.ts";
 
@@ -159,16 +159,13 @@ export function sessionTimeline(input: {
     })
     .filter((s) => (s.to === null ? true : Date.parse(s.to) > windowStart));
 
-  // Old clients keep report-based silence until their first heartbeat.
+  // Reports and heartbeats both renew liveness, including reports after a waiting turn.
   const times = marks.map((m) => m.at);
   const heartbeats = (input.history?.events ?? [])
     .filter((event) => event.kind === "heartbeat")
     .map((event) => Date.parse(event.at))
     .filter((at) => at >= runStart && at <= now);
-  const firstHeartbeat = Math.min(...heartbeats);
-  const life = [...new Set([...times.filter((at) => at <= firstHeartbeat), ...heartbeats])].sort(
-    (first, second) => first - second,
-  );
+  const life = [...new Set([...times, ...heartbeats])].sort((first, second) => first - second);
   const phaseAt = (t: number) => all.findLast((s) => s.from <= t)?.phase ?? all[0]?.phase ?? ticket.phase;
   const quiet = (phase: AgentPhase) => !NEEDS_HUMAN.includes(phase) && phase !== "merged";
   const silences: SessionTimeline["silences"] = [];
@@ -181,7 +178,7 @@ export function sessionTimeline(input: {
   // The silence going on now is the row's own: from its last report, as the `silent` flag counts it, within the run.
   if (ticket.silent)
     silences.push({
-      from: iso(Math.max(Date.parse(ticket.lastHeartbeat ?? ticket.lastReport ?? ticket.lastUpdate), runStart)),
+      from: iso(Math.max(Date.parse(workerLivenessAt(ticket)), runStart)),
       to: null,
     });
 
