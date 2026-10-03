@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.48](https://github.com/The-Vibe-Company/armada/compare/v0.2.47...v0.2.48) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** restore herdr worker names lost during startup ([#173](https://github.com/The-Vibe-Company/armada/issues/173)) ([89d50e8](https://github.com/The-Vibe-Company/armada/commit/89d50e844f9dbdba4bc25ef9e20fcf3eebec9c85))
+
 ## [0.2.47](https://github.com/The-Vibe-Company/armada/compare/v0.2.46...v0.2.47) (2026-10-03)
 
 

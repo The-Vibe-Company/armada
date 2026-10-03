@@ -434,7 +434,7 @@ export class Herdr {
       "--",
       ...harnessArgs(profile),
     ]);
-    this.checkAgent(r, handle);
+    await this.checkLaunchAgent(r, handle, profile.harness);
     if (verifyModel && herdrHarnessKind(profile.harness) === "opencode") {
       try {
         await verifyOpenCodeModel(this.io, handle.pane, profile.model);
@@ -455,7 +455,7 @@ export class Herdr {
     }
   }
 
-  /** Read only the named occupant of this exact pane; never dump terminal output. */
+  /** Verify the occupant of this exact pane before recovering its name or reading its screen. */
   async inspect(
     handle: HerdrClaimHandle,
     harness: HerdrHarness,
@@ -464,9 +464,7 @@ export class Herdr {
     ready: boolean;
     issue: FirstRunIssue | null;
   }> {
-    const agent = this.checkAgent(await this.call(["agent", "get", handle.pane], 5_000), handle);
-    if (agent.agent !== undefined && agent.agent !== null && agent.agent !== herdrHarnessKind(harness))
-      throw new UsageError("herdr worker harness changed; inspect herdr agent list before retrying");
+    const agent = await this.checkLaunchAgent(await this.call(["agent", "get", handle.pane], 5_000), handle, harness);
     const state = agent.agent_status;
     if (!["working", "blocked", "idle", "done", "unknown"].includes(String(state)))
       throw new UsageError("invalid herdr agent state");
@@ -484,7 +482,7 @@ export class Herdr {
       if (result.code !== 0) throw new Error("read failed");
       text = result.stdout;
     } catch {
-      throw new UsageError(`could not inspect the worker screen; run herdr agent attach ${handle.agent}`);
+      throw new UsageError(`could not inspect the worker screen; run herdr agent attach ${handle.pane}`);
     }
     return {
       state: state as RuntimeState,
@@ -500,8 +498,8 @@ export class Herdr {
     message = "The harness needs the owner's attention",
   ) {
     return new UsageError(
-      `${issue?.message ?? message}: run armada setup local, or answer it with herdr agent attach ${handle.agent}`,
-      `herdr agent attach ${handle.agent}`,
+      `${issue?.message ?? message}: run armada setup local, or answer it with herdr agent attach ${handle.pane}`,
+      `herdr agent attach ${handle.pane}`,
     );
   }
 
@@ -680,6 +678,25 @@ export class Herdr {
     const result = object((await this.call(["worktree", "remove", "--workspace", handle.workspace])).result);
     if (result?.workspace_id !== handle.workspace || result?.path !== path || result?.forced !== false)
       throw new UsageError("invalid herdr worktree removal response; inspect herdr worktree list before retrying");
+  }
+
+  private async checkLaunchAgent(reply: Record<string, unknown>, handle: HerdrClaimHandle, harness: HerdrHarness) {
+    const kind = herdrHarnessKind(harness);
+    const occupant = object(object(reply.result)?.agent);
+    // Herdr can clear the alias when startup detection re-registers a harness.
+    // Recover only a missing alias on the expected occupant of our exact pane.
+    if (
+      occupant &&
+      (occupant.name === null || occupant.name === undefined) &&
+      occupant.agent === kind &&
+      occupant.pane_id === handle.pane &&
+      occupant.workspace_id === handle.workspace
+    )
+      reply = await this.call(["agent", "rename", handle.pane, handle.agent], 5_000);
+    const agent = this.checkAgent(reply, handle);
+    if (agent.agent !== kind)
+      throw new UsageError("herdr worker harness changed; inspect herdr agent list before retrying");
+    return agent;
   }
 
   private checkAgent(reply: Record<string, unknown>, handle: HerdrClaimHandle) {
