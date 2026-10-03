@@ -4,6 +4,11 @@
 
 export type StatusType = "triage" | "backlog" | "unstarted" | "started" | "completed" | "canceled";
 
+/** Armada shipping detail; never a Linear phase label. */
+export const SHIPPING_STAGES = ["review", "ci"] as const;
+export type ShippingStage = (typeof SHIPPING_STAGES)[number];
+export const isShippingStage = (value: unknown): value is ShippingStage => value === "review" || value === "ci";
+
 export type CiState = "success" | "failure" | "pending" | "none";
 
 /** Values of the "Agent phase" label group (the fleet protocol). */

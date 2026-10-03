@@ -6,6 +6,7 @@
 // timeline and the rest of the dashboard never disagree.
 import { NEEDS_HUMAN, workerLivenessAt } from "./fleet.ts";
 import type { InFlightTicket } from "./status.ts";
+import type { ShippingStage } from "./types.ts";
 import { type AgentPhase, type Comment, LABEL_PHASES } from "./types.ts";
 
 /** How far back the timeline scrolls, in hours: the rows carry this much history. */
@@ -24,6 +25,7 @@ export interface HistoryEvent {
   ticket: string;
   kind: string;
   phase: string | null;
+  shippingStage?: ShippingStage | null;
   message: string | null;
   at: string;
 }

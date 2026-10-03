@@ -31,6 +31,7 @@ describe("worker heartbeats", () => {
     expect((await serveFleet(store, request, { now: () => now })).body.result).toEqual({
       active: true,
       phase: "implementing",
+      shippingStage: null,
       agent: null,
       claimedAt: NOW.toISOString(),
     });

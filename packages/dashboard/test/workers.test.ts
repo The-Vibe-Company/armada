@@ -254,6 +254,7 @@ describe("a worker session acts on its own ticket only", () => {
       active: true,
       claimedAt: at(900).toISOString(),
       phase: "implementing",
+      shippingStage: null,
       agent: null,
     });
     expect(await listEvents(client, orgId)).toEqual(before);

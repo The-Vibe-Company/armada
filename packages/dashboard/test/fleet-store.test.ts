@@ -68,6 +68,39 @@ describe("the project registry", () => {
 });
 
 describe("live data", () => {
+  test("shipping detail persists on events and session reports, and a later phase clears it", async () => {
+    const project = "shipping-stages";
+    await upsertProject(db, { slug: project, name: "Stages", repository: "acme/stages", programRoot: "WID-1" }, at(0));
+    const ticket = "WID-98";
+    await saveRuntimeHandle(db, {
+      project,
+      ticket,
+      runtime: "Conductor",
+      handle: "stage/session",
+      branch: "feature/wid-98",
+      at: at(0),
+    });
+    await recordEvent(db, {
+      project,
+      ticket,
+      kind: "report",
+      phase: "shipping",
+      shippingStage: "review",
+      at: at(1),
+    });
+    expect((await latestEvents(db, project))[ticket]?.shippingStage).toBe("review");
+    expect(
+      (await listSessions(db, project, { since: at(0) })).find((s) => s.ticket === ticket)?.lastReport?.shippingStage,
+    ).toBe("review");
+    await recordEvent(db, { project, ticket, kind: "report", phase: "shipping", shippingStage: "ci", at: at(2) });
+    expect((await latestEvents(db, project))[ticket]?.shippingStage).toBe("ci");
+    await recordEvent(db, { project, ticket, kind: "report", phase: "implementing", at: at(3) });
+    expect((await latestEvents(db, project))[ticket]?.shippingStage).toBeNull();
+    expect(
+      (await listSessions(db, project, { since: at(0) })).find((s) => s.ticket === ticket)?.lastReport?.shippingStage,
+    ).toBeNull();
+  });
+
   test("heartbeats atomically target the current claim, never change reports, and stop on release or replacement", async () => {
     const ticket = "WID-99";
     const handle = {
@@ -102,7 +135,7 @@ describe("live data", () => {
     expect((await lastEventTimes(db, P))[ticket]).toBe(at(1).toISOString());
     expect((await listSessions(db, P, { since: at(0) })).find((session) => session.ticket === ticket)).toMatchObject({
       lastHeartbeatAt: at(5).toISOString(),
-      lastReport: { at: at(1).toISOString(), message: "building", phase: "implementing" },
+      lastReport: { at: at(1).toISOString(), message: "building", phase: "implementing", shippingStage: null },
     });
     expect(await recordHeartbeat(db, { ...ping, workerSessionId: "stale-worker" })).toEqual({
       active: false,

@@ -93,6 +93,73 @@ describe("lanes", () => {
   const opts = { now: Date.parse("2026-03-04T10:00:00Z"), silentAfterMinutes: 15 };
   const lane = (i: Issue, comments: Comment[] = []) => buildLane(program(i), comments, i, opts);
 
+  test("shipping stages prefer the current report, survive snapshot refresh, and fall back to PR checks", () => {
+    const pr = { url: "u", number: 3, repo: "a/b", title: "", state: "open" as const };
+    const i = issue("P-2", { statusType: "started", agentPhase: "shipping", prs: [pr] });
+    expect(lane(i).shippingStage).toBe("review");
+    expect(lane({ ...i, prs: [] }).shippingStage).toBeNull();
+    for (const ci of ["pending", "failure", "success"] as const)
+      expect(lane({ ...i, prs: [{ ...pr, ci }] }).shippingStage).toBe("ci");
+    const report = {
+      kind: "report",
+      phase: "shipping",
+      shippingStage: "review" as const,
+      message: "review",
+      at: "2026-03-04T09:58:00Z",
+    };
+    const read = (after: string, changes = {}) =>
+      buildLane(
+        program(i),
+        [],
+        { ...i, ...changes },
+        {
+          ...opts,
+          live: { after, events: { "P-2": report } },
+        },
+      );
+    for (const after of ["2026-03-04T09:57:00Z", "2026-03-04T09:59:00Z"])
+      expect(read(after, { prs: [{ ...pr, ci: "pending" }] }).shippingStage).toBe("review");
+    expect(read("2026-03-04T09:59:00Z", { agentPhase: "implementing" }).shippingStage).toBeNull();
+    expect(
+      buildLane(
+        program(i),
+        [],
+        { ...i, prs: [{ ...pr, ci: "pending" }] },
+        {
+          ...opts,
+          live: {
+            after: "2026-03-04T09:59:00Z",
+            events: { "P-2": { ...report, kind: "claim" } },
+          },
+        },
+      ).shippingStage,
+    ).toBe("review");
+    const replaced = buildLane(program(i), [], i, {
+      ...opts,
+      live: {
+        after: "2026-03-04T09:59:00Z",
+        events: { "P-2": report },
+        handles: { "P-2": { runtime: "Conductor", handle: "new", claimedAt: "2026-03-04T09:59:00Z" } },
+      },
+    });
+    expect(replaced.shippingStage).toBe("review"); // From the PR, rather than the prior worker's explicit review.
+    expect(
+      buildLane(
+        program(i),
+        [],
+        { ...i, prs: [{ ...pr, ci: "pending" }] },
+        {
+          ...opts,
+          live: {
+            after: "2026-03-04T09:59:00Z",
+            events: { "P-2": report },
+            handles: { "P-2": { runtime: "Conductor", handle: "new", claimedAt: "2026-03-04T09:59:00Z" } },
+          },
+        },
+      ).shippingStage,
+    ).toBe("ci");
+  });
+
   test("the phase label wins over the latest status line, which wins over inference", () => {
     const statusLine = comment("P-2", "2026-03-04T09:55:00Z", { status: { phase: "shipping", summary: "PR open" } });
     const labelled = issue("P-2", { statusType: "started", agentPhase: "implementing" });

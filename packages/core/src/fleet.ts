@@ -1,8 +1,10 @@
 // Fleet derivations: tickets in flight (one lane per working agent), the
 // frontier of tickets ready to start, and pull requests waiting. Pure functions
 // over the model; tolerant of missing forge data and missing status lines.
+
 import type { RuntimeObservation } from "./live.ts";
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
+import type { ShippingStage } from "./types.ts";
 import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASES, type PullRequest } from "./types.ts";
 
 const MIN = 60_000;
@@ -38,6 +40,7 @@ export interface Lane {
   issue: Issue;
   spec: string | null;
   phase: AgentPhase;
+  shippingStage?: ShippingStage | null;
   /**
    * label = the phase label (source of truth); status-line and inferred are
    * fallbacks; live = a live report newer than the tracker read.
@@ -96,6 +99,12 @@ export function workerLivenessAt(worker: Pick<Lane, "lastHeartbeat" | "lastRepor
   return latest(worker.lastHeartbeat, worker.lastReport) || worker.lastUpdate;
 }
 
+/** Legacy workers: checks on the PR head mean CI, including completed checks. */
+export function deriveShippingStage(pr: PullRequest | null): ShippingStage | null {
+  if (pr?.state !== "open") return null;
+  return (pr.ci && pr.ci !== "none") || pr.checks?.some((c) => c.state !== "none") ? "ci" : "review";
+}
+
 function inferPhase(pr: PullRequest | null, comments: Comment[]): AgentPhase {
   if (pr?.state === "open")
     return pr.ci === "success" && pr.mergeable !== "CONFLICTING" ? "ready-to-merge" : "shipping";
@@ -107,6 +116,7 @@ function inferPhase(pr: PullRequest | null, comments: Comment[]): AgentPhase {
 export interface LiveEvent {
   kind: string;
   phase: string | null;
+  shippingStage?: ShippingStage | null;
   message: string | null;
   runtime?: string | null;
   handle?: string | null;
@@ -191,6 +201,20 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
   )
     phase = "merged";
 
+  // Armada owns this detail: a snapshot refresh never erases an explicit stage.
+  // A newer claim or a tracker report leaving shipping invalidates the old run.
+  const event = opts.live?.events[issue.id];
+  const claimedAt = opts.live?.handles?.[issue.id]?.claimedAt ?? claims.at(-1)?.at;
+  const leftShipping = comments.find((c) => c.status && c.status.phase !== "shipping");
+  const explicitStage =
+    (event?.kind === "report" || event?.kind === "claim") &&
+    event.phase === "shipping" &&
+    (!claimedAt || event.at >= claimedAt) &&
+    (!leftShipping || event.at >= leftShipping.createdAt)
+      ? event.shippingStage
+      : null;
+  const shippingStage = phase === "shipping" ? (explicitStage ?? deriveShippingStage(pr)) : null;
+
   // The phase started with the oldest status line of the latest run announcing it.
   let announcing: Comment | undefined;
   for (const c of comments) {
@@ -246,6 +270,7 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     spec: spec ? `Spec ${spec.ordinal}` : null,
     phase,
     phaseSource,
+    shippingStage,
     runtime: issue.agentRuntime ?? claimRuntime ?? fresh?.runtime ?? opts.live?.handles?.[issue.id]?.runtime ?? null,
     handle: opts.live?.handles?.[issue.id]?.handle ?? claims[0]?.session ?? fresh?.handle ?? null,
     claim: claims[0] ?? null,

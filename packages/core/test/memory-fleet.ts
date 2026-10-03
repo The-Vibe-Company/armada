@@ -136,7 +136,12 @@ export function memoryFleet(): FleetStore & {
           (session) => session.project === e.project && session.ticket === e.ticket && !session.releasedAt,
         );
         if (session && (!session.lastReport || session.lastReport.at <= e.at.toISOString()))
-          session.lastReport = { at: e.at.toISOString(), message: e.message ?? null, phase: e.phase ?? null };
+          session.lastReport = {
+            at: e.at.toISOString(),
+            message: e.message ?? null,
+            phase: e.phase ?? null,
+            shippingStage: e.shippingStage ?? null,
+          };
       }
     },
     async lastEventTimes(project) {
@@ -172,6 +177,7 @@ export function memoryFleet(): FleetStore & {
           {
             kind: e.kind,
             phase: e.phase ?? null,
+            shippingStage: e.shippingStage ?? null,
             message: e.message ?? null,
             runtime: e.runtime ?? null,
             handle: e.handle ?? null,

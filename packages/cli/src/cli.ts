@@ -87,7 +87,7 @@ const COMMAND_HELP: Record<string, string> = {
                     rules the coordinator judged apply. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
-        [--plan <text> | --plan-file <path|->] [--shipped-with "ship-pr-dev"|"fallback: <reason>"]
+        [--plan <text> | --plan-file <path|->] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--stage review|ci]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge, awaiting-validation); the same phase again is a
                     status update; armada validate is how a worker enters awaiting-validation.
@@ -95,6 +95,7 @@ const COMMAND_HELP: Record<string, string> = {
                     message's first line, else the plan's); awaiting-approval sends it to
                     the coordinator's inbox.
                     ready-to-merge needs --sha (full 40 characters, the PR head) and green CI.
+                    --stage is shipping only: review at independent review, ci after it passes.
                     --shipped-with names the shipping path in its hand-back and inbox.
                     Prints the ticket's state and what waits in this worker's inbox.
 `,
@@ -352,6 +353,7 @@ const VALUE_OPTIONS = [
   "pr",
   "sha",
   "shipped-with",
+  "stage",
   "reason",
   "program-root",
   "name",
@@ -393,7 +395,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
-  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with"],
+  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],

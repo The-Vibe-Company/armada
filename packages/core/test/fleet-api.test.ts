@@ -51,6 +51,91 @@ describe("the fleet through Armada", () => {
     expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
   });
 
+  test("shipping detail crosses the API without changing the legacy timestamp response", async () => {
+    const { fleet, store } = tempFleet();
+    await fleet.report({
+      ticket: "DEMO-7",
+      phase: "shipping",
+      previous: "implementing",
+      shippingStage: "review",
+      summary: "review",
+      message: "review",
+      prUrl: null,
+      headSha: null,
+    });
+    expect((await fleet.latestEvents())["DEMO-7"]).toMatchObject({ phase: "shipping", shippingStage: "review" });
+    expect(await fleet.lastEventTimes()).toEqual({ "DEMO-7": NOW.toISOString() });
+    const before = store.events.length;
+    for (const input of [
+      { phase: "implementing", shippingStage: "review" },
+      { phase: "shipping", shippingStage: "unknown" },
+    ]) {
+      const response = await serveFleet(
+        store,
+        {
+          op: "report",
+          project: DEMO_PROJECT,
+          caller: { kind: "organization" },
+          input: { ticket: "DEMO-7", summary: "x", ...input },
+        },
+        { now: () => NOW },
+      );
+      expect(response.status).toBe(400);
+      expect(store.events.length).toBe(before);
+    }
+  });
+
+  test("a repeated shipping report and same-session reclaim preserve explicit review; new work clears it", async () => {
+    const clock = fakeClock(NOW);
+    const { fleet, store } = tempFleet({ clock });
+    await fleet.claim(claim("DEMO-7"));
+    const report = {
+      ticket: "DEMO-7",
+      phase: "shipping" as const,
+      previous: "shipping" as const,
+      summary: "review",
+      message: "review",
+      prUrl: null,
+      headSha: null,
+    };
+    clock.advance(1_000);
+    await fleet.report({ ...report, shippingStage: "review" });
+    clock.advance(1_000);
+    await fleet.report(report);
+    expect((await fleet.latestEvents())["DEMO-7"]?.shippingStage).toBe("review");
+    clock.advance(1_000);
+    await fleet.claim({ ...claim("DEMO-7"), phase: "shipping", resuming: true });
+    expect((await fleet.latestEvents())["DEMO-7"]).toMatchObject({
+      kind: "claim",
+      phase: "shipping",
+      shippingStage: "review",
+    });
+    clock.advance(1_000);
+    await fleet.report({ ...report, phase: "implementing" });
+    clock.advance(1_000);
+    await fleet.report({ ...report, previous: "implementing" });
+    expect((await fleet.latestEvents())["DEMO-7"]?.shippingStage).toBeNull();
+    await fleet.report({ ...report, shippingStage: "review" });
+    clock.advance(1_000);
+    await fleet.claim({ ...claim("DEMO-7"), handle: "replacement", phase: "shipping", resuming: true });
+    expect((await fleet.latestEvents())["DEMO-7"]?.shippingStage).toBeNull();
+    await fleet.report({ ...report, shippingStage: "review" });
+    clock.advance(1_000);
+    // A new worker identity using the same runtime handle is a replacement too.
+    const replaced = await serveFleet(
+      store,
+      {
+        op: "claim",
+        project: DEMO_PROJECT,
+        caller: { kind: "worker", ticket: "DEMO-7", sessionId: "new-worker" },
+        input: { ...claim("DEMO-7"), handle: "replacement", phase: "shipping", resuming: true },
+      },
+      { now: clock.now },
+    );
+    expect(replaced.status).toBe(200);
+    expect((await fleet.latestEvents())["DEMO-7"]?.shippingStage).toBeNull();
+  });
+
   test("times are the server's, whatever the terminal's clock says", async () => {
     const clock = fakeClock(new Date("2026-03-04T12:00:00.000Z"));
     const { fleet, store } = tempFleet({ clock });

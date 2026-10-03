@@ -293,6 +293,7 @@ describe("live Fleet reading", () => {
       kind: "report",
       phase: "shipping",
       message: "PR open",
+      shippingStage: "review",
       at: w.at(2_000),
     });
     w.advance(5_000);
@@ -300,6 +301,11 @@ describe("live Fleet reading", () => {
     expect(next.rows.map((r) => [r.id, r.phase, r.phaseSource, r.statusLine?.summary])).toEqual([
       ["WID-2", "shipping", "live", "PR open"],
     ]);
+    expect(next.rows[0]?.shippingStage).toBe("review");
+    expect(w.reads.snapshots).toBe(1);
+    // A new server reads the same persisted snapshot plus Armada event, with no upstream request.
+    const fromStored = await loadOverview({ ...w.opts, cache: newCache() });
+    expect(fromStored.rows[0]?.shippingStage).toBe("review");
     expect(w.reads.snapshots).toBe(1);
   });
 

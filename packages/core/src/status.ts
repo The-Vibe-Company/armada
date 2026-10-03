@@ -8,6 +8,7 @@ import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
   followedLaunches,
   freshRuntimeState,
+  type LatestEvent,
   notStartedBody,
   notStartedLaunches,
   type PendingLaunch,
@@ -16,7 +17,7 @@ import {
 } from "./live.ts";
 import { buildModel, isDone } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
-import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest } from "./types.ts";
+import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 
 export const STATUS_SCHEMA_VERSION = 1;
 
@@ -48,6 +49,7 @@ export interface PrRef {
 
 export interface InFlightTicket extends TicketRef {
   phase: AgentPhase;
+  shippingStage?: ShippingStage | null;
   phaseSource: "label" | "status-line" | "inferred" | "live";
   runtime: string | null;
   /** The worker's runtime session (workspace/session id), when known. */
@@ -88,7 +90,7 @@ export interface WaitingPullRequest extends PrRef {
   failingChecks: string[];
   /** The head branch; null when GitHub did not give it. */
   branch: string | null;
-  ticket: { id: string; phase: AgentPhase | null } | null;
+  ticket: { id: string; phase: AgentPhase | null; shippingStage?: ShippingStage | null } | null;
 }
 
 /** A worker launched on a ticket that has not claimed it after `policy.not_started_minutes`. */
@@ -171,6 +173,7 @@ export function buildStatus({
     ...(heartbeats ? { heartbeats } : {}),
     ...(live ? { live } : {}),
   });
+  const stageOf = new Map(lanes.map((l) => [l.issue.id, l.shippingStage ?? null]));
   const phaseOf = new Map(lanes.map((l) => [l.issue.id, l.phase]));
   const prRef = (
     p: PullRequest & {
@@ -222,6 +225,7 @@ export function buildStatus({
         url: l.issue.url,
         spec: l.spec,
         phase: l.phase,
+        shippingStage: l.shippingStage ?? null,
         phaseSource: l.phaseSource,
         runtime: l.runtime,
         handle: l.handle,
@@ -278,7 +282,13 @@ export function buildStatus({
           updatedAt: pr.updatedAt ?? null,
           failingChecks: (pr.checks ?? []).filter((c) => c.state === "failure").map((c) => c.name),
           branch: pr.headRef ?? null,
-          ticket: ticket ? { id: ticket.id, phase: phaseOf.get(ticket.id) ?? ticket.agentPhase } : null,
+          ticket: ticket
+            ? {
+                id: ticket.id,
+                phase: phaseOf.get(ticket.id) ?? ticket.agentPhase,
+                shippingStage: stageOf.get(ticket.id) ?? null,
+              }
+            : null,
         }))
       : null,
     warnings: [...program.warnings, ...(forge?.warnings ?? []), ...extraWarnings],
@@ -291,6 +301,7 @@ export interface LoadStatusOptions {
   githubToken: string | null;
   /** Newest live event time per ticket, read by the caller through Armada when signed in. */
   lastEvents?: () => Promise<Record<string, string>>;
+  latestEvents?: () => Promise<Record<string, LatestEvent>>;
   heartbeats?: () => Promise<Record<string, string>>;
   runtimeHandles?: () => Promise<RuntimeHandle[]>;
   /** Launches no claim followed, read by the caller through Armada when signed in. */
@@ -399,13 +410,15 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles] = await Promise.all([
-    readStatusSources(config, opts),
-    eventsP,
-    launchesP,
-    opts.heartbeats?.().catch(() => undefined),
-    opts.runtimeHandles?.().catch(() => undefined),
-  ]);
+  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents] =
+    await Promise.all([
+      readStatusSources(config, opts),
+      eventsP,
+      launchesP,
+      opts.heartbeats?.().catch(() => undefined),
+      opts.runtimeHandles?.().catch(() => undefined),
+      opts.latestEvents?.().catch(() => undefined),
+    ]);
   return buildStatus({
     config,
     program,
@@ -413,12 +426,12 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     forgeError,
     ...(events.events ? { lastEvents: events.events } : {}),
     ...(heartbeats ? { heartbeats } : {}),
-    ...(runtimeHandles
+    ...(runtimeHandles || latestEvents
       ? {
           live: {
             after: program.fetchedAt,
-            events: {},
-            handles: Object.fromEntries(runtimeHandles.map((h) => [h.ticket, h])),
+            events: latestEvents ?? {},
+            handles: Object.fromEntries((runtimeHandles ?? []).map((h) => [h.ticket, h])),
           },
         }
       : {}),

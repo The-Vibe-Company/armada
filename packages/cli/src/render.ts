@@ -35,7 +35,10 @@ function prState(pr: Pick<NonNullable<InFlightTicket["pr"]>, "draft" | "ci" | "m
     .join(" · ");
 }
 
-const phaseLabel = (t: InFlightTicket) => (t.phaseSource === "label" ? t.phase : `${t.phase} (${t.phaseSource})`);
+const phaseLabel = (t: InFlightTicket) => {
+  const phase = `${t.phase}${t.shippingStage ? ` · ${t.shippingStage}` : ""}`;
+  return t.phaseSource === "label" ? phase : `${phase} (${t.phaseSource})`;
+};
 
 export function renderStatus(r: StatusReport): string {
   const now = Date.parse(r.generatedAt);
@@ -110,7 +113,9 @@ export function renderStatus(r: StatusReport): string {
   if (!r.pullRequests) out.push("  GitHub was not read");
   else if (!r.pullRequests.length) out.push("  none open");
   for (const p of r.pullRequests ?? []) {
-    const ticket = p.ticket ? `${p.ticket.id}${p.ticket.phase ? ` ${p.ticket.phase}` : ""}` : "no ticket";
+    const ticket = p.ticket
+      ? `${p.ticket.id}${p.ticket.phase ? ` ${p.ticket.phase}${p.ticket.shippingStage ? ` · ${p.ticket.shippingStage}` : ""}` : ""}`
+      : "no ticket";
     out.push(`  ${pad(`#${p.number}`, idWidth)}  ${[ticket, prState(p)].filter(Boolean).join(" · ")}`);
     out.push(`${indent}${truncate(p.title, 90)}`);
     if (p.failingChecks.length) out.push(`${indent}! failing: ${p.failingChecks.join(", ")}`);

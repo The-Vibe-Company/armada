@@ -13,7 +13,7 @@ import { NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
 import { attachPullRequests } from "./github.ts";
 import { buildModel, isClosed } from "./model.ts";
 import type { RequestKind } from "./request-kinds.ts";
-import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest } from "./types.ts";
+import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
 
 // ------------------------------------------------------------------ records
@@ -43,6 +43,7 @@ export interface EventInput {
   ticket: string;
   kind: EventKind;
   phase?: string | null;
+  shippingStage?: ShippingStage | null;
   message?: string | null;
   runtime?: string | null;
   handle?: string | null;
@@ -54,6 +55,7 @@ export interface EventInput {
 export interface LatestEvent {
   kind: EventKind;
   phase: string | null;
+  shippingStage?: ShippingStage | null;
   message: string | null;
   runtime: string | null;
   handle: string | null;
@@ -97,6 +99,7 @@ export interface HeartbeatRecord {
 
 export interface HeartbeatResult {
   phase?: string | null;
+  shippingStage?: ShippingStage | null;
   agent?: string | null;
   active: boolean;
   claimedAt: string | null;
@@ -147,7 +150,7 @@ export interface SessionRecord extends RuntimeHandle {
   agent: string | null;
   model: string | null;
   effort: string | null;
-  lastReport: { at: string; message: string | null; phase: string | null } | null;
+  lastReport: { at: string; message: string | null; phase: string | null; shippingStage?: ShippingStage | null } | null;
 }
 
 /**
@@ -388,8 +391,23 @@ export interface ClaimRecord {
   workerSessionId?: string | null;
 }
 
+/** The explicit stage of this claim's latest shipping event, including a resumed claim. */
+async function currentShippingStage(store: FleetStore, project: string, ticket: string, claimedAt?: string) {
+  const event = (await store.latestEvents(project, { tickets: [ticket], since: new Date(claimedAt ?? 0) }))[ticket];
+  return event?.phase === "shipping" ? (event.shippingStage ?? null) : null;
+}
+
 /** A claim: the session holding the ticket, its profile, the event; the launch the owner asked for is done. */
 export async function recordClaim(store: FleetStore, project: string, c: ClaimRecord, at: Date): Promise<InboxItem[]> {
+  const handle = c.resuming && c.phase === "shipping" ? await store.getRuntimeHandle(project, c.ticket) : null;
+  const shippingStage =
+    handle &&
+    !handle.releasedAt &&
+    handle.handle === c.handle &&
+    handle.runtime === c.runtime &&
+    (handle.workerSessionId ?? null) === (c.workerSessionId ?? null)
+      ? await currentShippingStage(store, project, c.ticket, handle.claimedAt)
+      : null;
   await store.saveRuntimeHandle({
     project,
     ticket: c.ticket,
@@ -406,6 +424,7 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
     ticket: c.ticket,
     kind: "claim",
     phase: c.phase,
+    shippingStage,
     runtime: c.runtime,
     handle: c.handle,
     at,
@@ -422,6 +441,7 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
 export interface ReportRecord {
   ticket: string;
   phase: LabelPhase;
+  shippingStage?: ShippingStage | null;
   /** The phase before this report. */
   previous: LabelPhase | null;
   /** The status line's summary. */
@@ -439,11 +459,21 @@ export async function recordReport(
   r: ReportRecord,
   at: Date,
 ): Promise<InboxItem[]> {
+  const handle =
+    r.phase === "shipping" && r.previous === "shipping" && !r.shippingStage
+      ? await store.getRuntimeHandle(project, r.ticket)
+      : null;
+  const shippingStage =
+    r.phase === "shipping"
+      ? (r.shippingStage ??
+        (r.previous === "shipping" ? await currentShippingStage(store, project, r.ticket, handle?.claimedAt) : null))
+      : null;
   await store.recordEvent({
     project,
     ticket: r.ticket,
     kind: "report",
     phase: r.phase,
+    shippingStage,
     message: r.summary,
     prUrl: r.prUrl,
     headSha: r.headSha,
@@ -1100,6 +1130,7 @@ export interface Fleet {
   register(): Promise<void>;
   /** Time of the newest event of every ticket (`armada status`). */
   lastEventTimes(): Promise<Record<string, string>>;
+  latestEvents(): Promise<Record<string, LatestEvent>>;
   heartbeatTimes(): Promise<Record<string, string>>;
   heartbeat(input: HeartbeatRecord): Promise<HeartbeatResult>;
   runtimeHandles(): Promise<RuntimeHandle[]>;
