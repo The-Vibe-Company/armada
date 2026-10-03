@@ -642,6 +642,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
         repository: project.repository,
         issues: snapshot.sources.program.issues,
         prs: snapshot.sources.forge?.prs ?? [],
+        flight: { ...snapshot.sources, after: snapshot.startedAt.toISOString() },
       };
     }
   }

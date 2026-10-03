@@ -9,9 +9,11 @@
 // record.
 import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
-import { NEEDS_HUMAN } from "./fleet.ts";
+import { NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+import { attachPullRequests } from "./github.ts";
+import { buildModel, isClosed } from "./model.ts";
 import type { RequestKind } from "./request-kinds.ts";
-import type { AgentPhase, Issue, LabelPhase, PullRequest } from "./types.ts";
+import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
 
 // ------------------------------------------------------------------ records
@@ -254,8 +256,11 @@ export interface FleetStore {
   heartbeatTimes(project: string): Promise<Record<string, string>>;
   /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
   lastEventTimes(project: string): Promise<Record<string, string>>;
-  /** The newest event of every ticket of a project; with `since`, only tickets with an event since then. */
-  latestEvents(project: string, opts?: { since?: Date }): Promise<Record<string, LatestEvent>>;
+  /** Newest events, optionally bounded to given tickets and events since a time. */
+  latestEvents(
+    project: string,
+    opts?: { since?: Date; tickets?: readonly string[] },
+  ): Promise<Record<string, LatestEvent>>;
   /** Records that the coordinator of a project is at work (it read its inbox). */
   recordCoordinatorSeen(seen: CoordinatorSeen): Promise<void>;
   lastCoordinatorSeen(project: string): Promise<string | null>;
@@ -310,8 +315,11 @@ export interface FleetStore {
   getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
   /** Resolves one open item; false when it was already resolved. */
   resolveInboxItem(q: { project: string; id: number; resolution: string; at: Date }): Promise<boolean>;
-  /** When the newest question or plan of each ticket was resolved, by ticket id; with `since`, only answers since then. */
-  lastAnsweredAt(project: string, opts?: { since?: Date }): Promise<Record<string, string>>;
+  /** Newest answer per ticket, optionally bounded to given tickets and a time. */
+  lastAnsweredAt(
+    project: string,
+    opts?: { since?: Date; tickets?: readonly string[] },
+  ): Promise<Record<string, string>>;
   /** Resolves the open items of one kind for a ticket; returns how many. */
   resolveInboxItems(q: {
     project: string;
@@ -735,6 +743,8 @@ export interface HandBackSnapshot {
   repository: string;
   issues: readonly Pick<Issue, "id" | "statusType">[];
   prs: readonly Pick<PullRequest, "repo" | "number" | "state">[];
+  /** Full stored reading for the same in-flight derivation as status. */
+  flight?: { program: ProgramData; forge: ForgeData | null; after: string };
 }
 
 /** The PR named by the worker's generated hand-back status line. */
@@ -818,9 +828,9 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
 }
 
 /**
- * `readInbox`, with the tickets in flight: those a worker holds (open runtime
- * handle), the coordinator's own excluded, and those a worker was launched on
- * and has not claimed yet.
+ * `readInbox`, with the same tickets in flight as status when a stored reading
+ * exists, the coordinator's own excluded. Recent unclaimed launches are also
+ * followed until they need the coordinator's attention.
  */
 async function readInboxAndFlight(
   store: FleetStore,
@@ -833,11 +843,30 @@ async function readInboxAndFlight(
     store.pendingLaunches(o.project, new Date(now - LAUNCH_WINDOW_MS)),
   ]);
   const items = await reconcileHandBacks(store, stored, o.snapshot, o.now);
-  const oldest = handles.reduce((min, h) => (h.claimedAt < min ? h.claimedAt : min), handles[0]?.claimedAt ?? "");
-  const since = new Date(oldest);
-  const [events, answered] = handles.length
-    ? await Promise.all([store.latestEvents(o.project, { since }), store.lastAnsweredAt(o.project, { since })])
-    : [{} as Record<string, LatestEvent>, {} as Record<string, string>];
+  const flight = o.snapshot?.flight;
+  const closed = new Set(o.snapshot?.issues.filter(isClosed).map((i) => i.id));
+  const model = flight ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId) : null;
+  const eventTickets = [
+    ...new Set([
+      ...handles.map((h) => h.ticket),
+      ...launches.map((l) => l.ticket),
+      ...(model?.program.filter((i) => model.isLeaf(i)).map((i) => i.id) ?? []),
+    ]),
+  ].filter((ticket) => !closed.has(ticket));
+  const answerTickets = handles.map((h) => h.ticket).filter((ticket) => !closed.has(ticket));
+  const oldest = [
+    ...handles.filter((h) => !closed.has(h.ticket)).map((h) => h.claimedAt),
+    ...launches.filter((l) => !closed.has(l.ticket)).map((l) => l.launchedAt),
+  ].sort()[0];
+  const since = new Date(flight && (!oldest || flight.after < oldest) ? flight.after : (oldest ?? o.now.toISOString()));
+  const [events, answered] = await Promise.all([
+    eventTickets.length
+      ? store.latestEvents(o.project, { since, tickets: eventTickets })
+      : Promise.resolve({} as Record<string, LatestEvent>),
+    answerTickets.length
+      ? store.lastAnsweredAt(o.project, { since, tickets: answerTickets })
+      : Promise.resolve({} as Record<string, string>),
+  ]);
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
     kind: i.kind,
@@ -850,12 +879,26 @@ async function readInboxAndFlight(
   }));
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
-  const inFlight: string[] = [];
+  const held =
+    flight && model
+      ? new Set(
+          statusInFlight(model, flight.program.comments, {
+            now,
+            silentAfterMinutes: o.silentAfterMinutes,
+            live: { after: flight.after, events, handles: Object.fromEntries(handles.map((h) => [h.ticket, h])) },
+          }).map((lane) => lane.issue.id),
+        )
+      : null;
+  // A claim may arrive before its newly created ticket reaches the stored reading.
+  const known = new Set(flight?.program.issues.map((i) => i.id));
+  const own = new Set(handles.filter((h) => o.coordinator && h.handle === o.coordinator).map((h) => h.ticket));
+  const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket)) : [];
   for (const h of handles) {
-    if (o.coordinator && h.handle === o.coordinator) continue;
+    const derived = held !== null && known.has(h.ticket);
+    if (own.has(h.ticket) || closed.has(h.ticket) || (derived && !held?.has(h.ticket))) continue;
     const e = events[h.ticket];
-    if (e && (e.kind === "release" || e.kind === "merge")) continue;
-    inFlight.push(h.ticket);
+    if (!derived && e && (e.kind === "release" || e.kind === "merge") && e.at >= h.claimedAt) continue;
+    if (!derived) inFlight.push(h.ticket);
     if (asking.has(h.ticket)) continue;
     const observation = h.runtimeState;
     const answer = answered[h.ticket];
@@ -898,8 +941,16 @@ async function readInboxAndFlight(
   }
   // A worker launched is in flight from its launch, so a watch started then waits for its claim;
   // once it shows as not started, its entry carries it until the coordinator acts.
-  const late = notStartedLaunches(launches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes);
-  for (const l of followedLaunches(launches, o.now))
+  const currentLaunches = launches.filter((l) => {
+    const event = events[l.ticket];
+    return (
+      !closed.has(l.ticket) &&
+      !own.has(l.ticket) &&
+      !(event && (event.kind === "release" || event.kind === "merge") && event.at >= l.launchedAt)
+    );
+  });
+  const late = notStartedLaunches(currentLaunches, o.now, o.notStartedMinutes ?? CONFIG_DEFAULTS.notStartedMinutes);
+  for (const l of followedLaunches(currentLaunches, o.now))
     if (!late.includes(l) && !inFlight.includes(l.ticket)) inFlight.push(l.ticket);
   for (const l of late)
     entries.push({

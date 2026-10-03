@@ -200,13 +200,14 @@ export async function lastEventTimes(db: Queryable, project: string): Promise<Re
 export async function latestEvents(
   db: Queryable,
   project: string,
-  opts: { since?: Date } = {},
+  opts: { since?: Date; tickets?: readonly string[] } = {},
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
     `SELECT DISTINCT ON (ticket) ticket, kind, phase, message, runtime, handle, pr_url, created_at
      FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind <> 'heartbeat'
+     ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
      ORDER BY ticket, created_at DESC, id DESC`,
-    [project, opts.since ?? new Date(0)],
+    opts.tickets ? [project, opts.since ?? new Date(0), opts.tickets] : [project, opts.since ?? new Date(0)],
   );
   return Object.fromEntries(
     rs.rows.map((r) => [
@@ -757,13 +758,14 @@ export async function resolveInboxItem(
 export async function lastAnsweredAt(
   db: Queryable,
   project: string,
-  opts: { since?: Date } = {},
+  opts: { since?: Date; tickets?: readonly string[] } = {},
 ): Promise<Record<string, string>> {
   const rs = await db.query(
     `SELECT ticket, max(resolved_at) AS at FROM inbox_items
      WHERE project = $1 AND kind IN ('question', 'plan') AND ticket IS NOT NULL AND resolved_at >= $2
+     ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
      GROUP BY ticket`,
-    [project, opts.since ?? new Date(0)],
+    opts.tickets ? [project, opts.since ?? new Date(0), opts.tickets] : [project, opts.since ?? new Date(0)],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
 }
