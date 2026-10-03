@@ -422,6 +422,7 @@ slug = "widgets"                 # stable id: lowercase letters, digits, dashes
 program_root = "ABC-1"           # Linear issue at the root of the program (required)
 language = "en"                  # owner-facing language (default "en"; output is English for now)
 ready_label = "ready-for-agent"  # marks a ticket an agent may take (default)
+parked_label = "parked"          # marks a ticket parked on purpose: never listed as work to start (default)
 
 [tracker.labels]
 phase_group = "Agent phase"      # single-select label group for the agent phase (default)
