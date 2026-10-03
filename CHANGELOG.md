@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.38](https://github.com/The-Vibe-Company/armada/compare/v0.2.37...v0.2.38) (2026-10-03)
+
+
+### Features
+
+* **cli:** read, answer and safely stop herdr workers ([#143](https://github.com/The-Vibe-Company/armada/issues/143)) ([c811e71](https://github.com/The-Vibe-Company/armada/commit/c811e716f1d3c4c9ce0ac39e8122236583139e8a))
+
 ## [0.2.37](https://github.com/The-Vibe-Company/armada/compare/v0.2.36...v0.2.37) (2026-10-03)
 
 
