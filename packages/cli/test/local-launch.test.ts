@@ -45,6 +45,8 @@ async function fixture(
     startFailure?: boolean;
     revokeFailure?: boolean;
     pane?: string;
+    herdrConfig?: string;
+    noGit?: boolean;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "armada-local-"));
@@ -78,13 +80,15 @@ async function fixture(
   let workerConfig = DEMO_TOML;
   const io: Io = {
     cwd: "/work/widgets/subfolder",
-    env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL },
+    env: { XDG_CONFIG_HOME: home, HOME: home, ARMADA_API_URL: ARMADA_URL },
     readFile: async (p) =>
       p === "/work/widgets/armada.toml"
         ? configText
         : p === "/work/worktrees/demo-13/armada.toml"
           ? workerConfig
-          : null,
+          : p === join(home, "herdr", "config.toml")
+            ? (options.herdrConfig ?? null)
+            : null,
     writeFile: async (path, text) => {
       if (path === "/work/widgets/armada.toml") configText = text;
       else if (path === "/work/worktrees/demo-13/armada.toml") workerConfig = text;
@@ -163,8 +167,13 @@ async function fixture(
         };
       if (command === "git")
         return {
-          code: 0,
-          stdout: args[0] === "rev-parse" ? "/work/widgets\n" : "ref: refs/heads/trunk\tHEAD\n",
+          code: options.noGit && args[0] === "rev-parse" ? 128 : 0,
+          stdout:
+            args[0] === "rev-parse"
+              ? args.includes("--git-common-dir")
+                ? "/work/widgets/.git\n"
+                : "/work/widgets\n"
+              : "ref: refs/heads/trunk\tHEAD\n",
           stderr: "",
         };
       let reply: unknown;
@@ -499,6 +508,113 @@ test("launch refuses an OpenCode fallback before delivering the worker token", a
   expect(f.prompt()).toBe("");
   expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
   expect(f.errors()).not.toContain("armada_launch_CANARY_1");
+});
+
+const dryWorktree = (home: string, directory = join(home, ".herdr", "worktrees")) =>
+  join(directory, "widgets", "feature-demo-13");
+
+test("dry-run prints the plan and creates nothing", async () => {
+  const f = await fixture();
+  let installs = 0;
+  f.io.spawn = async () => {
+    installs++;
+    return 0;
+  };
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], f.io), f.errors()).toBe(0);
+  const text = f.output();
+  expect(text).toContain("Launch plan for DEMO-13 (dry run: nothing is created)");
+  expect(text).toContain("Profile    backend — herdr.default_profile");
+  expect(text).toContain("Harness    codex (exact model: model-a, effort high)");
+  expect(text).toContain("Branch     feature/demo-13");
+  expect(text).toContain(`Worktree   ${dryWorktree(f.home)}`);
+  expect(text).toContain("Base       trunk");
+  expect(text).toContain("Preflight  ready");
+  // Nothing was created: no token, no runtime, no write, no install, no prompt.
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.writes).toEqual([]);
+  expect(installs).toBe(0);
+  expect(f.prompt()).toBe("");
+  // Only read-only herdr and git probes ran.
+  expect(f.calls.filter((call) => call[0] === "herdr").every((call) => call[1] === "--version")).toBe(true);
+  expect(
+    f.calls.filter((call) => call[0] === "git").every((call) => ["rev-parse", "ls-remote"].includes(call[1] ?? "")),
+  ).toBe(true);
+  expect(f.errors()).not.toContain("armada_launch_CANARY_1");
+});
+
+test("dry-run --json gives the same plan as JSON", async () => {
+  const f = await fixture();
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run", "--json"], f.io), f.errors()).toBe(0);
+  expect(JSON.parse(f.output())).toMatchObject({
+    ticket: "DEMO-13",
+    runtime: "herdr",
+    dryRun: true,
+    profile: "backend",
+    routed: "backend",
+    harness: "codex",
+    actualHarness: "codex",
+    model: "model-a",
+    effort: "high",
+    branch: "feature/demo-13",
+    worktree: dryWorktree(f.home),
+    base: "trunk",
+    preflight: { ready: true, gaps: [] },
+  });
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[0] === "herdr" && call[1] !== "--version")).toBe(false);
+});
+
+test("dry-run exits non-zero and lists every gap without creating anything", async () => {
+  const f = await fixture({ missing: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], f.io)).toBe(1);
+  expect(f.errors()).toContain("herdr could not report a usable version");
+  expect(f.errors()).toContain("codex could not report a usable version");
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[0] === "herdr" && call[1] !== "--version")).toBe(false);
+});
+
+test("dry-run lists a missing harness sign-in and an unpublished CLI as gaps", async () => {
+  const unsigned = await fixture({ unsigned: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], unsigned.io)).toBe(1);
+  expect(unsigned.errors()).toContain("codex is not signed in");
+  expect(unsigned.armada.launches.size).toBe(0);
+
+  const unpublished = await fixture({ unpublished: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run"], unpublished.io)).toBe(1);
+  expect(unpublished.errors()).toContain("is not on npm yet");
+  expect(unpublished.armada.launches.size).toBe(0);
+});
+
+test("dry-run honors herdr's configured worktrees directory", async () => {
+  const f = await fixture({ herdrConfig: '[worktrees]\ndirectory = "~/custom/trees"\n' });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run", "--json"], f.io), f.errors()).toBe(0);
+  expect(JSON.parse(f.output()).worktree).toBe(join(f.home, "custom", "trees", "widgets", "feature-demo-13"));
+});
+
+test("dry-run names the deepseek OpenCode fallback and its exact model", async () => {
+  const f = await fixture({ toml: deepseekLocal });
+  expect(
+    await run(["launch", "DEMO-13", "--runtime", "herdr", "--harness", "deepseek", "--dry-run", "--json"], f.io),
+    f.errors(),
+  ).toBe(0);
+  expect(JSON.parse(f.output())).toMatchObject({
+    harness: "deepseek",
+    actualHarness: "opencode",
+    harnessDescription: "deepseek (OpenCode + DeepSeek model)",
+    model: "opencode/deepseek-v4-pro",
+    preflight: { ready: true },
+  });
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[0] === "herdr" && call[1] !== "--version")).toBe(false);
+});
+
+test("dry-run lists a missing repository as a gap and still reports the preflight", async () => {
+  const f = await fixture({ noGit: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--dry-run", "--json"], f.io)).toBe(1);
+  const plan = JSON.parse(f.output());
+  expect(plan.worktree).toBeNull();
+  expect(plan.preflight.gaps).toContain("local launch must run in a git repository");
+  expect(f.armada.launches.size).toBe(0);
 });
 
 test("OpenCode first-run provider questions retain the worker pane before model verification", async () => {

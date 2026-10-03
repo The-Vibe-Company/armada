@@ -173,6 +173,11 @@ const COMMAND_HELP: Record<string, string> = {
                     [--profile <name> [--reason <why>]] [--validation <n|none>]
                     Create the ticket's worktree and start a persistent local worker
                     with its launch-token brief. Profiles follow [[herdr.routing]]
+  launch <ticket> --runtime herdr --dry-run [--json]
+                    Print the launch plan (profile and why, harness and exact model,
+                    branch and worktree path, preflight) and create nothing: no
+                    worktree, token, pane or install. Exits 0 when the preflight
+                    passes, else non-zero, listing every gap
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
@@ -397,7 +402,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug", "no-stop-hook"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason"],
+  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
