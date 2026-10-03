@@ -162,7 +162,8 @@ const COMMAND_HELP: Record<string, string> = {
                     for, without the lock; a red check or a conflict stops it. A head that
                     is the hand-back with only the base merged in counts as the hand-back.
                     --no-ticket: a pull request no ticket owns (armada init, a release);
-                    nothing is written to Linear.
+                    on a ticket-named branch, --reason is required and posted on the PR;
+                    the ticket and its worker stay unchanged, with nothing written to Linear.
                     With [policy] merge_approval, judge each pull request: --reason "<why>"
                     merges on its own; --ask-owner --reason "<why>" merges nothing, asks the
                     owner (PR, files, CI, preview, screenshots) and prints the approval link.

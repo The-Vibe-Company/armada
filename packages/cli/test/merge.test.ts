@@ -93,6 +93,10 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
   // The pull request as GitHub shows it; `gh api … update-branch` merges main into it, as GitHub does.
   const pr = { head, state: "CLEAN", check: { status: "COMPLETED", conclusion: "SUCCESS" as string | null } };
   const exec: Exec = async (command, args, { cwd }) => {
+    if (command === "gh" && args[0] === "pr" && args[1] === "comment") {
+      ghCalls.push(args);
+      return { code: 0, stdout: "comment posted", stderr: "" };
+    }
     if (command === "gh" && args[0] === "api") {
       ghCalls.push(args);
       git("switch", "--quiet", BRANCH);
@@ -376,4 +380,28 @@ test("armada merge refuses flags that do not go together", async () => {
     expect(f.err()).toContain(message);
   }
   expect(f.ghCalls).toEqual([]);
+});
+
+test("CLI accepts --no-ticket --reason and posts its audit comment without ending the worker", async () => {
+  const f = await fixture();
+  const before = structuredClone(f.linear.get("DEMO-18"));
+  expect(await run(["merge", "9", "--no-ticket", "--reason", "config only"], f.io)).toBe(0);
+  expect(f.ghCalls).toEqual([
+    [
+      "pr",
+      "comment",
+      "9",
+      "--repo",
+      "acme/widgets",
+      "--body",
+      `Armada merge --no-ticket at ${f.head}: config only. DEMO-18 stays open; its ticket and worker are left unchanged.`,
+    ],
+    ["pr", "merge", "9", "--repo", "acme/widgets", "--squash", "--match-head-commit", f.head],
+  ]);
+  expect(f.linear.get("DEMO-18")).toEqual(before);
+  expect(f.linear.writes).toEqual([]);
+  expect(f.armada.calls.map((c) => c.path)).not.toContain("workers/end");
+  expect(f.store.events.filter((e) => e.kind === "merge")).toEqual([]);
+  expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
+  expect(f.store.leases.size).toBe(0);
 });

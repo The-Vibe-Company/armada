@@ -57,6 +57,10 @@ class FakeForge implements MergeForge {
   answers: (MergeAttempt & { effect?: boolean })[] = [];
   merges: { number: number; sha: string }[] = [];
   reads = 0;
+  comments: { number: number; body: string }[] = [];
+  async comment(number: number, body: string) {
+    this.comments.push({ number, body });
+  }
   /** Called inside merge(), before it answers (to hold a merge open). */
   during: (() => Promise<void>) | null = null;
 
@@ -694,6 +698,10 @@ describe("the owner's merge approval (THE-885)", () => {
     const live = tempFleet();
     const s = setup({ live });
     await askOwnerToMerge(s.ctx, { pr: 9, reason: "a release that changes the landing" });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason: "config only" }))).toStartWith(
+      "#9 cannot be merged: the owner has not decided on the merge of #9 yet",
+    );
+    expect(s.forge.comments).toEqual([]);
     s.forge.pr.headRef = "release-please--branches--main";
     expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toStartWith(
       "#9 cannot be merged: the owner has not decided on the merge of #9 yet",
@@ -950,11 +958,112 @@ describe("armada merge --no-ticket", () => {
     expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
   });
 
-  test("refuses a branch that names a ticket of the program: its worker hands it back", async () => {
+  test.each([undefined, "", " \n\t "])(
+    "refuses a ticket-named branch without a nonblank reason (%j)",
+    async (reason) => {
+      const s = setup();
+      expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason }))).toBe(
+        'the branch of #9 (feature/demo-7-do-the-thing) names DEMO-7: merge it on its worker\'s hand-back, or use --no-ticket --reason "<why the ticket stays open>"\nNext: armada merge 9, or armada merge 9 --no-ticket --reason "<why the ticket stays open>"',
+      );
+    },
+  );
+
+  test("a reason permits a pinned, locked merge while leaving the ticket and worker untouched", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    const ticket = s.linear.get("DEMO-7");
+    ticket.labels = [label("phase-implementing"), label("rt-conductor")];
+    ticket.comments = [];
+    const before = structuredClone(ticket);
+    // The no-ticket override must not even read the ticket to decide its merge.
+    s.linear.readTicket = async () => {
+      throw new Error("no ticket read allowed");
+    };
+    await live.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "Conductor",
+      handle: "ws-1/s-1",
+      branch: s.forge.pr.headRef ?? null,
+      at: NOW,
+    });
+    const handle = await live.fleet.runtimeHandle("DEMO-7");
+    s.forge.comment = async (number, body) => {
+      expect(live.store.leases.size).toBe(1);
+      expect(s.forge.merges).toEqual([]);
+      s.forge.comments.push({ number, body });
+    };
+    const out = await mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason: " config only; \n ticket continues " });
+    expect(out.merged).toBe(true);
+    expect(out.ticket).toBeNull();
+    expect(out.archive).toBeNull();
+    expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+    expect(s.forge.comments).toEqual([
+      {
+        number: 9,
+        body: `Armada merge --no-ticket at ${HEAD}: config only; ticket continues. DEMO-7 stays open; its ticket and worker are left unchanged.`,
+      },
+    ]);
+    expect(s.linear.writes).toEqual([]);
+    expect(ticket).toEqual(before);
+    expect(await live.fleet.runtimeHandle("DEMO-7")).toEqual(handle);
+    expect(live.store.events.filter((e) => e.kind === "merge")).toEqual([]);
+    expect(live.store.leases.size).toBe(0);
+  });
+
+  test("dry-run with a reason checks the override without posting or merging", async () => {
     const s = setup();
-    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toBe(
-      "the branch of #9 (feature/demo-7-do-the-thing) names DEMO-7: merge it on its worker's hand-back, not with --no-ticket\nNext: armada merge 9",
+    const out = await mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason: "config only", dryRun: true });
+    expect(out.merged).toBe(false);
+    expect(s.forge.comments).toEqual([]);
+    expect(s.forge.merges).toEqual([]);
+    expect(s.linear.writes).toEqual([]);
+  });
+
+  test("a failed reason comment refuses the merge and releases the lock", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    s.forge.comment = async () => {
+      throw new Error("GitHub unavailable");
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason: "config only" }))).toContain(
+      "could not record the --no-ticket reason on #9 (GitHub unavailable); nothing was merged",
     );
+    expect(s.forge.merges).toEqual([]);
+    expect(s.linear.writes).toEqual([]);
+    expect(live.store.leases.size).toBe(0);
+  });
+
+  test.each([
+    { over: { checks: [{ name: "test", state: "failure" as const }] }, problem: 'required check "test" is failure' },
+    { over: { checks: [] }, problem: 'required check "test" has not reported on the head yet' },
+    { over: { reviewThreads: { total: 1, read: 1, unresolved: 1 } }, problem: "1 unresolved review thread" },
+  ])("a reason preserves the CI and review gates (%j)", async ({ over, problem }) => {
+    const s = setup();
+    Object.assign(s.forge.pr, over);
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason: "config only" }))).toContain(problem);
+    expect(s.forge.merges).toEqual([]);
+    expect(s.forge.comments).toEqual([]);
+    expect(s.linear.writes).toEqual([]);
+  });
+
+  test("a reason cannot bypass an unavailable required lock", async () => {
+    const s = setup({ down: true });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason: "config only" }))).toContain(
+      "the merge lock needs Armada",
+    );
+    expect(s.forge.comments).toEqual([]);
+    expect(s.forge.merges).toEqual([]);
+  });
+
+  test("a reason does not permit a head to move while checked", async () => {
+    const s = setup();
+    s.forge.onCompare = async () => {
+      s.forge.pr.headSha = BASE;
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, reason: "config only" }))).toContain("moved");
+    expect(s.forge.merges).toEqual([]);
+    expect(s.forge.comments).toEqual([]);
   });
 });
 

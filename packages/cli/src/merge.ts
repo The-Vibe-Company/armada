@@ -213,8 +213,6 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     throw new UsageError(
       `--ask-owner needs --reason: armada merge ${number} --ask-owner --reason "<why the owner must see it>"`,
     );
-  if (noTicket && a.options.reason !== undefined)
-    throw new UsageError("--reason judges a ticket's merge; --no-ticket has none");
   if (wait && a.options["dry-run"]) throw new UsageError("--wait and --dry-run cannot go together");
   if (!wait && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
   const timeoutMs = a.options.timeout === undefined ? MERGE_WAIT_DEFAULT_MS : waitMinutes(a.options.timeout) * 60_000;
@@ -238,6 +236,18 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
       compare: (base, head) => fetchComparison({ ...gh, base, head }),
       diff: (n) => fetchPullDiff({ ...gh, number: n }),
       merge: ghMerge(exec, repoDir, config.github.repository),
+      comment: async (number, body) => {
+        const result = await ghAttempt(exec, repoDir, [
+          "pr",
+          "comment",
+          String(number),
+          "--repo",
+          config.github.repository,
+          "--body",
+          body,
+        ]);
+        if (!result.ok) throw new Error(result.message);
+      },
       commit: (sha) => fetchCommit({ ...gh, sha }),
       updateBranch: ghUpdateBranch(exec, repoDir, config.github.repository),
       preview: (sha) => fetchPreview({ ...gh, sha }),
