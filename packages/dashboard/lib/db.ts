@@ -707,6 +707,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
         WHERE kind IN ('question', 'plan', 'decision') AND resolved_at IS NOT NULL`,
     ],
   },
+  {
+    // Shipping detail is Armada data, separate from Linear's phase labels.
+    version: 20,
+    statements: [
+      "ALTER TABLE events ADD COLUMN shipping_stage text CHECK (shipping_stage IS NULL OR (shipping_stage IN ('review', 'ci') AND phase IS NOT DISTINCT FROM 'shipping'))",
+      "ALTER TABLE fleet_sessions ADD COLUMN report_shipping_stage text CHECK (report_shipping_stage IS NULL OR (report_shipping_stage IN ('review', 'ci') AND report_phase IS NOT DISTINCT FROM 'shipping'))",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

@@ -209,6 +209,28 @@ describe("report", () => {
     return s;
   }
 
+  test("shipping stages record Armada data and reject invalid input before writes", async () => {
+    const live = tempFleet();
+    const { linear, ctx } = await claimed({ live });
+    await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", message: "approved" });
+    const before = linear.writes.length;
+    for (const input of [
+      { phase: "implementing" as const, stage: "review" },
+      { phase: "shipping" as const, stage: "unknown" },
+    ]) {
+      expect(await refusal(reportPhase(ctx, { ticket: "DEMO-7", message: "x", ...input }))).toContain("--stage");
+      expect(linear.writes.length).toBe(before);
+    }
+    for (const stage of ["review", "ci"] as const) {
+      await reportPhase(ctx, { ticket: "DEMO-7", phase: "shipping", stage, message: stage });
+      expect((await live.store.latestEvents("widgets"))["DEMO-7"]).toMatchObject({
+        phase: "shipping",
+        shippingStage: stage,
+      });
+      expect(labelsOf(linear, "DEMO-7")).toEqual(["Claude Code", "shipping"]);
+    }
+  });
+
   test("a valid move swaps the phase label, posts the status line and lists the worker's inbox", async () => {
     const live = tempFleet();
     const db = live.store;

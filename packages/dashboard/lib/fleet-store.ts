@@ -41,7 +41,7 @@ import type {
   ValidationOutcome,
   WorkerProfile,
 } from "@armada/core/read";
-import { REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
+import { isShippingStage, REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
 import { catchupRecords, type FeedQuery, feedPage, feedPeople } from "./activity-store";
 import { captionedAttachments, ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
@@ -164,14 +164,14 @@ export async function assignUnownedProjects(db: Queryable, organization: string,
 export async function recordEvent(db: Queryable, e: EventInput): Promise<void> {
   if (e.kind === "report")
     await db.query(
-      `UPDATE fleet_sessions SET report_at = $3, report_message = $4, report_phase = $5
+      `UPDATE fleet_sessions SET report_at = $3, report_message = $4, report_phase = $5, report_shipping_stage = $6
        WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND claimed_at <= $3
          AND (report_at IS NULL OR report_at <= $3)`,
-      [e.project, e.ticket, e.at, e.message ?? null, e.phase ?? null],
+      [e.project, e.ticket, e.at, e.message ?? null, e.phase ?? null, e.shippingStage ?? null],
     );
   await db.query(
-    `INSERT INTO events (project, ticket, kind, phase, message, runtime, handle, pr_url, head_sha, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    `INSERT INTO events (project, ticket, kind, phase, message, runtime, handle, pr_url, head_sha, created_at, shipping_stage)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       e.project,
       e.ticket,
@@ -183,6 +183,7 @@ export async function recordEvent(db: Queryable, e: EventInput): Promise<void> {
       e.prUrl ?? null,
       e.headSha ?? null,
       e.at,
+      e.shippingStage ?? null,
     ],
   );
 }
@@ -203,7 +204,7 @@ export async function latestEvents(
   opts: { since?: Date; tickets?: readonly string[] } = {},
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
-    `SELECT DISTINCT ON (ticket) ticket, kind, phase, message, runtime, handle, pr_url, created_at
+    `SELECT DISTINCT ON (ticket) ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
      FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind <> 'heartbeat'
      ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
      ORDER BY ticket, created_at DESC, id DESC`,
@@ -215,6 +216,7 @@ export async function latestEvents(
       {
         kind: String(r.kind) as LatestEvent["kind"],
         phase: text(r.phase),
+        shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
         message: text(r.message),
         runtime: text(r.runtime),
         handle: text(r.handle),
@@ -231,13 +233,14 @@ export const TICKET_HISTORY_LIMIT = 200;
 /** A ticket's events, newest first (its claims, reports, releases and merges). */
 export async function ticketEvents(db: Queryable, project: string, ticket: string): Promise<LatestEvent[]> {
   const rs = await db.query(
-    `SELECT kind, phase, message, runtime, handle, pr_url, created_at FROM events
+    `SELECT kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at FROM events
      WHERE project = $1 AND ticket = $2 ORDER BY created_at DESC, id DESC LIMIT $3`,
     [project, ticket, TICKET_HISTORY_LIMIT],
   );
   return rs.rows.map((r) => ({
     kind: String(r.kind) as LatestEvent["kind"],
     phase: text(r.phase),
+    shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
     message: text(r.message),
     runtime: text(r.runtime),
     handle: text(r.handle),
@@ -252,7 +255,7 @@ export async function ticketEvents(db: Queryable, project: string, ticket: strin
  */
 export async function recentEvents(db: Queryable, project: string, since: Date): Promise<HistoryEvent[]> {
   const rs = await db.query(
-    `SELECT ticket, kind, phase, message, created_at FROM events
+    `SELECT ticket, kind, phase, shipping_stage, message, created_at FROM events
      WHERE project = $1 AND created_at >= $2 AND kind IN ('claim', 'report', 'heartbeat', 'release', 'merge')
      ORDER BY created_at, id`,
     [project, since],
@@ -261,6 +264,7 @@ export async function recentEvents(db: Queryable, project: string, since: Date):
     ticket: String(r.ticket),
     kind: String(r.kind),
     phase: text(r.phase),
+    shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
     message: text(r.message),
     at: isoAt(r.created_at),
   }));
@@ -343,7 +347,12 @@ export async function listSessions(db: Queryable, project: string, opts: { since
     lastReport:
       row.report_at == null
         ? null
-        : { at: isoAt(row.report_at), message: text(row.report_message), phase: text(row.report_phase) },
+        : {
+            at: isoAt(row.report_at),
+            message: text(row.report_message),
+            phase: text(row.report_phase),
+            shippingStage: isShippingStage(row.report_shipping_stage) ? row.report_shipping_stage : null,
+          },
   }));
 }
 

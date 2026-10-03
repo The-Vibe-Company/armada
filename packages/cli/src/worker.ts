@@ -70,6 +70,7 @@ export function statusLive(
 ):
   | {
       lastEvents: () => Promise<Record<string, string>>;
+      latestEvents: () => Promise<Record<string, import("@armada/core").LatestEvent>>;
       heartbeats: () => Promise<Record<string, string>>;
       launches: () => Promise<PendingLaunch[]>;
       runtimeHandles: () => Promise<import("@armada/core").RuntimeHandle[]>;
@@ -79,6 +80,7 @@ export function statusLive(
   return fleet
     ? {
         lastEvents: () => fleet.lastEventTimes(),
+        latestEvents: () => fleet.latestEvents(),
         heartbeats: () => fleet.heartbeatTimes(),
         launches: () => fleet.pendingLaunches(),
         runtimeHandles: () => observeHerdr(io, fleet),
@@ -270,6 +272,7 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
     reportPhase(ctx, {
       ticket,
       phase,
+      stage: a.options.stage ?? null,
       message,
       plan,
       pr: a.options.pr ?? null,

@@ -5,6 +5,34 @@ import { buildStatus, loadStatus, readStatusSources, refreshStatusSources } from
 import { DEMO_TOML, demoConfig, issue, NOW, recordedFetch } from "./support.ts";
 
 describe("loadStatus", () => {
+  test("a persisted stage survives a later tracker read in status JSON", async () => {
+    const { fetch } = recordedFetch();
+    const r = await loadStatus(demoConfig(), {
+      linearApiKey: "k",
+      githubToken: "t",
+      fetch,
+      now: () => NOW,
+      latestEvents: async () => ({
+        "DEMO-16": {
+          kind: "report",
+          phase: "shipping",
+          shippingStage: "review",
+          message: "review",
+          runtime: null,
+          handle: null,
+          prUrl: null,
+          at: "2026-03-04T09:40:00.000Z",
+        },
+      }),
+    });
+    expect(r.inFlight.find((t) => t.id === "DEMO-16")).toMatchObject({
+      phase: "shipping",
+      shippingStage: "review",
+      pr: { ci: "failure" },
+    });
+    expect(r.pullRequests?.find((p) => p.number === 8)?.ticket?.shippingStage).toBe("review");
+  });
+
   test("reports tickets in flight, the frontier and waiting pull requests from Linear and GitHub", async () => {
     const { fetch } = recordedFetch();
     const r = await loadStatus(demoConfig(), { linearApiKey: "k", githubToken: "t", fetch, now: () => NOW });

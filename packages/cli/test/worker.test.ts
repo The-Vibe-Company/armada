@@ -58,6 +58,23 @@ function worker(
 }
 
 describe("armada claim, report and release", () => {
+  test("--stage reaches shipping events and refuses invalid phase or value", async () => {
+    const w = worker(SIGNED_IN);
+    w.linear.add("DEMO-7", { labels: [{ id: "phase-implementing", name: "implementing", group: "Agent phase" }] });
+    for (const stage of ["review", "ci"] as const) {
+      expect(await run(["report", "shipping", "--stage", stage, "--message", stage], w.io)).toBe(0);
+      expect((await w.store.latestEvents("widgets"))["DEMO-7"]?.shippingStage).toBe(stage);
+    }
+    const before = w.linear.writes.length;
+    for (const [phase, stage] of [
+      ["implementing", "review"],
+      ["shipping", "unknown"],
+    ] as const) {
+      expect(await run(["report", phase, "--stage", stage, "--message", "x"], w.io)).toBe(1);
+      expect(w.linear.writes.length).toBe(before);
+    }
+  });
+
   test("shipping paths reach the ticket and coordinator inbox, without inventing legacy review evidence", async () => {
     const w = worker(SIGNED_IN);
     w.linear.add("DEMO-7", { labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }] });
@@ -258,6 +275,7 @@ describe("armada claim, report and release", () => {
       "fleet/launches",
       "fleet/heartbeats/latest",
       "fleet/runtime/handles",
+      "fleet/events/state",
     ]);
   });
 

@@ -19,6 +19,7 @@ import {
   type InboxQuery,
   type InboxRead,
   LAUNCH_WINDOW_MS,
+  type LatestEvent,
   type LeaseResult,
   type MergeRecord,
   type MergeRecorded,
@@ -43,6 +44,7 @@ import {
 import { isLabelPhase } from "./phases.ts";
 import { RequestRefusal, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
 import type { CiState, LabelPhase } from "./types.ts";
+import { isShippingStage } from "./types.ts";
 import {
   approvalUrl,
   VALIDATION_KINDS,
@@ -62,6 +64,7 @@ export const FLEET_OPS = [
   "coordinator",
   "request",
   "events/latest",
+  "events/state",
   "heartbeats/latest",
   "runtime/handles",
   "runtime/handle",
@@ -141,6 +144,14 @@ function bool(b: Body, key: string): boolean {
   const v = b[key];
   if (typeof v !== "boolean") throw new Invalid(`${key} must be true or false`);
   return v;
+}
+
+function shippingStageOf(b: Body) {
+  const stage = b.shippingStage;
+  if (stage == null) return null;
+  if (b.phase !== "shipping" || !isShippingStage(stage))
+    throw new Invalid("shippingStage requires shipping and must be review or ci");
+  return stage;
 }
 
 function phaseOf(b: Body, key: string, optional = false): LabelPhase | null {
@@ -273,6 +284,7 @@ export async function serveFleet(
             {
               ticket: ticketOf(b),
               phase: phaseOf(b, "phase") as LabelPhase,
+              shippingStage: shippingStageOf(b),
               previous: phaseOf(b, "previous", true),
               summary: text(b, "summary", BODY_MAX),
               message: optText(b, "message", BODY_MAX) ?? "",
@@ -310,6 +322,8 @@ export async function serveFleet(
             });
           throw new Invalid("unknown request kind");
         }
+        case "events/state":
+          return store.latestEvents(slug);
         case "events/latest":
           return store.lastEventTimes(slug);
         case "heartbeats/latest":
@@ -353,7 +367,12 @@ export async function serveFleet(
             store.latestEvents(slug, { since: new Date(result.claimedAt) }),
             store.getWorkerProfile(slug, ticketOf(b)),
           ]);
-          return { ...result, phase: events[ticketOf(b)]?.phase ?? null, agent: profile?.agent ?? null };
+          return {
+            ...result,
+            phase: events[ticketOf(b)]?.phase ?? null,
+            shippingStage: events[ticketOf(b)]?.shippingStage ?? null,
+            agent: profile?.agent ?? null,
+          };
         }
         case "launches":
           return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
@@ -587,6 +606,7 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),
+    latestEvents: () => call<Record<string, LatestEvent>>("events/state", {}),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
     heartbeatTimes: () => call<Record<string, string>>("heartbeats/latest", {}),
     heartbeat: (input) => call("heartbeat", input),

@@ -11,6 +11,7 @@ import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
 import { handBackProblems, transitionProblem } from "./phases.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
+import { isShippingStage } from "./types.ts";
 import { type ValidationChoice, validationClaimLine } from "./validations.ts";
 
 /**
@@ -379,6 +380,8 @@ export interface ReportInput {
   sha?: string | null;
   /** ship-pr-dev, or fallback: <reason>. Optional for older workers. */
   shippedWith?: string | null;
+  /** Shipping only: independent code review, then CI. */
+  stage?: string | null;
 }
 
 /** The heading of the plan block in a status comment, which `armada status` and the dashboard look for. */
@@ -428,6 +431,11 @@ export function resolvePr(ticket: Ticket, repository: string, pr: string | null 
 export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promise<Outcome> {
   const { config, linear } = ctx;
   const groups = config.tracker.labels;
+  if (input.stage != null && (input.phase !== "shipping" || !isShippingStage(input.stage)))
+    throw new Refusal(
+      "--stage is for shipping: use review or ci",
+      'armada report shipping --stage review|ci --message "<progress>"',
+    );
   const ticket = await readOpenTicket(ctx, input.ticket);
   const problem = transitionProblem(ticket.agentPhase, input.phase);
   if (problem)
@@ -530,6 +538,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     fleet.report({
       ticket: ticket.id,
       phase: input.phase,
+      shippingStage: isShippingStage(input.stage) ? input.stage : null,
       previous: ticket.agentPhase,
       summary,
       // The whole report: an awaiting-approval plan reaches the coordinator's inbox in full.

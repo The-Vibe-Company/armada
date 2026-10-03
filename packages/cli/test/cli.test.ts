@@ -36,6 +36,11 @@ describe("armada status", () => {
     report.inFlight[0].profile = "backend";
     report.inFlight[0].profileReason = "mostly CLI and core rules";
     expect(renderStatus(report)).toContain("Profile: backend — mostly CLI and core rules");
+    report.inFlight[0].phase = "shipping";
+    report.inFlight[0].shippingStage = "review";
+    expect(renderStatus(report)).toContain("shipping · review");
+    report.inFlight[0].shippingStage = "ci";
+    expect(renderStatus(report)).toContain("shipping · ci");
   });
   test("--json prints the report found from the nearest armada.toml", async () => {
     const { io, out } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
@@ -53,16 +58,16 @@ describe("armada status", () => {
 Read 2026-03-04 10:00 UTC · Linear DEMO-1 · GitHub acme/widgets
 
 In flight (3)
-  DEMO-18  ready-to-merge          Codex · Grace Worker · reported 20 min ago
+  DEMO-18  ready-to-merge               Codex · Grace Worker · reported 20 min ago
            Expire idle sessions [Spec 1]
            “PR #9, head 9f1c2d3e4b5a69788796a5b4c3d2e1f00a1b2c3d, CI green”
            PR #9 · CI success · mergeable
-  DEMO-16  shipping (status-line)  unassigned · reported 2 h ago
+  DEMO-16  shipping · ci (status-line)  unassigned · reported 2 h ago
            Reset a forgotten password [Spec 1]
            “PR open, fixing CI”
            PR #8 · CI failure · mergeable
            ! silent, ci-failing, no-assignee, no-phase-label
-  DEMO-11  implementing            Claude Code · Ada Worker · reported 50 min ago
+  DEMO-11  implementing                 Claude Code · Ada Worker · reported 50 min ago
            Send a sign-in link by email [Spec 1]
            “plan approved, writing the email sender”
            plan: https://linear.app/acme/issue/DEMO-11#comment-c11b0000
@@ -78,7 +83,7 @@ Unblocked but not marked ready (1)
 Pull requests waiting (4)
   #7       DEMO-11 implementing · CI pending · mergeability unknown
            feat(auth): send a sign-in link
-  #8       DEMO-16 shipping · CI failure · mergeable
+  #8       DEMO-16 shipping · ci · CI failure · mergeable
            feat(auth): reset a forgotten password
            ! failing: test
   #9       DEMO-18 ready-to-merge · CI success · mergeable
