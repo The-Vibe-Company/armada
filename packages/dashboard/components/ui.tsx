@@ -284,7 +284,9 @@ export const LONGEST_TIMES = [59 * 60_000, 24 * 3_600_000 - 60_000];
 /**
  * Text the clock changes, in a box as wide as the widest it can read
  * (`widest`, drawn unseen in the same cell, in the same font): a new reading
- * moves nothing beside it, so it is never a layout shift (THE-982).
+ * moves nothing beside it. Each reading is a node of its own (keyed here, or
+ * by `RelativeTime`): text that moves inside its box counts as a layout
+ * shift, a new node does not (THE-982).
  */
 export function Steady({ widest, children }: { widest: string[]; children: ReactNode }) {
   return (
@@ -294,7 +296,7 @@ export function Steady({ widest, children }: { widest: string[]; children: React
           {w}
         </span>
       ))}
-      <span>{children}</span>
+      <span key={typeof children === "string" ? children : undefined}>{children}</span>
     </span>
   );
 }
@@ -305,9 +307,11 @@ export function RelativeTime({ at, format = "ago" }: { at: string | null; format
   const now = useNow();
   if (!at) return <span className="tnum">—</span>;
   const ms = Math.max(0, now - Date.parse(at));
+  const text = format === "ago" ? t.ago(ms) : t.duration(ms);
+  // A new node for each reading: text moving where it stands counts as a layout shift (THE-982).
   return (
-    <time className="tnum" dateTime={at} title={new Date(at).toLocaleString()}>
-      {format === "ago" ? t.ago(ms) : t.duration(ms)}
+    <time key={text} className="tnum" dateTime={at} title={new Date(at).toLocaleString()}>
+      {text}
     </time>
   );
 }

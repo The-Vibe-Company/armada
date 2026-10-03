@@ -214,10 +214,11 @@ button {
   font-variant-numeric: tabular-nums;
 }
 /* A ticking text in the box of its widest reading (THE-982): the readings
-   share one cell, the live one at its end. */
+   share one cell, each as wide as it, the text at its end. Only the text
+   moves inside a box that stays, which is not a layout shift. */
 .ui-steady {
   display: inline-grid;
-  justify-items: end;
+  text-align: end;
 }
 .ui-steady > * {
   grid-area: 1 / 1;
