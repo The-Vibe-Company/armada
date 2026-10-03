@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.43](https://github.com/The-Vibe-Company/armada/compare/v0.2.42...v0.2.43) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** verify local profile models in doctor ([#156](https://github.com/The-Vibe-Company/armada/issues/156)) ([82518f4](https://github.com/The-Vibe-Company/armada/commit/82518f463304babbbe76288b44fb4c8949f78ab9))
+
+## [0.2.42](https://github.com/The-Vibe-Company/armada/compare/v0.2.41...v0.2.42) (2026-10-03)
+
+
+### Bug Fixes
+
+* **cli:** preserve OpenCode and DeepSeek worker models ([#159](https://github.com/The-Vibe-Company/armada/issues/159)) ([0c352ab](https://github.com/The-Vibe-Company/armada/commit/0c352abec10dea83396ebb5a4520dcc92d9472e0))
+
 ## [0.2.41](https://github.com/The-Vibe-Company/armada/compare/v0.2.40...v0.2.41) (2026-10-03)
 
 
