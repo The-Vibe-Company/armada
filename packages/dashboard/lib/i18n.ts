@@ -105,6 +105,13 @@ function duration(ms: number, day: string): string {
   return `${Math.floor(d / DAY)} ${day}`;
 }
 
+/**
+ * The times whose `duration` (and `ago`) read longest before days: "59 min",
+ * "23 h 59". The overview keeps a ticking time in a box this wide (`Steady`
+ * in components/ui.tsx), so a new reading moves nothing (THE-982).
+ */
+export const LONGEST_TIMES = [59 * MIN, DAY - MIN];
+
 /** Like `duration`, with seconds under a minute: "4 s". */
 const elapsed = (ms: number, day: string) => (ms < MIN ? `${Math.max(0, Math.round(ms / 1000))} s` : duration(ms, day));
 

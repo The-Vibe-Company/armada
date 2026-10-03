@@ -278,15 +278,39 @@ export function EmptyState({
   );
 }
 
+/**
+ * Text the clock changes, in a box as wide as the widest it can read
+ * (`widest`, drawn unseen in the same cell, in the same font): a new reading
+ * moves nothing beside it. Each reading is a node of its own (keyed here, or
+ * by `RelativeTime`): text that moves inside its box counts as a layout
+ * shift, a new node does not (THE-982).
+ */
+export function Steady({ widest, children }: { widest: string[]; children: ReactNode }) {
+  return (
+    <span className="ui-steady">
+      {widest.map((w) => (
+        <span key={w} className="ui-steady-ghost" aria-hidden>
+          {w}
+        </span>
+      ))}
+      <span key={typeof children === "string" ? children : undefined} className="ui-steady-now">
+        {children}
+      </span>
+    </span>
+  );
+}
+
 /** A time from now, ticking: "il y a 12 min" (ago), "12 min" (duration). */
 export function RelativeTime({ at, format = "ago" }: { at: string | null; format?: "ago" | "duration" }) {
   const { t } = useShell();
   const now = useNow();
   if (!at) return <span className="tnum">—</span>;
   const ms = Math.max(0, now - Date.parse(at));
+  const text = format === "ago" ? t.ago(ms) : t.duration(ms);
+  // A new node for each reading: text moving where it stands counts as a layout shift (THE-982).
   return (
-    <time className="tnum" dateTime={at} title={new Date(at).toLocaleString()}>
-      {format === "ago" ? t.ago(ms) : t.duration(ms)}
+    <time key={text} className="tnum" dateTime={at} title={new Date(at).toLocaleString()}>
+      {text}
     </time>
   );
 }
