@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.52](https://github.com/The-Vibe-Company/armada/compare/v0.2.51...v0.2.52) (2026-10-03)
+
+
+### Features
+
+* **dashboard:** show the board as Plan, Implementing, Code Review, CI, Merged ([#182](https://github.com/The-Vibe-Company/armada/issues/182)) ([466bd42](https://github.com/The-Vibe-Company/armada/commit/466bd42a88ff3e113630ab33efe2545989c2cc8f))
+
 ## [0.2.51](https://github.com/The-Vibe-Company/armada/compare/v0.2.50...v0.2.51) (2026-10-03)
 
 
