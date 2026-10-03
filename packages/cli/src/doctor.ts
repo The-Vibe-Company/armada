@@ -29,7 +29,7 @@ import {
 import { apiOf } from "./api.ts";
 import { loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
-import { detectLocalTools, localHarnesses, offerLocalInstalls } from "./local-tools.ts";
+import { detectLocalTools, dshInformation, localHarnesses, offerLocalInstalls } from "./local-tools.ts";
 import { describeIdentity, hostOf } from "./login.ts";
 import { fsRepoView, gitRoot } from "./repo.ts";
 
@@ -334,7 +334,8 @@ export async function localRuntimeChecks(
 ): Promise<Check[]> {
   const harnesses = config ? localHarnesses(config) : [];
   if (!harnesses.length) return [];
-  return (await offerLocalInstalls(io, await detectLocalTools(io, harnesses), options)).checks;
+  const result = await offerLocalInstalls(io, await detectLocalTools(io, harnesses), options);
+  return [...result.checks, ...(harnesses.includes("deepseek") ? [await dshInformation(io)] : [])];
 }
 
 export async function buildDoctor(

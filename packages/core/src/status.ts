@@ -3,6 +3,7 @@
 import type { ArmadaConfig } from "./config.ts";
 import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
+import { herdrHarnessLabel } from "./herdr-profile.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import { followedLaunches, notStartedBody, notStartedLaunches, type PendingLaunch } from "./live.ts";
 import { buildModel, isDone } from "./model.ts";
@@ -46,6 +47,8 @@ export interface InFlightTicket extends TicketRef {
   /** The Conductor profile its claim named (live runtime handle, else the claim comment); null when none. */
   profile: string | null;
   profileReason?: string | null;
+  /** Selected local harness, explicitly naming its fallback when applicable. */
+  harness?: string;
   agent: string | null;
   since: string;
   lastUpdate: string;
@@ -198,30 +201,35 @@ export function buildStatus({
     },
     silentAfterMinutes: config.policy.silentAfterMinutes,
     coordinatorMinutes: config.policy.coordinatorMinutes,
-    inFlight: lanes.map((l) => ({
-      id: l.issue.id,
-      title: l.issue.title,
-      url: l.issue.url,
-      spec: l.spec,
-      phase: l.phase,
-      phaseSource: l.phaseSource,
-      runtime: l.runtime,
-      handle: l.handle,
-      profile: live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null,
-      profileReason: l.claim?.profileReason ?? null,
-      agent: l.agent,
-      since: l.since,
-      lastUpdate: l.lastUpdate,
-      lastReport: l.lastReport,
-      lastHeartbeat: l.lastHeartbeat,
-      silent: l.flags.includes("silent"),
-      statusLine: l.statusLine
-        ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
-        : null,
-      pr: l.pr ? prRef(l.pr) : null,
-      openBlockers: l.openBlockers,
-      flags: l.flags,
-    })),
+    inFlight: lanes.map((l) => {
+      const profileName = live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null;
+      const profile = profileName && l.runtime?.toLowerCase() === "herdr" ? config.herdr.profiles[profileName] : null;
+      return {
+        id: l.issue.id,
+        title: l.issue.title,
+        url: l.issue.url,
+        spec: l.spec,
+        phase: l.phase,
+        phaseSource: l.phaseSource,
+        runtime: l.runtime,
+        handle: l.handle,
+        profile: profileName,
+        profileReason: l.claim?.profileReason ?? null,
+        ...(profile ? { harness: herdrHarnessLabel(profile.harness) } : {}),
+        agent: l.agent,
+        since: l.since,
+        lastUpdate: l.lastUpdate,
+        lastReport: l.lastReport,
+        lastHeartbeat: l.lastHeartbeat,
+        silent: l.flags.includes("silent"),
+        statusLine: l.statusLine
+          ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
+          : null,
+        pr: l.pr ? prRef(l.pr) : null,
+        openBlockers: l.openBlockers,
+        flags: l.flags,
+      };
+    }),
     pendingLaunches: followedLaunches(launches, now),
     notStarted: notStartedLaunches(launches, now, config.policy.notStartedMinutes).map((l) => {
       const issue = issues.find((i) => i.id === l.ticket);

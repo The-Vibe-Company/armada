@@ -281,6 +281,25 @@ effort = "high"
     expect(defaults?.extraArgs).toEqual([]);
   });
 
+  test("DeepSeek profiles require the DeepSeek provider model", () => {
+    const profile = (model: string) => `${DEMO_TOML}
+[herdr.profiles.deepseek]
+harness = "deepseek"
+model = "${model}"
+effort = "high"
+`;
+    expect(parseConfig(profile("deepseek/deepseek-reasoner")).herdr.profiles.deepseek?.harness).toBe("deepseek");
+    for (const arg of ["--model", "--model=openai/model-a", "-m", "-mopenai/model-a"])
+      expect(problemsOf(`${profile("deepseek/deepseek-reasoner")}extra_args = ["${arg}"]`)).toContain(
+        '"herdr.profiles.deepseek.extra_args" must not override the DeepSeek model; use "herdr.profiles.deepseek.model"',
+      );
+    for (const model of ["deepseek-reasoner", "openai/model-a", "deepseek/", "deepseek/ "]) {
+      expect(problemsOf(profile(model))).toContain(
+        '"herdr.profiles.deepseek.model" must use the DeepSeek provider: "deepseek/<model>"',
+      );
+    }
+  });
+
   test("Herdr profile and routing values name their invalid keys", () => {
     const text = `${DEMO_TOML}
 [herdr]
@@ -295,7 +314,7 @@ labels = ["api"]
 profile = "missing"
 `;
     expect(problemsOf(text)).toEqual([
-      '"herdr.profiles.codex.harness" must be one of "claude", "codex", "opencode"',
+      '"herdr.profiles.codex.harness" must be one of "claude", "codex", "opencode", "deepseek"',
       '"herdr.profiles.codex.extra_args" must be a list of non-empty argument strings',
       '"herdr.default_profile" is "missing", but there is no [herdr.profiles.missing]',
       '"herdr.routing[1].profile" is "missing", but there is no [herdr.profiles.missing]',

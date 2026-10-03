@@ -17,6 +17,8 @@ import {
   type HerdrHarness,
   type HerdrProfileChoice,
   herdrClaimHandle,
+  herdrHarnessKind,
+  herdrHarnessLabel,
   inFlight,
   LINEAR_KEY,
   ProfileError,
@@ -72,13 +74,13 @@ async function launchLocal(
   const o = args.options;
   if (!input || extra.length || !/^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(input) || o.runtime !== "herdr")
     throw new UsageError(
-      "launch needs a ticket and runtime: armada launch <ticket> --runtime herdr [--harness claude|codex|opencode]",
+      "launch needs a ticket and runtime: armada launch <ticket> --runtime herdr [--harness claude|codex|opencode|deepseek]",
     );
   const requested = o.profile?.trim() || null;
   const reason = o.reason?.trim() || null;
   if (reason && !requested) throw new UsageError("--reason goes with --profile");
   if (o.harness && !HERDR_HARNESSES.includes(o.harness as HerdrHarness))
-    throw new UsageError("--harness must be claude, codex or opencode");
+    throw new UsageError("--harness must be claude, codex, opencode or deepseek (OpenCode + DeepSeek provider)");
   try {
     checkRequestedProfile(config, requested, "herdr");
   } catch (error) {
@@ -200,6 +202,8 @@ async function launchLocal(
     runtime: "herdr",
     profile: choice.name,
     harness: choice.profile.harness,
+    actualHarness: herdrHarnessKind(choice.profile.harness),
+    harnessDescription: herdrHarnessLabel(choice.profile.harness),
     branch,
     handle: herdrClaimHandle(handle),
     path: handle.path,
@@ -209,7 +213,7 @@ async function launchLocal(
   io.stdout(
     args.json
       ? `${JSON.stringify(result, null, 2)}\n`
-      : `Launched ${ticketId} with ${result.harness} on profile ${choice.name}.\nWorktree: ${handle.path}\nHandle: ${result.handle}\nThe worker signs in and claims its ticket from the brief.\n${watch.line}\n`,
+      : `Launched ${ticketId} with ${result.harnessDescription} on profile ${choice.name}.\nWorktree: ${handle.path}\nHandle: ${result.handle}\nThe worker signs in and claims its ticket from the brief.\n${watch.line}\n`,
   );
   return 0;
 }

@@ -106,6 +106,50 @@ profile = "codex"
 });
 
 describe("buildStatus", () => {
+  test("Herdr status explicitly names DeepSeek's OpenCode fallback, without confusing the assignee", () => {
+    const config = parseConfig(`${DEMO_TOML}
+[herdr.profiles.backend]
+harness = "deepseek"
+model = "deepseek/deepseek-reasoner"
+effort = "high"
+`);
+    const report = buildStatus({
+      config,
+      program: {
+        rootId: "DEMO-1",
+        fetchedAt: NOW.toISOString(),
+        warnings: [],
+        issues: [
+          issue("DEMO-1"),
+          issue("DEMO-2", {
+            parentId: "DEMO-1",
+            agentPhase: "planning",
+            agentRuntime: "Herdr",
+            assignee: "Ada Worker",
+          }),
+        ],
+        comments: [
+          normalizeComment(
+            {
+              id: "claim-2",
+              createdAt: NOW.toISOString(),
+              user: { name: "Ada Worker" },
+              body: "Agent claim — runtime: Herdr · session: w8/p9 · profile: backend",
+            },
+            "DEMO-2",
+          ),
+        ],
+      },
+      forge: null,
+      now: NOW,
+    });
+    expect(report.inFlight[0]).toMatchObject({
+      profile: "backend",
+      harness: "deepseek (OpenCode + DeepSeek provider)",
+      agent: "Ada Worker",
+    });
+  });
+
   test("the claim's profile reason reaches status and unmatched semantic tickets have no ready route", () => {
     const config = parseConfig(
       `${DEMO_TOML}\n[conductor]\ndefault_profile = "backend"\n[conductor.profiles.backend]\nagent = "codex"\nmodel = "m"\neffort = "high"\nwhen = "CLI, core rules and tests"\n[[conductor.routing]]\nlabels = ["api"]\nprofile = "backend"\n`,

@@ -113,7 +113,7 @@ Install herdr 0.9.1 or newer and sign in to your chosen harness yourself. The co
 default_profile = "backend"
 
 [herdr.profiles.backend]
-harness = "codex" # claude, codex or opencode
+harness = "codex" # claude, codex, opencode or deepseek (OpenCode + DeepSeek provider)
 model = "your-model-id"
 effort = "high"
 extra_args = ["--sandbox", "workspace-write"] # arguments for this harness only
@@ -132,6 +132,13 @@ Launch starts a headless herdr server if none is running, creates the ticket bra
 The worker signs in, claims with `--runtime herdr`, and starts its heartbeat. Its claim stores a JSON handle containing `workspace`, `pane` and `agent`, which `armada status` shows with its last report. Herdr keeps the worker's terminal running when the coordinator disconnects; the machine must remain awake. `--json` returns the launch handle and worktree path, without the prompt or token.
 
 If startup or prompt delivery fails, launch retains the worktree for inspection. Run `herdr agent list`, inspect the returned handle, and cancel an unused token with `armada launch revoke DEMO-13` before retrying. Once claimed, use the worker release protocol. Never delete a retained worktree without checking for unpushed work.
+
+For DeepSeek, add a profile with `harness = "deepseek"`, `model = "deepseek/deepseek-reasoner"` (or another `deepseek/<model>`), and `effort = "high"`, then use `armada launch DEMO-13 --runtime herdr --harness deepseek`. The worker is **deepseek (OpenCode + DeepSeek provider)**: Herdr starts its built-in `opencode` kind, with a persistent session that receives later plan approvals and answers. OpenCode discovers the worktree's `.agents/skills`. Launch, the brief, claim and status explicitly name this fallback; launch JSON keeps `harness: "deepseek"` and adds `actualHarness: "opencode"` and `harnessDescription`.
+
+Doctor and launch check OpenCode's saved DeepSeek connection specifically, through `opencode auth list`. Credentials for another provider do not satisfy it. The owner runs `opencode`, then `/connect` and chooses DeepSeek ([OpenCode provider setup](https://opencode.ai/docs/providers/#deepseek)). Connect it on disk: inherited provider environment keys are cleared in the worker shell and are not forwarded by Armada. An unfamiliar diagnostic format is reported as a warning rather than falsely declaring the provider missing. Armada never runs sign-in, reads provider credentials or handles the key. Missing OpenCode uses the existing explicit-consent install offer. Doctor reports dsh's presence/version as information only; missing dsh never prevents launch or produces an install offer, and no dsh-herdr plugin is installed.
+
+Native dsh is parked in [THE-949 — revisit native dsh when it can resume](https://linear.app/thevibecompany/issue/THE-949). The inspected npm package `@deepseek-ai/dsh@0.1.5-rc.2` can read `.agents/skills` and run a task headlessly, but its headless runner creates a fresh agent, accepts one task, prints the answer and exits. It exposes neither follow-up input nor `--resume`, and its shipped profiles have no TUI. A worker that ends its turn to await a plan approval or an answer cannot receive the reply through that mode. Native dsh can replace the fallback once it provides an interactive or resumable headless session that supports those replies; no dsh version is installed or launched by this fallback.
+
 
 ## Start a coordinator in Conductor Cloud
 

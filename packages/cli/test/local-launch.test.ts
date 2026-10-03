@@ -40,6 +40,7 @@ async function fixture(
     unsigned?: boolean;
     state?: string;
     unpublished?: boolean;
+    provider?: string;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "armada-local-"));
@@ -90,6 +91,12 @@ async function fixture(
         return {
           code: options.unsigned ? 1 : 0,
           stdout: options.unsigned ? "Not logged in" : "Logged in using ChatGPT",
+          stderr: "",
+        };
+      if (command === "opencode" && args[0] === "auth")
+        return {
+          code: 0,
+          stdout: `┌  Credentials ~/.local/share/opencode/auth.json\n│\n●  ${options.provider ?? "DeepSeek"} api\n│\n└  1 credentials\n`,
           stderr: "",
         };
       if (command === "git")
@@ -258,4 +265,47 @@ test("JSON launch never prompts or installs even on an interactive terminal", as
   expect(questions).toBe(0);
   expect(installs).toBe(0);
   expect(f.calls.some((call) => call[1] === "status" || call[1] === "worktree" || call[1] === "agent")).toBe(false);
+});
+
+const deepseekLocal = local
+  .replace('harness = "codex"', 'harness = "deepseek"')
+  .replace('model = "model-a"', 'model = "deepseek/deepseek-reasoner"')
+  .replace('extra_args = ["--sandbox", "workspace-write"]', "extra_args = []");
+
+test("DeepSeek launch and worker claim explicitly identify the OpenCode fallback", async () => {
+  const f = await fixture({ toml: deepseekLocal });
+  expect(
+    await run(["launch", "DEMO-13", "--runtime", "herdr", "--harness", "deepseek", "--json"], f.io),
+    f.errors(),
+  ).toBe(0);
+  expect(JSON.parse(f.output())).toMatchObject({
+    harness: "deepseek",
+    actualHarness: "opencode",
+    harnessDescription: "deepseek (OpenCode + DeepSeek provider)",
+  });
+  expect(f.calls.find((call) => call[1] === "agent" && call[2] === "start")).toContain("opencode");
+  expect(f.prompt()).toContain("deepseek (OpenCode + DeepSeek provider)");
+  const worker: Io = {
+    ...f.io,
+    env: { XDG_CONFIG_HOME: join(f.home, "worker"), ARMADA_API_URL: ARMADA_URL },
+    gitBranch: () => "feature/demo-13",
+  };
+  expect(await run(["login", "--launch-token", "armada_launch_CANARY_1", "--api-url", ARMADA_URL], worker)).toBe(0);
+  expect(
+    await run(
+      ["claim", "DEMO-13", "--runtime", "herdr", "--handle", herdrClaimHandle(f.handle), "--profile", "backend"],
+      worker,
+    ),
+    f.errors(),
+  ).toBe(0);
+  expect(f.linear.bodies.some((body) => body.includes("agent deepseek (OpenCode + DeepSeek provider)"))).toBe(true);
+  expect(f.calls.filter((call) => call[0] === "dsh")).toEqual([]);
+});
+
+test("credentials for another provider do not launch a DeepSeek worker", async () => {
+  const f = await fixture({ toml: deepseekLocal, provider: "OpenAI" });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr", "--harness", "deepseek"], f.io)).toBe(1);
+  expect(f.errors()).toContain("/connect");
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls.some((call) => call[1] === "worktree" || call[1] === "status")).toBe(false);
 });

@@ -62,7 +62,10 @@ export function renderStatus(r: StatusReport): string {
       `  ${pad(t.id, idWidth)}  ${pad(phaseLabel(t), phaseWidth)}  ${who} · ${t.lastReport ? `reported ${relative(t.lastReport, now)}` : `updated ${relative(t.lastUpdate, now)}`}`,
     );
     out.push(`${indent}${truncate(t.title, 90)}${t.spec ? ` [${t.spec}]` : ""}`);
-    if (t.profile) out.push(`${indent}Profile: ${t.profile}${t.profileReason ? ` — ${t.profileReason}` : ""}`);
+    if (t.profile)
+      out.push(
+        `${indent}Profile: ${t.profile}${t.harness ? ` · ${t.harness}` : ""}${t.profileReason ? ` — ${t.profileReason}` : ""}`,
+      );
     if (t.statusLine?.summary) out.push(`${indent}“${truncate(t.statusLine.summary, 100)}”`);
     if (t.statusLine?.plan) out.push(`${indent}plan: ${t.statusLine.url}`);
     if (t.pr) out.push(`${indent}${[`PR #${t.pr.number}`, prState(t.pr)].filter(Boolean).join(" · ")}`);

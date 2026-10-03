@@ -50,13 +50,12 @@ describe("local tool detection", () => {
     const t = terminal({});
     const result = await detectLocalTools(t.io, ["claude", "codex", "opencode", "deepseek", "codex"]);
     expect(result.ready).toBe(false);
-    expect(result.tools.map((tool) => tool.command)).toEqual(["herdr", "claude", "codex", "opencode", "dsh"]);
+    expect(result.tools.map((tool) => tool.command)).toEqual(["herdr", "claude", "codex", "opencode"]);
     expect(result.tools.map((tool) => tool.install)).toEqual([
       "curl -fsSL https://herdr.dev/install.sh | sh",
       "curl -fsSL https://claude.ai/install.sh | bash",
       "npm i -g @openai/codex",
       "curl -fsSL https://opencode.ai/install | bash",
-      "npm i -g @deepseek-ai/dsh",
     ]);
     expect(result.checks.every((check) => check.level === "error" && check.fix)).toBe(true);
     expect(JSON.stringify(result)).not.toContain(CANARY);
@@ -80,7 +79,7 @@ describe("local tool detection", () => {
     }
   });
 
-  test("checks each harness's own status; dsh has no status command", async () => {
+  test("checks each harness status and the specific DeepSeek connection", async () => {
     const t = terminal({
       "herdr --version": ok("herdr 0.9.1"),
       "claude --version": ok("2.1.100 (Claude Code)"),
@@ -88,7 +87,7 @@ describe("local tool detection", () => {
       "codex --version": ok("codex-cli 0.128.0"),
       "codex login status": ok("", `Logged in using API key - ${CANARY}`),
       "opencode --version": ok("1.2.0"),
-      "opencode auth list": ok("└  1 credentials\n"),
+      "opencode auth list": ok("●  DeepSeek api\n└  1 credentials\n"),
       "dsh --version": ok("0.1.7"),
     });
     const result = await detectLocalTools(t.io, ["claude", "codex", "opencode", "deepseek"]);
@@ -97,11 +96,9 @@ describe("local tool detection", () => {
       "ok",
       "ok",
       "ok",
-      "warning",
     ]);
-    expect(result.checks.at(-1)?.message).toContain("could not check sign-in");
-    expect(result.checks.at(-1)?.fix).toContain("dsh web");
-    expect(t.calls.filter((call) => call.startsWith("dsh"))).toEqual(["dsh --version"]);
+    expect(result.checks.at(-1)?.message).toContain("saved DeepSeek connection");
+    expect(t.calls.filter((call) => call.startsWith("dsh"))).toEqual([]);
     expect(JSON.stringify(result)).not.toContain(CANARY);
   });
 
@@ -244,7 +241,14 @@ describe("local install offers", () => {
   });
 
   test("an accepted official script can repair herdr; the result reflects the new version", async () => {
-    const t = terminal({ "herdr --version": ok("0.8.0"), "dsh --version": ok("0.1.7") }, ["y"]);
+    const t = terminal(
+      {
+        "herdr --version": ok("0.8.0"),
+        "opencode --version": ok("1.2.0"),
+        "opencode auth list": ok("● DeepSeek api\n└ 1 credentials"),
+      },
+      ["y"],
+    );
     t.io.spawn = async (command, args) => {
       t.installs.push([command, args]);
       t.responses["herdr --version"] = ok("0.9.1");
@@ -271,9 +275,10 @@ test("doctor lists all configured gaps and JSON/read-only reports never offer in
   const config = { herdr: { profiles: { a: { harness: "codex" as const }, b: { harness: "deepseek" as const } } } };
   const t = terminal({}, ["yes", "yes", "yes"]);
   const checks = await localRuntimeChecks(t.io, config);
-  expect(checks.map((check) => check.id)).toEqual(["local-herdr", "local-codex", "local-dsh"]);
+  expect(checks.map((check) => check.id)).toEqual(["local-herdr", "local-codex", "local-opencode", "local-dsh"]);
   const report = { schemaVersion: 1 as const, root: t.io.cwd, armadaVersion: "0.0.0", checks, errors: 3, warnings: 0 };
-  expect(renderDoctor(report)).toContain("npm i -g @deepseek-ai/dsh");
+  expect(renderDoctor(report)).toContain("information only");
+  expect(renderDoctor(report)).not.toContain("npm i -g @deepseek-ai/dsh");
   expect(renderDoctor(report)).toContain("3 errors");
   expect(t.prompts).toEqual([]);
   expect(t.installs).toEqual([]);
@@ -299,4 +304,64 @@ test("doctor offers each gap separately and rechecks only the accepted install",
   expect(t.installs).toEqual([["npm", ["i", "-g", "@openai/codex"]]]);
   expect(checks.find((check) => check.id === "local-herdr")?.level).toBe("error");
   expect(checks.find((check) => check.id === "local-codex")?.level).toBe("ok");
+});
+
+test("DeepSeek preflight distinguishes stored provider, missing provider, environment-only and unknown diagnostics", async () => {
+  for (const [response, level] of [
+    [ok("┌ Credentials /owner/auth.json\n│\n● DeepSeek api\n└ 1 credentials"), "ok"],
+    [ok("● \u001b[32mDeepSeek\u001b[0m api\n└ 1 credentials"), "ok"],
+    [ok("● OpenAI oauth\n└ 1 credentials"), "error"],
+    [ok("└ 0 credentials\n┌ Environment\n● DeepSeek DEEPSEEK_API_KEY\n└ 1 environment variable"), "error"],
+    [ok(`unexpected ${CANARY}`), "warning"],
+    [ok(`● DeepSeek changed-schema\n└ 1 credentials`), "warning"],
+    [{ code: 1, stdout: "", stderr: CANARY }, "warning"],
+  ] as const) {
+    const t = terminal({
+      "herdr --version": ok("0.9.1"),
+      "opencode --version": ok("1.2.0"),
+      "opencode auth list": response,
+    });
+    const result = await detectLocalTools(t.io, ["deepseek"]);
+    expect(result.checks.at(-1)?.level).toBe(level);
+    expect(result.ready).toBe(level !== "error");
+    expect(JSON.stringify(result)).not.toContain(CANARY);
+    if (level !== "ok") expect(result.checks.at(-1)?.fix).toContain("`opencode`, then `/connect`");
+    expect(t.calls).toEqual(["herdr --version", "opencode --version", "opencode auth list"]);
+    expect(t.installs).toEqual([]);
+  }
+});
+
+test("doctor's missing dsh is informational, never an install offer or plugin call", async () => {
+  const t = terminal(
+    {
+      "herdr --version": ok("0.9.1"),
+      "opencode --version": ok("1.2.0"),
+      "opencode auth list": ok("● DeepSeek api\n└ 1 credentials"),
+    },
+    ["yes"],
+  );
+  const checks = await localRuntimeChecks(
+    t.io,
+    { herdr: { profiles: { deep: { harness: "deepseek" } } } },
+    { readOnly: false },
+  );
+  expect(checks.every((check) => check.level === "ok")).toBe(true);
+  expect(checks.at(-1)).toMatchObject({ id: "local-dsh", level: "ok", fix: null });
+  expect(checks.at(-1)?.message).toContain("dsh is not installed; information only");
+  expect(t.calls.filter((call) => call.startsWith("dsh"))).toEqual(["dsh --version"]);
+  expect(t.prompts).toEqual([]);
+  expect(t.installs).toEqual([]);
+});
+
+test("consented OpenCode install retains the DeepSeek-specific preflight", async () => {
+  const t = terminal({ "herdr --version": ok("0.9.1") }, ["y"]);
+  t.io.spawn = async (command, args) => {
+    t.installs.push([command, args]);
+    t.responses["opencode --version"] = ok("1.2.0");
+    t.responses["opencode auth list"] = ok("● OpenAI oauth\n└ 1 credentials");
+    return 0;
+  };
+  expect(await ensureLocalTools(t.io, "deepseek")).toBe(false);
+  expect(t.installs).toEqual([["sh", ["-c", "curl -fsSL https://opencode.ai/install | bash"]]]);
+  expect(t.output.join("")).toContain("/connect");
 });

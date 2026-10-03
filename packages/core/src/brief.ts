@@ -575,6 +575,13 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
         ]
       : []),
   ];
+  if (b.runtime === "herdr" && b.profile)
+    out.push(
+      "## Harness",
+      "",
+      `Profile ${b.profile.name}: ${b.profile.agent}, model ${b.profile.model}, effort ${b.profile.effort}.`,
+      "",
+    );
   if (t.description) out.push("## Ticket", "", quote(t.description), "");
   if (b.parent)
     out.push("## Parent", "", `${b.parent.id} — ${b.parent.title} (${b.parent.url}). Read it before planning.`, "");
