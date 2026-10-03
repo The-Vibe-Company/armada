@@ -1,0 +1,5 @@
+Is this a project you created or one you trust?
+/work/worktrees/widgets/demo-7
+❯ 1. No, exit
+  2. Yes, I trust this folder
+Enter to confirm · Esc to cancel

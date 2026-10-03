@@ -148,6 +148,18 @@ export interface ConductorProfile {
 export const HERDR_HARNESSES = ["claude", "codex", "opencode", "deepseek"] as const;
 export type HerdrHarness = (typeof HERDR_HARNESSES)[number];
 
+/** Permission policy for a Herdr profile; omitted means the harness's normal policy. */
+export const HERDR_PERMISSIONS = ["ask", "full"] as const;
+export type HerdrPermission = (typeof HERDR_PERMISSIONS)[number];
+
+/** The native full-permission argument for each Herdr harness. */
+export const HERDR_FULL_PERMISSION_ARGS: Record<HerdrHarness, string> = {
+  claude: "--dangerously-skip-permissions",
+  codex: "--dangerously-bypass-approvals-and-sandbox",
+  opencode: "--auto",
+  deepseek: "--auto",
+};
+
 /** How a Herdr worker is launched. */
 export interface HerdrProfile {
   when?: string;
@@ -155,6 +167,8 @@ export interface HerdrProfile {
   model: string;
   effort: string;
   extraArgs: string[];
+  /** Omitted: retain the harness's normal approval policy; full: use its native bypass/auto flag. */
+  permissions?: HerdrPermission;
 }
 
 export const CONFIG_DEFAULTS = {
@@ -392,7 +406,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       problems.push(`"${path}" is not a usable profile name`);
       continue;
     }
-    known.push([path, p, ["harness", "model", "effort", "extra_args", "when"]]);
+    known.push([path, p, ["harness", "model", "effort", "extra_args", "permissions", "when"]]);
 
     let harness: HerdrHarness = "claude";
     if (p.harness === undefined) problems.push(`missing required key "${path}.harness"`);
@@ -407,6 +421,15 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     }
     if (harness === "deepseek" && extraArgs.some((arg) => /^(?:--model(?:=|$)|-m)/.test(arg.trim())))
       problems.push(`"${path}.extra_args" must not override the DeepSeek model; use "${path}.model"`);
+    let permissions: HerdrPermission | undefined;
+    if (p.permissions !== undefined) {
+      if (HERDR_PERMISSIONS.includes(p.permissions as HerdrPermission)) permissions = p.permissions as HerdrPermission;
+      else problems.push(`"${path}.permissions" must be "ask" or "full"`);
+    }
+    if (permissions === "ask" && extraArgs.some((arg) => arg.trim() === HERDR_FULL_PERMISSION_ARGS[harness]))
+      problems.push(
+        `"${path}.permissions" = "ask" cannot be combined with "${HERDR_FULL_PERMISSION_ARGS[harness]}" in "${path}.extra_args"`,
+      );
     const model =
       (harness === "opencode" || harness === "deepseek") &&
       (p.model === undefined || (typeof p.model === "string" && !p.model.trim()))
@@ -418,6 +441,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       model,
       effort: str(p, path, "effort"),
       extraArgs,
+      ...(permissions !== undefined ? { permissions } : {}),
     };
   }
   let herdrDefaultProfile: string | null = null;
@@ -722,6 +746,7 @@ profile = "debug"
 # harness = "claude"       # "claude", "codex", "opencode" or "deepseek" (OpenCode + DeepSeek model)
 # model = "sonnet"
 # effort = "high"
+# permissions = "ask"      # normal harness approvals; use "full" for the native bypass/auto flag
 # extra_args = ["--verbose"]
 # when = "a ticket best handled by Claude"
 

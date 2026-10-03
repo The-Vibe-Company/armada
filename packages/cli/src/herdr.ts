@@ -1,6 +1,16 @@
 // Herdr's JSON CLI is the runtime boundary. Never surface arbitrary CLI output:
 // agent prompt may include a one-time launch token in its arguments or errors.
-import { type HerdrProfile, herdrHarnessKind, herdrHarnessLabel, type RuntimeState } from "@armada/core";
+import { createHash } from "node:crypto";
+import { dirname } from "node:path";
+import {
+  type HerdrHarness,
+  type HerdrProfile,
+  herdrHarnessKind,
+  herdrHarnessLabel,
+  herdrPermissionArgs,
+  type RuntimeState,
+} from "@armada/core";
+import { type FirstRunIssue, firstRunIssue } from "./first-run.ts";
 import { type Io, UsageError } from "./io.ts";
 
 export class HerdrError extends UsageError {
@@ -33,7 +43,11 @@ export const harnessArgs = (p: HerdrProfile): string[] => [
     : p.harness === "claude"
       ? ["--effort", p.effort]
       : []),
-  ...p.extraArgs,
+  ...(p.harness === "codex" &&
+  !p.extraArgs.some((arg) => /^(?:check_for_update_on_startup\s*=|--config=check_for_update_on_startup=)/.test(arg))
+    ? ["-c", "check_for_update_on_startup=false"]
+    : []),
+  ...herdrPermissionArgs(p),
 ];
 
 const object = (v: unknown): Record<string, unknown> | null =>
@@ -103,6 +117,8 @@ const credentialNames = (env: Io["env"], extra: string[]) =>
     .sort();
 
 export class Herdr {
+  private setupShell: { workspace: string; pane: string } | null = null;
+
   constructor(private readonly io: Io) {}
 
   private async call(args: string[], timeoutMs = 40_000): Promise<Record<string, unknown>> {
@@ -119,7 +135,7 @@ export class Herdr {
         code === 0 &&
         !out.stdout.trim() &&
         !out.stderr.trim() &&
-        ["pane run", "pane report-agent"].includes(operation)
+        ["pane run", "pane report-agent", "pane report-metadata"].includes(operation)
       )
         return {};
       reply = object(JSON.parse(out.stdout || out.stderr));
@@ -171,6 +187,7 @@ export class Herdr {
     base: string;
     ticket: string;
     secrets?: string[];
+    label?: string;
   }): Promise<HerdrHandle> {
     const agent = input.ticket.toLowerCase();
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(agent)) throw new UsageError("ticket cannot be used as a herdr agent name");
@@ -186,6 +203,7 @@ export class Herdr {
           "--base",
           input.base,
           "--no-focus",
+          ...(input.label ? ["--label", input.label] : []),
         ])
       ).result,
     );
@@ -227,7 +245,138 @@ export class Herdr {
     return { workspace, pane, agent, path };
   }
 
-  async start(handle: HerdrHandle, profile: HerdrProfile): Promise<void> {
+  /** Ask the runtime for a real checkout path, respecting its loaded worktrees.directory. */
+  async setupRoot(repo: string, slug: string, secrets: string[]): Promise<{ root: string; repo: string }> {
+    const result = object((await this.call(["worktree", "list", "--cwd", repo])).result);
+    const source = object(result?.source);
+    if (
+      source?.source_checkout_path !== repo ||
+      typeof source.repo_root !== "string" ||
+      !source.repo_root.startsWith("/") ||
+      !Array.isArray(result?.worktrees)
+    )
+      throw new UsageError("invalid herdr worktree list response; inspect herdr worktree list before setup");
+    const branch = `armada-local-setup-${slug}`;
+    const label = `Armada local setup checkout: ${slug}`;
+    const found = result.worktrees.map(object).find((tree) => tree?.branch === branch);
+    let path: string;
+    if (found) {
+      if (found.is_linked_worktree !== true || typeof found.path !== "string" || !found.path.startsWith("/"))
+        throw new UsageError(
+          `the setup branch ${branch} already exists outside Armada setup; leave it untouched and choose another project slug`,
+        );
+      path = found.path;
+    } else {
+      path = (await this.create({ repo, branch, base: "HEAD", ticket: "setup-local", secrets, label })).path;
+    }
+    const root = dirname(path);
+    if (root === "/" || [...root].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127))
+      throw new UsageError("invalid herdr worktree parent directory");
+    return { root, repo: source.repo_root };
+  }
+
+  /** Reuse only our explicitly labelled setup workspace; ordinary worker panes are untouched. */
+  async setupWorkspace(root: string, secrets: string[]): Promise<string> {
+    const label = `Armada local setup: ${root}`;
+    const workspaces = object((await this.call(["workspace", "list"])).result)?.workspaces;
+    if (!Array.isArray(workspaces)) throw new UsageError("invalid herdr workspace list response");
+    const matches = workspaces.map(object).filter((ws) => ws?.label === label);
+    if (matches.length > 1)
+      throw new UsageError("multiple local setup workspaces; inspect herdr workspace list before retrying");
+    if (matches.length) {
+      const workspace = matches[0]?.workspace_id;
+      if (!id(workspace)) throw new UsageError("invalid herdr setup workspace response");
+      return workspace;
+    }
+    const result = object(
+      (
+        await this.call([
+          "workspace",
+          "create",
+          "--cwd",
+          root,
+          "--label",
+          label,
+          "--no-focus",
+          ...credentialNames(this.io.env, secrets).flatMap((name) => ["--env", `${name}=`]),
+          "--env",
+          "ARMADA_TICKET=",
+        ])
+      ).result,
+    );
+    const workspace = object(result?.workspace)?.workspace_id;
+    const pane = object(result?.root_pane);
+    if (!id(workspace) || !id(pane?.pane_id) || pane?.workspace_id !== workspace)
+      throw new UsageError("invalid herdr setup workspace response");
+    this.setupShell = { workspace, pane: String(pane?.pane_id) };
+    return workspace;
+  }
+
+  async setupPane(
+    workspace: string,
+    root: string,
+    profile: HerdrProfile,
+    secrets: string[],
+  ): Promise<{ handle: HerdrHandle; existing: boolean }> {
+    const kind = herdrHarnessKind(profile.harness);
+    const fingerprint = createHash("sha256")
+      .update(JSON.stringify([kind, ...harnessArgs(profile)]))
+      .digest("hex")
+      .slice(0, 32);
+    const name = `setup-${workspace}-${kind}`;
+    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(name)) throw new UsageError("cannot name the setup agent for this workspace");
+    const agents = object((await this.call(["agent", "list"])).result)?.agents;
+    if (!Array.isArray(agents)) throw new UsageError("invalid herdr agent list response");
+    const matches = agents.map(object).filter((agent) => agent?.name === name);
+    if (matches.length > 1) throw new UsageError("multiple setup agents; inspect herdr agent list");
+    if (matches.length) {
+      const agent = matches[0];
+      if (agent?.workspace_id !== workspace || !id(agent.pane_id) || agent.cwd !== root || agent.agent !== kind)
+        throw new UsageError("setup agent identity or directory changed; inspect herdr agent list before retrying");
+      if (object(agent.tokens)?.armadaSetup !== fingerprint)
+        throw new UsageError(
+          `the ${kind} setup session uses different launch settings; close its pane ${agent.pane_id} in herdr, then rerun armada setup local to check the current profile`,
+        );
+      return { handle: { workspace, pane: agent.pane_id, agent: name, path: root }, existing: true };
+    }
+    const result = object(
+      (
+        await this.call([
+          "tab",
+          "create",
+          "--workspace",
+          workspace,
+          "--cwd",
+          root,
+          "--label",
+          kind,
+          "--no-focus",
+          ...credentialNames(this.io.env, secrets).flatMap((key) => ["--env", `${key}=`]),
+          "--env",
+          "ARMADA_TICKET=",
+        ])
+      ).result,
+    );
+    const pane = object(result?.root_pane);
+    if (!id(pane?.pane_id) || pane?.workspace_id !== workspace)
+      throw new UsageError("invalid herdr setup pane response");
+    await this.call([
+      "pane",
+      "report-metadata",
+      pane.pane_id,
+      "--source",
+      "armada-setup",
+      "--token",
+      `armadaSetup=${fingerprint}`,
+    ]);
+    if (this.setupShell?.workspace === workspace) {
+      await this.call(["pane", "close", this.setupShell.pane]);
+      this.setupShell = null;
+    }
+    return { handle: { workspace, pane: pane.pane_id, agent: name, path: root }, existing: false };
+  }
+
+  async start(handle: HerdrHandle, profile: HerdrProfile, timeoutMs = 30_000): Promise<void> {
     const r = await this.call([
       "agent",
       "start",
@@ -237,11 +386,130 @@ export class Herdr {
       "--pane",
       handle.pane,
       "--timeout",
-      "30000",
+      String(timeoutMs),
       "--",
       ...harnessArgs(profile),
     ]);
     this.checkAgent(r, handle);
+  }
+
+  /** Read only the named occupant of this exact pane; never dump terminal output. */
+  async inspect(
+    handle: HerdrClaimHandle,
+    harness: HerdrHarness,
+  ): Promise<{
+    state: RuntimeState;
+    ready: boolean;
+    issue: FirstRunIssue | null;
+  }> {
+    const agent = this.checkAgent(await this.call(["agent", "get", handle.pane], 5_000), handle);
+    if (agent.agent !== undefined && agent.agent !== null && agent.agent !== herdrHarnessKind(harness))
+      throw new UsageError("herdr worker harness changed; inspect herdr agent list before retrying");
+    const state = agent.agent_status;
+    if (!["working", "blocked", "idle", "done", "unknown"].includes(String(state)))
+      throw new UsageError("invalid herdr agent state");
+    let text: string;
+    try {
+      if (!this.io.exec) throw new Error("no exec");
+      const result = await this.io.exec(
+        "herdr",
+        ["pane", "read", handle.pane, "--source", "visible", "--lines", "80"],
+        {
+          cwd: this.io.cwd,
+          timeoutMs: 5_000,
+        },
+      );
+      if (result.code !== 0) throw new Error("read failed");
+      text = result.stdout;
+    } catch {
+      throw new UsageError(`could not inspect the worker screen; run herdr agent attach ${handle.agent}`);
+    }
+    return {
+      state: state as RuntimeState,
+      ready:
+        (state === "idle" || state === "done") && agent.interactive_ready !== false && agent.launch_pending !== true,
+      issue: firstRunIssue(harness, text),
+    };
+  }
+
+  private screenError(
+    handle: HerdrClaimHandle,
+    issue: FirstRunIssue | null,
+    message = "The harness needs the owner's attention",
+  ) {
+    return new UsageError(
+      `${issue?.message ?? message}: run armada setup local, or answer it with herdr agent attach ${handle.agent}`,
+      `herdr agent attach ${handle.agent}`,
+    );
+  }
+
+  /** A short native start followed by bounded inspection, without answering any question. */
+  async startChecked(handle: HerdrHandle, profile: HerdrProfile): Promise<void> {
+    try {
+      await this.start(handle, profile, 3_500);
+    } catch (error) {
+      if (!(error instanceof HerdrError) || !["agent_not_ready", "timeout"].includes(error.code ?? "")) throw error;
+      // Herdr keeps the named occupant on these errors; never start it again.
+    }
+    const now = this.io.now ?? (() => new Date());
+    const deadline = now().getTime() + 30_000;
+    for (let attempt = 0; attempt < 120 && now().getTime() < deadline; attempt++) {
+      const screen = await this.inspect(handle, profile.harness);
+      if (screen.issue || screen.state === "blocked") throw this.screenError(handle, screen.issue);
+      if (screen.ready) return;
+      await (this.io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))))(250);
+    }
+    throw this.screenError(handle, null, "The harness did not become ready");
+  }
+
+  async promptChecked(handle: HerdrHandle, profile: HerdrProfile, prompt: string): Promise<void> {
+    const before = await this.inspect(handle, profile.harness);
+    if (before.issue || !before.ready) throw this.screenError(handle, before.issue);
+    try {
+      await this.prompt(handle, prompt);
+    } catch (error) {
+      const screen = await this.inspect(handle, profile.harness);
+      if (screen.issue || screen.state === "blocked") throw this.screenError(handle, screen.issue);
+      if (error instanceof HerdrError && ["agent_prompt_stalled", "timeout"].includes(error.code ?? ""))
+        throw this.screenError(handle, null, "The harness did not accept the brief");
+      throw error;
+    }
+  }
+
+  /** Token-free model probe after the owner has cleared every recognised question. */
+  async checkSetupModel(handle: HerdrHandle, profile: HerdrProfile): Promise<void> {
+    const screen = await this.inspect(handle, profile.harness);
+    if (screen.issue || !screen.ready) throw this.screenError(handle, screen.issue);
+    try {
+      const agent = this.checkAgent(
+        await this.call(
+          [
+            "agent",
+            "prompt",
+            handle.pane,
+            "Reply with OK only. Do not read files, run commands or modify anything.",
+            "--wait",
+            "--until",
+            "idle",
+            "--until",
+            "done",
+            "--timeout",
+            "10000",
+          ],
+          12_000,
+        ),
+        handle,
+      );
+      const after = await this.inspect(handle, profile.harness);
+      if (after.issue) throw this.screenError(handle, after.issue);
+      if (!["idle", "done"].includes(String(agent.agent_status)) || !after.ready)
+        throw this.screenError(handle, null, "The model did not finish the setup check");
+    } catch (error) {
+      const after = await this.inspect(handle, profile.harness);
+      if (after.issue) throw this.screenError(handle, after.issue);
+      if (error instanceof UsageError && !(error instanceof HerdrError)) throw error;
+      throw this.screenError(handle, null, "The model did not finish the setup check");
+    }
   }
 
   async prompt(handle: HerdrHandle, prompt: string): Promise<void> {
@@ -249,7 +517,7 @@ export class Herdr {
     const r = await this.call([
       "agent",
       "prompt",
-      handle.agent,
+      handle.pane,
       prompt,
       "--wait",
       "--until",

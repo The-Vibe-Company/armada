@@ -99,6 +99,8 @@ test("starts an absent server, uses returned topology and sends a long brief ver
     "model-a",
     "-c",
     'model_reasoning_effort="high"',
+    "-c",
+    "check_for_update_on_startup=false",
     "--sandbox",
     "workspace-write",
   ]);
@@ -106,7 +108,7 @@ test("starts an absent server, uses returned topology and sends a long brief ver
     "herdr",
     "agent",
     "prompt",
-    "demo-7",
+    "w8:p9",
     prompt,
     "--wait",
     "--until",

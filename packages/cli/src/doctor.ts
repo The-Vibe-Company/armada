@@ -423,6 +423,10 @@ export function renderDoctor(r: DoctorReport): string {
         ? "Next: armada init, which opens one pull request with the fixes it can make"
         : `Next: ${errors[0]?.fix}`,
     );
+  if (r.checks.some((c) => c.id === "local-herdr"))
+    lines.push(
+      "Local first-run setup: armada setup local — the owner answers trust, updates, project MCP, sign-in and model questions in herdr; new worktrees may still ask once.",
+    );
   return `${lines.join("\n")}\n`;
 }
 

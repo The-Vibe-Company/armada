@@ -160,6 +160,7 @@ describe("armada.toml", () => {
     expect(text).toContain('runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]');
     expect(text).toContain("# [herdr]");
     expect(text).toContain("# [herdr.profiles.claude]");
+    expect(text).toContain('# permissions = "ask"');
     const { conductor, ...rest } = parseConfig(text);
     const { conductor: _none, ...demo } = parseConfig(DEMO_TOML);
     expect(rest).toEqual(demo);
@@ -279,6 +280,54 @@ effort = "high"
 `,
     ).herdr.profiles.claude;
     expect(defaults?.extraArgs).toEqual([]);
+  });
+
+  test("Herdr permissions are optional, validated, and cannot claim ask with a bypass flag", () => {
+    const explicit = parseConfig(
+      `${DEMO_TOML}
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt"
+effort = "high"
+permissions = "full"
+`,
+    ).herdr.profiles.codex;
+    expect(explicit?.permissions).toBe("full");
+    expect(
+      parseConfig(
+        `${DEMO_TOML}
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt"
+effort = "high"
+`,
+      ).herdr.profiles.codex,
+    ).not.toHaveProperty("permissions");
+    expect(
+      problemsOf(
+        `${DEMO_TOML}
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt"
+effort = "high"
+permissions = "always"
+`,
+      ),
+    ).toContain('"herdr.profiles.codex.permissions" must be "ask" or "full"');
+    expect(
+      problemsOf(
+        `${DEMO_TOML}
+[herdr.profiles.codex]
+harness = "codex"
+model = "gpt"
+effort = "high"
+permissions = "ask"
+extra_args = ["--dangerously-bypass-approvals-and-sandbox"]
+`,
+      ),
+    ).toEqual([
+      '"herdr.profiles.codex.permissions" = "ask" cannot be combined with "--dangerously-bypass-approvals-and-sandbox" in "herdr.profiles.codex.extra_args"',
+    ]);
   });
 
   test("DeepSeek profiles accept DeepSeek models across providers", () => {
