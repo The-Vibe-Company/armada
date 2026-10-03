@@ -12,9 +12,11 @@
 import { createHash } from "node:crypto";
 import "server-only";
 import {
+  type ArmadaConfig,
   CONFIG_FILE,
   type FleetOverview,
   fetchDefaultBranchFile,
+  fetchProgramIssue,
   parseConfig,
   readProjectConfig,
   readStatusSources,
@@ -205,6 +207,14 @@ async function readKeysOf(scope: Scope | null): Promise<ReadKeys> {
           ),
         };
   return { keys: fleetKeysOf(own, env, scope), installations, projectLinear };
+}
+
+/** The upload API's cache-miss check, with the same Linear access as a fleet refresh. */
+export async function readAttachmentTicket(config: ArmadaConfig, scope: Scope, ticket: string) {
+  const { keys, projectLinear } = await readKeysOf(scope);
+  const apiKey = (await projectLinear(config.project.slug)) ?? keys.linearApiKey;
+  if (!apiKey) throw new Error("LINEAR_API_KEY is not set on the dashboard");
+  return fetchProgramIssue({ apiKey, rootId: config.tracker.programRoot, labels: config.tracker.labels }, ticket);
 }
 
 /** The fleet one scope reads: its process cache (shared by its viewers) and its sources. */

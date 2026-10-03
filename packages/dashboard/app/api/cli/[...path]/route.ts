@@ -6,6 +6,7 @@ import { after } from "next/server";
 import { accounts } from "@/lib/accounts-server";
 import { handleCli } from "@/lib/cli-api";
 import { PUBLISHED_CLI_VERSION } from "@/lib/cli-version";
+import { readAttachmentTicket } from "@/lib/server";
 import { vaultModeOf } from "@/lib/vault";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +17,7 @@ async function handle(request: Request, { params }: { params: Promise<{ path: st
     vault: () => vaultModeOf(process.env),
     publishedCli: PUBLISHED_CLI_VERSION,
     after,
+    readAttachmentTicket,
   });
 }
 
