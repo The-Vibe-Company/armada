@@ -189,6 +189,82 @@ test("failure to close the initial inherited shell prevents launch", async () =>
   expect(f.calls.some((call) => call[1] === "agent")).toBe(false);
 });
 
+const claim = { workspace: "w8", pane: "w8:p9", agent: "demo-7" };
+const workspace = {
+  result: {
+    workspace: {
+      workspace_id: "w8",
+      worktree: {
+        repo_root: "/work/widgets",
+        checkout_path: "/work/worktrees/widgets",
+        is_linked_worktree: true,
+      },
+    },
+  },
+};
+
+test("rediscovers a claimed agent by pane and validates every identity field", async () => {
+  const f = fake([
+    agent("blocked"),
+    agent("unknown"),
+    { result: { agent: { ...agent().result.agent, workspace_id: "other" } } },
+  ]);
+  expect(await new Herdr(f.io).state(claim)).toBe("blocked");
+  expect(await new Herdr(f.io).state(claim)).toBe("unknown");
+  await expect(new Herdr(f.io).state(claim)).rejects.toThrow("agent response");
+  expect(f.calls[0]).toEqual(["herdr", "agent", "get", "w8:p9"]);
+});
+
+test("answers blocked panes atomically; idle agents use prompt without waiting for a turn", async () => {
+  const f = fake([agent("blocked"), { result: { type: "ok" } }, agent("idle"), agent("working")]);
+  const text = "yes\n'\" $(never) `never`";
+  await new Herdr(f.io).message(claim, text);
+  expect(f.calls[1]).toEqual(["herdr", "pane", "run", "w8:p9", text]);
+  await new Herdr(f.io).message(claim, text);
+  expect(f.calls[3]).toEqual(["herdr", "agent", "prompt", "w8:p9", text]);
+});
+
+test("archive verifies linked worktree provenance and passes no force or branch deletion", async () => {
+  const f = fake([
+    workspace,
+    { result: { type: "worktree_removed", workspace_id: "w8", path: "/work/worktrees/widgets", forced: false } },
+  ]);
+  const runtime = new Herdr(f.io);
+  expect(await runtime.worktree(claim)).toEqual({ repo: "/work/widgets", path: "/work/worktrees/widgets" });
+  await runtime.remove(claim, "/work/worktrees/widgets");
+  expect(f.calls[1]).toEqual(["herdr", "worktree", "remove", "--workspace", "w8"]);
+  const unsafe = fake([
+    {
+      result: {
+        workspace: {
+          workspace_id: "w8",
+          worktree: { ...workspace.result.workspace.worktree, is_linked_worktree: false },
+        },
+      },
+    },
+  ]);
+  await expect(new Herdr(unsafe.io).worktree(claim)).rejects.toThrow("linked worktree");
+});
+
+test("real herdr terminal-write acknowledgments are empty on success, while reads remain strict", async () => {
+  const f = fake([agent("blocked")]);
+  const exec = f.io.exec;
+  if (!exec) throw new Error("missing exec");
+  f.io.exec = async (command, args, options) => {
+    if (args[0] === "pane") {
+      f.calls.push([command, ...args]);
+      return { code: 0, stdout: "", stderr: "" };
+    }
+    return exec(command, args, options);
+  };
+  await new Herdr(f.io).message(claim, "y");
+  await new Herdr(f.io).report(claim.pane, "codex", "working");
+  f.io.exec = async () => ({ code: 0, stdout: "", stderr: "" });
+  await expect(new Herdr(f.io).state(claim)).rejects.toThrow("agent get failed");
+  f.io.exec = async () => ({ code: 1, stdout: "", stderr: "" });
+  await expect(new Herdr(f.io).report(claim.pane, "codex", "working")).rejects.toThrow("pane report-agent failed");
+});
+
 // DeepSeek uses Herdr's real OpenCode kind, so later agent prompts stay interactive.
 test("DeepSeek fallback starts OpenCode with its provider and delivers follow-up prompts", async () => {
   const f = fake([agent(), agent("working"), agent("working")]);

@@ -250,7 +250,12 @@ describe("a worker session acts on its own ticket only", () => {
     now = at(905);
     const before = await listEvents(client, orgId);
     const ping = { ticket: claim.ticket, handle: claim.handle, at: "2099-01-01T00:00:00Z" };
-    expect((await call("heartbeat", ping)).body.result).toEqual({ active: true, claimedAt: at(900).toISOString() });
+    expect((await call("heartbeat", ping)).body.result).toEqual({
+      active: true,
+      claimedAt: at(900).toISOString(),
+      phase: "implementing",
+      agent: null,
+    });
     expect(await listEvents(client, orgId)).toEqual(before);
     const rows = await client.query("SELECT heartbeat_at FROM runtime_handles WHERE project = $1 AND ticket = $2", [
       "widgets",

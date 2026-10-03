@@ -1,6 +1,7 @@
 // Fleet derivations: tickets in flight (one lane per working agent), the
 // frontier of tickets ready to start, and pull requests waiting. Pure functions
 // over the model; tolerant of missing forge data and missing status lines.
+import type { RuntimeObservation } from "./live.ts";
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
 import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASES, type PullRequest } from "./types.ts";
 
@@ -125,7 +126,15 @@ export interface LaneOptions {
     /** Open runtime handle per ticket id. */
     handles?: Record<
       string,
-      { runtime: string; handle: string; profile?: string | null; lastHeartbeatAt?: string | null }
+      {
+        runtime: string;
+        handle: string;
+        profile?: string | null;
+        lastHeartbeatAt?: string | null;
+        runtimeState?: RuntimeObservation | null;
+        claimedAt?: string;
+        releasedAt?: string | null;
+      }
     >;
   };
 }
@@ -259,14 +268,22 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
 
 /**
  * Tickets in flight: open leaves that carry an agent phase label, plus started
- * leaves without one (shown with an inferred phase and flagged). A live event
+ * leaves without one (shown with an inferred phase and flagged), and leaves
+ * with an open persisted runtime handle. A live event
  * newer than the tracker read decides on its own: a release or a merge takes
  * the ticket out, any other event puts it in.
  */
 export function inFlight(m: Model, comments: Comment[], opts: LaneOptions): Lane[] {
   const held = (i: Issue) => {
     const fresh = freshEvent(i.id, opts);
-    return fresh ? !ENDS_WORK.includes(fresh.kind) : !!i.agentPhase || isStarted(i);
+    const handle = opts.live?.handles?.[i.id];
+    const open = !!handle && !handle.releasedAt;
+    if (fresh) {
+      if (!ENDS_WORK.includes(fresh.kind)) return true;
+      // A replacement claim survives an older release or merge in the reading.
+      return open && !!handle.claimedAt && handle.claimedAt > fresh.at;
+    }
+    return open || !!i.agentPhase || isStarted(i);
   };
   return m.program
     .filter((i) => m.isLeaf(i) && !isClosed(i) && held(i))

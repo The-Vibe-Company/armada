@@ -658,6 +658,7 @@ function Agent({
                 </Fact>
                 <Fact k={t.shell.lastReportKey} color={row.silent ? "var(--active)" : undefined}>
                   {row.lastReport ? <RelativeTime at={row.lastReport} /> : t.shell.neverReported}
+                  {row.runtimeState && <> · {t.shell.runtimeState[row.runtimeState]}</>}
                 </Fact>
               </Section>
               <Section label={t.shell.coordinator}>

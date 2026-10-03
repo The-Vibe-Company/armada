@@ -30,6 +30,8 @@ describe("worker heartbeats", () => {
     };
     expect((await serveFleet(store, request, { now: () => now })).body.result).toEqual({
       active: true,
+      phase: "implementing",
+      agent: null,
       claimedAt: NOW.toISOString(),
     });
     expect((await store.getRuntimeHandle("widgets", claim.ticket))?.lastHeartbeatAt).toBe(now.toISOString());

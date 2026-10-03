@@ -35,6 +35,7 @@ import { type Io, UsageError, type WatchSignal } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
 import { pendingRelease, rememberRelease } from "./release.ts";
+import { observingFleet } from "./runtime.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
 /** The coordinator's own session, never counted as a worker: ARMADA_COORDINATOR_HANDLE, else Conductor's. */
@@ -219,7 +220,7 @@ async function watchUntil(
       throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
     const before = paths ? await readWatchState(paths, project) : null;
     await remember(io, project, { root: dirname(configPath), stopped: null });
-    const report = await watchInbox(fleet, {
+    const report = await watchInbox(observingFleet(watchingIo, fleet), {
       project,
       signal: controller.signal,
       coordinator: coordinatorHandle(io),

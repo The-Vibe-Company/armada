@@ -7,7 +7,7 @@ import type { ArmadaConfig } from "./config.ts";
 import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
-import type { Fleet, InboxItem } from "./live.ts";
+import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
 import { handBackProblems, transitionProblem } from "./phases.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
@@ -38,6 +38,13 @@ export interface WorkerContext {
   fleet: () => Promise<{ fleet: Fleet | null; warning: string | null }>;
   /** Reads one pull request of the project repository; null without a GitHub token. */
   readPull: ((number: number) => Promise<PullRequest | null>) | null;
+  /** Optional coordinator runtime delivery; true when the answer reached a local worker. */
+  deliverAnswer?: (
+    ticket: string,
+    text: string,
+    runtime?: string | null,
+    claim?: RuntimeHandle | null,
+  ) => Promise<boolean>;
   now: () => Date;
 }
 

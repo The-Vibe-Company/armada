@@ -57,7 +57,8 @@ export function renderStatus(r: StatusReport): string {
   out.push("", `In flight (${r.inFlight.length})`);
   if (!r.inFlight.length) out.push("  nobody is working");
   for (const t of r.inFlight) {
-    const who = [t.runtime, t.agent].filter(Boolean).join(" · ") || "unassigned";
+    const who =
+      [t.runtime, t.runtimeState && `live ${t.runtimeState}`, t.agent].filter(Boolean).join(" · ") || "unassigned";
     out.push(
       `  ${pad(t.id, idWidth)}  ${pad(phaseLabel(t), phaseWidth)}  ${who} · ${t.lastReport ? `reported ${relative(t.lastReport, now)}` : `updated ${relative(t.lastUpdate, now)}`}`,
     );

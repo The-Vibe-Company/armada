@@ -59,6 +59,18 @@ export interface LatestEvent {
   at: string;
 }
 
+export const RUNTIME_STATES = ["working", "blocked", "idle", "done", "unknown"] as const;
+export type RuntimeState = (typeof RUNTIME_STATES)[number];
+
+export interface RuntimeObservation {
+  /** Runtime transition counter, including changes between observations. */
+  sequence?: number;
+  state: RuntimeState;
+  at: string;
+  /** When this state began, so an answer suppresses a block until its next transition. */
+  since?: string;
+}
+
 export interface RuntimeHandle {
   project: string;
   ticket: string;
@@ -70,6 +82,7 @@ export interface RuntimeHandle {
   releasedAt: string | null;
   /** Conductor profile the claim named, null when it named none. */
   profile: string | null;
+  runtimeState?: RuntimeObservation | null;
   lastHeartbeatAt?: string | null;
   workerSessionId?: string | null;
 }
@@ -81,6 +94,8 @@ export interface HeartbeatRecord {
 }
 
 export interface HeartbeatResult {
+  phase?: string | null;
+  agent?: string | null;
   active: boolean;
   claimedAt: string | null;
 }
@@ -266,6 +281,22 @@ export interface FleetStore {
   /** Sessions still holding a ticket of the project, by ticket id. */
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
+  observeRuntime(input: {
+    project: string;
+    ticket: string;
+    handle: string;
+    claimedAt: string;
+    state: RuntimeState;
+    sequence?: number;
+    at: Date;
+  }): Promise<boolean>;
+  stopRuntime(input: {
+    project: string;
+    ticket: string;
+    handle: string;
+    claimedAt: string;
+    at: Date;
+  }): Promise<boolean>;
 
   addInboxItem(item: Omit<InboxItem, "id" | "createdAt" | "request"> & { at: Date }): Promise<number>;
   /** Adds a dashboard request unless the same one is open, or the question it answers is closed: null then. */
@@ -520,6 +551,25 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
   const n = await store.resolveInboxItems({ project, ticket, kind: "question", resolution: text, at });
   const plans = await store.resolvePlans({ project, ticket, resolution: text, at });
   await store.resolveInboxItems({ project, ticket, kind: "answer-request", resolution: text, at });
+  if (n === 0 && plans === 0 && a.ticket) {
+    const held = await store.getRuntimeHandle(project, ticket);
+    if (held?.runtime.toLowerCase() === "herdr" && !held.releasedAt && held.runtimeState?.state === "blocked") {
+      // Harness approvals have no worker-authored question. Keep the delivered
+      // answer in the same indexed answer history so the inbox clears until the
+      // next blocked transition, even if the terminal stays blocked briefly.
+      const id = await store.addInboxItem({
+        project,
+        ticket,
+        kind: "question",
+        recipient: "coordinator",
+        author: held.handle,
+        body: "Herdr approval or question",
+        at,
+      });
+      await store.resolveInboxItem({ project, id, resolution: text, at });
+      return `Herdr approval or question of ${ticket} answered.`;
+    }
+  }
   return `${n} open question${n === 1 ? "" : "s"}${plans ? ` and ${plans} plan${plans === 1 ? "" : "s"}` : ""} of ${ticket} resolved.`;
 }
 
@@ -634,7 +684,7 @@ const MIN = 60_000;
  * claimed (both read from the fleet, they clear on their own); `version`: a
  * newer Armada is out (`armada watch` only, never stored).
  */
-export type InboxEntryKind = InboxKind | "silent" | "quiet" | "not-started" | "version";
+export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "quiet" | "not-started" | "version";
 
 export interface InboxEntry {
   /**
@@ -799,6 +849,7 @@ async function readInboxAndFlight(
     ...(i.request ? { request: i.request } : {}),
   }));
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
+  const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
   const inFlight: string[] = [];
   for (const h of handles) {
     if (o.coordinator && h.handle === o.coordinator) continue;
@@ -806,8 +857,24 @@ async function readInboxAndFlight(
     if (e && (e.kind === "release" || e.kind === "merge")) continue;
     inFlight.push(h.ticket);
     if (asking.has(h.ticket)) continue;
-    const reported = e?.at ?? h.claimedAt;
+    const observation = h.runtimeState;
     const answer = answered[h.ticket];
+    const runtimeBlocked = freshRuntimeState(observation, o.now, o.silentAfterMinutes, h.claimedAt) === "blocked";
+    if (runtimeBlocked && planning.has(h.ticket)) continue;
+    if (runtimeBlocked && observation && (!answer || answer < (observation.since ?? observation.at))) {
+      entries.push({
+        id: null,
+        kind: "runtime-blocked",
+        ticket: h.ticket,
+        author: h.handle,
+        body: `${h.runtime} worker is blocked on an approval or question; read its terminal with the runtime guide and answer with armada answer ${h.ticket}`,
+        createdAt: observation.at,
+        new: false,
+      });
+      continue;
+    }
+    if (runtimeBlocked) continue;
+    const reported = e?.at ?? h.claimedAt;
     const owesReport = !!answer && answer > reported;
     if (!owesReport && NEEDS_HUMAN.includes(e?.phase as AgentPhase)) continue;
     const last = owesReport ? answer : reported;
@@ -947,6 +1014,21 @@ export async function serveInbox(
   return q.etag === etag ? null : { items, inFlight, etag, warnings };
 }
 
+/** A runtime reading expires with the project's liveness threshold. */
+export function freshRuntimeState(
+  observation: RuntimeObservation | null | undefined,
+  now: Date,
+  minutes: number,
+  claimedAt?: string,
+): RuntimeState | null {
+  if (!observation || (claimedAt && (observation.at < claimedAt || (observation.since ?? observation.at) < claimedAt)))
+    return null;
+  const age = now.getTime() - Date.parse(observation.at);
+  return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
+    ? observation.state
+    : null;
+}
+
 // ------------------------------------------------------------------ the CLI's side
 
 /**
@@ -968,6 +1050,16 @@ export interface Fleet {
   lastEventTimes(): Promise<Record<string, string>>;
   heartbeatTimes(): Promise<Record<string, string>>;
   heartbeat(input: HeartbeatRecord): Promise<HeartbeatResult>;
+  runtimeHandles(): Promise<RuntimeHandle[]>;
+  runtimeHandle(ticket: string): Promise<RuntimeHandle | null>;
+  observeRuntime(input: {
+    ticket: string;
+    handle: string;
+    claimedAt: string;
+    state: RuntimeState;
+    sequence?: number;
+  }): Promise<boolean>;
+  stopRuntime(input: { ticket: string; handle: string; claimedAt: string }): Promise<boolean>;
   /** Launches no claim followed yet, within the last day (`armada status`). */
   pendingLaunches(): Promise<PendingLaunch[]>;
   claim(c: ClaimRecord): Promise<InboxItem[]>;

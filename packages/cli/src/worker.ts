@@ -31,7 +31,9 @@ import {
   workerSessionVariable,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
+import { reportHerdr } from "./herdr.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
+import { observeHerdr } from "./runtime.ts";
 
 /**
  * The project's live data through Armada, signed in as this terminal: a
@@ -70,6 +72,7 @@ export function statusLive(
       lastEvents: () => Promise<Record<string, string>>;
       heartbeats: () => Promise<Record<string, string>>;
       launches: () => Promise<PendingLaunch[]>;
+      runtimeHandles: () => Promise<import("@armada/core").RuntimeHandle[]>;
     }
   | undefined {
   const { fleet } = liveFleet(io, config, credentials);
@@ -78,6 +81,7 @@ export function statusLive(
         lastEvents: () => fleet.lastEventTimes(),
         heartbeats: () => fleet.heartbeatTimes(),
         launches: () => fleet.pendingLaunches(),
+        runtimeHandles: () => observeHerdr(io, fleet),
       }
     : undefined;
 }
@@ -193,7 +197,13 @@ export async function withContext(
   json: boolean,
   act: (ctx: WorkerContext) => Promise<Outcome>,
 ): Promise<number> {
-  print(io, await act(context(io, config, credentials)), json);
+  const outcome = await act(context(io, config, credentials));
+  if (outcome.state?.phase) {
+    const profile = outcome.state.profile;
+    const agent = profile ? config.herdr.profiles[profile]?.harness : null;
+    await reportHerdr(io, outcome.state.phase, agent ?? "armada");
+  }
+  print(io, outcome, json);
   return 0;
 }
 
