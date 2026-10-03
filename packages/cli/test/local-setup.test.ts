@@ -30,6 +30,8 @@ function fixture(
     changed?: boolean;
     explicit?: boolean;
     modelProblem?: boolean;
+    openCodeQuestion?: boolean;
+    openCodeFallback?: boolean;
   } = {},
 ) {
   let text = DEMO_TOML + profiles;
@@ -77,8 +79,21 @@ function fixture(
       if (args[0] === "--version") return { code: 0, stdout: `${command} 0.9.3`, stderr: "" };
       if (command === "claude") return ok({ loggedIn: false });
       if (command === "codex") return { code: 1, stdout: "Not logged in", stderr: "" };
-      if (command === "opencode")
-        return { code: 0, stdout: "provider/model-c\nprovider/deepseek-example\n", stderr: "" };
+      if (command === "opencode") {
+        const ids = ["provider/model-c", "provider/deepseek-example"];
+        return {
+          code: 0,
+          stdout: args.includes("--verbose")
+            ? ids
+                .map(
+                  (id) =>
+                    `${id}\n${JSON.stringify({ providerID: "provider", id: id.split("/")[1], name: id.split("/")[1] }, null, 2)}\n`,
+                )
+                .join("")
+            : `${ids.join("\n")}\n`,
+          stderr: "",
+        };
+      }
       if (command === "git") return { code: 0, stdout: "/work/widgets\n", stderr: "" };
       if (args[0] === "status") return ok({ server: { running: true, compatible: true } });
       if (args[0] === "worktree" && args[1] === "list")
@@ -112,6 +127,7 @@ function fixture(
           pane_id: args[6],
           workspace_id: "w8",
           agent: args[4],
+          model: args[args.indexOf("--model") + 1],
           cwd: root,
           agent_status: "idle",
           interactive_ready: true,
@@ -137,9 +153,13 @@ function fixture(
           stdout:
             options.modelProblem && submitted
               ? "The CANARY_private model is not supported when using Codex with a ChatGPT account."
-              : options.blocked
-                ? "Do you trust the contents of this directory?"
-                : "Ready\n> ",
+              : options.openCodeQuestion && agents.find((a) => a.pane_id === args[2])?.agent === "opencode"
+                ? "Select a provider to connect"
+                : agents.find((a) => a.pane_id === args[2])?.agent === "opencode"
+                  ? `Build auto · ${options.openCodeFallback ? "deepseek-example" : "model-c"} Example Provider\n╹`
+                  : options.blocked
+                    ? "Do you trust the contents of this directory?"
+                    : "Ready\n> ",
           stderr: "",
         };
       throw new Error(`unexpected ${command} ${args.slice(0, 2).join(" ")}`);
@@ -229,4 +249,33 @@ test("edited profile settings cannot be verified by a retained setup session wit
   await expect(f.run()).rejects.toThrow("different launch settings");
   expect(f.calls.filter((c) => c.includes("start"))).toHaveLength(3);
   expect(f.calls.filter((c) => c[1] === "pane" && c[2] === "close")).toEqual([["herdr", "pane", "close", "w8:p0"]]);
+});
+
+test("OpenCode provider questions are inspected before model checks and keep the setup pane for the owner", async () => {
+  const f = fixture({ explicit: true, openCodeQuestion: true });
+  expect(await f.run()).toBe(1);
+  expect(f.output()).toContain("OpenCode asks the owner to connect a provider");
+  expect(f.output()).toContain("herdr agent attach setup-w8-opencode");
+  expect(f.calls.some((c) => c[0] === "opencode" && c.includes("--verbose"))).toBe(false);
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === "w8:p3")).toBe(false);
+  expect(f.calls.some((c) => c[1] === "agent" && c[2] === "prompt" && c[3] === "w8:p3")).toBe(false);
+});
+
+test("setup refuses an OpenCode fallback model before its token-free probe and retains the pane", async () => {
+  const f = fixture({ explicit: true, openCodeFallback: true });
+  expect(await f.run()).toBe(1);
+  expect(f.output()).toContain("model differs from profile provider/model-c");
+  expect(f.output()).toContain("herdr agent attach setup-w8-opencode");
+  expect(f.calls.some((c) => c[1] === "agent" && c[2] === "prompt" && c[3] === "w8:p3")).toBe(false);
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === "w8:p3")).toBe(false);
+});
+
+test("after the owner clears OpenCode setup questions, reuse verifies the profile before probing", async () => {
+  const state = { explicit: true, openCodeQuestion: true };
+  const f = fixture(state);
+  expect(await f.run()).toBe(1);
+  state.openCodeQuestion = false;
+  expect(await f.run()).toBe(0);
+  expect(f.calls.filter((c) => c[1] === "agent" && c[2] === "start")).toHaveLength(3);
+  expect(f.output()).toContain("opencode (profile opencode): ready; model answered");
 });

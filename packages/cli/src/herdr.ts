@@ -12,6 +12,7 @@ import {
 } from "@armada/core";
 import { type FirstRunIssue, firstRunIssue } from "./first-run.ts";
 import { type Io, UsageError } from "./io.ts";
+import { verifyOpenCodeModel } from "./opencode-model.ts";
 
 export class HerdrError extends UsageError {
   constructor(
@@ -37,7 +38,7 @@ export interface HerdrHandle extends HerdrClaimHandle {
 
 export const harnessArgs = (p: HerdrProfile): string[] => [
   "--model",
-  herdrHarnessKind(p.harness) === "opencode" ? `${p.model.split("#")[0]}#${p.effort}` : p.model,
+  p.model,
   ...(p.harness === "codex"
     ? ["-c", `model_reasoning_effort=${JSON.stringify(p.effort)}`]
     : p.harness === "claude"
@@ -376,7 +377,7 @@ export class Herdr {
     return { handle: { workspace, pane: pane.pane_id, agent: name, path: root }, existing: false };
   }
 
-  async start(handle: HerdrHandle, profile: HerdrProfile, timeoutMs = 30_000): Promise<void> {
+  async start(handle: HerdrHandle, profile: HerdrProfile, timeoutMs = 30_000, verifyModel = true): Promise<void> {
     const r = await this.call([
       "agent",
       "start",
@@ -391,6 +392,24 @@ export class Herdr {
       ...harnessArgs(profile),
     ]);
     this.checkAgent(r, handle);
+    if (verifyModel && herdrHarnessKind(profile.harness) === "opencode") {
+      try {
+        await verifyOpenCodeModel(this.io, handle.pane, profile.model);
+      } catch (error) {
+        // No brief has been sent yet. Close only this new worker's pane;
+        // retain its workspace and worktree for inspection and recovery.
+        let closed = false;
+        try {
+          await this.call(["pane", "close", handle.pane]);
+          closed = true;
+        } catch {}
+        throw new UsageError(
+          `${error instanceof UsageError ? error.message : "could not verify OpenCode model"}; ${
+            closed ? "worker pane closed" : "could not close worker pane; close it with herdr pane close"
+          }. No worker brief was sent.`,
+        );
+      }
+    }
   }
 
   /** Read only the named occupant of this exact pane; never dump terminal output. */
@@ -443,10 +462,26 @@ export class Herdr {
     );
   }
 
+  private async checkProfileModel(handle: HerdrHandle, profile: HerdrProfile): Promise<void> {
+    if (herdrHarnessKind(profile.harness) !== "opencode") return;
+    try {
+      await verifyOpenCodeModel(this.io, handle.pane, profile.model);
+    } catch (error) {
+      const screen = await this.inspect(handle, profile.harness);
+      throw this.screenError(
+        handle,
+        screen.issue,
+        error instanceof UsageError ? error.message : "Could not verify the OpenCode profile model",
+      );
+    }
+  }
+
   /** A short native start followed by bounded inspection, without answering any question. */
   async startChecked(handle: HerdrHandle, profile: HerdrProfile): Promise<void> {
     try {
-      await this.start(handle, profile, 3_500);
+      // Inspect first-run screens before checking the selected model. Setup
+      // retains its pane so the owner can finish provider/sign-in questions.
+      await this.start(handle, profile, 3_500, false);
     } catch (error) {
       if (!(error instanceof HerdrError) || !["agent_not_ready", "timeout"].includes(error.code ?? "")) throw error;
       // Herdr keeps the named occupant on these errors; never start it again.
@@ -456,7 +491,10 @@ export class Herdr {
     for (let attempt = 0; attempt < 120 && now().getTime() < deadline; attempt++) {
       const screen = await this.inspect(handle, profile.harness);
       if (screen.issue || screen.state === "blocked") throw this.screenError(handle, screen.issue);
-      if (screen.ready) return;
+      if (screen.ready) {
+        await this.checkProfileModel(handle, profile);
+        return;
+      }
       await (this.io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))))(250);
     }
     throw this.screenError(handle, null, "The harness did not become ready");
@@ -465,6 +503,7 @@ export class Herdr {
   async promptChecked(handle: HerdrHandle, profile: HerdrProfile, prompt: string): Promise<void> {
     const before = await this.inspect(handle, profile.harness);
     if (before.issue || !before.ready) throw this.screenError(handle, before.issue);
+    await this.checkProfileModel(handle, profile);
     try {
       await this.prompt(handle, prompt);
     } catch (error) {
@@ -480,6 +519,7 @@ export class Herdr {
   async checkSetupModel(handle: HerdrHandle, profile: HerdrProfile): Promise<void> {
     const screen = await this.inspect(handle, profile.harness);
     if (screen.issue || !screen.ready) throw this.screenError(handle, screen.issue);
+    await this.checkProfileModel(handle, profile);
     try {
       const agent = this.checkAgent(
         await this.call(

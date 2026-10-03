@@ -44,6 +44,7 @@ async function fixture(
     screen?: string;
     startFailure?: boolean;
     revokeFailure?: boolean;
+    pane?: string;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "armada-local-"));
@@ -119,6 +120,32 @@ async function fixture(
           stdout: options.unsigned ? "Not logged in" : "Logged in using ChatGPT",
           stderr: "",
         };
+      if (command === "opencode" && args.includes("--verbose")) {
+        const ids = (
+          options.models ?? "opencode/deepseek-v4-pro\nopencode/deepseek-v4-flash\nopenrouter/deepseek/deepseek-chat"
+        )
+          .split("\n")
+          .filter(Boolean);
+        return {
+          code: 0,
+          stdout: ids
+            .map((id) => {
+              const slash = id.indexOf("/");
+              return `${id}\n${JSON.stringify({ providerID: id.slice(0, slash), id: id.slice(slash + 1), name: id.slice(slash + 1) }, null, 2)}\n`;
+            })
+            .join(""),
+          stderr: "",
+        };
+      }
+      if (command === "herdr" && args[0] === "pane" && args[1] === "read") {
+        const start = calls.find((call) => call[1] === "agent" && call[2] === "start");
+        const id = start?.[start.indexOf("--model") + 1] ?? "";
+        return {
+          code: 0,
+          stdout: options.screen ?? options.pane ?? `Build auto · ${id.slice(id.indexOf("/") + 1)} OpenCode Zen\n╹`,
+          stderr: "",
+        };
+      }
       if (command === "opencode" && args[0] === "models")
         return {
           code: 0,
@@ -363,9 +390,7 @@ test("interactive launch saves the chosen exact DeepSeek model and starts that m
   expect(f.workerConfig()).toBe(f.configText());
   expect(f.configText()).toContain('model = "opencode/deepseek-v4.1-flash"');
   expect(f.configText()).toContain("# choose a model");
-  expect(f.calls.find((call) => call[1] === "agent" && call[2] === "start")).toContain(
-    "opencode/deepseek-v4.1-flash#high",
-  );
+  expect(f.calls.find((call) => call[1] === "agent" && call[2] === "start")).toContain("opencode/deepseek-v4.1-flash");
   expect(f.prompt()).toContain("opencode/deepseek-v4.1-flash");
 });
 
@@ -455,4 +480,27 @@ test("a failed token revocation names its recovery without echoing server diagno
   expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
   expect(f.errors()).toContain("armada launch revoke DEMO-13");
   expect(f.errors()).not.toContain("CANARY_revoke_private");
+});
+
+test("launch refuses an OpenCode fallback before delivering the worker token", async () => {
+  const f = await fixture({ toml: deepseekLocal, pane: "Build auto · deepseek-v4-flash OpenCode Zen\n╹" });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(f.errors()).toContain("model differs from profile opencode/deepseek-v4-pro");
+  expect(f.errors()).toContain("armada setup local");
+  expect(f.errors()).toContain("herdr agent attach demo-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
+  expect(f.prompt()).toBe("");
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
+  expect(f.errors()).not.toContain("armada_launch_CANARY_1");
+});
+
+test("OpenCode first-run provider questions retain the worker pane before model verification", async () => {
+  const f = await fixture({ toml: deepseekLocal, screen: "Select a provider to connect" });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(f.errors()).toContain("OpenCode asks the owner to connect a provider");
+  expect(f.errors()).toContain("herdr agent attach demo-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
+  expect(f.calls.some((c) => c[0] === "opencode" && c.includes("--verbose"))).toBe(false);
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
+  expect(f.prompt()).toBe("");
 });
