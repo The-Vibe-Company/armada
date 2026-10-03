@@ -7,8 +7,8 @@
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
 import type { Attachment } from "./attachments.ts";
+import { HttpRequestError, httpRequest } from "./http.ts";
 import type { Fetch } from "./linear.ts";
-import { networkReason } from "./linear.ts";
 
 /**
  * How a terminal proves who it is: the session of `armada login`, an
@@ -267,7 +267,6 @@ export interface ArmadaApiOptions {
 
 export function armadaApi(opts: ArmadaApiOptions) {
   const base = apiBaseUrl(opts.url);
-  const doFetch = opts.fetch ?? fetch;
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
   const host = base.host;
   let serverCli: ServerCli | null = null;
@@ -275,7 +274,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
   async function call(
     method: string,
     path: string,
-    init: { body?: object; signIn?: ArmadaSignIn; timeoutMs?: number } = {},
+    init: { body?: object; signIn?: ArmadaSignIn; timeoutMs?: number; retry?: boolean } = {},
   ): Promise<{ status: number; body: Record<string, unknown> }> {
     const limit = init.timeoutMs ?? timeoutMs;
     const headers: Record<string, string> = { Accept: "application/json" };
@@ -284,38 +283,48 @@ export function armadaApi(opts: ArmadaApiOptions) {
       headers.Authorization = `Bearer ${init.signIn.token}`;
     if (init.signIn?.kind === "api-key") headers["x-api-key"] = init.signIn.key;
     if (opts.version) headers[CLI_VERSION_HEADER] = opts.version;
-    const res = await doFetch(new URL(`api/cli/${path}`, base).toString(), {
-      method,
-      headers,
-      ...(init.body ? { body: JSON.stringify(init.body) } : {}),
-      signal: AbortSignal.timeout(limit),
-    }).catch((err: unknown) => {
-      throw new ArmadaApiError(
-        `Armada (${host}) unreachable: ${networkReason(err, limit)}`,
-        "the same command again once it answers, or check ARMADA_API_URL",
-      );
+    return httpRequest(
+      new URL(`api/cli/${path}`, base).toString(),
+      {
+        method,
+        headers,
+        ...(init.body ? { body: JSON.stringify(init.body) } : {}),
+      },
+      { fetch: opts.fetch, timeoutMs: limit, retry: init.retry ?? method === "GET" },
+      async (res) => {
+        // Whatever it answered, an older CLI than the server expects cannot trust its reading of it.
+        const minimum = res.headers.get(CLI_MINIMUM_HEADER);
+        const latest = res.headers.get(CLI_LATEST_HEADER) || null;
+        if (minimum) {
+          serverCli = { minimum, latest };
+          opts.onServerCli?.(serverCli);
+        }
+        if (opts.version && minimum && compareVersions(opts.version, minimum) < 0) {
+          await res.body?.cancel().catch(() => {});
+          const install = versionToInstall(minimum, latest);
+          throw new ArmadaApiError(upgradeLine(opts.version, install), null, false, res.status, install);
+        }
+        // Not modified: no body to read (an unchanged inbox).
+        if (res.status === 304) return { status: 304, body: {} };
+        const body = (await res.json().catch((err) => {
+          if (err instanceof SyntaxError) return null;
+          throw err;
+        })) as unknown;
+        if (typeof body !== "object" || body === null || Array.isArray(body))
+          throw new ArmadaApiError(
+            `Armada (${host}) answered HTTP ${res.status} without JSON: is ${base.origin} an Armada?`,
+            "check ARMADA_API_URL or [api] url in config.toml",
+          );
+        return { status: res.status, body: body as Record<string, unknown> };
+      },
+    ).catch((err: unknown) => {
+      if (err instanceof HttpRequestError)
+        throw new ArmadaApiError(
+          `Armada (${host}) unreachable: ${err.message} (${method} ${path})`,
+          "the same command again once it answers, or check ARMADA_API_URL",
+        );
+      throw err;
     });
-    // Whatever it answered, an older CLI than the server expects cannot trust its reading of it.
-    const minimum = res.headers.get(CLI_MINIMUM_HEADER);
-    const latest = res.headers.get(CLI_LATEST_HEADER) || null;
-    if (minimum) {
-      serverCli = { minimum, latest };
-      opts.onServerCli?.(serverCli);
-    }
-    if (opts.version && minimum && compareVersions(opts.version, minimum) < 0) {
-      await res.body?.cancel().catch(() => {});
-      const install = versionToInstall(minimum, latest);
-      throw new ArmadaApiError(upgradeLine(opts.version, install), null, false, res.status, install);
-    }
-    // Not modified: no body to read (an unchanged inbox).
-    if (res.status === 304) return { status: 304, body: {} };
-    const body = (await res.json().catch(() => null)) as unknown;
-    if (typeof body !== "object" || body === null || Array.isArray(body))
-      throw new ArmadaApiError(
-        `Armada (${host}) answered HTTP ${res.status} without JSON: is ${base.origin} an Armada?`,
-        "check ARMADA_API_URL or [api] url in config.toml",
-      );
-    return { status: res.status, body: body as Record<string, unknown> };
   }
 
   /** The server's own refusal, with its next step when it gives one. */
@@ -375,7 +384,12 @@ export function armadaApi(opts: ArmadaApiOptions) {
 
     /** The organization's keys for `signIn`. Answers 503 when that Armada keeps no keys. */
     async credentials(signIn: ArmadaSignIn, purpose: KeysPurpose | null = null): Promise<ArmadaKeysAnswer> {
-      const { status, body } = await call("POST", "credentials", { signIn, body: purpose ? { purpose } : {} });
+      const { status, body } = await call("POST", "credentials", {
+        signIn,
+        body: purpose ? { purpose } : {},
+        // This reads a reusable key; each physical attempt remains audited and rate-limited.
+        retry: true,
+      });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada gave no keys");
       const str = (v: unknown) => typeof v === "string" && v.length > 0;
       const org = body.organization as ArmadaKeysAnswer["organization"] | undefined;
@@ -428,6 +442,17 @@ export function armadaApi(opts: ArmadaApiOptions) {
         signIn,
         body,
         ...(timeoutMs ? { timeoutMs } : {}),
+        retry: [
+          "events/latest",
+          "events/state",
+          "heartbeats/latest",
+          "runtime/handles",
+          "runtime/handle",
+          "launches",
+          "inbox/item",
+          "inbox/ticket",
+          "validations",
+        ].includes(op),
       });
       if (status === 304) return null;
       if (status !== 200) throw refusal(status, answer, status === 401 ? null : "Armada refused");
@@ -438,7 +463,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
 
     /** The secrets for workers of `project`: names, where each is set, who set it and when. Never a value. */
     async listSecrets(signIn: ArmadaSignIn, project: SecretsProject): Promise<ListedSecret[]> {
-      const { status, body } = await call("POST", "secrets/list", { signIn, body: { project } });
+      const { status, body } = await call("POST", "secrets/list", { signIn, body: { project }, retry: true });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada did not list the secrets");
       if (!Array.isArray(body.secrets))
         throw new ArmadaApiError(`Armada (${host}) answered the secrets in a shape this CLI does not know`);

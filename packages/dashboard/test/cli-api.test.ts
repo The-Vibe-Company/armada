@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { MINIMUM_CLI_VERSION } from "@armada/core/read";
+import { armadaApi, MINIMUM_CLI_VERSION } from "@armada/core/read";
 import { NextRequest } from "next/server";
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
 import { accountsGuard } from "../lib/accounts-http.ts";
@@ -348,6 +348,40 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     ].join("\n");
     for (const value of [ORG_LINEAR, OWN_LINEAR]) expect(everything).not.toContain(value);
     expect(logged.some((l) => l.includes("keys released to"))).toBe(true);
+  });
+
+  test("a lost credential response retries the reusable key read, auditing both attempts and respecting the limit", async () => {
+    now = at(2);
+    // Put this actor two releases away from the minute's limit.
+    for (let k = 0; k < 28; k++) expect((await keys({ token: ownerToken })).res.status).toBe(200);
+    const before = (await listEvents(client, orgId, 200)).filter((e) => e.action === "release").length;
+    let calls = 0;
+    const api = armadaApi({
+      url: BASE,
+      version: MINIMUM_CLI_VERSION,
+      fetch: async (url, init) => {
+        const response = await handleCli(new Request(url, init), ["credentials"], {
+          accounts: async () => accounts,
+          ...deps,
+        });
+        if (++calls === 1) {
+          // The server completed the read/audit, but the response was lost.
+          await response.body?.cancel();
+          throw new DOMException("response lost", "TimeoutError");
+        }
+        return response;
+      },
+    });
+    const signIn = { kind: "session" as const, token: ownerToken };
+    expect((await api.credentials(signIn)).linear?.apiKey).toBe(ORG_LINEAR);
+    expect(calls).toBe(2);
+    expect((await listEvents(client, orgId, 200)).filter((e) => e.action === "release")).toHaveLength(before + 2);
+    // Two actual releases use two slots; a 429 is never retried or bypassed.
+    await expect(api.credentials(signIn)).rejects.toMatchObject({ status: 429 });
+    expect(calls).toBe(3);
+    now = at(4);
+    expect((await api.credentials(signIn)).linear?.apiKey).toBe(ORG_LINEAR);
+    expect(calls).toBe(4);
   });
 
   test("the dashboard reads with the organization's Linear and GitHub keys, never a person's own", async () => {

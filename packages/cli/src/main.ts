@@ -6,6 +6,7 @@ import { hostname } from "node:os";
 import { isatty } from "node:tty";
 import { run } from "./cli.ts";
 import { readCodexModels } from "./codex-models.ts";
+import { cliFetch } from "./http.ts";
 import type { Exec } from "./io.ts";
 import { UsageError } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
@@ -171,7 +172,7 @@ const code = await run(process.argv.slice(2), {
   },
   stderr: (t) => process.stderr.write(t),
   ghToken,
-  fetch: (url, init) => fetch(url, init),
+  fetch: cliFetch(),
   inspectProcess: (pid) => inspectProcess(exec, pid),
   signalProcess: (pid, signal) => {
     process.kill(pid, signal);

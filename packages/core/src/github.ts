@@ -2,7 +2,7 @@
 // recently closed ones with their CI rollup and mergeability. The rollup's
 // check runs need a token with the Checks permission: the dashboard's GitHub
 // App installation token has it (THE-851), fine-grained personal tokens do not.
-import { type Fetch, networkReason, REQUEST_TIMEOUT_MS } from "./linear.ts";
+import { type Fetch, HttpRequestError, httpRequest } from "./http.ts";
 import type { CiState, ForgeData, Issue, ProgramData, PullRequest } from "./types.ts";
 
 export const GITHUB_GRAPHQL = "https://api.github.com/graphql";
@@ -154,20 +154,24 @@ async function githubQuery<T>(
   query: string,
   variables: object,
 ): Promise<{ data?: T; errors?: { message: string }[] }> {
-  const doFetch = opts.fetch ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  const res = await doFetch(GITHUB_GRAPHQL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
-    body: JSON.stringify({ query, variables }),
-    signal: AbortSignal.timeout(timeoutMs),
-  }).catch((err: unknown) => {
-    throw new GithubError(`GitHub API unreachable: ${networkReason(err, timeoutMs)}`);
+  return httpRequest(
+    GITHUB_GRAPHQL,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
+      body: JSON.stringify({ query, variables }),
+    },
+    { ...opts, retry: true },
+    async (res) => {
+      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
+      const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
+      if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
+      return json;
+    },
+  ).catch((err: unknown) => {
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    throw err;
   });
-  if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
-  const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
-  if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
-  return json;
 }
 
 const PULL_QUERY = /* GraphQL */ `${PULL_FIELDS}
@@ -257,24 +261,28 @@ export interface FetchFileOptions {
 /** Text of a file on the repository's default branch, or null when the file does not exist there. */
 export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<string | null> {
   const [owner, name] = opts.repository.split("/");
-  const doFetch = opts.fetch ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  const res = await doFetch(GITHUB_GRAPHQL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
-    body: JSON.stringify({ query: FILE_QUERY, variables: { owner, name, expression: `HEAD:${opts.path}` } }),
-    signal: AbortSignal.timeout(timeoutMs),
-  }).catch((err: unknown) => {
-    throw new GithubError(`GitHub API unreachable: ${networkReason(err, timeoutMs)}`);
+  return httpRequest(
+    GITHUB_GRAPHQL,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
+      body: JSON.stringify({ query: FILE_QUERY, variables: { owner, name, expression: `HEAD:${opts.path}` } }),
+    },
+    { ...opts, retry: true },
+    async (res) => {
+      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
+      const json = (await res.json()) as {
+        data?: { repository: { object: { text?: string | null } | null } | null };
+        errors?: { message: string }[];
+      };
+      if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
+      if (!json.data?.repository) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
+      return json.data.repository.object?.text ?? null;
+    },
+  ).catch((err: unknown) => {
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    throw err;
   });
-  if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
-  const json = (await res.json()) as {
-    data?: { repository: { object: { text?: string | null } | null } | null };
-    errors?: { message: string }[];
-  };
-  if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
-  if (!json.data?.repository) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
-  return json.data.repository.object?.text ?? null;
 }
 
 // ------------------------------------------------------------------ merge reads
@@ -375,17 +383,21 @@ export async function fetchComparison(
 
 /** The unified diff of a pull request (REST, diff media type). */
 export async function fetchPullDiff(opts: FetchForgeOptions & { number: number }): Promise<string> {
-  const doFetch = opts.fetch ?? fetch;
-  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  const res = await doFetch(`https://api.github.com/repos/${opts.repository}/pulls/${opts.number}`, {
-    method: "GET",
-    headers: { Accept: "application/vnd.github.diff", Authorization: `Bearer ${opts.token}` },
-    signal: AbortSignal.timeout(timeoutMs),
-  }).catch((err: unknown) => {
-    throw new GithubError(`GitHub API unreachable: ${networkReason(err, timeoutMs)}`);
+  return httpRequest(
+    `https://api.github.com/repos/${opts.repository}/pulls/${opts.number}`,
+    {
+      method: "GET",
+      headers: { Accept: "application/vnd.github.diff", Authorization: `Bearer ${opts.token}` },
+    },
+    { ...opts, retry: true },
+    async (res) => {
+      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading the diff of #${opts.number}`);
+      return res.text();
+    },
+  ).catch((err: unknown) => {
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    throw err;
   });
-  if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading the diff of #${opts.number}`);
-  return res.text();
 }
 
 /** A commit as `armada merge` checks an updated head: its parents and its tree. */

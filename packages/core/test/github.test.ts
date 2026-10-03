@@ -18,6 +18,21 @@ describe("ticketIdFromBranch", () => {
 });
 
 describe("fetchForge", () => {
+  test("a timed-out GitHub query retries once with the same request", async () => {
+    const recorded = recordedFetch();
+    let calls = 0;
+    const forge = await fetchForge({
+      token: "synthetic-token",
+      repository: "acme/widgets",
+      fetch: async (url, init) => {
+        if (++calls === 1) throw new DOMException("timed out", "TimeoutError");
+        return recorded.fetch(url, init);
+      },
+    });
+    expect(calls).toBe(2);
+    expect(forge.prs.length).toBeGreaterThan(0);
+  });
+
   test("reads open and recent pull requests with their CI rollup and mergeability", async () => {
     const { fetch, calls } = recordedFetch();
     const forge = await fetchForge({ token: "gh_test", repository: "acme/widgets", fetch, now: () => NOW });
