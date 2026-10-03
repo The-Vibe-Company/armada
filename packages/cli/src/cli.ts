@@ -56,7 +56,9 @@ const COMMAND_HELP: Record<string, string> = {
   status --all      The same for every project registered by \`armada init\`
 `,
   doctor: `  doctor            What this repository lacks to be run by Armada, with the fix for each,
-                    and whether this terminal is signed in to Armada
+                    and whether this terminal is signed in to Armada. Local herdr profiles
+                    check tools and harness sign-in; offers official installs with y/N.
+                    No terminal, CI and --json only print fixes and never install
 `,
   init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook]
                     Open one pull request that installs or updates it all, create the
