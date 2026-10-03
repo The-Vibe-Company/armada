@@ -5,7 +5,7 @@ import { CIPHER, COMMANDS, LAUNCH_TOKEN_HOURS, SETUP } from "../components/landi
 import { BREAK_AT, createSky, INTRO, LIME, step } from "../components/landing/flock";
 import { ASKED, delivered, HANDED_BACK, handedBack, opening, toValidate } from "../components/landing/replica-script";
 import { TRANSCRIPT } from "../components/landing/transcript";
-import { checksOf, coordinatorGroups, ownerChecks } from "../lib/coordinator-view";
+import { checksOf, coordinatorGroups, laneColumns, ownerChecks } from "../lib/coordinator-view";
 import { demoOverview } from "../lib/demo/overview";
 import { agentState } from "../lib/fleet-view";
 import { LAUNCH_TOKEN_MS } from "../lib/workers";
@@ -121,6 +121,10 @@ describe("the replica of the overview (THE-931)", () => {
     const [first] = coordinatorGroups(end, end.rows);
     expect(first?.project.slug).toBe("widgets");
     expect(first?.rows[0]?.id).toBe(HANDED_BACK);
+    // On the board (THE-968): WID-18 in the first lane's "To validate", WID-15 back at work.
+    const columns = laneColumns(ownerChecks(end), first?.rows ?? []);
+    expect(columns.validate.map((r) => r.id)).toContain(HANDED_BACK);
+    expect(columns.implementing.map((r) => r.id)).toContain(ASKED);
   });
 });
 

@@ -17,6 +17,7 @@ import type {
   ValidationOutcome,
   WaitingKind,
 } from "@armada/core/read";
+import type { BoardColumn } from "./coordinator-view";
 import type { ViewError } from "./filters";
 import type { AgentStatus, DecisionKind, Density, PageKind, Section, StatusReason } from "./fleet-view";
 import type { BlockerReason, PrState, RegisterStep } from "./project-view";
@@ -559,6 +560,15 @@ const en = {
     /** A session the owner has something to validate on. */
     toValidateBadge: "To validate",
     nothingRunning: "Nothing in flight.",
+    /** The board's columns (THE-968), left to right. */
+    columns: {
+      plan: "Plan",
+      approval: "Plan to approve",
+      implementing: "In progress",
+      delivery: "Delivery",
+      validate: "To validate",
+      blocked: "Blocked",
+    } satisfies Record<BoardColumn, string>,
     kinds: { question: "Question", approval: "Plan to approve", "hand-back": "Ready to merge" } satisfies Record<
       DecisionKind,
       string
@@ -1729,6 +1739,14 @@ const fr: Strings = {
     toValidate: (n) => `${n} à valider`,
     toValidateBadge: "À valider",
     nothingRunning: "Rien en cours.",
+    columns: {
+      plan: "Plan",
+      approval: "Plan à approuver",
+      implementing: "En cours",
+      delivery: "Livraison",
+      validate: "À valider",
+      blocked: "Bloqué",
+    },
     kinds: { question: "Question", approval: "Plan à approuver", "hand-back": "Prêt à fusionner" },
     approvePlan: "Approuver le plan",
     requestChanges: "Demander des changements",

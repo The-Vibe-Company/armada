@@ -1,19 +1,32 @@
 "use client";
 
-// The overview (THE-916): the Agents page (THE-869), its list, density, rows
-// and filters, with its sessions grouped by coordinator. Each group's header
-// says the project, its coordinator's harness, active or idle and since when,
-// how many sessions run and, in orange, how many the owner has to validate;
-// the sessions to validate come first, and so do their groups. The filters
-// live in the address (THE-895: ?coordinator=, ?harness=, ?state=, ?q=,
-// ?sort=…), and the live timeline (THE-868) sits under the list, compact.
+// The overview (THE-916): the Agents page's filters and density (THE-869),
+// its sessions in flight as a board (THE-968): one lane per coordinator, six
+// columns, the steps a session goes through (lib/coordinator-view.ts). Each
+// lane's header says the project, its coordinator's harness, active or idle
+// and since when, how many sessions run and, in orange, how many the owner has
+// to validate; the lanes with something to validate come first. On a desk the
+// columns line up from lane to lane, and a column no lane fills is a narrow
+// strip; on a phone each lane scrolls sideways a column at a time, its empty
+// columns narrow. The filters live in the address (THE-895: ?coordinator=,
+// ?harness=, ?state=, ?q=, ?sort=… sorts each column), and the live timeline
+// (THE-868) sits under the board, compact.
 // `Overview` draws it on the filters it is given: the landing's replica
 // (components/landing/Replica.tsx, THE-931), which has no router, plays it.
 import type { FleetRow, ProjectOverview } from "@armada/core/read";
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { type ReactNode, useCallback, useMemo } from "react";
-import { type CoordinatorGroup, checksOf, coordinatorGroups, overviewLine, ownerChecks } from "@/lib/coordinator-view";
+import { type CSSProperties, type ReactNode, useCallback, useId, useMemo } from "react";
+import {
+  BOARD_COLUMNS,
+  type BoardColumn,
+  type CoordinatorGroup,
+  checksOf,
+  coordinatorGroups,
+  laneColumns,
+  overviewLine,
+  ownerChecks,
+} from "@/lib/coordinator-view";
 import { filterAgents, hasFilters } from "@/lib/filters";
 import { coordinatorHarness, HARNESS_NAME, HARNESSES, harnessOf, paths } from "@/lib/fleet-view";
 import { FilterFields, type ListFilterControl, useListFilters } from "../FilterBar";
@@ -31,7 +44,7 @@ import {
 } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { Dot, EmptyState, harnessColor, PhasePill, Tabs } from "../ui";
-import { AgentRow } from "./AgentRow";
+import { SessionCard } from "./SessionCard";
 
 // The timeline is its own chunk (THE-892): the list does not wait for its code.
 const LiveTimeline = dynamic(() => import("../timeline/Timeline").then((m) => m.LiveTimeline));
@@ -63,6 +76,12 @@ export function Overview({ filters, go, hrefFor }: ListFilterControl) {
   }, [overview, filters, names, mine]);
   const line = overviewLine(overview);
   const shown = groups.reduce((n, g) => n + g.rows.length, 0);
+  const lanes = useMemo(
+    () => groups.map((g) => ({ group: g, columns: laneColumns(checks, g.rows) })),
+    [groups, checks],
+  );
+  // A desk's columns line up from lane to lane: those no lane fills are narrow.
+  const filled = useMemo(() => BOARD_COLUMNS.filter((c) => lanes.some((l) => l.columns[c].length)), [lanes]);
   const unread = overview.projects.filter((p) => p.error || p.reading);
 
   return (
@@ -135,27 +154,89 @@ export function Overview({ filters, go, hrefFor }: ListFilterControl) {
           </Button>
         </EmptyState>
       ) : (
-        groups.map((g) => (
-          <CoordinatorSection key={g.project.slug} group={g} long={all.length > LONG_LIST}>
+        lanes.map(({ group: g, columns }) => (
+          <CoordinatorSection key={g.project.slug} group={g}>
             {g.rows.length === 0 ? (
               <SectionBody>
                 <p>{t.overview.nothingRunning}</p>
               </SectionBody>
             ) : (
-              g.rows.map((r) => (
-                <AgentRow
-                  key={`${r.project}-${r.id}`}
-                  row={r}
-                  airy={density === "airy"}
-                  toValidate={checksOf(checks, r).length > 0}
-                />
-              ))
+              <Board
+                columns={columns}
+                filled={filled}
+                long={all.length > LONG_LIST}
+                airy={density === "airy"}
+                toValidate={(r) => checksOf(checks, r).length > 0}
+              />
             )}
           </CoordinatorSection>
         ))
       )}
       {overview.projects.length > 0 && <LiveTimeline project={filters.project} compact />}
     </Page>
+  );
+}
+
+/** A grid's tracks: a column in `wide` takes its share, any other is a narrow strip. */
+const tracks = (wide: readonly BoardColumn[]) =>
+  BOARD_COLUMNS.map((c) => (wide.includes(c) ? "var(--ov-wide)" : "var(--ov-narrow)")).join(" ");
+
+/**
+ * One lane's board: its six columns, each a group named by its heading (the
+ * column and its count) and holding its cards in a list. On a desk the
+ * columns some lane fills (`filled`) are wide in every lane; on a phone, those
+ * this lane fills.
+ */
+function Board({
+  columns,
+  filled,
+  long,
+  airy,
+  toValidate,
+}: {
+  columns: Record<BoardColumn, FleetRow[]>;
+  filled: readonly BoardColumn[];
+  long: boolean;
+  airy: boolean;
+  toValidate: (r: FleetRow) => boolean;
+}) {
+  const { t } = useShell();
+  const id = useId();
+  const lane = tracks(BOARD_COLUMNS.filter((c) => columns[c].length));
+  return (
+    <div className="ov-lane">
+      <div
+        className={long ? "ov-board is-long" : "ov-board"}
+        style={{ "--ov-board": tracks(filled), "--ov-lane": lane } as CSSProperties}
+      >
+        {BOARD_COLUMNS.map((c) => {
+          const cards = columns[c];
+          return (
+            // biome-ignore lint/a11y/useSemanticElements: a column of cards, named by its heading; a fieldset would mean form fields
+            <div
+              key={c}
+              role="group"
+              aria-labelledby={`${id}-${c}`}
+              className={`ov-col is-${c}${cards.length ? "" : " is-empty"}${filled.includes(c) ? "" : " is-narrow"}`}
+            >
+              <h3 className="ov-col-h" id={`${id}-${c}`}>
+                <span className="ov-col-name">{t.overview.columns[c]}</span>{" "}
+                <span className="ui-count">{cards.length}</span>
+              </h3>
+              {cards.length > 0 && (
+                <ol className="ov-cards">
+                  {cards.map((r) => (
+                    <li key={`${r.project}-${r.id}`}>
+                      <SessionCard row={r} airy={airy} toValidate={toValidate(r)} />
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -167,17 +248,15 @@ function CoordinatorMark({ state }: { state: ProjectOverview["coordinator"]["sta
 }
 
 /**
- * One coordinator's group: its header (the project, which opens the overview
+ * One coordinator's lane: its header (the project, which opens the overview
  * filtered to it; the harness; active or idle and since when; what the owner
- * has to validate) and its sessions in flight.
+ * has to validate) and its board.
  */
 function CoordinatorSection({
   group: { project: p, rows, toValidate },
-  long,
   children,
 }: {
   group: CoordinatorGroup;
-  long: boolean;
   children: ReactNode;
 }) {
   const { t } = useShell();
@@ -195,7 +274,6 @@ function CoordinatorSection({
         </Link>
       }
       count={rows.length}
-      long={long}
       side={
         <span className="ov-group-side">
           {h && (
