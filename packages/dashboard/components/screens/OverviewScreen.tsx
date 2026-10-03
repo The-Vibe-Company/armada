@@ -43,7 +43,7 @@ import {
   Toolbar,
 } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Dot, EmptyState, harnessColor, PhasePill, Tabs } from "../ui";
+import { Dot, EmptyState, harnessColor, LONGEST_TIMES, PhasePill, Steady, Tabs } from "../ui";
 import { SessionCard } from "./SessionCard";
 
 // The timeline is its own chunk (THE-892): the list does not wait for its code.
@@ -287,11 +287,17 @@ function CoordinatorSection({
             </span>
           )}
           <span className="ov-group-state" style={{ color: COORDINATOR_COLOR[c.state] }}>
-            {c.state === "active"
-              ? t.shell.coordinatorActive(t.ago(ms))
-              : c.state === "idle"
-                ? t.shell.coordinatorIdle(t.duration(ms))
-                : t.shell.coordinatorUnknown}
+            {c.state === "active" ? (
+              <Steady widest={LONGEST_TIMES.map((n) => t.shell.coordinatorActive(t.ago(n)))}>
+                {t.shell.coordinatorActive(t.ago(ms))}
+              </Steady>
+            ) : c.state === "idle" ? (
+              <Steady widest={LONGEST_TIMES.map((n) => t.shell.coordinatorIdle(t.duration(n)))}>
+                {t.shell.coordinatorIdle(t.duration(ms))}
+              </Steady>
+            ) : (
+              t.shell.coordinatorUnknown
+            )}
           </span>
           {toValidate > 0 && <PhasePill tone="waiting">{t.overview.toValidate(toValidate)}</PhasePill>}
         </span>

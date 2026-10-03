@@ -111,10 +111,7 @@ export interface Breach {
 
 interface Lhr {
   categories: Record<string, { score: number | null }>;
-  audits: Record<
-    string,
-    { numericValue?: number; details?: { items?: { score?: number; node?: { selector?: string } }[] } }
-  >;
+  audits: Record<string, { numericValue?: number }>;
   environment: { benchmarkIndex: number };
 }
 
@@ -132,6 +129,30 @@ export function resultOf(lhr: Lhr, page: string, formFactor: FormFactor): PageRe
     cls: Math.round(value("cumulative-layout-shift") * 1000) / 1000,
     tbt: Math.round(value("total-blocking-time")),
   };
+}
+
+/** A layout shift of a run's trace (scripts/perf-lighthouse.mjs): when, how much, and the nodes it moved. */
+export interface TraceShift {
+  ms: number;
+  score: number;
+  input: boolean;
+  nodes: { node: string; before: number[]; after: number[] }[];
+}
+
+/**
+ * What moved, in the log: a layout shift is easier to fix once named. Each
+ * shift with its nodes' boxes (x, y, width, height) before and after; a box
+ * that grows in place is content that arrived late (THE-982).
+ */
+export function shiftLines(shifts: TraceShift[], formFactor: FormFactor, page: string): string[] {
+  return shifts
+    .filter((s) => s.score > 0)
+    .map(
+      (s) =>
+        `  shift ${formFactor} ${page} ${s.score.toFixed(5)} at ${s.ms} ms${s.input ? " (after input)" : ""}: ${s.nodes
+          .map((n) => `${n.node} [${n.before.join(",")}] -> [${n.after.join(",")}]`)
+          .join(" | ")}`,
+    );
 }
 
 /** The run of median performance (the lower one of an even count). */
@@ -369,19 +390,8 @@ async function lighthouse(base: string): Promise<boolean> {
       for (let k = 0; k < config.runs[formFactor]; k++) {
         const lhr = await lighthouseRun(`${base}${page}`, formFactor, formFactor === "mobile" ? slowdown : 1, cookie);
         runs.push(resultOf(lhr, page, formFactor));
-        // What moved, in the log: a layout shift is easier to fix once named.
-        // TEMPORARY (THE-982): every shift of the trace, its nodes' rects before and after.
-        try {
-          const { shifts, names } = JSON.parse(await readFile(join(OUT, "run.json.shifts.json"), "utf8"));
-          for (const s of shifts)
-            if (s.score > 0)
-              console.log(
-                `  trace ${formFactor} ${page} at ${s.ms} ms score ${s.score.toFixed(5)}${s.recent ? " (input)" : ""}: ${s.nodes.map((n: { id: number; old: number[]; now: number[] }) => `${names[n.id] ?? `#${n.id}`} [${n.old}] -> [${n.now}]`).join(" | ")}`,
-              );
-        } catch {}
-        for (const shift of lhr.audits["layout-shifts"]?.details?.items ?? [])
-          if ((shift.score ?? 0) >= 0.0005)
-            console.log(`  shift ${formFactor} ${page} ${shift.score?.toFixed(4)} ${shift.node?.selector ?? "?"}`);
+        const shifts: TraceShift[] = JSON.parse(await readFile(join(OUT, "run.shifts.json"), "utf8"));
+        for (const line of shiftLines(shifts, formFactor, page)) console.log(line);
       }
       const r = medianRun(runs);
       results.push(r);

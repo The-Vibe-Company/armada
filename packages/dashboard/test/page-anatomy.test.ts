@@ -167,4 +167,28 @@ describe("globals.css", () => {
     );
     expect(unused).toEqual([]);
   });
+
+  // THE-982: the browser may paint a page before its HTML has all arrived. A
+  // bar sized by its content then grows as its buttons arrive, and the phone's
+  // tab bar, pinned to the bottom, jumped up by up to 47 px (CLS 0.001 to 0.004
+  // on the overview). On a phone each bar's height is its own.
+  test("gives the phone's bars a height of their own", () => {
+    const css = readFileSync(join(ROOT, "app/globals.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const phone = [...css.matchAll(/@media \(max-width: 719px\) \{/g)].map((m) => {
+      let depth = 0;
+      for (let i = (m.index ?? 0) + m[0].length - 1; i < css.length; i++) {
+        if (css[i] === "{") depth++;
+        else if (css[i] === "}" && --depth === 0) return css.slice(m.index, i);
+      }
+      return "";
+    });
+    const height = (selector: string) =>
+      phone
+        .flatMap((block) => [...block.matchAll(/(?:^|[}\n])\s*([^{}]+?)\s*\{([^{}]*)\}/g)])
+        .filter((rule) => rule[1]?.trim() === selector)
+        .map((rule) => /(?:^|;)\s*height:\s*([^;]+)/.exec(rule[2] ?? "")?.[1]?.trim())
+        .find(Boolean);
+    for (const bar of [".sh-side", ".sh-brand", ".sh-tabbar"])
+      expect(height(bar) ?? `${bar}: none`).not.toMatch(/none|auto/);
+  });
 });

@@ -278,6 +278,27 @@ export function EmptyState({
   );
 }
 
+/** The longest a ticking time reads before it counts days: "59 min", "23 h 59". */
+export const LONGEST_TIMES = [59 * 60_000, 24 * 3_600_000 - 60_000];
+
+/**
+ * Text the clock changes, in a box as wide as the widest it can read
+ * (`widest`, drawn unseen in the same cell, in the same font): a new reading
+ * moves nothing beside it, so it is never a layout shift (THE-982).
+ */
+export function Steady({ widest, children }: { widest: string[]; children: ReactNode }) {
+  return (
+    <span className="ui-steady">
+      {widest.map((w) => (
+        <span key={w} className="ui-steady-ghost" aria-hidden>
+          {w}
+        </span>
+      ))}
+      <span>{children}</span>
+    </span>
+  );
+}
+
 /** A time from now, ticking: "il y a 12 min" (ago), "12 min" (duration). */
 export function RelativeTime({ at, format = "ago" }: { at: string | null; format?: "ago" | "duration" }) {
   const { t } = useShell();

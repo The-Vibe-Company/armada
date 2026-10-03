@@ -3,6 +3,7 @@
 // into Chrome's cookie jar before the run. A Cookie header would not do: once
 // a page sets a cookie of its own, Chrome sends its jar instead.
 //   node scripts/perf-lighthouse.mjs <url> <config.mjs> <name=value> <report.json>
+// It writes the trace's layout shifts beside the report (<report>.shifts.json).
 import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -56,21 +57,24 @@ try {
   const result = await lighthouse(url, { port: chrome.port, output: "json", logLevel: "error" }, config);
   if (!result) throw new Error(`Lighthouse returned nothing for ${url}`);
   await writeFile(out, result.report);
-  // TEMPORARY (THE-982): every layout shift of the trace, with the rects of the nodes it moved.
+  // Each layout shift of the trace, with the boxes of the nodes it moved (THE-982): bun run perf prints them.
   const events = result.artifacts?.Trace?.traceEvents ?? [];
   const start = events.find((e) => e.name === "navigationStart")?.ts ?? events[0]?.ts ?? 0;
+  const names = new Map((result.artifacts?.TraceElements ?? []).map((t) => [t.nodeId, t.node?.selector]));
+  const box = (r) => (Array.isArray(r) ? r.map((n) => Math.round(n)) : []);
   const shifts = events
-    .filter((e) => e.name === "LayoutShift")
-    .map((e) => ({
-      ms: Math.round((e.ts - start) / 1000),
-      score: e.args?.data?.score,
-      recent: e.args?.data?.had_recent_input,
-      nodes: (e.args?.data?.impacted_nodes ?? []).map((n) => ({ id: n.node_id, old: n.old_rect, now: n.new_rect })),
+    .filter((e) => e.name === "LayoutShift" && e.args?.data)
+    .map(({ ts, args: { data } }) => ({
+      ms: Math.round((ts - start) / 1000),
+      score: data.score ?? 0,
+      input: Boolean(data.had_recent_input),
+      nodes: (data.impacted_nodes ?? []).map((n) => ({
+        node: names.get(n.node_id) ?? `node ${n.node_id}`,
+        before: box(n.old_rect),
+        after: box(n.new_rect),
+      })),
     }));
-  const names = Object.fromEntries(
-    (result.artifacts?.TraceElements ?? []).map((t) => [t.nodeId, t.node?.selector ?? t.node?.nodeLabel]),
-  );
-  await writeFile(`${out}.shifts.json`, JSON.stringify({ shifts, names }));
+  await writeFile(out.replace(/\.json$/, ".shifts.json"), JSON.stringify(shifts));
 } finally {
   chrome.kill();
 }

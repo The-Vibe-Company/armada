@@ -11,7 +11,7 @@ import { agentState, harnessOf, paths } from "@/lib/fleet-view";
 import { Card } from "../page";
 import { useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
-import { HarnessBadge, PhasePill, RelativeTime, StatusDot, toneColor } from "../ui";
+import { HarnessBadge, LONGEST_TIMES, PhasePill, RelativeTime, StatusDot, Steady, toneColor } from "../ui";
 import { rowLine, rowProgress, useFresh } from "./AgentRow";
 
 export function SessionCard({
@@ -36,7 +36,13 @@ export function SessionCard({
         <span className="ov-card-id">{r.id}</span>
         <span className="ov-card-ago" style={{ color: r.silent ? "var(--active)" : undefined }}>
           <span className="sr-only">{t.shell.lastReport} </span>
-          {r.lastReport ? <RelativeTime at={r.lastReport} format="duration" /> : t.shell.neverReported}
+          {r.lastReport ? (
+            <Steady widest={LONGEST_TIMES.map((n) => t.duration(n))}>
+              <RelativeTime at={r.lastReport} format="duration" />
+            </Steady>
+          ) : (
+            t.shell.neverReported
+          )}
           {r.runtimeState && <> · {t.shell.runtimeState[r.runtimeState]}</>}
         </span>
       </span>
