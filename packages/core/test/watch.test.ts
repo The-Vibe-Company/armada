@@ -109,7 +109,7 @@ describe("armada watch", () => {
     expect(got.inFlight).toEqual(["DEMO-2"]);
     expect(retries).toEqual([
       "Armada refused: database waking up; still watching, next try in 15 s",
-      "Armada (armada.example.test) unreachable: fetch failed; still watching, next try in 30 s",
+      "Armada (armada.example.test) unreachable: fetch failed (POST fleet/inbox); still watching, next try in 30 s",
     ]);
     // 200, 304, 503, (network), 304, then the hand-back.
     expect(live.statuses).toEqual([200, 304, 503, 304, 200]);

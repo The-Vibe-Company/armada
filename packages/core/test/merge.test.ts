@@ -691,7 +691,7 @@ describe("the owner's merge approval (THE-885)", () => {
       toml: `${GATES}${RULE}`,
     });
     expect(await refusal(mergePullRequest(down.ctx, { pr: 9, reason: "CLI only" }))).toBe(
-      "#9 (DEMO-7) cannot be merged: the owner's approvals of #9 could not be read (Armada (armada.example.test) unreachable: connection reset)\nNext: armada merge 9 again once Armada answers",
+      "#9 (DEMO-7) cannot be merged: the owner's approvals of #9 could not be read (Armada (armada.example.test) unreachable: connection reset (POST fleet/validations))\nNext: armada merge 9 again once Armada answers",
     );
     expect(down.forge.merges).toEqual([]);
 

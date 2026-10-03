@@ -22,6 +22,23 @@ function graphql(answers: Record<string, unknown>) {
 }
 
 describe("Linear write adapter", () => {
+  test("a timed-out query retries once; comment mutations are never replayed", async () => {
+    let calls = 0;
+    const writer = createLinearWriter({
+      apiKey: "synthetic-key",
+      labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
+      fetch: async () => {
+        calls++;
+        if (calls === 2) return Response.json({ data: { viewer: { id: "person-1", name: "Olive" } } });
+        throw new DOMException("timed out", "TimeoutError");
+      },
+    });
+    expect(await writer.viewer()).toEqual({ id: "person-1", name: "Olive" });
+    expect(calls).toBe(2);
+    await expect(writer.comment("ticket-1", "Progress")).rejects.toThrow("no answer within 30 s");
+    expect(calls).toBe(3);
+  });
+
   test("reads a ticket with its labels (phase names in any case), team workflow, claim and linked pull request", async () => {
     const { writer } = graphql({
       Ticket: {

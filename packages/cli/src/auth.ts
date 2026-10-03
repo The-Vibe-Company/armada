@@ -54,9 +54,10 @@ const wantsArmada = (env: Io["env"]) => !env.LINEAR_API_KEY?.trim();
 
 /**
  * The organization's Linear key from Armada, kept in memory only. Armada
- * unreachable or refusing: a warning, and the command goes on with the keys
- * of this machine. Armada keeping no keys (503) is not worth a warning: the
- * terminal then works as before. A worker cut off, ended, or out of its
+ * unreachable or refusing: fall back only when this machine has a usable
+ * Linear key; otherwise preserve the credential-fetch error. Armada keeping
+ * no keys (503) is not worth a warning: the terminal then works as before.
+ * A worker cut off, ended, or out of its
  * ticket stops here, whatever keys the machine has, and so does a CLI older
  * than Armada expects, with the one line that upgrades it.
  */
@@ -72,6 +73,7 @@ async function fromArmada(io: Io, credentials: Credentials, purpose: KeysPurpose
     // Older than the server expects: its one upgrade line, rather than a run on a reading it cannot trust.
     if (err.upgrade) throw err;
     if (err.status === 503) return null;
+    if (!credentials.linearApiKey) throw err;
     io.stderr(`! Armada gave no keys (${err.message}); using this machine's${err.next ? `. Next: ${err.next}` : ""}\n`);
     return null;
   }
