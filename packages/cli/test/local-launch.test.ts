@@ -74,6 +74,7 @@ async function fixture(
     errors: string[] = [],
     calls: string[][] = [];
   let prompt = "";
+  let kind = "codex";
   const handle = { workspace: "w8", pane: "w8:p9", agent: "demo-13" };
   let configText = options.toml ?? local;
   const writes: { path: string; text: string }[] = [];
@@ -192,6 +193,7 @@ async function fixture(
       else if (args[0] === "tab")
         reply = { result: { root_pane: { workspace_id: handle.workspace, pane_id: handle.pane } } };
       else {
+        if (args[1] === "start") kind = args[4] ?? "codex";
         if (args[1] === "start" && options.startFailure)
           return { code: 1, stdout: JSON.stringify({ error: { code: "agent_not_ready" } }), stderr: "" };
         if (args[1] === "prompt") {
@@ -201,6 +203,7 @@ async function fixture(
         reply = {
           result: {
             agent: {
+              agent: kind,
               name: handle.agent,
               pane_id: handle.pane,
               workspace_id: handle.workspace,

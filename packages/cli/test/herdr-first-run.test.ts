@@ -30,6 +30,7 @@ function fake(screens: string[], options: { startCode?: string; otherPane?: bool
         stdout: JSON.stringify({
           result: {
             agent: {
+              agent: profile.harness,
               name: handle.agent,
               workspace_id: handle.workspace,
               pane_id: options.otherPane ? "w9:p1" : handle.pane,
@@ -73,7 +74,7 @@ test("unknown blocked and timed-out startup screens retain actionable attach com
   for (const state of ["blocked", "unknown"]) {
     const f = fake([], { state, startCode: "agent_not_ready" });
     await expect(new Herdr(f.io).startChecked(handle, { ...profile, extraArgs: [] })).rejects.toThrow(
-      "herdr agent attach demo-7",
+      "herdr agent attach w8:p9",
     );
     expect(f.calls.length).toBeLessThan(250);
   }
