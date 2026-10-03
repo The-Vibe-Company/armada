@@ -1,6 +1,6 @@
 // `armada status`: one JSON-serializable reading of the fleet, shared by the
 // CLI and, later, the dashboard.
-import type { ArmadaConfig } from "./config.ts";
+import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
 import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
@@ -117,7 +117,10 @@ export interface StatusReport {
   /** Workers launched that have not claimed their ticket; empty when Armada's live data was not read. */
   notStarted: NotStartedLaunch[];
   pendingLaunches?: PendingLaunch[];
-  /** Ready to start: the frontier, ranked. `readyForAgent` marks tickets that carry the ready label. */
+  /**
+   * Ready to start: the frontier, ranked, without the tickets parked on purpose.
+   * `readyForAgent` marks tickets that carry the ready label.
+   */
   frontier: FrontierTicket[];
   /** Open pull requests of the repository; null when GitHub could not be read. */
   pullRequests: WaitingPullRequest[] | null;
@@ -250,7 +253,12 @@ export function buildStatus({
       const issue = issues.find((i) => i.id === l.ticket);
       return { ...l, title: issue?.title ?? null, url: issue?.url ?? null, detail: notStartedBody(l, now) };
     }),
-    frontier: frontier(m, config.tracker.readyLabel)
+    // The dashboard keeps whole configs in its snapshots, so a body written
+    // before this field existed has none: fall back rather than park nothing.
+    frontier: frontier(m, {
+      ready: config.tracker.readyLabel,
+      parked: config.tracker.parkedLabel ?? CONFIG_DEFAULTS.parkedLabel,
+    })
       .filter((c) => !phaseOf.has(c.issue.id))
       .map((c) => ({
         id: c.issue.id,

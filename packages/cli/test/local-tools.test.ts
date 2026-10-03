@@ -275,7 +275,13 @@ test("doctor lists all configured gaps and JSON/read-only reports never offer in
   const config = { herdr: { profiles: { a: { harness: "codex" as const }, b: { harness: "deepseek" as const } } } };
   const t = terminal({}, ["yes", "yes", "yes"]);
   const checks = await localRuntimeChecks(t.io, config);
-  expect(checks.map((check) => check.id)).toEqual(["local-herdr", "local-codex", "local-opencode", "local-dsh"]);
+  expect(checks.map((check) => check.id)).toEqual([
+    "local-herdr",
+    "local-codex",
+    "local-opencode",
+    "local-opencode-effort",
+    "local-dsh",
+  ]);
   const report = { schemaVersion: 1 as const, root: t.io.cwd, armadaVersion: "0.0.0", checks, errors: 3, warnings: 0 };
   expect(renderDoctor(report)).toContain("information only");
   expect(renderDoctor(report)).not.toContain("npm i -g @deepseek-ai/dsh");
@@ -373,7 +379,13 @@ test("doctor's missing dsh is informational, never an install offer or plugin ca
     { herdr: { profiles: { deep: { harness: "deepseek", model: "opencode/deepseek-v4-pro" } } } },
     { readOnly: false },
   );
-  expect(checks.every((check) => check.level === "ok")).toBe(true);
+  expect(checks.filter((check) => check.id !== "local-opencode-effort").every((check) => check.level === "ok")).toBe(
+    true,
+  );
+  expect(checks.find((check) => check.id === "local-opencode-effort")).toMatchObject({
+    level: "warning",
+    message: expect.stringContaining("effort is not applied for OpenCode"),
+  });
   expect(checks.at(-1)).toMatchObject({ id: "local-dsh", level: "ok", fix: null });
   expect(checks.at(-1)?.message).toContain("dsh is not installed; information only");
   expect(t.calls.filter((call) => call.startsWith("dsh"))).toEqual(["dsh --version"]);
@@ -446,7 +458,13 @@ test("doctor asks and saves a missing or unavailable OpenCode model, preserving 
             ),
       );
       expect(t.output.join("")).toContain(`Wrote model = ${JSON.stringify(chosen)}`);
-      expect(checks.every((check) => check.level === "ok")).toBe(true);
+      expect(
+        checks.filter((check) => check.id !== "local-opencode-effort").every((check) => check.level === "ok"),
+      ).toBe(true);
+      expect(checks.find((check) => check.id === "local-opencode-effort")).toMatchObject({
+        level: "warning",
+        message: expect.stringContaining("effort is not applied for OpenCode"),
+      });
       expect(t.output.join("").includes("3. openai/model-a")).toBe(harness === "opencode");
       expect(t.calls.some((call) => call.includes("auth"))).toBe(false);
     }
@@ -528,7 +546,13 @@ test("model choice preserves CRLF, quoted section names and literal-string quoti
   };
   const checks = await localRuntimeChecks(t.io, parseConfig(original), { readOnly: false });
   expect(text).toBe(original.replace("'opencode/deepseek-old'", "'opencode/deepseek-v4.1-flash'"));
-  expect(checks.every((check) => check.level === "ok")).toBe(true);
+  expect(checks.filter((check) => check.id !== "local-opencode-effort").every((check) => check.level === "ok")).toBe(
+    true,
+  );
+  expect(checks.find((check) => check.id === "local-opencode-effort")).toMatchObject({
+    level: "warning",
+    message: expect.stringContaining("effort is not applied for OpenCode"),
+  });
 });
 
 test("the shared OpenCode preflight validates the supplied exact model without credentials", async () => {
