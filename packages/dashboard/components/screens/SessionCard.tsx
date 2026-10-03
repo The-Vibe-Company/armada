@@ -8,10 +8,11 @@
 // it (lib/coordinator-view.ts). Airy density adds the worker's last line.
 import type { FleetRow } from "@armada/core/read";
 import { agentState, harnessOf, paths } from "@/lib/fleet-view";
+import { LONGEST_TIMES } from "@/lib/i18n";
 import { Card } from "../page";
 import { useShell } from "../shell/context";
 import { stateLabel } from "../shell/labels";
-import { HarnessBadge, LONGEST_TIMES, PhasePill, RelativeTime, StatusDot, Steady, toneColor } from "../ui";
+import { HarnessBadge, PhasePill, RelativeTime, StatusDot, Steady, toneColor } from "../ui";
 import { rowLine, rowProgress, useFresh } from "./AgentRow";
 
 export function SessionCard({

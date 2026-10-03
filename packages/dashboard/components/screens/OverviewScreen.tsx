@@ -29,6 +29,7 @@ import {
 } from "@/lib/coordinator-view";
 import { filterAgents, hasFilters } from "@/lib/filters";
 import { coordinatorHarness, HARNESS_NAME, HARNESSES, harnessOf, paths } from "@/lib/fleet-view";
+import { LONGEST_TIMES } from "@/lib/i18n";
 import { FilterFields, type ListFilterControl, useListFilters } from "../FilterBar";
 import {
   Alert,
@@ -43,7 +44,7 @@ import {
   Toolbar,
 } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Dot, EmptyState, harnessColor, LONGEST_TIMES, PhasePill, Steady, Tabs } from "../ui";
+import { Dot, EmptyState, harnessColor, PhasePill, Steady, Tabs } from "../ui";
 import { SessionCard } from "./SessionCard";
 
 // The timeline is its own chunk (THE-892): the list does not wait for its code.

@@ -390,7 +390,10 @@ async function lighthouse(base: string): Promise<boolean> {
       for (let k = 0; k < config.runs[formFactor]; k++) {
         const lhr = await lighthouseRun(`${base}${page}`, formFactor, formFactor === "mobile" ? slowdown : 1, cookie);
         runs.push(resultOf(lhr, page, formFactor));
-        const shifts: TraceShift[] = JSON.parse(await readFile(join(OUT, "run.shifts.json"), "utf8"));
+        // A log only: without it the run still counts.
+        const shifts: TraceShift[] = await readFile(join(OUT, "run.json.shifts.json"), "utf8")
+          .then((text) => JSON.parse(text))
+          .catch(() => []);
         for (const line of shiftLines(shifts, formFactor, page)) console.log(line);
       }
       const r = medianRun(runs);

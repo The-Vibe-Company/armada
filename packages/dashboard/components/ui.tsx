@@ -278,9 +278,6 @@ export function EmptyState({
   );
 }
 
-/** The longest a ticking time reads before it counts days: "59 min", "23 h 59". */
-export const LONGEST_TIMES = [59 * 60_000, 24 * 3_600_000 - 60_000];
-
 /**
  * Text the clock changes, in a box as wide as the widest it can read
  * (`widest`, drawn unseen in the same cell, in the same font): a new reading
@@ -296,7 +293,9 @@ export function Steady({ widest, children }: { widest: string[]; children: React
           {w}
         </span>
       ))}
-      <span key={typeof children === "string" ? children : undefined}>{children}</span>
+      <span key={typeof children === "string" ? children : undefined} className="ui-steady-now">
+        {children}
+      </span>
     </span>
   );
 }

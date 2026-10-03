@@ -220,7 +220,8 @@ button {
   display: inline-grid;
   text-align: end;
 }
-.ui-steady > * {
+.ui-steady-ghost,
+.ui-steady-now {
   grid-area: 1 / 1;
 }
 .ui-steady-ghost {
