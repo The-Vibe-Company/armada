@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.34](https://github.com/The-Vibe-Company/armada/compare/v0.2.33...v0.2.34) (2026-10-03)
+
+
+### Features
+
+* **dashboard:** replay the grouped overview in the landing's live demo ([#136](https://github.com/The-Vibe-Company/armada/issues/136)) ([f85d65e](https://github.com/The-Vibe-Company/armada/commit/f85d65eb55228306a3a95934b6e31e9a2c602beb))
+
 ## [0.2.33](https://github.com/The-Vibe-Company/armada/compare/v0.2.32...v0.2.33) (2026-10-02)
 
 
