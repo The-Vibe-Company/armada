@@ -17,6 +17,8 @@ export interface ArmadaConfig {
     language: string;
     /** Label that marks a ticket as specified enough for an agent to take. */
     readyLabel: string;
+    /** Label that marks a ticket as parked on purpose: never listed as work to start. */
+    parkedLabel: string;
     labels: {
       /** Single-select label group holding the agent phase. */
       phaseGroup: string;
@@ -174,6 +176,7 @@ export interface HerdrProfile {
 export const CONFIG_DEFAULTS = {
   language: "en",
   readyLabel: "ready-for-agent",
+  parkedLabel: "parked",
   phaseGroup: "Agent phase",
   runtimeGroup: "Agent runtime",
   runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
@@ -300,7 +303,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   // left alone so newer sections do not break older readers.
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
-    ["tracker", tracker, ["program_root", "language", "ready_label", "labels"]],
+    ["tracker", tracker, ["program_root", "language", "ready_label", "parked_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
@@ -606,6 +609,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       }),
       language: str(tracker, "tracker", "language", { default: CONFIG_DEFAULTS.language }),
       readyLabel: str(tracker, "tracker", "ready_label", { default: CONFIG_DEFAULTS.readyLabel }),
+      parkedLabel: str(tracker, "tracker", "parked_label", { default: CONFIG_DEFAULTS.parkedLabel }),
       labels: {
         phaseGroup: str(labelsT, "tracker.labels", "phase_group", { default: CONFIG_DEFAULTS.phaseGroup }),
         runtimeGroup: str(labelsT, "tracker.labels", "runtime_group", { default: CONFIG_DEFAULTS.runtimeGroup }),
@@ -654,6 +658,7 @@ slug = ${q(p.slug)}          # stable id: lowercase letters, digits and dashes
 program_root = ${q(p.programRoot)}  # Linear issue at the root of the program
 language = "en"          # language of owner-facing output
 ready_label = "ready-for-agent"
+# parked_label = "parked"  # a ticket with this label is parked on purpose: never listed as work to start
 
 [tracker.labels]
 phase_group = "Agent phase"

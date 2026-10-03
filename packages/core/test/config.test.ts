@@ -27,6 +27,7 @@ describe("armada.toml", () => {
         programRoot: "DEMO-1",
         language: "en",
         readyLabel: "ready-for-agent",
+        parkedLabel: "parked",
         labels: {
           phaseGroup: "Agent phase",
           runtimeGroup: "Agent runtime",
@@ -54,6 +55,11 @@ describe("armada.toml", () => {
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
       herdr: { defaultProfile: null, profiles: {}, routing: [] },
     });
+  });
+
+  test("the parked label is configurable", () => {
+    const toml = DEMO_TOML.replace("[tracker]\n", '[tracker]\nparked_label = "on-hold"\n');
+    expect(parseConfig(toml).tracker.parkedLabel).toBe("on-hold");
   });
 
   test("every missing key is named at once", () => {
