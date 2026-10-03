@@ -53,7 +53,6 @@ export function SessionCard({
       )}
       <span className="ov-card-foot">
         <HarnessBadge harness={harnessOf(r.runtime)} />
-        {airy && r.profile && <span className="ov-card-profile">{r.profile}</span>}
         {toValidate && <PhasePill tone="waiting">{t.overview.toValidateBadge}</PhasePill>}
       </span>
     </Card>

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { type FleetRow, type OwnerValidation, type ProjectOverview, pipeline } from "@armada/core/read";
+import type { FleetRow, OwnerValidation, ProjectOverview } from "@armada/core/read";
 import {
   BOARD_COLUMNS,
   boardColumn,
@@ -27,11 +27,6 @@ const row = (id: string, over: Partial<FleetRow> = {}) =>
     flags: [],
     ...over,
   }) as FleetRow;
-/** A row whose pipeline step is core's, as the overview builds it. */
-const flight = (id: string, over: Partial<FleetRow> = {}) => {
-  const r = row(id, over);
-  return { ...r, pipeline: pipeline(r) };
-};
 const project = (slug: string) => ({ slug, name: slug }) as ProjectOverview;
 const validation = (id: number, ticket: string, over: Partial<OwnerValidation> = {}) =>
   ({
@@ -118,7 +113,7 @@ describe("the board (THE-968)", () => {
   const pr = (ci: "success" | "failure" | "pending" | "none") => ({ ci }) as FleetRow["pr"];
 
   test("puts each session in the column of its phase", () => {
-    const column = (over: Partial<FleetRow>) => boardColumn(none, flight("WID-1", over));
+    const column = (over: Partial<FleetRow>) => boardColumn(none, row("WID-1", over));
     expect(column({ phase: "planning" })).toBe("plan");
     expect(column({ phase: "awaiting-approval" })).toBe("approval");
     expect(column({ phase: "implementing" })).toBe("implementing");
@@ -130,19 +125,21 @@ describe("the board (THE-968)", () => {
     expect(column({ phase: "ready-to-merge", pr: pr("success") })).toBe("validate");
     expect(column({ phase: "blocked" })).toBe("blocked");
     expect(column({ phase: "implementing", silent: true })).toBe("blocked");
+    // A worker that handed back may go quiet: its hand-back still waits in "To validate".
+    expect(column({ phase: "ready-to-merge", silent: true })).toBe("validate");
   });
 
   test("an open owner validation wins over a blocked or silent session", () => {
     const checks = ownerChecks({ validations: [validation(1, "WID-1", { kind: "question" })] });
-    expect(boardColumn(checks, flight("WID-1", { phase: "blocked", silent: true }))).toBe("validate");
-    expect(boardColumn(checks, flight("WID-2", { phase: "blocked" }))).toBe("blocked");
+    expect(boardColumn(checks, row("WID-1", { phase: "blocked", silent: true }))).toBe("validate");
+    expect(boardColumn(checks, row("WID-2", { phase: "blocked" }))).toBe("blocked");
   });
 
   test("keeps the lane's order in each column", () => {
     const rows = [
-      flight("WID-1", { phase: "implementing" }),
-      flight("WID-2", { phase: "planning" }),
-      flight("WID-3", { phase: "implementing" }),
+      row("WID-1", { phase: "implementing" }),
+      row("WID-2", { phase: "planning" }),
+      row("WID-3", { phase: "implementing" }),
     ];
     const columns = laneColumns(none, rows);
     expect(Object.keys(columns)).toEqual([...BOARD_COLUMNS]);

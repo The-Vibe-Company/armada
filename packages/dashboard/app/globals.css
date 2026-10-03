@@ -3267,6 +3267,10 @@ a.ui-figure:hover {
   border-radius: var(--r);
   isolation: isolate;
 }
+.sh-main[data-density="airy"] .ui-card.ov-card {
+  gap: 8px;
+  padding: 12px 12px 11px;
+}
 .ui-card.ov-card[data-selected],
 .ui-card.ov-card:focus-visible {
   border-radius: var(--r);
@@ -3336,9 +3340,6 @@ a.ui-figure:hover {
   margin-right: 6px;
   vertical-align: 1px;
 }
-.ov-card-profile {
-  white-space: nowrap;
-}
 .ov-card-foot .ui-pill {
   flex: none;
   margin-left: auto;
@@ -3354,9 +3355,13 @@ a.ui-figure:hover {
   animation: ui-fade-out 1600ms ease-out forwards;
   pointer-events: none;
 }
-/* A phone: a lane's own tracks, one column at a time with the next one
-   showing at the edge, its empty columns narrow. */
-@media (max-width: 720px) {
+/* A lane as narrow as a phone (its width, not the screen's: the landing's
+   replica draws a desk at any size): the lane's own tracks, one column at a
+   time with the next one showing at the edge, its empty columns narrow. */
+.ov-lane {
+  container-type: inline-size;
+}
+@container (max-width: 700px) {
   .ov-board {
     --ov-wide: calc(100% - 52px);
     --ov-narrow: 30px;

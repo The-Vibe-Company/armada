@@ -204,36 +204,38 @@ function Board({
   const id = useId();
   const lane = tracks(BOARD_COLUMNS.filter((c) => columns[c].length));
   return (
-    <div
-      className={long ? "ov-board is-long" : "ov-board"}
-      style={{ "--ov-board": tracks(filled), "--ov-lane": lane } as CSSProperties}
-    >
-      {BOARD_COLUMNS.map((c) => {
-        const cards = columns[c];
-        return (
-          // biome-ignore lint/a11y/useSemanticElements: a column of cards, named by its heading; a fieldset would mean form fields
-          <div
-            key={c}
-            role="group"
-            aria-labelledby={`${id}-${c}`}
-            className={`ov-col is-${c}${cards.length ? "" : " is-empty"}${filled.includes(c) ? "" : " is-narrow"}`}
-          >
-            <h3 className="ov-col-h" id={`${id}-${c}`}>
-              <span className="ov-col-name">{t.overview.columns[c]}</span>
-              <span className="ui-count">{cards.length}</span>
-            </h3>
-            {cards.length > 0 && (
-              <ol className="ov-cards">
-                {cards.map((r) => (
-                  <li key={`${r.project}-${r.id}`}>
-                    <SessionCard row={r} airy={airy} toValidate={toValidate(r)} />
-                  </li>
-                ))}
-              </ol>
-            )}
-          </div>
-        );
-      })}
+    <div className="ov-lane">
+      <div
+        className={long ? "ov-board is-long" : "ov-board"}
+        style={{ "--ov-board": tracks(filled), "--ov-lane": lane } as CSSProperties}
+      >
+        {BOARD_COLUMNS.map((c) => {
+          const cards = columns[c];
+          return (
+            // biome-ignore lint/a11y/useSemanticElements: a column of cards, named by its heading; a fieldset would mean form fields
+            <div
+              key={c}
+              role="group"
+              aria-labelledby={`${id}-${c}`}
+              className={`ov-col is-${c}${cards.length ? "" : " is-empty"}${filled.includes(c) ? "" : " is-narrow"}`}
+            >
+              <h3 className="ov-col-h" id={`${id}-${c}`}>
+                <span className="ov-col-name">{t.overview.columns[c]}</span>{" "}
+                <span className="ui-count">{cards.length}</span>
+              </h3>
+              {cards.length > 0 && (
+                <ol className="ov-cards">
+                  {cards.map((r) => (
+                    <li key={`${r.project}-${r.id}`}>
+                      <SessionCard row={r} airy={airy} toValidate={toValidate(r)} />
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

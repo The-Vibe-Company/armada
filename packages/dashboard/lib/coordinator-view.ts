@@ -4,7 +4,7 @@
 // approve or a question escalated to the owner). A worker's question, plan or
 // hand-back is the coordinator's to handle, not the owner's. Pure: it reads
 // the overview the shell polls.
-import type { FleetOverview, FleetRow, OwnerValidation, ProjectOverview } from "@armada/core/read";
+import type { AgentPhase, FleetOverview, FleetRow, OwnerValidation, ProjectOverview } from "@armada/core/read";
 import { AGENT_STATUSES, agentState } from "./fleet-view";
 import { pendingValidations } from "./overview-view";
 
@@ -71,23 +71,32 @@ export function coordinatorGroups(
 export const BOARD_COLUMNS = ["plan", "approval", "implementing", "delivery", "validate", "blocked"] as const;
 export type BoardColumn = (typeof BOARD_COLUMNS)[number];
 
-/** Core's pipeline steps (plan, approval, implement, pr, ci, merge) on the board's columns. */
-const STEP_COLUMN: readonly BoardColumn[] = ["plan", "approval", "implementing", "delivery", "delivery", "validate"];
+/** Where each phase sits when nothing else decides: core's pipeline steps on the board. */
+const PHASE_COLUMN: Record<AgentPhase, BoardColumn> = {
+  planning: "plan",
+  "awaiting-approval": "approval",
+  implementing: "implementing",
+  shipping: "delivery",
+  "awaiting-validation": "validate",
+  "ready-to-merge": "validate",
+  merged: "validate",
+  blocked: "blocked",
+  released: "plan",
+};
 
 /**
- * A session's column: an open owner validation, else a session waiting for
- * the owner's validation or handed back, in "To validate" (its badge and its
- * lane's count stay the open validations only); a blocked or silent one in
- * "Blocked"; else core's pipeline step (red CI stays in "Delivery").
+ * A session's column: an open owner validation on it, else a session waiting
+ * for the owner's validation or handed back, in "To validate" (its badge and
+ * its lane's count stay the open validations only); a blocked or silent one in
+ * "Blocked"; else its phase's (red CI stays in "Delivery", in its red).
  */
 export function boardColumn(
   checks: Map<string, OwnerValidation[]>,
-  row: Pick<FleetRow, "project" | "id" | "phase" | "silent" | "pipeline">,
+  row: Pick<FleetRow, "project" | "id" | "phase" | "silent">,
 ): BoardColumn {
   if (checksOf(checks, row).length) return "validate";
-  if (row.phase === "awaiting-validation" || row.phase === "ready-to-merge") return "validate";
-  if (row.phase === "blocked" || row.silent) return "blocked";
-  return STEP_COLUMN[row.pipeline.step] ?? "implementing";
+  const column = PHASE_COLUMN[row.phase];
+  return column !== "validate" && row.silent ? "blocked" : column;
 }
 
 /** A lane's sessions by column, each in its group's order. */
