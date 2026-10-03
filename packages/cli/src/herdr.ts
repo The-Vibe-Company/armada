@@ -2,6 +2,7 @@
 // agent prompt may include a one-time launch token in its arguments or errors.
 import { type HerdrProfile, herdrHarnessKind, herdrHarnessLabel, type RuntimeState } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
+import { verifyOpenCodeModel } from "./opencode-model.ts";
 
 export class HerdrError extends UsageError {
   constructor(
@@ -27,7 +28,7 @@ export interface HerdrHandle extends HerdrClaimHandle {
 
 export const harnessArgs = (p: HerdrProfile): string[] => [
   "--model",
-  herdrHarnessKind(p.harness) === "opencode" ? `${p.model.split("#")[0]}#${p.effort}` : p.model,
+  p.model,
   ...(p.harness === "codex"
     ? ["-c", `model_reasoning_effort=${JSON.stringify(p.effort)}`]
     : p.harness === "claude"
@@ -242,6 +243,24 @@ export class Herdr {
       ...harnessArgs(profile),
     ]);
     this.checkAgent(r, handle);
+    if (herdrHarnessKind(profile.harness) === "opencode") {
+      try {
+        await verifyOpenCodeModel(this.io, handle.pane, profile.model);
+      } catch (error) {
+        // No brief has been sent yet. Close only this new worker's pane;
+        // retain its workspace and worktree for inspection and recovery.
+        let closed = false;
+        try {
+          await this.call(["pane", "close", handle.pane]);
+          closed = true;
+        } catch {}
+        throw new UsageError(
+          `${error instanceof UsageError ? error.message : "could not verify OpenCode model"}; ${
+            closed ? "worker pane closed" : "could not close worker pane; close it with herdr pane close"
+          }. No worker brief was sent.`,
+        );
+      }
+    }
   }
 
   async prompt(handle: HerdrHandle, prompt: string): Promise<void> {
