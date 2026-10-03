@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.47](https://github.com/The-Vibe-Company/armada/compare/v0.2.46...v0.2.47) (2026-10-03)
+
+
+### Features
+
+* **cli:** preview a local launch without creating anything ([#169](https://github.com/The-Vibe-Company/armada/issues/169)) ([c6313be](https://github.com/The-Vibe-Company/armada/commit/c6313bec129549a4db8d4798e60b67c2e29c6924))
+
 ## [0.2.46](https://github.com/The-Vibe-Company/armada/compare/v0.2.45...v0.2.46) (2026-10-03)
 
 
