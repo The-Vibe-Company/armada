@@ -75,7 +75,7 @@ effort = "high"
 
 [herdr.profiles.claude]
 harness = "claude"
-model = "claude-opus-5-5"
+model = "opus"
 effort = "high"
 
 [herdr.profiles.codex]
