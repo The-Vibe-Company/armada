@@ -10,6 +10,7 @@ import {
   getLease,
   getRuntimeHandle,
   heartbeatTimes,
+  lastAnsweredAt,
   lastCoordinatorSeen,
   lastEventTimes,
   latestEvents,
@@ -125,6 +126,9 @@ describe("live data", () => {
     await recordEvent(db, { project: P, ticket: "WID-2", kind: "report", phase: "shipping", prUrl: "u", at: at(3) });
     await recordEvent(db, { project: P, ticket: "WID-3", kind: "report", phase: "implementing", at: at(1) });
     await recordEvent(db, { project: "other", ticket: "WID-2", kind: "report", phase: "blocked", at: at(9) });
+    expect(Object.keys(await latestEvents(db, P, { tickets: ["WID-3"] }))).toEqual(["WID-3"]);
+    expect(await latestEvents(db, P, { tickets: [] })).toEqual({});
+    expect(await latestEvents(db, P, { since: at(2), tickets: ["WID-3"] })).toEqual({});
     const latest = await latestEvents(db, P, { since: at(2) });
     expect(Object.keys(latest)).toEqual(["WID-2"]);
     expect(latest["WID-2"]).toMatchObject({ kind: "report", phase: "shipping", prUrl: "u", at: at(3).toISOString() });
@@ -211,6 +215,10 @@ describe("the coordinator's inbox", () => {
 
     const closed = await question();
     await resolveInboxItem(db, { project: P, id: closed, resolution: "answered", at: at(22) });
+    expect(await lastAnsweredAt(db, P, { tickets: ["WID-5"] })).toEqual({ "WID-5": at(22).toISOString() });
+    expect(await lastAnsweredAt(db, P, { tickets: [] })).toEqual({});
+    expect(await lastAnsweredAt(db, P, { tickets: ["WID-999"] })).toEqual({});
+    expect(await lastAnsweredAt(db, P, { since: at(23), tickets: ["WID-5"] })).toEqual({});
     expect(await addRequest(db, answer(closed, "late"))).toBeNull();
 
     const launch: NewRequest = {

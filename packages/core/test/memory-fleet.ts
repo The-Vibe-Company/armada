@@ -155,7 +155,14 @@ export function memoryFleet(): FleetStore & {
       const since = opts.since?.toISOString() ?? "";
       const out: Record<string, EventRow> = {};
       for (const e of events) {
-        if (e.kind === "heartbeat" || e.project !== project || !e.ticket || e.at < since) continue;
+        if (
+          e.kind === "heartbeat" ||
+          e.project !== project ||
+          !e.ticket ||
+          e.at < since ||
+          (opts.tickets && !opts.tickets.includes(e.ticket))
+        )
+          continue;
         const was = out[e.ticket];
         if (!was || e.at > was.at || (e.at === was.at && e.id > was.id)) out[e.ticket] = e;
       }
@@ -460,7 +467,8 @@ export function memoryFleet(): FleetStore & {
           ["question", "plan"].includes(i.kind) &&
           i.ticket &&
           i.resolvedAt &&
-          i.resolvedAt >= since
+          i.resolvedAt >= since &&
+          (!opts.tickets || opts.tickets.includes(i.ticket))
         )
           if (!out[i.ticket] || i.resolvedAt > (out[i.ticket] ?? "")) out[i.ticket] = i.resolvedAt;
       return out;
