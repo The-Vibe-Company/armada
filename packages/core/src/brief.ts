@@ -8,6 +8,7 @@
 // once, within the hour, which makes a copy left in a transcript useless.
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
 import { inFlight } from "./fleet.ts";
+import { herdrChoice } from "./herdr-profile.ts";
 import {
   type Connection,
   type Fetch,
@@ -25,6 +26,7 @@ import { planRule } from "./phases.ts";
 import {
   checkRequestedProfile,
   chooseProfile,
+  type HerdrProfileChoice,
   hasProfileRules,
   type ProfileChoice,
   ProfileError,
@@ -115,6 +117,8 @@ export interface Brief {
   /** Runs that version where a global install is refused. */
   fallback: string;
   claimCommand: string;
+  /** Actual local runtime handle, supplied after herdr creates the worktree. */
+  handle?: string;
   /** `armada login --launch-token <token>`, the worker's first command, and when the token expires; null without one. */
   launch: { command: string; expiresAt: string } | null;
   /** Why there is no launch token, when there is none. */
@@ -307,6 +311,7 @@ export interface BuildBriefInput {
   /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
   validation?: ValidationChoice | null;
   now: Date;
+  herdr?: { choice: HerdrProfileChoice; handle: string };
 }
 
 /** Thrown for a profile that does not exist or cannot be chosen (a usage mistake). */
@@ -328,12 +333,14 @@ export function buildBrief(input: BuildBriefInput): Brief {
 
   let choice: ProfileChoice | null;
   try {
-    choice = chooseProfile(config, {
-      ticket: ticket.id,
-      labels: ticket.labels,
-      requested: input.profile,
-      reason: input.reason ?? null,
-    });
+    choice = input.herdr
+      ? herdrChoice(input.herdr.choice)
+      : chooseProfile(config, {
+          ticket: ticket.id,
+          labels: ticket.labels,
+          requested: input.profile,
+          reason: input.reason ?? null,
+        });
   } catch (err) {
     if (err instanceof ProfileError) throw new BriefError(err.message);
     throw err;
@@ -374,10 +381,14 @@ export function buildBrief(input: BuildBriefInput): Brief {
   const pkg = `${ARMADA_PACKAGE}@${pinned}`;
   const branch = ticket.branchName;
   const runtime = choice?.profile.runtime ?? "conductor";
-  const handle = runtime === "claude-code" ? subagentName(ticket.id) : CONDUCTOR_HANDLE;
+  const handle = input.herdr
+    ? shellWord(input.herdr.handle)
+    : runtime === "claude-code"
+      ? subagentName(ticket.id)
+      : CONDUCTOR_HANDLE;
   const claimCommand = [
     `armada claim ${ticket.id} --runtime ${runtime} --handle ${handle}`,
-    branch ? ` --branch ${branch}` : "",
+    branch ? ` --branch ${shellWord(branch)}` : "",
     choice ? ` --profile ${shellWord(choice.name)}` : "",
     choice?.reason ? ` --reason ${shellWord(choice.reason)}` : "",
     ...(input.validation?.rules.length
@@ -438,6 +449,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
     install: `npm install -g ${pkg}`,
     fallback: `npm exec --yes --package=${pkg} -- armada`,
     claimCommand,
+    ...(input.herdr ? { handle: input.herdr.handle } : {}),
     launch: launch
       ? {
           command: `armada login --launch-token ${shellWord(launch.token)}${launch.apiUrl ? ` --api-url ${shellWord(launch.apiUrl)}` : ""}`,
@@ -525,7 +537,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     b.install,
     ...(b.launch ? [b.launch.command] : []),
     b.claimCommand,
-    `armada heartbeat --every 5m --ticket ${t.id} --handle ${subagent ? subagentName(t.id) : CONDUCTOR_HANDLE} --parent "$PPID"${subagent ? "" : " --background"}`,
+    `armada heartbeat --every 5m --ticket ${t.id} --handle ${b.handle ? shellWord(b.handle) : subagent ? subagentName(t.id) : CONDUCTOR_HANDLE} --parent "$PPID"${subagent ? "" : " --background"}`,
     "```",
     "",
     subagent
@@ -544,10 +556,18 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     "## Branch",
     "",
-    t.branch
-      ? `Work on \`${t.branch}\`. Your ${subagent ? "worktree starts on a branch Claude Code" : "workspace starts on a branch Conductor"} named; rename it before your first commit: \`git branch -m ${t.branch}\`.`
-      : "Linear suggests no branch name for this ticket; name yours after the ticket id.",
+    b.runtime === "herdr"
+      ? `Herdr already created your own worktree on \`${t.branch}\`. Work only there. Before editing, check \`git branch --show-current\` and \`git rev-parse --show-toplevel\`; do not rename the branch or switch the coordinator's checkout. Your runtime handle is \`${b.handle}\`.`
+      : t.branch
+        ? `Work on \`${t.branch}\`. Your ${subagent ? "worktree starts on a branch Claude Code" : "workspace starts on a branch Conductor"} named; rename it before your first commit: \`git branch -m ${t.branch}\`.`
+        : "Linear suggests no branch name for this ticket; name yours after the ticket id.",
     "",
+    ...(b.runtime === "herdr"
+      ? [
+          `You share the coordinator's machine, but own only ${t.id}. Pass \`--ticket ${t.id}\` to every \`armada report\`, \`ask\`, \`release\` and \`validate\`; an inherited \`ARMADA_TICKET\` may name the coordinator's ticket. Herdr keeps your terminal alive when the coordinator disconnects.`,
+          "",
+        ]
+      : []),
     ...(subagent
       ? [
           `You share the coordinator's machine and environment: its \`ARMADA_TICKET\`, if it has one, is not yours. Pass \`--ticket ${t.id}\` to every \`armada report\`, \`ask\` and \`release\`. You end when the coordinator's session ends: report at every step, so the ticket always says where you are.`,

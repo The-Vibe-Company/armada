@@ -35,7 +35,7 @@ describe("tracker labels", () => {
         scope: "team",
         missing: ["awaiting-approval", "shipping", "blocked", "ready-to-merge", "awaiting-validation"],
       },
-      { name: "Agent runtime", id: null, scope: null, missing: ["Claude Code", "Codex", "Conductor"] },
+      { name: "Agent runtime", id: null, scope: null, missing: ["Claude Code", "Codex", "Conductor", "Herdr"] },
     ]);
     expect(checkLabels(state).map((c) => [c.level, c.message])).toEqual([
       [
@@ -64,6 +64,7 @@ describe("tracker labels", () => {
       "Agent runtime / Claude Code",
       "Agent runtime / Codex",
       "Agent runtime / Conductor",
+      "Agent runtime / Herdr",
     ]);
     expect(linear.created[0]).toEqual({ name: "awaiting-approval", parentId: "g-shared" });
     expect(linear.created[6]).toEqual({

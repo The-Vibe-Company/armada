@@ -209,7 +209,7 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
   if (reason && !profile)
     throw new UsageError("--reason goes with --profile: it says why the routed profile is not used");
   try {
-    checkRequestedProfile(config, profile);
+    checkRequestedProfile(config, profile, a.options.runtime?.toLowerCase() === "herdr" ? "herdr" : "conductor");
   } catch (err) {
     if (err instanceof ProfileError) throw new UsageError(err.message);
     throw err;

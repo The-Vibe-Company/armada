@@ -4,6 +4,7 @@
 // warning, never a failure.
 import { ArmadaApiError } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
+import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import type { Fleet, InboxItem } from "./live.ts";
@@ -272,12 +273,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       throw new Refusal(`${ticket.id} already carries the agent phase "${ticket.agentPhase}"`, another);
     if (input.profile)
       try {
-        profile = chooseProfile(config, {
+        const selection = {
           ticket: ticket.id,
           labels: ticket.labels.map((l) => l.name),
           requested: input.profile,
           reason: input.reason ?? null,
-        });
+        };
+        const local = input.runtime.toLowerCase() === "herdr";
+        const choice = local ? chooseProfile(config, selection, "herdr") : null;
+        profile = local ? (choice ? herdrChoice(choice) : null) : chooseProfile(config, selection);
       } catch (err) {
         if (err instanceof ProfileError)
           throw new Refusal(err.message, `armada brief ${ticket.id}, which shows the profile the ticket routes to`);
