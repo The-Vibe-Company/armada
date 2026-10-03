@@ -268,6 +268,60 @@ effort = "high"
     const old = { ...config, tracker: { ...config.tracker, parkedLabel: undefined as unknown as string } };
     expect(buildStatus({ config: old, program, forge: null, now: NOW }).frontier.map((t) => t.id)).toEqual(["DEMO-4"]);
   });
+  test("lists the last ten tickets merged, newest first, from the reading and Armada's merges since", () => {
+    const at = (h: number) => `2026-03-0${h < 24 ? 3 : 4}T${String(h % 24).padStart(2, "0")}:00:00.000Z`;
+    const pr = (n: number, state: "merged" | "open" | "closed", mergedAt: string | null = null) => ({
+      url: `https://github.com/acme/widgets/pull/${n}`,
+      number: n,
+      repo: "acme/widgets",
+      title: `#${n}`,
+      state,
+      mergedAt,
+    });
+    const done = { statusType: "completed" as const, parentId: "DEMO-1" };
+    const twelve = Array.from({ length: 12 }, (_, k) =>
+      issue(`DEMO-${10 + k}`, { ...done, completedAt: at(k + 1), prs: [pr(10 + k, "merged", at(k))] }),
+    );
+    const r = buildStatus({
+      config: demoConfig(),
+      program: {
+        rootId: "DEMO-1",
+        fetchedAt: at(30),
+        warnings: [],
+        comments: [],
+        issues: [
+          issue("DEMO-1"),
+          ...twelve,
+          // Closed by hand: no merged pull request, so not merged.
+          issue("DEMO-2", { ...done, completedAt: at(31), prs: [pr(2, "closed")] }),
+          issue("DEMO-3", { ...done, completedAt: at(31) }),
+          // Merged but not read with its merge time: when the ticket closed.
+          issue("DEMO-4", { ...done, completedAt: at(29), prs: [pr(4, "merged")] }),
+          // Merged by Armada after the reading, still In Progress there.
+          issue("DEMO-5", { statusType: "started", parentId: "DEMO-1", prs: [pr(5, "open")] }),
+          // Canceled after its pull request merged.
+          issue("DEMO-6", { statusType: "canceled", parentId: "DEMO-1", prs: [pr(6, "merged", at(32))] }),
+        ],
+      },
+      forge: null,
+      live: {
+        after: at(30),
+        events: { "DEMO-5": { kind: "merge", phase: null, message: null, at: at(33) } },
+        handles: {},
+      },
+      now: NOW,
+    });
+    expect(r.merged?.map((t) => [t.id, t.mergedAt, t.pr.number])).toEqual([
+      ["DEMO-5", at(33), 5],
+      ["DEMO-4", at(29), 4],
+      ...[21, 20, 19, 18, 17, 16, 15, 14].map((n) => [`DEMO-${n}`, at(n - 10), n]),
+    ]);
+    expect(r.merged?.[0]).toMatchObject({
+      title: "DEMO-5",
+      spec: null,
+      pr: { url: "https://github.com/acme/widgets/pull/5" },
+    });
+  });
 });
 
 describe("refreshStatusSources", () => {

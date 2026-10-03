@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { InboxItem } from "../src/live.ts";
-import { buildOverview, type ProjectReading, pipeline } from "../src/overview.ts";
+import { buildOverview, flowStep, type ProjectReading, pipeline } from "../src/overview.ts";
 import type { InFlightTicket, StatusReport } from "../src/status.ts";
 
 const NOW = new Date("2026-03-04T10:00:00Z");
@@ -343,5 +343,67 @@ describe("fleet overview", () => {
     expect(at({ phase: "shipping", pr: pr("failure") })).toEqual({ step: 4, state: "fail" });
     expect(at({ phase: "ready-to-merge", pr: pr("success", "CONFLICTING") })).toEqual({ step: 5, state: "fail" });
     expect(at({ phase: "blocked" })).toEqual({ step: 1, state: "fail" });
+  });
+
+  test("the board's flow places each session in its step, a waiting one in the step it left", () => {
+    const pr = (ci: "success" | "pending" | "none" | null) => ({
+      number: 1,
+      url: "u",
+      title: "",
+      draft: false,
+      ci,
+      mergeable: "MERGEABLE",
+    });
+    const step = (t: Partial<InFlightTicket>, earlier: InFlightTicket["phase"][] = []) =>
+      flowStep(ticket("W-1", t), earlier);
+    expect(step({ phase: "planning" })).toBe("plan");
+    expect(step({ phase: "awaiting-approval" })).toBe("plan");
+    expect(step({ phase: "implementing" })).toBe("implementing");
+    // The stage the worker reported wins over the pull request's checks.
+    expect(step({ phase: "shipping", shippingStage: "review", pr: pr("pending") })).toBe("review");
+    expect(step({ phase: "shipping", shippingStage: "ci", pr: pr(null) })).toBe("ci");
+    expect(step({ phase: "shipping", pr: pr("none") })).toBe("review");
+    expect(step({ phase: "shipping", pr: pr("pending") })).toBe("ci");
+    expect(step({ phase: "ready-to-merge", pr: pr("success") })).toBe("ci");
+    expect(step({ phase: "merged", pr: pr("success") })).toBe("merged");
+    // Blocked or awaiting a validation: the last working phase of its timeline.
+    expect(step({ phase: "blocked" }, ["planning", "implementing", "blocked"])).toBe("implementing");
+    expect(step({ phase: "blocked", pr: pr("success") }, ["shipping", "blocked"])).toBe("ci");
+    expect(step({ phase: "awaiting-validation" }, ["planning", "awaiting-validation"])).toBe("plan");
+    // No working phase known: where its pull request is, else the plan.
+    expect(step({ phase: "blocked", pr: pr(null) }, ["blocked"])).toBe("review");
+    expect(step({ phase: "awaiting-validation" })).toBe("plan");
+  });
+
+  test("a blocked row keeps the step its timeline left, and each project carries its last merges", () => {
+    const merged = [
+      {
+        id: "W-9",
+        title: "Done",
+        url: "https://linear.app/acme/issue/W-9",
+        spec: null,
+        mergedAt: at("08:00"),
+        pr: { number: 9, url: "https://github.com/acme/widgets/pull/9" },
+      },
+    ];
+    const base = reading("widgets", [ticket("W-1", { phase: "blocked", since: at("09:40") })], {
+      inbox: [],
+      coordinatorSeenAt: null,
+    });
+    const widgets: ProjectReading = {
+      ...base,
+      report: base.report ? { ...base.report, merged } : null,
+      history: {
+        comments: [],
+        events: [
+          { ticket: "W-1", kind: "claim", phase: "planning", message: null, at: at("09:00") },
+          { ticket: "W-1", kind: "report", phase: "implementing", message: "started", at: at("09:20") },
+          { ticket: "W-1", kind: "ask", phase: "blocked", message: "which?", at: at("09:40") },
+        ],
+      },
+    };
+    const o = buildOverview({ projects: [widgets], live: { state: "ok", error: null }, now: NOW });
+    expect(o.rows.map((r) => [r.id, r.step])).toEqual([["W-1", "implementing"]]);
+    expect(o.projects[0]?.merged).toEqual(merged);
   });
 });

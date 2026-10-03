@@ -494,16 +494,25 @@ export function Card({
   href,
   className,
   prefetch = true,
+  external = false,
 }: {
   children: ReactNode;
   href?: string;
   className?: string;
   /** As a row's. */
   prefetch?: boolean;
+  /** Another site's page: it opens in a new tab, as Enter on the row does. */
+  external?: boolean;
 }) {
   if (href)
     return (
-      <Link href={href} prefetch={prefetch} className={cx("ui-card is-link", className)} data-row="">
+      <Link
+        href={href}
+        prefetch={prefetch}
+        className={cx("ui-card is-link", className)}
+        data-row=""
+        {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
+      >
         {children}
       </Link>
     );

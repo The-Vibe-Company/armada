@@ -3193,7 +3193,7 @@ a.ui-figure:hover {
     display: none;
   }
 }
-/* The board (THE-968): a lane's six columns, wells on the deck, cards in
+/* The board (THE-968, THE-988): a lane's five columns, wells on the deck, cards in
    them. On a desk the tracks line up from lane to lane (--ov-board), and a
    column no lane fills is a narrow strip with its name standing up; a card is
    never wider than a card. Past the columns' room the lane scrolls sideways
@@ -3247,13 +3247,6 @@ a.ui-figure:hover {
 }
 .ov-col.is-empty .ov-col-h {
   color: var(--text-3);
-}
-/* The owner's column in its orange, the stuck one in red, while they hold a card. */
-.ov-col.is-validate:not(.is-empty) .ov-col-name {
-  color: var(--accent);
-}
-.ov-col.is-blocked:not(.is-empty) .ov-col-name {
-  color: var(--critical);
 }
 .ov-col.is-narrow {
   align-items: center;
@@ -3331,7 +3324,7 @@ a.ui-figure:hover {
   font-size: var(--fs-small);
   font-weight: 500;
 }
-/* The harness gives way to the badge: its name ends in an ellipsis first. */
+/* The harness gives way to the badges: its name ends in an ellipsis first, then they wrap among themselves. */
 .ov-card-foot {
   display: flex;
   align-items: center;
@@ -3350,9 +3343,30 @@ a.ui-figure:hover {
   margin-right: 6px;
   vertical-align: 1px;
 }
-.ov-card-foot .ui-pill {
-  flex: none;
+.ov-card-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
   margin-left: auto;
+}
+/* A merged ticket: one line, quieter than the work in flight; ten of them stay short. */
+.ui-card.ov-card.is-merged,
+.sh-main[data-density="airy"] .ui-card.ov-card.is-merged {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+}
+.ov-card.is-merged .ov-card-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-small);
+  font-weight: 400;
+  color: var(--text-2);
+  -webkit-line-clamp: 1;
+  overflow-wrap: normal;
+  word-break: break-all;
 }
 /* A card that just reported glows blue from its top, once, then fades (opacity only). */
 .ov-card.is-fresh::before {

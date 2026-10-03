@@ -8,7 +8,7 @@ import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
 import { workerLivenessAt } from "./fleet.ts";
 import type { CoordinatorPresence, InboxItem, InboxReadEvent, SessionRecord } from "./live.ts";
 import { REQUEST_KINDS } from "./request-kinds.ts";
-import type { FrontierTicket, InFlightTicket, StatusReport } from "./status.ts";
+import type { FrontierTicket, InFlightTicket, MergedTicket, StatusReport } from "./status.ts";
 import {
   type CoordinatorTrack,
   coordinatorTrack,
@@ -49,6 +49,42 @@ export function pipeline(t: Pick<InFlightTicket, "phase" | "pr">): Pipeline {
   };
   const p = at[t.phase];
   return pr?.mergeable === "CONFLICTING" ? { ...p, state: "fail" } : p;
+}
+
+/** A ticket's flow on the overview's board (THE-988), left to right. */
+export const FLOW_STEPS = ["plan", "implementing", "review", "ci", "merged"] as const;
+export type FlowStep = (typeof FLOW_STEPS)[number];
+
+/** Where a working phase sits in the flow; a waiting phase sits in the step it left. */
+const PHASE_STEP: Partial<Record<AgentPhase, FlowStep>> = {
+  planning: "plan",
+  "awaiting-approval": "plan",
+  released: "plan",
+  implementing: "implementing",
+  "ready-to-merge": "ci",
+  merged: "merged",
+};
+
+/**
+ * A session's step in the flow: its phase's, shipping by its stage (review
+ * until the pull request has checks when no stage was reported); blocked or
+ * awaiting a validation, the step of its last working phase (`earlier`, its
+ * timeline's phases oldest first), else where its pull request is, else plan.
+ */
+export function flowStep(
+  t: Pick<InFlightTicket, "phase" | "shippingStage" | "pr">,
+  earlier: readonly AgentPhase[] = [],
+): FlowStep {
+  const checked = !!t.pr?.ci && t.pr.ci !== "none";
+  const shipping = t.shippingStage ?? (checked ? "ci" : "review");
+  const of = (phase: AgentPhase) => (phase === "shipping" ? shipping : PHASE_STEP[phase]);
+  const own = of(t.phase);
+  if (own) return own;
+  for (const phase of [...earlier].reverse()) {
+    const step = of(phase);
+    if (step && phase !== "released") return step;
+  }
+  return t.pr ? shipping : "plan";
 }
 
 /** What waits for the owner, most urgent kind first. */
@@ -105,6 +141,8 @@ export interface FleetRow extends InFlightTicket {
   /** The oldest open question of this ticket in the coordinator's inbox. */
   question: { id: number; body: string; at: string; author: string | null; answer: PendingAnswer | null } | null;
   pipeline: Pipeline;
+  /** Its column on the overview's board. */
+  step: FlowStep;
   /** Set when the row is in the waiting list. */
   waiting: WaitingKind | null;
 }
@@ -127,6 +165,8 @@ export interface ProjectOverview {
   progress: { done: number; total: number } | null;
   health: ProjectHealth | null;
   pullRequests: StatusReport["pullRequests"];
+  /** Its last tickets merged, newest first (THE-988). */
+  merged: MergedTicket[];
   requests: InboxItem[];
   slug: string;
   name: string;
@@ -374,6 +414,12 @@ export function buildOverview(input: {
     const silentAfterMinutes = p.report?.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes;
     for (const t of tickets) {
       const q = questions.get(t.id);
+      const tl = sessionTimeline({
+        ticket: t,
+        history: history.get(t.id) ?? { comments: [], events: [] },
+        silentAfterMinutes,
+        now: input.now,
+      });
       rows.push({
         ...t,
         session: p.live?.sessions?.find((session) => session.ticket === t.id && session.releasedAt === null) ?? null,
@@ -382,18 +428,13 @@ export function buildOverview(input: {
           ? { id: q.id, body: q.body, at: q.createdAt, author: q.author, answer: answers.get(q.id) ?? null }
           : null,
         pipeline: pipeline(t),
+        step: flowStep(
+          t,
+          tl.phases.map((s) => s.phase),
+        ),
         waiting: perTicket.get(t.id)?.kind ?? null,
       });
-      timeline.rows.push({
-        project: p.slug,
-        id: t.id,
-        timeline: sessionTimeline({
-          ticket: t,
-          history: history.get(t.id) ?? { comments: [], events: [] },
-          silentAfterMinutes,
-          now: input.now,
-        }),
-      });
+      timeline.rows.push({ project: p.slug, id: t.id, timeline: tl });
     }
 
     for (const f of p.report?.frontier ?? []) ready.push({ ...f, project: p.slug, launch: launches.get(f.id) ?? null });
@@ -426,6 +467,7 @@ export function buildOverview(input: {
           })
         : null,
       pullRequests: p.report?.pullRequests ?? null,
+      merged: p.report?.merged ?? [],
       requests: inbox.filter((item) => REQUEST_KINDS.includes(item.kind as (typeof REQUEST_KINDS)[number])),
       slug: p.slug,
       name: p.name,

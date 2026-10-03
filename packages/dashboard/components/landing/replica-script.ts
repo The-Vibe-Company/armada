@@ -4,7 +4,7 @@
 // back to work, a hand-back arrives, then its merge waits for the owner, "To
 // validate". Pure: each beat is a new overview, built from the one before,
 // the dashboard's overview draws it.
-import type { AgentPhase, FleetOverview, FleetRow, WaitingItem } from "@armada/core/read";
+import { type AgentPhase, type FleetOverview, type FleetRow, flowStep, type WaitingItem } from "@armada/core/read";
 
 /** The question the coordinator answers, and the hand-back whose merge the owner validates. */
 export const ASKED = "WID-15";
@@ -15,6 +15,17 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 function rowOf(o: FleetOverview, id: string): FleetRow | undefined {
   return o.rows.find((r) => r.id === id);
+}
+
+/** A row's column on the board, after its phase or its timeline changed. */
+function restep(o: FleetOverview, id: string) {
+  const row = rowOf(o, id);
+  const tl = o.timeline?.rows.find((r) => r.id === id)?.timeline;
+  if (row)
+    row.step = flowStep(
+      row,
+      tl?.phases.map((p) => p.phase),
+    );
 }
 
 /** A worker's new phase on its row and its timeline: the last segment closes, a new one opens now. */
@@ -34,6 +45,7 @@ function movePhase(o: FleetOverview, id: string, phase: AgentPhase, at: number, 
     tl.phases.push({ phase, from: iso(at), to: null, summary });
     tl.reports.push(iso(at));
   }
+  restep(o, id);
 }
 
 const isOpen = (v: FleetOverview["validations"][number]) => v.ticket === HANDED_BACK && !v.decision;
@@ -59,6 +71,7 @@ export function opening(base: FleetOverview): FleetOverview {
     last.phase = "shipping";
     last.summary = "Pull request open, waiting for CI";
   }
+  restep(o, HANDED_BACK);
   return o;
 }
 
