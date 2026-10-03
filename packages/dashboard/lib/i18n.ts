@@ -585,6 +585,8 @@ const en = {
     } satisfies Record<CardBadge, string>,
     /** Before a merged ticket's time, for a screen reader. */
     mergedAgo: "Merged",
+    /** Where a merged ticket's card goes, for a screen reader. */
+    mergedOpens: (n: number) => `opens pull request #${n} on GitHub in a new tab`,
     kinds: { question: "Question", approval: "Plan to approve", "hand-back": "Ready to merge" } satisfies Record<
       DecisionKind,
       string
@@ -1770,6 +1772,7 @@ const fr: Strings = {
       ready: "Prêt à merger",
     },
     mergedAgo: "Mergé",
+    mergedOpens: (n) => `ouvre la pull request #${n} sur GitHub dans un nouvel onglet`,
     kinds: { question: "Question", approval: "Plan à approuver", "hand-back": "Prêt à fusionner" },
     approvePlan: "Approuver le plan",
     requestChanges: "Demander des changements",

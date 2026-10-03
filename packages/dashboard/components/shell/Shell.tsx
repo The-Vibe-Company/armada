@@ -169,7 +169,10 @@ function Frame({ children }: { children: ReactNode }) {
         const focused = document.activeElement;
         if (row && (!focused || focused === document.body || focused.id === "content")) {
           e.preventDefault();
-          router.push(row.getAttribute("href") ?? "/");
+          const href = row.getAttribute("href") ?? "/";
+          // Another site's page (a merged pull request) opens in a new tab, as a click does.
+          if (row.target === "_blank") window.open(href, "_blank", "noreferrer");
+          else router.push(href);
         }
       }
     };

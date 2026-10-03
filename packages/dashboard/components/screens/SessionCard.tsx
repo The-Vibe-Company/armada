@@ -99,11 +99,11 @@ export function SessionCard({
 export function MergedCard({ ticket: m }: { ticket: MergedTicket }) {
   const { t } = useShell();
   return (
-    <Card href={m.pr.url} prefetch={false} className="ov-card is-merged">
+    <Card href={m.pr.url} prefetch={false} external className="ov-card is-merged">
       <span className="ov-card-id">{m.id}</span>
       <span className="ov-card-title">
         {m.title}
-        <span className="sr-only"> #{m.pr.number}</span>
+        <span className="sr-only"> · {t.overview.mergedOpens(m.pr.number)}</span>
       </span>
       <span className="ov-card-ago">
         <span className="sr-only">{t.overview.mergedAgo} </span>

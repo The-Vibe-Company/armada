@@ -1,7 +1,7 @@
 // `armada status`: one JSON-serializable reading of the fleet, shared by the
 // CLI and, later, the dashboard.
 import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
-import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
+import { freshEvent, frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
@@ -311,7 +311,9 @@ export function buildStatus({
  * The last `MERGED_SHOWN` tickets merged, newest first: Done leaves out of
  * flight with a pull request GitHub read as merged, at its merge time (else
  * when the ticket closed), and those Armada saw merged since the reading, at
- * that time. A Done ticket without a merged pull request is left out.
+ * that time. A Done ticket without a merged pull request is left out, and so
+ * is one whose pull request GitHub's reading no longer holds (it keeps the 30
+ * pull requests closed last, `github.ts`): a busy repository may list fewer.
  */
 export function mergedTickets(
   m: Model,
@@ -321,8 +323,8 @@ export function mergedTickets(
   const out: MergedTicket[] = [];
   for (const issue of m.program) {
     if (!m.isLeaf(issue) || inFlight.has(issue.id)) continue;
-    const event = live?.events[issue.id];
-    const fresh = live && event?.kind === "merge" && event.at > live.after ? event : null;
+    const event = freshEvent(issue.id, { live });
+    const fresh = event?.kind === "merge" ? event : null;
     const merged = issue.prs
       .filter((p) => p.state === "merged")
       .sort(byMergeTime)
