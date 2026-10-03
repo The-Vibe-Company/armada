@@ -111,7 +111,7 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     )
   )
     out.push(
-      'Dashboard requests: deliver an answer-request, then armada answer <id> "<answer>"; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>". Handle or decline merge-request, release-request and plan-changes, then resolve them with armada answer <id> "<result>". Plan changes are not an approval.',
+      'Dashboard requests: armada answer <id> "<answer>" delivers herdr answer-requests automatically; deliver answers for other runtimes first; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>". Handle or decline merge-request, release-request and plan-changes, then resolve them with armada answer <id> "<result>". Plan changes are not an approval.',
     );
   return out;
 }
