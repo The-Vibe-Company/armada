@@ -5,6 +5,7 @@ import {
   BriefError,
   buildBrief,
   buildModel,
+  CONFIG_FILE,
   type Credentials,
   checkPublished,
   checkRequestedProfile,
@@ -17,16 +18,19 @@ import {
   type HerdrHarness,
   type HerdrProfileChoice,
   herdrClaimHandle,
+  herdrHarnessKind,
+  herdrHarnessLabel,
   inFlight,
   LINEAR_KEY,
   ProfileError,
+  parseConfig,
   type ValidationChoice,
   ValidationChoiceError,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { Herdr, type HerdrHandle } from "./herdr.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
-import { ensureLocalTools } from "./local-tools.ts";
+import { ensureLocalProfile } from "./local-tools.ts";
 import { requireSignIn } from "./login.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
@@ -72,13 +76,13 @@ async function launchLocal(
   const o = args.options;
   if (!input || extra.length || !/^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(input) || o.runtime !== "herdr")
     throw new UsageError(
-      "launch needs a ticket and runtime: armada launch <ticket> --runtime herdr [--harness claude|codex|opencode]",
+      "launch needs a ticket and runtime: armada launch <ticket> --runtime herdr [--harness claude|codex|opencode|deepseek]",
     );
   const requested = o.profile?.trim() || null;
   const reason = o.reason?.trim() || null;
   if (reason && !requested) throw new UsageError("--reason goes with --profile");
   if (o.harness && !HERDR_HARNESSES.includes(o.harness as HerdrHarness))
-    throw new UsageError("--harness must be claude, codex or opencode");
+    throw new UsageError("--harness must be claude, codex, opencode or deepseek (OpenCode + DeepSeek model)");
   try {
     checkRequestedProfile(config, requested, "herdr");
   } catch (error) {
@@ -137,7 +141,18 @@ async function launchLocal(
     interactive: args.json ? false : io.interactive,
     exec: (command, argv, options) => execute(command, argv, { ...options, timeoutMs: options.timeoutMs ?? 10_000 }),
   };
-  if (!(await ensureLocalTools(preflight, choice.profile.harness))) return 1;
+  const model = await ensureLocalProfile(preflight, configPath, choice.name, choice.profile);
+  if (model === null) return 1;
+  choice.profile.model = model;
+  // Claim reads configuration in the worker worktree, not the coordinator checkout.
+  const openCode = herdrHarnessKind(choice.profile.harness) === "opencode";
+  const configSnapshot = openCode ? await io.readFile(configPath) : null;
+  if (openCode) {
+    if (!io.writeFile || configSnapshot === null)
+      throw new UsageError("local OpenCode launch needs the configuration copied into its worker worktree");
+    if (JSON.stringify(parseConfig(configSnapshot, configPath)) !== JSON.stringify(config))
+      throw new UsageError("configuration changed during preflight; retry launch with the saved model");
+  }
   const root = await io.exec("git", ["rev-parse", "--show-toplevel"], { cwd: io.cwd, timeoutMs: 10_000 });
   if (root.code !== 0 || !root.stdout.trim().startsWith("/"))
     throw new UsageError("local launch must run in a git repository");
@@ -160,6 +175,7 @@ async function launchLocal(
   try {
     await runtime.ensureServer();
     handle = await runtime.create({ repo, branch, base, ticket: ticketId, secrets: config.secrets.names });
+    if (configSnapshot !== null && io.writeFile) await io.writeFile(join(handle.path, CONFIG_FILE), configSnapshot);
     const b = buildBrief({
       config,
       ticket,
@@ -200,6 +216,8 @@ async function launchLocal(
     runtime: "herdr",
     profile: choice.name,
     harness: choice.profile.harness,
+    actualHarness: herdrHarnessKind(choice.profile.harness),
+    harnessDescription: herdrHarnessLabel(choice.profile.harness),
     branch,
     handle: herdrClaimHandle(handle),
     path: handle.path,
@@ -209,7 +227,7 @@ async function launchLocal(
   io.stdout(
     args.json
       ? `${JSON.stringify(result, null, 2)}\n`
-      : `Launched ${ticketId} with ${result.harness} on profile ${choice.name}.\nWorktree: ${handle.path}\nHandle: ${result.handle}\nThe worker signs in and claims its ticket from the brief.\n${watch.line}\n`,
+      : `Launched ${ticketId} with ${result.harnessDescription} on profile ${choice.name}.\nWorktree: ${handle.path}\nHandle: ${result.handle}\nThe worker signs in and claims its ticket from the brief.\n${watch.line}\n`,
   );
   return 0;
 }

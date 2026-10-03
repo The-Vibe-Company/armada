@@ -309,7 +309,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       );
     }
     lines.push(
-      `Claimed ${ticket.id} for ${runtime.name} (${input.handle})${profile ? ` on profile ${profile.name}` : ""}.`,
+      `Claimed ${ticket.id} for ${runtime.name} (${input.handle})${profile ? ` on profile ${profile.name}${profile.profile.runtime === "herdr" ? ` (${profile.profile.agent})` : ""}` : ""}.`,
     );
   } else {
     lines.push(`${ticket.id} is already claimed by this session (${input.handle}); labels and state repaired.`);

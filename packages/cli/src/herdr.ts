@@ -1,6 +1,6 @@
 // Herdr's JSON CLI is the runtime boundary. Never surface arbitrary CLI output:
 // agent prompt may include a one-time launch token in its arguments or errors.
-import type { HerdrProfile, RuntimeState } from "@armada/core";
+import { type HerdrProfile, herdrHarnessKind, herdrHarnessLabel, type RuntimeState } from "@armada/core";
 import { type Io, UsageError } from "./io.ts";
 
 export class HerdrError extends UsageError {
@@ -27,7 +27,7 @@ export interface HerdrHandle extends HerdrClaimHandle {
 
 export const harnessArgs = (p: HerdrProfile): string[] => [
   "--model",
-  p.harness === "opencode" ? `${p.model.split("#")[0]}#${p.effort}` : p.model,
+  herdrHarnessKind(p.harness) === "opencode" ? `${p.model.split("#")[0]}#${p.effort}` : p.model,
   ...(p.harness === "codex"
     ? ["-c", `model_reasoning_effort=${JSON.stringify(p.effort)}`]
     : p.harness === "claude"
@@ -233,7 +233,7 @@ export class Herdr {
       "start",
       handle.agent,
       "--kind",
-      profile.harness,
+      herdrHarnessKind(profile.harness),
       "--pane",
       handle.pane,
       "--timeout",
@@ -305,6 +305,7 @@ export class Herdr {
       // A liveness ping must not overwrite a newly detected harness approval.
       if (heartbeat && state === "working" && current.agent_status === "blocked") state = "blocked";
     }
+    if (agent === "deepseek" || agent === herdrHarnessLabel("deepseek")) agent = herdrHarnessKind("deepseek");
     await this.call(["pane", "report-agent", pane, "--source", "armada", "--agent", agent, "--state", state], 5_000);
   }
 

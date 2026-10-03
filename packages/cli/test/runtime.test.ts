@@ -2,9 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Fleet, recordClaim } from "@armada/core";
+import { buildStatus, type Fleet, herdrHarnessLabel, parseConfig, recordClaim } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, issue, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import { herdrPhase, parseHerdrHandle, reportHerdr } from "../src/herdr.ts";
 import type { Io } from "../src/io.ts";
@@ -17,7 +17,7 @@ const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((h) => rm(h, { recursive: true, force: true })));
 });
-async function fixture() {
+async function fixture(harness = "codex") {
   const home = await mkdtemp(join(tmpdir(), "armada-runtime-"));
   homes.push(home);
   const store = memoryFleet();
@@ -86,12 +86,13 @@ async function fixture() {
             : args[0] === "pane"
               ? args[1] === "get"
                 ? {
-                    pane: { pane_id: handle.pane, workspace_id: handle.workspace, agent: "codex", agent_status: state },
+                    pane: { pane_id: handle.pane, workspace_id: handle.workspace, agent: harness, agent_status: state },
                   }
                 : { type: "ok" }
               : {
                   agent: {
                     name: handle.agent,
+                    agent: harness,
                     workspace_id: handle.workspace,
                     pane_id: handle.pane,
                     agent_status: state,
@@ -441,4 +442,89 @@ test("a second native approval between polls reappears without any worker report
   f.change({ sequence: 3 });
   expect(await run(["inbox", "--json"], f.io)).toBe(0);
   expect(JSON.parse(f.out.at(-1) ?? "{}").items.map((i: { kind: string }) => i.kind)).toEqual(["runtime-blocked"]);
+});
+
+test("DeepSeek profiles keep their model label while report, heartbeat, answer and stop drive OpenCode", async () => {
+  const f = await fixture("opencode");
+  const configText = `${DEMO_TOML}\n[herdr.profiles.backend]\nharness = "deepseek"\nmodel = "deepseek/deepseek-reasoner"\neffort = "high"\n`;
+  f.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? configText : null);
+  f.linear.post(
+    "DEMO-7",
+    `Agent claim — runtime: Herdr · session: ${rawHandle} · branch: ${branch} · profile: backend`,
+    NOW.toISOString(),
+  );
+  await f.store.saveWorkerProfile({
+    project: "widgets",
+    ticket: "DEMO-7",
+    at: NOW,
+    profile: {
+      name: "backend",
+      agent: herdrHarnessLabel("deepseek"),
+      model: "deepseek/deepseek-reasoner",
+      effort: "high",
+      fastMode: false,
+      routed: null,
+      reason: "back end work",
+      why: "semantic choice",
+    },
+  });
+  f.io.env.HERDR_ENV = "1";
+  f.io.env.HERDR_PANE_ID = handle.pane;
+  expect(await run(["report", "shipping", "--ticket", "DEMO-7", "--message", "checks passed"], f.io)).toBe(0);
+  expect(f.calls.at(-1)).toEqual([
+    "herdr",
+    "pane",
+    "report-agent",
+    handle.pane,
+    "--source",
+    "armada",
+    "--agent",
+    "opencode",
+    "--state",
+    "working",
+  ]);
+  expect(await run(["ask", "Allow this operation?", "--ticket", "DEMO-7"], f.io)).toBe(0);
+  f.io.processAlive = () => f.clock.now().getTime() < NOW.getTime() + 1000;
+  expect(
+    await run(["heartbeat", "--every", "1s", "--ticket", "DEMO-7", "--handle", rawHandle, "--parent", "4242"], f.io),
+  ).toBe(0);
+  expect(f.calls.at(-1)).toEqual([
+    "herdr",
+    "pane",
+    "report-agent",
+    handle.pane,
+    "--source",
+    "armada",
+    "--agent",
+    "opencode",
+    "--state",
+    "blocked",
+  ]);
+  expect(await run(["answer", "DEMO-7", "yes"], f.io)).toBe(0);
+  expect(f.calls).toContainEqual(["herdr", "pane", "run", handle.pane, "yes"]);
+  f.change({ state: "idle" });
+  expect(await run(["inbox", "--json"], f.io)).toBe(0);
+  const saved = await f.store.getRuntimeHandle("widgets", "DEMO-7");
+  expect(saved).not.toBeNull();
+  if (!saved) throw new Error("missing fixture claim");
+  const status = buildStatus({
+    config: parseConfig(configText),
+    program: {
+      rootId: "DEMO-1",
+      fetchedAt: NOW.toISOString(),
+      issues: [issue("DEMO-1"), issue("DEMO-7", { parentId: "DEMO-1", agentRuntime: "Herdr", agentPhase: "blocked" })],
+      comments: [],
+      warnings: [],
+    },
+    forge: null,
+    now: f.clock.now(),
+    live: { after: NOW.toISOString(), events: {}, handles: { "DEMO-7": saved } },
+  });
+  expect(status.inFlight[0]).toMatchObject({
+    profile: "backend",
+    harness: herdrHarnessLabel("deepseek"),
+    runtimeState: "idle",
+  });
+  expect(await run(["stop", "DEMO-7"], f.io)).toBe(0);
+  expect(f.calls).toContainEqual(["herdr", "worktree", "remove", "--workspace", handle.workspace]);
 });

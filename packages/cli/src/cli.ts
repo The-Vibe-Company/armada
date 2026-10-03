@@ -162,7 +162,8 @@ const COMMAND_HELP: Record<string, string> = {
                     A pull request the owner was asked about merges only once they approved
                     that exact head (or it with only the base merged in).
 `,
-  launch: `  launch <ticket> --runtime herdr [--harness claude|codex|opencode]
+  launch: `  launch <ticket> --runtime herdr [--harness claude|codex|opencode|deepseek]
+    deepseek (OpenCode + DeepSeek model) runs a persistent session
                     [--profile <name> [--reason <why>]] [--validation <n|none>]
                     Create the ticket's worktree and start a persistent local worker
                     with its launch-token brief. Profiles follow [[herdr.routing]]

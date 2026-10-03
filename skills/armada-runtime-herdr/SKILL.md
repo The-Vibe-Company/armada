@@ -11,7 +11,7 @@ Herdr keeps each worker in its own worktree and terminal across coordinator rest
 armada launch ABC-12 --runtime herdr --profile backend --reason "back end work" --json
 ```
 
-The profile in `[herdr.profiles]` selects the harness, model and effort. Label routing wins; use a reason for semantic selection or an override. An optional `--harness claude|codex|opencode` checks the selected profile. Launch checks tools first, creates a worktree, starts the harness, and sends the scoped worker brief. Its JSON gives the `handle` and worktree path, without the token. The worker signs in with its one-time launch token, claims the stored handle and starts its heartbeat. No claim after the configured timeout: read the pane, fix the cause, or revoke the unused launch with `armada launch revoke ABC-12`. Failed launch retains the worktree for inspection.
+The profile in `[herdr.profiles]` selects the harness, model and effort. Label routing wins; use a reason for semantic selection or an override. An optional `--harness claude|codex|opencode|deepseek` checks the selected profile. DeepSeek profiles run OpenCode with the exact configured DeepSeek model; Armada reports their runtime agent as `opencode` while preserving the DeepSeek profile label. Launch checks tools first, creates a worktree, starts the harness, and sends the scoped worker brief. Its JSON gives the `handle` and worktree path, without the token. The worker signs in with its one-time launch token, claims the stored handle and starts its heartbeat. No claim after the configured timeout: read the pane, fix the cause, or revoke the unused launch with `armada launch revoke ABC-12`. Failed launch retains the worktree for inspection.
 
 ## Message
 

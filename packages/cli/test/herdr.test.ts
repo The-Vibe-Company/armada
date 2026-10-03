@@ -264,3 +264,24 @@ test("real herdr terminal-write acknowledgments are empty on success, while read
   f.io.exec = async () => ({ code: 1, stdout: "", stderr: "" });
   await expect(new Herdr(f.io).report(claim.pane, "codex", "working")).rejects.toThrow("pane report-agent failed");
 });
+
+// DeepSeek uses Herdr's real OpenCode kind, so later agent prompts stay interactive.
+test("DeepSeek fallback starts OpenCode with its provider and delivers follow-up prompts", async () => {
+  const f = fake([agent(), agent("working"), agent("working")]);
+  const runtime = new Herdr(f.io);
+  const handle = { workspace: "w8", pane: "w8:p9", agent: "demo-7", path: "/work" };
+  await runtime.start(handle, {
+    harness: "deepseek",
+    model: "deepseek/deepseek-reasoner",
+    effort: "high",
+    extraArgs: [],
+  });
+  expect(f.calls[0]).toContain("opencode");
+  expect(f.calls[0]).not.toContain("deepseek");
+  expect(f.calls[0]?.slice(-2)).toEqual(["--model", "deepseek/deepseek-reasoner#high"]);
+  const brief = `Follow .agents/skills/armada-worker/SKILL.md\n${"quotes ' \" $(touch never)\n".repeat(100)}`;
+  await runtime.prompt(handle, brief);
+  await runtime.prompt(handle, "Plan approved. Continue.");
+  expect(f.calls[1]?.[4]).toBe(brief);
+  expect(f.calls[2]?.[4]).toBe("Plan approved. Continue.");
+});

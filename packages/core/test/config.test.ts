@@ -281,6 +281,33 @@ effort = "high"
     expect(defaults?.extraArgs).toEqual([]);
   });
 
+  test("DeepSeek profiles accept DeepSeek models across providers", () => {
+    const profile = (model: string) => `${DEMO_TOML}
+[herdr.profiles.deepseek]
+harness = "deepseek"
+model = "${model}"
+effort = "high"
+`;
+    for (const model of [
+      "deepseek/deepseek-reasoner",
+      "opencode/deepseek-v4-pro",
+      "openrouter/deepseek/deepseek-chat",
+      "opencode/deepseek-v4.1-flash#high",
+    ])
+      expect(parseConfig(profile(model)).herdr.profiles.deepseek?.harness).toBe("deepseek");
+    for (const arg of ["--model", "--model=openai/model-a", "-m", "-mopenai/model-a"])
+      expect(problemsOf(`${profile("deepseek/deepseek-reasoner")}extra_args = ["${arg}"]`)).toContain(
+        '"herdr.profiles.deepseek.extra_args" must not override the DeepSeek model; use "herdr.profiles.deepseek.model"',
+      );
+    for (const harness of ["opencode", "deepseek"]) {
+      const text = profile("").replace('harness = "deepseek"', `harness = "${harness}"`);
+      expect(parseConfig(text).herdr.profiles.deepseek?.model).toBe("");
+      expect(parseConfig(text.replace('model = ""', "")).herdr.profiles.deepseek?.model).toBe("");
+    }
+    // The interactive preflight repairs unavailable and wrong-family selections.
+    expect(parseConfig(profile("openai/model-a")).herdr.profiles.deepseek?.model).toBe("openai/model-a");
+  });
+
   test("Herdr profile and routing values name their invalid keys", () => {
     const text = `${DEMO_TOML}
 [herdr]
@@ -295,7 +322,7 @@ labels = ["api"]
 profile = "missing"
 `;
     expect(problemsOf(text)).toEqual([
-      '"herdr.profiles.codex.harness" must be one of "claude", "codex", "opencode"',
+      '"herdr.profiles.codex.harness" must be one of "claude", "codex", "opencode", "deepseek"',
       '"herdr.profiles.codex.extra_args" must be a list of non-empty argument strings',
       '"herdr.default_profile" is "missing", but there is no [herdr.profiles.missing]',
       '"herdr.routing[1].profile" is "missing", but there is no [herdr.profiles.missing]',

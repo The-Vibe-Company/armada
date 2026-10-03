@@ -145,7 +145,7 @@ export interface ConductorProfile {
 }
 
 /** Harnesses Herdr can use to run a worker. */
-export const HERDR_HARNESSES = ["claude", "codex", "opencode"] as const;
+export const HERDR_HARNESSES = ["claude", "codex", "opencode", "deepseek"] as const;
 export type HerdrHarness = (typeof HERDR_HARNESSES)[number];
 
 /** How a Herdr worker is launched. */
@@ -405,10 +405,17 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         extraArgs = [...p.extra_args];
       else problems.push(`"${path}.extra_args" must be a list of non-empty argument strings`);
     }
+    if (harness === "deepseek" && extraArgs.some((arg) => /^(?:--model(?:=|$)|-m)/.test(arg.trim())))
+      problems.push(`"${path}.extra_args" must not override the DeepSeek model; use "${path}.model"`);
+    const model =
+      (harness === "opencode" || harness === "deepseek") &&
+      (p.model === undefined || (typeof p.model === "string" && !p.model.trim()))
+        ? ""
+        : str(p, path, "model");
     herdrProfiles[name] = {
       ...(p.when !== undefined ? { when: str(p, path, "when") } : {}),
       harness,
-      model: str(p, path, "model"),
+      model,
       effort: str(p, path, "effort"),
       extraArgs,
     };
@@ -712,7 +719,7 @@ profile = "debug"
 # default_profile = "claude"
 
 # [herdr.profiles.claude]
-# harness = "claude"       # "claude", "codex" or "opencode"
+# harness = "claude"       # "claude", "codex", "opencode" or "deepseek" (OpenCode + DeepSeek model)
 # model = "sonnet"
 # effort = "high"
 # extra_args = ["--verbose"]
