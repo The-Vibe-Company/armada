@@ -60,6 +60,26 @@ describe("a session's timeline", () => {
     expect(active.silences).toEqual([]);
     expect(active.phases).toEqual([{ phase: "implementing", from: at("11:00"), to: null, summary: null }]);
   });
+  test("a resumed report renews liveness after heartbeats stop during a waiting turn", () => {
+    const t = timeline(
+      row({ since: at("11:40"), lastReport: at("11:55"), lastHeartbeat: at("11:05") }),
+      [],
+      [
+        event("11:00", "claim", "implementing"),
+        event("11:05", "heartbeat", null),
+        event("11:06", "report", "awaiting-approval"),
+        event("11:40", "report", "implementing"),
+        event("11:55", "report", "implementing"),
+      ],
+    );
+    expect(t.silences).toEqual([]);
+    const silent = timeline(
+      row({ since: at("11:40"), silent: true, lastReport: at("11:40"), lastHeartbeat: at("11:05") }),
+      [],
+    );
+    expect(silent.silences).toEqual([{ from: at("11:40"), to: null }]);
+  });
+
   test("phases from status comments and events, each report once, the row's phase last", () => {
     const t = timeline(
       row({
@@ -200,7 +220,14 @@ describe("a session's timeline", () => {
 
   test("a silence going on now starts at the claim at the earliest", () => {
     const t = timeline(
-      row({ phase: "planning", since: at("11:00"), silent: true, lastReport: eve("13:00"), lastUpdate: eve("13:00") }),
+      row({
+        phase: "planning",
+        since: at("11:00"),
+        silent: true,
+        lastReport: eve("13:00"),
+        lastHeartbeat: eve("12:00"),
+        lastUpdate: eve("13:00"),
+      }),
       [status(eve("13:00"), "planning"), claimed("11:00")],
     );
     expect(t.silences).toEqual([{ from: at("11:00"), to: null }]);

@@ -127,7 +127,23 @@ describe("lanes", () => {
         ...opts,
         heartbeats: { "P-2": at("09:30") },
       }).flags,
+    ).not.toContain("silent");
+    expect(
+      buildLane(program(working), [report("09:55")], working, {
+        ...opts,
+        now: Date.parse(at("10:11")),
+        heartbeats: { "P-2": at("09:30") },
+      }).flags,
     ).toContain("silent");
+    const resumed = buildLane(program(working), [report("09:00")], working, {
+      ...opts,
+      live: {
+        after: at("09:50"),
+        events: { "P-2": { kind: "report", phase: "implementing", message: "resumed", at: at("09:55") } },
+        handles: { "P-2": { runtime: "Conductor", handle: "workspace/session", lastHeartbeatAt: at("09:30") } },
+      },
+    });
+    expect(resumed.flags).not.toContain("silent");
     const waiting = issue("P-2", { statusType: "started", agentPhase: "awaiting-approval", updatedAt: at("09:00") });
     expect(lane(waiting, [report("09:00")]).flags).not.toContain("silent");
     // A lane that never reported falls back to its last sign of life.

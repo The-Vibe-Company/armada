@@ -91,6 +91,11 @@ export function activeClaims(comments: Comment[]): AgentClaim[] {
 const latest = (...xs: (string | null | undefined)[]) =>
   xs.filter((x): x is string => !!x).reduce((a, b) => (b > a ? b : a), "");
 
+/** Newest worker liveness; unrelated ticket updates are a fallback only before its first report or ping. */
+export function workerLivenessAt(worker: Pick<Lane, "lastHeartbeat" | "lastReport" | "lastUpdate">): string {
+  return latest(worker.lastHeartbeat, worker.lastReport) || worker.lastUpdate;
+}
+
 function inferPhase(pr: PullRequest | null, comments: Comment[]): AgentPhase {
   if (pr?.state === "open")
     return pr.ci === "success" && pr.mergeable !== "CONFLICTING" ? "ready-to-merge" : "shipping";
@@ -215,9 +220,10 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
 
   const flags: LaneFlag[] = [];
   const waitingOnHuman = NEEDS_HUMAN.includes(phase) || phase === "merged";
-  // Old clients without heartbeat support keep their report-based liveness.
+  // A resumed report is fresh liveness even if the previous turn's heartbeat stopped.
+  // Ticket edits and ordinary comments count only when the worker has never reported or pinged.
   const lastHeartbeat = opts.heartbeats?.[issue.id] ?? opts.live?.handles?.[issue.id]?.lastHeartbeatAt ?? null;
-  const alive = lastHeartbeat ?? lastReport ?? lastUpdate;
+  const alive = workerLivenessAt({ lastHeartbeat, lastReport, lastUpdate });
   if (!waitingOnHuman && opts.now - Date.parse(alive) > opts.silentAfterMinutes * MIN) flags.push("silent");
   if (pr?.state === "open" && pr.ci === "failure") flags.push("ci-failing");
   if (pr?.state === "open" && pr.mergeable === "CONFLICTING") flags.push("conflict");
