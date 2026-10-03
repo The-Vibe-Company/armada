@@ -1,0 +1,41 @@
+packages/cli/src/launch.ts
+  s_d72998640459eb::t_80cb97748ea72b 257-260,263-289,306,311,313
+  s_d72998640459eb::t_0de5306782dc2b 138
+  s_d72998640459eb::t_9de59fec9e2bba 1,31,33
+  s_d72998640459eb::t_ced5bb98b3a0dc 235-256,261-262,290-305,307-310,312,314-316
+packages/cli/src/cli.ts
+  s_d72998640459eb::t_f9afcd9f21efd5 170-174
+  s_d72998640459eb::t_f4177f0db1d399 398
+docs/runbook.md
+  s_d72998640459eb::t_7c1ae4e9fbd722 130-131
+packages/cli/src/herdr.ts
+  s_d72998640459eb::t_9fe850a33355ca 50
+  s_d72998640459eb::t_164042d9d9036c 3
+  s_d72998640459eb::t_aadf1f9608cb9e 45-49,51-87
+packages/cli/test/local-launch.test.ts
+  s_d72998640459eb::t_1b3324622a17e8 159-164
+  s_d72998640459eb::t_af3eef0e30b659 158
+  s_d72998640459eb::t_bc4cfaba6a0963 456-461,467-475,477-478,480-482,486-553
+  s_d72998640459eb::t_aeedd659b68d99 462-466,476,479
+  s_d72998640459eb::t_f05e9b4b0b4f9e 80,86-88
+  s_d72998640459eb::t_e0a737c688c7d0 483-485
+  s_d72998640459eb::t_428f4c485b2358 46
+  s_d72998640459eb::t_88f6b06fb11fba 45
+  s_d72998640459eb::t_f29f238de7c10b 554-562
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "5cfca9956ace807affb54bc8df3b1b25ff51b2eb",
+  "prompts": {},
+  "sessions": {
+    "s_d72998640459eb": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_efda06d6effe5UjXSX5TTzoqFh",
+        "model": "deepseek-v4.1-flash"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
