@@ -79,7 +79,7 @@ const PHASE_COLUMN: Record<AgentPhase, BoardColumn> = {
   shipping: "delivery",
   "awaiting-validation": "validate",
   "ready-to-merge": "validate",
-  merged: "validate",
+  merged: "delivery",
   blocked: "blocked",
   released: "plan",
 };

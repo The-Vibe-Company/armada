@@ -1,8 +1,8 @@
 "use client";
 
 // One agent in flight as a list row (compact or airy), on the page kit's Row:
-// the Agents page's row, which the overview (THE-916) and a project's page
-// show. "À valider" when the owner has something to validate on it.
+// the Agents page's row, which a project's page shows. The overview's board
+// (THE-968) draws its cards (SessionCard.tsx) with the same rules.
 import type { FleetRow } from "@armada/core/read";
 import { useEffect, useRef, useState } from "react";
 import { agentState, harnessOf, paths } from "@/lib/fleet-view";
@@ -43,20 +43,16 @@ export function AgentRow({
   row: r,
   projectName,
   airy = false,
-  toValidate = false,
 }: {
   row: FleetRow;
   projectName?: string;
   airy?: boolean;
-  /** The owner has something to validate on it (lib/coordinator-view.ts). */
-  toValidate?: boolean;
 }) {
   const { t } = useShell();
   const state = agentState(r);
   const label = stateLabel(t, state, r.phase);
   const harness = harnessOf(r.runtime);
   const fresh = useFresh(r.lastReport);
-  const badge = toValidate && <PhasePill tone="waiting">{t.overview.toValidateBadge}</PhasePill>;
   if (airy)
     return (
       <Row href={paths.agent(r.id)} className={fresh ? "sc-agent is-airy is-fresh" : "sc-agent is-airy"}>
@@ -64,7 +60,6 @@ export function AgentRow({
         <span className="sc-agent-main">
           <span className="ui-row-title">{r.title}</span>
           <span className="sc-agent-meta">
-            {badge}
             <span className="mono">{r.id}</span>
             {projectName && <> · {projectName}</>} · <HarnessBadge harness={harness} />
             {r.profile && <> · {r.profile}</>}
@@ -104,7 +99,6 @@ export function AgentRow({
         </span>
       </RowId>
       <RowText title={r.title} line={rowLine(r) || <PhasePill tone={state.status}>{label}</PhasePill>} />
-      {badge && <RowSide>{badge}</RowSide>}
       {projectName && (
         <RowSide roomy>
           <Tag>

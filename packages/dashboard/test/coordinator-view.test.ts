@@ -124,6 +124,8 @@ describe("the board (THE-968)", () => {
     expect(column({ phase: "awaiting-validation" })).toBe("validate");
     expect(column({ phase: "ready-to-merge", pr: pr("success") })).toBe("validate");
     expect(column({ phase: "blocked" })).toBe("blocked");
+    // Merged, its ticket not closed yet: delivered, nothing left for the owner.
+    expect(column({ phase: "merged" })).toBe("delivery");
     expect(column({ phase: "implementing", silent: true })).toBe("blocked");
     // A worker that handed back may go quiet: its hand-back still waits in "To validate".
     expect(column({ phase: "ready-to-merge", silent: true })).toBe("validate");
