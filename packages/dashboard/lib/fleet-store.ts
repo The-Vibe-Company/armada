@@ -32,6 +32,7 @@ import type {
   ProjectRecord,
   RequestStore,
   RuntimeHandle,
+  RuntimeState,
   SessionRecord,
   StoredInboxItem,
   Validation,
@@ -437,6 +438,15 @@ export async function saveRuntimeHandle(
        heartbeat_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
                          AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
                          THEN runtime_handles.heartbeat_at ELSE NULL END,
+       runtime_state = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
+                         AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
+                         THEN runtime_handles.runtime_state ELSE NULL END,
+       runtime_changed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
+                         AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
+                         THEN runtime_handles.runtime_changed_at ELSE NULL END,
+       runtime_observed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
+                         AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
+                         THEN runtime_handles.runtime_observed_at ELSE NULL END,
        worker_session_id = excluded.worker_session_id,
        runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch, released_at = NULL
        RETURNING project, ticket, runtime, handle, branch, claimed_at
@@ -462,7 +472,7 @@ export async function releaseRuntimeHandle(db: Database, project: string, ticket
   });
 }
 
-const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, p.profile
+const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, p.profile
   FROM runtime_handles h LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket`;
 
 const handleOf = (r: Row): RuntimeHandle => ({
@@ -474,9 +484,55 @@ const handleOf = (r: Row): RuntimeHandle => ({
   claimedAt: isoAt(r.claimed_at),
   releasedAt: iso(r.released_at),
   profile: text(r.profile),
+  ...(r.runtime_state == null || r.runtime_observed_at == null
+    ? {}
+    : {
+        runtimeState: {
+          state: String(r.runtime_state) as RuntimeState,
+          at: isoAt(r.runtime_observed_at),
+          since: isoAt(r.runtime_changed_at ?? r.runtime_observed_at),
+        },
+      }),
   ...(r.heartbeat_at == null ? {} : { lastHeartbeatAt: isoAt(r.heartbeat_at) }),
   ...(r.worker_session_id == null ? {} : { workerSessionId: String(r.worker_session_id) }),
 });
+
+/** A reading belongs to this exact claim; late observations cannot change a replacement session. */
+export async function observeRuntime(
+  db: Queryable,
+  input: { project: string; ticket: string; handle: string; claimedAt: string; state: RuntimeState; at: Date },
+): Promise<boolean> {
+  const result = await db.query(
+    `UPDATE runtime_handles SET runtime_state = $5, runtime_observed_at = $6,
+       runtime_changed_at = CASE WHEN runtime_state IS DISTINCT FROM $5 THEN $6 ELSE runtime_changed_at END
+     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND released_at IS NULL
+       AND lower(runtime) = 'herdr' AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
+    [input.project, input.ticket, input.handle, input.claimedAt, input.state, input.at],
+  );
+  return result.rowCount > 0;
+}
+
+/** Archive only the claim the coordinator stopped, including one already merged or released. */
+export async function stopRuntime(
+  db: Database,
+  input: { project: string; ticket: string; handle: string; claimedAt: string; at: Date },
+): Promise<boolean> {
+  return transaction(db, async (tx) => {
+    const held = await tx.query(
+      `UPDATE runtime_handles SET released_at = COALESCE(released_at, $5)
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND lower(runtime) = 'herdr' RETURNING ticket`,
+      [input.project, input.ticket, input.handle, input.claimedAt, input.at],
+    );
+    if (!held.rowCount) return false;
+    await tx.query(
+      `UPDATE fleet_sessions SET released_at = COALESCE(released_at, $5)
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4`,
+      [input.project, input.ticket, input.handle, input.claimedAt, input.at],
+    );
+    await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [input.project, input.ticket]);
+    return true;
+  });
+}
 
 export async function recordHeartbeat(
   db: Queryable,
@@ -924,6 +980,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   saveWorkerProfile: (w) => saveWorkerProfile(db, w),
   getWorkerProfile: (project, ticket) => getWorkerProfile(db, project, ticket),
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
+  observeRuntime: (input) => observeRuntime(db, input),
+  stopRuntime: (input) => stopRuntime(db, input),
   releaseRuntimeHandle: (project, ticket, at) => releaseRuntimeHandle(db, project, ticket, at),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),

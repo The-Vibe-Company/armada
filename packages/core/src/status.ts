@@ -4,7 +4,15 @@ import type { ArmadaConfig } from "./config.ts";
 import { frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
-import { followedLaunches, notStartedBody, notStartedLaunches, type PendingLaunch } from "./live.ts";
+import {
+  followedLaunches,
+  freshRuntimeState,
+  notStartedBody,
+  notStartedLaunches,
+  type PendingLaunch,
+  type RuntimeHandle,
+  type RuntimeState,
+} from "./live.ts";
 import { buildModel, isDone } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
 import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest } from "./types.ts";
@@ -51,6 +59,7 @@ export interface InFlightTicket extends TicketRef {
   lastUpdate: string;
   /** Latest report by the worker (live event, status comment or claim); null if it never reported. */
   lastReport: string | null;
+  runtimeState?: RuntimeState | null;
   lastHeartbeat?: string | null;
   silent: boolean;
   /** `plan`: the comment at `url` carries the worker's full plan. */
@@ -214,6 +223,12 @@ export function buildStatus({
       lastUpdate: l.lastUpdate,
       lastReport: l.lastReport,
       lastHeartbeat: l.lastHeartbeat,
+      runtimeState: freshRuntimeState(
+        live?.handles?.[l.issue.id]?.runtimeState,
+        now,
+        config.policy.silentAfterMinutes,
+        live?.handles?.[l.issue.id]?.claimedAt,
+      ),
       silent: l.flags.includes("silent"),
       statusLine: l.statusLine
         ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
@@ -261,6 +276,7 @@ export interface LoadStatusOptions {
   /** Newest live event time per ticket, read by the caller through Armada when signed in. */
   lastEvents?: () => Promise<Record<string, string>>;
   heartbeats?: () => Promise<Record<string, string>>;
+  runtimeHandles?: () => Promise<RuntimeHandle[]>;
   /** Launches no claim followed, read by the caller through Armada when signed in. */
   launches?: () => Promise<PendingLaunch[]>;
   fetch?: Fetch;
@@ -367,11 +383,12 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches, heartbeats] = await Promise.all([
+  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles] = await Promise.all([
     readStatusSources(config, opts),
     eventsP,
     launchesP,
     opts.heartbeats?.().catch(() => undefined),
+    opts.runtimeHandles?.().catch(() => undefined),
   ]);
   return buildStatus({
     config,
@@ -380,6 +397,15 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     forgeError,
     ...(events.events ? { lastEvents: events.events } : {}),
     ...(heartbeats ? { heartbeats } : {}),
+    ...(runtimeHandles
+      ? {
+          live: {
+            after: program.fetchedAt,
+            events: {},
+            handles: Object.fromEntries(runtimeHandles.map((h) => [h.ticket, h])),
+          },
+        }
+      : {}),
     ...(launches.launches ? { launches: launches.launches } : {}),
     extraWarnings: [events.warning, launches.warning].filter((w): w is string => !!w),
     now: now(),

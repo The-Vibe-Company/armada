@@ -8,6 +8,7 @@ import {
   releaseWatchLock,
   takeWatchLock,
 } from "@armada/core";
+import { reportHerdr } from "./herdr.ts";
 import { type Io, UsageError } from "./io.ts";
 import { currentTicket, liveFleet } from "./worker.ts";
 
@@ -79,7 +80,11 @@ export async function heartbeat(
       now: io.now ?? (() => new Date()),
       sleep: io.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
       parentAlive: alive,
-      ping: (input) => fleet.heartbeat(input),
+      ping: async (input) => {
+        const result = await fleet.heartbeat(input);
+        if (result.active) await reportHerdr(io, result.phase, result.agent ?? "armada", true);
+        return result;
+      },
       ready: async (session) => {
         const name = `${config.project.slug}-heartbeat-${ticket.toLowerCase()}-${createHash("sha256").update(`${handle}/${session.claimedAt}`).digest("hex").slice(0, 12)}`;
         const acquired = await takeWatchLock(paths, name, pid, io.processAlive ?? processAlive);

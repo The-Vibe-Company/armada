@@ -1,6 +1,5 @@
 // `armada ask | inbox | answer`: questions between a worker and the
-// coordinator. Armada only records: the coordinator delivers every answer in
-// the worker's session through the runtime guide.
+// coordinator. Local herdr delivery is automatic; other runtimes use the guide.
 import {
   type ArmadaConfig,
   answerItem,
@@ -15,6 +14,7 @@ import {
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
+import { deliverHerdr, observingFleet } from "./runtime.ts";
 import { coordinatorHandle, rearmFor, remember, shown } from "./watch.ts";
 import { currentTicket, liveFleet, readMessage, type WorkerArgs, withContext } from "./worker.ts";
 
@@ -49,7 +49,27 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
     throw new UsageError("give the text once: as an argument, --message or --message-file");
   const text = positional ?? fromOption;
   if (!text?.trim()) throw new UsageError(`answer needs the text: ${usage}`);
-  return withContext(io, config, credentials, a.json, (ctx) => answerItem(ctx, { target, text, note }));
+  return withContext(io, config, credentials, a.json, (ctx) =>
+    answerItem(
+      {
+        ...ctx,
+        deliverAnswer: async (ticket, message, runtime, claim) => {
+          if (runtime && runtime.toLowerCase() !== "herdr") return false;
+          const { fleet } = liveFleet(io, config, credentials);
+          if (!fleet) {
+            if (runtime?.toLowerCase() === "herdr")
+              throw new Refusal("cannot read the herdr claim before delivery", "armada whoami");
+            return false;
+          }
+          const delivered = await deliverHerdr(io, fleet, ticket, message, claim);
+          if (!delivered && runtime?.toLowerCase() === "herdr")
+            throw new Refusal("the herdr claim is missing or changed; no answer was delivered", "armada status");
+          return delivered;
+        },
+      },
+      { target, text, note },
+    ),
+  );
 }
 
 function waitSeconds(raw: string | undefined): number {
@@ -79,9 +99,11 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     if (e.kind === "hand-back" && !/shipped with (?:ship-pr-dev|the fallback:)|shipping path unreported/.test(e.body))
       out.push("    shipping path unreported");
   }
+  if (items.some((e) => e.kind === "runtime-blocked"))
+    out.push('Read the blocked herdr pane with its runtime guide, then answer: armada answer <ticket> "<answer>".');
   if (items.some((e) => e.kind === "question" || e.kind === "plan"))
     out.push(
-      'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+      'For herdr, armada answer delivers automatically. Deliver each other answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
     );
   if (
     items.some((e) =>
@@ -112,7 +134,7 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   const { fleet, warning } = liveFleet(io, config, credentials);
   if (!fleet)
     throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
-  const report = await checkInbox(fleet, {
+  const report = await checkInbox(observingFleet(io, fleet), {
     project: config.project.slug,
     coordinator: coordinatorHandle(io),
     facts: detectCoordinator(io),

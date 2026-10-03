@@ -2,7 +2,7 @@
 // its phase becomes blocked and the question lands in the coordinator's inbox.
 // The coordinator reads the inbox (`armada inbox`), delivers the answer in the
 // worker's session through the runtime guide, then records it (`armada answer`).
-// Armada never calls a runtime: these commands only record.
+// Runtime delivery is injected by the CLI; other runtimes use their guide.
 import { entryKey, type Fleet, handBackPr, type InboxEntry, type InboxKind, type StoredInboxItem } from "./live.ts";
 import type { AgentPhase } from "./types.ts";
 import { live, type Outcome, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
@@ -166,8 +166,8 @@ const ANSWERABLE: InboxKind[] = [
 ];
 
 /**
- * Records a coordinator's answer or note. It never calls a runtime: deliver it
- * in the worker's session with the runtime guide first. An answer resolves the
+ * Records a coordinator's answer or note after optional injected runtime delivery.
+ * Other runtimes are delivered with the runtime guide first. An answer resolves the
  * question or plan in the inbox and posts `Agent status: <phase> — answer: …` on the ticket;
  * the worker's phase stays as it is until the worker reports the one it resumes.
  * An answer-request from the dashboard resolves with its question or plan, and the
@@ -223,7 +223,19 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       const open = await live(ctx, warnings, `read the open questions of ${ticketId}`, (fleet) =>
         fleet.ticketItems(ticketId ?? ""),
       );
-      if (open && !open.some((i) => i.kind === "question" || i.kind === "plan"))
+      const handle =
+        open && !open.some((i) => i.kind === "question" || i.kind === "plan")
+          ? await live(ctx, warnings, `read the runtime of ${ticketId}`, (fleet) => fleet.runtimeHandle(ticketId ?? ""))
+          : null;
+      const observation = handle?.runtimeState;
+      const runtimeBlocked =
+        ctx.deliverAnswer &&
+        handle?.runtime.toLowerCase() === "herdr" &&
+        !handle.releasedAt &&
+        observation?.state === "blocked" &&
+        Date.parse(observation.at) <= ctx.now().getTime() &&
+        ctx.now().getTime() - Date.parse(observation.at) <= config.policy.silentAfterMinutes * 60_000;
+      if (open && !open.some((i) => i.kind === "question" || i.kind === "plan") && !runtimeBlocked)
         throw new Refusal(
           `${ticketId} has no open question or plan in the inbox`,
           `armada answer --note ${ticketId} "<message>", for an unsolicited message`,
@@ -247,13 +259,23 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       ? item
       : await live(ctx, warnings, `read the item answered by #${item?.id}`, (fleet) => fleet.inboxItem(question));
   const answerKind = answered?.kind === "plan" ? "plan" : "question";
+  // Freeze the claim generation before tracker reads or terminal delivery.
+  const claim =
+    ticketId && ctx.deliverAnswer
+      ? await live(ctx, warnings, `read the claim of ${ticketId}`, (fleet) => fleet.runtimeHandle(ticketId))
+      : null;
+  if (claim?.runtime.toLowerCase() === "herdr" && claim.releasedAt)
+    throw new Refusal("the herdr worker has ended; no answer was delivered", "armada inbox");
+  if (claim?.runtime.toLowerCase() === "herdr" && answered && answered.createdAt < claim.claimedAt)
+    throw new Refusal("the question belongs to an earlier worker claim; no answer was delivered", "armada inbox");
   let url = "";
   if (ticketId) {
     const ticket = await linear.readTicket(ticketId);
     if (!ticket) throw new Refusal(`ticket ${ticketId} not found in Linear`, "armada inbox");
     url = ticket.url;
     warnings.push(...ticket.warnings);
-    if (!ticket.agentPhase) {
+    const herdrClaim = claim?.runtime.toLowerCase() === "herdr" && !claim.releasedAt;
+    if (!ticket.agentPhase && !herdrClaim) {
       if (input.note)
         throw new Refusal(
           `${ticket.id} has no agent phase: no worker holds it, so there is no one to tell`,
@@ -267,8 +289,14 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
           : itemId === null
             ? null
             : `Answers ${answerKind} #${itemId}.`;
-      await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));
-      lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
+      // Delivery happens only after validation and before either record is written.
+      // Throwing leaves the question/plan open, with no successful answer comment.
+      if (ctx.deliverAnswer && (await ctx.deliverAnswer(ticket.id, text, claim?.runtime ?? ticket.agentRuntime, claim)))
+        lines.push(`Delivered to ${ticket.id}'s herdr pane.`);
+      if (ticket.agentPhase) {
+        await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));
+        lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
+      } else warnings.push(`${ticket.id} has no tracker phase; the delivered answer is recorded in Armada`);
     }
   }
 

@@ -283,7 +283,33 @@ export function memoryFleet(): FleetStore & {
         releasedAt: null,
         lastHeartbeatAt: same && was.workerSessionId === h.workerSessionId ? was.lastHeartbeatAt : null,
         workerSessionId: h.workerSessionId,
+        runtimeState: same ? was.runtimeState : null,
       });
+    },
+    async observeRuntime(input) {
+      const h = handles.get(key(input.project, input.ticket));
+      if (
+        h?.runtime.toLowerCase() !== "herdr" ||
+        h.releasedAt ||
+        h.handle !== input.handle ||
+        h.claimedAt !== input.claimedAt ||
+        (h.runtimeState && h.runtimeState.at > input.at.toISOString())
+      )
+        return false;
+      h.runtimeState = {
+        state: input.state,
+        at: input.at.toISOString(),
+        since:
+          h.runtimeState?.state === input.state ? (h.runtimeState.since ?? h.runtimeState.at) : input.at.toISOString(),
+      };
+      return true;
+    },
+    async stopRuntime(input) {
+      const h = handles.get(key(input.project, input.ticket));
+      if (h?.runtime.toLowerCase() !== "herdr" || h.handle !== input.handle || h.claimedAt !== input.claimedAt)
+        return false;
+      if (!h.releasedAt) await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
+      return true;
     },
     async heartbeatTimes(project) {
       return Object.fromEntries(

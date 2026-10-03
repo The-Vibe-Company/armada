@@ -31,6 +31,7 @@ import { statusAll } from "./projects.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
+import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { updateSkills } from "./skills.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
@@ -130,11 +131,14 @@ const COMMAND_HELP: Record<string, string> = {
   watch --stop      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
+  stop: `  stop <ticket>
+                    Stop a herdr worker and archive its worktree only when clean and fully pushed
+`,
   answer: `  answer <item|ticket> "<answer>"
-                    Coordinator: record an answer already delivered in the worker's
-                    session (runtime guide): resolves the question or plan and posts it on
-                    the ticket. A ticket id answers its open questions and plans. A hand-back id can
-                    clear a merged/closed PR or a Done/Canceled ticket. Never calls a runtime
+                    Coordinator: deliver to a herdr worker and record the answer. For other
+                    runtimes, deliver with the runtime guide first. Resolves the question or
+                    plan and posts it on the ticket. A ticket id also answers a live herdr block.
+                    A hand-back id can clear a merged/closed PR or a Done/Canceled ticket
   answer --note <ticket|plan item> "<message>"
                     Coordinator: record a delivered note; an open plan is resolved
 `,
@@ -239,6 +243,7 @@ const CONFIG_OPTION = new Set([
   "inbox",
   "watch",
   "answer",
+  "stop",
   "merge",
   "brief",
   "launch",
@@ -588,7 +593,9 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       });
       return await heartbeat(io, config, credentials, args);
     }
-    const worker = { claim, report, release, ask, inbox, answer, validate, "ask-owner": askOwner, done }[args.command];
+    const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
+      args.command
+    ];
     if (worker) {
       const { path, text } = await findConfig(io, args.config, args.command);
       const config = parseConfig(text, path);

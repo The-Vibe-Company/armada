@@ -257,6 +257,7 @@ describe("armada claim, report and release", () => {
       "fleet/events/latest",
       "fleet/launches",
       "fleet/heartbeats/latest",
+      "fleet/runtime/handles",
     ]);
   });
 
@@ -377,7 +378,7 @@ describe("armada ask, inbox and answer", () => {
         "    Options:",
         "    1. SQLite",
         "    2. Redis",
-        'Deliver each answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+        'For herdr, armada answer delivers automatically. Deliver each other answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
         "1 worker in flight (DEMO-7) — act on the items above, then keep watching: armada watch",
         "",
       ].join("\n"),

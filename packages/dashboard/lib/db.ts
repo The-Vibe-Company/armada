@@ -682,6 +682,15 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       )`,
     ],
   },
+  {
+    // Runtime readings are separate from worker reports and expire with the silence policy.
+    version: 17,
+    statements: [
+      "ALTER TABLE runtime_handles ADD COLUMN runtime_state text CHECK (runtime_state IN ('working', 'blocked', 'idle', 'done', 'unknown'))",
+      "ALTER TABLE runtime_handles ADD COLUMN runtime_observed_at timestamptz",
+      "ALTER TABLE runtime_handles ADD COLUMN runtime_changed_at timestamptz",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

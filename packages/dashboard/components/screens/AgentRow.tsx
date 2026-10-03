@@ -86,6 +86,7 @@ export function AgentRow({
         <span className="sc-agent-ago">
           <span style={{ color: r.silent ? "var(--active)" : undefined }}>
             {r.lastReport ? <RelativeTime at={r.lastReport} /> : t.shell.neverReported}
+            {r.runtimeState && <> · {t.shell.runtimeState[r.runtimeState]}</>}
           </span>
           <span className="sc-agent-ago-label">{t.shell.lastReport}</span>
         </span>
@@ -119,6 +120,7 @@ export function AgentRow({
       </RowSide>
       <RowTime color={r.silent ? "var(--active)" : undefined}>
         <RelativeTime at={r.lastReport} format="duration" />
+        {r.runtimeState && <> · {t.shell.runtimeState[r.runtimeState]}</>}
       </RowTime>
     </Row>
   );

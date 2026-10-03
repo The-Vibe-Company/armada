@@ -25,6 +25,8 @@ import {
   type PendingLaunch,
   type ProjectInput,
   type ReportRecord,
+  RUNTIME_STATES,
+  type RuntimeState,
   recordAnswer,
   recordClaim,
   recordDone,
@@ -61,6 +63,10 @@ export const FLEET_OPS = [
   "request",
   "events/latest",
   "heartbeats/latest",
+  "runtime/handles",
+  "runtime/handle",
+  "runtime/observe",
+  "runtime/stop",
   "launches",
   "inbox",
   "inbox/item",
@@ -308,10 +314,23 @@ export async function serveFleet(
           return store.lastEventTimes(slug);
         case "heartbeats/latest":
           return store.heartbeatTimes(slug);
+        case "runtime/handles":
+          return store.openRuntimeHandles(slug);
+        case "runtime/handle":
+          return store.getRuntimeHandle(slug, ticketOf(b));
+        case "runtime/observe":
+        case "runtime/stop": {
+          const claimedAt = text(b, "claimedAt", 40);
+          if (!Number.isFinite(Date.parse(claimedAt))) throw new Invalid("claimedAt must be a timestamp");
+          const input = { project: slug, ticket: ticketOf(b), handle: text(b, "handle", LINE_MAX), claimedAt, at };
+          if (op === "runtime/stop") return store.stopRuntime(input);
+          if (!RUNTIME_STATES.includes(b.state as RuntimeState)) throw new Invalid("unknown runtime state");
+          return store.observeRuntime({ ...input, state: b.state as RuntimeState });
+        }
         case "heartbeat": {
           const claimedAt = optText(b, "claimedAt", 40);
           if (claimedAt && !Number.isFinite(Date.parse(claimedAt))) throw new Invalid("claimedAt must be a timestamp");
-          return store.recordHeartbeat({
+          const result = await store.recordHeartbeat({
             project: slug,
             ticket: ticketOf(b),
             handle: text(b, "handle", LINE_MAX),
@@ -319,6 +338,12 @@ export async function serveFleet(
             workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
             at,
           });
+          if (!result.active || !result.claimedAt) return result;
+          const [events, profile] = await Promise.all([
+            store.latestEvents(slug, { since: new Date(result.claimedAt) }),
+            store.getWorkerProfile(slug, ticketOf(b)),
+          ]);
+          return { ...result, phase: events[ticketOf(b)]?.phase ?? null, agent: profile?.agent ?? null };
         }
         case "launches":
           return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
@@ -555,6 +580,10 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
     heartbeatTimes: () => call<Record<string, string>>("heartbeats/latest", {}),
     heartbeat: (input) => call("heartbeat", input),
+    runtimeHandles: () => call("runtime/handles", {}),
+    runtimeHandle: (ticket) => call("runtime/handle", { ticket }),
+    observeRuntime: (input) => call("runtime/observe", input),
+    stopRuntime: (input) => call("runtime/stop", input),
     pendingLaunches: () => call<PendingLaunch[]>("launches", {}),
     claim: (c: ClaimRecord) => call<InboxItem[]>("claim", c),
     report: (r: ReportRecord) => call<InboxItem[]>("report", r),
