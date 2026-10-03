@@ -80,6 +80,8 @@ function fixture(
       if (command === "claude") return ok({ loggedIn: false });
       if (command === "codex") return { code: 1, stdout: "Not logged in", stderr: "" };
       if (command === "opencode") {
+        if (args[0] === "debug")
+          return ok(args[1] === "config" ? {} : { providers: [{ id: "provider", name: "Example Provider" }] });
         const ids = ["provider/model-c", "provider/deepseek-example"];
         return {
           code: 0,
