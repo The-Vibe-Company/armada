@@ -16,7 +16,7 @@ export interface ExecResult {
 export type Exec = (
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs?: number },
+  options: { cwd: string; timeoutMs?: number; maxOutputBytes?: number },
 ) => Promise<ExecResult>;
 
 /**
@@ -45,6 +45,8 @@ export interface Io {
   cwd: string;
   env: Record<string, string | undefined>;
   readFile: (path: string) => Promise<string | null>;
+  /** Installed Codex model/list catalog for the current sign-in; null if unavailable. */
+  codexModels?: (cwd: string) => Promise<string[] | null>;
   /** Save a model chosen by the owner in the existing repository configuration. */
   writeFile?: (path: string, text: string) => Promise<void>;
   readBinaryFile?: (path: string, maxBytes: number) => Promise<Uint8Array | null>;
