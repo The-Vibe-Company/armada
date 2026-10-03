@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.37](https://github.com/The-Vibe-Company/armada/compare/v0.2.36...v0.2.37) (2026-10-03)
+
+
+### Features
+
+* **cli:** run DeepSeek workers through OpenCode and herdr ([#142](https://github.com/The-Vibe-Company/armada/issues/142)) ([eed501b](https://github.com/The-Vibe-Company/armada/commit/eed501be4b27346c1a4046f5f89d6c252143169a))
+
 ## [0.2.36](https://github.com/The-Vibe-Company/armada/compare/v0.2.35...v0.2.36) (2026-10-03)
 
 
