@@ -601,6 +601,39 @@ describe("the fleet through the Armada API", () => {
     expect(await refusal(api.revokeLaunch(claimed, unusedTarget))).toEqual([403, expect.stringContaining("worker")]);
   });
 
+  test("failed-launch cleanup ends its own unused token even after a newer launch claims", async () => {
+    clock = start.getTime() + 3 * 24 * 60 * 60_000 + 60 * 60_000;
+    const signIn: ArmadaSignIn = { kind: "session", token: ownerToken };
+    const target = { project: WIDGETS.slug, ticket: "WID-83" };
+    const failed = await api.launchToken(signIn, target);
+    clock += 60_000;
+    const newer = await api.launchToken(signIn, target);
+    const session = await api.exchangeLaunchToken(newer.token);
+    const live: ArmadaSignIn = { kind: "worker", token: session.token, ...target };
+    await fleetOf(live).claim(claim(target.ticket, "ws-83"));
+    const cleanup = { ...target, id: failed.worker.id };
+    expect(await refusal(api.revokePendingLaunch({ kind: "api-key", key: otherKey }, cleanup))).toEqual([
+      404,
+      expect.stringContaining("no pending launch"),
+    ]);
+    expect(await refusal(api.revokePendingLaunch(signIn, { ...cleanup, ticket: "WID-84" }))).toEqual([
+      404,
+      expect.stringContaining("no pending launch"),
+    ]);
+    expect(await refusal(api.revokePendingLaunch(live, cleanup))).toEqual([403, expect.stringContaining("worker")]);
+    expect(await refusal(api.revokePendingLaunch(signIn, { ...cleanup, id: "" }))).toEqual([
+      400,
+      expect.stringContaining("needs its id"),
+    ]);
+    await api.revokePendingLaunch(signIn, cleanup);
+    expect(await refusal(api.exchangeLaunchToken(failed.token))).toEqual([401, expect.stringContaining("revoked")]);
+    expect((await api.whoami(live)).worker?.id).toBe(newer.worker.id);
+    expect(await refusal(api.revokePendingLaunch(signIn, { ...target, id: newer.worker.id }))).toEqual([
+      409,
+      expect.stringContaining("already claimed"),
+    ]);
+  });
+
   test("an unused token expires after its grace hour, shows once even with the old ETag, then clears; exchanged launches age out at 24 h", async () => {
     clock = start.getTime() + 4 * 24 * 60 * 60_000;
     const launchedAt = clock;

@@ -1,0 +1,4 @@
+2 new MCP servers found in this project
+❯ 1. Use all servers
+  2. Choose servers
+Esc to reject

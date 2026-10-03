@@ -197,14 +197,28 @@ async function launchLocal(
       },
       herdr: { choice, handle: herdrClaimHandle(handle) },
     });
-    await runtime.start(handle, choice.profile);
-    await runtime.prompt(handle, b.prompt);
+    await runtime.startChecked(handle, choice.profile);
+    await runtime.promptChecked(handle, choice.profile, b.prompt);
   } catch (error) {
     // Keep the workspace for recovery; deletion could lose the worker's unpushed work.
     if (handle) io.stderr(`armada: local workspace retained: ${herdrClaimHandle(handle)}\n`);
+    let revoked = false;
+    try {
+      await api.revokePendingLaunch(signIn, { project: config.project.slug, ticket: ticketId, id: launch.worker.id });
+      revoked = true;
+      io.stderr(`armada: revoked the pending launch of ${ticketId}.\n`);
+    } catch {
+      io.stderr(
+        `armada: could not revoke the pending launch; run armada launch revoke ${ticketId} before retrying (a claimed worker must release).\n`,
+      );
+    }
     throw new UsageError(
       error instanceof UsageError || error instanceof BriefError ? error.message : "local worker launch failed",
-      `inspect herdr agent list; revoke the pending token with armada launch revoke ${ticketId} before retrying`,
+      !revoked
+        ? `armada launch revoke ${ticketId}`
+        : handle
+          ? `herdr agent attach ${handle.agent}`
+          : "herdr agent list",
     );
   }
   const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];

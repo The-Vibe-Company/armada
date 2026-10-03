@@ -41,6 +41,9 @@ async function fixture(
     state?: string;
     unpublished?: boolean;
     models?: string;
+    screen?: string;
+    startFailure?: boolean;
+    revokeFailure?: boolean;
     pane?: string;
   } = {},
 ) {
@@ -93,12 +96,21 @@ async function fixture(
     ghToken: () => null,
     now: () => NOW,
     linearWriter: () => linear,
-    fetch: (url, init) =>
-      url === "https://registry.npmjs.org/old.tgz"
+    fetch: (url, init) => {
+      if (url.endsWith("/workers/revoke-pending")) {
+        expect(JSON.parse(String(init?.body))).toEqual({ project: "widgets", ticket: "DEMO-13", id: "wk-1" });
+        if (options.revokeFailure)
+          return Promise.resolve(Response.json({ error: "CANARY_revoke_private" }, { status: 500 }));
+        const pending = armada.launches.get("armada_launch_CANARY_1");
+        if (pending) pending.used = true;
+        return Promise.resolve(Response.json({ id: "wk-1", ticket: "DEMO-13" }));
+      }
+      return url === "https://registry.npmjs.org/old.tgz"
         ? Promise.resolve(new Response(null, { status: 200 }))
         : url.startsWith(ARMADA_URL)
           ? armada.fetch(url, init)
-          : recorded.fetch(url, init),
+          : recorded.fetch(url, init);
+    },
     exec: async (command, args) => {
       calls.push([command, ...args]);
       if (args[0] === "--version") return { code: options.missing ? 1 : 0, stdout: `${command} 0.9.1`, stderr: "" };
@@ -137,7 +149,7 @@ async function fixture(
         const id = start?.[start.indexOf("--model") + 1] ?? "";
         return {
           code: 0,
-          stdout: options.pane ?? `Build auto · ${id.slice(id.indexOf("/") + 1)} OpenCode Zen\n╹`,
+          stdout: options.screen ?? options.pane ?? `Build auto · ${id.slice(id.indexOf("/") + 1)} OpenCode Zen\n╹`,
           stderr: "",
         };
       }
@@ -165,10 +177,14 @@ async function fixture(
             worktree: { path: "/work/worktrees/demo-13" },
           },
         };
+      else if (args[0] === "pane" && args[1] === "read")
+        return { code: 0, stdout: options.screen ?? "Ready\n> ", stderr: "" };
       else if (args[0] === "pane") reply = { result: { type: "ok" } };
       else if (args[0] === "tab")
         reply = { result: { root_pane: { workspace_id: handle.workspace, pane_id: handle.pane } } };
       else {
+        if (args[1] === "start" && options.startFailure)
+          return { code: 1, stdout: JSON.stringify({ error: { code: "agent_not_ready" } }), stderr: "" };
         if (args[1] === "prompt") {
           prompt = args[3] ?? "";
           if (options.promptFailure) throw new Error(prompt);
@@ -276,11 +292,12 @@ test("policy decisions and completed tickets are rejected before token creation"
   }
 });
 
-test("a failed prompt retains the workspace, tells how to revoke and never leaks its token", async () => {
+test("a failed prompt retains the workspace, revokes its token and never leaks it", async () => {
   const f = await fixture({ promptFailure: true });
   expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
   expect(f.errors()).toContain("local workspace retained");
-  expect(f.errors()).toContain("armada launch revoke DEMO-13");
+  expect(f.errors()).toContain("revoked the pending launch of DEMO-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
   expect(f.output() + f.errors()).not.toContain("armada_launch_CANARY_1");
 });
 
@@ -434,13 +451,63 @@ test("failed worker config delivery prevents the harness from starting and never
   expect(f.errors()).not.toContain("CANARY_private_config");
 });
 
+test("known first-run questions stop launch with recovery, retaining the worktree and revoking the token", async () => {
+  for (const [harness, screen, message] of [
+    [
+      "claude",
+      "Is this a project you created or one you trust? Yes, I trust this folder",
+      "Claude Code asks to trust this folder",
+    ],
+    ["claude", "2 new MCP servers found in this project", "project MCP servers"],
+    ["codex", "Update available! 1. Update now 2. Skip 3. Skip until next version", "Codex asks whether to update"],
+    ["codex", "Do you trust the contents of this directory? 1. Yes, continue", "Codex asks to trust this repository"],
+    ["codex", "not supported when using Codex with a ChatGPT account", "configured model is not supported"],
+  ]) {
+    const f = await fixture({
+      screen,
+      startFailure: true,
+      toml: local.replace('harness = "codex"', `harness = "${harness}"`),
+    });
+    expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+    expect(f.errors()).toContain(message ?? "");
+    expect(f.errors()).toContain("armada setup local");
+    expect(f.errors()).toContain("herdr agent attach demo-13");
+    expect(f.errors()).toContain("workspace retained");
+    expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
+    expect(f.calls.some((c) => c.includes("prompt") || c.includes("send-keys") || c.includes("remove"))).toBe(false);
+  }
+});
+
+test("a failed token revocation names its recovery without echoing server diagnostics", async () => {
+  const f = await fixture({
+    screen: "Do you trust the contents of this directory?",
+    startFailure: true,
+    revokeFailure: true,
+  });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(f.errors()).toContain("armada launch revoke DEMO-13");
+  expect(f.errors()).not.toContain("CANARY_revoke_private");
+});
+
 test("launch refuses an OpenCode fallback before delivering the worker token", async () => {
   const f = await fixture({ toml: deepseekLocal, pane: "Build auto · deepseek-v4-flash OpenCode Zen\n╹" });
   expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
   expect(f.errors()).toContain("model differs from profile opencode/deepseek-v4-pro");
-  expect(f.errors()).toContain("worker pane closed");
-  expect(f.errors()).toContain("armada launch revoke DEMO-13");
+  expect(f.errors()).toContain("armada setup local");
+  expect(f.errors()).toContain("herdr agent attach demo-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
   expect(f.prompt()).toBe("");
-  expect(f.calls.at(-1)).toEqual(["herdr", "pane", "close", f.handle.pane]);
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
   expect(f.errors()).not.toContain("armada_launch_CANARY_1");
+});
+
+test("OpenCode first-run provider questions retain the worker pane before model verification", async () => {
+  const f = await fixture({ toml: deepseekLocal, screen: "Select a provider to connect" });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(f.errors()).toContain("OpenCode asks the owner to connect a provider");
+  expect(f.errors()).toContain("herdr agent attach demo-13");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
+  expect(f.calls.some((c) => c[0] === "opencode" && c.includes("--verbose"))).toBe(false);
+  expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
+  expect(f.prompt()).toBe("");
 });
