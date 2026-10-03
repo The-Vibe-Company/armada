@@ -1,0 +1,28 @@
+{
+  "providers": [
+    {
+      "id": "opencode",
+      "name": "OpenCode Zen"
+    },
+    {
+      "id": "opencode-go",
+      "name": "OpenCode Go"
+    },
+    {
+      "id": "zai",
+      "name": "Z.AI"
+    },
+    {
+      "id": "zai-coding-plan",
+      "name": "Z.AI Coding Plan"
+    },
+    {
+      "id": "zhipuai",
+      "name": "Zhipu AI"
+    },
+    {
+      "id": "zhipuai-coding-plan",
+      "name": "Zhipu AI Coding Plan"
+    }
+  ]
+}
