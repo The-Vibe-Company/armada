@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.36](https://github.com/The-Vibe-Company/armada/compare/v0.2.35...v0.2.36) (2026-10-03)
+
+
+### Features
+
+* **cli:** launch local workers through herdr ([#140](https://github.com/The-Vibe-Company/armada/issues/140)) ([dc46b9c](https://github.com/The-Vibe-Company/armada/commit/dc46b9cc42994b31abfafcc169291df97c8fecaf))
+
 ## [0.2.35](https://github.com/The-Vibe-Company/armada/compare/v0.2.34...v0.2.35) (2026-10-03)
 
 
