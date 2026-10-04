@@ -8,7 +8,7 @@ import {
   demoSnapshot,
   HISTORY_DAYS,
 } from "../lib/demo/world.ts";
-import { AGENT_STATUSES, agentState, harnessCounts, projectColor } from "../lib/fleet-view.ts";
+import { AGENT_STATUSES, agentState, harnessOf, projectColor } from "../lib/fleet-view.ts";
 
 const NOW = new Date("2026-10-01T13:42:00Z");
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000).toISOString();
@@ -65,7 +65,12 @@ describe("the demo world", () => {
       "THE-858": { status: "done" },
     });
     expect(new Set(Object.values(byTicket).map((s) => s.status))).toEqual(new Set(AGENT_STATUSES));
-    expect(harnessCounts(o.rows)).toEqual({ conductor: 6, "claude-code": 3, codex: 2, other: 0 });
+    const harnesses = o.rows.map((r) => harnessOf(r.runtime));
+    expect([
+      harnesses.filter((h) => h === "conductor").length,
+      harnesses.filter((h) => h === "claude-code").length,
+    ]).toEqual([6, 3]);
+    expect(harnesses.filter((h) => h === "codex")).toHaveLength(2);
   });
 
   test("waits on a question, a plan and two hand-backs, and has one idle coordinator", () => {

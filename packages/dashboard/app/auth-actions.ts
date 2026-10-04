@@ -12,7 +12,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { isRole, recordApiKeyCreator } from "@/lib/accounts";
 import { requireAccounts, requireMember, requireSession } from "@/lib/accounts-server";
-import { DEVICE_PATH, INVITATION_PATH, ORGANIZATION_PATH, WELCOME_PATH } from "@/lib/accounts-settings";
+import { DEVICE_PATH, INVITATION_PATH, KEYS_PATH, ORGANIZATION_PATH, WELCOME_PATH } from "@/lib/accounts-settings";
 import { clientAddress, FailureLimiter, LOGIN_PATH, safeNext } from "@/lib/auth";
 import type { AuthError, DeviceError, OrgError, OrgNotice } from "@/lib/i18n";
 
@@ -174,19 +174,23 @@ export async function createOrganization(form: FormData): Promise<void> {
   redirect("/");
 }
 
-function orgPage(result: { done: OrgNotice } | { error: OrgError }): string {
-  return "done" in result ? `${ORGANIZATION_PATH}?done=${result.done}` : `${ORGANIZATION_PATH}?error=${result.error}`;
+function orgPage(result: { done: OrgNotice } | { error: OrgError }, path: string = ORGANIZATION_PATH): string {
+  return "done" in result ? `${path}?done=${result.done}` : `${path}?error=${result.error}`;
 }
 
-/** Runs one change on the viewer's organization, then shows the organization page with its outcome. */
-async function change(done: OrgNotice, run: (organizationId: string, h: Headers) => Promise<unknown>): Promise<void> {
+/** Runs one change on the viewer's organization, then shows its page (the members', or `path`) with its outcome. */
+async function change(
+  done: OrgNotice,
+  run: (organizationId: string, h: Headers) => Promise<unknown>,
+  path: string = ORGANIZATION_PATH,
+): Promise<void> {
   const viewer = await requireMember();
   let target: string;
   try {
     await run(viewer.organization.id, await headers());
-    target = orgPage({ done });
+    target = orgPage({ done }, path);
   } catch (err) {
-    target = orgPage({ error: orgError(err) });
+    target = orgPage({ error: orgError(err) }, path);
   }
   redirect(target);
 }
@@ -294,7 +298,7 @@ export async function createApiKey(_: ApiKeyState, form: FormData): Promise<ApiK
       user: viewer.user.id,
       now: new Date(),
     });
-    revalidatePath(ORGANIZATION_PATH);
+    revalidatePath(KEYS_PATH);
     return { key: created.key, name };
   } catch (err) {
     return { error: orgError(err) };
@@ -303,7 +307,11 @@ export async function createApiKey(_: ApiKeyState, form: FormData): Promise<ApiK
 
 export async function revokeApiKey(form: FormData): Promise<void> {
   const { auth } = await requireAccounts();
-  await change("revoked", (_, h) => auth.api.deleteApiKey({ body: { keyId: text(form, "key") }, headers: h }));
+  await change(
+    "revoked",
+    (_, h) => auth.api.deleteApiKey({ body: { keyId: text(form, "key") }, headers: h }),
+    KEYS_PATH,
+  );
 }
 
 // ------------------------------------------------------------ armada login

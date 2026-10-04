@@ -1,7 +1,7 @@
 import { visitSince } from "@armada/core/read";
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
-import { notFound, redirect } from "next/navigation";
+import { redirect } from "next/navigation";
 import { ActivityScreen } from "@/components/screens/ActivityScreen";
 import { requireFleetAccess } from "@/lib/access";
 import { activityHref, activityQuery, ZONE_COOKIE, zoneOf } from "@/lib/activity-view";
@@ -12,9 +12,9 @@ import { fleetOf, languageOf } from "@/lib/server";
 import { viewerKey } from "@/lib/viewer";
 import { readVisit } from "@/lib/visits";
 
-// Every event of the fleet (THE-894). Like /insights it reads on the server,
-// Postgres only (the feed's page and the viewer's last visit), never Linear
-// or GitHub; the filters are its address.
+// Every event of the fleet (THE-894, THE-1021). Like /insights it reads on
+// the server, Postgres only (the feed's page and the viewer's last visit),
+// never Linear or GitHub; its chip and page are its address.
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -38,7 +38,7 @@ async function lastVisit(now: Date): Promise<string | null> {
 export default async function ActivityPage({ searchParams }: { searchParams: Params }) {
   const [{ opts, scope }, jar, params] = await Promise.all([fleetOf(), cookies(), searchParams]);
   const query = activityQuery(params);
-  // The form sends every field, empty or not: the address keeps only what is set.
+  // An older link's filters (project, ticket, kind, who) are dropped: the address keeps only what it reads.
   const href = activityHref(query);
   const given = new URLSearchParams(
     Object.entries(params).flatMap(([k, v]) =>
@@ -49,7 +49,6 @@ export default async function ActivityPage({ searchParams }: { searchParams: Par
   const t = STRINGS[languageOf(jar.get(LANGUAGE_COOKIE)?.value)];
   const now = opts.now();
   const [reading, since] = await Promise.all([loadActivity(opts, scope, query), lastVisit(now)]);
-  if (!reading) notFound();
   return (
     <ActivityScreen
       t={t}

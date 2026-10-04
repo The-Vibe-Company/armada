@@ -8,16 +8,11 @@ import {
   demoInboxReads,
   demoSnapshot,
 } from "../lib/demo/world.ts";
-import { paths } from "../lib/fleet-view.ts";
 import {
   coordinatorHarness,
   coordinatorLink,
-  lastActivity,
   launchProfileLabel,
-  prCounts,
   progressPercent,
-  projectBlockers,
-  projectSlice,
   prState,
 } from "../lib/project-view.ts";
 
@@ -74,15 +69,15 @@ function demoOverview() {
   });
 }
 
-describe("the Projects list", () => {
-  test("reads each demo project as the mockup draws it: progress, owner, health, PRs and coordinator", () => {
+describe("a project's page", () => {
+  test("reads each demo project as the design draws it: progress, owner, open PRs and coordinator", () => {
     const o = demoOverview();
     const lines = o.projects.map((p) => ({
       name: p.name,
       percent: progressPercent(p.progress),
       owner: p.owner,
       health: p.health,
-      prs: prCounts(p.pullRequests),
+      prs: p.pullRequests?.map((pr) => prState(pr)),
       harness: coordinatorHarness(p.coordinator.harness),
       coordinator: p.coordinator.state,
     }));
@@ -92,7 +87,7 @@ describe("the Projects list", () => {
         percent: 58,
         owner: "Léa Martin",
         health: "blocked",
-        prs: { open: 2, green: 1 },
+        prs: ["red", "green"],
         harness: "conductor",
         coordinator: "active",
       },
@@ -101,7 +96,7 @@ describe("the Projects list", () => {
         percent: 55,
         owner: "Hugo Bernard",
         health: "blocked",
-        prs: { open: 1, green: 0 },
+        prs: ["conflict"],
         harness: "claude-code",
         coordinator: "idle",
       },
@@ -110,19 +105,11 @@ describe("the Projects list", () => {
         percent: 89,
         owner: "Camille Roux",
         health: "on-track",
-        prs: { open: 1, green: 1 },
+        prs: ["green"],
         harness: "codex",
         coordinator: "active",
       },
     ]);
-  });
-
-  test("a project's last activity is its newest report or coordinator command", () => {
-    const project = { coordinator: { seenAt: ago(30) } };
-    expect(lastActivity(project, [{ lastReport: ago(40), lastUpdate: ago(5) }])).toBe(ago(5));
-    expect(lastActivity(project, [])).toBe(ago(30));
-    expect(lastActivity({ coordinator: { seenAt: null } }, [{ lastReport: null, lastUpdate: ago(9) }])).toBe(ago(9));
-    expect(lastActivity({ coordinator: { seenAt: null } }, [])).toBeNull();
   });
 
   test("progress is unknown without a reading, and zero out of zero is 0 %", () => {
@@ -132,69 +119,7 @@ describe("the Projects list", () => {
   });
 });
 
-describe("a project's page", () => {
-  test("lists what blocks Widgets, failures first, each opening its agent", () => {
-    const o = demoOverview();
-    const widgets = o.projects.find((p) => p.slug === "widgets");
-    if (!widgets) throw new Error("no Widgets");
-    const slice = projectSlice(o, "widgets");
-    const blockers = projectBlockers(widgets, slice.rows, slice.waiting, paths.agent);
-    expect(blockers.map((b) => [b.tone, b.reason, b.ticket, b.href])).toEqual([
-      ["error", "ci", "WID-14", "/agents/WID-14"],
-      ["waiting", "question", "WID-15", "/agents/WID-15"],
-      ["silent", "silent", "WID-17", "/agents/WID-17"],
-    ]);
-    expect(blockers[1]?.text).toBe("How long should a sign-in link stay valid?");
-  });
-
-  test("nothing blocks Armada", () => {
-    const o = demoOverview();
-    const armada = o.projects.find((p) => p.slug === "armada");
-    if (!armada) throw new Error("no Armada");
-    const slice = projectSlice(o, "armada");
-    expect(projectBlockers(armada, slice.rows, slice.waiting, paths.agent)).toEqual([]);
-  });
-
-  test("a red pull request no agent holds, a launch never started and an away coordinator block too", () => {
-    const pr = {
-      number: 35,
-      url: "https://github.com/acme/widgets/pull/35",
-      title: "chore: bump dependencies",
-      draft: false,
-      ci: "failure" as const,
-      mergeable: "MERGEABLE",
-      headSha: null,
-      updatedAt: null,
-      failingChecks: ["test"],
-      branch: "chore/bump",
-      ticket: null,
-    };
-    const waiting = {
-      project: "widgets",
-      ticket: "WID-30",
-      title: "Archive invoices",
-      url: null,
-      detail: "launched 40 min ago, never claimed",
-      author: null,
-      item: null,
-      answer: null,
-    };
-    const blockers = projectBlockers(
-      { slug: "widgets", pullRequests: [pr], coordinator: { state: "idle" } },
-      [],
-      [
-        { ...waiting, kind: "not-started", since: ago(40), coordinatorSince: null },
-        { ...waiting, kind: "question", ticket: "WID-31", since: ago(50), coordinatorSince: ago(50) },
-      ],
-      paths.agent,
-    );
-    expect(blockers.map((b) => [b.tone, b.reason, b.ticket ?? b.pr, b.since])).toEqual([
-      ["error", "ci", 35, null],
-      ["waiting", "coordinator", null, ago(50)],
-      ["silent", "not-started", "WID-30", ago(40)],
-    ]);
-  });
-
+describe("a project's pull requests and coordinator", () => {
   test("a pull request reads green, red, conflict, pending or none; a conflict wins over its checks", () => {
     expect(prState({ ci: "success", mergeable: "MERGEABLE" })).toBe("green");
     expect(prState({ ci: "failure", mergeable: "MERGEABLE" })).toBe("red");

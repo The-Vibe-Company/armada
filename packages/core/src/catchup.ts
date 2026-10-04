@@ -70,20 +70,6 @@ export function cursorOf(text: string | null | undefined): FeedCursor | null {
   return { at: new Date(at).toISOString(), key };
 }
 
-/** "who" in the feed's address: the coordinator, the agents, or a person by name. */
-export type FeedWho = { kind: "coordinator" } | { kind: "agent" } | { kind: "person"; name: string };
-
-export function feedWhoOf(v: string | null | undefined): FeedWho | null {
-  const name = v?.trim();
-  if (!name) return null;
-  if (name === "coordinator") return { kind: "coordinator" };
-  if (name === "agents") return { kind: "agent" };
-  return name.length <= 120 ? { kind: "person", name } : null;
-}
-
-export const feedWhoText = (w: FeedWho) =>
-  w.kind === "coordinator" ? "coordinator" : w.kind === "agent" ? "agents" : w.name;
-
 // ------------------------------------------------------------------ visits
 
 /** A visit after this long away is a new one: the overview sums up what happened in between. */

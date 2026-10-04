@@ -13,7 +13,6 @@ import {
   type FeedCursor,
   type FeedEntry,
   type FeedKind,
-  type FeedWho,
   REQUEST_KINDS,
   type ValidationKind,
 } from "@armada/core/read";
@@ -24,9 +23,9 @@ export interface FeedQuery {
   projects: string[];
   /** Where the previous page ended; null for the newest. */
   before: FeedCursor | null;
-  ticket: string | null;
   kinds: FeedKind[] | null;
-  who: FeedWho | null;
+  /** Only the reports in this phase (the other kinds are not filtered): the blocked ones. */
+  phase: string | null;
   limit: number;
   now: Date;
 }
@@ -40,12 +39,11 @@ const WORKER_FEED_KINDS = "('claim', 'report', 'release', 'merge')";
 const REQUESTS = `(${[...REQUEST_KINDS, "request"].map((k) => `'${k}'`).join(", ")})`;
 
 /**
- * One source of the feed: the kinds and actors it can give (a filter that
- * rules them out skips it), and its rows' columns over `$1`, the projects.
+ * One source of the feed: the kinds it can give (a filter that rules them
+ * out skips it), and its rows' columns over `$1`, the projects.
  */
 interface Branch {
   kinds: FeedKind[];
-  actors: FeedActorKind[];
   sql: string;
 }
 
@@ -54,7 +52,6 @@ const COLUMNS = "key, project, ticket, kind, at, actor_kind, actor, body, phase,
 const BRANCHES: Branch[] = [
   {
     kinds: ["claim", "report", "release", "merge"],
-    actors: ["agent", "coordinator"],
     sql: `SELECT 'e:' || id AS key, project, ticket, kind, created_at AS at,
             CASE WHEN kind = 'merge' THEN 'coordinator' ELSE 'agent' END AS actor_kind, NULL::text AS actor,
             message AS body, phase, NULL::text AS detail, NULL::bigint AS ref
@@ -62,7 +59,6 @@ const BRANCHES: Branch[] = [
   },
   {
     kinds: ["question", "plan", "hand-back", "answer", "request"],
-    actors: ["agent", "coordinator", "person"],
     sql: `SELECT 'i:' || id AS key, project, ticket,
             CASE WHEN kind IN ('question', 'plan', 'hand-back') THEN kind WHEN kind = 'note' THEN 'answer' ELSE 'request' END AS kind,
             created_at AS at,
@@ -76,7 +72,6 @@ const BRANCHES: Branch[] = [
   {
     // A worker's question or plan, answered: the coordinator's answer.
     kinds: ["answer"],
-    actors: ["coordinator"],
     sql: `SELECT 'a:' || id AS key, project, ticket, 'answer' AS kind, resolved_at AS at,
             'coordinator' AS actor_kind, NULL::text AS actor, resolution AS body, NULL::text AS phase, kind AS detail,
             NULL::bigint AS ref
@@ -85,7 +80,6 @@ const BRANCHES: Branch[] = [
   {
     // Work a worker shows the owner; a merge or a question the coordinator puts to them.
     kinds: ["validation"],
-    actors: ["agent", "coordinator"],
     sql: `SELECT 'v:' || id AS key, project, ticket, 'validation' AS kind, created_at AS at,
             CASE WHEN kind = 'validation' THEN 'agent' ELSE 'coordinator' END AS actor_kind, NULL::text AS actor,
             what AS body, NULL::text AS phase, kind AS detail, id AS ref
@@ -93,7 +87,6 @@ const BRANCHES: Branch[] = [
   },
   {
     kinds: ["decision"],
-    actors: ["person"],
     sql: `SELECT 'd:' || id AS key, project, ticket, 'decision' AS kind, decided_at AS at,
             'person' AS actor_kind, decided_by AS actor, COALESCE(answer, note) AS body, NULL::text AS phase,
             outcome AS detail, id AS ref
@@ -101,7 +94,6 @@ const BRANCHES: Branch[] = [
   },
   {
     kinds: ["launch"],
-    actors: ["person"],
     sql: `SELECT 'l:' || "id" AS key, "project" AS project, "ticket" AS ticket, 'launch' AS kind, "createdAt" AS at,
             'person' AS actor_kind, "launchedByLabel" AS actor, NULL::text AS body, NULL::text AS phase,
             NULL::text AS detail, NULL::bigint AS ref
@@ -109,7 +101,6 @@ const BRANCHES: Branch[] = [
   },
   {
     kinds: ["revoke"],
-    actors: ["person"],
     sql: `SELECT 'r:' || "id" AS key, "project" AS project, "ticket" AS ticket, 'revoke' AS kind, "endedAt" AS at,
             'person' AS actor_kind, "endedByLabel" AS actor, NULL::text AS body, NULL::text AS phase,
             NULL::text AS detail, NULL::bigint AS ref
@@ -171,61 +162,32 @@ const newestFirst = (a: FeedEntry, b: FeedEntry) =>
  */
 export async function feedPage(db: Queryable, q: FeedQuery): Promise<FeedEntry[]> {
   if (q.projects.length === 0 || q.limit <= 0) return [];
-  const params: unknown[] = [
-    q.projects,
-    q.before?.at ?? null,
-    q.before?.key ?? null,
-    q.ticket,
-    q.kinds,
-    q.who?.kind ?? null,
-    q.who?.kind === "person" ? q.who.name : null,
-    q.limit,
-  ];
-  const wanted = (b: Pick<Branch, "kinds" | "actors">) =>
-    (!q.kinds || b.kinds.some((k) => q.kinds?.includes(k))) && (!q.who || b.actors.includes(q.who.kind));
+  const params: unknown[] = [q.projects, q.before?.at ?? null, q.before?.key ?? null, q.kinds, q.phase, q.limit];
+  const wanted = (b: Pick<Branch, "kinds">) => !q.kinds || b.kinds.some((k) => q.kinds?.includes(k));
   const filter = `
     WHERE ($2::timestamptz IS NULL OR at < $2::timestamptz OR (at = $2::timestamptz AND key COLLATE "C" < $3::text))
-      AND ($4::text IS NULL OR ticket = $4::text)
-      AND ($5::text[] IS NULL OR kind = ANY($5::text[]))
-      AND ($6::text IS NULL OR actor_kind = $6::text)
-      AND ($7::text IS NULL OR actor = $7::text)
-    ORDER BY at DESC, key COLLATE "C" DESC LIMIT $8`;
+      AND ($4::text[] IS NULL OR kind = ANY($4::text[]))
+      AND ($5::text IS NULL OR kind <> 'report' OR phase = $5::text)
+    ORDER BY at DESC, key COLLATE "C" DESC LIMIT $6`;
   const read = async (sources: string[], values: unknown[]): Promise<FeedEntry[]> => {
     if (sources.length === 0) return [];
     const sql = `SELECT ${COLUMNS} FROM (${sources
       .map((s) => `(SELECT ${COLUMNS} FROM (${s}) f ${filter})`)
-      .join(" UNION ALL ")}) page ORDER BY at DESC, key COLLATE "C" DESC LIMIT $8`;
+      .join(" UNION ALL ")}) page ORDER BY at DESC, key COLLATE "C" DESC LIMIT $6`;
     return (await db.query(sql, values)).rows.map(entryOf);
   };
   const entries = await read(
     BRANCHES.filter(wanted).map((b) => b.sql),
     params,
   );
-  if (q.ticket || !wanted({ kinds: ["coordinator"], actors: ["coordinator"] })) return entries;
+  if (!wanted({ kinds: ["coordinator"] })) return entries;
   // A full page covers its span; a short one reaches back as far as the reads are kept.
   const values = [...params, q.now, entries.length >= q.limit ? (entries.at(-1)?.at ?? null) : null];
   const turns = await read(
-    q.projects.map((project) => coordinatorTurns(`$${values.push(project)}`, "$9", "$10")),
+    q.projects.map((project) => coordinatorTurns(`$${values.push(project)}`, "$7", "$8")),
     values,
   );
   return [...entries, ...turns].sort(newestFirst).slice(0, q.limit);
-}
-
-/** The people the feed's "who" filter offers: who asked, decided, launched or revoked in the last 90 days. */
-export async function feedPeople(db: Queryable, projects: string[], now: Date): Promise<string[]> {
-  if (projects.length === 0) return [];
-  const since = new Date(now.getTime() - 90 * 24 * 3_600_000);
-  const rs = await db.query(
-    `SELECT DISTINCT name FROM (
-       SELECT author AS name FROM inbox_items WHERE project = ANY($1) AND created_at >= $2 AND kind IN ${REQUESTS}
-       UNION SELECT decided_by FROM validations WHERE project = ANY($1) AND decided_at >= $2
-       UNION SELECT "launchedByLabel" FROM "armada_worker" WHERE "project" = ANY($1) AND "createdAt" >= $2
-       UNION SELECT "endedByLabel" FROM "armada_worker"
-         WHERE "project" = ANY($1) AND "endReason" = 'revoked' AND "endedAt" >= $2
-     ) people WHERE name IS NOT NULL AND name <> '' ORDER BY name LIMIT 50`,
-    [projects, since],
-  );
-  return rs.rows.map((r) => String(r.name));
 }
 
 const HELD_KINDS = "('claim', 'report', 'heartbeat', 'release', 'merge')";

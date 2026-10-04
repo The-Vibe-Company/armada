@@ -1,43 +1,19 @@
 import type { Metadata } from "next";
 import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
-import {
-  cancelInvitation,
-  inviteMember,
-  removeMember,
-  revokeApiKey,
-  switchOrganization,
-  updateMemberRole,
-} from "@/app/auth-actions";
-import { ApiKeyForm } from "@/components/ApiKeyForm";
+import { cancelInvitation, inviteMember, removeMember, updateMemberRole } from "@/app/auth-actions";
 import { CopyLink } from "@/components/CopyLink";
-import { OrganizationTabs } from "@/components/OrganizationTabs";
-import {
-  Button,
-  Form,
-  Input,
-  Notice,
-  Page,
-  Row,
-  RowSide,
-  RowText,
-  RowTime,
-  Section,
-  SectionBody,
-  Select,
-  StatusHeader,
-  Toolbar,
-} from "@/components/page";
-import { Avatar, EmptyState, Tag } from "@/components/ui";
+import { Disclose, OrgBar, OrgPage, OrgRow, OrgRows } from "@/components/org";
+import { Button, Form, Input, Notice, Select } from "@/components/page";
 import { invitationUrl, isRole, ROLES, type Role } from "@/lib/accounts";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
 import { accountsModeOf } from "@/lib/accounts-settings";
 import { LANGUAGE_COOKIE, ORG_ERRORS, ORG_NOTICES, type OrgError, type OrgNotice, STRINGS } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 
-// The viewer's organization: its members, pending invitations and API keys.
-// Owners and admins invite, change roles and remove; owners create and revoke
-// the API keys of headless coordinators. Better Auth enforces who may do what.
+// The organization's members and pending invitations (THE-1021 on
+// design/dashboard-v7). Owners and admins invite, change roles and remove;
+// Better Auth enforces who may do what. The API keys are the next tab.
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -61,200 +37,104 @@ export default async function Organization({ searchParams }: { searchParams: Par
   ]);
   const lang = languageOf(jar.get(LANGUAGE_COOKIE)?.value);
   const t = STRINGS[lang];
-  const [full, organizations] = await Promise.all([
-    auth.api.getFullOrganization({ query: { organizationId: viewer.organization.id }, headers: h }),
-    auth.api.listOrganizations({ headers: h }),
-  ]);
+  const o = t.org;
+  const full = await auth.api.getFullOrganization({ query: { organizationId: viewer.organization.id }, headers: h });
   const manager = viewer.organization.role === "owner" || viewer.organization.role === "admin";
-  const owner = viewer.organization.role === "owner";
-  // Only owners may read the organization's keys; Better Auth refuses the others.
-  const apiKeys = owner
-    ? ((
-        await auth.api
-          .listApiKeys({ query: { organizationId: viewer.organization.id }, headers: h })
-          .catch(() => ({ apiKeys: [] }))
-      ).apiKeys ?? [])
-    : [];
   // Only an owner hands out the owner role.
   const grantable: readonly Role[] = viewer.organization.role === "owner" ? ROLES : ROLES.filter((r) => r !== "owner");
   const error = pick<OrgError>(ORG_ERRORS, params.error);
   const done = pick<OrgNotice>(ORG_NOTICES, params.done);
   const date = new Intl.DateTimeFormat(lang === "fr" ? "fr-FR" : "en-GB", { day: "numeric", month: "short" });
+  const members = full?.members ?? [];
   const invitations = (full?.invitations ?? []).filter(
     (i) => i.status === "pending" && new Date(i.expiresAt).getTime() > Date.now(),
   );
-  const roleOf = (r: string) => t.org.roles[isRole(r) ? r : "member"];
+  const roleOf = (r: string) => o.roles[isRole(r) ? r : "member"];
+  const roles = (id: string, value: string) => (
+    <>
+      <label className="sr-only" htmlFor={id}>
+        {o.role}
+      </label>
+      <Select id={id} name="role" defaultValue={value}>
+        {grantable.map((r) => (
+          <option key={r} value={r}>
+            {o.roles[r]}
+          </option>
+        ))}
+      </Select>
+    </>
+  );
 
   return (
-    <Page
-      status={
-        <StatusHeader
-          lead={t.status.org.members(viewer.organization.name, full?.members.length ?? 0)}
-          then={t.status.org.invitations(invitations.length)}
-        />
-      }
-      toolbar={
-        <Toolbar>
-          <OrganizationTabs t={t} page="members" />
-        </Toolbar>
-      }
-    >
-      {error && <Notice tone="critical">{t.org.errors[error]}</Notice>}
-      {done && <Notice tone="done">{t.org.notices[done]}</Notice>}
-
-      <Section label={t.org.members} count={full?.members.length ?? 0} side={viewer.organization.name}>
-        <SectionBody>
-          <p>{t.org.roleHint}</p>
-        </SectionBody>
-        {(full?.members ?? []).map((m) => {
+    <OrgPage t={t} name={viewer.organization.name} page="members">
+      {error && <Notice tone="critical">{o.errors[error]}</Notice>}
+      {done && <Notice tone="done">{o.notices[done]}</Notice>}
+      <OrgBar hint={manager ? o.membersHint(members.length) : `${o.membersHint(members.length)} ${o.onlyAdmins}`}>
+        {manager && (
+          <Disclose label={o.sendInvite} primary>
+            <Form action={inviteMember} grow>
+              <label className="sr-only" htmlFor="invite-email">
+                {o.inviteEmail}
+              </label>
+              <Input id="invite-email" name="email" type="email" required placeholder={o.inviteEmail} />
+              {roles("invite-role", "member")}
+              <Button tone="primary">{o.sendInvite}</Button>
+            </Form>
+            <p className="org-note">{o.emailNote}</p>
+          </Disclose>
+        )}
+      </OrgBar>
+      <OrgRows>
+        {members.map((m) => {
           const self = m.userId === viewer.user.id;
-          const name = m.user.name || m.user.email;
           return (
-            <Row key={m.id}>
-              <Avatar name={name} size={20} />
-              <RowText
-                title={
-                  <>
-                    {name} {self && <Tag>{t.org.you}</Tag>}
-                  </>
-                }
-                line={m.user.email}
-              />
-              {manager && !self ? (
-                <RowSide>
-                  <Form action={updateMemberRole}>
-                    <input type="hidden" name="member" value={m.id} />
-                    <label className="sr-only" htmlFor={`role-${m.id}`}>
-                      {t.org.role}
-                    </label>
-                    <Select id={`role-${m.id}`} name="role" defaultValue={m.role}>
-                      {grantable.map((r) => (
-                        <option key={r} value={r}>
-                          {t.org.roles[r]}
-                        </option>
-                      ))}
-                    </Select>
-                    <Button>{t.org.changeRole}</Button>
-                  </Form>
-                  <Form action={removeMember}>
-                    <input type="hidden" name="member" value={m.id} />
-                    <Button tone="danger">{t.org.remove}</Button>
-                  </Form>
-                </RowSide>
-              ) : (
-                <RowSide>
-                  <Tag>{roleOf(m.role)}</Tag>
-                </RowSide>
-              )}
-            </Row>
+            <OrgRow
+              key={m.id}
+              a={self ? `${m.user.name || m.user.email} (${o.you})` : m.user.name || m.user.email}
+              sub={m.user.email}
+              b={o.memberSince(date.format(new Date(m.createdAt)))}
+              c={roleOf(m.role)}
+              d={
+                manager &&
+                !self && (
+                  <Disclose label={o.manage}>
+                    <Form action={updateMemberRole}>
+                      <input type="hidden" name="member" value={m.id} />
+                      {roles(`role-${m.id}`, m.role)}
+                      <Button>{o.changeRole}</Button>
+                    </Form>
+                    <Form action={removeMember}>
+                      <input type="hidden" name="member" value={m.id} />
+                      <Button tone="danger">{o.remove}</Button>
+                    </Form>
+                  </Disclose>
+                )
+              }
+            />
           );
         })}
-      </Section>
-
-      <Section label={t.org.invitations} count={invitations.length}>
-        {invitations.length === 0 ? (
-          <EmptyState compact title={t.org.noInvitations} hint={t.org.noInvitationsHint} />
-        ) : (
-          invitations.map((i) => (
-            <Row key={i.id}>
-              <RowText title={i.email} line={roleOf(i.role ?? "member")} />
-              {manager && (
-                <RowSide>
-                  <CopyLink url={invitationUrl(settings.baseUrl, i.id)} label={t.org.copyLink} done={t.org.copied} />
+        {invitations.map((i) => (
+          <OrgRow
+            key={i.id}
+            a={i.email}
+            sub={roleOf(i.role ?? "member")}
+            b={o.expires(date.format(new Date(i.expiresAt)))}
+            c={o.pending}
+            color="var(--amber)"
+            d={
+              manager && (
+                <Disclose label={o.manage}>
+                  <CopyLink url={invitationUrl(settings.baseUrl, i.id)} label={o.copyLink} done={o.copied} />
                   <Form action={cancelInvitation}>
                     <input type="hidden" name="invitation" value={i.id} />
-                    <Button tone="danger">{t.org.cancel}</Button>
+                    <Button tone="danger">{o.cancel}</Button>
                   </Form>
-                </RowSide>
-              )}
-              <RowTime>{t.org.expires(date.format(new Date(i.expiresAt)))}</RowTime>
-            </Row>
-          ))
-        )}
-      </Section>
-
-      <Section label={t.org.invite}>
-        <SectionBody>
-          {manager ? (
-            <>
-              <Form action={inviteMember} grow>
-                <label className="sr-only" htmlFor="invite-email">
-                  {t.org.inviteEmail}
-                </label>
-                <Input id="invite-email" name="email" type="email" required placeholder={t.org.inviteEmail} />
-                <label className="sr-only" htmlFor="invite-role">
-                  {t.org.role}
-                </label>
-                <Select id="invite-role" name="role" defaultValue="member">
-                  {grantable.map((r) => (
-                    <option key={r} value={r}>
-                      {t.org.roles[r]}
-                    </option>
-                  ))}
-                </Select>
-                <Button tone="primary">{t.org.sendInvite}</Button>
-              </Form>
-              <p className="faint">{t.org.emailNote}</p>
-            </>
-          ) : (
-            <p className="faint">{t.org.onlyAdmins}</p>
-          )}
-        </SectionBody>
-      </Section>
-
-      <Section label={t.org.apiKeys} count={owner ? apiKeys.length : undefined}>
-        <SectionBody>
-          <p>{t.org.apiKeysHint}</p>
-          {!owner && <p className="faint">{t.org.onlyOwners}</p>}
-        </SectionBody>
-        {owner && apiKeys.length === 0 && <EmptyState compact title={t.org.noApiKeys} hint={t.org.noApiKeysHint} />}
-        {owner &&
-          apiKeys.map((k) => (
-            <Row key={k.id}>
-              <RowText
-                title={k.name ?? k.start ?? k.id}
-                line={
-                  <>
-                    {k.start && <span className="mono">{k.start}… · </span>}
-                    {t.org.keyCreated(date.format(new Date(k.createdAt)))}
-                  </>
-                }
-              />
-              <RowSide>
-                <Form action={revokeApiKey}>
-                  <input type="hidden" name="key" value={k.id} />
-                  <Button tone="danger">{t.org.revoke}</Button>
-                </Form>
-              </RowSide>
-              <RowTime>{k.lastRequest ? t.org.keyUsed(date.format(new Date(k.lastRequest))) : t.org.keyUnused}</RowTime>
-            </Row>
-          ))}
-        {owner && (
-          <SectionBody>
-            <ApiKeyForm lang={lang} />
-          </SectionBody>
-        )}
-      </Section>
-
-      {organizations.length > 1 && (
-        <Section label={t.org.yourOrganizations} count={organizations.length}>
-          {organizations.map((o) => (
-            <Row key={o.id}>
-              <RowText title={o.name} />
-              <RowSide>
-                {o.id === viewer.organization.id ? (
-                  <Tag>{t.org.current}</Tag>
-                ) : (
-                  <Form action={switchOrganization}>
-                    <input type="hidden" name="organization" value={o.id} />
-                    <Button>{t.org.switchTo}</Button>
-                  </Form>
-                )}
-              </RowSide>
-            </Row>
-          ))}
-        </Section>
-      )}
-    </Page>
+                </Disclose>
+              )
+            }
+          />
+        ))}
+      </OrgRows>
+    </OrgPage>
   );
 }

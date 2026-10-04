@@ -10,7 +10,6 @@ import { launchTicket } from "@/app/actions";
 import { launchProfileLabel } from "@/lib/project-view";
 import { useRequest, useSent } from "../Actions";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Dot } from "../ui";
 
 /** The state of one ticket's launch: its request, and what was sent before the server shows it. */
 export function useLaunch(r: ReadyTicket) {
@@ -52,15 +51,15 @@ export function LaunchControl({ ticket: r, launch }: { ticket: ReadyTicket; laun
   const profile = r.route?.profile ?? null;
   if (pending)
     return (
-      <span className="pj-sent" role="status">
-        <Dot color="var(--frontier)" pulse="breathe" size={6} />
-        {t.projectPages.launchSent}
-        <span className="faint">
-          {pending.author ? `· ${pending.author} ` : ""}· {t.ago(Math.max(0, now - Date.parse(pending.at)))}
-        </span>
+      <span
+        className="pj-sent"
+        role="status"
+        title={`${pending.author ? `${pending.author} · ` : ""}${t.ago(Math.max(0, now - Date.parse(pending.at)))}`}
+      >
+        {t.projectPage.launchSent}
       </span>
     );
-  if (!r.readyForAgent) return <span className="faint">{t.projectPages.notReady}</span>;
+  if (!r.readyForAgent) return <span className="pj-wait">{t.projectPage.notReady}</span>;
   if (!live) return null;
   return (
     <form className="pj-launch" onSubmit={req.submit}>
@@ -85,13 +84,13 @@ export function LaunchControl({ ticket: r, launch }: { ticket: ReadyTicket; laun
       )}
       <button
         type={needsName && !naming ? "button" : "submit"}
-        className="ui-button pj-launch-button"
+        className="btn is-soft pj-launch-button"
         disabled={req.busy}
         aria-label={t.launchLabel(r.id)}
+        title={t.projectPage.profile(launchProfileLabel(r, t.projectPage.coordinatorChoice))}
         onClick={needsName && !naming ? () => setNaming(true) : undefined}
       >
         {req.busy ? t.sending : t.launch}
-        <span className="mono pj-profile">{launchProfileLabel(r, t.projectPages.coordinatorChoice)}</span>
       </button>
     </form>
   );

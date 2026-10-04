@@ -1,21 +1,16 @@
 "use client";
 
-// The shared components of the v4 dashboard (THE-866): the small parts rows
-// and cards are made of (status dots, pills, badges, tabs, times). The page's
-// anatomy (header, toolbar, sections, rows, cards) is the page kit,
-// components/page.tsx. /design shows both; styles are the `ui-*` classes of
+// The shared components of the dashboard (THE-866, THE-1021): the small parts
+// rows are made of (status dots, project marks, tabs, times, an empty state).
+// The page kit is components/page.tsx; styles are the `ui-*` classes of
 // globals.css.
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { type AgentStatus, HARNESS_NAME, type Harness, projectColor } from "@/lib/fleet-view";
+import { type AgentStatus, projectColor } from "@/lib/fleet-view";
 import { tabStep } from "@/lib/keyboard";
-import { FormationAtRest } from "./mark";
 import { useNow, useShell } from "./shell/context";
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
-
-/** A tone: an agent status, or plain. */
-export type Tone = AgentStatus | "neutral";
 
 /**
  * An agent's status as the mockup draws it: a ring with a dot (waiting), a
@@ -61,54 +56,6 @@ export function Dot({
   );
 }
 
-const TONE_COLOR: Record<Tone, string> = {
-  waiting: "var(--accent)",
-  error: "var(--critical)",
-  silent: "var(--active)",
-  running: "var(--frontier)",
-  done: "var(--done)",
-  neutral: "var(--text-2)",
-};
-
-export const toneColor = (tone: Tone) => TONE_COLOR[tone];
-
-/** A phase or status in its tone: "Attend ta réponse", "CI rouge", "Implémentation". */
-export function PhasePill({ tone, children, dot = false }: { tone: Tone; children: ReactNode; dot?: boolean }) {
-  return (
-    <span className={`ui-pill is-${tone}`}>
-      {dot && <Dot color={TONE_COLOR[tone]} size={6} />}
-      {children}
-    </span>
-  );
-}
-
-/** A plain label chip: a ticket label, a project name. */
-export function Tag({ children }: { children: ReactNode }) {
-  return <span className="ui-tag">{children}</span>;
-}
-
-export const harnessColor = (h: Harness) => `var(--h-${h})`;
-
-/** The harness a session runs on: its color, and its name unless `bare`. */
-export function HarnessBadge({
-  harness,
-  local = false,
-  bare = false,
-}: {
-  harness: Harness;
-  local?: boolean;
-  bare?: boolean;
-}) {
-  const { t } = useShell();
-  const name = local ? t.shell.local(HARNESS_NAME[harness]) : HARNESS_NAME[harness];
-  return (
-    <span className="ui-harness" title={bare ? name : undefined}>
-      <Dot color={harnessColor(harness)} />
-      {bare ? <span className="sr-only">{name}</span> : name}
-    </span>
-  );
-}
-
 /** A project's color square, with its name unless `bare`. */
 export function ProjectChip({ slug, name, bare = false }: { slug: string; name?: string; bare?: boolean }) {
   return (
@@ -119,29 +66,9 @@ export function ProjectChip({ slug, name, bare = false }: { slug: string; name?:
   );
 }
 
-const initials = (name: string) =>
-  name
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase())
-    .join("");
-
-/** A person's initials in a circle. */
-export function Avatar({ name, size = 18 }: { name: string; size?: number }) {
-  return (
-    <span className="ui-avatar" style={{ width: size, height: size, fontSize: Math.round(size * 0.47) }} title={name}>
-      {initials(name)}
-    </span>
-  );
-}
-
 export interface TabItem<K extends string> {
   key: K;
   label: ReactNode;
-  count?: ReactNode;
-  /** A color dot before the label (a harness). */
-  dot?: string;
   /** A tab that is a link (a filter in the address) rather than a button. */
   href?: string;
 }
@@ -157,7 +84,6 @@ export function Tabs<K extends string>({
   value,
   onChange,
   label,
-  size = "md",
   push = false,
   controls,
   prefetch = true,
@@ -166,7 +92,6 @@ export function Tabs<K extends string>({
   value: K;
   onChange?: (key: K) => void;
   label: string;
-  size?: "sm" | "md";
   /** Link tabs that open pages (the organization's) add to the history; filters replace it. */
   push?: boolean;
   controls?: string;
@@ -179,7 +104,7 @@ export function Tabs<K extends string>({
   );
   return (
     <div
-      className={`ui-tabs is-${size}`}
+      className="ui-tabs"
       role="tablist"
       aria-label={label}
       onKeyDown={(e) => {
@@ -198,13 +123,7 @@ export function Tabs<K extends string>({
       }}
     >
       {items.map((it, k) => {
-        const body = (
-          <>
-            {it.dot && <Dot color={it.dot} />}
-            {it.label}
-            {it.count !== undefined && <span className="ui-tab-count">{it.count}</span>}
-          </>
-        );
+        const body = <>{it.label}</>;
         const on = it.key === value;
         const roving = { tabIndex: k === stop ? 0 : -1, "aria-controls": on ? controls : undefined };
         return it.href ? (
@@ -240,40 +159,12 @@ export function Tabs<K extends string>({
   );
 }
 
-/**
- * What a list or page shows when it has nothing (THE-899): the formation at
- * rest, one sentence, what to do next, and its action in `children`.
- * `compact` for a list among others on a page (a settings page): one line,
- * a small formation before it.
- */
-export function EmptyState({
-  title,
-  hint,
-  compact = false,
-  children,
-}: {
-  title: ReactNode;
-  hint?: ReactNode;
-  compact?: boolean;
-  children?: ReactNode;
-}) {
-  if (compact)
-    return (
-      <div className="ui-empty is-compact">
-        <FormationAtRest size={28} />
-        <span className="ui-empty-text">
-          <span className="ui-empty-title">{title}</span>
-          {hint && <span className="ui-empty-hint">{hint}</span>}
-        </span>
-        {children}
-      </div>
-    );
+/** What a page shows when it has nothing (a session or a project not on the dashboard): one sentence, then what to do. */
+export function EmptyState({ title, hint }: { title: ReactNode; hint?: ReactNode }) {
   return (
     <div className="ui-empty">
-      <FormationAtRest size={104} />
-      <span className="ui-empty-title">{title}</span>
-      {hint && <span className="ui-empty-hint">{hint}</span>}
-      {children && <span className="ui-empty-actions">{children}</span>}
+      <p className="ui-empty-title">{title}</p>
+      {hint && <p className="ui-empty-hint">{hint}</p>}
     </div>
   );
 }
@@ -312,23 +203,6 @@ export function RelativeTime({ at, format = "ago" }: { at: string | null; format
     <time key={text} className="tnum" dateTime={at} title={new Date(at).toLocaleString()}>
       {text}
     </time>
-  );
-}
-
-/** The six steps from plan to merge in a small bar; the current one lit in its tone. */
-export function Steps({ step, tone, wide = false }: { step: number; tone: Tone; wide?: boolean }) {
-  const { t } = useShell();
-  return (
-    <span
-      className={cx("ui-steps", wide && "is-wide")}
-      role="img"
-      aria-label={`${t.shell.steps[step] ?? ""} (${step + 1}/${t.shell.steps.length})`}
-      style={{ ["--c" as string]: TONE_COLOR[tone] }}
-    >
-      {t.shell.steps.map((s, k) => (
-        <span key={s} className={cx("ui-step", k < step && "is-done", k === step && "is-now")} />
-      ))}
-    </span>
   );
 }
 

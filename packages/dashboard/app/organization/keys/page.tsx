@@ -1,25 +1,12 @@
 import type { Metadata } from "next";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
+import Link from "next/link";
 import { notFound } from "next/navigation";
+import { revokeApiKey } from "@/app/auth-actions";
 import { deleteKey, saveKey } from "@/app/keys-actions";
-import { OrganizationTabs } from "@/components/OrganizationTabs";
-import {
-  Button,
-  Form,
-  Input,
-  LONG_LIST,
-  Notice,
-  Page,
-  Row,
-  RowSide,
-  RowText,
-  RowTime,
-  Section,
-  SectionBody,
-  StatusHeader,
-  Toolbar,
-} from "@/components/page";
-import { EmptyState, PhasePill, Tabs, Tag } from "@/components/ui";
+import { ApiKeyForm } from "@/components/ApiKeyForm";
+import { Disclose, OrgBar, OrgHeading, OrgNone, OrgPage, OrgRow, OrgRows } from "@/components/org";
+import { Button, Form, Input, Notice } from "@/components/page";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
 import { accountsModeOf, KEYS_PATH } from "@/lib/accounts-settings";
 import { projectsOf } from "@/lib/fleet-store";
@@ -30,6 +17,10 @@ import {
   type KeysError,
   type KeysNotice,
   LANGUAGE_COOKIE,
+  ORG_ERRORS,
+  ORG_NOTICES,
+  type OrgError,
+  type OrgNotice,
   STRINGS,
 } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
@@ -44,12 +35,13 @@ import {
   vaultModeOf,
 } from "@/lib/vault";
 
-// The organization's keys (THE-840) and each project's (THE-859), one scope
-// at a time: "Organization" or a project (`?project=<slug>`). Owners and
-// admins set, replace and delete them, and the secrets for workers; every
-// member sets their own Linear key. A secret's value never reaches this page:
-// only who set it and when (`listSecrets` returns no secret value). Owners
-// and admins read the audit list, filtered by the project picked.
+// The organization's access (THE-1021 on design/dashboard-v7): its API keys
+// (headless coordinators sign in with them; owners create and revoke them),
+// then the keys Armada keeps in its vault (THE-840) and each project's
+// (THE-859), one scope at a time (`?project=<slug>`): the Linear and GitHub
+// keys, the secrets for workers, and the audit list. Owners and admins set,
+// replace and delete them; every member sets their own Linear key. A
+// secret's value never reaches this page: only who set it and when.
 export const dynamic = "force-dynamic";
 
 export async function generateMetadata(): Promise<Metadata> {
@@ -62,22 +54,25 @@ type Params = Promise<{ error?: string | string[]; done?: string | string[]; pro
 const pick = <T extends string>(list: readonly T[], v: string | string[] | undefined): T | null =>
   typeof v === "string" && (list as readonly string[]).includes(v) ? (v as T) : null;
 
-const GROUPS: { title: "linear" | "github"; keys: SecretName[] }[] = [
-  { title: "linear", keys: ["linear-api-key"] },
-  { title: "github", keys: ["github-token"] },
-];
+const SLOTS: SecretName[] = ["linear-api-key", "github-token"];
 
 export default async function Keys({ searchParams }: { searchParams: Params }) {
   if (accountsModeOf(process.env).kind !== "accounts") notFound();
   const viewer = await requireMember();
-  const [{ client }, jar, params] = await Promise.all([requireAccounts(), cookies(), searchParams]);
+  const [{ auth, client }, jar, params, h] = await Promise.all([requireAccounts(), cookies(), searchParams, headers()]);
   const lang = languageOf(jar.get(LANGUAGE_COOKIE)?.value);
   const t = STRINGS[lang];
   const k = t.keys;
+  const o = t.org;
   const vault = vaultModeOf(process.env);
-  const manager = viewer.organization.role === "owner" || viewer.organization.role === "admin";
+  const owner = viewer.organization.role === "owner";
+  const manager = owner || viewer.organization.role === "admin";
   const error = pick<KeysError>(KEYS_ERRORS, params.error);
   const done = pick<KeysNotice>(KEYS_NOTICES, params.done);
+  // The API key forms come back with the members' page's codes.
+  const orgError = pick<OrgError>(ORG_ERRORS, params.error);
+  const orgDone = pick<OrgNotice>(ORG_NOTICES, params.done);
+  const day = new Intl.DateTimeFormat(lang === "fr" ? "fr-FR" : "en-GB", { day: "numeric", month: "short" });
   const date = new Intl.DateTimeFormat(lang === "fr" ? "fr-FR" : "en-GB", {
     day: "numeric",
     month: "short",
@@ -85,17 +80,62 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
     minute: "2-digit",
   });
   const when = (iso: string) => date.format(new Date(iso));
+  // Only owners may read the organization's API keys; Better Auth refuses the others.
+  const apiKeys = owner
+    ? ((
+        await auth.api
+          .listApiKeys({ query: { organizationId: viewer.organization.id }, headers: h })
+          .catch(() => ({ apiKeys: [] }))
+      ).apiKeys ?? [])
+    : [];
 
-  const tabs = <OrganizationTabs t={t} page="keys" />;
+  const apiKeysList = (
+    <>
+      <OrgBar hint={owner ? o.apiKeysHint : `${o.apiKeysHint} ${o.onlyOwners}`}>
+        {owner && (
+          <Disclose label={o.newKey} primary>
+            <ApiKeyForm lang={lang} />
+          </Disclose>
+        )}
+      </OrgBar>
+      {owner && (
+        <OrgRows>
+          {apiKeys.length === 0 && <OrgNone>{o.noApiKeys}</OrgNone>}
+          {apiKeys.map((key) => (
+            <OrgRow
+              key={key.id}
+              a={key.name ?? key.start ?? key.id}
+              sub={key.start ? `${key.start}…` : undefined}
+              subMono
+              b={o.keyCreated(day.format(new Date(key.createdAt)))}
+              c={key.lastRequest ? o.keyUsed(day.format(new Date(key.lastRequest))) : o.keyUnused}
+              color={key.lastRequest ? undefined : "var(--amber)"}
+              d={
+                <Form action={revokeApiKey}>
+                  <input type="hidden" name="key" value={key.id} />
+                  <button type="submit" className="org-link">
+                    {o.revoke}
+                  </button>
+                </Form>
+              }
+            />
+          ))}
+        </OrgRows>
+      )}
+    </>
+  );
+
   if (vault.kind !== "on")
     return (
-      <Page toolbar={<Toolbar>{tabs}</Toolbar>}>
-        <Section label={k.nav} side={viewer.organization.name}>
-          <Notice tone="critical">
-            {vault.kind === "off" ? k.vaultOff(SECRETS_KEY_VARIABLE) : k.vaultInvalid(SECRETS_KEY_VARIABLE)}
-          </Notice>
-        </Section>
-      </Page>
+      <OrgPage t={t} name={viewer.organization.name} page="keys">
+        {orgError && <Notice tone="critical">{o.errors[orgError]}</Notice>}
+        {orgDone && <Notice tone="done">{o.notices[orgDone]}</Notice>}
+        {apiKeysList}
+        <OrgHeading>{k.vault}</OrgHeading>
+        <Notice tone="critical">
+          {vault.kind === "off" ? k.vaultOff(SECRETS_KEY_VARIABLE) : k.vaultInvalid(SECRETS_KEY_VARIABLE)}
+        </Notice>
+      </OrgPage>
     );
 
   const projects = await projectsOf(client, viewer.organization.id);
@@ -112,8 +152,8 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   const fromOrganization = inherited
     .filter((s) => isWorkerSecretName(s.name) && !workerSecrets.some((w) => w.name === s.name))
     .map((s) => s.name);
-  const status = (info: SecretInfo | null) =>
-    info ? `${k.setBy(info.setBy, when(info.setAt))}${info.readable ? "" : ` · ${k.unreadable}`}` : k.notSet;
+  const setBy = (info: SecretInfo) =>
+    `${k.setBy(info.setBy, when(info.setAt))}${info.readable ? "" : ` · ${k.unreadable}`}`;
 
   /** The hidden fields that say which slot a form is for. */
   const slotFields = (name: string, scope: "own" | "organization" | "project") => (
@@ -123,147 +163,105 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
       {scope === "project" && <input type="hidden" name="project" value={slug} />}
     </>
   );
+  /** Set or replace a slot's value, and delete it when it is set. */
+  const editor = (id: string, label: string, name: string, scope: "own" | "organization" | "project", set: boolean) => {
+    const secret = isWorkerSecretName(name) || SECRET_KINDS[name as SecretName]?.secret !== false;
+    return (
+      <Disclose label={o.manage}>
+        <Form action={saveKey}>
+          {slotFields(name, scope)}
+          <label className="sr-only" htmlFor={id}>
+            {`${label}: ${k.newValue}`}
+          </label>
+          <Input
+            id={id}
+            name="value"
+            type={secret ? "password" : "text"}
+            required
+            autoComplete={secret ? "new-password" : "off"}
+            spellCheck={false}
+            placeholder={k.newValue}
+            maxLength={32768}
+          />
+          <Button tone="primary">{set ? k.replace : k.save}</Button>
+        </Form>
+        {set && (
+          <Form action={deleteKey}>
+            {slotFields(name, scope)}
+            <Button tone="danger">{k.remove}</Button>
+          </Form>
+        )}
+      </Disclose>
+    );
+  };
 
-  const row = (name: SecretName, own: boolean) => {
+  const slot = (name: SecretName, own: boolean) => {
     const label: KeyLabel = own ? "own-linear-api-key" : project ? "project-linear-api-key" : name;
     const scope = own ? "own" : project ? "project" : "organization";
-    const info: SecretInfo | null = find(name, own);
-    const editable = own || manager;
-    const secret = SECRET_KINDS[name].secret;
-    const id = `key-${label}`;
+    const info = find(name, own);
     return (
-      <Row key={label} className="sc-key">
-        <RowText title={k.labels[label]} line={status(info)} lineColor={info ? undefined : "var(--text-3)"} />
-        {editable && (
-          <RowSide>
-            <Form action={saveKey}>
-              {slotFields(name, scope)}
-              <label className="sr-only" htmlFor={id}>
-                {`${k.labels[label]}: ${k.newValue}`}
-              </label>
-              <Input
-                id={id}
-                name="value"
-                type={secret ? "password" : "text"}
-                required
-                autoComplete={secret ? "new-password" : "off"}
-                spellCheck={false}
-                placeholder={k.newValue}
-                maxLength={4096}
-              />
-              <Button tone="primary">{info ? k.replace : k.save}</Button>
-            </Form>
-            {info && (
-              <Form action={deleteKey}>
-                {slotFields(name, scope)}
-                <Button tone="danger">{k.remove}</Button>
-              </Form>
-            )}
-          </RowSide>
-        )}
-        <span className="sc-key-wide sc-key-hint">{k.hints[label]}</span>
-        {info?.value && <code className="mono sc-key-wide sc-key-value">{info.value}</code>}
-      </Row>
+      <OrgRow
+        key={label}
+        a={k.labels[label]}
+        sub={info?.value ?? k.hints[label]}
+        subMono={!!info?.value}
+        b={info ? setBy(info) : null}
+        c={info ? k.isSet : k.notSet}
+        color={info ? "var(--green)" : "var(--text-3)"}
+        d={(own || manager) && editor(`slot-${label}`, k.labels[label], name, scope, !!info)}
+      />
     );
   };
-
   const secretScope = project ? "project" : "organization";
-  const workerRow = (info: SecretInfo) => {
-    const id = `secret-${info.name}`;
-    return (
-      <Row key={info.name} className="sc-key">
-        <RowText title={<span className="mono">{info.name}</span>} line={status(info)} />
-        {manager && (
-          <RowSide>
-            <Form action={saveKey}>
-              {slotFields(info.name, secretScope)}
-              <label className="sr-only" htmlFor={id}>
-                {`${info.name}: ${k.newValue}`}
-              </label>
-              <Input
-                id={id}
-                name="value"
-                type="password"
-                required
-                autoComplete="new-password"
-                spellCheck={false}
-                placeholder={k.newValue}
-                maxLength={32768}
-              />
-              <Button tone="primary">{k.replace}</Button>
-            </Form>
-            <Form action={deleteKey}>
-              {slotFields(info.name, secretScope)}
-              <Button tone="danger">{k.remove}</Button>
-            </Form>
-          </RowSide>
-        )}
-      </Row>
-    );
-  };
-
-  const groups = project ? GROUPS.filter((g) => g.title === "linear") : GROUPS;
   const scopeHref = (p: string) => (p ? `${KEYS_PATH}?${new URLSearchParams({ project: p })}` : KEYS_PATH);
 
   return (
-    <Page
-      status={
-        <StatusHeader
-          lead={t.status.org.keys(project?.name ?? viewer.organization.name)}
-          then={t.status.org.workerSecrets(workerSecrets.length + fromOrganization.length)}
-        />
-      }
-      toolbar={
-        <Toolbar
-          end={
-            projects.length > 0 && (
-              <Tabs
-                label={k.scope}
-                value={slug}
-                items={[{ slug: "", name: k.organizationScope }, ...projects].map((p) => ({
-                  key: p.slug,
-                  label: p.name,
-                  href: scopeHref(p.slug),
-                }))}
-              />
-            )
-          }
-        >
-          {tabs}
-        </Toolbar>
-      }
-    >
+    <OrgPage t={t} name={viewer.organization.name} page="keys">
+      {orgError && <Notice tone="critical">{o.errors[orgError]}</Notice>}
+      {orgDone && <Notice tone="done">{o.notices[orgDone]}</Notice>}
       {error && <Notice tone="critical">{k.errors[error]}</Notice>}
       {done && <Notice tone="done">{k.notices[done]}</Notice>}
+      {apiKeysList}
 
-      {groups.map((g, i) => (
-        <Section
-          key={g.title}
-          label={k[g.title]}
-          side={i === 0 ? (project?.name ?? viewer.organization.name) : undefined}
-        >
-          {i === 0 && (
-            <SectionBody>
-              <p>{project ? k.projectLead(project.name) : k.lead}</p>
-              {!manager && <p className="faint">{k.onlyAdmins}</p>}
-            </SectionBody>
-          )}
-          {g.keys.map((name) => row(name, false))}
-          {g.title === "linear" && !project && row("linear-api-key", true)}
-        </Section>
-      ))}
+      <OrgHeading
+        side={
+          projects.length > 0 && (
+            <nav className="ov-chips" aria-label={k.scope}>
+              {[{ slug: "", name: k.organizationScope }, ...projects].map((p) => (
+                <Link
+                  key={p.slug}
+                  href={scopeHref(p.slug)}
+                  className="ov-chip"
+                  aria-current={p.slug === slug ? "true" : undefined}
+                >
+                  {p.name}
+                </Link>
+              ))}
+            </nav>
+          )
+        }
+      >
+        {k.vault}
+      </OrgHeading>
+      <OrgBar hint={`${project ? k.projectLead(project.name) : k.lead}${manager ? "" : ` ${k.onlyAdmins}`}`} />
+      <OrgRows>
+        {(project ? SLOTS.filter((n) => n === "linear-api-key") : SLOTS).map((n) => slot(n, false))}
+        {!project && slot("linear-api-key", true)}
+      </OrgRows>
 
-      <Section label={k.workerSecrets} count={workerSecrets.length}>
-        <SectionBody>
-          <p>{k.workerSecretsHint(!project)}</p>
-          {fromOrganization.length > 0 && (
-            <p className="faint mono">{k.fromOrganization(fromOrganization.join(", "))}</p>
-          )}
-        </SectionBody>
-        {workerSecrets.length === 0 && <EmptyState compact title={k.noSecrets} />}
-        {workerSecrets.map(workerRow)}
+      <OrgHeading>{k.workerSecrets}</OrgHeading>
+      <OrgBar
+        hint={
+          <>
+            {k.workerSecretsHint(!project)}
+            {fromOrganization.length > 0 && (
+              <span className="mono"> {k.fromOrganization(fromOrganization.join(", "))}</span>
+            )}
+          </>
+        }
+      >
         {manager && (
-          <SectionBody>
+          <Disclose label={k.add} primary>
             <Form action={saveKey} grow>
               <input type="hidden" name="scope" value={secretScope} />
               {project && <input type="hidden" name="project" value={slug} />}
@@ -297,39 +295,44 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
               />
               <Button tone="primary">{k.add}</Button>
             </Form>
-          </SectionBody>
+          </Disclose>
         )}
-      </Section>
+      </OrgBar>
+      <OrgRows>
+        {workerSecrets.length === 0 && <OrgNone>{k.noSecrets}</OrgNone>}
+        {workerSecrets.map((info) => (
+          <OrgRow
+            key={info.name}
+            a={<span className="mono">{info.name}</span>}
+            b={setBy(info)}
+            c={k.isSet}
+            color="var(--green)"
+            d={manager && editor(`secret-${info.name}`, info.name, info.name, secretScope, true)}
+          />
+        ))}
+      </OrgRows>
 
       {manager && (
-        <Section label={k.audit} count={events.length} long={events.length > LONG_LIST}>
-          <SectionBody>
-            <p>
-              {k.auditHint}
-              {project ? ` ${k.auditProjectHint(project.name)}` : ""}
-            </p>
-          </SectionBody>
-          {events.length === 0 && <EmptyState compact title={k.noEvents} />}
-          {events.map((e) => (
-            <Row key={e.id}>
-              <RowText
-                title={e.actor.label}
-                line={
-                  <>
-                    <span className="mono">{e.keys.length ? e.keys.join(", ") : k.nothing}</span>
-                    {e.detail && <> · {e.detail}</>}
-                  </>
-                }
+        <>
+          <OrgHeading>{k.audit}</OrgHeading>
+          <OrgBar hint={`${k.auditHint}${project ? ` ${k.auditProjectHint(project.name)}` : ""}`} />
+          <OrgRows>
+            {events.length === 0 && <OrgNone>{k.noEvents}</OrgNone>}
+            {events.map((e) => (
+              <OrgRow
+                key={e.id}
+                a={e.actor.label}
+                sub={e.keys.length ? e.keys.join(", ") : k.nothing}
+                subMono
+                b={[!project && e.project, e.detail].filter(Boolean).join(" · ")}
+                c={k.actions[e.action]}
+                color={e.action === "refuse" ? "var(--red)" : undefined}
+                d={<span className="org-when">{when(e.at)}</span>}
               />
-              <RowSide>
-                {!project && e.project && <Tag>{e.project}</Tag>}
-                <PhasePill tone={e.action === "refuse" ? "error" : "neutral"}>{k.actions[e.action]}</PhasePill>
-              </RowSide>
-              <RowTime>{when(e.at)}</RowTime>
-            </Row>
-          ))}
-        </Section>
+            ))}
+          </OrgRows>
+        </>
       )}
-    </Page>
+    </OrgPage>
   );
 }

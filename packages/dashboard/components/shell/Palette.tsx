@@ -31,7 +31,6 @@ import { Kbd, ProjectChip, StatusDot } from "../ui";
 import { useFleet, useNow, useShell } from "./context";
 import { SearchIcon } from "./Logo";
 import { stateLabel } from "./labels";
-import { useViews } from "./views";
 
 // ------------------------------------------------------------ the index
 
@@ -91,13 +90,12 @@ export function Palette({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDivElement>(null);
   const p = t.shell.palette;
   const live = overview.live.state === "ok" && !failed;
-  const { views } = useViews();
 
   useEffect(() => setRecent(readRecent()), []);
 
   const items = useMemo(
-    () => searchItems(overview, index ?? EMPTY_INDEX, { t, lang, organization: account !== null, live, views }),
-    [overview, index, t, lang, account, live, views],
+    () => searchItems(overview, index ?? EMPTY_INDEX, { t, lang, organization: account !== null, live }),
+    [overview, index, t, lang, account, live],
   );
   const groups = useMemo(() => search(items, query, { recent }), [items, query, recent]);
   const flat = useMemo(() => flatten(groups), [groups]);
@@ -409,7 +407,7 @@ function StepPanel({ step, onBack }: { step: Step; onBack: () => void }) {
   if (step.kind === "launch") {
     const ticket = overview.ready.find((r) => r.project === step.project && r.id === step.ticket);
     title = p.launchTitle(step.ticket);
-    body = ticket ? <LaunchStep ticket={ticket} /> : <p className="calm">{t.projectPages.launchSent}</p>;
+    body = ticket ? <LaunchStep ticket={ticket} /> : <p className="calm">{t.projectPage.launchSent}</p>;
   } else {
     title = p.answerTitle;
     const w = decisionCards(overview).find((d) => d.project === step.project && d.item === step.item);
@@ -441,7 +439,7 @@ function LaunchStep({ ticket }: { ticket: ReturnType<typeof useFleet>["overview"
       </p>
       <LaunchControl ticket={ticket} launch={launch} />
       {error && (
-        <p role="alert" style={{ color: "var(--critical)" }}>
+        <p role="alert" style={{ color: "var(--red)" }}>
           {t.requestErrors[error]}
         </p>
       )}

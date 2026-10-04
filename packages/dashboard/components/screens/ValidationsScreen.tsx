@@ -1,20 +1,22 @@
 "use client";
 
-// /validations and /approve/<id> (THE-885): what waits for the owner's check
-// (merges to approve, work to validate, questions the coordinator escalated),
-// then what they decided this week, with who decided and when. /approve/<id>
-// is the link the coordinator sends: one validation, whole, built to be read
-// on a phone. Both render from the overview the shell polls, which holds the
-// viewer's organization's projects only.
+// /validations and /approve/<id> (THE-885, THE-1021 on design/dashboard-v7):
+// what waits for the owner (merges to approve, work to validate, questions
+// the coordinator escalated) in a list on the left, with what they decided
+// this week under it, and the selected one whole on the right. /approve/<id>
+// is the link the coordinator sends: the same page with that one selected.
+// On a phone the list is /validations and a row opens /approve/<id>, the
+// validation alone with the way back. Both render from the overview the
+// shell polls, which holds the viewer's organization's projects only.
+import type { OwnerValidation } from "@armada/core/read";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
-import { filterValidations, hasFilters } from "@/lib/filters";
+import { paths } from "@/lib/fleet-view";
 import type { ActionContext } from "../Actions";
-import { FilterBar, useListFilters } from "../FilterBar";
-import { Alert, CardGrid, LONG_LIST, Notice, Page, Section, SectionBody, StatusHeader } from "../page";
+import { Alert } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { EmptyState } from "../ui";
-import { ValidationCard } from "./ValidationCard";
+import { VALIDATION_COLOR, ValidationDetail, validationTitle } from "./ValidationCard";
 
 function useActionContext(): ActionContext {
   const { overview, failed, refresh, version } = useFleet();
@@ -30,94 +32,120 @@ function useActionContext(): ActionContext {
   };
 }
 
+/** What waits, oldest first, then what was decided, newest first. */
+export function splitValidations(list: readonly OwnerValidation[]) {
+  const pending = list.filter((v) => !v.decision).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const decided = list
+    .filter((v) => v.decision)
+    .sort((a, b) => (b.decision?.at ?? "").localeCompare(a.decision?.at ?? ""));
+  return { pending, decided };
+}
+
 export function ValidationsScreen() {
-  const { overview } = useFleet();
-  const ctx = useActionContext();
-  const { t } = ctx;
-  const s = t.validations;
-  const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
-  const { filters } = useListFilters("validations");
-  const shown = useMemo(
-    () => filterValidations(overview.validations ?? [], filters, names),
-    [overview, filters, names],
-  );
-  const pending = shown.filter((v) => !v.decision);
-  const decided = shown.filter((v) => v.decision);
-  const filtered = hasFilters(filters);
-  // A filter on what was decided leaves out what is still to decide, and the other way round.
-  const showPending = !filters.state || filters.state === "pending";
-  const showDecided = !filters.mine && filters.state !== "pending";
-  const waiting = (overview.validations ?? []).filter((v) => !v.decision);
-  const oldest = waiting.reduce<string | null>((o, v) => (o === null || v.createdAt < o ? v.createdAt : o), null);
-  return (
-    <Page
-      status={
-        <StatusHeader
-          lead={waiting.length ? s.lead(waiting.length) : t.status.calm}
-          then={oldest ? s.oldest(t.duration(Math.max(0, ctx.now - Date.parse(oldest)))) : undefined}
-          line={waiting.length ? s.line : s.emptyLine}
-        />
-      }
-      toolbar={<FilterBar list="validations" />}
-    >
-      {overview.live.state === "unreachable" && (
-        <Alert tone="warn" title={t.live.unreachable}>
-          {t.unreachableBanner(overview.live.error)}
-        </Alert>
-      )}
-      {showPending && (
-        <Section label={s.pendingTitle} count={pending.length}>
-          {pending.length === 0 ? (
-            filtered ? (
-              <SectionBody>
-                <p>{t.filters.noMatch}</p>
-              </SectionBody>
-            ) : (
-              <EmptyState title={s.caughtUp} hint={s.empty} />
-            )
-          ) : (
-            <CardGrid wide className="vd-list">
-              {pending.map((v) => (
-                <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
-              ))}
-            </CardGrid>
-          )}
-        </Section>
-      )}
-      {showDecided && (
-        <Section label={s.decidedTitle} count={decided.length}>
-          {decided.length === 0 ? (
-            <SectionBody>
-              <p>{filtered ? t.filters.noMatch : s.decidedEmpty}</p>
-            </SectionBody>
-          ) : (
-            <CardGrid wide long={decided.length > LONG_LIST} className="vd-list is-decided">
-              {decided.map((v) => (
-                <ValidationCard key={v.id} ctx={ctx} v={v} projectName={names.get(v.project) ?? v.project} />
-              ))}
-            </CardGrid>
-          )}
-        </Section>
-      )}
-    </Page>
-  );
+  return <Validations chosen={null} />;
 }
 
 export function ApproveScreen() {
+  const id = Number(useParams<{ id: string }>().id);
+  return <Validations chosen={Number.isSafeInteger(id) ? id : -1} />;
+}
+
+/** The list beside the one chosen: the address's (/approve/<id>), else the oldest waiting, else the last decided. */
+function Validations({ chosen }: { chosen: number | null }) {
   const { overview } = useFleet();
   const ctx = useActionContext();
-  const id = Number(useParams<{ id: string }>().id);
-  const v = (overview.validations ?? []).find((x) => x.id === id);
-  const name = v ? (overview.projects.find((p) => p.slug === v.project)?.name ?? v.project) : null;
+  const { t, now } = ctx;
+  const s = t.validations;
+  const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
+  const { pending, decided } = useMemo(() => splitValidations(overview.validations ?? []), [overview]);
+  const selected =
+    chosen === null
+      ? (pending[0] ?? decided[0] ?? null)
+      : ([...pending, ...decided].find((v) => v.id === chosen) ?? null);
+  const oldest = pending[0]?.createdAt ?? null;
+  const ago = (iso: string) => t.ago(Math.max(0, now - Date.parse(iso)));
+  const row = (v: OwnerValidation) => {
+    const on = v.id === selected?.id;
+    const color = VALIDATION_COLOR[v.kind];
+    const outcome = v.decision ? (v.decision.answer ?? s.outcome[v.decision.outcome]) : null;
+    return (
+      <li key={v.id}>
+        <Link
+          href={paths.validation(v.id)}
+          prefetch={false}
+          scroll={false}
+          data-row
+          className={v.decision ? "vd-row is-decided" : "vd-row"}
+          aria-current={on ? "true" : undefined}
+        >
+          <span className="vd-row-top">
+            {outcome ? (
+              <span style={{ color: v.decision?.outcome === "approved" ? "var(--green)" : "var(--text-2)" }}>
+                {s.by(outcome, v.decision?.by ?? null)}
+              </span>
+            ) : (
+              <>
+                <span className="ov-dot is-small" style={{ background: color }} aria-hidden />
+                <span style={{ color }}>{s.kinds[v.kind]}</span>
+              </>
+            )}
+            <span className="spacer" />
+            <span className="vd-row-ago">{ago(v.decision?.at ?? v.createdAt)}</span>
+          </span>
+          <span className="vd-row-what">{validationTitle(v)}</span>
+          {!v.decision && (
+            <span className="vd-row-meta">
+              <span className="mono">{v.ticket}</span>
+              <span aria-hidden>·</span>
+              <span>{names.get(v.project) ?? v.project}</span>
+            </span>
+          )}
+        </Link>
+      </li>
+    );
+  };
   return (
-    <Page>
-      {v && name ? (
-        <div className="vd-approve">
-          <ValidationCard ctx={ctx} v={v} projectName={name} mode="full" />
+    <div className={chosen === null ? "vd" : "vd is-chosen"}>
+      <nav className="vd-list" aria-label={t.shell.nav.validations}>
+        <div className="vd-list-head">
+          <p className="vd-headline">{s.headline(pending.length)}</p>
+          <p className="vd-subline">
+            {oldest ? s.oldest(t.duration(Math.max(0, now - Date.parse(oldest)))) : s.caughtUp}
+          </p>
         </div>
-      ) : (
-        <Notice>{ctx.t.validations.notFound}</Notice>
-      )}
-    </Page>
+        <h2 className="vd-list-h">{s.pendingTitle}</h2>
+        {pending.length ? (
+          <ul className="vd-rows">{pending.map(row)}</ul>
+        ) : (
+          <p className="vd-list-none">{s.noPending}</p>
+        )}
+        {decided.length > 0 && (
+          <>
+            <h2 className="vd-list-h is-later">{s.decidedTitle}</h2>
+            <ul className="vd-rows">{decided.map(row)}</ul>
+          </>
+        )}
+      </nav>
+      <div className="vd-main">
+        {overview.live.state === "unreachable" && (
+          <Alert tone="warn" title={t.live.unreachable}>
+            {t.unreachableBanner(overview.live.error)}
+          </Alert>
+        )}
+        <Link href={paths.validations} prefetch={false} className="vd-back">
+          ← {s.back}
+        </Link>
+        {selected ? (
+          <ValidationDetail
+            key={selected.id}
+            ctx={ctx}
+            v={selected}
+            projectName={names.get(selected.project) ?? selected.project}
+          />
+        ) : (
+          <p className="pg-none">{chosen === null ? s.choose : s.notFound}</p>
+        )}
+      </div>
+    </div>
   );
 }

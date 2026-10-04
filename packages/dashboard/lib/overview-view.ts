@@ -4,41 +4,10 @@
 // never recompute what core decides (health, progress, what waits, since when
 // an item waits for the coordinator).
 import type { CoordinatorState, FleetOverview, InboxItem, OwnerValidation, WaitingItem } from "@armada/core/read";
-import { agentState, type DecisionKind, decisionsOf, harnessOf } from "./fleet-view";
-import { lastActivity, prCounts, progressPercent } from "./project-view";
+import { type DecisionKind, decisionsOf } from "./fleet-view";
 
 /** A question, a plan or a hand-back: what the owner decides. */
 export type Decision = WaitingItem & { kind: DecisionKind };
-
-export interface OverviewFigures {
-  inFlight: number;
-  /** What waits for the owner's check, and stopped coordinators: the sidebar's count. */
-  decide: number;
-  failing: number;
-  silent: number;
-  coordinators: { active: number; total: number };
-  projects: number;
-  /** The harnesses the sessions in flight run on. */
-  harnesses: number;
-}
-
-export function overviewFigures(
-  o: Pick<FleetOverview, "rows" | "waiting" | "projects"> & Partial<Pick<FleetOverview, "validations">>,
-): OverviewFigures {
-  const states = o.rows.map((r) => agentState(r).status);
-  return {
-    inFlight: o.rows.length,
-    decide: decideCount(o),
-    failing: states.filter((s) => s === "error").length,
-    silent: states.filter((s) => s === "silent").length,
-    coordinators: {
-      active: o.projects.filter((p) => p.coordinator.state === "active").length,
-      total: o.projects.length,
-    },
-    projects: o.projects.length,
-    harnesses: new Set(o.rows.map((r) => harnessOf(r.runtime))).size,
-  };
-}
 
 /**
  * A coordinator that stopped answering while items wait for it: only the
@@ -75,15 +44,6 @@ export function coordinatorAlerts(o: Pick<FleetOverview, "projects" | "waiting">
  */
 export const pendingValidations = (o: Partial<Pick<FleetOverview, "validations">>): OwnerValidation[] =>
   (o.validations ?? []).filter((v) => !v.decision);
-
-/** What the owner decided this week, newest first. */
-export const decidedValidations = (o: Partial<Pick<FleetOverview, "validations">>): OwnerValidation[] =>
-  (o.validations ?? []).filter((v) => v.decision);
-
-/** What the owner has to decide: what waits for their check, and the coordinators to bring back. */
-export const decideCount = (
-  o: Pick<FleetOverview, "projects" | "waiting"> & Partial<Pick<FleetOverview, "validations">>,
-) => pendingValidations(o).length + coordinatorAlerts(o).length;
 
 /** The decisions an agent's page offers, oldest first: a question to answer, a plan to approve. */
 export const decisionCards = (o: Pick<FleetOverview, "waiting">): Decision[] =>
@@ -136,28 +96,4 @@ export function sentRequest(o: Pick<FleetOverview, "projects">, w: WaitingItem, 
       : w.kind === "hand-back" && r.kind === "merge-request" && pr !== null && r.request?.pr === pr;
   const r = requests.find(match);
   return r ? { body: r.body, author: r.author, at: r.createdAt } : null;
-}
-
-export interface ProjectFacts {
-  /** Done tickets out of all under the root, in percent (`progressPercent`); null when unknown. */
-  progress: number | null;
-  inFlight: number;
-  /** Tickets marked ready to start, or whose launch was asked. */
-  ready: number;
-  /** Null when GitHub was not read. */
-  prs: { open: number; green: number } | null;
-  /** The latest report of its agents or command of its coordinator. */
-  lastActivity: string | null;
-}
-
-export function projectFacts(o: Pick<FleetOverview, "rows" | "ready" | "projects">, slug: string): ProjectFacts {
-  const p = o.projects.find((x) => x.slug === slug);
-  const rows = o.rows.filter((r) => r.project === slug);
-  return {
-    progress: progressPercent(p?.progress ?? null),
-    inFlight: rows.length,
-    ready: o.ready.filter((r) => r.project === slug && (r.readyForAgent || r.launch)).length,
-    prs: prCounts(p?.pullRequests ?? null),
-    lastActivity: p ? lastActivity(p, rows) : null,
-  };
 }

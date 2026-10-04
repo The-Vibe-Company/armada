@@ -151,7 +151,8 @@ describe("globals.css", () => {
     const css = readFileSync(join(ROOT, "app/globals.css"), "utf8")
       .replace(/\/\*[\s\S]*?\*\//g, "")
       .replace(/url\([^)]*\)/g, "");
-    const classes = new Set([...css.matchAll(/(?<![\w-])\.([a-zA-Z][\w-]*)/g)].map((m) => m[1] ?? ""));
+    // Every class of a selector, the second of `.a.b` too (THE-1021): a number's dot is never followed by a letter.
+    const classes = new Set([...css.matchAll(/\.([a-zA-Z][\w-]*)/g)].map((m) => m[1] ?? ""));
     const words = new Set<string>();
     const prefixes: string[] = [];
     const files = ["app", "components", "lib"].flatMap((d) => sources(join(ROOT, d)));

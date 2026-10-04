@@ -29,9 +29,9 @@ const APPROVED = "Approved.";
 const PLAN_EXCERPT = 280;
 
 const KIND_COLOR: Record<Decision["kind"], string> = {
-  question: "var(--accent)",
-  approval: "var(--accent)",
-  "hand-back": "var(--done)",
+  question: "var(--amber)",
+  approval: "var(--amber)",
+  "hand-back": "var(--green)",
 };
 
 /** Sends the request the clicked button names. */

@@ -4,9 +4,7 @@ import {
   agentState,
   coordinatorHarness,
   crumbsOf,
-  designPageEnabled,
   escapeTarget,
-  fileShape,
   harnessOf,
   PROJECT_PALETTE,
   paths,
@@ -14,7 +12,6 @@ import {
   projectColor,
   sectionOf,
   sessionLink,
-  stepStates,
 } from "../lib/fleet-view.ts";
 
 type Bits = Pick<FleetRow, "phase" | "pr" | "silent" | "question" | "flags">;
@@ -90,13 +87,14 @@ describe("places", () => {
   test("the menu has the overview, Validations, Activity, Insights and the organization; agents and projects are the overview's", () => {
     // THE-916: the Agents page is the overview, and the pages out of the menu belong to it.
     expect(placeOf("/agents")).toEqual({ kind: "overview" });
-    for (const path of ["/", "/agents/WID-15", "/projects", "/projects/widgets"])
-      expect(sectionOf(placeOf(path))).toBe("overview");
+    for (const path of ["/", "/agents/WID-15", "/projects/widgets"]) expect(sectionOf(placeOf(path))).toBe("overview");
     expect(sectionOf(placeOf("/validations"))).toBe("validations");
     expect(sectionOf(placeOf("/approve/3"))).toBe("validations");
     expect(sectionOf(placeOf("/activity"))).toBe("activity");
     expect(sectionOf(placeOf("/insights"))).toBe("insights");
     expect(sectionOf(placeOf("/organization/keys"))).toBe("organization");
+    // The Projects list and the component sheet are gone (THE-1021): their pages redirect to the overview.
+    expect(sectionOf(placeOf("/projects"))).toBeNull();
     expect(sectionOf(placeOf("/design"))).toBeNull();
     expect(paths.coordinator("widgets")).toBe("/?coordinator=widgets");
   });
@@ -110,12 +108,6 @@ describe("places", () => {
     expect(escapeTarget(placeOf("/projects/widgets"), "/agents/WID-15")).toBe("/");
     expect(escapeTarget(placeOf("/"), "/agents/WID-15")).toBeNull();
   });
-});
-
-test("the component sheet shows in development and demo only", () => {
-  expect(designPageEnabled({ NODE_ENV: "development" })).toBe(true);
-  expect(designPageEnabled({ NODE_ENV: "production" })).toBe(false);
-  expect(designPageEnabled({ NODE_ENV: "production", ARMADA_DASHBOARD_DEMO: "fleet" })).toBe(true);
 });
 
 describe("an agent's page", () => {
@@ -132,19 +124,5 @@ describe("an agent's page", () => {
     expect(sessionLink("Claude Code", "ws-4f2a/ses-91")).toBeNull();
     expect(sessionLink("Conductor", null)).toBeNull();
     expect(sessionLink("Conductor", "local tty/s004")).toBeNull();
-  });
-
-  test("steps before the current one are done, after it to come", () => {
-    expect(stepStates(2)).toEqual(["done", "done", "now", "next", "next", "next"]);
-    expect(stepStates(5)).toEqual(["done", "done", "done", "done", "done", "now"]);
-  });
-
-  test("a changed file splits into folder and name, its +/- into five squares", () => {
-    expect(fileShape({ path: "src/auth/routes.ts", additions: 38, deletions: 6 })).toEqual({
-      dir: "src/auth/",
-      name: "routes.ts",
-      bar: ["add", "add", "add", "add", "del"],
-    });
-    expect(fileShape({ path: "README.md", additions: 0, deletions: 0 }).bar).toEqual(Array(5).fill("none"));
   });
 });

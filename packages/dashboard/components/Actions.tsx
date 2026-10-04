@@ -64,15 +64,15 @@ export interface RequestSteps {
 function keepFocus(form: HTMLElement) {
   // The card or row may leave with what it asked (an answered question), once
   // the server has answered: then its section's heading. Checked until then.
-  const hosts = [form.closest<HTMLElement>(".ui-card, .ui-row"), form.closest<HTMLElement>(".ui-section")];
+  const hosts = [
+    form.closest<HTMLElement>(".ag-action, .ov-pv-state, .vd-detail, .pj-ready"),
+    form.closest<HTMLElement>(".pg, .ov-pv, .vd"),
+  ];
   const rescue = () => {
     const lost = !document.activeElement || document.activeElement === document.body;
     const host = hosts.find((h) => h?.isConnected);
     if (!lost || !host) return;
-    const target =
-      host.querySelector<HTMLElement>("[role='status'], [role='alert']") ??
-      (host.matches(".ui-section") ? host.querySelector<HTMLElement>(".ui-section-label") : null) ??
-      host;
+    const target = host.querySelector<HTMLElement>("[role='status'], [role='alert']") ?? host;
     if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
     target.focus({ preventScroll: true });
   };

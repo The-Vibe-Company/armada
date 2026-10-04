@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { FeedEntry } from "@armada/core/read";
-import { activityHref, activityQuery, entryHref, entryWhat, entryWho, feedDays, zoneOf } from "../lib/activity-view.ts";
+import {
+  activityHref,
+  activityQuery,
+  entryHref,
+  entryKind,
+  entryWhat,
+  feedDays,
+  SHOWS,
+  zoneOf,
+} from "../lib/activity-view.ts";
 import { STRINGS } from "../lib/i18n.ts";
 
 // Synthetic entries, for these tests only.
@@ -20,33 +29,31 @@ const entry = (key: string, at: string, over: Partial<FeedEntry> = {}): FeedEntr
 });
 
 describe("the Activity page's address", () => {
-  test("reads its filters and drops what it cannot use", () => {
+  test("reads its chip and drops what it cannot use, older links' filters too", () => {
+    expect(activityQuery({ show: "merge", before: "x" })).toEqual({ show: "merge", before: null });
     expect(
-      activityQuery({ project: "widgets", ticket: " wid-12 ", kind: "merge", who: "Ada Lovelace", before: "x" }),
-    ).toEqual({
-      project: "widgets",
-      ticket: "WID-12",
-      kind: "merge",
-      who: { kind: "person", name: "Ada Lovelace" },
-      before: null,
-    });
-    expect(activityQuery({ project: "Not A Slug", ticket: "drop table", kind: "everything", who: "" })).toEqual({
-      project: null,
-      ticket: null,
-      kind: null,
-      who: null,
-      before: null,
-    });
+      activityQuery({ project: "widgets", ticket: "WID-12", kind: "merge", who: "Ada", show: "all-of-it" }),
+    ).toEqual({ show: "all", before: null });
   });
 
   test("writes only what is set, in one order, and reads back the same", () => {
     expect(activityHref({})).toBe("/activity");
-    const q = activityQuery({ who: "coordinator", kind: "claim", project: "widgets" });
-    const href = activityHref(q);
-    expect(href).toBe("/activity?project=widgets&kind=claim&who=coordinator");
+    expect(activityHref({ show: "all" })).toBe("/activity");
     const before = { at: "2026-03-04T10:00:00.000Z", key: "e:7" };
-    const paged = activityHref({ ...q, before });
-    expect(activityQuery(Object.fromEntries(new URL(paged, "http://x").searchParams))).toEqual({ ...q, before });
+    const paged = activityHref({ show: "blocked", before });
+    expect(paged).toBe(`/activity?${new URLSearchParams({ show: "blocked", before: `${before.at}~${before.key}` })}`);
+    expect(activityQuery(Object.fromEntries(new URL(paged, "http://x").searchParams))).toEqual({
+      show: "blocked",
+      before,
+    });
+  });
+
+  test("each chip reads its kinds: blocks are questions and blocked reports, for you plans and validations", () => {
+    expect(SHOWS.all).toEqual({ kinds: null, phase: null });
+    expect(SHOWS.blocked).toEqual({ kinds: ["question", "report"], phase: "blocked" });
+    expect(SHOWS.you.kinds).toEqual(["plan", "validation"]);
+    expect(SHOWS.merge.kinds).toEqual(["merge", "hand-back", "decision"]);
+    expect(SHOWS.report.kinds).toEqual(["report", "claim", "launch"]);
   });
 
   test("keeps a time zone the server knows", () => {
@@ -57,7 +64,7 @@ describe("the Activity page's address", () => {
 });
 
 describe("an entry", () => {
-  test("says what happened, who did it and where it opens", () => {
+  test("says what happened, its kind and where it opens", () => {
     expect(entryWhat(en, entry("e:1", "2026-03-04T10:00:00Z"))).toBe("Reported · Implementing");
     const decision = entry("d:3", "2026-03-04T10:00:00Z", {
       kind: "decision",
@@ -65,9 +72,9 @@ describe("an entry", () => {
       ref: 3,
       actor: { kind: "person", name: "Ada" },
     });
-    expect([entryWhat(en, decision), entryWho(en, decision), entryHref(decision)]).toEqual([
+    expect([entryWhat(en, decision), entryKind(decision), entryHref(decision)]).toEqual([
       "Asked for changes",
-      "Ada",
+      "decision",
       "/approve/3",
     ]);
     const stop = entry("c:9:stop", "2026-03-04T10:00:00Z", {
@@ -76,12 +83,16 @@ describe("an entry", () => {
       detail: "stop",
       actor: { kind: "coordinator", name: null },
     });
-    expect([entryWhat(en, stop), entryWho(en, stop), entryHref(stop)]).toEqual([
+    expect([entryWhat(en, stop), entryKind(stop), entryHref(stop)]).toEqual([
       "Coordinator stopped",
       "coordinator",
       "/projects/widgets",
     ]);
     expect(entryHref(entry("e:2", "2026-03-04T10:00:00Z"))).toBe("/agents/WID-1");
+    // A report is a block when it entered blocked; a worker's question is one too.
+    expect(entryKind(entry("e:3", "2026-03-04T10:00:00Z", { phase: "blocked" }))).toBe("blocked");
+    expect(entryKind(entry("e:4", "2026-03-04T10:00:00Z", { kind: "question" }))).toBe("blocked");
+    expect(entryKind(entry("e:5", "2026-03-04T10:00:00Z", { kind: "claim" }))).toBe("start");
   });
 });
 

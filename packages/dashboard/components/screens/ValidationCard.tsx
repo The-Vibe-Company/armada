@@ -1,40 +1,40 @@
 "use client";
 
-// One thing the owner validates (THE-885), as the Validations page, the
-// approval link (/approve/<id>) and a session's page show it:
-// what to check and why, the pull request with its files, CI and preview, the
-// screenshots and links, and the owner's buttons. Each button is a request:
-// the decision lands in the coordinator's inbox, which merges or relays it.
-// `full` is the approval page and a session to validate (every file, every
-// attachment, its images full width, THE-916).
+// One thing the owner validates (THE-885), as the Validations page shows it
+// (THE-1021, design/dashboard-v7): its kind, ticket, project and who asked;
+// what to check and why the owner; the pull request in one strip (number,
+// head, diff, CI, preview); the screenshots, full screen on a click (the
+// arrow keys between them, THE-916), then the links; a note for the
+// coordinator and the owner's buttons, or the decision once taken. Each
+// button is a request: the decision lands in the coordinator's inbox, which
+// merges or relays it. `Decide` is shared with the overview's pane and a
+// session's page, without the note.
 import type { Attachment, CiState, OwnerValidation } from "@armada/core/read";
 import Image from "next/image";
 import Link from "next/link";
-import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { decideValidation } from "@/app/actions";
-import { fileShape, paths } from "@/lib/fleet-view";
+import { paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import { type ActionContext, ErrorLine, PendingNote, SignerField, signerOf, useRequest, useSent } from "../Actions";
-import { Card, CardHead, CardMeta, CardTitle } from "../page";
-import { Dot, ProjectChip, Tag } from "../ui";
 
-const KIND_COLOR: Record<OwnerValidation["kind"], string> = {
-  merge: "var(--done)",
-  validation: "var(--accent)",
-  question: "var(--frontier)",
+/** A kind's color: a question is blue, a merge or work to check amber. */
+export const VALIDATION_COLOR: Record<OwnerValidation["kind"], string> = {
+  merge: "var(--amber)",
+  validation: "var(--amber)",
+  question: "var(--blue)",
 };
 
 const CI_COLOR: Record<CiState, string> = {
-  success: "var(--done)",
-  failure: "var(--critical)",
-  pending: "var(--active)",
+  success: "var(--green)",
+  failure: "var(--red)",
+  pending: "var(--amber)",
   none: "var(--text-3)",
 };
 
-/** How many screenshots the overview's card shows before "+n". */
-const COMPACT_IMAGES = 3;
-/** How many files the approval page lists before "+n". */
-const FULL_FILES = 30;
+/** The words a validation is about: a merge's pull request title, else what to check. */
+export const validationTitle = (v: OwnerValidation) =>
+  (v.kind === "merge" ? v.title : null) ?? v.what.split("\n").find((l) => l.trim()) ?? v.ticket;
 
 interface Sent {
   body: string;
@@ -42,228 +42,123 @@ interface Sent {
   at: string;
 }
 
-export function ValidationCard({
+export function ValidationDetail({
   ctx,
   v,
   projectName,
-  mode = "list",
 }: {
   ctx: ActionContext;
   v: OwnerValidation;
   projectName: string;
-  /** `list`: the Validations page; `full`: the approval page. */
-  mode?: "list" | "full";
 }) {
   const { t, now } = ctx;
   const s = t.validations;
-  const color = KIND_COLOR[v.kind];
-  const title = v.title ?? v.what.split("\n")[0] ?? v.ticket;
+  const color = VALIDATION_COLOR[v.kind];
   const ago = (iso: string) => t.ago(Math.max(0, now - Date.parse(iso)));
-  const body = v.kind === "merge" ? null : v.what;
+  const title = validationTitle(v);
+  const rest = v.what.trim() === title.trim() ? null : v.kind === "merge" ? v.what : v.what.slice(title.length).trim();
   return (
-    <Card className={`vd-card is-${mode}`}>
-      <CardHead
-        icon={<Dot color={color} />}
-        label={s.kinds[v.kind]}
-        color={color}
-        side={<span title={v.createdAt}>{ago(v.createdAt)}</span>}
-      />
-      <CardTitle>
-        {mode === "full" ? (
-          v.url ? (
+    <article className="vd-detail" aria-labelledby={`validation-${v.id}`}>
+      <div className="vd-head">
+        <p className="pg-meta">
+          <span style={{ color }}>{s.kinds[v.kind]}</span>
+          <span aria-hidden>·</span>
+          <Link href={paths.agent(v.ticket)} prefetch={false} className="mono pg-link">
+            {v.ticket}
+          </Link>
+          <span aria-hidden>·</span>
+          <span>{projectName}</span>
+          {v.author && (
+            <>
+              <span aria-hidden>·</span>
+              <span>{s.askedBy(v.author, ago(v.createdAt))}</span>
+            </>
+          )}
+        </p>
+        <h2 className="vd-what" id={`validation-${v.id}`}>
+          {v.url ? (
             <a href={v.url} target="_blank" rel="noreferrer">
               {title}
             </a>
           ) : (
             title
-          )
-        ) : (
-          <Link href={paths.validation(v.id)} prefetch>
-            {title}
-          </Link>
-        )}
-      </CardTitle>
-      <CardMeta>
-        <Tag>
-          <ProjectChip slug={v.project} name={projectName} />
-        </Tag>
-        <Link href={paths.agent(v.ticket)} prefetch className="mono">
-          {v.ticket}
-        </Link>
-        {v.author && <span>{s.askedBy(v.author, ago(v.createdAt))}</span>}
-      </CardMeta>
-      {body && (
-        <p className="wait-detail is-quote" style={{ ["--q" as string]: color }}>
-          {body}
-        </p>
-      )}
-      {v.reason && (
-        <p className="vd-reason">
-          <span className="faint">{s.reason}</span> {v.reason}
-        </p>
-      )}
-      {v.pr && <PullRequest t={t} pr={v.pr} full={mode === "full"} />}
-      {v.pr?.preview && (
-        <a className="ui-button vd-preview" href={v.pr.preview} target="_blank" rel="noreferrer">
-          {s.preview}
-          <span aria-hidden>↗</span>
-        </a>
-      )}
-      {mode === "full" && v.decision === null ? (
-        <LargeGallery t={t} items={v.gallery} />
-      ) : (
-        <Gallery t={t} items={v.gallery} compact={v.decision !== null} more={paths.validation(v.id)} />
-      )}
+          )}
+        </h2>
+        {rest && <p className="vd-body">{rest}</p>}
+        {v.reason && <p className="vd-why">{s.whyYou(v.reason)}</p>}
+      </div>
+      {v.pr && <PrFacts t={t} pr={v.pr} />}
+      <Gallery t={t} items={v.gallery} />
       {v.decision ? (
-        <p className="vd-decided">
-          <Dot color={v.decision.outcome === "approved" ? "var(--done)" : "var(--text-3)"} size={6} />
-          <b>{v.decision.answer ?? s.outcome[v.decision.outcome]}</b>{" "}
-          <span className="faint">{s.by(v.decision.by, ago(v.decision.at))}</span>
-          {v.decision.note && <span className="vd-note">{v.decision.note}</span>}
-        </p>
+        <div className="vd-outcome">
+          <span
+            className="vd-outcome-h"
+            style={{ color: v.decision.outcome === "approved" ? "var(--green)" : undefined }}
+          >
+            {s.by(v.decision.answer ?? s.outcome[v.decision.outcome], v.decision.by)}
+            <span className="vd-outcome-ago"> · {ago(v.decision.at)}</span>
+          </span>
+          {v.decision.note && <span className="vd-outcome-note">« {v.decision.note} »</span>}
+        </div>
       ) : (
-        <Decide ctx={ctx} v={v} projectName={projectName} />
+        <Decide ctx={ctx} v={v} projectName={projectName} note />
       )}
-    </Card>
+    </article>
   );
 }
 
-function PullRequest({ t, pr, full }: { t: Strings; pr: NonNullable<OwnerValidation["pr"]>; full: boolean }) {
+/** The pull request in one strip: its number, head, diff, CI and preview. */
+function PrFacts({ t, pr }: { t: Strings; pr: NonNullable<OwnerValidation["pr"]> }) {
   const s = t.validations;
-  const files = pr.files ?? [];
   const ci = pr.ci ?? "none";
   return (
-    <div className="vd-pr">
-      <a href={pr.url} target="_blank" rel="noreferrer" className="vd-pr-title">
-        <span className="mono">{s.pr(pr.number)}</span> {pr.title}
-      </a>
-      <CardMeta>
-        {pr.additions !== null && (
-          <span className="sc-file-delta">
-            <span className="sc-add">+{pr.additions}</span> <span className="sc-del">−{pr.deletions ?? 0}</span>
-          </span>
-        )}
-        {pr.files && <span>{s.files(files.length)}</span>}
-        <span className="vd-ci">
-          <Dot color={CI_COLOR[ci]} size={6} />
-          {s.ci[ci]}
-        </span>
-        <span className="mono" title={pr.headSha}>
-          {pr.headSha.slice(0, 7)}
-        </span>
-      </CardMeta>
-      {full && files.length > 0 && (
-        <ul className="vd-files">
-          {files.slice(0, FULL_FILES).map((f) => {
-            const shape = fileShape(f);
-            return (
-              <li key={f.path}>
-                <span className="sc-file-path">
-                  <span className="faint">{shape.dir}</span>
-                  {shape.name}
-                </span>
-                <span className="sc-file-delta">
-                  <span className="sc-add">+{f.additions}</span> <span className="sc-del">−{f.deletions}</span>
-                </span>
-              </li>
-            );
-          })}
-          {files.length > FULL_FILES && <li className="faint">{s.more(files.length - FULL_FILES)}</li>}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-/** The screenshots, enlarged on a click, then the links; on the overview's card, the first few. */
-function Gallery({ t, items, compact, more }: { t: Strings; items: Attachment[]; compact: boolean; more: string }) {
-  const s = t.validations;
-  const [chosen, setChosen] = useState<string | null>(null);
-  const dialog = useRef<HTMLDialogElement>(null);
-  const images = items.filter((a) => a.kind === "image");
-  const links = items.filter((a) => a.kind === "link" && a.url);
-  const selected = images.find((a) => a.id === chosen);
-  useEffect(() => {
-    const element = dialog.current;
-    if (selected && element && !element.open) element.showModal();
-    if (!selected && element?.open) element.close();
-  }, [selected]);
-  if (!images.length && !links.length) return compact ? null : <p className="calm">{s.noGallery}</p>;
-  const shown = compact ? images.slice(0, COMPACT_IMAGES) : images;
-  const hidden = images.length - shown.length;
-  return (
-    <div className="vd-gallery">
-      {shown.length > 0 && (
-        <ul className={`vd-shots${compact ? " is-compact" : ""}`}>
-          {shown.map((a) => (
-            <li key={a.id}>
-              <button
-                type="button"
-                className="vd-shot"
-                onClick={() => setChosen(a.id)}
-                aria-label={s.enlarge(a.caption ?? s.screenshot)}
-              >
-                <Image
-                  src={`/api/attachments/${a.id}`}
-                  alt={a.caption ?? s.screenshot}
-                  width={compact ? 240 : 640}
-                  height={compact ? 150 : 400}
-                  unoptimized
-                />
-              </button>
-              {!compact && a.caption && <span className="vd-caption">{a.caption}</span>}
-            </li>
-          ))}
-          {hidden > 0 && (
-            <li>
-              <Link href={more} prefetch className="vd-shot vd-more">
-                {s.more(hidden)}
-              </Link>
-            </li>
-          )}
-        </ul>
-      )}
-      {!compact &&
-        links.map((a) => (
-          <a key={a.id} href={a.url ?? undefined} target="_blank" rel="noreferrer" className="vd-link">
-            {a.caption ?? a.url}
-            <span aria-hidden>↗</span>
+    <dl className="vd-pr">
+      <div>
+        <dt>{s.facts.pr}</dt>
+        <dd className="mono">
+          <a href={pr.url} target="_blank" rel="noreferrer">
+            #{pr.number}
           </a>
-        ))}
-      <dialog
-        ref={dialog}
-        className="attachment-dialog"
-        onCancel={() => setChosen(null)}
-        onClose={() => setChosen(null)}
-        aria-label={selected?.caption ?? s.screenshot}
-      >
-        <button type="button" className="ui-button" onClick={() => setChosen(null)}>
-          {t.shell.agent.closeAttachment}
-        </button>
-        {selected && (
-          <>
-            <Image
-              src={`/api/attachments/${selected.id}`}
-              alt={selected.caption ?? s.screenshot}
-              width={1280}
-              height={800}
-              unoptimized
-            />
-            {selected.caption && <p>{selected.caption}</p>}
-          </>
-        )}
-      </dialog>
-    </div>
+        </dd>
+      </div>
+      <div>
+        <dt>{s.facts.head}</dt>
+        <dd className="mono" title={pr.headSha}>
+          {pr.headSha.slice(0, 7)}
+        </dd>
+      </div>
+      {pr.additions !== null && (
+        <div>
+          <dt>{s.facts.diff}</dt>
+          <dd className="mono">{s.diff(pr.additions, pr.deletions ?? 0, pr.files ? pr.files.length : null)}</dd>
+        </div>
+      )}
+      <div>
+        <dt>{s.facts.ci}</dt>
+        <dd className="mono" style={{ color: CI_COLOR[ci] }}>
+          {s.ci[ci]}
+        </dd>
+      </div>
+      {pr.preview && (
+        <div>
+          <dt>{s.facts.preview}</dt>
+          <dd className="mono">
+            <a href={pr.preview} target="_blank" rel="noreferrer" className="vd-preview">
+              {pr.preview.replace(/^https?:\/\//, "").replace(/\/$/, "")}
+            </a>
+          </dd>
+        </div>
+      )}
+    </dl>
   );
 }
 
 /**
- * What a session asks the owner to validate, large (THE-916): each image the
- * card's full width, its caption under it. A click opens it full screen: the
- * arrow keys move between the images, Esc or Close leaves, and the focus goes
- * back to the image it was opened from. Then the links.
+ * The screenshots in a grid, each with its caption. A click opens one full
+ * screen: the arrow keys move between them, Esc or Close leaves, and the
+ * focus goes back to the image it was opened from. Then the links.
  */
-function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
+function Gallery({ t, items }: { t: Strings; items: Attachment[] }) {
   const s = t.validations;
   const images = items.filter((a) => a.kind === "image");
   const links = items.filter((a) => a.kind === "link" && a.url);
@@ -276,7 +171,7 @@ function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
     if (open !== null && element && !element.open) element.showModal();
     if (open === null && element?.open) element.close();
   }, [open]);
-  if (!images.length && !links.length) return <p className="calm">{s.noGallery}</p>;
+  if (!images.length && !links.length) return null;
   const show = (k: number) => {
     from.current = k;
     setOpen(k);
@@ -290,7 +185,7 @@ function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
   return (
     <div className="vd-gallery">
       {images.length > 0 && (
-        <ul className="vd-large">
+        <ul className="vd-shots">
           {images.map((a, k) => (
             <li key={a.id}>
               <figure>
@@ -306,23 +201,28 @@ function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
                   <Image
                     src={`/api/attachments/${a.id}`}
                     alt={a.caption ?? s.screenshot}
-                    width={1600}
-                    height={1000}
+                    width={640}
+                    height={480}
                     unoptimized
                   />
                 </button>
-                {a.caption && <figcaption className="vd-caption">{a.caption}</figcaption>}
+                {a.caption && <figcaption>{a.caption}</figcaption>}
               </figure>
             </li>
           ))}
         </ul>
       )}
-      {links.map((a) => (
-        <a key={a.id} href={a.url ?? undefined} target="_blank" rel="noreferrer" className="vd-link">
-          {a.caption ?? a.url}
-          <span aria-hidden>↗</span>
-        </a>
-      ))}
+      {links.length > 0 && (
+        <ul className="vd-links">
+          {links.map((a) => (
+            <li key={a.id}>
+              <a href={a.url ?? undefined} target="_blank" rel="noreferrer">
+                {a.caption ?? a.url} ↗
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
       <dialog
         ref={dialog}
         className="vd-viewer"
@@ -346,8 +246,8 @@ function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
               <span className="vd-viewer-caption">{current.caption}</span>
               <span className="spacer" />
               <span className="vd-viewer-hint">{images.length > 1 ? s.viewer.hint : null}</span>
-              <button type="button" className="btn" onClick={close}>
-                {t.shell.agent.closeAttachment}
+              <button type="button" className="btn is-soft" onClick={close}>
+                {s.viewer.close}
               </button>
             </div>
             <div className="vd-viewer-stage">
@@ -408,15 +308,18 @@ function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
 }
 
 /**
- * The owner's buttons: Approve (the merge) and Request changes with a short
- * text, or the choices the validation was sent with. Shown as sent at once;
- * back with the reason when refused.
+ * The owner's buttons: Approve (the merge) and Request changes, or the
+ * choices the validation was sent with. `note` (the Validations page) puts a
+ * note for the coordinator above them, sent with any decision and required
+ * to request changes; without it, Request changes opens its own box. Shown
+ * as sent at once; back with the reason when refused.
  */
 export function Decide({
   ctx,
   v,
   projectName,
   changes = true,
+  note = false,
   children,
 }: {
   ctx: ActionContext;
@@ -424,6 +327,8 @@ export function Decide({
   projectName: string;
   /** Offer "Request changes" here; the overview's pane leaves it to the validation's page. */
   changes?: boolean;
+  /** A note box above the buttons (the Validations page). */
+  note?: boolean;
   /** More buttons, after the decision's (the overview's pane: the validation's page). */
   children?: ReactNode;
 }) {
@@ -431,11 +336,14 @@ export function Decide({
   const s = t.validations;
   const [changing, setChanging] = useState(false);
   const [draft, setDraft] = useState("");
+  const [missing, setMissing] = useState(false);
+  const box = useRef<HTMLTextAreaElement>(null);
   const [sent, markSent, unmark] = useSent<Sent>(ctx.version);
   const shown = useRef<Sent | null>(null);
   const req = useRequest(decideValidation, {
     start: (form) => {
       const action = form.get("action");
+      const typed = String(form.get("note") ?? "").trim();
       const body =
         action === "approve"
           ? v.kind === "merge"
@@ -443,7 +351,7 @@ export function Decide({
             : s.approve
           : action === "choice"
             ? String(form.get("choice") ?? "")
-            : String(form.get("note") ?? "").trim();
+            : typed;
       shown.current = { body, author: signerOf(ctx.signer, form), at: new Date(now).toISOString() };
       markSent(shown.current);
       setChanging(false);
@@ -477,7 +385,7 @@ export function Decide({
       e.currentTarget.form?.requestSubmit();
     } else if (e.key === "Escape") setChanging(false);
   };
-  if (changing)
+  if (changing && !note)
     return (
       <form className="composer" onSubmit={req.submit}>
         {hidden}
@@ -508,9 +416,46 @@ export function Decide({
         </div>
       </form>
     );
+  // With the note box, "Request changes" needs its words there.
+  const submit = (e: FormEvent<HTMLFormElement>) => {
+    const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+    if (note && submitter?.value === "changes" && !draft.trim()) {
+      e.preventDefault();
+      setMissing(true);
+      box.current?.focus();
+      return;
+    }
+    req.submit(e);
+  };
   return (
-    <form className="question" onSubmit={req.submit} aria-label={`${s.kinds[v.kind]} · ${projectName}`}>
+    <form className="question vd-decide" onSubmit={submit} aria-label={`${s.kinds[v.kind]} · ${projectName}`}>
       {hidden}
+      {note && (
+        <>
+          <textarea
+            ref={box}
+            name="note"
+            className="vd-note"
+            aria-label={s.noteLabel(v.ticket)}
+            aria-invalid={missing || undefined}
+            aria-describedby={missing ? `validation-note-${v.id}` : undefined}
+            placeholder={s.note}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setMissing(false);
+            }}
+            onKeyDown={keys}
+            rows={2}
+            maxLength={4000}
+          />
+          {missing && (
+            <p className="req-error" id={`validation-note-${v.id}`} role="alert">
+              {s.changesNeedNote}
+            </p>
+          )}
+        </>
+      )}
       {!ctx.signer.fixed && <SignerField t={t} signer={ctx.signer} />}
       <ErrorLine t={t} code={req.error} />
       <div className="vd-actions">
@@ -535,18 +480,23 @@ export function Decide({
             <button type="submit" name="action" value="approve" className="btn is-primary" disabled={req.busy}>
               {v.kind === "merge" ? s.approveMerge : s.approve}
             </button>
-            {changes && (
-              <button
-                type="button"
-                className="btn is-soft"
-                onClick={() => {
-                  req.clear();
-                  setChanging(true);
-                }}
-              >
-                {s.requestChanges}
-              </button>
-            )}
+            {changes &&
+              (note ? (
+                <button type="submit" name="action" value="changes" className="btn is-soft" disabled={req.busy}>
+                  {s.requestChanges}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn is-soft"
+                  onClick={() => {
+                    req.clear();
+                    setChanging(true);
+                  }}
+                >
+                  {s.requestChanges}
+                </button>
+              ))}
           </>
         )}
         {children}

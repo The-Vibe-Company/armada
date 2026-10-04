@@ -1,9 +1,6 @@
-import { notFound } from "next/navigation";
-import { DesignSheet } from "@/components/screens/DesignSheet";
-import { designPageEnabled } from "@/lib/fleet-view";
+import { redirect } from "next/navigation";
 
-// Every shared component in its states: in development and in the demo only.
+// The component sheet is gone (THE-1021): the v7 design is the dashboard's reference.
 export default function DesignPage() {
-  if (!designPageEnabled(process.env)) notFound();
-  return <DesignSheet />;
+  redirect("/");
 }

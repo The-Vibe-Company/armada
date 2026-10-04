@@ -8,7 +8,6 @@
 // typing. Pure: ranking, grouping and the recent picks are tested here, and
 // a query over thousands of items stays far under 50 ms.
 import type { FleetOverview, Issue, PullRequest, StatusSources, StatusType } from "@armada/core/read";
-import { type SavedView, viewHref } from "./filters";
 import { type AgentState, agentState, paths } from "./fleet-view";
 import { LANGUAGES, type Language, type Strings } from "./i18n";
 import { decisionCards } from "./overview-view";
@@ -184,8 +183,6 @@ export interface SearchContext {
   organization: boolean;
   /** The live data answers: a launch or an answer can be sent. */
   live: boolean;
-  /** The viewer's saved views (THE-895), found here since the menu lost them (THE-916). */
-  views?: readonly Pick<SavedView, "id" | "name" | "list" | "query">[];
 }
 
 type Overview = Pick<FleetOverview, "rows" | "projects" | "ready" | "waiting"> &
@@ -486,7 +483,6 @@ function pages(ctx: SearchContext): SearchItem[] {
   const nav = [
     ["overview", paths.overview, t.shell.nav.overview],
     ["validations", paths.validations, t.shell.nav.validations],
-    ["projects", paths.projects, t.shell.nav.projects],
     ["insights", paths.insights, t.shell.nav.insights],
     ["activity", paths.activity, t.shell.nav.activity],
     ...(ctx.organization
@@ -512,19 +508,6 @@ function pages(ctx: SearchContext): SearchItem[] {
           project: null,
         },
         [key, name, "go", "page", ...words(key)],
-      ),
-    ),
-    ...(ctx.views ?? []).map((v) =>
-      item(
-        {
-          kind: "page",
-          key: `view:${v.id}`,
-          label: v.name,
-          detail: t.views.heading,
-          href: viewHref(v),
-          project: null,
-        },
-        ["view", "saved", t.views.heading],
       ),
     ),
   ];
