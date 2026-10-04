@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<title>Armada</title>
+<style>
+@font-face{font-family:"Geist";src:url("fonts/geist.woff2") format("woff2");font-weight:100 900;font-display:swap}
+@font-face{font-family:"Geist Mono";src:url("fonts/geist-mono.woff2") format("woff2");font-weight:100 900;font-display:swap}
+html,body{margin:0;height:100%;background:#0F1012;color:#E6E7E9;font-family:"Geist",ui-sans-serif,system-ui,sans-serif;font-size:13px;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+a{color:#E6E7E9;text-decoration:none}
+a:hover{color:#FFFFFF;text-decoration:underline}
+input,textarea,button{font-family:inherit}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#24262B;border-radius:10px;border:3px solid #0F1012}
+</style>
+</helmet>
+<div style="display:flex;height:100vh;width:100%;overflow:hidden;background:#0F1012">
+
+<aside style="width:228px;flex:none;display:flex;flex-direction:column;gap:2px;padding:12px 10px;background:#0B0C0D;border-right:1px solid #1C1D21">
+  <div style="display:flex;align-items:center;gap:8px;padding:4px 6px 10px">
+    <svg width="18" height="18" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 4.5L20 11.5H12Z" fill="#b6f15a"></path><path d="M10 13L14 20H6Z" fill="#f0efec"></path><path d="M22 13L26 20H18Z" fill="#f0efec"></path><path d="M4 21.5L8 28.5H0Z" fill="#f0efec" fill-opacity="0.45"></path><path d="M28 21.5L32 28.5H24Z" fill="#f0efec" fill-opacity="0.45"></path></svg>
+    <span style="font-weight:600;font-size:13.5px">Armada</span>
+    <span style="flex:1"></span>
+    <span style="font-size:12px;color:#A3A6AD">Acme ▾</span>
+  </div>
+  <label style="display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;margin-bottom:10px;border:1px solid #1F2125;border-radius:6px;background:#121316;color:#7D818A">
+    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"></circle><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"></path></svg>
+    <input value="{{ q }}" onChange="{{ onSearch }}" placeholder="Rechercher un ticket…" style="flex:1;min-width:0;background:transparent;border:0;outline:none;color:#E6E7E9;font-size:12.5px"></input>
+    <span style="font-family:'Geist Mono',monospace;font-size:10.5px;color:#7D818A">⌘K</span>
+  </label>
+  <sc-for list="{{ nav }}" as="n" hint-placeholder-count="4">
+    <div onClick="{{ n.click }}" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:6px;cursor:pointer;color:{{ n.color }};background:{{ n.bg }}" style-hover="background:#16171A;color:#E6E7E9">
+      <span style="flex:1">{{ n.label }}</span>
+      <span style="font-family:'Geist Mono',monospace;font-size:11px;color:{{ n.countColor }}">{{ n.count }}</span>
+    </div>
+  </sc-for>
+  <div style="padding:18px 8px 6px;font-size:11px;color:#7D818A;font-weight:500">Projets</div>
+  <sc-for list="{{ sideProjects }}" as="p" hint-placeholder-count="3">
+    <div onClick="{{ p.click }}" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:6px;cursor:pointer;color:{{ p.color }};background:{{ p.bg }}" style-hover="background:#16171A;color:#E6E7E9">
+      <span title="{{ p.coordText }}" style="width:7px;height:7px;border-radius:2px;transform:rotate(45deg);background:{{ p.coordColor }}"></span>
+      <span style="flex:1">{{ p.name }}</span>
+      <sc-if value="{{ p.hasBlocked }}" hint-placeholder-val="{{ false }}">
+        <span style="font-family:'Geist Mono',monospace;font-size:11px;color:oklch(0.72 0.17 25)">{{ p.blocked }}</span>
+      </sc-if>
+      <span style="font-family:'Geist Mono',monospace;font-size:11px;color:#7D818A">{{ p.count }}</span>
+    </div>
+  </sc-for>
+  <span style="flex:1"></span>
+  <div onClick="{{ goOrg }}" style="display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:6px;cursor:pointer;color:{{ orgNav.color }};background:{{ orgNav.bg }}" style-hover="background:#16171A;color:#E6E7E9">Organisation</div>
+  <div style="display:flex;align-items:center;gap:8px;padding:10px 8px 2px;font-size:11.5px;color:#7D818A">
+    <span style="width:6px;height:6px;border-radius:50%;background:oklch(0.76 0.15 150)"></span>En direct · lu il y a 2 s
+  </div>
+</aside>
+
+<main style="flex:1;min-width:0;display:flex;flex-direction:column">
+  <header style="height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 24px;border-bottom:1px solid #1C1D21">
+    <sc-for list="{{ crumbs }}" as="c" hint-placeholder-count="1">
+      <span style="display:flex;align-items:center;gap:8px">
+        <sc-if value="{{ c.sep }}" hint-placeholder-val="{{ false }}"><span style="color:#4A4D54">/</span></sc-if>
+        <span onClick="{{ c.click }}" style="cursor:pointer;color:{{ c.color }};font-size:13px">{{ c.label }}</span>
+      </span>
+    </sc-for>
+    <span style="flex:1"></span>
+    <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;gap:2px;padding:2px;border:1px solid #24262B;border-radius:7px">
+        <sc-for list="{{ variantTabs }}" as="v" hint-placeholder-count="2">
+          <button onClick="{{ v.click }}" style="white-space:nowrap;flex:none;height:24px;padding:0 10px;border:0;border-radius:5px;font-size:12px;cursor:pointer;background:{{ v.bg }};color:{{ v.color }}">{{ v.label }}</button>
+        </sc-for>
+      </div>
+    </sc-if>
+  </header>
+
+  <div ref="{{ scrollRef }}" style="flex:1;min-height:0;overflow:auto">
+
+  <sc-if value="{{ isOverview }}" hint-placeholder-val="{{ true }}">
+    <div style="padding:28px 32px 18px;display:flex;flex-direction:column;gap:6px">
+      <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;text-wrap:pretty">{{ ov.headline }}</h1>
+      <p style="margin:0;color:#A3A6AD;font-size:13.5px">{{ ov.subline }}</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1px;margin:0 32px 20px;background:#121316;border:1px solid #1C1D21;border-radius:8px;overflow:hidden">
+      <sc-for list="{{ ov.projects }}" as="p" hint-placeholder-count="3">
+        <div onClick="{{ p.click }}" style="outline:1px solid #1C1D21;display:flex;flex-direction:column;gap:10px;padding:14px 16px;background:#121316;cursor:pointer" style-hover="background:#16171A">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span style="font-weight:600">{{ p.name }}</span>
+            <span style="flex:1"></span>
+            <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#A3A6AD;white-space:nowrap">{{ p.done }} / {{ p.total }}</span>
+          </div>
+          <div style="height:3px;border-radius:2px;background:#24262B;overflow:hidden"><div style="height:100%;width:{{ p.pct }};background:#A3A6AD"></div></div>
+          <div style="display:flex;gap:14px;font-size:12px;color:#A3A6AD;flex-wrap:wrap">
+            <span style="color:{{ p.blockedColor }}">{{ p.blocked }} bloqué(s)</span>
+            <span style="color:{{ p.youColor }}">{{ p.you }} pour toi</span>
+            <span>{{ p.running }} en cours</span>
+            <span style="flex:1"></span>
+            <span style="display:flex;align-items:center;gap:6px;color:{{ p.coordColor }}"><span style="width:6px;height:6px;border-radius:1px;transform:rotate(45deg);background:{{ p.coordColor }}"></span>{{ p.coordShort }}</span>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;padding:0 32px 10px;flex-wrap:wrap">
+      <sc-for list="{{ ov.filters }}" as="f" hint-placeholder-count="4">
+        <button onClick="{{ f.click }}" style="white-space:nowrap;flex:none;height:26px;padding:0 10px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid {{ f.border }};background:{{ f.bg }};color:{{ f.color }};display:flex;gap:6px;align-items:center">{{ f.label }}<span style="font-family:'Geist Mono',monospace;font-size:11px;color:#7D818A">{{ f.count }}</span></button>
+      </sc-for>
+      <span style="flex:1"></span>
+      <span style="font-size:12px;color:#7D818A">Grouper par</span>
+      <sc-for list="{{ ov.groupTabs }}" as="g" hint-placeholder-count="2">
+        <button onClick="{{ g.click }}" style="white-space:nowrap;flex:none;height:26px;padding:0 10px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid {{ g.border }};background:{{ g.bg }};color:{{ g.color }}">{{ g.label }}</button>
+      </sc-for>
+    </div>
+
+    <sc-if value="{{ ov.empty }}" hint-placeholder-val="{{ false }}">
+      <div style="margin:24px 32px;padding:32px;border:1px dashed #24262B;border-radius:8px;color:#A3A6AD;text-align:center">Aucun agent ne correspond. <span onClick="{{ ov.clear }}" style="color:#E6E7E9;cursor:pointer;text-decoration:underline">Effacer les filtres</span></div>
+    </sc-if>
+
+    <sc-if value="{{ ov.isA }}" hint-placeholder-val="{{ true }}">
+      <div style="border-top:1px solid #1C1D21;padding-bottom:48px">
+        <sc-for list="{{ ov.groups }}" as="g" hint-placeholder-count="4">
+          <section>
+            <div style="position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:10px;height:34px;padding:0 32px;background:#131417;border-bottom:1px solid #1C1D21">
+              <span style="width:8px;height:8px;border-radius:50%;background:{{ g.color }}"></span>
+              <span style="font-weight:600;font-size:12.5px">{{ g.label }}</span>
+              <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ g.count }}</span>
+              <span style="font-size:12px;color:#7D818A">{{ g.hint }}</span>
+            </div>
+            <sc-for list="{{ g.rows }}" as="r" hint-placeholder-count="3">
+              <div onClick="{{ r.open }}" style="display:grid;grid-template-columns:8px 64px minmax(0,1fr) 72px 64px 52px;align-items:center;gap:14px;min-height:48px;padding:6px 32px;border-bottom:1px solid #1A1B1F;cursor:pointer" style-hover="background:#15161A">
+                <span style="width:8px;height:8px;border-radius:50%;background:{{ r.color }}"></span>
+                <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A3A6AD">{{ r.id }}</span>
+                <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:{{ r.reasonColor }}">{{ r.reason }}</span></span>
+                <span style="font-size:12px;color:#A3A6AD;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.projName }}</span>
+                <span title="{{ r.stepLabel }}" style="display:flex;gap:2px">
+                  <sc-for list="{{ r.steps }}" as="s" hint-placeholder-count="6"><span style="flex:1;height:4px;border-radius:1px;background:{{ s.bg }}"></span></sc-for>
+                </span>
+                <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A;text-align:right">{{ r.last }}</span>
+              </div>
+            </sc-for>
+          </section>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ ov.isB }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex;border-top:1px solid #1C1D21;min-height:calc(100vh - 300px)">
+        <div style="flex:1;min-width:0;padding-bottom:48px;border-right:1px solid #1C1D21">
+          <sc-for list="{{ ov.groups }}" as="g" hint-placeholder-count="4">
+            <section>
+              <div style="position:sticky;top:0;z-index:1;display:flex;align-items:center;gap:10px;height:34px;padding:0 24px 0 32px;background:#131417;border-bottom:1px solid #1C1D21">
+                <span style="width:8px;height:8px;border-radius:50%;background:{{ g.color }}"></span>
+                <span style="font-weight:600;font-size:12.5px">{{ g.label }}</span>
+                <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ g.count }}</span>
+              </div>
+              <sc-for list="{{ g.rows }}" as="r" hint-placeholder-count="3">
+                <div onClick="{{ r.select }}" style="display:grid;grid-template-columns:8px 64px minmax(0,1fr) 44px;align-items:center;gap:12px;height:38px;padding:0 24px 0 32px;border-bottom:1px solid #1A1B1F;cursor:pointer;background:{{ r.selBg }};box-shadow:{{ r.selShadow }}" style-hover="background:#15161A">
+                  <span style="width:8px;height:8px;border-radius:50%;background:{{ r.color }}"></span>
+                  <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A3A6AD">{{ r.id }}</span>
+                  <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span>
+                  <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A;text-align:right">{{ r.last }}</span>
+                </div>
+              </sc-for>
+            </section>
+          </sc-for>
+        </div>
+        <sc-if value="{{ pv.has }}" hint-placeholder-val="{{ true }}">
+          <aside style="width:clamp(280px,36%,380px);flex:none;position:sticky;top:0;align-self:flex-start;display:flex;flex-direction:column;gap:18px;padding:22px 24px 40px">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;gap:8px;align-items:center;font-size:12px;color:#A3A6AD"><span style="font-family:'Geist Mono',monospace">{{ pv.id }}</span><span>·</span><span>{{ pv.projName }}</span></div>
+              <div style="font-size:16px;font-weight:600;line-height:1.35;text-wrap:pretty">{{ pv.title }}</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px;padding:12px 14px;border-radius:8px;background:#141518;border:1px solid #1F2125">
+              <div style="display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:50%;background:{{ pv.color }}"></span><span style="font-weight:600;color:{{ pv.color }}">{{ pv.groupLabel }}</span></div>
+              <div style="color:#D3D5D9;line-height:1.45;text-wrap:pretty">{{ pv.reason }}</div>
+              <sc-if value="{{ pv.hasButtons }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:6px;flex-wrap:wrap;padding-top:6px">
+                  <sc-for list="{{ pv.buttons }}" as="b" hint-placeholder-count="2">
+                    <button onClick="{{ b.click }}" style="height:28px;padding:0 10px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid {{ b.border }};background:{{ b.bg }};color:{{ b.color }}">{{ b.label }}</button>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{ pv.isDecided }}" hint-placeholder-val="{{ false }}">
+                <div style="padding-top:4px;color:oklch(0.76 0.15 150);font-size:12.5px">{{ pv.decidedText }}</div>
+              </sc-if>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:11.5px;color:#7D818A;font-weight:500">Étape</div>
+              <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:3px">
+                <sc-for list="{{ pv.stepsFull }}" as="s" hint-placeholder-count="6">
+                  <div style="display:flex;flex-direction:column;gap:5px"><span style="height:4px;border-radius:1px;background:{{ s.bg }}"></span><span style="font-size:10.5px;color:{{ s.labelColor }};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ s.label }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="display:flex;flex-direction:column">
+              <sc-for list="{{ pv.facts }}" as="f" hint-placeholder-count="4">
+                <div style="display:grid;grid-template-columns:110px minmax(0,1fr);gap:10px;padding:6px 0;border-bottom:1px solid #1A1B1F;font-size:12.5px"><span style="color:#7D818A">{{ f.k }}</span><span style="color:{{ f.color }};font-family:{{ f.font }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f.v }}</span></div>
+              </sc-for>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="font-size:11.5px;color:#7D818A;font-weight:500">Derniers rapports</div>
+              <sc-for list="{{ pv.reports }}" as="e" hint-placeholder-count="3">
+                <div style="display:grid;grid-template-columns:44px minmax(0,1fr);gap:10px;font-size:12.5px;line-height:1.4"><span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ e.t }}</span><span style="color:#D3D5D9">{{ e.text }}</span></div>
+              </sc-for>
+            </div>
+            <button onClick="{{ pv.open }}" style="height:32px;border-radius:6px;border:1px solid #2A2C31;background:#1A1B1F;color:#E6E7E9;font-size:12.5px;cursor:pointer" style-hover="background:#222429">Ouvrir la page de l'agent →</button>
+          </aside>
+        </sc-if>
+      </div>
+    </sc-if>
+  </sc-if>
+
+  <sc-if value="{{ isAgent }}" hint-placeholder-val="{{ false }}">
+    <div style="max-width:1080px;padding:28px 32px 56px;display:flex;flex-direction:column;gap:22px">
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:#A3A6AD;flex-wrap:wrap">
+          <span style="font-family:'Geist Mono',monospace">{{ ag.id }}</span><span>·</span>
+          <span onClick="{{ ag.openProject }}" style="cursor:pointer;text-decoration:underline;text-decoration-color:#3A3D44;text-underline-offset:3px">{{ ag.projName }}</span><span>·</span>
+          <span>{{ ag.harness }}</span><span>·</span><span>{{ ag.worker }}</span>
+        </div>
+        <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em;text-wrap:pretty">{{ ag.title }}</h1>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;padding:16px 18px;border-radius:10px;background:#141518;border:1px solid #1F2125;border-left:3px solid {{ ag.color }}">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-weight:600;color:{{ ag.color }}">{{ ag.groupLabel }}</span>
+          <span style="color:#7D818A;font-size:12.5px">{{ ag.sinceText }}</span>
+        </div>
+        <div style="font-size:14.5px;line-height:1.5;color:#E6E7E9;text-wrap:pretty">{{ ag.actionTitle }}</div>
+        <sc-if value="{{ ag.hasBody }}" hint-placeholder-val="{{ false }}">
+          <div style="white-space:pre-line;color:#B4B7BD;line-height:1.55;font-size:13px">{{ ag.actionBody }}</div>
+        </sc-if>
+        <sc-if value="{{ ag.hasButtons }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:4px">
+            <sc-for list="{{ ag.buttons }}" as="b" hint-placeholder-count="2">
+              <button onClick="{{ b.click }}" style="height:30px;padding:0 12px;border-radius:6px;font-size:12.5px;cursor:pointer;border:1px solid {{ b.border }};background:{{ b.bg }};color:{{ b.color }}">{{ b.label }}</button>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ ag.isDecided }}" hint-placeholder-val="{{ false }}">
+          <div style="color:oklch(0.76 0.15 150)">{{ ag.decidedText }}</div>
+        </sc-if>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px">
+        <sc-for list="{{ ag.stepsFull }}" as="s" hint-placeholder-count="6">
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <span style="height:4px;border-radius:1px;background:{{ s.bg }}"></span>
+            <span style="font-size:12px;color:{{ s.labelColor }};font-weight:{{ s.weight }}">{{ s.label }}</span>
+            <span style="font-size:11px;color:#7D818A;font-family:'Geist Mono',monospace">{{ s.sub }}</span>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex;gap:18px;border-bottom:1px solid #1C1D21">
+        <sc-for list="{{ ag.tabs }}" as="t" hint-placeholder-count="2">
+          <button onClick="{{ t.click }}" style="height:34px;padding:0;border:0;background:transparent;font-size:13px;cursor:pointer;color:{{ t.color }};border-bottom:2px solid {{ t.line }};margin-bottom:-1px">{{ t.label }}</button>
+        </sc-for>
+      </div>
+
+      <sc-if value="{{ ag.tabSummary }}" hint-placeholder-val="{{ true }}">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:32px;align-items:start">
+          <div style="display:flex;flex-direction:column;gap:2px">
+            <div style="font-size:11.5px;color:#7D818A;font-weight:500;padding-bottom:8px">Rapports et événements</div>
+            <sc-for list="{{ ag.reports }}" as="e" hint-placeholder-count="4">
+              <div style="display:grid;grid-template-columns:48px 10px minmax(0,1fr);gap:10px;padding:7px 0;line-height:1.45">
+                <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A;padding-top:1px">{{ e.t }}</span>
+                <span style="width:6px;height:6px;border-radius:50%;margin-top:6px;background:{{ e.color }}"></span>
+                <span style="color:#D3D5D9">{{ e.text }}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;flex-direction:column">
+            <div style="font-size:11.5px;color:#7D818A;font-weight:500;padding-bottom:8px">Détails</div>
+            <sc-for list="{{ ag.facts }}" as="f" hint-placeholder-count="6">
+              <div style="display:grid;grid-template-columns:130px minmax(0,1fr);gap:12px;padding:8px 0;border-bottom:1px solid #1A1B1F"><span style="color:#7D818A">{{ f.k }}</span><span style="color:{{ f.color }};font-family:{{ f.font }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f.v }}</span></div>
+            </sc-for>
+            <sc-if value="{{ ag.canRelease }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;gap:8px;padding-top:14px">
+                <button style="height:28px;padding:0 10px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid #2A2C31;background:transparent;color:#A3A6AD">Ouvrir la session</button>
+                <button style="height:28px;padding:0 10px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid #2A2C31;background:transparent;color:#A3A6AD">Libérer le ticket</button>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ ag.tabFiles }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column">
+          <sc-if value="{{ ag.noFiles }}" hint-placeholder-val="{{ false }}"><div style="color:#7D818A;padding:12px 0">Aucun fichier modifié pour l'instant.</div></sc-if>
+          <sc-for list="{{ ag.files }}" as="f" hint-placeholder-count="3">
+            <div style="display:grid;grid-template-columns:minmax(0,1fr) 56px 56px;gap:12px;padding:8px 0;border-bottom:1px solid #1A1B1F;font-family:'Geist Mono',monospace;font-size:12px">
+              <span style="color:#D3D5D9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f.path }}</span>
+              <span style="color:oklch(0.76 0.15 150);text-align:right">+{{ f.add }}</span>
+              <span style="color:oklch(0.72 0.17 25);text-align:right">−{{ f.del }}</span>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isProject }}" hint-placeholder-val="{{ false }}">
+    <div style="padding:28px 32px 56px;display:flex;flex-direction:column;gap:24px">
+      <div style="display:flex;gap:24px;align-items:flex-end;flex-wrap:wrap">
+        <div style="display:flex;flex-direction:column;gap:8px;flex:1;min-width:280px">
+          <div style="font-size:12.5px;color:#A3A6AD;display:flex;gap:8px;flex-wrap:wrap"><span style="font-family:'Geist Mono',monospace">{{ pj.repo }}</span><span>·</span><span>{{ pj.owner }}</span></div>
+          <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em">{{ pj.name }}</h1>
+          <p style="margin:0;color:#A3A6AD;font-size:13.5px">{{ pj.line }}</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button style="white-space:nowrap;height:30px;padding:0 12px;border-radius:6px;font-size:12.5px;cursor:pointer;border:1px solid #2A2C31;background:#1A1B1F;color:#E6E7E9">Programme Linear</button>
+          <button style="height:30px;padding:0 12px;border-radius:6px;font-size:12.5px;cursor:pointer;border:1px solid #2A2C31;background:#1A1B1F;color:#E6E7E9;white-space:nowrap">Ouvrir le repo</button>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#A3A6AD"><span>Progression du programme</span><span style="font-family:'Geist Mono',monospace;white-space:nowrap">{{ pj.done }} / {{ pj.total }} tickets</span></div>
+        <div style="height:4px;border-radius:2px;background:#24262B;overflow:hidden"><div style="height:100%;width:{{ pj.pct }};background:#A3A6AD"></div></div>
+      </div>
+
+      <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
+        <div style="display:flex;flex-direction:column;gap:28px;min-width:0;flex:999 1 520px">
+          <div style="border:1px solid #1C1D21;border-radius:8px;overflow:hidden">
+            <sc-for list="{{ pj.groups }}" as="g" hint-placeholder-count="3">
+              <section>
+                <div style="display:flex;align-items:center;gap:10px;height:32px;padding:0 16px;background:#131417;border-bottom:1px solid #1C1D21">
+                  <span style="width:8px;height:8px;border-radius:50%;background:{{ g.color }}"></span>
+                  <span style="font-weight:600;font-size:12.5px">{{ g.label }}</span>
+                  <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ g.count }}</span>
+                </div>
+                <sc-for list="{{ g.rows }}" as="r" hint-placeholder-count="2">
+                  <div onClick="{{ r.open }}" style="display:grid;grid-template-columns:8px 64px minmax(0,1fr) 60px 44px;align-items:center;gap:12px;min-height:48px;padding:6px 16px;border-bottom:1px solid #1A1B1F;cursor:pointer" style-hover="background:#15161A">
+                    <span style="width:8px;height:8px;border-radius:50%;background:{{ r.color }}"></span>
+                    <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A3A6AD">{{ r.id }}</span>
+                    <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:{{ r.reasonColor }}">{{ r.reason }}</span></span>
+                    <span style="display:flex;gap:2px"><sc-for list="{{ r.steps }}" as="s" hint-placeholder-count="6"><span style="flex:1;height:4px;border-radius:1px;background:{{ s.bg }}"></span></sc-for></span>
+                    <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A;text-align:right">{{ r.last }}</span>
+                  </div>
+                </sc-for>
+              </section>
+            </sc-for>
+          </div>
+
+          <div style="display:flex;flex-direction:column">
+            <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:8px"><span style="font-weight:600">Prêts à lancer</span><span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ pj.readyCount }}</span><span style="font-size:12px;color:#7D818A">Le lancement est une demande au coordinateur.</span></div>
+            <sc-if value="{{ pj.noReady }}" hint-placeholder-val="{{ false }}"><div style="color:#7D818A;padding:8px 0">Rien de prêt pour l'instant.</div></sc-if>
+            <sc-for list="{{ pj.ready }}" as="r" hint-placeholder-count="3">
+              <div style="display:grid;grid-template-columns:64px minmax(0,1fr) auto 84px;align-items:center;gap:12px;min-height:40px;border-bottom:1px solid #1A1B1F">
+                <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A3A6AD">{{ r.id }}</span>
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span>
+                <span style="display:flex;gap:4px">
+                  <sc-for list="{{ r.labels }}" as="l" hint-placeholder-count="1"><span style="font-size:11px;padding:2px 6px;border-radius:4px;border:1px solid #24262B;color:#A3A6AD">{{ l }}</span></sc-for>
+                  <sc-if value="{{ r.isBlocked }}" hint-placeholder-val="{{ false }}"><span style="font-size:11.5px;color:#A3A6AD">attend {{ r.blockedBy }}</span></sc-if>
+                </span>
+                <button onClick="{{ r.launch }}" style="height:26px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid {{ r.btnBorder }};background:{{ r.btnBg }};color:{{ r.btnColor }}">{{ r.btnLabel }}</button>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display:flex;flex-direction:column">
+            <div style="display:flex;align-items:baseline;gap:10px;padding-bottom:8px"><span style="font-weight:600">Pull requests ouvertes</span><span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ pj.prCount }}</span></div>
+            <sc-if value="{{ pj.noPrs }}" hint-placeholder-val="{{ false }}"><div style="color:#7D818A;padding:8px 0">Aucune PR ouverte.</div></sc-if>
+            <sc-for list="{{ pj.prs }}" as="r" hint-placeholder-count="2">
+              <div onClick="{{ r.open }}" style="display:grid;grid-template-columns:56px minmax(0,1fr) 120px;align-items:center;gap:12px;height:38px;border-bottom:1px solid #1A1B1F;cursor:pointer" style-hover="background:#15161A">
+                <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A3A6AD">#{{ r.n }}</span>
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.title }}</span>
+                <span style="font-size:12.5px;color:{{ r.color }};text-align:right">{{ r.state }}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <aside style="flex:1 1 260px;min-width:0;display:flex;flex-direction:column;padding:16px;border:1px solid #1C1D21;border-radius:8px;background:#121316">
+          <div style="display:flex;align-items:center;gap:8px;padding-bottom:10px">
+            <span style="width:8px;height:8px;border-radius:1px;transform:rotate(45deg);background:{{ pj.coordColor }}"></span>
+            <span style="font-weight:600">Coordinateur</span>
+          </div>
+          <div style="color:{{ pj.coordColor }};padding-bottom:10px">{{ pj.coordText }}</div>
+          <sc-for list="{{ pj.coordFacts }}" as="f" hint-placeholder-count="4">
+            <div style="display:grid;grid-template-columns:90px minmax(0,1fr);gap:10px;padding:7px 0;border-top:1px solid #1A1B1F;font-size:12.5px"><span style="color:#7D818A">{{ f.k }}</span><span style="font-family:{{ f.font }};color:#D3D5D9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ f.v }}</span></div>
+          </sc-for>
+          <button style="margin-top:12px;height:28px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid #2A2C31;background:#1A1B1F;color:#E6E7E9">Ouvrir la session</button>
+        </aside>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isValidations }}" hint-placeholder-val="{{ false }}">
+    <div style="display:flex;min-height:100%">
+      <div style="width:340px;flex:none;border-right:1px solid #1C1D21;display:flex;flex-direction:column">
+        <div style="padding:24px 20px 14px;display:flex;flex-direction:column;gap:4px">
+          <h1 style="margin:0;font-size:18px;font-weight:600">{{ vd.headline }}</h1>
+          <p style="margin:0;color:#A3A6AD;font-size:12.5px">{{ vd.subline }}</p>
+        </div>
+        <div style="padding:8px 20px;font-size:11.5px;color:#7D818A;font-weight:500;border-top:1px solid #1C1D21">À décider</div>
+        <sc-for list="{{ vd.pending }}" as="v" hint-placeholder-count="3">
+          <div onClick="{{ v.select }}" style="display:flex;flex-direction:column;gap:4px;padding:12px 20px;border-top:1px solid #1A1B1F;cursor:pointer;background:{{ v.bg }};box-shadow:{{ v.shadow }}" style-hover="background:#15161A">
+            <div style="display:flex;gap:8px;align-items:center;font-size:12px"><span style="width:7px;height:7px;border-radius:50%;background:{{ v.dot }}"></span><span style="color:{{ v.dot }}">{{ v.kind }}</span><span style="flex:1"></span><span style="color:#7D818A">{{ v.ago }}</span></div>
+            <div style="line-height:1.4;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">{{ v.short }}</div>
+            <div style="font-size:12px;color:#7D818A;display:flex;gap:6px"><span style="font-family:'Geist Mono',monospace">{{ v.ticket }}</span><span>·</span><span>{{ v.projName }}</span></div>
+          </div>
+        </sc-for>
+        <div style="padding:8px 20px;font-size:11.5px;color:#7D818A;font-weight:500;border-top:1px solid #1C1D21;margin-top:12px">Décidé cette semaine</div>
+        <sc-for list="{{ vd.decided }}" as="v" hint-placeholder-count="1">
+          <div onClick="{{ v.select }}" style="display:flex;flex-direction:column;gap:4px;padding:12px 20px;border-top:1px solid #1A1B1F;cursor:pointer;background:{{ v.bg }};box-shadow:{{ v.shadow }}" style-hover="background:#15161A">
+            <div style="display:flex;gap:8px;font-size:12px"><span style="color:oklch(0.76 0.15 150)">{{ v.outcome }}</span><span style="flex:1"></span><span style="color:#7D818A">{{ v.ago }}</span></div>
+            <div style="color:#A3A6AD;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ v.short }}</div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="flex:1;min-width:0;padding:28px 32px 56px;display:flex;flex-direction:column;gap:20px;max-width:880px">
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:8px;align-items:center;font-size:12.5px;color:#A3A6AD;flex-wrap:wrap">
+            <span style="color:{{ vs.dot }}">{{ vs.kind }}</span><span>·</span>
+            <span onClick="{{ vs.openAgent }}" style="font-family:'Geist Mono',monospace;cursor:pointer;text-decoration:underline;text-decoration-color:#3A3D44;text-underline-offset:3px">{{ vs.ticket }}</span><span>·</span>
+            <span>{{ vs.projName }}</span><span>·</span><span>demandé par {{ vs.from }}, {{ vs.ago }}</span>
+          </div>
+          <h2 style="margin:0;font-size:19px;font-weight:600;line-height:1.4;text-wrap:pretty">{{ vs.what }}</h2>
+          <sc-if value="{{ vs.hasWhy }}" hint-placeholder-val="{{ false }}"><p style="margin:0;color:#A3A6AD;line-height:1.5">Pourquoi toi : {{ vs.why }}</p></sc-if>
+        </div>
+        <sc-if value="{{ vs.hasPr }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;gap:24px;flex-wrap:wrap;padding:12px 16px;border:1px solid #1C1D21;border-radius:8px;background:#121316;font-size:12.5px">
+            <sc-for list="{{ vs.prFacts }}" as="f" hint-placeholder-count="4">
+              <div style="display:flex;flex-direction:column;gap:3px"><span style="color:#7D818A;font-size:11.5px">{{ f.k }}</span><span style="font-family:'Geist Mono',monospace;color:{{ f.color }}">{{ f.v }}</span></div>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ vs.hasShots }}" hint-placeholder-val="{{ false }}">
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+            <sc-for list="{{ vs.shots }}" as="s" hint-placeholder-count="2">
+              <figure style="margin:0;display:flex;flex-direction:column;gap:6px">
+                <div style="aspect-ratio:4/3;border-radius:8px;border:1px solid #24262B;background:repeating-linear-gradient(135deg,#141518 0 8px,#17181C 8px 16px);display:flex;align-items:center;justify-content:center;font-family:'Geist Mono',monospace;font-size:11px;color:#7D818A">capture</div>
+                <figcaption style="font-size:12px;color:#A3A6AD">{{ s }}</figcaption>
+              </figure>
+            </sc-for>
+          </div>
+        </sc-if>
+        <sc-if value="{{ vs.isOpen }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex;flex-direction:column;gap:10px;padding-top:4px">
+            <textarea placeholder="Note pour le coordinateur (facultatif)" style="min-height:64px;padding:10px 12px;border-radius:8px;border:1px solid #24262B;background:#121316;color:#E6E7E9;font-size:13px;resize:vertical;outline:none"></textarea>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <sc-for list="{{ vs.buttons }}" as="b" hint-placeholder-count="2">
+                <button onClick="{{ b.click }}" style="height:32px;padding:0 14px;border-radius:6px;font-size:13px;cursor:pointer;border:1px solid {{ b.border }};background:{{ b.bg }};color:{{ b.color }}">{{ b.label }}</button>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{ vs.isClosed }}" hint-placeholder-val="{{ false }}">
+          <div style="padding:12px 16px;border-radius:8px;border:1px solid #1F2125;background:#121316;display:flex;flex-direction:column;gap:4px">
+            <span style="color:oklch(0.76 0.15 150);font-weight:600">{{ vs.outcome }}</span>
+            <span style="color:#A3A6AD">{{ vs.note }}</span>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isActivity }}" hint-placeholder-val="{{ false }}">
+    <div style="padding:28px 32px 56px;display:flex;flex-direction:column;gap:16px;max-width:1080px">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em">Activité</h1>
+        <p style="margin:0;color:#A3A6AD;font-size:13.5px">Tout ce qui s'est passé aujourd'hui, du plus récent au plus ancien.</p>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <sc-for list="{{ act.filters }}" as="f" hint-placeholder-count="5">
+          <button onClick="{{ f.click }}" style="white-space:nowrap;flex:none;height:26px;padding:0 10px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid {{ f.border }};background:{{ f.bg }};color:{{ f.color }}">{{ f.label }}</button>
+        </sc-for>
+      </div>
+      <div style="display:flex;flex-direction:column;border-top:1px solid #1C1D21">
+        <sc-for list="{{ act.after }}" as="e" hint-placeholder-count="6">
+          <div onClick="{{ e.open }}" style="display:grid;grid-template-columns:48px 112px 64px minmax(0,1fr) 80px;gap:14px;align-items:center;height:36px;border-bottom:1px solid #1A1B1F;cursor:pointer" style-hover="background:#15161A">
+            <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ e.t }}</span>
+            <span style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:{{ e.color }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ e.color }}"></span>{{ e.kindLabel }}</span>
+            <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A3A6AD">{{ e.ticket }}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#D3D5D9">{{ e.text }}</span>
+            <span style="font-size:12px;color:#7D818A;text-align:right">{{ e.projName }}</span>
+          </div>
+        </sc-for>
+        <div style="display:flex;align-items:center;gap:10px;height:34px;color:oklch(0.72 0.13 250);font-size:12px">
+          <span style="flex:1;height:1px;background:oklch(0.72 0.13 250 / 0.5)"></span>Ta dernière visite · 14:20<span style="flex:1;height:1px;background:oklch(0.72 0.13 250 / 0.5)"></span>
+        </div>
+        <sc-for list="{{ act.before }}" as="e" hint-placeholder-count="3">
+          <div onClick="{{ e.open }}" style="display:grid;grid-template-columns:48px 112px 64px minmax(0,1fr) 80px;gap:14px;align-items:center;height:36px;border-bottom:1px solid #1A1B1F;cursor:pointer;opacity:0.75" style-hover="background:#15161A">
+            <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#7D818A">{{ e.t }}</span>
+            <span style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:{{ e.color }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ e.color }}"></span>{{ e.kindLabel }}</span>
+            <span style="font-family:'Geist Mono',monospace;font-size:12px;color:#A3A6AD">{{ e.ticket }}</span>
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#D3D5D9">{{ e.text }}</span>
+            <span style="font-size:12px;color:#7D818A;text-align:right">{{ e.projName }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isInsights }}" hint-placeholder-val="{{ false }}">
+    <div style="padding:28px 32px 56px;display:flex;flex-direction:column;gap:24px;max-width:1080px">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em">Insights</h1>
+        <p style="margin:0;color:#A3A6AD;font-size:13.5px">Les 7 derniers jours, tous projets.</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:1px;background:#121316;border:1px solid #1C1D21;border-radius:8px;overflow:hidden">
+        <sc-for list="{{ ins.kpis }}" as="k" hint-placeholder-count="4">
+          <div style="outline:1px solid #1C1D21;display:flex;flex-direction:column;gap:6px;padding:16px 18px;background:#121316">
+            <span style="font-size:12px;color:#A3A6AD">{{ k.label }}</span>
+            <span style="font-size:24px;font-weight:600;letter-spacing:-0.01em">{{ k.value }}</span>
+            <span style="font-size:12px;color:#7D818A">{{ k.note }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:12px">
+        <div style="font-weight:600">Merges par jour</div>
+        <div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;align-items:end;height:160px;padding-bottom:4px;border-bottom:1px solid #24262B">
+          <sc-for list="{{ ins.bars }}" as="b" hint-placeholder-count="7">
+            <div style="display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;height:100%">
+              <span style="font-family:'Geist Mono',monospace;font-size:11.5px;color:#A3A6AD">{{ b.n }}</span>
+              <span style="width:100%;max-width:56px;height:{{ b.h }};border-radius:3px 3px 0 0;background:{{ b.bg }}"></span>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px">
+          <sc-for list="{{ ins.bars }}" as="b" hint-placeholder-count="7"><span style="text-align:center;font-size:11.5px;color:#7D818A">{{ b.d }}</span></sc-for>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column">
+        <div style="font-weight:600;padding-bottom:8px">Par projet</div>
+        <div style="display:grid;grid-template-columns:minmax(0,1fr) repeat(4,110px);gap:12px;padding:8px 0;border-bottom:1px solid #24262B;font-size:12px;color:#7D818A"><span>Projet</span><span style="text-align:right">Mergés</span><span style="text-align:right">Cycle médian</span><span style="text-align:right">Temps bloqué</span><span style="text-align:right">CI verte 1er coup</span></div>
+        <sc-for list="{{ ins.rows }}" as="r" hint-placeholder-count="3">
+          <div style="display:grid;grid-template-columns:minmax(0,1fr) repeat(4,110px);gap:12px;padding:10px 0;border-bottom:1px solid #1A1B1F;font-family:'Geist Mono',monospace;font-size:12.5px">
+            <span style="font-family:'Geist',sans-serif">{{ r.name }}</span><span style="text-align:right">{{ r.merged }}</span><span style="text-align:right">{{ r.cycle }}</span><span style="text-align:right">{{ r.blocked }}</span><span style="text-align:right">{{ r.ci }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isOrg }}" hint-placeholder-val="{{ false }}">
+    <div style="padding:28px 32px 56px;display:flex;flex-direction:column;gap:18px;max-width:960px">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <h1 style="margin:0;font-size:22px;font-weight:600;letter-spacing:-0.01em">Acme</h1>
+        <p style="margin:0;color:#A3A6AD;font-size:13.5px">Membres, accès et machines de l'organisation.</p>
+      </div>
+      <div style="display:flex;gap:18px;border-bottom:1px solid #1C1D21">
+        <sc-for list="{{ org.tabs }}" as="t" hint-placeholder-count="4">
+          <button onClick="{{ t.click }}" style="height:34px;padding:0;border:0;background:transparent;font-size:13px;cursor:pointer;color:{{ t.color }};border-bottom:2px solid {{ t.line }};margin-bottom:-1px">{{ t.label }}</button>
+        </sc-for>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span style="color:#A3A6AD;font-size:12.5px;flex:1">{{ org.hint }}</span>
+        <button style="height:30px;padding:0 12px;border-radius:6px;font-size:12.5px;cursor:pointer;border:0;background:#E6E7E9;color:#0F1012;font-weight:500">{{ org.action }}</button>
+      </div>
+      <div style="display:flex;flex-direction:column;border-top:1px solid #1C1D21">
+        <sc-for list="{{ org.rows }}" as="r" hint-placeholder-count="4">
+          <div style="display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) 140px 90px;gap:14px;align-items:center;min-height:44px;border-bottom:1px solid #1A1B1F">
+            <span style="display:flex;flex-direction:column;gap:2px;min-width:0"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.a }}</span><span style="font-size:12px;color:#7D818A;font-family:{{ r.subFont }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.sub }}</span></span>
+            <span style="color:#A3A6AD;font-size:12.5px;font-family:{{ r.bFont }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.b }}</span>
+            <span style="color:{{ r.cColor }};font-size:12.5px">{{ r.c }}</span>
+            <span style="text-align:right;color:#7D818A;font-size:12px;cursor:pointer">{{ r.d }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </sc-if>
+
+  </div>
+</main>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;overviewVariant&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Liste&quot;,&quot;Liste + aperçu&quot;],&quot;default&quot;:&quot;Liste&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Vue d'ensemble&quot;},&quot;groupBy&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;État&quot;,&quot;Projet&quot;],&quot;default&quot;:&quot;État&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Vue d'ensemble&quot;},&quot;showMerged&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Vue d'ensemble&quot;}}">
+const C = { red: "oklch(0.72 0.17 25)", amber: "oklch(0.80 0.14 75)", blue: "oklch(0.72 0.13 250)", green: "oklch(0.76 0.15 150)", gray: "#7D818A" };
+const MONO = "'Geist Mono',monospace", SANS = "inherit";
+const GROUPS = [
+  { key: "blocked", label: "Bloqué", hint: "ne peut pas avancer sans intervention", color: C.red },
+  { key: "you", label: "Attend ta décision", hint: "plan, merge ou question pour toi", color: C.amber },
+  { key: "running", label: "En cours", hint: "avance seul", color: C.blue },
+  { key: "ready", label: "Prêt à merger", hint: "approuvé, le coordinateur merge", color: C.green },
+  { key: "merged", label: "Mergé aujourd'hui", hint: "", color: C.gray },
+];
+const GMAP = Object.fromEntries(GROUPS.map((g) => [g.key, g]));
+const STEPS = ["Plan", "Approbation", "Code", "Revue & CI", "Prêt", "Mergé"];
+const PROJECTS = [
+  { slug: "widgets", name: "Widgets", owner: "Léa Martin", repo: "acme/widgets", done: 14, total: 24, coord: { harness: "Conductor Cloud", where: "ws-0c01/coord", model: "opus-5-5-1m", state: "active", text: "Actif · vu il y a 2 min", short: "actif", since: "10:40 · 7 h" } },
+  { slug: "gadgets", name: "Gadgets", owner: "Hugo Bernard", repo: "acme/gadgets", done: 6, total: 14, coord: { harness: "Claude Code · local", where: "hugo-mbp/ttys004", model: "opus-5-5-1m", state: "idle", text: "Inactif depuis 24 min", short: "inactif 24 min", since: "12:40 · 5 h" } },
+  { slug: "armada", name: "Armada", owner: "Camille Roux", repo: "The-Vibe-Company/armada", done: 31, total: 35, coord: { harness: "Codex · local", where: "camille-mbp/ttys011", model: "gpt-6.1-sol", state: "active", text: "Actif · vu il y a 1 min", short: "actif", since: "14:30 · 3 h 10" } },
+];
+const PMAP = Object.fromEntries(PROJECTS.map((p) => [p.slug, p]));
+const F = (path, add, del) => ({ path, add, del });
+const AGENTS = [
+  { id: "WID-15", p: "widgets", title: "Connexion par lien magique", g: "blocked", step: 2, reason: "Question sans réponse : durée de validité du lien", last: "12 min", since: "bloqué depuis 12 min", harness: "Conductor", worker: "Worker A", session: "ws-4f2a/ses-91", model: "opus · opus-5-5-1m", claimed: "16:05", files: [F("src/auth/magic-link.ts", 142, 0), F("src/auth/routes.ts", 38, 6), F("src/mail/templates/sign-in.tsx", 64, 0), F("test/auth/magic-link.test.ts", 97, 0)],
+    action: { title: "Le worker a posé une question au coordinateur il y a 12 min. Pas encore de réponse.", body: "Combien de temps un lien de connexion reste-t-il valide ?\nPlus court est plus sûr ; plus long survit à un serveur mail lent.", buttons: [{ label: "15 minutes (recommandé)", primary: true, result: "Réponse envoyée : 15 minutes." }, { label: "30 minutes", result: "Réponse envoyée : 30 minutes." }] },
+    reports: [["17:28", "Bloqué : question au coordinateur sur la durée du lien", C.red], ["17:10", "Gabarit d'email de connexion écrit", C.gray], ["16:40", "Routes /auth/magic-link en place", C.gray], ["16:05", "Pris par Worker A · Conductor", C.blue]] },
+  { id: "WID-14", p: "widgets", title: "Afficher le total de la facture sur la commande", g: "blocked", step: 3, reason: "CI rouge sur #41 : test d'arrondi", last: "4 min", since: "en revue depuis 38 min", harness: "Conductor", worker: "Worker C", session: "ws-1b9e/ses-40", model: "opus · opus-5-5-1m", claimed: "15:00", pr: { n: 41, ci: "CI rouge", ciColor: C.red, state: "CI rouge" }, files: [F("src/orders/total.ts", 22, 9), F("src/orders/OrderPage.tsx", 31, 4), F("test/orders/total.test.ts", 40, 2)],
+    action: { title: "La CI échoue sur #41 (test/orders/total.test.ts). Le worker corrige : dernier rapport il y a 4 min.", buttons: [{ label: "Ouvrir #41", link: true }] },
+    reports: [["17:36", "Corrige le test d'arrondi qui échoue en CI", C.gray], ["17:02", "PR #41 ouverte · CI rouge", C.red], ["16:20", "Total calculé côté serveur", C.gray], ["15:00", "Pris par Worker C · Conductor", C.blue]] },
+  { id: "GAD-5", p: "gadgets", title: "Accélérer la page de recherche produit", g: "blocked", step: 3, reason: "Conflit avec main sur #12", last: "2 min", since: "en revue depuis 25 min", harness: "Conductor", worker: "Worker F", session: "ws-5e61/ses-02", model: "codex · gpt-6.1-sol", claimed: "13:40", pr: { n: 12, ci: "Pas encore de CI", ciColor: C.gray, state: "Conflit" }, files: [F("src/search/query.ts", 45, 61), F("src/search/index.ts", 12, 3), F("src/catalogue/schema.sql", 4, 1)],
+    action: { title: "#12 est en conflit avec main après le changement du catalogue. Le worker rebase.", buttons: [{ label: "Ouvrir #12", link: true }] },
+    reports: [["17:38", "Rebase sur main après le changement du catalogue", C.gray], ["17:15", "Conflit détecté sur #12", C.red], ["16:05", "Silencieux 50 min, puis reprise", C.amber], ["13:40", "Pris par Worker F · Conductor", C.blue]] },
+  { id: "WID-17", p: "widgets", title: "Relancer les webhooks échoués", g: "blocked", step: 2, reason: "Silencieux depuis 42 min", last: "42 min", since: "en code depuis 1 h 40", harness: "Codex", worker: "Worker E", session: "ws-90aa/ses-33", model: "codex · gpt-6.1-sol", claimed: "15:30", files: [F("src/webhooks/retry.ts", 67, 0), F("src/webhooks/queue.ts", 21, 8)],
+    action: { title: "Aucun rapport depuis 42 min. Dernier message : planning de backoff écrit, branchement de la file.", buttons: [{ label: "Relancer le worker", primary: true, result: "Demande de relance envoyée au coordinateur." }, { label: "Libérer le ticket", result: "Ticket libéré, il repasse en prêt à lancer." }] },
+    reports: [["16:58", "Planning de backoff écrit, branchement de la file", C.gray], ["16:20", "Lit le code de la file", C.gray], ["15:30", "Pris par Worker E · Codex", C.blue]] },
+  { id: "GAD-3", p: "gadgets", title: "Importer des produits depuis un tableur", g: "you", step: 1, reason: "Plan à approuver", last: "18 min", since: "attend depuis 18 min", harness: "Claude Code", worker: "Worker G", session: "ws-d810/ses-17", model: "opus · opus-5-5-1m", claimed: "16:56", files: [F("docs/plans/gad-3.md", 48, 0)],
+    action: { title: "Plan posté, à approuver avant que le code commence.", body: "Parser le tableur, valider chaque ligne, puis importer en une seule transaction.\nLes lignes invalides sont renvoyées à l'utilisateur ; rien n'est écrit tant que tout n'est pas valide.", buttons: [{ label: "Approuver le plan", primary: true, result: "Plan approuvé. Le worker passe au code." }, { label: "Demander des changements", result: "Demande de changements envoyée." }] },
+    reports: [["17:22", "Plan posté : parser, valider, importer en une transaction", C.amber], ["17:05", "Lit le schéma produit", C.gray], ["16:56", "Pris par Worker G · Claude Code", C.blue]] },
+  { id: "GAD-9", p: "gadgets", title: "Dessiner la carte produit du catalogue", g: "you", step: 2, reason: "Deux directions à valider", last: "14 min", since: "attend depuis 14 min", harness: "Conductor", worker: "Worker K", session: "ws-7e21/ses-08", model: "opus · opus-5-5-1m", claimed: "16:05", files: [], val: 2,
+    action: { title: "Deux directions pour la carte produit sont jointes. Choisis-en une ou dis quoi changer.", buttons: [{ label: "Ouvrir la validation", primary: true, goVal: 2 }] },
+    reports: [["17:26", "Deux directions jointes pour validation", C.amber], ["16:30", "Maquettes A et B en cours", C.gray], ["16:05", "Pris par Worker K · Conductor", C.blue]] },
+  { id: "WID-18", p: "widgets", title: "Thème sombre pour la page des réglages", g: "you", step: 4, reason: "Merge à approuver · #44 verte", last: "6 min", since: "attend depuis 5 min", harness: "Claude Code", worker: "Worker B", session: "ws-77c0/ses-12", model: "opus · opus-5-5-1m", claimed: "14:10", pr: { n: 44, ci: "CI verte", ciColor: C.green, state: "Verte" }, files: [F("src/settings/theme.css", 88, 12), F("src/settings/ThemeToggle.tsx", 54, 0), F("src/settings/page.tsx", 9, 3)], val: 1,
+    action: { title: "#44 est prêt (tête a3f9c2e, CI verte). Il touche la page des réglages que les utilisateurs voient : la règle te laisse le merge.", buttons: [{ label: "Approuver le merge", primary: true, result: "Merge approuvé. Le coordinateur merge #44." }, { label: "Voir les captures", goVal: 1 }] },
+    reports: [["17:34", "Rendu : CI verte sur la tête finale", C.green], ["16:30", "PR #44 ouverte", C.gray], ["15:20", "Bascule clair/sombre ajoutée", C.gray], ["14:10", "Pris par Worker B · Claude Code", C.blue]] },
+  { id: "THE-862", p: "armada", title: "Adaptateur de harness Codex local", g: "you", step: 2, reason: "Question : livrer derrière un flag ?", last: "1 min", since: "question depuis 22 min", harness: "Conductor", worker: "Worker I", session: "ws-a1c4/ses-03", model: "opus · opus-5-5-1m", claimed: "16:42", files: [F("packages/core/src/harness/codex-local.ts", 156, 0), F("packages/core/src/harness/index.ts", 8, 2), F("packages/core/test/codex-local.test.ts", 88, 0)], val: 3,
+    action: { title: "Le worker a escaladé un choix produit : l'adaptateur Codex local doit-il d'abord sortir derrière un flag ? Il continue le code en attendant.", buttons: [{ label: "Derrière un flag (recommandé)", primary: true, result: "Réponse envoyée : derrière un flag." }, { label: "Activé pour tous", result: "Réponse envoyée : activé pour tous." }] },
+    reports: [["17:39", "Mappe les événements de session Codex sur armada report", C.gray], ["17:18", "Question escaladée : flag d'abord ?", C.amber], ["17:09", "Phase code", C.gray], ["16:42", "Pris par Worker I · Conductor", C.blue]] },
+  { id: "WID-12", p: "widgets", title: "Exporter un rapport en CSV", g: "running", step: 2, reason: "Streame les lignes au lieu de construire le fichier en mémoire", last: "3 min", since: "en code depuis 52 min", harness: "Claude Code", worker: "Worker D", session: "ws-c3d1/ses-08", model: "opus · opus-5-5-1m", claimed: "16:25", files: [F("src/reports/export-csv.ts", 118, 0), F("src/reports/routes.ts", 14, 1), F("test/reports/export-csv.test.ts", 76, 0)],
+    reports: [["17:37", "Streame les lignes au lieu de construire le fichier en mémoire", C.gray], ["17:10", "Route d'export ajoutée", C.gray], ["16:48", "Plan approuvé par le coordinateur", C.green], ["16:25", "Pris par Worker D · Claude Code", C.blue]] },
+  { id: "GAD-6", p: "gadgets", title: "Envoyer un digest hebdomadaire par email", g: "running", step: 0, reason: "Lit la spec et le code du mailer", last: "4 min", since: "en plan depuis 6 min", harness: "Codex", worker: "Worker H", session: "ws-2c47/ses-55", model: "codex · gpt-6.1-sol", claimed: "17:34", files: [],
+    reports: [["17:36", "Lit la spec et le code du mailer", C.gray], ["17:34", "Pris par Worker H · Codex", C.blue]] },
+  { id: "THE-858", p: "armada", title: "Afficher le harness sur chaque session", g: "ready", step: 4, reason: "Approuvé par Ada Lovelace · #317 verte", last: "9 min", since: "prêt depuis 9 min", harness: "Conductor", worker: "Worker J", session: "ws-b20e/ses-77", model: "opus · opus-5-5-1m", claimed: "14:40", pr: { n: 317, ci: "CI verte", ciColor: C.green, state: "Verte" }, files: [F("packages/dashboard/components/Fleet.tsx", 36, 4), F("packages/core/src/live.ts", 19, 2)],
+    action: { title: "Merge approuvé par Ada Lovelace il y a 40 min. Le coordinateur merge #317." },
+    reports: [["17:31", "Rendu : PR #317 verte, tête 7c1e0a4", C.green], ["17:00", "Merge approuvé par Ada Lovelace", C.green], ["16:48", "PR #317 ouverte", C.gray], ["14:40", "Pris par Worker J · Conductor", C.blue]] },
+  ...[["WID-11", "widgets", "Paginer la liste des commandes", 39, "1 h 10", "16:30"], ["GAD-2", "gadgets", "Réindexer le catalogue chaque nuit", 10, "2 h", "15:40"], ["THE-855", "armada", "Lire l'inbox du coordinateur", 312, "2 h 40", "15:00"], ["THE-851", "armada", "Compteur de validations dans la barre", 309, "3 h 30", "14:10"], ["WID-9", "widgets", "Champs d'adresse sur le profil", 36, "4 h", "13:40"], ["THE-850", "armada", "Mode démo du dashboard", 305, "5 h", "12:40"]].map(([id, p, title, n, ago, t]) => ({ id, p, title, g: "merged", step: 6, reason: `#${n} mergée`, last: ago, since: `mergé à ${t}`, harness: "Conductor", worker: "—", session: "—", model: "—", claimed: "—", pr: { n, ci: "CI verte", ciColor: C.green, state: "Mergée" }, files: [], action: { title: `#${n} mergée à ${t}.` }, reports: [[t, `PR #${n} mergée`, C.green]] })),
+];
+const AMAP = Object.fromEntries(AGENTS.map((a) => [a.id, a]));
+const READY = [
+  { id: "WID-20", p: "widgets", title: "Changer son adresse email", labels: ["web"] },
+  { id: "WID-21", p: "widgets", title: "Limiter le débit de l'API publique", labels: ["api"] },
+  { id: "WID-22", p: "widgets", title: "Corriger l'arrondi des remboursements", labels: ["Bug"] },
+  { id: "WID-24", p: "widgets", title: "Envoyer la facture en PDF", labels: [], blockedBy: "WID-14" },
+  { id: "GAD-8", p: "gadgets", title: "Filtrer le catalogue par taille", labels: ["web"] },
+  { id: "THE-864", p: "armada", title: "Prototype d'un harness boat.dev", labels: [] },
+  { id: "THE-866", p: "armada", title: "Filtrer la flotte par harness", labels: ["web"] },
+];
+const VALS = [
+  { id: 1, kind: "Merge à approuver", ticket: "WID-18", p: "widgets", what: "Ajouter un thème sombre à la page des réglages", why: "touche la page des réglages que les utilisateurs voient ; la règle garde les changements front pour toi.", pr: { n: 44, sha: "a3f9c2e", diff: "+151 −15 · 3 fichiers", ci: "Verte", preview: "widgets-git-wid-18.example.app" }, shots: ["Réglages, thème sombre", "Réglages, thème clair conservé"], from: "le coordinateur", ago: "il y a 5 min", buttons: [["Approuver le merge", true, "Approuvé"], ["Demander des changements", false, "Changements demandés"]] },
+  { id: 2, kind: "Design à valider", ticket: "GAD-9", p: "gadgets", what: "Deux directions pour la carte produit : A garde la photo carrée, B la laisse déborder jusqu'aux bords. Choisis-en une, ou dis quoi changer.", shots: ["Direction A : photo carrée", "Direction B : photo pleine largeur", "Les deux sur mobile"], from: "ws-7e21/ses-08", ago: "il y a 14 min", buttons: [["Choisir A", true, "Direction A choisie"], ["Choisir B", true, "Direction B choisie"], ["Demander des changements", false, "Changements demandés"]] },
+  { id: 3, kind: "Question", ticket: "THE-862", p: "armada", what: "L'adaptateur Codex local doit-il d'abord sortir derrière un flag ?", why: "un choix produit que le worker a escaladé.", shots: [], from: "le coordinateur", ago: "il y a 22 min", buttons: [["Derrière un flag (recommandé)", true, "Répondu : derrière un flag"], ["Activé pour tous", false, "Répondu : activé pour tous"]] },
+  { id: 4, kind: "Merge", ticket: "THE-858", p: "armada", what: "Afficher le harness sur chaque session", why: "change les lignes de session de la vue d'ensemble.", pr: { n: 317, sha: "7c1e0a4", diff: "+55 −6 · 2 fichiers", ci: "Verte" }, shots: [], from: "le coordinateur", ago: "il y a 40 min", done: { outcome: "Approuvé par Ada Lovelace", note: "« Looks right on mobile too. »" } },
+];
+const VMAP = Object.fromEntries(VALS.map((v) => [v.id, v]));
+const EVENTS = [
+  ["17:39", "report", "THE-862", "Mappe les événements de session Codex sur armada report"],
+  ["17:38", "report", "GAD-5", "Rebase sur main après le changement du catalogue"],
+  ["17:37", "report", "WID-12", "Streame les lignes au lieu de construire le fichier en mémoire"],
+  ["17:36", "report", "WID-14", "Corrige le test d'arrondi qui échoue en CI"],
+  ["17:34", "start", "GAD-6", "Pris par Worker H · Codex"],
+  ["17:34", "handback", "WID-18", "Rendu : CI verte sur la tête finale"],
+  ["17:28", "blocked", "WID-15", "Question au coordinateur : durée de validité du lien"],
+  ["17:26", "question", "THE-862", "Escaladé à toi : livrer derrière un flag ?"],
+  ["17:26", "question", "GAD-9", "Deux directions jointes pour validation"],
+  ["17:22", "question", "GAD-3", "Plan posté : parser, valider, importer en une transaction"],
+  ["17:15", "blocked", "GAD-5", "Conflit avec main sur #12"],
+  ["17:02", "blocked", "WID-14", "CI rouge sur #41"],
+  ["17:00", "merge", "THE-858", "Merge approuvé par Ada Lovelace"],
+  ["16:58", "blocked", "WID-17", "Dernier rapport avant silence : backoff écrit"],
+  ["16:30", "merge", "WID-11", "#39 mergée"],
+  ["15:40", "merge", "GAD-2", "#10 mergée"],
+  ["15:00", "merge", "THE-855", "#312 mergée"],
+  ["14:10", "merge", "THE-851", "#309 mergée"],
+  ["13:40", "merge", "WID-9", "#36 mergée"],
+  ["12:40", "merge", "THE-850", "#305 mergée"],
+];
+const KIND = { report: ["Rapport", C.gray], start: ["Démarrage", C.blue], handback: ["Rendu", C.green], blocked: ["Blocage", C.red], question: ["Pour toi", C.amber], merge: ["Merge", C.green] };
+const ACT_FILTERS = [["all", "Tout"], ["blocked", "Blocages"], ["question", "Pour toi"], ["merge", "Merges"], ["report", "Rapports"]];
+
+const btn = (primary) => primary ? { bg: "#E6E7E9", color: "#0F1012", border: "#E6E7E9" } : { bg: "#1A1B1F", color: "#E6E7E9", border: "#2A2C31" };
+const chip = (on) => on ? { bg: "#1F2125", color: "#E6E7E9", border: "#2E3036" } : { bg: "transparent", color: "#A3A6AD", border: "#1F2125" };
+const tab = (on) => ({ color: on ? "#E6E7E9" : "#7D818A", line: on ? "#E6E7E9" : "transparent" });
+const coordColor = (s) => (s === "active" ? C.green : C.amber);
+
+class Component extends DCLogic {
+  state = { screen: "overview", agentId: "WID-15", projectSlug: "widgets", valId: 1, orgTab: "members", agentTab: "summary", sel: "WID-15", fp: "all", q: "", af: "all", decided: {}, launched: {}, variant: null, groupBy: null };
+  scrollRef = React.createRef();
+  go = (screen, extra = {}) => { this.setState({ screen, ...extra }); if (this.scrollRef.current) this.scrollRef.current.scrollTop = 0; };
+  openAgent = (id) => this.go("agent", { agentId: id, agentTab: "summary" });
+  decide = (key, text) => this.setState((s) => ({ decided: { ...s.decided, [key]: text } }));
+
+  actionButtons(a) {
+    const key = a.val ? `v${a.val}` : a.id;
+    return (a.action?.buttons ?? []).map((b) => ({ label: b.label, ...btn(b.primary), click: (e) => { e && e.stopPropagation && e.stopPropagation(); if (b.goVal) this.go("validations", { valId: b.goVal }); else if (b.result) this.decide(key, b.result); } }));
+  }
+  enrich(a) {
+    const g = GMAP[a.g];
+    const proj = PMAP[a.p];
+    const key = a.val ? `v${a.val}` : a.id;
+    const decidedText = this.state.decided[key] ?? null;
+    return {
+      ...a, color: g.color, groupLabel: g.label, projName: proj.name,
+      reasonColor: a.g === "running" || a.g === "merged" ? "#A3A6AD" : g.color,
+      stepLabel: STEPS[Math.min(a.step, 5)],
+      steps: STEPS.map((_, i) => ({ bg: i < a.step ? "#5A5E66" : i === a.step ? g.color : "#26282D" })),
+      open: () => this.openAgent(a.id),
+      select: () => this.setState({ sel: a.id }),
+      selBg: this.state.sel === a.id ? "#17181C" : "transparent",
+      selShadow: this.state.sel === a.id ? `inset 2px 0 0 ${g.color}` : "none",
+      decidedText, isDecided: !!decidedText,
+    };
+  }
+  agentDetail(a) {
+    const e = this.enrich(a);
+    const buttons = e.isDecided ? [] : this.actionButtons(a);
+    const files = a.files;
+    const add = files.reduce((n, f) => n + f.add, 0), del = files.reduce((n, f) => n + f.del, 0);
+    const facts = [
+      { k: "Pull request", v: a.pr ? `#${a.pr.n}` : "Pas encore", color: "#D3D5D9", font: MONO },
+      { k: "CI", v: a.pr ? a.pr.ci : "—", color: a.pr ? a.pr.ciColor : "#7D818A", font: SANS },
+      { k: "Fichiers", v: files.length ? `${files.length} · +${add} −${del}` : "—", color: "#D3D5D9", font: MONO },
+      { k: "Dernier rapport", v: a.g === "merged" ? "—" : `il y a ${a.last}`, color: a.g === "blocked" && a.reason.startsWith("Silencieux") ? C.amber : "#D3D5D9", font: SANS },
+      { k: "Harness", v: a.harness, color: "#D3D5D9", font: SANS },
+      { k: "Session", v: a.session, color: "#D3D5D9", font: MONO },
+      { k: "Modèle", v: a.model, color: "#D3D5D9", font: MONO },
+      { k: "Pris à", v: a.claimed, color: "#D3D5D9", font: MONO },
+    ];
+    return {
+      ...e, facts, buttons, hasButtons: buttons.length > 0,
+      actionTitle: a.action?.title ?? a.reason, actionBody: a.action?.body ?? "", hasBody: !!a.action?.body,
+      sinceText: a.since,
+      stepsFull: STEPS.map((label, i) => ({ label, bg: i < a.step ? "#5A5E66" : i === a.step ? e.color : "#26282D", labelColor: i === a.step ? "#E6E7E9" : i < a.step ? "#A3A6AD" : "#5B5F67", weight: i === a.step ? 600 : 400, sub: i === a.step ? a.since.replace(/^.*depuis /, "") : "" })),
+      reports: a.reports.map(([t, text, color]) => ({ t, text, color })),
+      files, noFiles: files.length === 0,
+      openProject: () => this.go("project", { projectSlug: a.p }),
+      canRelease: a.g !== "merged",
+    };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const variant = s.variant ?? (this.props.overviewVariant === "Liste + aperçu" ? "B" : "A");
+    const groupBy = s.groupBy ?? (this.props.groupBy === "Projet" ? "project" : "state");
+    const showMerged = this.props.showMerged ?? true;
+    const live = AGENTS.filter((a) => a.g !== "merged");
+    const by = (g) => live.filter((a) => a.g === g).length;
+    const nBlocked = by("blocked"), nYou = by("you"), nRun = by("running"), nReady = by("ready"), nMerged = AGENTS.length - live.length;
+    const pendingVals = VALS.filter((v) => !v.done && !s.decided[`v${v.id}`]).length;
+
+    const nav = [
+      ["overview", "Vue d'ensemble", live.length, "#7D818A"],
+      ["validations", "Validations", pendingVals || "", C.amber],
+      ["activity", "Activité", "", "#7D818A"],
+      ["insights", "Insights", "", "#7D818A"],
+    ].map(([key, label, count, countColor]) => ({ label, count, countColor, click: () => this.go(key), bg: s.screen === key ? "#17181C" : "transparent", color: s.screen === key ? "#E6E7E9" : "#A3A6AD" }));
+    const sideProjects = PROJECTS.map((p) => {
+      const on = s.screen === "project" && s.projectSlug === p.slug;
+      const bl = live.filter((a) => a.p === p.slug && a.g === "blocked").length;
+      return { name: p.name, count: live.filter((a) => a.p === p.slug).length, blocked: bl, hasBlocked: bl > 0, coordColor: coordColor(p.coord.state), coordText: `Coordinateur : ${p.coord.text}`, click: () => this.go("project", { projectSlug: p.slug }), bg: on ? "#17181C" : "transparent", color: on ? "#E6E7E9" : "#A3A6AD" };
+    });
+
+    const agentForCrumb = AMAP[s.agentId];
+    const crumbDefs = {
+      overview: [["Vue d'ensemble"]],
+      agent: [["Vue d'ensemble", "overview"], [PMAP[agentForCrumb.p].name, "project"], [agentForCrumb.id]],
+      project: [["Vue d'ensemble", "overview"], [PMAP[s.projectSlug].name]],
+      validations: [["Validations"]], activity: [["Activité"]], insights: [["Insights"]], org: [["Organisation"]],
+    }[s.screen];
+    const crumbs = crumbDefs.map(([label, to], i) => ({ label, sep: i > 0, color: to ? "#7D818A" : "#E6E7E9", click: () => { if (to === "project") this.go("project", { projectSlug: agentForCrumb.p }); else if (to) this.go(to); } }));
+
+    // Overview
+    const q = s.q.trim().toLowerCase();
+    const matches = (a) => (s.fp === "all" || a.p === s.fp) && (!q || a.id.toLowerCase().includes(q) || a.title.toLowerCase().includes(q));
+    const pool = AGENTS.filter((a) => matches(a) && (showMerged || a.g !== "merged"));
+    const order = (a) => GROUPS.findIndex((g) => g.key === a.g);
+    let groups;
+    if (groupBy === "state") {
+      groups = GROUPS.map((g) => ({ ...g, rows: pool.filter((a) => a.g === g.key).map((a) => this.enrich(a)) }));
+    } else {
+      groups = PROJECTS.map((p) => ({ key: p.slug, label: p.name, hint: `coordinateur ${p.coord.short}`, color: coordColor(p.coord.state), rows: pool.filter((a) => a.p === p.slug).sort((x, y) => order(x) - order(y)).map((a) => this.enrich(a)) }));
+    }
+    groups = groups.filter((g) => g.rows.length).map((g) => ({ ...g, count: g.rows.length }));
+    const headline = nBlocked
+      ? `${nBlocked} agents bloqués, ${nYou} attendent ta décision.`
+      : nYou ? `Rien de bloqué. ${nYou} attendent ta décision.` : "Tout avance, rien n'attend.";
+    const subline = `${live.length} agents en cours sur ${PROJECTS.length} projets · ${nRun} avancent seuls · ${nReady} prêt à merger · ${nMerged} mergés aujourd'hui`;
+    const ovProjects = PROJECTS.map((p) => {
+      const pa = live.filter((a) => a.p === p.slug);
+      const b = pa.filter((a) => a.g === "blocked").length, y = pa.filter((a) => a.g === "you").length;
+      return { name: p.name, done: p.done, total: p.total, pct: `${Math.round((p.done / p.total) * 100)}%`, blocked: b, you: y, running: pa.filter((a) => a.g === "running").length, blockedColor: b ? C.red : "#7D818A", youColor: y ? C.amber : "#7D818A", coordColor: coordColor(p.coord.state), coordShort: `coord. ${p.coord.short}`, click: () => this.go("project", { projectSlug: p.slug }) };
+    });
+    const filters = [["all", "Tous", AGENTS.filter((a) => showMerged || a.g !== "merged").length], ...PROJECTS.map((p) => [p.slug, p.name, AGENTS.filter((a) => a.p === p.slug && (showMerged || a.g !== "merged")).length])].map(([k, label, count]) => ({ label, count, ...chip(s.fp === k), click: () => this.setState({ fp: k }) }));
+    const groupTabs = [["state", "État"], ["project", "Projet"]].map(([k, label]) => ({ label, ...chip(groupBy === k), click: () => this.setState({ groupBy: k }) }));
+    const variantTabs = [["A", "Liste"], ["B", "Liste + aperçu"]].map(([k, label]) => ({ label, bg: variant === k ? "#24262B" : "transparent", color: variant === k ? "#E6E7E9" : "#7D818A", click: () => this.setState({ variant: k }) }));
+
+    const selAgent = pool.find((a) => a.id === s.sel) ?? pool[0];
+    let pv = { has: false };
+    if (selAgent) {
+      const d = this.agentDetail(selAgent);
+      pv = { ...d, has: true, reason: d.actionTitle, facts: d.facts.slice(0, 4), reports: d.reports.slice(0, 3), open: () => this.openAgent(selAgent.id), stepsFull: d.stepsFull };
+    }
+
+    // Project
+    const P = PMAP[s.projectSlug];
+    const pAgents = live.filter((a) => a.p === P.slug);
+    const pGroups = GROUPS.filter((g) => g.key !== "merged").map((g) => ({ ...g, rows: pAgents.filter((a) => a.g === g.key).map((a) => this.enrich(a)) })).filter((g) => g.rows.length).map((g) => ({ ...g, count: g.rows.length }));
+    const ready = READY.filter((r) => r.p === P.slug).map((r) => { const sent = !!s.launched[r.id]; return { ...r, isBlocked: !!r.blockedBy, btnLabel: sent ? "Envoyé" : "Lancer", ...(sent ? { btnBg: "transparent", btnColor: C.green, btnBorder: "#24262B" } : { btnBg: "#1A1B1F", btnColor: "#E6E7E9", btnBorder: "#2A2C31" }), btnBg: sent ? "transparent" : "#1A1B1F", btnColor: sent ? C.green : "#E6E7E9", btnBorder: sent ? "#24262B" : "#2A2C31", launch: () => this.setState((st) => ({ launched: { ...st.launched, [r.id]: true } })) }; });
+    const prs = pAgents.filter((a) => a.pr).map((a) => ({ n: a.pr.n, title: a.title, state: a.pr.state, color: a.pr.ciColor === C.gray && a.pr.state === "Conflit" ? C.red : a.pr.ciColor, open: () => this.openAgent(a.id) }));
+    const pb = pAgents.filter((a) => a.g === "blocked").length, py = pAgents.filter((a) => a.g === "you").length;
+    const pj = {
+      name: P.name, repo: P.repo, owner: `Responsable : ${P.owner}`, done: P.done, total: P.total, pct: `${Math.round((P.done / P.total) * 100)}%`,
+      line: `${pAgents.length} agents en cours · ${pb} bloqué(s) · ${py} pour toi · ${ready.length} tickets prêts à lancer`,
+      groups: pGroups, ready, readyCount: ready.length, noReady: ready.length === 0, prs, prCount: prs.length, noPrs: prs.length === 0,
+      coordColor: coordColor(P.coord.state), coordText: P.coord.text,
+      coordFacts: [{ k: "Harness", v: P.coord.harness, font: SANS }, { k: "Session", v: P.coord.where, font: MONO }, { k: "Modèle", v: P.coord.model, font: MONO }, { k: "En poste", v: P.coord.since, font: MONO }],
+    };
+
+    // Validations
+    const valRow = (v) => { const on = s.valId === v.id; const dec = s.decided[`v${v.id}`]; return { ...v, projName: PMAP[v.p].name, short: v.what, dot: v.kind === "Question" ? C.blue : C.amber, outcome: v.done ? v.done.outcome : dec, bg: on ? "#17181C" : "transparent", shadow: on ? `inset 2px 0 0 ${C.amber}` : "none", select: () => this.setState({ valId: v.id }) }; };
+    const pendingList = VALS.filter((v) => !v.done && !s.decided[`v${v.id}`]).map(valRow);
+    const decidedList = VALS.filter((v) => v.done || s.decided[`v${v.id}`]).map(valRow);
+    const V = VMAP[s.valId];
+    const vDec = s.decided[`v${V.id}`];
+    const vs = {
+      kind: V.kind, ticket: V.ticket, projName: PMAP[V.p].name, from: V.from, ago: V.ago, what: V.what, why: V.why, hasWhy: !!V.why,
+      dot: V.kind === "Question" ? C.blue : C.amber,
+      hasPr: !!V.pr, prFacts: V.pr ? [{ k: "Pull request", v: `#${V.pr.n}`, color: "#D3D5D9" }, { k: "Tête", v: V.pr.sha, color: "#D3D5D9" }, { k: "Diff", v: V.pr.diff, color: "#D3D5D9" }, { k: "CI", v: V.pr.ci, color: C.green }, ...(V.pr.preview ? [{ k: "Preview", v: V.pr.preview, color: C.blue }] : [])] : [],
+      shots: V.shots, hasShots: V.shots.length > 0,
+      isOpen: !V.done && !vDec, isClosed: !!(V.done || vDec),
+      outcome: V.done ? V.done.outcome : vDec, note: V.done ? V.done.note : "Envoyé au coordinateur.",
+      buttons: (V.buttons ?? []).map(([label, primary, result]) => ({ label, ...btn(primary), click: () => this.decide(`v${V.id}`, result) })),
+      openAgent: () => this.openAgent(V.ticket),
+    };
+    const vd = { headline: pendingList.length ? `${pendingList.length} décisions t'attendent` : "Rien à décider", subline: pendingList.length ? "La plus ancienne attend depuis 22 min." : "Tu es à jour.", pending: pendingList, decided: decidedList };
+
+    // Activity
+    const evs = EVENTS.filter((e) => s.af === "all" || e[1] === s.af || (s.af === "merge" && e[1] === "handback")).map(([t, k, ticket, text]) => ({ t, ticket, text, kindLabel: KIND[k][0], color: KIND[k][1], projName: PMAP[AMAP[ticket].p].name, open: () => this.openAgent(ticket), after: t > "14:20" }));
+    const act = { after: evs.filter((e) => e.after), before: evs.filter((e) => !e.after), filters: ACT_FILTERS.map(([k, label]) => ({ label, ...chip(s.af === k), click: () => this.setState({ af: k }) })) };
+
+    // Insights
+    const days = [["lun.", 4], ["mar.", 6], ["mer.", 3], ["jeu.", 8], ["ven.", 5], ["sam.", 2], ["dim.", 6]];
+    const ins = {
+      kpis: [{ label: "Tickets mergés", value: "34", note: "+6 vs semaine dernière" }, { label: "Cycle médian", value: "2 h 40", note: "du claim au merge" }, { label: "Attente de ta décision", value: "18 min", note: "médiane" }, { label: "CI verte du 1er coup", value: "72 %", note: "sur 41 PR" }],
+      bars: days.map(([d, n], i) => ({ d, n, h: `${(n / 8) * 120}px`, bg: i === days.length - 1 ? "#D3D5D9" : "#3A3D44" })),
+      rows: [{ name: "Widgets", merged: 14, cycle: "2 h 55", blocked: "3 h 10", ci: "68 %" }, { name: "Gadgets", merged: 7, cycle: "3 h 20", blocked: "1 h 45", ci: "61 %" }, { name: "Armada", merged: 13, cycle: "1 h 50", blocked: "40 min", ci: "84 %" }],
+    };
+
+    // Organisation
+    const ORG = {
+      members: { label: "Membres", hint: "4 membres. Les propriétaires gèrent les accès et la facturation.", action: "Inviter", rows: [["Camille Roux", "camille@acme.dev", "Armada", "Propriétaire", "Gérer"], ["Léa Martin", "lea@acme.dev", "Widgets", "Membre", "Gérer"], ["Hugo Bernard", "hugo@acme.dev", "Gadgets", "Membre", "Gérer"], ["Ada Lovelace", "ada@acme.dev", "—", "Invitée", "Renvoyer"]].map(([a, sub, b, c, d]) => ({ a, sub, b, c, d, subFont: SANS, bFont: SANS, cColor: c === "Invitée" ? C.amber : "#D3D5D9" })) },
+      keys: { label: "Clés API", hint: "Les clés permettent à la CLI armada et aux coordinateurs d'écrire dans la flotte.", action: "Nouvelle clé", rows: [["CLI Camille", "arm_live_••••3f9c", "Créée le 12 sept.", "Utilisée il y a 1 min", "Révoquer"], ["Conductor Cloud", "arm_live_••••a81e", "Créée le 2 sept.", "Utilisée il y a 2 min", "Révoquer"], ["CI GitHub", "arm_live_••••07bd", "Créée le 28 août", "Jamais utilisée", "Révoquer"]].map(([a, sub, b, c, d]) => ({ a, sub, b, c, d, subFont: MONO, bFont: SANS, cColor: c === "Jamais utilisée" ? C.amber : "#D3D5D9" })) },
+      github: { label: "GitHub", hint: "L'app GitHub est installée sur acme et The-Vibe-Company.", action: "Ajouter un dépôt", rows: [["acme/widgets", "Widgets", "Webhooks actifs", "Connecté", "Retirer"], ["acme/gadgets", "Gadgets", "Webhooks actifs", "Connecté", "Retirer"], ["The-Vibe-Company/armada", "Armada", "Webhooks actifs", "Connecté", "Retirer"]].map(([a, sub, b, c, d]) => ({ a, sub, b, c, d, subFont: SANS, bFont: SANS, cColor: C.green })) },
+      workers: { label: "Workers", hint: "Les machines et espaces qui font tourner des agents pour l'organisation.", action: "Ajouter une machine", rows: [["Conductor Cloud", "ws-0c01", "8 sessions", "En ligne", "Détails"], ["hugo-mbp", "Claude Code · local", "1 session", "Inactif 24 min", "Détails"], ["camille-mbp", "Codex · local", "1 session", "En ligne", "Détails"]].map(([a, sub, b, c, d]) => ({ a, sub, b, c, d, subFont: SANS, bFont: SANS, cColor: c === "En ligne" ? C.green : C.amber })) },
+    };
+    const O = ORG[s.orgTab];
+    const org = { ...O, tabs: Object.entries(ORG).map(([k, t]) => ({ label: t.label, ...tab(s.orgTab === k), click: () => this.setState({ orgTab: k }) })) };
+
+    const ag = this.agentDetail(AMAP[s.agentId]);
+    ag.tabs = [["summary", "Résumé"], ["files", `Fichiers · ${ag.files.length}`]].map(([k, label]) => ({ label, ...tab(s.agentTab === k), click: () => this.setState({ agentTab: k }) }));
+    ag.tabSummary = s.agentTab === "summary"; ag.tabFiles = s.agentTab === "files";
+
+    return {
+      scrollRef: this.scrollRef, nav, sideProjects, crumbs, variantTabs,
+      orgNav: { bg: s.screen === "org" ? "#17181C" : "transparent", color: s.screen === "org" ? "#E6E7E9" : "#A3A6AD" },
+      goOrg: () => this.go("org"),
+      q: s.q, onSearch: (e) => this.setState({ q: e.target.value, screen: "overview" }),
+      isOverview: s.screen === "overview", isAgent: s.screen === "agent", isProject: s.screen === "project", isValidations: s.screen === "validations", isActivity: s.screen === "activity", isInsights: s.screen === "insights", isOrg: s.screen === "org",
+      ov: { headline, subline, projects: ovProjects, filters, groupTabs, groups, isA: variant === "A", isB: variant === "B", empty: groups.length === 0, clear: () => this.setState({ fp: "all", q: "" }) },
+      pv, ag, pj, vs, vd, act, ins, org,
+    };
+  }
+}
+</script>
+</body>
+</html>
