@@ -132,6 +132,16 @@ export const paths = {
   organization: "/organization",
 } as const;
 
+/**
+ * Where `armada attach`'s link opens (`/agents/<ticket>?tab=attachments&attachment=<id>`):
+ * the attachment itself, served behind the organization's access check (a
+ * session's page has no attachments tab since THE-1021). Null without one.
+ */
+export function attachmentHref(search: Record<string, string | string[] | undefined>): string | null {
+  const id = search.attachment;
+  return typeof id === "string" && /^[\w-]{1,128}$/.test(id) ? `/api/attachments/${encodeURIComponent(id)}` : null;
+}
+
 /** A page of the shell, read from its path. */
 export type Place =
   | { kind: "overview" }

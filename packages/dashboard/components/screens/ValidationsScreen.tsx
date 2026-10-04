@@ -13,9 +13,11 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
 import { paths } from "@/lib/fleet-view";
+import { splitValidations } from "@/lib/overview-view";
 import type { ActionContext } from "../Actions";
 import { Alert } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
+import { RelativeTime } from "../ui";
 import { VALIDATION_COLOR, ValidationDetail, validationTitle } from "./ValidationCard";
 
 function useActionContext(): ActionContext {
@@ -30,15 +32,6 @@ function useActionContext(): ActionContext {
     version,
     refresh,
   };
-}
-
-/** What waits, oldest first, then what was decided, newest first. */
-export function splitValidations(list: readonly OwnerValidation[]) {
-  const pending = list.filter((v) => !v.decision).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const decided = list
-    .filter((v) => v.decision)
-    .sort((a, b) => (b.decision?.at ?? "").localeCompare(a.decision?.at ?? ""));
-  return { pending, decided };
 }
 
 export function ValidationsScreen() {
@@ -63,7 +56,6 @@ function Validations({ chosen }: { chosen: number | null }) {
       ? (pending[0] ?? decided[0] ?? null)
       : ([...pending, ...decided].find((v) => v.id === chosen) ?? null);
   const oldest = pending[0]?.createdAt ?? null;
-  const ago = (iso: string) => t.ago(Math.max(0, now - Date.parse(iso)));
   const row = (v: OwnerValidation) => {
     const on = v.id === selected?.id;
     const color = VALIDATION_COLOR[v.kind];
@@ -90,7 +82,9 @@ function Validations({ chosen }: { chosen: number | null }) {
               </>
             )}
             <span className="spacer" />
-            <span className="vd-row-ago">{ago(v.decision?.at ?? v.createdAt)}</span>
+            <span className="vd-row-ago">
+              <RelativeTime at={v.decision?.at ?? v.createdAt} />
+            </span>
           </span>
           <span className="vd-row-what">{validationTitle(v)}</span>
           {!v.decision && (

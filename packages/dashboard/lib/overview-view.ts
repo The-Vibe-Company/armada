@@ -45,6 +45,19 @@ export function coordinatorAlerts(o: Pick<FleetOverview, "projects" | "waiting">
 export const pendingValidations = (o: Partial<Pick<FleetOverview, "validations">>): OwnerValidation[] =>
   (o.validations ?? []).filter((v) => !v.decision);
 
+/**
+ * The Validations page's two lists (THE-1021): what waits for the owner,
+ * oldest first (the page opens on it), then what they decided this week,
+ * newest first.
+ */
+export function splitValidations(list: readonly OwnerValidation[]) {
+  const pending = list.filter((v) => !v.decision).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const decided = list
+    .filter((v) => v.decision)
+    .sort((a, b) => (b.decision?.at ?? "").localeCompare(a.decision?.at ?? ""));
+  return { pending, decided };
+}
+
 /** The decisions an agent's page offers, oldest first: a question to answer, a plan to approve. */
 export const decisionCards = (o: Pick<FleetOverview, "waiting">): Decision[] =>
   [...decisionsOf(o)].sort((a, b) => a.since.localeCompare(b.since));

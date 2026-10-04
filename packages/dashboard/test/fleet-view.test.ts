@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { FleetRow } from "@armada/core/read";
 import {
   agentState,
+  attachmentHref,
   coordinatorHarness,
   crumbsOf,
   escapeTarget,
@@ -125,4 +126,11 @@ describe("an agent's page", () => {
     expect(sessionLink("Conductor", null)).toBeNull();
     expect(sessionLink("Conductor", "local tty/s004")).toBeNull();
   });
+});
+
+test("the link armada attach prints opens the attachment itself (THE-1021)", () => {
+  expect(attachmentHref({ tab: "attachments", attachment: "att_01-x" })).toBe("/api/attachments/att_01-x");
+  expect(attachmentHref({ tab: "files" })).toBeNull();
+  expect(attachmentHref({ attachment: "../../etc" })).toBeNull();
+  expect(attachmentHref({ attachment: ["a", "b"] })).toBeNull();
 });

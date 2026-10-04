@@ -345,8 +345,8 @@ export function searchItems(overview: Overview, index: SearchIndex | null, ctx: 
       ),
     );
 
+  // An attachment opens itself (THE-1021: a session's page has no attachments tab).
   for (const a of index?.attachments ?? []) {
-    const row = inFlight.get(`${a.project}:${a.ticket}`);
     out.push(
       item(
         {
@@ -354,10 +354,8 @@ export function searchItems(overview: Overview, index: SearchIndex | null, ctx: 
           key: `attachment:${a.id}`,
           label: a.caption,
           detail: a.ticket,
-          href: row
-            ? `${paths.agent(row.id)}?tab=attachments`
-            : (a.url ?? `/api/attachments/${encodeURIComponent(a.id)}`),
-          external: !row,
+          href: a.url ?? `/api/attachments/${encodeURIComponent(a.id)}`,
+          external: true,
           project: a.project,
           at: a.createdAt,
         },

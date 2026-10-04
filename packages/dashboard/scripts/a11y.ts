@@ -1,9 +1,9 @@
 // The accessibility check (THE-891): WCAG 2.2 AA on every page of the demo
-// world, in both languages and both densities, as CI runs it.
+// world, in both languages, as CI runs it.
 //   bun run a11y seed   an owner of an organization, and a member invited to it, in the demo database
 //   bun run a11y scan   axe on every page; 320 px without sideways scroll and no motion under
 //                       reduced motion; the keyboard's promises (skip link, ⌘K, dialogs, tabs, j/k,
-//                       filters in the address, saved views)
+//                       views in the address)
 // Seed after `bun run demo:seed` and before the dashboard starts (a PGlite
 // database belongs to one process), with the accounts variables the dashboard
 // runs with (ARMADA_AUTH_SECRET, ARMADA_AUTH_URL, ARMADA_AUTH_OWNER_EMAILS,
@@ -168,18 +168,15 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
     `/?view=preview&ticket=${open.ticket}`,
     `/agents/${agent}`,
     `/agents/${agent}?tab=files`,
-    // A session to validate: its images large, first (THE-916).
+    // A session to validate: its action first (THE-1021).
     `/agents/${open.ticket}`,
-    "/projects",
-    "/projects?sort=phase",
     `/projects/${project}`,
     "/validations",
-    "/validations?state=pending&q=e",
+    // One validation, its images in a grid, opened full screen (THE-916).
     `/approve/${validation}`,
     "/insights",
     "/activity",
-    "/activity?kind=merge",
-    "/design",
+    "/activity?show=merge",
   ];
   return [
     ...fleetPages.map((path) => ({ path, who }) as Target),
@@ -346,28 +343,8 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
     return pane && kept;
   });
 
-  if (seeded) {
-    await open(page, "/projects?state=blocked");
-    await check("a saved view is found with ⌘K, opens its filters, and goes on Remove", async () => {
-      await page.getByRole("button", { name: "Save view" }).click();
-      await page.getByRole("textbox", { name: "View name" }).fill("Blocked projects");
-      await page.keyboard.press("Enter");
-      const removal = page.getByRole("button", { name: "Remove the view Blocked projects" });
-      await removal.waitFor();
-      await open(page, "/");
-      await page.keyboard.press("ControlOrMeta+k");
-      await page.locator(".sh-palette input").waitFor();
-      await page.keyboard.type("Blocked projects");
-      await page.keyboard.press("Enter");
-      await page.waitForURL((url) => url.searchParams.get("state") === "blocked", { timeout: 5_000 });
-      await removal.click();
-      await page.getByRole("button", { name: "Save view" }).waitFor();
-      return true;
-    });
-  }
-
-  // A session's tabs are in its "Details", which the address opens.
-  await open(page, `${agent.split("?")[0]}?tab=activity`);
+  // A session's tabs: its summary and its files (THE-1021).
+  await open(page, `${agent.split("?")[0]}?tab=files`);
   await check("the arrows move between tabs", async () => {
     await page.locator(".ui-tab[aria-selected='true']").first().focus();
     const before = await focused(page);
@@ -396,6 +373,8 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
   if (seeded) {
     await open(page, "/organization");
     await check("j and k typed in a form's field stay in it", async () => {
+      // The invitation's form opens under its button (THE-1021).
+      await page.locator(".org-disclose.is-primary > summary").click();
       const field = page.locator("input.ui-input:not([type='hidden'])").first();
       await field.focus();
       await page.keyboard.type("jk");

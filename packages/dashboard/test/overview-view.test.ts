@@ -16,6 +16,7 @@ import {
   orderOptions,
   pendingValidations,
   sentRequest,
+  splitValidations,
 } from "../lib/overview-view.ts";
 
 // A synthetic fleet: two projects, every state the overview shows.
@@ -159,6 +160,21 @@ describe("yours to decide (THE-885)", () => {
     expect(pendingValidations({ validations }).map((v) => v.id)).toEqual([1, 2]);
     // An overview from before validations has none.
     expect(pendingValidations({})).toEqual([]);
+  });
+
+  test("the Validations page lists what waits oldest first, then what was decided newest first (THE-1021)", () => {
+    const decided = (id: number, ticket: string, minutes: number) => ({
+      ...validation(id, ticket, minutes + 5),
+      decision: { outcome: "approved" as const, answer: null, note: null, by: "Ada", at: at(minutes) },
+    });
+    const { pending, decided: done } = splitValidations([
+      validation(1, "WID-6", 4),
+      decided(4, "WID-9", 50),
+      validation(2, "WID-1", 9),
+      decided(5, "WID-3", 10),
+    ]);
+    expect(pending.map((v) => v.id)).toEqual([2, 1]);
+    expect(done.map((v) => v.id)).toEqual([5, 4]);
   });
 });
 
