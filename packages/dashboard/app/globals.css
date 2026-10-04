@@ -6,36 +6,50 @@
 :root {
   color-scheme: dark;
 
-  /* Planes: the sky (the page), the deck (the main panel, the one lit
-     surface), bands, instruments (cards, popovers), wells (fields, code). */
-  --bg: #060709;
-  --surface: #0c0d10;
-  --band: #101115;
-  --card: #14151a;
-  --panel-3: #1a1b21;
-  --raised: #202128;
-  --sunken: #08090b;
-  --code: #08090b;
-  --overlay: rgba(20, 21, 26, 0.94);
-  --overlay-glass: rgba(20, 21, 26, 0.86);
+  /* Planes (THE-1020, design/dashboard-v7): the sidebar, the page, bands
+     (a list's group headers), instruments (cards, popovers), wells (fields, code). */
+  --side: #0b0c0d;
+  --bg: #0f1012;
+  --surface: #0f1012;
+  --band: #131417;
+  --card: #121316;
+  --panel-3: #1a1b1f;
+  --raised: #24262b;
+  --sunken: #0b0c0d;
+  --code: #0b0c0d;
+  --overlay: rgba(20, 21, 24, 0.96);
+  --overlay-glass: rgba(20, 21, 24, 0.88);
 
-  /* Ink, four steps. WCAG 2.2 AA (THE-891, test/contrast.test.ts): every text
-     step reads at 4.5:1 at least on every surface above; --text-4 is for marks
-     (a dot, a bar, a separator), never text, at 3:1. */
-  --text: #f2f1ee;
-  --text-2: #b6b6bd;
-  --text-3: #8e8e97;
+  /* Ink, four steps, and the quoted words of a worker. WCAG 2.2 AA (THE-891,
+     test/contrast.test.ts): every text step reads at 4.5:1 at least on every
+     surface above; --text-4 is for marks (a dot, a bar, a separator), never
+     text, at 3:1. */
+  --text: #e6e7e9;
+  --text-soft: #d3d5d9;
+  --text-2: #a3a6ad;
+  --text-3: #84888f;
   --text-4: #6a6a6f;
 
-  /* Hairlines and fills over a surface. Shadows draw depth, lines draw structure. */
-  --line: rgba(255, 255, 255, 0.06);
-  --line-soft: rgba(255, 255, 255, 0.035);
-  --line-strong: rgba(255, 255, 255, 0.11);
-  --hover: rgba(255, 255, 255, 0.03);
-  --fill: rgba(255, 255, 255, 0.05);
-  --fill-2: rgba(255, 255, 255, 0.08);
-  --fill-3: rgba(255, 255, 255, 0.11);
-  --track: rgba(255, 255, 255, 0.07);
+  /* Hairlines and fills over a surface. */
+  --line: #1c1d21;
+  --line-soft: #1a1b1f;
+  --line-strong: #24262b;
+  --hover: rgba(255, 255, 255, 0.025);
+  --fill: rgba(255, 255, 255, 0.035);
+  --fill-2: rgba(255, 255, 255, 0.06);
+  --fill-3: rgba(255, 255, 255, 0.09);
+  --track: #24262b;
+
+  /* The overview's states (design/dashboard-v7), always beside a word: blocked
+     (red), waiting for the owner and an idle coordinator (amber), running
+     (blue), ready and live (green); merged is grey. */
+  --red: #fd736d;
+  --amber: #f2af48;
+  --blue: #60aaf3;
+  --green: #61cb7c;
+  /* A step's bar: done, to come. */
+  --step-done: #5a5e66;
+  --step-next: #26282d;
 
   /* One meaning per hue, always beside a word or a glyph: done and live
      (lime), yours to decide (orange), silent or idle (amber), in flight
@@ -56,10 +70,6 @@
   --h-claude-code: #e0835f;
   --h-codex: #19b48c;
   --h-other: #6e6e73;
-
-  /* The horizon: the deck's top light takes the fleet's state (the shell's
-     data-horizon, lib/horizon.ts). */
-  --horizon: var(--frontier);
 
   /* Type: five sizes. */
   --fs-meta: 11px;
@@ -124,7 +134,7 @@
   --livepulse: ui-livepulse 2.4s infinite;
   --breathe: ui-breathe 1.6s infinite;
 
-  /* Density: Compact by default; the main panel's data-density="airy" widens. */
+  /* Rows and bands of the page kit. */
   --row: 36px;
   --band-h: 34px;
   --row-title: 13px;
@@ -570,9 +580,6 @@ button.chip:hover {
     /* biome-ignore lint/complexity/noImportantStyles: a press does not shrink anything */
     scale: none !important;
   }
-  .merge-toast.is-leaving {
-    translate: none;
-  }
 }
 
 /* ===================================================================== v4
@@ -594,11 +601,12 @@ button.chip:hover {
 }
 
 /* -------------------------------------------------------------- shell */
+/* design/dashboard-v7 (THE-1020): a flat 228 px sidebar on --side, the page
+   on --bg under a 44 px header bar, hairlines between them. */
 .sh {
   display: flex;
   height: 100vh;
   min-width: 720px;
-  padding: 8px 8px 8px 0;
   background: var(--bg);
 }
 .sh-side {
@@ -606,23 +614,25 @@ button.chip:hover {
   width: var(--sidebar);
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 6px 12px 4px;
+  gap: 2px;
+  padding: 12px 10px;
+  background: var(--side);
+  border-right: 1px solid var(--line);
   overflow-y: auto;
   overflow-x: hidden;
 }
 .sh-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 34px;
-  padding: 0 6px;
+  gap: 8px;
+  height: 36px;
+  padding: 4px 6px 10px;
 }
 .sh-brand-home {
   display: flex;
   align-items: center;
-  gap: 10px;
-  /* WCAG 2.2's 24 px target, which the narrow top bar would miss. */
+  gap: 8px;
+  /* WCAG 2.2's 24 px target. */
   min-width: 24px;
   min-height: 24px;
 }
@@ -631,8 +641,7 @@ button.chip:hover {
 }
 .sh-brand-name {
   font-weight: 600;
-  font-size: 14px;
-  letter-spacing: -0.02em;
+  font-size: 13.5px;
 }
 /* The phone's only. */
 .sh-tabbar {
@@ -645,25 +654,22 @@ button.chip:hover {
   display: flex;
   align-items: center;
   gap: 4px;
-  max-width: 110px;
+  max-width: 120px;
   min-width: 24px;
   min-height: 24px;
   border: 0;
   background: none;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border-radius: var(--r-sm);
-  font-size: var(--fs-small);
-  color: var(--text-3);
-  transition:
-    background-color var(--t-1) ease,
-    color var(--t-1) ease;
+  font-size: 12px;
+  color: var(--text-2);
   cursor: pointer;
   white-space: nowrap;
+  transition: color var(--t-1) ease;
 }
 .sh-org-button:hover,
 .sh-org-button[aria-expanded="true"] {
-  color: var(--text-2);
-  background: var(--fill);
+  color: var(--text);
 }
 .sh-org-name {
   overflow: hidden;
@@ -673,13 +679,13 @@ button.chip:hover {
 .sh-menu {
   position: fixed;
   z-index: 60;
-  top: 46px;
-  left: 12px;
+  top: 44px;
+  left: 10px;
   width: 240px;
   display: flex;
   flex-direction: column;
   padding: 6px;
-  border-radius: var(--r-card);
+  border-radius: var(--r);
   background: var(--overlay);
   box-shadow: var(--pop-shadow);
 }
@@ -700,7 +706,7 @@ button.chip:hover {
   min-height: 30px;
   padding: 0 8px;
   border: 0;
-  border-radius: var(--r);
+  border-radius: var(--r-sm);
   background: none;
   text-align: left;
   font-size: 13px;
@@ -717,7 +723,7 @@ button.chip:hover {
 }
 .sh-menu-check {
   width: 12px;
-  color: var(--done);
+  color: var(--green);
 }
 .sh-menu-sep {
   height: 1px;
@@ -741,170 +747,128 @@ button.chip:hover {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The design's search field: it opens ⌘K. */
 .sh-search {
+  flex: none;
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 32px;
-  padding: 0 8px 0 10px;
-  border: 0;
-  border-radius: var(--r-control);
-  background: var(--fill);
-  box-shadow: var(--lit);
+  height: 30px;
+  margin-bottom: 10px;
+  padding: 0 8px;
+  border: 1px solid #1f2125;
+  border-radius: var(--r-sm);
+  background: #121316;
   color: var(--text-3);
+  font-size: 12.5px;
+  text-align: left;
   cursor: pointer;
   white-space: nowrap;
-  transition:
-    background-color var(--t-1) ease,
-    color var(--t-1) ease;
+  transition: border-color var(--t-1) ease;
 }
 .sh-search:hover {
-  background: var(--fill-2);
-  color: var(--text-2);
+  border-color: var(--line-strong);
 }
-.sh-nav {
+.sh-search-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sh-search-key {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.sh-nav,
+.sh-projects {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
 }
-.sh-nav-item,
+.sh-heading {
+  padding: 18px 8px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-3);
+}
 .sh-item {
+  flex: none;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   height: 30px;
   padding: 0 8px;
-  border-radius: var(--r-control);
+  border-radius: var(--r-sm);
   color: var(--text-2);
   white-space: nowrap;
   transition:
     background-color var(--t-1) ease,
     color var(--t-1) ease;
 }
-.sh-item {
-  height: 28px;
-}
-a.sh-nav-item:hover,
-a.sh-item:hover {
-  background: var(--hover);
+.sh-item:hover {
+  background: #16171a;
   color: var(--text);
 }
-.sh-nav-item[aria-current="page"],
 .sh-item[aria-current="page"] {
-  background: var(--fill);
-  box-shadow: var(--lit);
+  background: #17181c;
   color: var(--text);
 }
-.sh-icon {
-  flex: none;
-  color: var(--text-3);
-  transition: color var(--t-1) ease;
-}
-:is(a:hover, [aria-current="page"]) .sh-icon {
-  color: var(--text);
-}
-.sh-nav-label {
-  font-weight: 500;
+.sh-item-label {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .sh-count {
-  margin-left: auto;
   font-family: var(--font-mono);
-  font-size: var(--fs-meta);
+  font-size: 11px;
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
 .sh-count.is-hot {
-  color: var(--accent);
+  color: var(--amber);
 }
-/* What the owner has to validate (THE-916): the orange of "yours", on a coordinator's item. */
-.sh-badge {
-  display: grid;
-  place-items: center;
-  min-width: 18px;
-  height: 18px;
-  padding: 0 5px;
-  border-radius: 9px;
-  background: var(--accent);
-  color: #160a03;
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.sh-count.is-blocked {
+  color: var(--red);
 }
-:is(.sh-nav-item, .sh-item) .sh-count + .sh-badge {
-  margin-left: -4px;
-}
-.sh-group {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.sh-item-icon {
-  width: 16px;
+/* A project's coordinator: a diamond, green while it is active, amber idle. */
+.sh-diamond {
   flex: none;
-  display: grid;
-  place-items: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  rotate: 45deg;
 }
 .sh-live {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 8px;
-  font-size: var(--fs-small);
+  gap: 8px;
+  padding: 10px 8px 2px;
+  font-size: 11.5px;
   color: var(--text-3);
   white-space: nowrap;
 }
+.sh-live-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+}
 .sh-live.is-failed {
-  color: var(--active);
+  color: var(--amber);
 }
-/* The horizon's hue changes over 320 ms when the fleet's state does: a registered color can be transitioned. */
-@property --horizon {
-  syntax: "<color>";
-  inherits: true;
-  initial-value: #7ea6ff;
+.sh-live.is-failed .sh-live-dot {
+  background: var(--amber);
 }
-
-/* The deck: the one lit surface, its top edge lit, the horizon behind its top. */
 .sh-main {
   position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  border-radius: var(--r-deck);
-  background: var(--surface);
-  box-shadow: var(--deck-shadow);
-  overflow: hidden;
-  isolation: isolate;
-  transition: --horizon var(--t-3) ease;
-}
-.sh-main[data-density="airy"] {
-  --row: 48px;
-  --band-h: 40px;
-  --row-title: 14px;
-}
-/* The lit edge: a hairline brightest above the glow, in the horizon's hue. */
-.sh-main::after {
-  content: "";
-  position: absolute;
-  z-index: 4;
-  top: 0;
-  left: 18%;
-  right: 18%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--horizon) 55%, white 10%), transparent);
-  opacity: 0.55;
-  pointer-events: none;
-}
-.sh-main[data-horizon="yours"] {
-  --horizon: var(--accent);
-}
-.sh-main[data-horizon="fail"] {
-  --horizon: var(--critical);
-}
-.sh-main[data-horizon="clear"] {
-  --horizon: var(--done);
+  background: var(--bg);
 }
 .sh-crumbs {
   display: flex;
@@ -917,7 +881,7 @@ a.sh-item:hover {
   align-items: center;
   gap: 8px;
   white-space: nowrap;
-  font-weight: 500;
+  font-size: 13px;
   color: var(--text-3);
 }
 .sh-crumb a {
@@ -930,7 +894,7 @@ a.sh-item:hover {
   color: var(--text);
 }
 .sh-crumb-sep {
-  color: var(--text-4);
+  color: #4a4d54;
 }
 /* The first stop of the keyboard on every page (THE-891): out of sight until focused. */
 .sh-skip {
@@ -957,59 +921,6 @@ a.sh-item:hover {
   min-height: 0;
   overflow-y: auto;
   isolation: isolate;
-}
-/* The horizon: a wide, low glow from the deck's top, in the fleet's state;
-   it scrolls away with the page's status sentence it sits beside. */
-.sh-scroll::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  top: -230px;
-  left: 6%;
-  right: 6%;
-  height: 400px;
-  background: radial-gradient(50% 50% at 50% 50%, var(--horizon), transparent 72%);
-  opacity: 0.2;
-  pointer-events: none;
-}
-/* Under 1180 px the sidebar is an icon rail, as in the mockup. */
-@media (max-width: 1179px) {
-  .sh-side {
-    width: var(--rail);
-  }
-  .sh-search .ui-kbd {
-    display: none;
-  }
-  /* Hidden from sight, still each link's name for a screen reader (THE-891). */
-  .sh-label,
-  .sh-side .sh-count {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .sh-brand {
-    flex-direction: column;
-    height: auto;
-    gap: 6px;
-  }
-  /* On the rail, what waits for the owner is a dot on the item's mark; its number stays for a screen reader. */
-  :is(.sh-nav-item, .sh-item):has(.sh-badge) {
-    position: relative;
-  }
-  .sh-side .sh-badge {
-    position: absolute;
-    top: 4px;
-    right: 6px;
-    min-width: 0;
-    width: 7px;
-    height: 7px;
-    padding: 0;
-    overflow: hidden;
-    color: transparent;
-  }
 }
 
 /* ------------------------------------------------------------ palette */
@@ -1863,12 +1774,12 @@ a.ui-figure:hover {
   z-index: 3;
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: var(--bar);
+  gap: 8px;
+  height: 44px;
   flex: none;
-  padding: 0 20px 0 var(--edge);
-  background: var(--surface);
-  border-bottom: 1px solid var(--line-soft);
+  padding: 0 24px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
 }
 .ui-header-actions {
   display: flex;
@@ -1878,14 +1789,6 @@ a.ui-figure:hover {
 }
 .ui-header-actions:empty {
   display: none;
-}
-.ui-header-hints {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--text-3);
-  white-space: nowrap;
 }
 .ui-page {
   display: flex;
@@ -2546,64 +2449,6 @@ a.ui-figure:hover {
   color: var(--text);
 }
 
-/* ------------------------------------------------------------- screens */
-.sc-agent.is-airy {
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: 12px 28px;
-  padding: 18px var(--edge);
-}
-.sc-agent.is-airy .ui-status {
-  margin-top: 2px;
-}
-.sc-agent-main {
-  flex: 1 1 320px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.sc-agent.is-airy .ui-row-title {
-  font-size: 15px;
-  letter-spacing: -0.01em;
-}
-.sc-agent-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0 6px;
-  font-size: 12px;
-  color: var(--text-3);
-}
-.sc-agent.is-airy .ui-row-line {
-  font-size: 13px;
-  color: var(--text-2);
-}
-.sc-agent-stage {
-  flex: 0 1 220px;
-  min-width: 170px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 12px;
-}
-.sc-agent-ago {
-  flex: none;
-  min-width: 110px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-  font-size: 12.5px;
-}
-.sc-agent-ago time {
-  font-family: var(--font-mono);
-  font-size: 12px;
-}
-.sc-agent-ago-label {
-  color: var(--text-3);
-  font-size: 11.5px;
-}
 .sc-coord {
   display: inline-flex;
   align-items: center;
@@ -2611,6 +2456,7 @@ a.ui-figure:hover {
   font-size: 12.5px;
   white-space: nowrap;
 }
+
 .sc-coord-mark {
   width: 9px;
   height: 9px;
@@ -2839,97 +2685,11 @@ a.ui-figure:hover {
   }
 }
 
-/* The merge moment: a ship leaving the formation, then a confirmation from below. */
-.merge-ship {
-  position: fixed;
-  z-index: 70;
-  line-height: 0;
-  fill: var(--done);
-  pointer-events: none;
-  filter: drop-shadow(0 0 6px rgba(182, 241, 90, 0.8));
-}
-.merge-toasts {
-  position: fixed;
-  z-index: 50;
-  left: 50%;
-  bottom: 24px;
-  display: grid;
-  gap: 8px;
-  translate: -50% 0;
-  pointer-events: none;
-}
-.merge-toast {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px 10px 12px;
-  border-radius: var(--r-card);
-  background: var(--overlay-glass);
-  backdrop-filter: blur(16px) saturate(1.3);
-  -webkit-backdrop-filter: blur(16px) saturate(1.3);
-  box-shadow: var(--pop-shadow);
-  transition:
-    translate var(--t-2) var(--ease-out),
-    opacity var(--t-2) var(--ease-out);
-}
-@starting-style {
-  .merge-toast {
-    translate: 0 16px;
-    opacity: 0;
-  }
-}
-.merge-toast.is-leaving {
-  translate: 0 8px;
-  opacity: 0;
-}
-.merge-toast b {
-  font-weight: 500;
-}
-@media (max-width: 719px) {
-  .merge-toasts {
-    bottom: calc(76px + env(safe-area-inset-bottom));
-    width: calc(100% - 32px);
-  }
-}
-
 /* On a phone an agent's row is two lines (THE-899): its title, then its id and phase. */
 .sc-agent-phase {
   display: none;
 }
 @media (max-width: 719px) {
-  .ui-row.sc-agent:not(.is-airy) {
-    display: grid;
-    grid-template-columns: 16px minmax(0, 1fr) auto auto;
-    grid-template-areas:
-      "icon text side time"
-      "icon id side time";
-    column-gap: 12px;
-    row-gap: 2px;
-    min-height: 56px;
-    padding-top: 10px;
-    padding-bottom: 10px;
-  }
-  .sc-agent:not(.is-airy) > .ui-status {
-    grid-area: icon;
-    align-self: start;
-    margin-top: 3px;
-  }
-  .sc-agent:not(.is-airy) > .ui-row-id {
-    grid-area: id;
-    width: auto;
-  }
-  .sc-agent:not(.is-airy) > .ui-row-text {
-    grid-area: text;
-  }
-  .sc-agent:not(.is-airy) .ui-row-line {
-    display: none;
-  }
-  .sc-agent:not(.is-airy) > .ui-row-side {
-    grid-area: side;
-  }
-  .sc-agent:not(.is-airy) > .ui-row-time {
-    grid-area: time;
-  }
   .sc-agent-phase {
     display: inline;
     font-family: var(--font-sans);
@@ -3149,267 +2909,6 @@ a.ui-figure:hover {
   width: 120px;
 }
 
-/* ---------------------------------------------------- live timeline (THE-868) */
-/* One horizontal scroller (THE-880): the track is 24 h wide, `--tl-zoom` views
-   of 3 h, sized from the scroller's own width (container units); the names on
-   the left and the "ago" column on the right are sticky, on the row's color. */
-.tl {
-  position: relative;
-  --tl-label: 260px;
-  --tl-side: 152px;
-  --tl-gap: 22px;
-}
-.tl-defs {
-  position: absolute;
-}
-.tl-scroll {
-  container-type: inline-size;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
-  scrollbar-color: var(--fill-3) transparent;
-}
-/* The overview (THE-916): what the owner has to validate, in its orange. */
-.ov-yours {
-  color: var(--accent);
-}
-.ov-group-link:hover {
-  text-decoration: underline;
-  text-decoration-color: var(--line-strong);
-  text-underline-offset: 3px;
-}
-.ov-group-side {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-/* Its time moves each minute: digits of one width, in the box of its widest reading (CLS 0). */
-.ov-group-state {
-  font-variant-numeric: tabular-nums;
-}
-@media (max-width: 720px) {
-  .ov-group-side .ui-harness {
-    display: none;
-  }
-}
-/* The board (THE-968, THE-988): a lane's five columns, wells on the deck, cards in
-   them. On a desk the tracks line up from lane to lane (--ov-board), and a
-   column no lane fills is a narrow strip with its name standing up; a card is
-   never wider than a card. Past the columns' room the lane scrolls sideways
-   on its own, never the page. */
-.ov-board {
-  --ov-wide: minmax(156px, 320px);
-  --ov-narrow: 34px;
-  display: grid;
-  grid-template-columns: var(--ov-board);
-  justify-content: start;
-  align-items: stretch;
-  gap: 8px;
-  padding: 12px var(--edge) 16px;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  scroll-padding-inline: var(--edge);
-  scrollbar-width: thin;
-  scrollbar-color: var(--fill-3) transparent;
-  border-bottom: 1px solid var(--line-soft);
-}
-/* A well: concentric with its cards (6 px around an 8 px card, 14 px out). */
-.ov-col {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  padding: 6px;
-  border-radius: var(--r-lg);
-  background: color-mix(in oklab, var(--sunken) 70%, transparent);
-  box-shadow: inset 0 0 0 1px var(--line-soft);
-}
-.ov-col.is-empty {
-  background: transparent;
-}
-.ov-col-h {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  margin: 0;
-  padding: 2px 4px;
-  font-size: var(--fs-small);
-  font-weight: 500;
-  line-height: 18px;
-  color: var(--text-2);
-  white-space: nowrap;
-}
-.ov-col-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ov-col.is-empty .ov-col-h {
-  color: var(--text-3);
-}
-.ov-col.is-narrow {
-  align-items: center;
-  padding: 8px 0;
-}
-.ov-col.is-narrow .ov-col-h {
-  writing-mode: vertical-rl;
-  padding: 0;
-}
-.ov-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.ui-card.ov-card {
-  gap: 6px;
-  padding: 10px 10px 9px;
-  border-radius: var(--r);
-  isolation: isolate;
-}
-.sh-main[data-density="airy"] .ui-card.ov-card {
-  gap: 8px;
-  padding: 12px 12px 11px;
-}
-.ui-card.ov-card[data-selected],
-.ui-card.ov-card:focus-visible {
-  border-radius: var(--r);
-}
-.ov-card-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  min-width: 0;
-}
-.ov-card-id {
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  color: var(--text-2);
-  white-space: nowrap;
-}
-/* Its time moves each minute: digits of one width, in the box of its widest reading (CLS 0). */
-.ov-card-ago {
-  margin-left: auto;
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--fs-meta);
-  font-variant-numeric: tabular-nums;
-  color: var(--text-3);
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.ov-card-title,
-.ov-card-line {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow-wrap: anywhere;
-}
-.ov-card-title {
-  font-size: var(--fs-body);
-  font-weight: 500;
-  line-height: 1.35;
-  letter-spacing: -0.005em;
-}
-.ov-card-line {
-  font-size: var(--fs-small);
-  line-height: 1.4;
-  color: var(--text-3);
-}
-.ov-card-state {
-  font-size: var(--fs-small);
-  font-weight: 500;
-}
-/* The harness gives way to the badges: its name ends in an ellipsis first, then they wrap among themselves. */
-.ov-card-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  font-size: var(--fs-small);
-  color: var(--text-3);
-}
-.ov-card-foot .ui-harness {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.ov-card-foot .ui-harness .ui-dot {
-  margin-right: 6px;
-  vertical-align: 1px;
-}
-.ov-card-badges {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
-  margin-left: auto;
-}
-/* A merged ticket: one line, quieter than the work in flight; ten of them stay short. */
-.ui-card.ov-card.is-merged,
-.sh-main[data-density="airy"] .ui-card.ov-card.is-merged {
-  flex-direction: row;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 10px;
-}
-.ov-card.is-merged .ov-card-title {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--fs-small);
-  font-weight: 400;
-  color: var(--text-2);
-  -webkit-line-clamp: 1;
-  overflow-wrap: normal;
-  word-break: break-all;
-}
-/* A card that just reported glows blue from its top, once, then fades (opacity only). */
-.ov-card.is-fresh::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  border-radius: inherit;
-  background: linear-gradient(180deg, var(--frontier-dim), transparent 70%);
-  animation: ui-fade-out 1600ms ease-out forwards;
-  pointer-events: none;
-}
-/* A lane as narrow as a phone (its width, not the screen's: the landing's
-   replica draws a desk at any size): the lane's own tracks, one column at a
-   time with the next one showing at the edge, its empty columns narrow. */
-.ov-lane {
-  container-type: inline-size;
-}
-@container (max-width: 700px) {
-  .ov-board {
-    --ov-wide: calc(100% - 52px);
-    --ov-narrow: 30px;
-    grid-template-columns: var(--ov-lane);
-    scroll-snap-type: x mandatory;
-  }
-  /* A swipe stops on the lane's start and on each column that holds a card,
-     never on a strip; the lane opens on its first card where the browser can. */
-  .ov-col:is(:first-child, :not(.is-empty)) {
-    scroll-snap-align: start;
-  }
-  .ov-col:not(.is-empty) {
-    /* biome-ignore lint/correctness/noUnknownProperty: CSS Scroll Snap 2, Chrome 133+; others open on the lane's start */
-    scroll-initial-target: nearest;
-  }
-  .ov-col.is-empty {
-    align-items: center;
-    padding: 8px 0;
-  }
-  .ov-col.is-empty .ov-col-h {
-    writing-mode: vertical-rl;
-    padding: 0;
-  }
-}
 /* A session to validate: its validation, full width, first on its page. */
 .ui-section-body.sc-validate {
   align-items: stretch;
@@ -3448,285 +2947,7 @@ a.ui-figure:hover {
 .sc-details[open] .sc-details-chevron {
   rotate: 90deg;
 }
-/* Under the overview's list (THE-916): about six sessions high, the rest scrolls inside. */
-.tl.is-compact .tl-scroll {
-  max-height: 320px;
-  overflow-y: auto;
-}
-.tl-scroll.is-dragging {
-  cursor: grabbing;
-  user-select: none;
-}
-.tl-rows {
-  width: max-content;
-  min-width: 100%;
-}
-.tl-rows .ui-row {
-  --tl-bg: var(--surface);
-  gap: 0;
-  padding: 0;
-}
-.tl-rows a.ui-row:hover {
-  --tl-bg: color-mix(in srgb, var(--surface), #fff 3%);
-}
-.tl-rows .ui-row[data-selected],
-.tl-rows .ui-row:focus-visible {
-  --tl-bg: color-mix(in srgb, var(--surface), #fff 4.5%);
-}
-.ui-row.tl-row {
-  min-height: 46px;
-}
-.ui-row.tl-row.is-coordinator {
-  min-height: 38px;
-}
-.ui-row.tl-head {
-  min-height: 32px;
-  padding-top: 0;
-  padding-bottom: 0;
-}
-.ui-row.tl-group-h {
-  --tl-bg: color-mix(in srgb, var(--surface), #fff 2%);
-  min-height: 30px;
-  padding-top: 0;
-  padding-bottom: 0;
-  background: var(--tl-bg);
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-2);
-}
-.tl-label,
-.tl-side {
-  position: sticky;
-  z-index: 1;
-  align-self: stretch;
-  flex: none;
-  display: flex;
-  align-items: center;
-  background: var(--tl-bg);
-}
-.tl-label {
-  left: 0;
-  width: var(--tl-label);
-  gap: 10px;
-  min-width: 0;
-  padding: 0 12px 0 var(--edge);
-  font-size: 12.5px;
-}
-.tl-side {
-  right: 0;
-  width: var(--tl-side);
-  justify-content: flex-end;
-  padding: 0 var(--edge) 0 12px;
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--text-3);
-}
-.ui-row.tl-group-h .tl-label {
-  gap: 8px;
-}
-.tl-rows .ui-row[data-selected] .tl-label,
-.tl-rows .ui-row:focus-visible .tl-label {
-  box-shadow: inset 2px 0 0 var(--frontier);
-}
-.tl-label-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-.tl-label-line {
-  font-size: 11.5px;
-  color: var(--text-3);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tl-coord {
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.tl-track {
-  position: relative;
-  flex: none;
-  width: calc((100cqw - var(--tl-label) - var(--tl-side) - var(--tl-gap)) * var(--tl-zoom, 8));
-  height: 46px;
-  margin-right: var(--tl-gap);
-}
-.tl-track.is-short {
-  height: 38px;
-}
-.tl-now-icon {
-  margin-right: -2px;
-}
-.tl-svg {
-  position: absolute;
-  inset: 0;
-  overflow: visible;
-}
-.tl-scale {
-  height: 32px;
-}
-.tl-hour,
-.tl-now {
-  position: absolute;
-  top: 9px;
-  font-size: 11px;
-  color: var(--text-3);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.tl-hour {
-  transform: translateX(-50%);
-}
-.tl-now {
-  right: -14px;
-  color: var(--done);
-}
-.tl-grid {
-  fill: rgba(255, 255, 255, 0.035);
-}
-/* Now: a lime line down every row, the edge the ships fly at. */
-.tl-nowline {
-  fill: var(--done);
-  fill-opacity: 0.55;
-}
-/* The path flown: a thin trail, wide enough to hover. */
-.tl-phase {
-  fill-opacity: 0.42;
-  stroke: transparent;
-  stroke-width: 8;
-  transition: fill-opacity var(--t-1) ease;
-}
-.tl-phase.is-current {
-  fill-opacity: 1;
-  stroke-width: 0;
-}
-.tl-phase:hover {
-  fill-opacity: 0.8;
-}
-.tl-report {
-  fill: var(--text-2);
-  stroke: var(--surface);
-  stroke-width: 2;
-}
-.tl-pr {
-  fill: var(--text);
-  stroke: var(--surface);
-  stroke-width: 2;
-}
-.tl-ship {
-  filter: drop-shadow(0 0 4px color-mix(in oklab, var(--c) 80%, transparent));
-}
-.tl-ship.is-silent {
-  filter: none;
-  opacity: 0.7;
-}
-.tl-coord-line {
-  fill-opacity: 0.6;
-}
-.ui-section-body.tl-legend {
-  flex-direction: row;
-  flex-wrap: wrap;
-  gap: 16px;
-  padding: 10px var(--edge);
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-.ui-section-body.tl-legend.is-hidden {
-  display: none;
-}
-.tl-scroll:focus-visible {
-  outline: 2px solid var(--frontier);
-  outline-offset: -2px;
-}
-.tl-legend > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.tl-swatch {
-  display: inline-block;
-  flex: none;
-}
-.tl-swatch.is-past {
-  width: 16px;
-  height: 2px;
-  border-radius: 1px;
-  background: color-mix(in oklab, var(--frontier) 42%, transparent);
-}
-.tl-swatch.is-current {
-  width: 16px;
-  height: 8px;
-  border-radius: 4px;
-  background: linear-gradient(
-    90deg,
-    color-mix(in oklab, var(--frontier) 18%, transparent),
-    color-mix(in oklab, var(--frontier) 55%, transparent)
-  );
-}
-.tl-swatch.is-pr {
-  width: 6px;
-  height: 6px;
-  transform: rotate(45deg);
-  background: var(--text);
-}
-.tl-swatch.is-report {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--text-2);
-}
-.tl-swatch.is-silence {
-  width: 16px;
-  height: 8px;
-  border-radius: 4px;
-  background: repeating-linear-gradient(135deg, rgba(255, 181, 71, 0.5) 0 2px, transparent 2px 6px);
-}
-.tl-swatch.is-inbox {
-  width: 14px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--done);
-}
-.tl-swatch.is-idle {
-  width: 14px;
-  height: 2px;
-  background: repeating-linear-gradient(90deg, var(--active) 0 4px, transparent 4px 8px);
-}
-.tl-tip {
-  position: absolute;
-  z-index: 5;
-  transform: translate(12px, 14px);
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-width: 320px;
-  padding: 8px 10px;
-  border-radius: var(--r);
-  background: var(--overlay);
-  border: 1px solid var(--line-strong);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  font-size: 12px;
-  color: var(--text-2);
-  pointer-events: none;
-}
-.tl-tip-title {
-  font-weight: 500;
-}
-@media (max-width: 1000px) {
-  .tl {
-    --tl-label: 200px;
-    --tl-side: 108px;
-  }
-}
-.tl-tip.is-left {
-  transform: translate(calc(-100% - 12px), 14px);
-}
+
 .attachment-thumbnail {
   display: block;
   width: 100%;
@@ -3767,6 +2988,611 @@ a.ui-figure:hover {
   max-height: 70vh;
   margin-top: 12px;
   object-fit: contain;
+}
+
+/* ------------------------------------------------------- the overview (THE-1020) */
+/* design/dashboard-v7: one sentence, a card per project, the filters, then
+   one list grouped by state or project, alone or beside the preview pane.
+   Its phone layout follows its own width (a container), so the landing's
+   replica, a desk shrunk to 820 px at the narrowest, keeps the desk's. */
+.ov {
+  container: ov / inline-size;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ov-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 28px 32px 18px;
+}
+.ov-headline {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  text-wrap: pretty;
+}
+.ov-subline {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+.ov-projects {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1px;
+  margin: 0 32px 20px;
+  padding: 0;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+.ov-project {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100%;
+  padding: 14px 16px;
+  outline: 1px solid var(--line);
+  background: var(--card);
+  transition: background-color var(--t-1) ease;
+}
+.ov-project:hover {
+  background: #16171a;
+}
+.ov-project-head,
+.ov-project-facts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ov-project-name {
+  font-weight: 600;
+}
+.ov-project-n {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ov-project-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
+}
+.ov-project-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--text-2);
+}
+.ov-project-facts {
+  flex-wrap: wrap;
+  column-gap: 14px;
+  row-gap: 4px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ov-project-coord {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.ov-diamond {
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  rotate: 45deg;
+  background: currentColor;
+}
+.ov-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 32px 10px;
+}
+.ov-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ov-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid #1f2125;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  transition:
+    background-color var(--t-1) ease,
+    color var(--t-1) ease;
+}
+.ov-chip:hover {
+  color: var(--text);
+}
+.ov-chip[aria-current] {
+  border-color: #2e3036;
+  background: #1f2125;
+  color: var(--text);
+}
+.ov-chip-n {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.ov-chip[aria-current] .ov-chip-n {
+  color: var(--text-2);
+}
+.ov-groupby {
+  font-size: 12px;
+  color: var(--text-3);
+}
+/* The header bar's view toggle: Liste | Liste + aperçu. */
+.ov-views {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+}
+.ov-view {
+  display: flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 5px;
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+  transition: color var(--t-1) ease;
+}
+.ov-view:hover {
+  color: var(--text);
+}
+.ov-view[aria-current] {
+  background: var(--raised);
+  color: var(--text);
+}
+.ov-empty {
+  margin: 24px 32px;
+  padding: 32px;
+  border-radius: var(--r);
+  color: var(--text-2);
+  text-align: center;
+}
+.ov-empty p {
+  margin: 0;
+}
+.ov-empty.is-dashed {
+  border: 1px dashed var(--line-strong);
+}
+.ov-empty a {
+  color: var(--text);
+  text-decoration: underline;
+}
+.ov-list {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 48px;
+  border-top: 1px solid var(--line);
+}
+.ov-group-h {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  margin: 0;
+  padding: 0 32px;
+  background: var(--band);
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ov-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.ov-group-n {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+.ov-group-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-3);
+}
+.ov-row {
+  display: grid;
+  grid-template-columns: 8px 64px minmax(0, 1fr) 72px 64px 52px;
+  align-items: center;
+  gap: 14px;
+  min-height: 48px;
+  padding: 6px 32px;
+  border-bottom: 1px solid var(--line-soft);
+  transition: background-color var(--t-1) ease;
+}
+.ov-row:hover,
+.ov-row[data-selected] {
+  background: #15161a;
+}
+.ov-row[data-selected] {
+  box-shadow: inset 2px 0 0 var(--text);
+}
+.ov-row:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: -2px;
+  border-radius: 0;
+}
+.ov-row.is-compact {
+  grid-template-columns: 8px 64px minmax(0, 1fr) 44px;
+  gap: 12px;
+  height: 38px;
+  min-height: 0;
+  padding: 0 24px 0 32px;
+}
+.ov-row.is-compact[aria-current] {
+  background: #17181c;
+}
+.ov-id {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.ov-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ov-title,
+.ov-reason,
+.ov-proj {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-reason {
+  font-size: 12px;
+}
+.ov-proj {
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ov-steps {
+  display: flex;
+  gap: 2px;
+}
+.ov-steps > span {
+  flex: 1;
+  height: 4px;
+  border-radius: 1px;
+}
+.ov-steps.is-wide {
+  gap: 3px;
+}
+.ov-last {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  text-align: right;
+  white-space: nowrap;
+}
+/* A long list (THE-892): rows off screen skip style, layout and paint, and stay in the DOM. */
+.ov-list.is-long .ov-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+}
+.ov-list.is-long .ov-row.is-compact {
+  contain-intrinsic-size: auto 38px;
+}
+.ov-split {
+  display: flex;
+  min-height: calc(100vh - 300px);
+  border-top: 1px solid var(--line);
+}
+.ov-split > .ov-list {
+  border-top: 0;
+  border-right: 1px solid var(--line);
+}
+.ov-split .ov-group-h {
+  padding: 0 24px 0 32px;
+}
+/* The pane keeps its width before its code arrives: nothing beside it moves (CLS 0). */
+.ov-pane {
+  flex: none;
+  width: clamp(280px, 36%, 380px);
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
+}
+.ov-pv {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 22px 24px 40px;
+}
+.ov-pv-head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ov-pv-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+.ov-pv-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-wrap: pretty;
+}
+.ov-pv-state {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid #1f2125;
+  border-radius: var(--r);
+  background: #141518;
+}
+.ov-pv-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+.ov-pv-reason,
+.ov-pv-body {
+  margin: 0;
+  line-height: 1.45;
+  color: var(--text-soft);
+  text-wrap: pretty;
+}
+.ov-pv-body {
+  white-space: pre-line;
+  color: var(--text-2);
+}
+.ov-pv-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+}
+/* The answer and decision forms the agent's page and the Validations page share, at the pane's size. */
+.ov-pv-state :is(.question, .composer) {
+  margin: 0;
+}
+.ov-pv-state .wait-detail.is-quote {
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--text-2);
+  line-height: 1.45;
+  white-space: pre-line;
+}
+.ov-pv-state :is(.composer-foot, .vd-actions) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+}
+/* The pane needs 720 px beside the 228 px sidebar: narrower, the preview is the session's own page. */
+@media (max-width: 947px) {
+  .ov-views {
+    display: none;
+  }
+}
+.ov-pv .btn {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid #2a2c31;
+  border-radius: var(--r-sm);
+  background: #1a1b1f;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 400;
+}
+.ov-pv .btn:hover {
+  background: #222429;
+}
+.ov-pv .btn.is-primary {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--bg);
+}
+.ov-pv .btn.is-primary:hover {
+  background: #ffffff;
+}
+.ov-pv .btn.is-ghost {
+  border-color: transparent;
+  background: none;
+  color: var(--text-2);
+}
+.ov-pv-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ov-pv-h {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-3);
+}
+.ov-pv-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.ov-pv-labels {
+  letter-spacing: -0.02em;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 3px;
+  font-size: 10.5px;
+  color: var(--text-3);
+}
+.ov-pv-labels > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ov-pv-labels > .is-done {
+  color: var(--text-2);
+}
+.ov-pv-labels > .is-now {
+  color: var(--text);
+}
+.ov-pv-facts {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+.ov-pv-facts > div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12.5px;
+}
+.ov-pv-facts dt {
+  color: var(--text-3);
+}
+.ov-pv-facts dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-soft);
+}
+.ov-pv-reports {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ov-pv-reports > li {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.4;
+  color: var(--text-soft);
+}
+.ov-pv-reports time {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.ov-pv-none {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
+.ov-pv-open {
+  display: grid;
+  place-items: center;
+  height: 32px;
+  border: 1px solid #2a2c31;
+  border-radius: var(--r-sm);
+  background: #1a1b1f;
+  font-size: 12.5px;
+  transition: background-color var(--t-1) ease;
+}
+.ov-pv-open:hover {
+  background: #222429;
+}
+/* Narrow (a phone, or a desk window too small for the pane): the list alone, and a row opens its page. */
+@container ov (max-width: 719px) {
+  .ov-pane {
+    display: none;
+  }
+  .ov-split > .ov-list {
+    border-right: 0;
+  }
+}
+@container ov (max-width: 559px) {
+  .ov-head {
+    padding: 20px 16px 14px;
+  }
+  .ov-headline {
+    font-size: 18px;
+  }
+  /* The list first: the projects' cards in one strip that scrolls sideways. */
+  .ov-projects {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(250px, 80%);
+    margin: 0 16px 16px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+  }
+  .ov-projects > li {
+    scroll-snap-align: start;
+  }
+  .ov-bar {
+    padding: 0 16px 10px;
+  }
+  .ov-group-h,
+  .ov-split .ov-group-h {
+    padding: 0 16px;
+  }
+  .ov-group-hint {
+    display: none;
+  }
+  .ov-row {
+    grid-template-columns: 8px minmax(0, 1fr) 44px;
+    gap: 12px;
+    padding: 8px 16px;
+  }
+  .ov-row > :is(.ov-id, .ov-proj, .ov-steps) {
+    display: none;
+  }
+  .ov-row.is-compact {
+    grid-template-columns: 8px 64px minmax(0, 1fr) 44px;
+    padding: 0 16px;
+  }
+  .ov-row.is-compact > .ov-id {
+    display: block;
+  }
+  .ov-empty {
+    margin: 16px;
+    padding: 24px 16px;
+  }
 }
 
 /* ------------------------------------------------------------ validations (THE-885) */
@@ -4129,14 +3955,10 @@ a.ui-figure:hover {
   padding: 20px;
   gap: 12px;
 }
-.vd-list.is-decided .vd-card {
-  opacity: 0.86;
-}
-/* The shell keeps 720 px for its lists; the approval page alone is read on a phone, without the sidebar. */
 /* Under 720 px (a phone, or a laptop at 200% zoom, THE-891): the sidebar is
-   a bar on top (home, organization, search, the four sections) and the page
-   takes the whole width, so nothing scrolls sideways but the timeline. The
-   projects and harnesses stay one tap away, on Projects and Agents. */
+   a bar on top (the mark, the organization, search), the sections a tab bar
+   at the bottom, and the page takes the whole width. The approval page alone
+   is read without either. */
 @media (max-width: 719px) {
   :root {
     --edge: 16px;
@@ -4146,7 +3968,6 @@ a.ui-figure:hover {
   .sh {
     min-width: 0;
     flex-direction: column;
-    padding: 0;
     height: 100dvh;
   }
   /* The top bar (THE-891): the mark, the organization, search. Its cells and
@@ -4162,70 +3983,47 @@ a.ui-figure:hover {
     column-gap: 6px;
     padding: 0 12px 0 16px;
     overflow: visible;
-    background: var(--surface);
-    border-bottom: 1px solid var(--line-soft);
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
   }
-  .sh-side > .sh-group,
   .sh-side > .sh-nav,
+  .sh-side > .sh-projects,
+  .sh-side > .sh-item,
   .sh-side > .spacer,
   .sh-side > .sh-live {
     display: none;
   }
   .sh-brand {
     min-width: 0;
-    flex-direction: row;
-    gap: 10px;
     height: 32px;
     padding: 0;
-  }
-  .sh-brand .sh-brand-name {
-    position: static;
-    width: auto;
-    height: auto;
-    overflow: hidden;
-    clip: auto;
   }
   .sh-brand > .sh-brand-home {
     margin-right: auto;
   }
-  .sh-brand .sh-org-name {
-    position: static;
-    width: auto;
-    height: auto;
-    overflow: hidden;
-    clip: auto;
-  }
-  .sh-org-button {
-    height: 32px;
-    padding: 0 10px;
-    border-radius: var(--r-control);
-    background: var(--fill);
-    color: var(--text-2);
-  }
   .sh-search {
-    flex: none;
     width: 36px;
     height: 36px;
+    margin: 0;
     padding: 0;
     justify-content: center;
-    border-radius: var(--r-seg);
   }
-  .sh-main {
-    border-radius: 0;
-    box-shadow: none;
+  .sh-search-key {
+    display: none;
   }
-  .sh-main::after {
-    left: 0;
-    right: 0;
+  /* Out of sight, still the button's name for a screen reader. */
+  .sh-search-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
   .sh-scroll {
     padding-bottom: calc(64px + env(safe-area-inset-bottom));
   }
-  .sh-scroll::before {
-    left: -20%;
-    right: -20%;
-  }
-  /* The sections: a tab bar at the bottom, the one blurred surface with toasts (THE-892).
+  /* The sections: a tab bar at the bottom, the one blurred surface (THE-892).
      It comes last in the page's HTML, and the browser may paint the page
      before its tabs have all arrived: its height is its own, not its tabs',
      so its top never moves (THE-982: it grew from 13 or 41 px to 60). */
@@ -4237,10 +4035,11 @@ a.ui-figure:hover {
     bottom: 0;
     height: calc(60px + env(safe-area-inset-bottom));
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-auto-columns: minmax(0, 1fr);
+    grid-auto-flow: column;
     align-items: start;
     padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
-    background: color-mix(in oklab, var(--bg) 88%, transparent);
+    background: color-mix(in oklab, var(--side) 90%, transparent);
     backdrop-filter: blur(18px) saturate(1.3);
     -webkit-backdrop-filter: blur(18px) saturate(1.3);
     border-top: 1px solid var(--line);
@@ -4253,7 +4052,7 @@ a.ui-figure:hover {
     gap: 3px;
     min-width: 0;
     padding: 6px 0 4px;
-    border-radius: var(--r-seg);
+    border-radius: var(--r);
     font-size: 10.5px;
     color: var(--text-3);
     transition:
@@ -4265,9 +4064,6 @@ a.ui-figure:hover {
   }
   .sh-tab[aria-current="page"] {
     color: var(--text);
-  }
-  .sh-tab[aria-current="page"] .sh-icon {
-    filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.35));
   }
   .sh-tab-label {
     max-width: 100%;
@@ -4285,15 +4081,12 @@ a.ui-figure:hover {
     height: 16px;
     padding: 0 4px;
     border-radius: 8px;
-    background: var(--accent);
-    box-shadow: 0 0 0 2px var(--bg);
+    background: var(--amber);
+    box-shadow: 0 0 0 2px var(--side);
     color: #160a03;
     font-size: 10px;
     font-weight: 600;
     font-variant-numeric: tabular-nums;
-  }
-  .ui-header-hints {
-    display: none;
   }
   .ui-header {
     flex-wrap: wrap;
@@ -4359,15 +4152,8 @@ a.ui-figure:hover {
     padding-top: 6px;
     padding-bottom: 6px;
   }
-  .sh.is-focus {
-    min-width: 0;
-    padding: 0;
-  }
   .sh.is-focus .sh-side {
     display: none;
-  }
-  .sh.is-focus .sh-main {
-    border-radius: 0;
   }
   .sh.is-focus .sh-tabbar {
     display: none;
@@ -4561,44 +4347,6 @@ a.ui-figure:hover {
 .ins-table > summary:focus-visible {
   outline: 2px solid var(--frontier);
   outline-offset: 2px;
-}
-
-/* The timeline as a table (THE-891): the rows' type, a hairline under each session. */
-.tl-table-wrap {
-  overflow-x: auto;
-}
-.tl-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12.5px;
-}
-.tl-cell {
-  padding: 9px 20px 9px 0;
-  border-bottom: 1px solid var(--line);
-  text-align: left;
-  vertical-align: top;
-  font-weight: 400;
-  color: var(--text-2);
-}
-.tl-cell:first-child {
-  padding-left: var(--edge);
-}
-.tl-cell.is-head {
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--text-3);
-}
-.tl-cell.is-row {
-  color: var(--text);
-  font-weight: 500;
-}
-.tl-table-link:hover {
-  text-decoration: underline;
-}
-.tl-table-phases {
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 /* ------------------------------------------------------------------ activity (THE-894) */
@@ -4852,18 +4600,7 @@ a.ui-figure:hover {
   content-visibility: auto;
   contain-intrinsic-size: auto 36px;
 }
-.sh-main[data-density="airy"] .ui-section.is-long > .ui-row {
-  contain-intrinsic-size: auto 48px;
-}
-.ov-board.is-long .ov-card {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 92px;
-}
 .ui-cards.is-long > .ui-card {
   content-visibility: auto;
   contain-intrinsic-size: auto 320px;
-}
-.tl-rows.is-long .ui-row.tl-row {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 46px;
 }

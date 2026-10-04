@@ -9,7 +9,7 @@
 // a query over thousands of items stays far under 50 ms.
 import type { FleetOverview, Issue, PullRequest, StatusSources, StatusType } from "@armada/core/read";
 import { type SavedView, viewHref } from "./filters";
-import { type AgentState, agentState, DENSITIES, type Density, paths } from "./fleet-view";
+import { type AgentState, agentState, paths } from "./fleet-view";
 import { LANGUAGES, type Language, type Strings } from "./i18n";
 import { decisionCards } from "./overview-view";
 import { coordinatorLink } from "./project-view";
@@ -148,8 +148,7 @@ export type PaletteAction =
   | { kind: "launch"; project: string; ticket: string; profile: string | null }
   | { kind: "answer"; project: string; item: number }
   | { kind: "copy"; text: string }
-  | { kind: "language"; to: Language }
-  | { kind: "density"; to: Density };
+  | { kind: "language"; to: Language };
 
 export interface SearchItem {
   kind: SearchKind;
@@ -181,7 +180,6 @@ export interface SearchItem {
 export interface SearchContext {
   t: Strings;
   lang: Language;
-  density: Density;
   /** Signed in with accounts: the organization's pages are listed. */
   organization: boolean;
   /** The live data answers: a launch or an answer can be sent. */
@@ -479,22 +477,6 @@ function actions(
           verbs("language", "langue", "english", "français", "french"),
         ),
       );
-  for (const d of DENSITIES)
-    if (d !== ctx.density)
-      out.push(
-        item(
-          {
-            kind: "action",
-            key: `action:density:${d}`,
-            label: p.density(t.shell.density[d]),
-            detail: t.shell.density.label,
-            href: null,
-            project: null,
-            action: { kind: "density", to: d },
-          },
-          verbs("density", "densité", d),
-        ),
-      );
   return out;
 }
 
@@ -628,10 +610,7 @@ function defaults(items: SearchItem[], recent: readonly string[]): SearchGroup[]
   const recents = recent.flatMap((k) => byKey.get(k) ?? []).slice(0, 6);
   const shown = new Set(recents.map((i) => i.key));
   const acts = items.filter(
-    (i) =>
-      i.kind === "action" &&
-      !shown.has(i.key) &&
-      (i.action?.kind === "answer" || i.action?.kind === "language" || i.action?.kind === "density"),
+    (i) => i.kind === "action" && !shown.has(i.key) && (i.action?.kind === "answer" || i.action?.kind === "language"),
   );
   const launches = items.filter((i) => i.action?.kind === "launch" && !shown.has(i.key)).slice(0, 2);
   const pageItems = items.filter((i) => i.kind === "page" && !shown.has(i.key));

@@ -8,16 +8,9 @@
 // one "Details" disclosure, closed until opened or asked for by `?tab=`. Renders from the overview the shell polls and the ticket's
 // history its page read with it; that history is read again when the ticket
 // moves (`/api/fleet/activity`, Postgres only).
-import {
-  type ActivityEntry,
-  agentActivity,
-  type FleetRow,
-  type InboxItem,
-  type ProjectOverview,
-  type RequestKind,
-} from "@armada/core/read";
+import type { ActivityEntry, FleetRow, InboxItem, ProjectOverview, RequestKind } from "@armada/core/read";
 import { useParams, useSearchParams } from "next/navigation";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { releaseTicket } from "@/app/actions";
 import { checksOf, ownerChecks } from "@/lib/coordinator-view";
 import type { TaggedActivity } from "@/lib/fleet-data";
@@ -69,6 +62,7 @@ import { RequestAction } from "./AgentActions";
 import { rowLine, rowProgress } from "./AgentRow";
 import { Attachments, useAttachments } from "./Attachments";
 import { DecisionActions } from "./DecisionCard";
+import { useActivity } from "./use-activity";
 import { ValidationCard } from "./ValidationCard";
 
 /** A key and its value, as a static row. */
@@ -99,102 +93,6 @@ const ciColor = (ci: string | null | undefined) =>
 /** The open request of a kind the overview holds for this ticket. */
 const openRequest = (p: ProjectOverview | undefined, kind: RequestKind, match: (i: InboxItem) => boolean) =>
   p?.requests.find((i) => i.kind === kind && match(i)) ?? null;
-
-/** What the overview already knows of the ticket's history, shown until the full read answers. */
-function knownActivity(row: FleetRow): ActivityEntry[] {
-  const s = row.session;
-  return agentActivity({
-    comments: [],
-    events: [
-      ...(s
-        ? [
-            {
-              kind: "claim" as const,
-              phase: "planning",
-              message: null,
-              runtime: s.runtime,
-              handle: s.handle,
-              prUrl: null,
-              at: s.claimedAt,
-            },
-          ]
-        : []),
-      ...(row.statusLine
-        ? [
-            {
-              kind: "report" as const,
-              phase: row.phase,
-              message: row.statusLine.summary,
-              runtime: null,
-              handle: null,
-              prUrl: null,
-              at: row.statusLine.at,
-            },
-          ]
-        : []),
-    ],
-    inbox: row.question
-      ? [
-          {
-            id: row.question.id,
-            project: row.project,
-            ticket: row.id,
-            kind: "question",
-            recipient: "coordinator",
-            author: row.question.author,
-            body: row.question.body,
-            createdAt: row.question.at,
-            resolvedAt: null,
-            resolution: null,
-          },
-        ]
-      : [],
-    launches: [],
-    prs: [],
-  });
-}
-
-/**
- * The ticket's history from the server, read again when the row changes;
- * the server answers 304 while it is the same.
- */
-function useActivity(row: FleetRow, requests: InboxItem[], initial: TaggedActivity | null) {
-  const [read, setRead] = useState<{ key: string; entries: ActivityEntry[]; live: boolean } | null>(null);
-  const tag = useRef<string | null>(null);
-  const project = row.project;
-  const ticket = row.id;
-  const key = `${project}/${ticket}`;
-  // The activity the page was rendered with, while it is this ticket's.
-  const given = initial && `${initial.activity.project}/${initial.activity.ticket}` === key ? initial : null;
-  const changed = [
-    row.lastUpdate,
-    row.lastReport,
-    row.phase,
-    row.question?.id,
-    row.pr?.number,
-    ...requests.filter((r) => r.ticket === ticket).map((r) => r.id),
-  ].join("|");
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `changed` says when the history may have changed.
-  useEffect(() => {
-    let live = true;
-    const url = `/api/fleet/activity?project=${encodeURIComponent(project)}&ticket=${encodeURIComponent(ticket)}`;
-    const known = read?.key === key ? tag.current : (given?.tag ?? null);
-    fetch(url, { cache: "no-store", headers: known ? { "If-None-Match": known } : {} })
-      .then(async (res) => {
-        if (res.status === 304 || !res.ok || !live) return;
-        const body = (await res.json()) as { entries: ActivityEntry[]; live: boolean };
-        tag.current = res.headers.get("etag");
-        setRead({ key, entries: body.entries, live: body.live });
-      })
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [project, ticket, changed]);
-  if (read?.key === key) return read;
-  if (given) return { key, entries: given.activity.entries, live: given.activity.live };
-  return { entries: knownActivity(row), live: true, key: "" };
-}
 
 function ActivityRow({ e, row, t }: { e: ActivityEntry; row: FleetRow; t: Strings }) {
   const a = t.shell.agent;

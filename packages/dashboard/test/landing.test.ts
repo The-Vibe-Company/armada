@@ -5,7 +5,7 @@ import { CIPHER, COMMANDS, LAUNCH_TOKEN_HOURS, SETUP } from "../components/landi
 import { BREAK_AT, createSky, INTRO, LIME, step } from "../components/landing/flock";
 import { ASKED, delivered, HANDED_BACK, handedBack, opening, toValidate } from "../components/landing/replica-script";
 import { TRANSCRIPT } from "../components/landing/transcript";
-import { cardBadges, checksOf, coordinatorGroups, laneColumns, ownerChecks } from "../lib/coordinator-view";
+import { checksOf, overviewItems, ownerChecks } from "../lib/coordinator-view";
 import { demoOverview } from "../lib/demo/overview";
 import { agentState } from "../lib/fleet-view";
 import { LAUNCH_TOKEN_MS } from "../lib/workers";
@@ -90,9 +90,9 @@ describe("the landing page", () => {
       // The landing's own static files (its replica's overview) are fine to fetch.
       .filter((f) => /next\/headers|\bfetch\((?!"\/landing\/)|cookies\(\)/.test(read(f)))
       .map((f) => relative(ROOT, f));
-    // They read the server only in the shell: its poll (FleetProvider), and the timeline's history when
-    // none is given. The replica runs in ShowcaseProvider, which gives the history and never polls.
-    expect(offenders.sort()).toEqual(["components/shell/context.tsx", "components/timeline/Timeline.tsx"]);
+    // They read the server only in the shell's poll (FleetProvider), and in the overview's preview pane (a
+    // session's history). The replica runs in ShowcaseProvider, which never polls, and shows the list alone.
+    expect(offenders.sort()).toEqual(["components/screens/use-activity.ts", "components/shell/context.tsx"]);
   });
 });
 
@@ -112,22 +112,20 @@ describe("the replica of the overview (THE-931)", () => {
     expect(o.rows.find((r) => r.id === HANDED_BACK)?.phase).toBe("shipping");
   });
 
-  test("ends on WID-18 to validate, first in the first group", () => {
+  test("ends on WID-18 waiting for the owner's decision, WID-15 back at work", () => {
     const o = opening(base);
     const end = toValidate(handedBack(delivered(o, at + 1), base, at + 2), base, at + 3);
     expect(end.rows.find((r) => r.id === ASKED)).toMatchObject({ phase: "implementing", question: null });
     expect(end.rows.find((r) => r.id === HANDED_BACK)?.phase).toBe("ready-to-merge");
     expect(toCheck(end).sort()).toEqual(["GAD-9", "THE-862", HANDED_BACK]);
-    const [first] = coordinatorGroups(end, end.rows);
-    expect(first?.project.slug).toBe("widgets");
-    expect(first?.rows[0]?.id).toBe(HANDED_BACK);
-    // On the board (THE-988): WID-18 in the first lane's CI, "To validate" and "Ready to merge", WID-15 back at work.
-    const columns = laneColumns(first?.rows ?? []);
-    expect(columns.ci.map((r) => r.id)).toContain(HANDED_BACK);
-    const badges = (id: string) => end.rows.filter((r) => r.id === id).flatMap((r) => cardBadges(ownerChecks(end), r));
-    expect(badges(HANDED_BACK)).toEqual(["validate", "ready"]);
-    expect(columns.implementing.map((r) => r.id)).toContain(ASKED);
-    expect(badges(ASKED)).toEqual([]);
+    // On the overview (THE-1020): WID-18 waits for the owner's decision, a merge to approve; WID-15 runs again.
+    const items = overviewItems(end, { now: at + 3, zone: "UTC" });
+    const of = (id: string) => items.find((i) => i.id === id);
+    expect(of(HANDED_BACK)).toMatchObject({ group: "you", reason: { kind: "merge" }, step: 4 });
+    expect(of(ASKED)?.group).toBe("running");
+    // Before the merge was asked, the hand-back was ready to merge.
+    const before = overviewItems(handedBack(delivered(o, at + 1), base, at + 2), { now: at + 2, zone: "UTC" });
+    expect(before.find((i) => i.id === HANDED_BACK)?.group).toBe("ready");
   });
 });
 

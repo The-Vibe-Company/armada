@@ -34,7 +34,7 @@ import {
   saveRuntimeHandle,
   upsertProject,
 } from "../lib/fleet-store.ts";
-import { answerJson, answerOverview, answerTimeline } from "../lib/live-http.ts";
+import { answerJson, answerOverview } from "../lib/live-http.ts";
 import { submitAnswer as answer, submitLaunch as launchReq, submitDecision } from "../lib/requests.ts";
 import { markRepository } from "../lib/snapshots.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
@@ -258,19 +258,8 @@ describe("live Fleet reading", () => {
     expect(changed.headers.get("etag")).not.toBe(tag);
     const updated = await changed.json();
     expect(updated.projects[0].requests).toMatchObject([{ kind: "merge-request", request: { pr: 11 } }]);
-    // The timeline's history is not in the poll: its own route serves it, tagged on its own.
+    // The timeline's history is not in the poll.
     expect(updated.timeline).toBeUndefined();
-    const history = answerTimeline(
-      new Request("https://armada.example.test/api/fleet/timeline"),
-      await loadOverview(w.opts),
-    );
-    expect((await history.json()).coordinators).toMatchObject([
-      { project: "widgets", inboxTrack: { reads: [{ from: w.at(3_000).toISOString() }] } },
-    ]);
-    const again = new Request("https://armada.example.test/api/fleet/timeline", {
-      headers: { "if-none-match": history.headers.get("etag") ?? "" },
-    });
-    expect(answerTimeline(again, await loadOverview(w.opts)).status).toBe(304);
     expect(w.reads.snapshots).toBe(1);
   });
 

@@ -251,7 +251,7 @@ export async function ticketEvents(db: Queryable, project: string, ticket: strin
 
 /**
  * The worker events of a project since `since` (claims, reports, releases,
- * merges), oldest first: the history the overview's live timeline draws.
+ * merges), oldest first: the history each row's step is read from.
  */
 export async function recentEvents(db: Queryable, project: string, since: Date): Promise<HistoryEvent[]> {
   const rs = await db.query(
@@ -325,7 +325,7 @@ export async function getCoordinatorPresence(db: Queryable, project: string): Pr
     : null;
 }
 
-/** The inbox reads the live timeline draws: its whole span, and an hour before it for the gap that crosses its start. */
+/** The coordinators' inbox reads of the timeline's history: its whole span, and an hour before it for the gap that crosses its start. */
 export async function inboxReads(db: Queryable, project: string, now: Date): Promise<InboxReadEvent[]> {
   const result = await db.query(
     "SELECT id, created_at, handle FROM events WHERE project = $1 AND kind = 'inbox' AND created_at >= $2 AND created_at <= $3 ORDER BY created_at, id",

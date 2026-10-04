@@ -523,7 +523,7 @@ export const DEMO_COORDINATOR_SEEN: Record<string, number> = Object.fromEntries(
 
 /**
  * `fleet` is the mockup's world; `busy` adds twenty sessions that ran the
- * whole day, a report every 2 minutes, to try the live timeline at 30
+ * whole day, a report every 2 minutes, to try the overview at 30
  * sessions over 24 hours (THE-880); `large` adds 240 sessions, the first
  * reporting every minute for six hours, for lists of hundreds of rows
  * (THE-892: the responsiveness check runs on it); `empty` has none.
@@ -725,7 +725,7 @@ export function demoSnapshot(
     }),
   ];
   // The tickets already done under the root, so the project's progress reads as in the mockup,
-  // each closed when its pull request merged in the history `demo:seed` writes (the board's Merged column).
+  // each closed when its pull request merged in the history `demo:seed` writes (the overview's "Merged today").
   const done = scenario !== "empty" ? (DEMO_PROJECT_FACTS[project.slug]?.done ?? 1) : 1;
   const mergedAgo = new Map(
     demoHistory()

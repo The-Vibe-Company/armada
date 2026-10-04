@@ -4,7 +4,6 @@ import {
   agentState,
   coordinatorHarness,
   crumbsOf,
-  densityOf,
   designPageEnabled,
   escapeTarget,
   fileShape,
@@ -72,11 +71,15 @@ test("a project keeps its color whatever other projects exist", () => {
 });
 
 describe("places", () => {
-  test("an agent's page sits under the overview, or under the project it was opened from", () => {
+  test("an agent's page sits under the overview and its project, a project's under the overview", () => {
     const agent = placeOf("/agents/WID-15");
     expect(agent).toEqual({ kind: "agent", ticket: "WID-15" });
-    const project = placeOf("/projects/widgets");
-    expect(crumbsOf(agent, project).map((c) => c.kind)).toEqual(["projects", "project", "agent"]);
+    expect(crumbsOf(agent, "widgets")).toEqual([
+      { kind: "overview", href: "/" },
+      { kind: "project", slug: "widgets", href: "/projects/widgets" },
+      { kind: "agent", ticket: "WID-15", href: null },
+    ]);
+    expect(crumbsOf(placeOf("/projects/widgets")).map((c) => c.kind)).toEqual(["overview", "project"]);
     expect(crumbsOf(agent, null)).toEqual([
       { kind: "overview", href: "/" },
       { kind: "agent", ticket: "WID-15", href: null },
@@ -84,11 +87,13 @@ describe("places", () => {
     expect(placeOf("/organization/keys")).toEqual({ kind: "organization", page: "keys" });
   });
 
-  test("the menu has the overview, Activity, Insights and the organization; the other pages are the overview's", () => {
+  test("the menu has the overview, Validations, Activity, Insights and the organization; agents and projects are the overview's", () => {
     // THE-916: the Agents page is the overview, and the pages out of the menu belong to it.
     expect(placeOf("/agents")).toEqual({ kind: "overview" });
-    for (const path of ["/", "/agents/WID-15", "/projects", "/projects/widgets", "/validations", "/approve/3"])
+    for (const path of ["/", "/agents/WID-15", "/projects", "/projects/widgets"])
       expect(sectionOf(placeOf(path))).toBe("overview");
+    expect(sectionOf(placeOf("/validations"))).toBe("validations");
+    expect(sectionOf(placeOf("/approve/3"))).toBe("validations");
     expect(sectionOf(placeOf("/activity"))).toBe("activity");
     expect(sectionOf(placeOf("/insights"))).toBe("insights");
     expect(sectionOf(placeOf("/organization/keys"))).toBe("organization");
@@ -102,13 +107,12 @@ describe("places", () => {
     expect(escapeTarget(agent, "/")).toBe("/");
     expect(escapeTarget(agent, null)).toBe("/");
     expect(escapeTarget(agent, "/organization/keys")).toBe("/");
-    expect(escapeTarget(placeOf("/projects/widgets"), "/agents/WID-15")).toBe("/projects");
+    expect(escapeTarget(placeOf("/projects/widgets"), "/agents/WID-15")).toBe("/");
     expect(escapeTarget(placeOf("/"), "/agents/WID-15")).toBeNull();
   });
 });
 
-test("density defaults to compact, and the component sheet shows in development and demo only", () => {
-  expect([densityOf("airy"), densityOf(undefined), densityOf("bogus")]).toEqual(["airy", "compact", "compact"]);
+test("the component sheet shows in development and demo only", () => {
   expect(designPageEnabled({ NODE_ENV: "development" })).toBe(true);
   expect(designPageEnabled({ NODE_ENV: "production" })).toBe(false);
   expect(designPageEnabled({ NODE_ENV: "production", ARMADA_DASHBOARD_DEMO: "fleet" })).toBe(true);

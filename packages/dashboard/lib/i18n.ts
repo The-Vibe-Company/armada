@@ -17,9 +17,9 @@ import type {
   ValidationOutcome,
   WaitingKind,
 } from "@armada/core/read";
-import type { BoardColumn, CardBadge } from "./coordinator-view";
+import type { SessionGroup } from "./coordinator-view";
 import type { ViewError } from "./filters";
-import type { AgentStatus, DecisionKind, Density, PageKind, Section, StatusReason } from "./fleet-view";
+import type { AgentStatus, DecisionKind, PageKind, Section, StatusReason } from "./fleet-view";
 import type { BlockerReason, PrState, RegisterStep } from "./project-view";
 import type { IndexPr, SearchKind } from "./search";
 
@@ -555,38 +555,118 @@ const en = {
   } satisfies Record<RequestError, string>,
   overview: {
     locale: "en-GB",
-    /** The overview's one line (THE-916): "2 coordinators · 6 sessions in flight · 1 to validate". */
-    line: {
-      coordinators: (n: number) => (n === 1 ? "1 coordinator" : `${n} coordinators`),
-      running: (n: number) => (n === 1 ? "1 session in flight" : `${n} sessions in flight`),
-      toValidate: (n: number) => `${n} to validate`,
-      nothing: "nothing to validate",
-    },
-    /** A coordinator's count of what the owner has to validate, in orange. */
-    toValidate: (n: number) => `${n} to validate`,
-    /** A session the owner has something to validate on. */
-    toValidateBadge: "To validate",
-    nothingRunning: "Nothing in flight.",
-    /** The board's columns (THE-968, THE-988), left to right: the owner's names for a ticket's flow. */
-    columns: {
-      plan: "Plan",
-      implementing: "Implementing",
-      review: "Code Review",
-      ci: "CI",
-      merged: "Merged",
-    } satisfies Record<BoardColumn, string>,
-    /** A card's badges (THE-988), in place of columns. */
-    badges: {
-      validate: "To validate",
+    /** The overview's states (THE-1020), most urgent first, and what each means. */
+    groups: {
       blocked: "Blocked",
-      silent: "Silent",
-      approval: "Plan to approve",
+      you: "Waiting for your decision",
+      running: "In progress",
       ready: "Ready to merge",
-    } satisfies Record<CardBadge, string>,
-    /** Before a merged ticket's time, for a screen reader. */
-    mergedAgo: "Merged",
-    /** Where a merged ticket's card goes, for a screen reader. */
-    mergedOpens: (n: number) => `opens pull request #${n} on GitHub in a new tab`,
+      merged: "Merged today",
+    } satisfies Record<SessionGroup, string>,
+    groupHints: {
+      blocked: "can't go on without someone",
+      you: "a plan, a merge or a question for you",
+      running: "moving on its own",
+      ready: "approved, the coordinator merges",
+      merged: "",
+    } satisfies Record<SessionGroup, string>,
+    headline: (blocked: number, you: number) => {
+      const waits = you === 0 ? "nothing waits for your decision" : `${you} waiting for your decision`;
+      if (blocked) return `${blocked === 1 ? "1 agent" : `${blocked} agents`} blocked, ${waits}.`;
+      return you ? `Nothing blocked. ${waits}.` : "Everything is moving, nothing is waiting.";
+    },
+    subline: (n: { live: number; projects: number; running: number; ready: number; merged: number }) =>
+      [
+        `${n.live === 1 ? "1 agent" : `${n.live} agents`} in flight across ${n.projects === 1 ? "1 project" : `${n.projects} projects`}`,
+        `${n.running} moving on their own`,
+        `${n.ready} ready to merge`,
+        `${n.merged} merged today`,
+      ].join(" · "),
+    card: {
+      blocked: (n: number) => `${n} blocked`,
+      you: (n: number) => `${n} for you`,
+      running: (n: number) => `${n} in flight`,
+      progress: (done: number, total: number) => `${done} of ${total} tickets done`,
+    },
+    coordinator: {
+      active: "coord. active",
+      idle: (d: string) => `coord. idle ${d}`,
+      unknown: "coord. not seen",
+    },
+    coordinatorHint: {
+      active: "coordinator active",
+      idle: (d: string) => `coordinator idle ${d}`,
+      unknown: "coordinator not seen yet",
+    },
+    filterLabel: "Project",
+    all: "All",
+    groupBy: "Group by",
+    byState: "State",
+    byProject: "Project",
+    views: { list: "List", preview: "List + preview", label: "View" },
+    noMatch: "No agent matches.",
+    clear: "Clear the filters",
+    nothingRunning: "No agent in flight and nothing merged today.",
+    /** A session the owner has something to validate on (its page). */
+    toValidateBadge: "To validate",
+    /** A row's colored line: why it is in its state. */
+    reasons: {
+      question: (text: string) => `Unanswered question: ${text}`,
+      ci: (pr: number) => `Red CI on #${pr}`,
+      conflict: (pr: number) => `Conflict with main on #${pr}`,
+      silent: (d: string) => `Silent for ${d}`,
+      blocked: (text: string | null) => (text ? `Blocked: ${text}` : "Blocked"),
+      plan: "Plan to approve",
+      merge: (pr: number | null, ci: string) =>
+        ["Merge to approve", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
+      ownerQuestion: (text: string) => `Question: ${text}`,
+      awaitingValidation: "Waiting for your validation",
+      ready: (by: string | null, pr: number | null, ci: string) =>
+        [by ? `Approved by ${by}` : "Handed back", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
+      merged: (pr: number) => `#${pr} merged`,
+      working: "At work",
+    },
+    ci: { success: "green", failure: "red", pending: "running", none: "" } satisfies Record<CiState, string>,
+    /** The six steps of a row's bar. */
+    steps: ["Plan", "Approval", "Code", "Review & CI", "Ready", "Merged"],
+    stepLabel: (step: string) => `Step: ${step}`,
+    lastReport: "Last report",
+    /** The preview pane (THE-1020): the selected session. */
+    preview: {
+      step: "Step",
+      reports: "Last reports",
+      noReports: "No report yet.",
+      open: "Open the agent's page →",
+      pr: "Pull request",
+      ci: "CI",
+      files: "Files",
+      lastReport: "Last report",
+      notYet: "Not yet",
+      ciStates: { success: "CI green", failure: "CI red", pending: "CI running", none: "No CI yet" } satisfies Record<
+        CiState,
+        string
+      >,
+      ago: (d: string) => `${d} ago`,
+      openPr: (n: number) => `Open #${n}`,
+      openValidation: "Open the validation",
+      seeShots: "See the screenshots",
+      action: {
+        question: (ago: string) => `The worker asked the coordinator a question ${ago}. No answer yet.`,
+        ci: (pr: number, checks: string) => `CI fails on #${pr}${checks ? ` (${checks})` : ""}.`,
+        conflict: (pr: number) => `#${pr} conflicts with main.`,
+        silent: (d: string) => `No report for ${d}.`,
+        lastMessage: (m: string) => `Last message: ${m}`,
+        blocked: "The worker is blocked.",
+        plan: "Plan posted, to approve before the code starts.",
+        merge: (pr: number | null) =>
+          pr ? `#${pr} waits for your approval to merge.` : "A merge waits for your approval.",
+        awaitingValidation: "The worker waits for your validation.",
+        ready: (by: string | null, pr: number | null) =>
+          `${by ? `Merge approved by ${by}.` : "Handed back."} The coordinator merges${pr ? ` #${pr}` : ""}.`,
+        merged: (pr: number) => `#${pr} merged.`,
+        working: "At work.",
+      },
+    },
     kinds: { question: "Question", approval: "Plan to approve", "hand-back": "Ready to merge" } satisfies Record<
       DecisionKind,
       string
@@ -793,8 +873,6 @@ const en = {
     allHarnesses: "All harnesses",
     state: "State",
     anyState: "Any state",
-    statuses: "Status",
-    phases: "Phase",
     health: "Health",
     outcomes: {
       pending: "To decide",
@@ -808,7 +886,6 @@ const en = {
     sort: "Sort",
     sortDefault: "Default order",
     sorts: {
-      agents: { age: "Longest in flight", report: "Latest report", phase: "By phase" },
       projects: { age: "Quietest first", report: "Latest activity", phase: "By health" },
       validations: { age: "Oldest first", report: "Latest first" },
     },
@@ -836,6 +913,7 @@ const en = {
   },
   shell: {
     search: "Search",
+    searchTicket: "Search a ticket…",
     /** The pages a breadcrumb or ⌘K names. */
     nav: {
       overview: "Overview",
@@ -847,18 +925,15 @@ const en = {
     /** The menu's sections, and the phone's tab bar: a word each, as short as the tab. */
     tab: {
       overview: "Overview",
+      validations: "Validations",
       activity: "Activity",
       insights: "Insights",
       organization: "Organization",
     } satisfies Record<NonNullable<Section>, string>,
-    harnessHeading: "Harness",
     local: (name: string) => `${name} · local`,
-    live: (ms: number) => `Live · ${elapsed(ms, "d")} ago`,
+    live: (ms: number) => `Live · read ${elapsed(ms, "d")} ago`,
     liveWaiting: "Live",
     offline: "Offline · retrying",
-    back: "back",
-    navigate: "navigate",
-    open: "open",
     organizationMenu: "Organization and settings",
     organizations: "Organizations",
     settings: "Settings",
@@ -896,7 +971,6 @@ const en = {
       coordinator: (name: string) => `Open the coordinator session of ${name}`,
       copyBranch: (id: string) => `Copy the branch of ${id}`,
       language: (name: string) => `Switch to ${name}`,
-      density: (name: string) => `Switch the density to ${name}`,
       goTo: (section: string) => `Go to ${section}`,
       hints: { move: "move", open: "open", run: "run", back: "back", close: "close" },
       newTab: "opens in a new tab",
@@ -936,8 +1010,6 @@ const en = {
       merged: "Merged",
     } satisfies Record<AgentPhase, string>,
     steps: ["Plan", "Approval", "Implementation", "PR", "CI", "Merge"],
-    density: { label: "Density", compact: "Compact", airy: "Airy" } satisfies Record<Density | "label", string>,
-    all: "All",
     coordinator: "Coordinator",
     coordinators: "Coordinators",
     onePerProject: "one per project",
@@ -1059,10 +1131,10 @@ const en = {
       sample: "A sample page",
       uses: {
         PageHeader:
-          "The bar on top: breadcrumbs on the left, key hints on the right. The shell draws it; a page adds its buttons with HeaderActions and never a title of its own.",
+          "The bar on top: breadcrumbs on the left, the page's buttons on the right. The shell draws it; a page adds its buttons with HeaderActions and never a title of its own.",
         StatusHeader:
-          "Where things stand, first: one sentence in display type, its quieter second half, a line, and Stat chips that open what they count. Rendered with the page, under the horizon.",
-        Toolbar: "Tabs and filters, the density toggle in end. Left out when a page has none, never an empty row.",
+          "Where things stand, first: one sentence in display type, its quieter second half, a line, and Stat chips that open what they count. Rendered with the page.",
+        Toolbar: "Tabs and filters, their companions in end. Left out when a page has none, never an empty row.",
         Section:
           "A band: an icon or status dot, a label, a count, a side. Rows go inside; anything else in a SectionBody.",
         Row: "36 px compact, 48 px airy, a hairline. With href it opens a page and joins j/k; ids and times in Geist Mono (RowId, RowTime).",
@@ -1089,43 +1161,6 @@ const en = {
     mergedMany: (n: number) => `${n} tickets merged`,
     coordinator: { active: "active", idle: "idle", unknown: "not seen" } satisfies Record<CoordinatorState, string>,
     criticalPath: "On the critical path",
-    timelineScroll: "Live fleet timeline, the last 24 hours. Arrow keys scroll it.",
-    showTable: "Show as table",
-    showChart: "Show as chart",
-    table: {
-      caption: "Sessions in flight, with their phases since the claim",
-      project: "Project",
-      session: "Session",
-      status: "Status",
-      phases: "Phases",
-      lastReport: "Last report",
-      none: "No session in flight.",
-      phaseAt: (phase: string, clock: string, length: string) => `${phase} from ${clock} (${length})`,
-    },
-  },
-  timeline: {
-    title: "Live fleet",
-    session: "Session",
-    now: "now",
-    backToNow: "Back to now: the last 3 hours",
-    coordinator: (harness: string | null) => (harness ? `Coordinator · ${harness}` : "Coordinator"),
-    from: (clock: string, length: string) => `from ${clock} · ${length}`,
-    report: (clock: string) => `Report at ${clock}`,
-    prOpened: (n: number, clock: string) => `PR #${n} opened at ${clock}`,
-    silence: (length: string) => `No report for ${length}`,
-    inboxRead: (clock: string) => `Inbox read at ${clock}`,
-    inboxWatch: (count: number, from: string, to: string) => `Watching its inbox, ${from} → ${to} · ${count} reads`,
-    idle: (length: string) => `Not reading its inbox for ${length}`,
-    legend: {
-      past: "earlier phases",
-      current: "current phase",
-      ship: "the agent, now",
-      pr: "PR opened",
-      report: "report",
-      silence: "silence",
-      inbox: "coordinator watching its inbox",
-      idle: "coordinator idle",
-    },
   },
   /** Every event of the fleet (THE-894). */
   activity: {
@@ -1748,31 +1783,109 @@ const fr: Strings = {
   },
   overview: {
     locale: "fr-FR",
-    line: {
-      coordinators: (n) => `${n} coordinateur${n > 1 ? "s" : ""}`,
-      running: (n) => `${n} session${n > 1 ? "s" : ""} en cours`,
-      toValidate: (n) => `${n} à valider`,
-      nothing: "rien à valider",
-    },
-    toValidate: (n) => `${n} à valider`,
-    toValidateBadge: "À valider",
-    nothingRunning: "Rien en cours.",
-    columns: {
-      plan: "Plan",
-      implementing: "Implementing",
-      review: "Code Review",
-      ci: "CI",
-      merged: "Merged",
-    },
-    badges: {
-      validate: "À valider",
+    groups: {
       blocked: "Bloqué",
-      silent: "Silencieux",
-      approval: "Plan à approuver",
+      you: "Attend ta décision",
+      running: "En cours",
       ready: "Prêt à merger",
+      merged: "Mergé aujourd'hui",
     },
-    mergedAgo: "Mergé",
-    mergedOpens: (n) => `ouvre la pull request #${n} sur GitHub dans un nouvel onglet`,
+    groupHints: {
+      blocked: "ne peut pas avancer sans intervention",
+      you: "plan, merge ou question pour toi",
+      running: "avance seul",
+      ready: "approuvé, le coordinateur merge",
+      merged: "",
+    },
+    headline: (blocked, you) => {
+      const waits =
+        you === 0 ? "rien n'attend ta décision" : you === 1 ? "1 attend ta décision" : `${you} attendent ta décision`;
+      if (blocked) return `${blocked === 1 ? "1 agent bloqué" : `${blocked} agents bloqués`}, ${waits}.`;
+      return you ? `Rien de bloqué. ${waits.charAt(0).toUpperCase()}${waits.slice(1)}.` : "Tout avance, rien n'attend.";
+    },
+    subline: (n) =>
+      [
+        `${n.live} agent${n.live > 1 ? "s" : ""} en cours sur ${n.projects} projet${n.projects > 1 ? "s" : ""}`,
+        `${n.running} avance${n.running > 1 ? "nt" : ""} seul${n.running > 1 ? "s" : ""}`,
+        `${n.ready} prêt${n.ready > 1 ? "s" : ""} à merger`,
+        `${n.merged} mergé${n.merged > 1 ? "s" : ""} aujourd'hui`,
+      ].join(" · "),
+    card: {
+      blocked: (n) => `${n} bloqué(s)`,
+      you: (n) => `${n} pour toi`,
+      running: (n) => `${n} en cours`,
+      progress: (done, total) => `${done} tickets terminés sur ${total}`,
+    },
+    coordinator: {
+      active: "coord. actif",
+      idle: (d) => `coord. inactif ${d}`,
+      unknown: "coord. jamais vu",
+    },
+    coordinatorHint: {
+      active: "coordinateur actif",
+      idle: (d) => `coordinateur inactif ${d}`,
+      unknown: "coordinateur jamais vu",
+    },
+    filterLabel: "Projet",
+    all: "Tous",
+    groupBy: "Grouper par",
+    byState: "État",
+    byProject: "Projet",
+    views: { list: "Liste", preview: "Liste + aperçu", label: "Vue" },
+    noMatch: "Aucun agent ne correspond.",
+    clear: "Effacer les filtres",
+    nothingRunning: "Aucun agent en cours, rien de mergé aujourd'hui.",
+    toValidateBadge: "À valider",
+    reasons: {
+      question: (text) => `Question sans réponse : ${text}`,
+      ci: (pr) => `CI rouge sur #${pr}`,
+      conflict: (pr) => `Conflit avec main sur #${pr}`,
+      silent: (d) => `Silencieux depuis ${d}`,
+      blocked: (text) => (text ? `Bloqué : ${text}` : "Bloqué"),
+      plan: "Plan à approuver",
+      merge: (pr, ci) => ["Merge à approuver", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
+      ownerQuestion: (text) => `Question : ${text}`,
+      awaitingValidation: "Attend ta validation",
+      ready: (by, pr, ci) =>
+        [by ? `Approuvé par ${by}` : "Rendu", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
+      merged: (pr) => `#${pr} mergée`,
+      working: "Au travail",
+    },
+    ci: { success: "verte", failure: "rouge", pending: "en cours", none: "" },
+    steps: ["Plan", "Approbation", "Code", "Revue & CI", "Prêt", "Mergé"],
+    stepLabel: (step) => `Étape : ${step}`,
+    lastReport: "Dernier rapport",
+    preview: {
+      step: "Étape",
+      reports: "Derniers rapports",
+      noReports: "Pas encore de rapport.",
+      open: "Ouvrir la page de l'agent →",
+      pr: "Pull request",
+      ci: "CI",
+      files: "Fichiers",
+      lastReport: "Dernier rapport",
+      notYet: "Pas encore",
+      ciStates: { success: "CI verte", failure: "CI rouge", pending: "CI en cours", none: "Pas encore de CI" },
+      ago: (d) => `il y a ${d}`,
+      openPr: (n) => `Ouvrir #${n}`,
+      openValidation: "Ouvrir la validation",
+      seeShots: "Voir les captures",
+      action: {
+        question: (ago) => `Le worker a posé une question au coordinateur ${ago}. Pas encore de réponse.`,
+        ci: (pr, checks) => `La CI échoue sur #${pr}${checks ? ` (${checks})` : ""}.`,
+        conflict: (pr) => `#${pr} est en conflit avec main.`,
+        silent: (d) => `Aucun rapport depuis ${d}.`,
+        lastMessage: (m) => `Dernier message : ${m}`,
+        blocked: "Le worker est bloqué.",
+        plan: "Plan posté, à approuver avant que le code commence.",
+        merge: (pr) => (pr ? `#${pr} attend ton approbation pour merger.` : "Un merge attend ton approbation."),
+        awaitingValidation: "Le worker attend ta validation.",
+        ready: (by, pr) =>
+          `${by ? `Merge approuvé par ${by}.` : "Rendu au coordinateur."} Le coordinateur merge${pr ? ` #${pr}` : ""}.`,
+        merged: (pr) => `#${pr} mergée.`,
+        working: "Au travail.",
+      },
+    },
     kinds: { question: "Question", approval: "Plan à approuver", "hand-back": "Prêt à fusionner" },
     approvePlan: "Approuver le plan",
     requestChanges: "Demander des changements",
@@ -1808,7 +1921,7 @@ const fr: Strings = {
     pr: (n) => `PR #${n}`,
     files: (n) => (n === 1 ? "1 fichier" : `${n} fichiers`),
     ci: { success: "CI verte", failure: "CI rouge", pending: "CI en cours", none: "sans checks" },
-    approveMerge: "Approuver la fusion",
+    approveMerge: "Approuver le merge",
     approve: "Approuver",
     requestChanges: "Demander des changements",
     changesLabel: (ticket) => `Les changements dont ${ticket} a besoin`,
@@ -1966,8 +2079,6 @@ const fr: Strings = {
     allHarnesses: "Tous les harness",
     state: "État",
     anyState: "Tous les états",
-    statuses: "Statut",
-    phases: "Phase",
     health: "Santé",
     outcomes: {
       pending: "À décider",
@@ -1981,7 +2092,6 @@ const fr: Strings = {
     sort: "Tri",
     sortDefault: "Ordre par défaut",
     sorts: {
-      agents: { age: "Plus longtemps en vol", report: "Dernier rapport", phase: "Par phase" },
       projects: { age: "Plus calmes d'abord", report: "Activité récente", phase: "Par santé" },
       validations: { age: "Plus anciennes d'abord", report: "Plus récentes d'abord" },
     },
@@ -2009,27 +2119,25 @@ const fr: Strings = {
   },
   shell: {
     search: "Rechercher",
+    searchTicket: "Rechercher un ticket…",
     nav: {
       overview: "Vue d'ensemble",
       validations: "Validations",
       projects: "Projets",
-      insights: "Tendances",
+      insights: "Insights",
       activity: "Activité",
     },
     tab: {
       overview: "Accueil",
+      validations: "Validations",
       activity: "Activité",
-      insights: "Tendances",
+      insights: "Insights",
       organization: "Organisation",
     },
-    harnessHeading: "Harness",
     local: (name) => `${name} · local`,
-    live: (ms) => `En direct · il y a ${elapsed(ms, "j")}`,
+    live: (ms) => `En direct · lu il y a ${elapsed(ms, "j")}`,
     liveWaiting: "En direct",
     offline: "Hors ligne · nouvel essai",
-    back: "retour",
-    navigate: "naviguer",
-    open: "ouvrir",
     organizationMenu: "Organisation et réglages",
     organizations: "Organisations",
     settings: "Réglages",
@@ -2067,7 +2175,6 @@ const fr: Strings = {
       coordinator: (name) => `Ouvrir la session du coordinateur de ${name}`,
       copyBranch: (id) => `Copier la branche de ${id}`,
       language: (name) => `Passer en ${name}`,
-      density: (name) => `Passer en densité ${name.toLowerCase()}`,
       goTo: (section) => `Aller à ${section}`,
       hints: { move: "choisir", open: "ouvrir", run: "lancer", back: "retour", close: "fermer" },
       newTab: "s'ouvre dans un nouvel onglet",
@@ -2107,8 +2214,6 @@ const fr: Strings = {
       merged: "Fusionné",
     },
     steps: ["Plan", "Approbation", "Implémentation", "PR", "CI", "Fusion"],
-    density: { label: "Densité", compact: "Compact", airy: "Aéré" },
-    all: "Tous",
     coordinator: "Coordinateur",
     coordinators: "Coordinateurs",
     onePerProject: "un par projet",
@@ -2227,8 +2332,9 @@ const fr: Strings = {
         PageHeader:
           "La barre du haut : le fil d'Ariane à gauche, les raccourcis à droite. Le shell la dessine ; une page y ajoute ses boutons avec HeaderActions, jamais un titre à elle.",
         StatusHeader:
-          "Où en sont les choses, d'abord : une phrase en grand, sa seconde moitié plus discrète, une ligne, et des Stat qui ouvrent ce qu'elles comptent. Rendue avec la page, sous l'horizon.",
-        Toolbar: "Onglets et filtres, la densité dans end. Absente quand une page n'en a pas, jamais une ligne vide.",
+          "Où en sont les choses, d'abord : une phrase en grand, sa seconde moitié plus discrète, une ligne, et des Stat qui ouvrent ce qu'elles comptent. Rendue avec la page.",
+        Toolbar:
+          "Onglets et filtres, leurs compléments dans end. Absente quand une page n'en a pas, jamais une ligne vide.",
         Section:
           "Une bande : une icône ou un point d'état, un libellé, un compte, un côté. Les lignes dedans ; le reste dans un SectionBody.",
         Row: "36 px en compact, 48 px en aéré, un filet. Avec href elle ouvre une page et suit j/k ; ids et heures en Geist Mono (RowId, RowTime).",
@@ -2253,43 +2359,6 @@ const fr: Strings = {
     mergedMany: (n) => `${n} tickets fusionnés`,
     coordinator: { active: "actif", idle: "inactif", unknown: "jamais vu" },
     criticalPath: "Sur le chemin critique",
-    timelineScroll: "Chronologie de la flotte en direct, les dernières 24 heures. Les flèches la font défiler.",
-    showTable: "Afficher en tableau",
-    showChart: "Afficher en graphique",
-    table: {
-      caption: "Sessions en cours, avec leurs phases depuis la prise du ticket",
-      project: "Projet",
-      session: "Session",
-      status: "État",
-      phases: "Phases",
-      lastReport: "Dernier rapport",
-      none: "Aucune session en cours.",
-      phaseAt: (phase, clock, length) => `${phase} depuis ${clock} (${length})`,
-    },
-  },
-  timeline: {
-    title: "Flotte en direct",
-    session: "Session",
-    now: "maintenant",
-    backToNow: "Revenir à maintenant : les 3 dernières heures",
-    coordinator: (harness) => (harness ? `Coordinateur · ${harness}` : "Coordinateur"),
-    from: (clock, length) => `depuis ${clock} · ${length}`,
-    report: (clock) => `Rapport à ${clock}`,
-    prOpened: (n, clock) => `PR #${n} ouverte à ${clock}`,
-    silence: (length) => `Aucun rapport pendant ${length}`,
-    inboxRead: (clock) => `Inbox lue à ${clock}`,
-    inboxWatch: (count, from, to) => `Surveille son inbox, ${from} → ${to} · ${count} lectures`,
-    idle: (length) => `N'a pas lu son inbox pendant ${length}`,
-    legend: {
-      past: "phases précédentes",
-      current: "phase en cours",
-      ship: "l'agent, maintenant",
-      pr: "PR ouverte",
-      report: "rapport",
-      silence: "silence",
-      inbox: "le coordinateur surveille son inbox",
-      idle: "coordinateur inactif",
-    },
   },
   activity: {
     lead: (n) => `${n} événement${n > 1 ? "s" : ""} depuis ta dernière visite.`,

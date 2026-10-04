@@ -77,7 +77,7 @@ function readRecent(): string[] {
 type Step = Extract<PaletteAction, { kind: "launch" | "answer" }>;
 
 export function Palette({ onClose }: { onClose: () => void }) {
-  const { t, lang, density, setLanguage, setDensity, account } = useShell();
+  const { t, lang, setLanguage, account } = useShell();
   const { overview, failed } = useFleet();
   const router = useRouter();
   const { index, loading } = useSearchIndex(account?.organization.id ?? "");
@@ -96,9 +96,8 @@ export function Palette({ onClose }: { onClose: () => void }) {
   useEffect(() => setRecent(readRecent()), []);
 
   const items = useMemo(
-    () =>
-      searchItems(overview, index ?? EMPTY_INDEX, { t, lang, density, organization: account !== null, live, views }),
-    [overview, index, t, lang, density, account, live, views],
+    () => searchItems(overview, index ?? EMPTY_INDEX, { t, lang, organization: account !== null, live, views }),
+    [overview, index, t, lang, account, live, views],
   );
   const groups = useMemo(() => search(items, query, { recent }), [items, query, recent]);
   const flat = useMemo(() => flatten(groups), [groups]);
@@ -157,10 +156,6 @@ export function Palette({ onClose }: { onClose: () => void }) {
     if (a?.kind === "language") {
       onClose();
       return setLanguage(a.to);
-    }
-    if (a?.kind === "density") {
-      onClose();
-      return setDensity(a.to);
     }
     if (!item.href) return;
     onClose();

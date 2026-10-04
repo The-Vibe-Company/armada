@@ -1,13 +1,13 @@
 "use client";
 
 // What every page of the shell reads (THE-866): the overview the shell polls,
-// the clock, the language, the density and who is signed in. The shell polls
+// the clock, the language, the viewer's time zone and who is signed in. The shell polls
 // the server for a new overview: every 5 s while work is in flight, every 30 s
 // when the fleet is quiet, never while the tab is hidden (THE-853: nothing
 // runs when nobody looks). Each poll names the overview it holds, and the
 // server answers 304 while nothing changed. Pages render from this context,
 // so moving between them never waits for the server.
-import type { FleetOverview, FleetTimeline } from "@armada/core/read";
+import type { FleetOverview } from "@armada/core/read";
 import { useRouter } from "next/navigation";
 import {
   createContext,
@@ -20,7 +20,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { DENSITY_COOKIE, type Density } from "@/lib/fleet-view";
 import { LANGUAGE_COOKIE, type Language, STRINGS, type Strings } from "@/lib/i18n";
 
 /** Polls while a worker is in flight, a request waits for the coordinator or a project is being read. */
@@ -52,16 +51,14 @@ export interface Fleet {
   /** Bumped by every answered poll, 304 included. */
   version: number;
   refresh: () => void;
-  /** The live timeline's history when it is given (ShowcaseProvider); the timeline reads it from the server otherwise. */
-  timeline?: FleetTimeline;
 }
 
 export interface Shell {
   t: Strings;
   lang: Language;
   setLanguage: (lang: Language) => void;
-  density: Density;
-  setDensity: (density: Density) => void;
+  /** The viewer's time zone (the `armada-tz` cookie on the server, the browser's own once it runs): "today" is its day. */
+  zone: string;
   /** With accounts; null under the shared-password gate. */
   account: Account | null;
   /** The shared-password gate's log out. */
@@ -196,7 +193,7 @@ export function FleetProvider({
   initial,
   initialTag = null,
   initialLanguage,
-  initialDensity,
+  zone: initialZone,
   account,
   canLogOut,
   initialAuthor,
@@ -205,7 +202,7 @@ export function FleetProvider({
   initial: FleetOverview;
   initialTag?: string | null;
   initialLanguage: Language;
-  initialDensity: Density;
+  zone: string;
   account: Account | null;
   canLogOut: boolean;
   initialAuthor: string;
@@ -215,8 +212,13 @@ export function FleetProvider({
   const fleet = useLiveOverview(initial, initialTag);
   const now = useClock(initial.generatedAt);
   const [lang, setLang] = useState(initialLanguage);
-  const [density, setDensityState] = useState(initialDensity);
   const [author, setAuthor] = useState(initialAuthor);
+  // The cookie's zone renders on the server; the browser's own takes over once it runs (a first visit has no cookie).
+  const [zone, setZone] = useState(initialZone);
+  useEffect(() => {
+    const own = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (own) setZone(own);
+  }, []);
 
   const shell = useMemo<Shell>(
     () => ({
@@ -230,17 +232,13 @@ export function FleetProvider({
         // Server-rendered pages (the organization's) follow.
         router.refresh();
       },
-      density,
-      setDensity: (next) => {
-        setDensityState(next);
-        remember(DENSITY_COOKIE, next);
-      },
+      zone,
       account,
       canLogOut,
       author,
       setAuthor,
     }),
-    [lang, density, account, canLogOut, author, router],
+    [lang, zone, account, canLogOut, author, router],
   );
 
   return (
@@ -273,8 +271,7 @@ export function ShowcaseProvider({
       t: STRINGS.en,
       lang: "en",
       setLanguage: () => {},
-      density: "compact",
-      setDensity: () => {},
+      zone: "UTC",
       account,
       canLogOut: false,
       author: account?.name ?? "",
@@ -290,7 +287,6 @@ export function ShowcaseProvider({
       pending: false,
       version: 0,
       refresh: () => {},
-      timeline: overview.timeline ?? { rows: [], coordinators: [] },
     }),
     [overview, now],
   );
@@ -310,7 +306,7 @@ function required<T>(value: T | null, name: string): T {
 
 /** The overview the shell polls, and its state. */
 export const useFleet = () => required(useContext(FleetContext), "useFleet");
-/** The language, density and viewer. */
+/** The language, time zone and viewer. */
 export const useShell = () => required(useContext(ShellContext), "useShell");
 /** The time, in ms, ticking every second. */
 export const useNow = () => useContext(NowContext);

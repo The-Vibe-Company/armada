@@ -10,7 +10,7 @@
 import type { Attachment, CiState, OwnerValidation } from "@armada/core/read";
 import Image from "next/image";
 import Link from "next/link";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { decideValidation } from "@/app/actions";
 import { fileShape, paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
@@ -412,7 +412,21 @@ function LargeGallery({ t, items }: { t: Strings; items: Attachment[] }) {
  * text, or the choices the validation was sent with. Shown as sent at once;
  * back with the reason when refused.
  */
-function Decide({ ctx, v, projectName }: { ctx: ActionContext; v: OwnerValidation; projectName: string }) {
+export function Decide({
+  ctx,
+  v,
+  projectName,
+  changes = true,
+  children,
+}: {
+  ctx: ActionContext;
+  v: OwnerValidation;
+  projectName: string;
+  /** Offer "Request changes" here; the overview's pane leaves it to the validation's page. */
+  changes?: boolean;
+  /** More buttons, after the decision's (the overview's pane: the validation's page). */
+  children?: ReactNode;
+}) {
   const { t, now } = ctx;
   const s = t.validations;
   const [changing, setChanging] = useState(false);
@@ -521,18 +535,21 @@ function Decide({ ctx, v, projectName }: { ctx: ActionContext; v: OwnerValidatio
             <button type="submit" name="action" value="approve" className="btn is-primary" disabled={req.busy}>
               {v.kind === "merge" ? s.approveMerge : s.approve}
             </button>
-            <button
-              type="button"
-              className="btn is-soft"
-              onClick={() => {
-                req.clear();
-                setChanging(true);
-              }}
-            >
-              {s.requestChanges}
-            </button>
+            {changes && (
+              <button
+                type="button"
+                className="btn is-soft"
+                onClick={() => {
+                  req.clear();
+                  setChanging(true);
+                }}
+              >
+                {s.requestChanges}
+              </button>
+            )}
           </>
         )}
+        {children}
       </div>
     </form>
   );

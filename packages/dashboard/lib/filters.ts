@@ -10,17 +10,9 @@
 // `<FilterBar list="…" />` in its toolbar. A list that reads its own address
 // (THE-894's /activity, a server-rendered GET form) gives its canonical query
 // in `OWN_ADDRESS` instead: its views are saved and pinned the same way.
-import {
-  type AgentPhase,
-  type FleetOverview,
-  type FleetRow,
-  LABEL_PHASES,
-  type OwnerValidation,
-  type ProjectHealth,
-  type ProjectOverview,
-} from "@armada/core/read";
+import type { FleetOverview, FleetRow, OwnerValidation, ProjectHealth, ProjectOverview } from "@armada/core/read";
 import { activityHref, activityQuery } from "./activity-view";
-import { AGENT_STATUSES, agentState, decisionsOf, HARNESSES, type Harness, harnessOf } from "./fleet-view";
+import { decisionsOf, HARNESSES, type Harness, harnessOf } from "./fleet-view";
 import { pendingValidations } from "./overview-view";
 import { coordinatorHarness, lastActivity } from "./project-view";
 
@@ -59,22 +51,13 @@ const HEALTHS = ["blocked", "watch", "on-track"] as const satisfies readonly Pro
 
 interface ListRule {
   path: string;
-  /** The address's name for the project filter: the overview's groups are coordinators (THE-916). */
-  projectParam?: string;
   fields: readonly FilterField[];
   states: readonly string[];
   sorts: readonly SortKey[];
 }
 
+// The overview (THE-1020) has no list of its own here: its view is lib/coordinator-view.ts's.
 export const LISTS = {
-  // The overview (THE-916): the sessions in flight, grouped by coordinator.
-  agents: {
-    path: "/",
-    projectParam: "coordinator",
-    fields: ["project", "harness", "state", "profile", "mine", "q", "sort"],
-    states: [...AGENT_STATUSES, ...LABEL_PHASES],
-    sorts: SORTS,
-  },
   projects: {
     path: "/projects",
     fields: ["project", "harness", "state", "profile", "mine", "q", "sort"],
@@ -129,10 +112,8 @@ export function parseFilters(list: FilterList, params: Params): ListFilters {
   const harness = params.get("harness");
   const state = params.get("state");
   const sort = params.get("sort");
-  // `?project=` still reads on the overview: the links and views from before THE-916.
-  const param = rule.projectParam ?? "project";
   return {
-    project: has("project") ? (token(param) ?? (param === "project" ? null : token("project"))) : null,
+    project: has("project") ? token("project") : null,
     harness: has("harness") && (HARNESSES as readonly string[]).includes(harness ?? "") ? (harness as Harness) : null,
     state: has("state") && state && rule.states.includes(state) ? state : null,
     profile: has("profile") ? token("profile", PROFILE) : null,
@@ -143,10 +124,9 @@ export function parseFilters(list: FilterList, params: Params): ListFilters {
 }
 
 /** The filters as a query string, without "?": one order, defaults left out, so equal views have equal URLs. */
-export function filterQuery(list: FilterList, f: ListFilters): string {
+export function filterQuery(_list: FilterList, f: ListFilters): string {
   const out = new URLSearchParams();
-  const rule: ListRule = LISTS[list];
-  if (f.project) out.set(rule.projectParam ?? "project", f.project);
+  if (f.project) out.set("project", f.project);
   if (f.harness) out.set("harness", f.harness);
   if (f.state) out.set("state", f.state);
   if (f.profile) out.set("profile", f.profile);
@@ -168,7 +148,7 @@ export function canonicalQuery(list: FilterList, query: string): string {
   return own ? own(q) : filterQuery(list, parseFilters(list, new URLSearchParams(q)));
 }
 
-export const hasFilters = (f: ListFilters): boolean => filterQuery("agents", f) !== "";
+export const hasFilters = (f: ListFilters): boolean => filterQuery("projects", f) !== "";
 
 /** Every word of the query in the text, whatever the case. */
 function holds(text: string, q: string): boolean {
@@ -185,48 +165,6 @@ const byTime = (a: string | null | undefined, b: string | null | undefined) => (
 // ------------------------------------------------------------------- agents
 
 export const profileOf = (r: Pick<FleetRow, "profile" | "session">) => r.session?.profile ?? r.profile ?? null;
-
-/** From plan to merge, as the pipeline draws it. */
-const PHASE_ORDER: readonly AgentPhase[] = [
-  "planning",
-  "awaiting-approval",
-  "implementing",
-  "awaiting-validation",
-  "shipping",
-  "blocked",
-  "ready-to-merge",
-  "merged",
-  "released",
-];
-
-/**
- * The sessions a view keeps, in its order: by age the longest in flight
- * first, by last report the freshest first, by phase from plan to merge.
- */
-export function filterAgents(
-  rows: FleetRow[],
-  f: ListFilters,
-  names: Map<string, string> = new Map(),
-  /** What "needs me" keeps; the overview's (THE-916) is what the owner has to validate. */
-  needsMe: (r: FleetRow) => boolean = (r) => agentState(r).status === "waiting",
-): FleetRow[] {
-  const kept = rows.filter((r) => {
-    const s = agentState(r);
-    if (f.project && r.project !== f.project) return false;
-    if (f.harness && harnessOf(r.runtime) !== f.harness) return false;
-    if (f.state && s.status !== f.state && r.phase !== f.state) return false;
-    if (f.profile && profileOf(r) !== f.profile) return false;
-    if (f.mine && !needsMe(r)) return false;
-    const text = [r.id, r.title, names.get(r.project) ?? r.project, r.runtime, profileOf(r), r.session?.branch];
-    return holds(text.filter(Boolean).join(" "), f.q);
-  });
-  if (f.sort === "age") return kept.sort((a, b) => byTime(a.since, b.since));
-  if (f.sort === "report")
-    return kept.sort((a, b) => byTime(b.lastReport ?? b.lastUpdate, a.lastReport ?? a.lastUpdate));
-  if (f.sort === "phase")
-    return kept.sort((a, b) => PHASE_ORDER.indexOf(a.phase) - PHASE_ORDER.indexOf(b.phase) || byTime(a.since, b.since));
-  return kept;
-}
 
 // ------------------------------------------------------------------ projects
 

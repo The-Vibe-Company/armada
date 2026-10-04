@@ -18,7 +18,6 @@ import { type Browser, type BrowserContext, chromium, type Page } from "playwrig
 import { createAuth, type EmailMessage } from "../lib/accounts";
 import { accountsModeOf } from "../lib/accounts-settings";
 import { openDatabase } from "../lib/db";
-import { DENSITIES, DENSITY_COOKIE } from "../lib/fleet-view";
 import { LANGUAGE_COOKIE, LANGUAGES } from "../lib/i18n";
 
 const SESSION_FILE = resolve(import.meta.dir, "../.demo/a11y.json");
@@ -102,17 +101,13 @@ const sessionCookies = (list: { name: string; value: string }[]) =>
 async function contextFor(
   browser: Browser,
   who: { name: string; value: string }[] | null,
-  options: { lang?: string; density?: string; width?: number; reduced?: boolean } = {},
+  options: { lang?: string; width?: number; reduced?: boolean } = {},
 ): Promise<BrowserContext> {
   const context = await browser.newContext({
     viewport: { width: options.width ?? 1440, height: 900 },
     reducedMotion: options.reduced ? "reduce" : "no-preference",
   });
-  await context.addCookies([
-    cookie(LANGUAGE_COOKIE, options.lang ?? "en"),
-    cookie(DENSITY_COOKIE, options.density ?? "compact"),
-    ...(who ? sessionCookies(who) : []),
-  ]);
+  await context.addCookies([cookie(LANGUAGE_COOKIE, options.lang ?? "en"), ...(who ? sessionCookies(who) : [])]);
   return context;
 }
 
@@ -167,14 +162,14 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
     throw new Error("the demo world has no agent, project or validation");
   const fleetPages = [
     "/",
-    // The overview on one coordinator (THE-916).
+    // The overview on one project, grouped by project, and with its preview pane (THE-1020).
     `/?coordinator=${project}`,
+    "/?group=project",
+    `/?view=preview&ticket=${open.ticket}`,
     `/agents/${agent}`,
     `/agents/${agent}?tab=files`,
     // A session to validate: its images large, first (THE-916).
     `/agents/${open.ticket}`,
-    // Filters in the address (THE-895): a list as a shared link opens it.
-    "/?state=running&sort=report",
     "/projects",
     "/projects?sort=phase",
     `/projects/${project}`,
@@ -207,30 +202,29 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
 const cookiesFor = (seeded: Seeded | null, who: Target["who"]) => (who === "none" || !seeded ? null : seeded[who]);
 
 async function axe(browser: Browser, seeded: Seeded | null, list: Target[]) {
-  console.log("axe: every page, in each language and density");
+  console.log("axe: every page, in each language");
   for (const lang of LANGUAGES)
-    for (const density of DENSITIES)
-      for (const who of ["owner", "member", "none"] as const) {
-        const mine = list.filter((t) => t.who === who);
-        if (!mine.length) continue;
-        const context = await contextFor(browser, cookiesFor(seeded, who), { lang, density });
-        const page = await context.newPage();
-        for (const t of mine) {
-          await open(page, t.path);
-          const result = await new AxeBuilder({ page }).withTags(TAGS).analyze();
-          const where = `${t.path} (${lang}, ${density})`;
-          if (!result.violations.length) console.log(`  ✓ ${where}`);
-          for (const v of result.violations)
-            for (const node of v.nodes)
-              fail(
-                `${where}: ${v.id} (${v.impact}) ${node.target.join(" ")}: ${node.failureSummary?.split("\n")[1]?.trim() ?? v.help}`,
-              );
-        }
-        await context.close();
+    for (const who of ["owner", "member", "none"] as const) {
+      const mine = list.filter((t) => t.who === who);
+      if (!mine.length) continue;
+      const context = await contextFor(browser, cookiesFor(seeded, who), { lang });
+      const page = await context.newPage();
+      for (const t of mine) {
+        await open(page, t.path);
+        const result = await new AxeBuilder({ page }).withTags(TAGS).analyze();
+        const where = `${t.path} (${lang})`;
+        if (!result.violations.length) console.log(`  ✓ ${where}`);
+        for (const v of result.violations)
+          for (const node of v.nodes)
+            fail(
+              `${where}: ${v.id} (${v.impact}) ${node.target.join(" ")}: ${node.failureSummary?.split("\n")[1]?.trim() ?? v.help}`,
+            );
       }
+      await context.close();
+    }
 }
 
-/** 320 px wide (and so 200% zoom of 640 px): no sideways scroll but the timeline's own; no motion when reduced. */
+/** 320 px wide (and so 200% zoom of 640 px): no sideways scroll; no motion when reduced. */
 async function reflow(browser: Browser, seeded: Seeded | null, list: Target[]) {
   console.log("320 px, reduced motion");
   for (const who of ["owner", "member", "none"] as const) {
@@ -335,35 +329,37 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
   });
 
   await open(page, "/");
-  await check("a list's filters live in its address, and Back brings the view before back", async () => {
-    const state = page.getByRole("combobox", { name: "State" });
-    await state.selectOption("running");
-    await page.waitForURL((url) => url.searchParams.get("state") === "running", { timeout: 5_000 });
-    await page.getByRole("combobox", { name: "Sort" }).selectOption("report");
-    await page.waitForURL((url) => url.searchParams.get("sort") === "report", { timeout: 5_000 });
+  await check("the overview's view lives in its address, and Back brings the view before back", async () => {
+    await page.getByRole("link", { name: "Project", exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get("group") === "project", { timeout: 5_000 });
+    await page.getByRole("link", { name: "List + preview" }).click();
+    await page.waitForURL((url) => url.searchParams.get("view") === "preview", { timeout: 5_000 });
+    const pane = await page
+      .locator(".ov-pane .ov-pv")
+      .waitFor({ timeout: 5_000 })
+      .then(() => true);
     await page.goBack();
-    await page.waitForURL((url) => url.searchParams.get("sort") === null, { timeout: 5_000 });
-    const kept =
-      new URL(page.url()).searchParams.get("state") === "running" && (await state.inputValue()) === "running";
+    await page.waitForURL((url) => url.searchParams.get("view") === null, { timeout: 5_000 });
+    const kept = new URL(page.url()).searchParams.get("group") === "project";
     await page.goBack();
     await page.waitForURL((url) => !url.search, { timeout: 5_000 });
-    return kept && (await state.inputValue()) === "";
+    return pane && kept;
   });
 
   if (seeded) {
-    await open(page, "/?state=running");
+    await open(page, "/projects?state=blocked");
     await check("a saved view is found with ⌘K, opens its filters, and goes on Remove", async () => {
       await page.getByRole("button", { name: "Save view" }).click();
-      await page.getByRole("textbox", { name: "View name" }).fill("Running now");
+      await page.getByRole("textbox", { name: "View name" }).fill("Blocked projects");
       await page.keyboard.press("Enter");
-      const removal = page.getByRole("button", { name: "Remove the view Running now" });
+      const removal = page.getByRole("button", { name: "Remove the view Blocked projects" });
       await removal.waitFor();
       await open(page, "/");
       await page.keyboard.press("ControlOrMeta+k");
       await page.locator(".sh-palette input").waitFor();
-      await page.keyboard.type("Running now");
+      await page.keyboard.type("Blocked projects");
       await page.keyboard.press("Enter");
-      await page.waitForURL((url) => url.searchParams.get("state") === "running", { timeout: 5_000 });
+      await page.waitForURL((url) => url.searchParams.get("state") === "blocked", { timeout: 5_000 });
       await removal.click();
       await page.getByRole("button", { name: "Save view" }).waitFor();
       return true;
@@ -378,22 +374,6 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
     await page.keyboard.press("ArrowRight");
     const after = await focused(page);
     return after.includes("ui-tab") && after !== before;
-  });
-
-  await open(page, "/");
-  await check("the timeline scrolls from the keyboard and reads as a table", async () => {
-    const scroller = page.locator(".tl-scroll");
-    await scroller.focus();
-    const start = await scroller.evaluate((el) => el.scrollLeft);
-    await page.keyboard.press("ArrowLeft");
-    // The browser scrolls smoothly: wait for it to move.
-    const scrolled = await page
-      .waitForFunction((from) => document.querySelector(".tl-scroll")?.scrollLeft !== from, start, { timeout: 2_000 })
-      .then(() => true)
-      .catch(() => false);
-    await page.getByRole("button", { name: "Show as table" }).click();
-    const rows = await page.locator(".tl-table tbody tr").count();
-    return scrolled && rows > 0;
   });
 
   await open(page, approve);

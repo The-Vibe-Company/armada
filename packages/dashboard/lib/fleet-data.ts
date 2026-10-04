@@ -116,7 +116,7 @@ export const inScope = (p: ProjectRef, scope: Scope | null): boolean =>
 
 /** Live events older than this are not read on each poll: they no longer change what a row shows. */
 const LIVE_WINDOW_MS = 7 * 24 * 3_600_000;
-/** The events the live timeline draws: its longest span, and an hour before it for the gap that crosses its start. */
+/** The events of the timeline's history (each row's step): its longest span, and an hour before it for the gap that crosses its start. */
 const HISTORY_MS = (TIMELINE_HOURS + 1) * 3_600_000;
 
 export interface LoadOptions {

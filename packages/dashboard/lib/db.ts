@@ -715,6 +715,11 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE fleet_sessions ADD COLUMN report_shipping_stage text CHECK (report_shipping_stage IS NULL OR (report_shipping_stage IN ('review', 'ci') AND report_phase IS NOT DISTINCT FROM 'shipping'))",
     ],
   },
+  {
+    // The overview's saved views go with its filters (THE-1020): one project chip is all it filters on.
+    version: 21,
+    statements: ["DELETE FROM saved_views WHERE list = 'agents'"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

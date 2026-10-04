@@ -43,7 +43,7 @@ export function LazyReplica() {
   return (
     <div className="lp-replica" ref={ref}>
       <div className="lp-replica-window" aria-hidden>
-        <div className="lp-replica-rail" />
+        <div className="sh-side" />
         <div className="sh-main lp-replica-main" />
       </div>
     </div>

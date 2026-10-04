@@ -1,14 +1,14 @@
 "use client";
 
-// The fleet, live (THE-887, THE-931): the dashboard's own overview
-// (components/screens/OverviewScreen.tsx: its board, a lane per coordinator,
-// THE-968; its filters, its live timeline) drawn from the demo world's overview, built
-// at build time, in a window. It plays replica-script.ts: the coordinator
-// answers a question and the worker goes back to work, a hand-back arrives,
-// then its merge waits for the owner and a pointer rests on its "To validate"
-// card; the clock runs fifteen times faster, so the timeline moves. It plays
-// only while on screen; it is inert (nothing in it can be clicked or focused)
-// and reads nothing from any server.
+// The fleet, live (THE-887, THE-931): the dashboard's own sidebar and
+// overview (components/screens/OverviewScreen.tsx, THE-1020: every session
+// grouped by state) drawn from the demo world's overview, built at build
+// time, in a window. It plays replica-script.ts: the coordinator answers a
+// question and the worker goes back to work, a hand-back arrives, then its
+// merge waits for the owner and a pointer rests on its row, now "Waiting for
+// your decision"; the clock runs fifteen times faster. It plays only while on
+// screen; it is inert (nothing in it can be clicked or focused) and reads
+// nothing from any server.
 import type { FleetOverview } from "@armada/core/read";
 // The context Next's Link reads its router from: without one, a Link prefetches nothing (see below).
 import { AppRouterContext } from "next/dist/shared/lib/app-router-context.shared-runtime";
@@ -16,10 +16,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { HeaderSlotProvider, PageHeader } from "@/components/page-client";
 import { Overview } from "@/components/screens/OverviewScreen";
 import { ShowcaseProvider } from "@/components/shell/context";
-import { filterHref, type ListFilters, parseFilters } from "@/lib/filters";
+import { Sidebar } from "@/components/shell/Sidebar";
+import { type OverviewView, overviewHref } from "@/lib/coordinator-view";
 import { paths } from "@/lib/fleet-view";
 import { prefersReducedMotion, whileVisible } from "./frames";
-import { Mark } from "./Mark";
 import { delivered, HANDED_BACK, handedBack, OWNER, opening, toValidate } from "./replica-script";
 
 /** The replica's clock runs this many times faster than the viewer's. */
@@ -27,12 +27,10 @@ const SPEED = 15;
 /** The beats, in seconds from the start of a loop. */
 const BEATS = { deliver: 2.6, handBack: 5.6, validate: 8.6, point: 9.4, loop: 15.5 };
 
-/** No filter, and none to set: the replica has no address of its own. */
-const FILTERS = {
-  filters: parseFilters("agents", new URLSearchParams()),
-  go: () => {},
-  hrefFor: (patch: Partial<ListFilters>) => filterHref("agents", { ...FILTERS.filters, ...patch }),
-};
+/** The list grouped by state, and nothing to change: the replica has no address of its own. */
+const VIEW: OverviewView = { project: null, group: "state", view: "list", ticket: null };
+const hrefFor = (patch: Partial<OverviewView>) => overviewHref({ ...VIEW, ...patch });
+const still = () => {};
 
 /** The demo world's owner, signed in: requests are signed with her name. */
 const VIEWER = {
@@ -70,14 +68,14 @@ export function Replica({ base }: { base: FleetOverview }) {
       setShown({ overview: next, now: clock(), stage });
     };
 
-    /** Where the hand-back's "To validate" badge is (else its card), in the replica's coordinates. */
+    /** Where the hand-back's reason is (else its row), in the replica's coordinates. */
     const target = () => {
-      const card = el.querySelector<HTMLElement>(`a[href="${paths.agent(HANDED_BACK)}"]`);
-      const badge = card?.querySelector<HTMLElement>(".ui-pill") ?? card;
+      const row = el.querySelector<HTMLElement>(`a[href="${paths.agent(HANDED_BACK)}"]`);
+      const badge = row?.querySelector<HTMLElement>(".ov-reason") ?? row;
       if (!badge) return null;
       const r = el.getBoundingClientRect();
       const b = badge.getBoundingClientRect();
-      return { x: b.left - r.left + b.width * 0.55, y: b.top - r.top + b.height * 0.6 };
+      return { x: b.left - r.left + Math.min(b.width, 160) * 0.6, y: b.top - r.top + b.height * 0.6 };
     };
 
     const play = () => {
@@ -118,27 +116,32 @@ export function Replica({ base }: { base: FleetOverview }) {
   return (
     <div className="lp-replica" ref={ref} data-stage={shown.stage}>
       <div className="lp-replica-window" inert>
-        <div className="lp-replica-rail" aria-hidden>
-          <Mark size={20} />
-          <span className="lp-replica-nav is-on" />
-          <span className="lp-replica-nav" />
-          <span className="lp-replica-nav" />
-          <span className="lp-replica-nav" />
-        </div>
-        <div className="sh-main lp-replica-main" data-density="compact">
-          {/* No router: the replica's links (agents, projects) never prefetch the real pages, which
-              would send a signed-out visitor's browser through the sign-in gate for nothing. */}
-          <AppRouterContext.Provider value={null}>
-            <ShowcaseProvider overview={shown.overview} now={shown.now} account={VIEWER}>
+        {/* No router: the replica's links (agents, projects) never prefetch the real pages, which
+            would send a signed-out visitor's browser through the sign-in gate for nothing. */}
+        <AppRouterContext.Provider value={null}>
+          <ShowcaseProvider overview={shown.overview} now={shown.now} account={VIEWER}>
+            <Sidebar
+              section="overview"
+              place={{ kind: "overview" }}
+              org={<span className="lp-replica-org">{VIEWER.organization.name} ▾</span>}
+              onSearch={still}
+            />
+            <div className="sh-main lp-replica-main">
               <HeaderSlotProvider>
-                <PageHeader title={<span className="lp-replica-crumb">Overview</span>} />
+                <PageHeader
+                  title={
+                    <span className="sh-crumb">
+                      <span aria-current="page">Overview</span>
+                    </span>
+                  }
+                />
                 <div className="lp-replica-scroll">
-                  <Overview {...FILTERS} />
+                  <Overview view={VIEW} hrefFor={hrefFor} select={still} />
                 </div>
               </HeaderSlotProvider>
-            </ShowcaseProvider>
-          </AppRouterContext.Provider>
-        </div>
+            </div>
+          </ShowcaseProvider>
+        </AppRouterContext.Provider>
       </div>
       {pointer && (
         <span
