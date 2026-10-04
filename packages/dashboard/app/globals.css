@@ -3981,7 +3981,7 @@ a.pj-title:hover {
 }
 @container pg (max-width: 559px) {
   .act-row {
-    grid-template-columns: 40px 64px minmax(0, 1fr);
+    grid-template-columns: 40px 92px minmax(0, 1fr);
     gap: 10px;
   }
   .act-row > :is(.act-ticket, .act-project) {
