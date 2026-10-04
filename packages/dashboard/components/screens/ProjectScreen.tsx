@@ -164,11 +164,6 @@ function ReadyRow({ ticket: r }: { ticket: ReadyTicket }) {
         {r.title}
       </a>
       <span className="pj-labels">
-        {error && (
-          <span role="alert" style={{ color: "var(--red)" }}>
-            {t.requestErrors[error]}
-          </span>
-        )}
         {r.labels.map((l) => (
           <span key={l} className="pj-label">
             {l}
@@ -178,6 +173,12 @@ function ReadyRow({ ticket: r }: { ticket: ReadyTicket }) {
       <span className="pj-launch-cell">
         <LaunchControl ticket={r} launch={launch} />
       </span>
+      {/* Its own line, under the row: a phone hides the labels' column. */}
+      {error && (
+        <span className="pj-error" role="alert">
+          {t.requestErrors[error]}
+        </span>
+      )}
     </li>
   );
 }
