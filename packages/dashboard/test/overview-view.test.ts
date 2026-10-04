@@ -10,16 +10,13 @@ import type {
 } from "@armada/core/read";
 import {
   coordinatorAlerts,
-  decideCount,
-  decidedValidations,
   decisionCards,
   excerpt,
   handBackPr,
   orderOptions,
-  overviewFigures,
   pendingValidations,
-  projectFacts,
   sentRequest,
+  splitValidations,
 } from "../lib/overview-view.ts";
 
 // A synthetic fleet: two projects, every state the overview shows.
@@ -157,29 +154,27 @@ const validation = (id: number, ticket: string, minutesAgo: number, decided?: nu
   gallery: [],
 });
 
-describe("the overview's headline", () => {
-  test("counts what is in flight, what waits for the owner's decision, what fails and the active coordinators", () => {
-    const validations = [validation(1, "WID-6", 4), validation(2, "WID-1", 9), validation(3, "WID-2", 30, 20)];
-    expect(overviewFigures({ ...overview, validations })).toEqual({
-      inFlight: 7,
-      decide: 2,
-      failing: 2,
-      silent: 1,
-      coordinators: { active: 1, total: 2 },
-      projects: 2,
-      harnesses: 3,
-    });
-  });
-});
-
 describe("yours to decide (THE-885)", () => {
   test("holds only what the owner validates; the workers' questions, plans and hand-backs stay with the coordinator", () => {
     const validations = [validation(3, "WID-2", 30, 20), validation(1, "WID-6", 4), validation(2, "WID-1", 9)];
     expect(pendingValidations({ validations }).map((v) => v.id)).toEqual([1, 2]);
-    expect(decidedValidations({ validations }).map((v) => v.id)).toEqual([3]);
-    expect(decideCount({ ...overview, validations })).toBe(2);
     // An overview from before validations has none.
-    expect(decideCount(overview)).toBe(0);
+    expect(pendingValidations({})).toEqual([]);
+  });
+
+  test("the Validations page lists what waits oldest first, then what was decided newest first (THE-1021)", () => {
+    const decided = (id: number, ticket: string, minutes: number) => ({
+      ...validation(id, ticket, minutes + 5),
+      decision: { outcome: "approved" as const, answer: null, note: null, by: "Ada", at: at(minutes) },
+    });
+    const { pending, decided: done } = splitValidations([
+      validation(1, "WID-6", 4),
+      decided(4, "WID-9", 50),
+      validation(2, "WID-1", 9),
+      decided(5, "WID-3", 10),
+    ]);
+    expect(pending.map((v) => v.id)).toEqual([2, 1]);
+    expect(done.map((v) => v.id)).toEqual([5, 4]);
   });
 });
 
@@ -261,24 +256,5 @@ describe("a coordinator to bring back", () => {
     expect(coordinatorAlerts(o)).toEqual([
       { project: "widgets", state: "idle", seenAt: at(40), waiting: 2, since: at(35) },
     ]);
-    // The sidebar and the headline count it with what the owner validates.
-    expect(decideCount({ ...o, validations: [validation(1, "WID-6", 4)] })).toBe(1 + 1);
-  });
-});
-
-test("a project's card reads its progress, agents, ready tickets, pull requests and last activity", () => {
-  expect(projectFacts(overview, "widgets")).toEqual({
-    progress: 58,
-    inFlight: 6,
-    ready: 2,
-    prs: { open: 3, green: 2 },
-    lastActivity: at(2),
-  });
-  expect(projectFacts(overview, "gadgets")).toEqual({
-    progress: 0,
-    inFlight: 1,
-    ready: 0,
-    prs: null,
-    lastActivity: at(1),
   });
 });

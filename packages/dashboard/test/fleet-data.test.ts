@@ -396,7 +396,7 @@ describe("speed: a page reads Postgres only (THE-853)", () => {
       expect((await loadAgentActivity(w.opts, HOME, "widgets", "WID-2"))?.live).toBe(true);
       expect((await loadInsights(w.opts, HOME, { range: "7d", project: null }))?.live).toBe(true);
       expect((await loadSearchIndex(w.opts, HOME)).tickets.map((t) => t.id)).toContain("WID-3");
-      const everything = { project: null, ticket: null, kind: null, who: null, before: null };
+      const everything = { show: "all", before: null } as const;
       expect((await loadActivity(w.opts, HOME, everything))?.live).toBe(true);
       expect(await loadCatchup(w.opts, HOME, { since: w.at(-3_600_000), until: w.at(0) })).not.toBeNull();
       expect(await markRepository(db, "acme/widgets")).toEqual(["widgets"]);
@@ -548,7 +548,7 @@ describe("an agent's activity (THE-869)", () => {
 });
 
 describe("insights (THE-893)", () => {
-  test("the scope's projects only, ticket titles from the last reading, records kept a minute, tagged for 304", async () => {
+  test("the scope's projects only, each project's own numbers, records kept a minute, tagged for 304", async () => {
     const db = await tempDb();
     await upsertProject(db, WIDGETS);
     const w = world(db);
@@ -557,12 +557,14 @@ describe("insights (THE-893)", () => {
     await recordEvent(db, { ...base, kind: "claim", phase: "planning", at: w.at(-3 * 3_600_000) });
     await recordEvent(db, { ...base, kind: "merge", phase: "merged", at: w.at(-3_600_000) });
 
-    const reading = await loadInsights(w.opts, HOME, { range: "7d", project: null });
+    const reading = await loadInsights(w.opts, HOME, { range: "7d", project: null, perProject: true });
     expect(reading?.live).toBe(true);
     expect(reading?.projects).toEqual([{ slug: "widgets", name: "Widgets" }]);
     expect(reading?.insights.merged.count).toBe(1);
     expect(reading?.insights.cycle.p50).toBe(2 * 3_600_000);
-    expect(reading?.tickets["widgets/WID-2"]).toMatchObject({ title: "Export a report", inFlight: false });
+    expect(reading?.byProject.map((p) => [p.slug, p.name, p.insights.merged.count])).toEqual([
+      ["widgets", "Widgets", 1],
+    ]);
 
     // Another organization, or a project nobody registered: nothing.
     expect(
@@ -667,7 +669,7 @@ describe("⌘K's search index (THE-895)", () => {
 });
 
 describe("since the owner last looked (THE-894)", () => {
-  const everything = { project: null, ticket: null, kind: null, who: null, before: null };
+  const everything = { show: "all", before: null } as const;
 
   test("the activity of the scope's projects only, a page at a time, with each ticket's title", async () => {
     const db = await tempDb();
@@ -688,13 +690,11 @@ describe("since the owner last looked (THE-894)", () => {
     const second = await loadActivity(w.opts, HOME, { ...everything, before: next }, 2);
     expect(second?.entries.map((e) => e.kind)).toEqual(["claim"]);
     expect(second?.next).toBeNull();
-    expect((await loadActivity(w.opts, HOME, { ...everything, kind: "merge" }))?.entries).toHaveLength(1);
+    expect((await loadActivity(w.opts, HOME, { ...everything, show: "merge" }))?.entries).toHaveLength(1);
 
-    // Another organization, or a project nobody registered: nothing.
+    // Another organization: nothing.
     const other = { organization: "org-other", home: "org-home" };
-    expect(await loadActivity(w.opts, other, { ...everything, project: "widgets" })).toBeNull();
     expect((await loadActivity(w.opts, other, everything))?.entries).toEqual([]);
-    expect(await loadActivity(w.opts, HOME, { ...everything, project: "nope" })).toBeNull();
   });
 
   test("what happened since a visit, with each project's silence threshold", async () => {

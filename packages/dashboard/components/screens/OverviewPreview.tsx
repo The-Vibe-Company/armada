@@ -144,15 +144,16 @@ function MergedReport({ item, t, zone }: { item: OverviewItem; t: Strings; zone:
   );
 }
 
-const entryText = (t: Strings, e: ActivityEntry): string => {
+/** One entry of a ticket's history in one line, as the pane and the session's page list them. */
+export const entryText = (t: Strings, e: ActivityEntry): string => {
   if (e.kind === "question") return splitQuestion(e.text ?? "").text.split("\n")[0] ?? "";
   if (e.kind === "pr") return t.shell.agent.entries.pr(e.pr ?? 0);
   if (e.kind === "merge" && !e.text) return t.shell.agent.entries.merge;
   return (e.text ?? "").split("\n")[0] ?? "";
 };
 
-/** The state's sentence and what the owner can do about it. */
-function Action({ item, ctx, projectName }: { item: OverviewItem; ctx: ActionContext; projectName: string }) {
+/** The state's sentence and what the owner can do about it: the pane's and the session's page's. */
+export function Action({ item, ctx, projectName }: { item: OverviewItem; ctx: ActionContext; projectName: string }) {
   const { t, now } = ctx;
   const { overview } = useFleet();
   const a = t.overview.preview.action;

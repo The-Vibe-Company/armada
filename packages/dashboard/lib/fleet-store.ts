@@ -42,7 +42,7 @@ import type {
   WorkerProfile,
 } from "@armada/core/read";
 import { isShippingStage, REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
-import { catchupRecords, type FeedQuery, feedPage, feedPeople } from "./activity-store";
+import { catchupRecords, type FeedQuery, feedPage } from "./activity-store";
 import { captionedAttachments, ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
 import { endWorker } from "./workers";
@@ -1269,7 +1269,6 @@ export interface LiveStore extends RequestStore {
   ): Promise<Omit<ProjectInsightRecords, "project" | "silentAfterMinutes">>;
   /** The Activity feed and the people its filter offers (THE-894). */
   feedPage(q: FeedQuery): Promise<FeedEntry[]>;
-  feedPeople(projects: string[], now: Date): Promise<string[]>;
   /** What the overview's "since you were away" sums up (THE-894). */
   catchupRecords(
     project: string,
@@ -1316,7 +1315,6 @@ export const liveStore = (db: Database): LiveStore => ({
   captionedAttachments: (project, since) => captionedAttachments(db, project, since),
   insightRecords: (project, since, silentAfterMinutes) => insightRecords(db, project, since, silentAfterMinutes),
   feedPage: (q) => feedPage(db, q),
-  feedPeople: (projects, now) => feedPeople(db, projects, now),
   catchupRecords: (project, window, silentAfterMinutes, now) =>
     catchupRecords(db, project, window, silentAfterMinutes, now),
 });

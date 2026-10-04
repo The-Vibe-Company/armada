@@ -15,7 +15,6 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signOut, switchOrganization } from "@/app/auth-actions";
-import type { SavedView } from "@/lib/filters";
 import { type Crumb, crumbsOf, escapeTarget, paths, placeOf, type Section, sectionOf } from "@/lib/fleet-view";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
 import { ownsKeys } from "@/lib/keyboard";
@@ -28,7 +27,6 @@ import { ChevronIcon, SectionIcon } from "./icons";
 import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
 import { prefetched, Sidebar, useNav } from "./Sidebar";
-import { ViewsProvider } from "./views";
 import { VisitProvider } from "./visit";
 
 // ⌘K and its index load apart from every page, as soon as the browser is idle (THE-892).
@@ -42,7 +40,6 @@ export function Shell({
   account,
   canLogOut,
   initialAuthor,
-  views,
   children,
 }: {
   initial: FleetOverview;
@@ -54,8 +51,6 @@ export function Shell({
   account: Account | null;
   canLogOut: boolean;
   initialAuthor: string;
-  /** The viewer's saved views (THE-895); null under the password gate, where the browser keeps them. */
-  views: SavedView[] | null;
   children: ReactNode;
 }) {
   return (
@@ -69,9 +64,7 @@ export function Shell({
       initialAuthor={initialAuthor}
     >
       <VisitProvider>
-        <ViewsProvider initial={views}>
-          <Frame>{children}</Frame>
-        </ViewsProvider>
+        <Frame>{children}</Frame>
       </VisitProvider>
     </FleetProvider>
   );
@@ -210,7 +203,6 @@ function Frame({ children }: { children: ReactNode }) {
 function crumbLabel(t: Strings, c: Crumb, names: Map<string, string>) {
   switch (c.kind) {
     case "overview":
-    case "projects":
     case "validations":
     case "insights":
     case "activity":
@@ -225,8 +217,6 @@ function crumbLabel(t: Strings, c: Crumb, names: Map<string, string>) {
       return t.org.nav;
     case "organization-page":
       return t[c.page].nav;
-    case "design":
-      return t.shell.design.title;
   }
 }
 

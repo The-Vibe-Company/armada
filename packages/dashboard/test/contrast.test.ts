@@ -60,12 +60,11 @@ const TEXT = [
   "text-soft",
   "text-2",
   "text-3",
-  ...["done", "active", "frontier", "critical", "accent"],
-  // The overview's states (design/dashboard-v7).
+  // The states (design/dashboard-v7).
   ...["red", "amber", "blue", "green"],
 ];
-/** Marks: harness dots, the faint mark step, the focus ring. */
-const MARKS = ["text-4", "h-conductor", "h-claude-code", "h-codex", "h-other", "frontier"];
+/** Marks: the focus ring. (A step bar is decorative: its step is in words beside it.) */
+const MARKS = ["blue"];
 
 const failures = (names: string[], min: number, on: typeof backgrounds) =>
   names.flatMap((n) =>
@@ -79,12 +78,15 @@ describe("the dark theme's tokens", () => {
     expect(failures(TEXT, 4.5, backgrounds)).toEqual([]);
   });
 
-  test("a state's text reads on its own dim fill (a pill)", () => {
-    const pills = ["done", "active", "frontier", "critical", "accent"].flatMap((s) =>
-      ["bg", "surface", "card"].map((b) => ({
-        pair: `--${s} on --${s}-dim over ${b}`,
-        ratio: Math.round(ratio(color(s), over(color(`${s}-dim`), color(b))) * 100) / 100,
-      })),
+  test("a state's text reads on its own 13% fill (a selected chip, an error)", () => {
+    const pills = ["red", "amber", "blue", "green"].flatMap((s) =>
+      ["bg", "surface", "card"].map((b) => {
+        const [r, g, bl] = color(s);
+        return {
+          pair: `--${s} on 13% of it over ${b}`,
+          ratio: Math.round(ratio(color(s), over([r, g, bl, 0.13], color(b))) * 100) / 100,
+        };
+      }),
     );
     expect(pills.filter((p) => p.ratio < 4.5)).toEqual([]);
   });
@@ -107,8 +109,8 @@ describe("the dark theme's tokens", () => {
     ).toEqual([]);
   });
 
-  test("the four text steps stay in order, brightest first", () => {
-    const steps = ["text", "text-2", "text-3", "text-4"].map((n) => luminance(color(n)));
+  test("the text steps stay in order, brightest first", () => {
+    const steps = ["text", "text-soft", "text-2", "text-3"].map((n) => luminance(color(n)));
     expect(steps).toEqual([...steps].sort((a, b) => b - a));
   });
 });

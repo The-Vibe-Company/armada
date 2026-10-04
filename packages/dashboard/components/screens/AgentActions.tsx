@@ -9,7 +9,6 @@ import type { CoordinatorState, InboxItem } from "@armada/core/read";
 import { useRef, useState } from "react";
 import type { RequestResult } from "@/lib/requests";
 import { type ActionContext, ErrorLine, PendingNote, SignerField, signerOf, useRequest, useSent } from "../Actions";
-import { Button } from "../page";
 
 /** A request waiting for the coordinator: the server's, or the one just sent. */
 type Pending = { author: string | null; at: string };
@@ -70,9 +69,9 @@ export function RequestAction({
   if (!ctx.live) return null;
   if (!open)
     return (
-      <Button ref={opener} type="button" tone="danger" onClick={() => setOpen(true)}>
+      <button ref={opener} type="button" className="btn is-soft" onClick={() => setOpen(true)}>
         {label}
-      </Button>
+      </button>
     );
   const close = () => {
     setOpen(false);
@@ -80,7 +79,7 @@ export function RequestAction({
     requestAnimationFrame(() => opener.current?.focus());
   };
   return (
-    <form className="sc-request-form composer" onSubmit={req.submit}>
+    <form className="composer" onSubmit={req.submit}>
       {Object.entries(fields).map(([name, value]) => (
         <input key={name} type="hidden" name={name} value={value} />
       ))}

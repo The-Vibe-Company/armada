@@ -28,6 +28,16 @@
   --fill: rgba(255, 255, 255, 0.05);
   --fill-2: rgba(255, 255, 255, 0.08);
   --fill-3: rgba(255, 255, 255, 0.11);
+  /* Its hues, the night sky's (THE-899): done and live (lime), yours to decide
+     (orange), silent (amber), in flight (blue), failing (red). */
+  --done: #b6f15a;
+  --done-dim: rgba(182, 241, 90, 0.13);
+  --accent: #ff8a4c;
+  --active: #ffb547;
+  --active-dim: rgba(255, 181, 71, 0.13);
+  --frontier: #7ea6ff;
+  --frontier-dim: rgba(126, 166, 255, 0.14);
+  --critical: #ff6b5b;
   --track: rgba(255, 255, 255, 0.07);
   font-size: 16px;
   line-height: 1.5;

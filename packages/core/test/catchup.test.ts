@@ -4,8 +4,6 @@ import {
   type CatchupRecords,
   cursorOf,
   cursorText,
-  feedWhoOf,
-  feedWhoText,
   showSummary,
   sinceSummary,
   visitSince,
@@ -192,13 +190,5 @@ describe("the feed's address", () => {
     expect(cursorOf("yesterday~e:42")).toBeNull();
     expect(cursorOf(`${iso(5)}~'; DROP`)).toBeNull();
     expect(cursorOf(null)).toBeNull();
-  });
-
-  test("names who: the coordinator, the agents or a person", () => {
-    expect(feedWhoOf("coordinator")).toEqual({ kind: "coordinator" });
-    expect(feedWhoOf("agents")).toEqual({ kind: "agent" });
-    expect(feedWhoOf(" Ada Lovelace ")).toEqual({ kind: "person", name: "Ada Lovelace" });
-    expect(feedWhoOf("")).toBeNull();
-    for (const w of ["coordinator", "agents", "Ada"]) expect(feedWhoText(feedWhoOf(w) ?? { kind: "agent" })).toBe(w);
   });
 });

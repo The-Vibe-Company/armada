@@ -330,11 +330,16 @@ function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummari
   );
 }
 
-/** The list: its groups, each a sticky header over its rows. */
-function List({
+/**
+ * The list: its groups, each a sticky header over its rows. `boxed` is a
+ * project's page (THE-1021): one project's sessions in a frame, without the
+ * project column or the groups' hints.
+ */
+export function List({
   groups,
   names,
   compact = false,
+  boxed = false,
   selected = null,
   select,
   long,
@@ -342,6 +347,7 @@ function List({
   groups: ItemGroup[];
   names: Map<string, string>;
   compact?: boolean;
+  boxed?: boolean;
   selected?: OverviewItem | null;
   select?: (id: string) => void;
   long: boolean;
@@ -349,7 +355,7 @@ function List({
   const { t } = useShell();
   const now = useNow();
   return (
-    <div className={long ? "ov-list is-long" : "ov-list"}>
+    <div className={["ov-list", long && "is-long", boxed && "is-boxed"].filter(Boolean).join(" ")}>
       {groups.map((g) => {
         const color = g.group ? GROUP_COLOR[g.group] : COORDINATOR_COLOR[g.project?.coordinator.state ?? "unknown"];
         const label = g.group ? t.overview.groups[g.group] : (g.project?.name ?? g.key);
@@ -360,7 +366,7 @@ function List({
               <span className="ov-dot" style={{ background: color }} aria-hidden />
               <span className="ov-group-name">{label}</span>
               <span className="ov-group-n">{g.items.length}</span>
-              {!compact && hint && <span className="ov-group-hint">{hint}</span>}
+              {!compact && !boxed && hint && <span className="ov-group-hint">{hint}</span>}
             </h2>
             {g.items.map((i) => (
               <Row
@@ -368,6 +374,7 @@ function List({
                 item={i}
                 projectName={names.get(i.project) ?? i.project}
                 compact={compact}
+                boxed={boxed}
                 selected={selected === i}
                 select={select}
               />
@@ -398,12 +405,14 @@ function Row({
   item: i,
   projectName,
   compact,
+  boxed,
   selected,
   select,
 }: {
   item: OverviewItem;
   projectName: string;
   compact: boolean;
+  boxed: boolean;
   selected: boolean;
   select?: (id: string) => void;
 }) {
@@ -454,7 +463,7 @@ function Row({
               {reason}
             </span>
           </span>
-          <span className="ov-proj">{projectName}</span>
+          {!boxed && <span className="ov-proj">{projectName}</span>}
           <StepBar step={i.step} color={color} />
         </>
       )}

@@ -1,6 +1,6 @@
-import { ProjectsScreen } from "@/components/screens/ProjectsScreen";
+import { redirect } from "next/navigation";
 
-// Renders from the overview the shell polls: no server data here, so it opens without waiting.
+// The Projects list is gone (THE-1021): the overview has a card per project, the sidebar a line each.
 export default function ProjectsPage() {
-  return <ProjectsScreen />;
+  redirect("/");
 }

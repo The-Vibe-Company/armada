@@ -1,376 +1,60 @@
 "use client";
 
-// /agents/[ticket] (THE-869): one session from plan to merge. When the owner
-// has something to validate on it (THE-916), that comes first: the text to
-// check, its images full width and the buttons to decide. Otherwise its steps,
-// what waits on it and its last reports. Its activity, its pull request's
-// files, its attachments and its session, coordinator and code facts are in
-// one "Details" disclosure, closed until opened or asked for by `?tab=`. Renders from the overview the shell polls and the ticket's
+// /agents/[ticket] (THE-1021, design/dashboard-v7): one session. Its ticket,
+// project and harness over its title; its state and what to do about it, in
+// a card edged in the state's color (the overview pane's `Action`: answers
+// and decisions are requests in the coordinator's inbox); its six steps; then
+// two tabs, in the address (`?tab=files`): its reports and events beside its
+// facts, with "Open the session" and "Release the ticket", or its pull
+// request's files. A ticket merged today, no longer in flight, shows from its
+// overview line. Renders from the overview the shell polls and the ticket's
 // history its page read with it; that history is read again when the ticket
 // moves (`/api/fleet/activity`, Postgres only).
-import type { ActivityEntry, FleetRow, InboxItem, ProjectOverview, RequestKind } from "@armada/core/read";
+import type { ActivityEntry, FleetRow, ProjectOverview } from "@armada/core/read";
+import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useMemo } from "react";
 import { releaseTicket } from "@/app/actions";
-import { checksOf, ownerChecks } from "@/lib/coordinator-view";
+import { clockIn } from "@/lib/activity-view";
+import type { OverviewItem } from "@/lib/coordinator-view";
 import type { TaggedActivity } from "@/lib/fleet-data";
-import {
-  type AgentState,
-  agentState,
-  coordinatorHarness,
-  fileShape,
-  HARNESS_NAME,
-  type Harness,
-  harnessOf,
-  paths,
-  sessionLink,
-  stepStates,
-} from "@/lib/fleet-view";
+import { HARNESS_NAME, harnessOf, paths, sessionLink } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
-import { decisionCards, handBackPr, sentRequest } from "@/lib/overview-view";
-import { type ActionContext, splitQuestion } from "../Actions";
-import { Ship } from "../mark";
-import {
-  Columns,
-  HeaderActions,
-  LONG_LIST,
-  Page,
-  Row,
-  RowIcon,
-  RowSide,
-  RowText,
-  RowTime,
-  Section,
-  SectionBody,
-  Stat,
-  StatusHeader,
-} from "../page";
+import type { ActionContext } from "../Actions";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { stateLabel } from "../shell/labels";
-import {
-  Dot,
-  EmptyState,
-  HarnessBadge,
-  harnessColor,
-  ProjectChip,
-  RelativeTime,
-  StatusDot,
-  Tabs,
-  toneColor,
-} from "../ui";
+import { useOverviewItems } from "../shell/use-items";
+import { EmptyState, RelativeTime, Tabs } from "../ui";
 import { RequestAction } from "./AgentActions";
-import { rowLine, rowProgress } from "./AgentRow";
-import { Attachments, useAttachments } from "./Attachments";
-import { DecisionActions } from "./DecisionCard";
+import { Action, entryText } from "./OverviewPreview";
+import { GROUP_COLOR } from "./OverviewScreen";
 import { useActivity } from "./use-activity";
-import { ValidationCard } from "./ValidationCard";
 
-/** A key and its value, as a static row. */
-function Fact({ k, children, color }: { k: ReactNode; children: ReactNode; color?: string }) {
-  return (
-    <Row>
-      <span className="sc-fact-k">{k}</span>
-      <span className="sc-fact-v" style={color ? { color } : undefined}>
-        {children}
-      </span>
-    </Row>
-  );
-}
-
-/** A time of day in the viewer's zone: rendered after mount, so the server's zone never shows. */
-function Clock({ at }: { at: string }) {
-  const { lang } = useShell();
-  const [text, setText] = useState<string | null>(null);
-  useEffect(() => {
-    setText(new Date(at).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" }));
-  }, [at, lang]);
-  return <time dateTime={at}>{text ?? "—"}</time>;
-}
-
-const ciColor = (ci: string | null | undefined) =>
-  ci === "success" ? "var(--done)" : ci === "failure" ? "var(--critical)" : "var(--active)";
-
-/** The open request of a kind the overview holds for this ticket. */
-const openRequest = (p: ProjectOverview | undefined, kind: RequestKind, match: (i: InboxItem) => boolean) =>
-  p?.requests.find((i) => i.kind === kind && match(i)) ?? null;
-
-function ActivityRow({ e, row, t }: { e: ActivityEntry; row: FleetRow; t: Strings }) {
-  const a = t.shell.agent;
-  const x = a.entries;
-  const harness = (r: string | null) => (r ? HARNESS_NAME[harnessOf(r)] : "—");
-  const view = ((): { title: string; line?: string | null; color: string } => {
-    switch (e.kind) {
-      case "launch":
-        return { title: x.launch(e.author ?? "—"), color: "var(--text-4)" };
-      case "claim":
-        return {
-          title: x.claim(harness(e.runtime)),
-          line: [e.handle && x.session(e.handle), e.profile && x.profile(e.profile)].filter(Boolean).join(" · "),
-          color: "var(--text-4)",
-        };
-      case "branch":
-        return { title: x.branch(e.branch ?? ""), color: "var(--text-4)" };
-      case "phase":
-        return {
-          title: x.phase(e.phase ? t.shell.phases[e.phase] : "—"),
-          line: e.text,
-          color: e.phase === "blocked" ? "var(--critical)" : "var(--frontier)",
-        };
-      case "report":
-        return { title: x.report, line: e.text, color: "var(--done)" };
-      case "question":
-        return { title: x.question, line: e.text && splitQuestion(e.text).text, color: "var(--accent)" };
-      case "plan":
-        return { title: x.plan, line: e.text, color: "var(--accent)" };
-      case "answer":
-        return { title: x.answer, line: e.text, color: "var(--frontier)" };
-      case "hand-back":
-        return { title: x.handBack, line: e.text, color: "var(--done)" };
-      case "note":
-        return { title: x.note, line: e.text, color: "var(--frontier)" };
-      case "request":
-        return {
-          title: x.request(e.request ? a.requests[e.request] : "—", e.author),
-          line: e.resolvedAt ? x.resolved : e.request === "plan-changes" ? e.text : null,
-          color: "var(--accent)",
-        };
-      case "pr": {
-        const files = row.pr?.number === e.pr ? row.pr.files : null;
-        return {
-          title: x.pr(e.pr ?? 0),
-          line: files ? `${a.fileCount(files.length)} · +${row.pr?.additions ?? 0} −${row.pr?.deletions ?? 0}` : null,
-          color: "var(--text)",
-        };
-      }
-      case "release":
-        return { title: x.release, line: e.text, color: "var(--critical)" };
-      case "merge":
-        return { title: x.merge, line: e.text, color: "var(--done)" };
-      default:
-        return { title: x.comment(e.author), line: e.text, color: "var(--text-3)" };
-    }
-  })();
-  return (
-    <Row className="sc-activity">
-      <RowIcon>
-        <Dot color={view.color} size={8} />
-      </RowIcon>
-      <RowText title={view.title} line={view.line || undefined} />
-      <RowTime>
-        <RelativeTime at={e.at} />
-      </RowTime>
-    </Row>
-  );
-}
-
-function FilesList({ row, t }: { row: FleetRow; t: Strings }) {
-  const a = t.shell.agent;
-  const files = row.pr?.files ?? [];
-  if (!row.pr)
-    return (
-      <SectionBody>
-        <p>{a.noPrYet}</p>
-      </SectionBody>
-    );
-  if (!files.length)
-    return (
-      <SectionBody>
-        <p>{a.noFiles}</p>
-      </SectionBody>
-    );
-  return (
-    <>
-      {files.map((f) => {
-        const shape = fileShape(f);
-        return (
-          <Row key={f.path}>
-            <RowIcon />
-            <RowText
-              title={
-                <span className="sc-file-path">
-                  <span className="faint">{shape.dir}</span>
-                  {shape.name}
-                </span>
-              }
-            />
-            <RowSide>
-              <span className="sc-file-delta">
-                <span className="sc-add">+{f.additions}</span> <span className="sc-del">−{f.deletions}</span>
-              </span>
-            </RowSide>
-            <RowSide roomy>
-              <span className="sc-file-bar" aria-hidden>
-                {shape.bar.map((b, k) => (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: five fixed squares
-                  <span key={k} className={`is-${b}`} />
-                ))}
-              </span>
-            </RowSide>
-          </Row>
-        );
-      })}
-      {row.pr.filesComplete === false && (
-        <SectionBody>
-          <p>{a.filesIncomplete}</p>
-        </SectionBody>
-      )}
-    </>
-  );
-}
-
-/** What waits for the owner on this agent, with the requests the overview cards make. */
-function Decision({
-  ctx,
-  row,
-  state,
-  label,
-  project,
-}: {
-  ctx: ActionContext;
-  row: FleetRow;
-  state: AgentState;
-  label: string;
-  project: ProjectOverview | undefined;
-}) {
-  const { t } = ctx;
-  const a = t.shell.agent;
-  const { overview } = useFleet();
-  const name = project?.name ?? row.project;
-  const coordinator = project?.coordinator.state ?? "unknown";
-  // The overview's decision on this ticket, with the overview card's actions.
-  const decision = decisionCards(overview).find((w) => w.project === row.project && w.ticket === row.id);
-  const head = (text: string, color: string, since: string | null) => ({
-    icon: <Dot color={color} />,
-    label: <span style={{ color }}>{text}</span>,
-    side: since ? <RelativeTime at={since} /> : undefined,
-  });
-
-  if (decision) {
-    const pr = decision.kind === "hand-back" ? handBackPr(overview, decision) : null;
-    const title =
-      decision.kind === "question"
-        ? a.waitsAnswer(row.id)
-        : decision.kind === "approval"
-          ? a.planToApprove
-          : t.shell.reasons.ready;
-    const color = decision.kind === "hand-back" ? "var(--done)" : "var(--accent)";
-    return (
-      <Section {...head(title, color, decision.since)}>
-        <SectionBody>
-          <DecisionActions
-            ctx={ctx}
-            w={decision}
-            projectName={name}
-            coordinator={coordinator}
-            pr={pr}
-            sent={sentRequest(overview, decision, pr)}
-            full
-          />
-          <p className="calm">{decision.kind === "hand-back" ? a.mergeHint(name) : a.relays(name)}</p>
-        </SectionBody>
-      </Section>
-    );
-  }
-  if (state.status === "error")
-    return (
-      <Section {...head(label, "var(--critical)", row.since)}>
-        <SectionBody>
-          {row.pr?.failingChecks?.length ? <p className="sc-decision-text">{row.pr.failingChecks.join(", ")}</p> : null}
-          {row.statusLine && <p>{row.statusLine.summary}</p>}
-        </SectionBody>
-      </Section>
-    );
-  if (state.status === "silent")
-    return (
-      <Section {...head(label, "var(--active)", row.lastReport)}>
-        <SectionBody>
-          <p className="sc-decision-text">
-            {a.silentFor(t.duration(Math.max(0, ctx.now - Date.parse(row.lastReport ?? row.since))))}
-          </p>
-          {row.statusLine && <p>{a.lastMessage(row.statusLine.summary)}</p>}
-        </SectionBody>
-      </Section>
-    );
-  return null;
-}
-
-/**
- * The flight path (THE-899): the six steps from plan to merge as legs flown,
- * the done ones checked, the agent a ship on the current one, in its tone,
- * the rest dashed ahead.
- */
-function Stepper({ row, color }: { row: FleetRow; color: string }) {
-  const { t } = useShell();
-  const states = stepStates(row.pipeline.step);
-  return (
-    <ol className="sc-path" style={{ ["--tone" as string]: color }}>
-      {t.shell.steps.map((s, k) => (
-        <li key={s} className={`sc-path-step is-${states[k]}`} aria-current={states[k] === "now" ? "step" : undefined}>
-          <span className="sc-path-node" aria-hidden>
-            {states[k] === "done" ? (
-              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden>
-                <circle cx="8" cy="8" r="7" fill="var(--done)" />
-                <path
-                  d="M5 8.2l2 2 4-4.2"
-                  fill="none"
-                  stroke="#0b1203"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            ) : states[k] === "now" ? (
-              <Ship color={color} size={15} className="sc-path-ship" />
-            ) : (
-              <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
-                <circle cx="6" cy="6" r="4.5" fill="none" stroke="var(--text-4)" strokeWidth="1.5" />
-              </svg>
-            )}
-          </span>
-          <b className="sc-path-label">{s}</b>
-          <span className="sc-path-sub">
-            {states[k] === "now" ? (
-              <RelativeTime at={row.since} format="duration" />
-            ) : states[k] === "done" ? (
-              t.shell.agent.done
-            ) : (
-              " "
-            )}
-          </span>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-const TABS = ["activity", "files", "attachments"] as const;
+const TABS = ["summary", "files"] as const;
 type Tab = (typeof TABS)[number];
 
-/** What a session's last reports are made of: its reports, its phase changes, its hand-back. */
-const REPORT_KINDS: readonly ActivityEntry["kind"][] = ["report", "phase", "hand-back"];
-/** How many of them its page shows outside "Details". */
-const LAST_REPORTS = 3;
+/** An entry's dot: blocked red, the owner's amber, a start blue, a hand-back or merge green, the rest grey. */
+function entryColor(e: ActivityEntry): string {
+  if (e.kind === "release" || (e.kind === "phase" && e.phase === "blocked")) return "var(--red)";
+  if (e.kind === "question" || e.kind === "plan" || e.kind === "request") return "var(--amber)";
+  if (e.kind === "claim" || e.kind === "launch") return "var(--blue)";
+  if (e.kind === "hand-back" || e.kind === "merge") return "var(--green)";
+  return "var(--text-3)";
+}
 
 export function AgentScreen({ initialActivity = null }: { initialActivity?: TaggedActivity | null }) {
   const { t, author, setAuthor, account } = useShell();
   const { overview, failed, refresh, version } = useFleet();
   const now = useNow();
   const ticket = decodeURIComponent(String(useParams<{ ticket: string }>().ticket ?? ""));
-  const asked = useSearchParams().get("tab");
-  const tab: Tab = asked === "files" || asked === "attachments" ? asked : "activity";
-  // "Details" opens when the address asks for one of its tabs (⌘K's files and attachments, the tabs themselves).
-  const [details, setDetails] = useState(asked !== null);
-  useEffect(() => {
-    if (asked !== null) setDetails(true);
-  }, [asked]);
-  const row = overview.rows.find((r) => r.id.toLowerCase() === ticket.toLowerCase());
-  const project = overview.projects.find((p) => p.slug === row?.project);
-  const requests = useMemo(() => project?.requests ?? [], [project]);
-  if (!row)
+  const tab: Tab = useSearchParams().get("tab") === "files" ? "files" : "summary";
+  const items = useOverviewItems();
+  const item = items.find((i) => i.id.toLowerCase() === ticket.toLowerCase());
+  const project = overview.projects.find((p) => p.slug === item?.project);
+  if (!item)
     return (
-      <Page>
+      <div className="pg">
         <EmptyState title={t.shell.agentMissing} hint={t.shell.agentMissingHint} />
-      </Page>
+      </div>
     );
   const ctx: ActionContext = {
     t,
@@ -380,317 +64,296 @@ export function AgentScreen({ initialActivity = null }: { initialActivity?: Tagg
     version,
     refresh,
   };
-  return (
-    <Agent
-      row={row}
-      project={project}
-      requests={requests}
-      tab={tab}
-      ctx={ctx}
-      initialActivity={initialActivity}
-      details={details}
-      setDetails={setDetails}
-    />
-  );
+  return <Agent item={item} project={project} tab={tab} ctx={ctx} initialActivity={initialActivity} />;
 }
 
 function Agent({
-  row,
+  item,
   project,
-  requests,
   tab,
   ctx,
   initialActivity,
-  details,
-  setDetails,
 }: {
-  row: FleetRow;
+  item: OverviewItem;
   project: ProjectOverview | undefined;
-  requests: InboxItem[];
   tab: Tab;
   ctx: ActionContext;
   initialActivity: TaggedActivity | null;
-  details: boolean;
-  setDetails: (open: boolean) => void;
 }) {
-  const { t } = ctx;
-  const { overview } = useFleet();
-  const checks = checksOf(ownerChecks(overview), row);
-  const a = t.shell.agent;
-  const state = agentState(row);
-  const label = stateLabel(t, state, row.phase);
-  const color = toneColor(state.status);
-  const harness = harnessOf(row.runtime);
-  const handle = row.session?.handle ?? row.handle;
-  const link = sessionLink(row.runtime, handle);
-  const activity = useActivity(row, requests, initialActivity);
-  const attachments = useAttachments(row.project, row.id, ctx.version);
-  const branch = row.session?.branch ?? activity.entries.find((e) => e.kind === "branch")?.branch ?? null;
-  const files = row.pr?.files ?? null;
-  const coordinator = project?.coordinator;
-  const coordHarness: Harness | null = coordinatorHarness(coordinator?.harness);
-  // Every tab names itself, so moving between them keeps "Details" open.
-  const tabPath = (k: Tab) => `${paths.agent(row.id)}?tab=${k}`;
-  const reports = activity.entries.filter((e) => REPORT_KINDS.includes(e.kind)).slice(0, LAST_REPORTS);
-  const session = row.session;
-
-  const line = rowLine(row);
+  const { t, now } = ctx;
+  const { zone } = useShell();
+  const a = t.agentPage;
+  const row = item.row;
+  const color = GROUP_COLOR[item.group];
+  const projectName = project?.name ?? item.project;
+  const harness = row ? HARNESS_NAME[harnessOf(row.session?.runtime ?? row.runtime)] : null;
+  const files = row?.pr?.files ?? [];
+  const since =
+    item.group === "merged"
+      ? item.last && a.mergedAt(clockIn(item.last, zone, t.overview.locale))
+      : row && a.since(t.shell.phases[row.phase].toLowerCase(), t.duration(Math.max(0, now - Date.parse(row.since))));
+  const steps = t.overview.steps;
   return (
-    <Page
-      status={
-        <StatusHeader
-          kicker={
+    <div className="pg ag">
+      <div className="pg-head">
+        <p className="pg-meta">
+          {row ? (
+            <a href={row.url} target="_blank" rel="noreferrer" className="mono pg-link">
+              {item.id}
+            </a>
+          ) : (
+            <span className="mono">{item.id}</span>
+          )}
+          <span aria-hidden>·</span>
+          <Link href={paths.project(item.project)} prefetch={false} className="pg-link">
+            {projectName}
+          </Link>
+          {harness && (
             <>
-              <StatusDot status={state.status} progress={rowProgress(row)} size={14} />
-              <span style={{ color }}>{label}</span>
-              <span className="mono faint">
-                {a.forTime} <RelativeTime at={row.since} format="duration" />
-              </span>
+              <span aria-hidden>·</span>
+              <span>{harness}</span>
             </>
-          }
-          lead={row.title}
-          line={line ? <span style={row.question ? { color: "var(--accent)" } : undefined}>{line}</span> : undefined}
-          stats={
+          )}
+          {(row?.session?.profile ?? row?.profile) && (
             <>
-              <Stat>
-                <ProjectChip slug={row.project} name={project?.name ?? row.project} />
-              </Stat>
-              <Stat value={row.id} />
-              <Stat>
-                <HarnessBadge harness={harness} />
-              </Stat>
-              {(session?.profile ?? row.profile) && (
-                <Stat>{[session?.profile ?? row.profile, session?.effort].filter(Boolean).join(" · ")}</Stat>
-              )}
+              <span aria-hidden>·</span>
+              <span>{row?.session?.profile ?? row?.profile}</span>
             </>
-          }
-        />
-      }
-    >
-      <HeaderActions>
-        {link && (
-          <a className="ui-button is-primary" href={link}>
-            {a.openIn("Conductor")}
-          </a>
-        )}
-        <a className="ui-button" href={row.url} target="_blank" rel="noreferrer">
-          {t.shell.openLinear}
-        </a>
-        {row.pr ? (
-          <a className="ui-button" href={row.pr.url} target="_blank" rel="noreferrer">
-            {t.shell.openPr(row.pr.number)}
-          </a>
-        ) : (
-          <span className="ui-button is-disabled">{t.shell.noPr}</span>
-        )}
-      </HeaderActions>
-      {checks.length > 0 ? (
-        <Section
-          icon={<Dot color="var(--accent)" />}
-          label={<span style={{ color: "var(--accent)" }}>{t.overview.toValidateBadge}</span>}
-          count={checks.length}
-        >
-          <SectionBody className="sc-validate">
-            {checks.map((v) => (
-              <ValidationCard key={v.id} ctx={ctx} v={v} projectName={project?.name ?? row.project} mode="full" />
-            ))}
-          </SectionBody>
-        </Section>
-      ) : (
-        <>
-          <Section label={t.shell.stepsHeading} count={`${row.pipeline.step + 1}/${t.shell.steps.length}`}>
-            <Stepper row={row} color={color} />
-          </Section>
-          <Decision ctx={ctx} row={row} state={state} label={label} project={project} />
-          <Section label={a.lastReports} count={reports.length}>
-            {reports.length === 0 ? (
-              <SectionBody>
-                <p>{a.noReports}</p>
-              </SectionBody>
-            ) : (
-              reports.map((e, k) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id; the list is rebuilt whole
-                <ActivityRow key={`${e.kind}-${e.at}-${k}`} e={e} row={row} t={t} />
-              ))
-            )}
-          </Section>
-        </>
-      )}
-      <details className="sc-details" open={details} onToggle={(e) => setDetails(e.currentTarget.open)}>
-        <summary className="sc-details-h">
-          <svg className="sc-details-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
-            <path d="M4.5 3l3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-          </svg>
-          {a.details}
-        </summary>
-        <Columns
-          side={
-            <>
-              <Section label={t.shell.session}>
-                <Fact k={t.shell.harness}>
-                  <Dot color={harnessColor(harness)} />
-                  {HARNESS_NAME[harness]}
-                </Fact>
-                <Fact k={t.shell.profile}>
-                  <span className="mono">{session?.profile ?? row.profile ?? "—"}</span>
-                  {row.profileReason && <span> · {row.profileReason}</span>}
-                </Fact>
-                <Fact k={a.model}>
-                  <span className="mono">
-                    {session?.model ? [session.model, session.effort].filter(Boolean).join(" · ") : "—"}
-                  </span>
-                </Fact>
-                <Fact k={a.sessionId}>
-                  <span className="mono" title={handle ?? undefined}>
-                    {handle ?? "—"}
-                  </span>
-                </Fact>
-                <Fact k={t.shell.started}>
-                  {session ? (
-                    <span className="mono">
-                      <Clock at={session.claimedAt} /> · <RelativeTime at={session.claimedAt} format="duration" />
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </Fact>
-                <Fact k={t.shell.lastReportKey} color={row.silent ? "var(--active)" : undefined}>
-                  {row.lastReport ? <RelativeTime at={row.lastReport} /> : t.shell.neverReported}
-                  {row.runtimeState && <> · {t.shell.runtimeState[row.runtimeState]}</>}
-                </Fact>
-              </Section>
-              <Section label={t.shell.coordinator}>
-                <Fact k={project?.name ?? row.project}>
-                  {coordHarness ? (
-                    <>
-                      <Dot color={harnessColor(coordHarness)} />
-                      {coordHarness === "other" ? a.terminal : HARNESS_NAME[coordHarness]}
-                    </>
-                  ) : (
-                    "—"
-                  )}
-                </Fact>
-                <Fact
-                  k={a.state}
-                  color={
-                    coordinator?.state === "active"
-                      ? "var(--done)"
-                      : coordinator?.state === "idle"
-                        ? "var(--active)"
-                        : "var(--text-3)"
-                  }
-                >
-                  {coordinator?.state === "active"
-                    ? t.shell.coordinatorActive(t.ago(Math.max(0, ctx.now - Date.parse(coordinator.seenAt ?? ""))))
-                    : coordinator?.state === "idle"
-                      ? t.shell.coordinatorIdle(t.duration(Math.max(0, ctx.now - Date.parse(coordinator.seenAt ?? ""))))
-                      : t.shell.coordinatorUnknown}
-                </Fact>
-              </Section>
-              <Section label={t.shell.code}>
-                <Fact k={t.shell.branch}>
-                  <span className="mono" title={branch ?? undefined}>
-                    {branch ?? "—"}
-                  </span>
-                </Fact>
-                <Fact k={t.shell.pr}>
-                  {row.pr ? (
-                    <a className="mono" href={row.pr.url} target="_blank" rel="noreferrer">
-                      <Dot color={ciColor(row.pr.ci)} /> #{row.pr.number}
-                    </a>
-                  ) : (
-                    "—"
-                  )}
-                </Fact>
-                {row.pr?.ci && (
-                  <Fact k={a.checks} color={ciColor(row.pr.ci)}>
-                    {a.checkStates[row.pr.ci]}
-                  </Fact>
-                )}
-                {row.pr && (
-                  <Fact k={a.mergeable} color={row.pr.mergeable === "CONFLICTING" ? "var(--critical)" : undefined}>
-                    {row.pr.mergeable === "CONFLICTING" ? a.conflict : row.pr.mergeable === "MERGEABLE" ? a.yes : "—"}
-                  </Fact>
-                )}
-                <Fact k={a.changes}>
-                  {row.pr?.additions != null ? (
-                    <span className="sc-file-delta">
-                      <span className="sc-add">+{row.pr.additions}</span>{" "}
-                      <span className="sc-del">−{row.pr.deletions ?? 0}</span>
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </Fact>
-              </Section>
-              <SectionBody>
-                <RequestAction
-                  ctx={ctx}
-                  label={a.askRelease}
-                  what={a.requests["release-request"]}
-                  send={releaseTicket}
-                  fields={{ project: row.project, ticket: row.id }}
-                  pending={openRequest(project, "release-request", (i) => i.ticket === row.id)}
-                  coordinator={coordinator?.state ?? "unknown"}
-                  hint={a.releaseHint}
-                />
-              </SectionBody>
-            </>
-          }
-        >
-          <Section
-            id="agent-tab"
-            long={tab === "activity" && activity.entries.length > LONG_LIST}
-            label={tab === "attachments" ? a.attachments : tab === "files" ? a.files : a.activity}
-            count={
-              tab === "attachments"
-                ? (attachments?.items.length ?? 0)
-                : tab === "files"
-                  ? (files?.length ?? 0)
-                  : activity.entries.length
-            }
-            side={
-              <Tabs
-                label={a.tabs}
-                value={tab}
-                size="sm"
-                controls="agent-tab"
-                items={TABS.map((k) => ({
-                  key: k,
-                  label: k === "attachments" ? a.attachments : k === "files" ? a.files : a.activity,
-                  count:
-                    k === "attachments" ? attachments?.items.length : k === "files" ? (files?.length ?? 0) : undefined,
-                  href: tabPath(k),
-                }))}
+          )}
+        </p>
+        <p className="pg-title">{item.title}</p>
+      </div>
+
+      <section className="ag-action" style={{ borderLeftColor: color }} aria-label={t.overview.groups[item.group]}>
+        <p className="ag-state">
+          <span style={{ color }}>{t.overview.groups[item.group]}</span>
+          {since && <span className="ag-since">{since}</span>}
+        </p>
+        <Action item={item} ctx={ctx} projectName={projectName} />
+      </section>
+
+      <ol className="ag-steps" aria-label={t.overview.stepLabel(steps[Math.min(item.step, steps.length - 1)] ?? "")}>
+        {steps.map((s, k) => {
+          const state = k < item.step ? "is-done" : k === item.step ? "is-now" : undefined;
+          return (
+            <li key={s} className={state} aria-current={k === item.step ? "step" : undefined}>
+              <span
+                className="ag-step-bar"
+                style={{
+                  background: k < item.step ? "var(--step-done)" : k === item.step ? color : "var(--step-next)",
+                }}
+                aria-hidden
               />
-            }
-          >
-            {tab === "attachments" ? (
-              <Attachments items={attachments?.items ?? null} failed={attachments?.failed ?? false} t={t} />
-            ) : tab === "files" ? (
-              <FilesList row={row} t={t} />
-            ) : (
-              <>
-                {!activity.live && (
-                  <SectionBody>
-                    <p>{a.activityPartial}</p>
-                  </SectionBody>
-                )}
-                {activity.entries.length === 0 ? (
-                  <SectionBody>
-                    <p>{a.noActivity}</p>
-                  </SectionBody>
-                ) : (
-                  activity.entries.map((e, k) => (
-                    // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id; the list is rebuilt whole
-                    <ActivityRow key={`${e.kind}-${e.at}-${k}`} e={e} row={row} t={t} />
-                  ))
-                )}
-              </>
-            )}
-          </Section>
-        </Columns>
-      </details>
-    </Page>
+              <span className="ag-step-label">{s}</span>
+              <span className="ag-step-sub">
+                {k === item.step && row ? <RelativeTime at={row.since} format="duration" /> : null}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+
+      <Tabs
+        label={a.tabs}
+        value={tab}
+        controls="ag-tab"
+        items={TABS.map((k) => ({
+          key: k,
+          label: k === "files" ? a.files(files.length) : a.summary,
+          href: k === "files" ? `${paths.agent(item.id)}?tab=files` : paths.agent(item.id),
+        }))}
+      />
+      <div id="ag-tab" role="tabpanel">
+        {tab === "files" ? (
+          <Files row={row} t={t} />
+        ) : (
+          <div className="ag-cols">
+            <div className="ag-col">
+              <p className="pg-h">{a.history}</p>
+              {row ? (
+                <History row={row} project={project} t={t} zone={zone} initial={initialActivity} />
+              ) : (
+                <ol className="ag-history">
+                  {item.last && item.pr && (
+                    <li>
+                      <time dateTime={item.last}>{clockIn(item.last, zone, t.overview.locale)}</time>
+                      <span className="ag-history-dot" style={{ background: "var(--green)" }} aria-hidden />
+                      <span>{t.overview.reasons.merged(item.pr.number)}</span>
+                    </li>
+                  )}
+                </ol>
+              )}
+            </div>
+            <div className="ag-col">
+              <p className="pg-h">{a.details}</p>
+              <Facts item={item} t={t} zone={zone} now={now} />
+              {row && <SessionButtons row={row} project={project} ctx={ctx} />}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The session's history, newest first: its reports, phases, questions, pull request and merge. */
+function History({
+  row,
+  project,
+  t,
+  zone,
+  initial,
+}: {
+  row: FleetRow;
+  project: ProjectOverview | undefined;
+  t: Strings;
+  zone: string;
+  initial: TaggedActivity | null;
+}) {
+  const requests = useMemo(() => project?.requests ?? [], [project]);
+  const activity = useActivity(row, requests, initial);
+  const shown = activity.entries.filter((e) => entryText(t, e) || e.kind === "claim" || e.kind === "branch");
+  if (!shown.length) return <p className="pg-none">{t.overview.preview.noReports}</p>;
+  return (
+    <ol className="ag-history">
+      {shown.map((e, k) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: entries have no id; the list is rebuilt whole
+        <li key={`${e.kind}-${e.at}-${k}`}>
+          <time dateTime={e.at}>{clockIn(e.at, zone, t.overview.locale)}</time>
+          <span className="ag-history-dot" style={{ background: entryColor(e) }} aria-hidden />
+          <span>{line(t, e)}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** What an entry says: its own words, else what happened. */
+function line(t: Strings, e: ActivityEntry): string {
+  const x = t.shell.agent.entries;
+  const text = entryText(t, e);
+  if (text) return text;
+  switch (e.kind) {
+    case "claim":
+      return x.claim(e.runtime ? HARNESS_NAME[harnessOf(e.runtime)] : "—");
+    case "branch":
+      return x.branch(e.branch ?? "");
+    case "launch":
+      return x.launch(e.author ?? "—");
+    case "phase":
+      return x.phase(e.phase ? t.shell.phases[e.phase] : "—");
+    case "release":
+      return x.release;
+    default:
+      return "";
+  }
+}
+
+function Facts({ item, t, zone, now }: { item: OverviewItem; t: Strings; zone: string; now: number }) {
+  const a = t.agentPage;
+  const p = t.overview.preview;
+  const row = item.row;
+  const pr = row?.pr ?? null;
+  const session = row?.session ?? null;
+  const facts: { k: string; v: ReactNode; color?: string; mono?: boolean }[] = [
+    {
+      k: p.pr,
+      v: item.pr ? (
+        <a href={item.pr.url} target="_blank" rel="noreferrer" className="pg-link">
+          #{item.pr.number}
+        </a>
+      ) : (
+        p.notYet
+      ),
+      mono: true,
+    },
+    {
+      k: p.ci,
+      v: pr?.ci ? p.ciStates[pr.ci] : "—",
+      color: pr?.ci === "success" ? "var(--green)" : pr?.ci === "failure" ? "var(--red)" : undefined,
+    },
+    {
+      k: p.files,
+      v: pr?.files?.length ? `${pr.files.length} · +${pr.additions ?? 0} −${pr.deletions ?? 0}` : "—",
+      mono: true,
+    },
+    {
+      k: p.lastReport,
+      v: row?.lastReport ? p.ago(t.duration(Math.max(0, now - Date.parse(row.lastReport)))) : "—",
+      color: row?.silent ? "var(--amber)" : undefined,
+    },
+    { k: a.harness, v: row ? HARNESS_NAME[harnessOf(session?.runtime ?? row.runtime)] : "—" },
+    { k: a.session, v: session?.handle ?? row?.handle ?? "—", mono: true },
+    {
+      k: a.model,
+      v: [session?.profile ?? row?.profile, session?.model].filter(Boolean).join(" · ") || "—",
+      mono: true,
+    },
+    { k: a.claimed, v: session ? clockIn(session.claimedAt, zone, t.overview.locale) : "—", mono: true },
+  ];
+  return (
+    <dl className="pg-facts">
+      {facts.map((f) => (
+        <div key={f.k}>
+          <dt>{f.k}</dt>
+          <dd className={f.mono ? "mono" : undefined} style={f.color ? { color: f.color } : undefined}>
+            {f.v}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** Open the worker's session where its harness has a link, and ask the coordinator to release the ticket. */
+function SessionButtons({
+  row,
+  project,
+  ctx,
+}: {
+  row: FleetRow;
+  project: ProjectOverview | undefined;
+  ctx: ActionContext;
+}) {
+  const a = ctx.t.agentPage;
+  const link = sessionLink(row.runtime, row.session?.handle ?? row.handle);
+  const pending = project?.requests.find((i) => i.kind === "release-request" && i.ticket === row.id) ?? null;
+  return (
+    <div className="ag-buttons">
+      {link && (
+        <a className="btn is-soft" href={link}>
+          {a.openSession}
+        </a>
+      )}
+      <RequestAction
+        ctx={ctx}
+        label={a.release}
+        what={ctx.t.shell.agent.requests["release-request"]}
+        send={releaseTicket}
+        fields={{ project: row.project, ticket: row.id }}
+        pending={pending}
+        coordinator={project?.coordinator.state ?? "unknown"}
+        hint={ctx.t.shell.agent.releaseHint}
+      />
+    </div>
+  );
+}
+
+function Files({ row, t }: { row: FleetRow | null; t: Strings }) {
+  const files = row?.pr?.files ?? [];
+  if (!files.length) return <p className="pg-none">{t.agentPage.noFiles}</p>;
+  return (
+    <>
+      <ul className="ag-files">
+        {files.map((f) => (
+          <li key={f.path}>
+            <span className="ag-file-path">{f.path}</span>
+            <span className="ag-file-add">+{f.additions}</span>
+            <span className="ag-file-del">−{f.deletions}</span>
+          </li>
+        ))}
+      </ul>
+      {row?.pr?.filesComplete === false && <p className="pg-none">{t.shell.agent.filesIncomplete}</p>}
+    </>
   );
 }

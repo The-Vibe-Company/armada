@@ -1,17 +1,9 @@
-// The Activity page's view rules (THE-894): its address (project, ticket,
-// kind, who, and the cursor of an older page), what each entry says and where
-// it links, and the days it is grouped by, in the viewer's time zone. Pure:
-// the entries come from `loadActivity`, every rule of what they mean from core.
-import {
-  cursorOf,
-  cursorText,
-  type FeedCursor,
-  type FeedEntry,
-  type FeedKind,
-  feedWhoOf,
-  feedWhoText,
-  isFeedKind,
-} from "@armada/core/read";
+// The Activity page's view rules (THE-894, THE-1021 on design/dashboard-v7):
+// its address (a chip, and the cursor of an older page), what each entry
+// says and where it links, its kind's word and color, and the days it is
+// grouped by, in the viewer's time zone. Pure: the entries come from
+// `loadActivity`, every rule of what they mean from core.
+import { cursorOf, cursorText, type FeedCursor, type FeedEntry, type FeedKind } from "@armada/core/read";
 import type { ActivityQuery } from "./fleet-data";
 import { paths } from "./fleet-view";
 import type { Strings } from "./i18n";
@@ -31,38 +23,87 @@ export function zoneOf(cookie: string | undefined): string {
 }
 
 const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v) ?? null;
-const PROJECT = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const TICKET = /^[A-Z][A-Z0-9]{0,15}-\d{1,9}$/;
 
-/** What the page's address says: `?project=<slug>&ticket=<id>&kind=<kind>&who=<who>&before=<cursor>`. */
+/** The page's chips, as the design draws them: everything, what blocked, what is for the owner, merges, reports. */
+export const ACTIVITY_SHOWS = ["all", "blocked", "you", "merge", "report"] as const;
+export type ActivityShow = (typeof ACTIVITY_SHOWS)[number];
+
+/** What each chip reads: its kinds, and for the blocked ones only the reports that entered `blocked`. */
+export const SHOWS: Record<ActivityShow, { kinds: FeedKind[] | null; phase: string | null }> = {
+  all: { kinds: null, phase: null },
+  blocked: { kinds: ["question", "report"], phase: "blocked" },
+  you: { kinds: ["plan", "validation"], phase: null },
+  merge: { kinds: ["merge", "hand-back", "decision"], phase: null },
+  report: { kinds: ["report", "claim", "launch"], phase: null },
+};
+
+const isShow = (v: string | null): v is ActivityShow => ACTIVITY_SHOWS.includes(v as ActivityShow);
+
+/** What the page's address says: `?show=<chip>&before=<cursor>`; anything else (older links' filters) is ignored. */
 export function activityQuery(params: Record<string, string | string[] | undefined>): ActivityQuery {
-  const project = one(params.project);
-  const ticket = one(params.ticket)?.trim().toUpperCase() ?? null;
-  const kind = one(params.kind);
-  return {
-    project: project && PROJECT.test(project) ? project : null,
-    ticket: ticket && TICKET.test(ticket) ? ticket : null,
-    kind: isFeedKind(kind) ? kind : null,
-    who: feedWhoOf(one(params.who)),
-    before: cursorOf(one(params.before)),
-  };
+  const show = one(params.show);
+  return { show: isShow(show) ? show : "all", before: cursorOf(one(params.before)) };
 }
 
 /** The page's address for `q`: only what is set, in one order, so a shared address reads the same. */
-export function activityHref(q: Partial<Omit<ActivityQuery, "before">> & { before?: FeedCursor | null }): string {
+export function activityHref(q: { show?: ActivityShow; before?: FeedCursor | null }): string {
   const p = new URLSearchParams();
-  if (q.project) p.set("project", q.project);
-  if (q.ticket) p.set("ticket", q.ticket);
-  if (q.kind) p.set("kind", q.kind);
-  if (q.who) p.set("who", feedWhoText(q.who));
+  if (q.show && q.show !== "all") p.set("show", q.show);
   if (q.before) p.set("before", cursorText(q.before));
   const s = p.toString();
   return s ? `${paths.activity}?${s}` : paths.activity;
 }
 
-/** Whether any filter is set (the cursor is not one). */
-export const filtered = (q: ActivityQuery) =>
-  q.project !== null || q.ticket !== null || q.kind !== null || q.who !== null;
+/** An entry's kind as a row shows it: one word in one color. */
+export type EntryKind =
+  | "report"
+  | "start"
+  | "handback"
+  | "blocked"
+  | "you"
+  | "merge"
+  | "decision"
+  | "answer"
+  | "request"
+  | "stop"
+  | "coordinator";
+
+export function entryKind(e: Pick<FeedEntry, "kind" | "phase">): EntryKind {
+  switch (e.kind) {
+    case "report":
+      return e.phase === "blocked" ? "blocked" : "report";
+    case "question":
+      return "blocked";
+    case "claim":
+    case "launch":
+      return "start";
+    case "hand-back":
+      return "handback";
+    case "plan":
+    case "validation":
+      return "you";
+    case "release":
+    case "revoke":
+      return "stop";
+    default:
+      return e.kind;
+  }
+}
+
+/** Each kind's color: blocked red, the owner's amber, a start blue, a hand-back or merge green, the rest grey. */
+export const KIND_COLOR: Record<EntryKind, string> = {
+  report: "var(--text-3)",
+  start: "var(--blue)",
+  handback: "var(--green)",
+  blocked: "var(--red)",
+  you: "var(--amber)",
+  merge: "var(--green)",
+  decision: "var(--green)",
+  answer: "var(--text-3)",
+  request: "var(--text-3)",
+  stop: "var(--red)",
+  coordinator: "var(--text-3)",
+};
 
 /** What an entry says happened, in a few words. */
 export function entryWhat(t: Strings, e: FeedEntry): string {
@@ -76,9 +117,9 @@ export function entryWhat(t: Strings, e: FeedEntry): string {
     case "request":
       return w.request[e.detail ?? "request"] ?? w.request.request ?? "";
     case "validation":
-      return w.validation[e.detail ?? "validation"] ?? t.activity.kinds.validation;
+      return w.validation[e.detail ?? "validation"] ?? w.validation.validation ?? "";
     case "decision":
-      return w.decision[e.detail ?? "approved"] ?? t.activity.kinds.decision;
+      return w.decision[e.detail ?? "approved"] ?? w.decision.approved ?? "";
     case "coordinator":
       return e.detail === "stop" ? w.stop : w.start;
     default:
@@ -86,38 +127,11 @@ export function entryWhat(t: Strings, e: FeedEntry): string {
   }
 }
 
-/** Who did it, as the row names them. */
-export function entryWho(t: Strings, e: FeedEntry): string {
-  if (e.actor.kind === "person") return e.actor.name ?? "";
-  return t.activity.by[e.actor.kind];
-}
-
 /** Where an entry opens: the validation it asks or decides, the coordinator's project, else the ticket's agent. */
 export function entryHref(e: FeedEntry): string {
   if ((e.kind === "validation" || e.kind === "decision") && e.ref !== null) return paths.validation(e.ref);
   if (e.ticket) return paths.agent(e.ticket);
   return paths.project(e.project);
-}
-
-/** The color of an entry's dot: one meaning per color, always with the words beside it. */
-export function entryColor(kind: FeedKind): string {
-  switch (kind) {
-    case "merge":
-    case "decision":
-      return "var(--done)";
-    case "question":
-    case "plan":
-    case "validation":
-    case "hand-back":
-      return "var(--accent)";
-    case "revoke":
-      return "var(--critical)";
-    case "claim":
-    case "launch":
-      return "var(--frontier)";
-    default:
-      return "var(--text-3)";
-  }
 }
 
 /** The day an instant falls on in `zone`, as `YYYY-MM-DD`. */

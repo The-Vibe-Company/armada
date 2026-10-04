@@ -13,14 +13,8 @@ const TO_VALIDATE = "WID-18";
 const RUNS = 5;
 /** How many sessions to validate the decision is measured on: each records its decision, so each runs once. */
 const DECISIONS = 3;
-/** The pages it opens; an agent's tabs are in its "Details", which `?tab=` opens (THE-916). */
-export const INP_PAGES = [
-  "/",
-  "/?view=preview",
-  `/agents/${LONG_AGENT}?tab=activity`,
-  `/agents/${TO_VALIDATE}`,
-  "/agents/GAD-9",
-];
+/** The pages it opens; an agent's page opens on its summary, its files are `?tab=files` (THE-1021). */
+export const INP_PAGES = ["/", "/?view=preview", `/agents/${LONG_AGENT}`, `/agents/${TO_VALIDATE}`, "/agents/GAD-9"];
 
 declare global {
   interface Window {
@@ -75,10 +69,11 @@ async function toValidate(base: string, cookie: string): Promise<string[]> {
   if (!res.ok) return [TO_VALIDATE];
   const fleet = (await res.json()) as {
     rows: { id: string }[];
-    validations?: { ticket: string; decision: unknown }[];
+    validations?: { ticket: string; kind: string; decision: unknown }[];
   };
+  // A merge or an escalated question is decided on the session's page; work to check opens its validation (THE-1021).
   const open = (fleet.validations ?? [])
-    .filter((v) => !v.decision && fleet.rows.some((r) => r.id === v.ticket))
+    .filter((v) => !v.decision && v.kind !== "validation" && fleet.rows.some((r) => r.id === v.ticket))
     .map((v) => v.ticket);
   const tickets = [...new Set([TO_VALIDATE, ...open].filter((t) => open.includes(t)))];
   return tickets.length ? tickets.slice(0, DECISIONS) : [TO_VALIDATE];
@@ -153,9 +148,10 @@ export async function measureInteractions(base: string, cookie: string, slowdown
     });
     await split.context().close();
 
-    const agent = await open(browser, `${base}/agents/${LONG_AGENT}?tab=activity`, cookie, slowdown);
-    const entries = await agent.locator(".ui-columns-main .ui-row").count();
-    const tab = (to: string) => agent.locator(`a[role="tab"][href="/agents/${LONG_AGENT}${to || "?tab=activity"}"]`);
+    const agent = await open(browser, `${base}/agents/${LONG_AGENT}`, cookie, slowdown);
+    const entries = await agent.locator(".ag-history > li").count();
+    const tab = (to: string) => agent.locator(`a[role="tab"][href="/agents/${LONG_AGENT}${to}"]`);
+    const summary = (url: URL) => !url.searchParams.has("tab");
     out.push({
       name: "Switch an agent's tab (to Files)",
       ms: await typical(
@@ -166,17 +162,17 @@ export async function measureInteractions(base: string, cookie: string, slowdown
         },
         async () => {
           await tab("").click();
-          await agent.waitForURL(/tab=activity/);
+          await agent.waitForURL(summary);
         },
       ),
     });
     out.push({
-      name: `Switch an agent's tab (back to its ${entries}-row activity)`,
+      name: `Switch an agent's tab (back to its ${entries}-entry summary)`,
       ms: await typical(
         agent,
         async () => {
           await tab("").click();
-          await agent.waitForURL(/tab=activity/);
+          await agent.waitForURL(summary);
         },
         async () => {
           await tab("?tab=files").click();

@@ -21,8 +21,6 @@ import {
   type CoordinatorPresence,
   type FeedCursor,
   type FeedEntry,
-  type FeedKind,
-  type FeedWho,
   type FleetInsights,
   type FleetOverview,
   type HistoryEvent,
@@ -48,10 +46,10 @@ import {
   TIMELINE_HOURS,
   type Validation,
 } from "@armada/core/read";
+import { type ActivityShow, SHOWS } from "./activity-view";
 import { LATEST_CLI_VERSION } from "./cli-version";
 import { type Database, redactDatabase } from "./db";
 import type { LiveStore } from "./fleet-store";
-import { insightKey } from "./insights-view";
 import { DONE_SEARCH_DAYS, indexOfReading, type SearchIndex } from "./search";
 import {
   type ClaimOptions,
@@ -616,22 +614,15 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
 /** How long a project's Insights records are kept in this process: the page and the overview's line share them. */
 export const INSIGHTS_CACHE_MS = 60_000;
 
-/** A ticket an Insights number links to: its title, its Linear issue, and whether a worker holds it now. */
-export interface InsightTicketFacts {
-  title: string | null;
-  url: string | null;
-  inFlight: boolean;
-}
-
-/** The Insights page's reading: the numbers, the projects it may filter on, and what each ticket links to. */
+/** The Insights page's reading: the numbers of every project shown together, then of each. */
 export interface InsightsReading {
   insights: FleetInsights;
   range: InsightRange;
   /** The project filter; null for every project. */
   project: string | null;
   projects: { slug: string; name: string }[];
-  /** By `<project>/<ticket>`. */
-  tickets: Record<string, InsightTicketFacts>;
+  /** The same numbers for each project shown, in the registry's order, when asked (`perProject`: the page's "By project" table, THE-1021). */
+  byProject: { slug: string; name: string; insights: FleetInsights }[];
   /** False when the live data could not be read: the numbers are empty, not zero. */
   live: boolean;
 }
@@ -645,7 +636,7 @@ export interface InsightsReading {
 export async function loadInsights(
   opts: LoadOptions,
   scope: Scope | null,
-  q: { range: InsightRange; project: string | null },
+  q: { range: InsightRange; project: string | null; perProject?: boolean },
 ): Promise<InsightsReading | null> {
   const now = opts.now();
   const { store, shown } = await shownProjects(opts, scope);
@@ -685,31 +676,18 @@ export async function loadInsights(
     }
   }
   const insights = buildInsights({ records, range: q.range, now });
-  const tickets: Record<string, InsightTicketFacts> = {};
-  for (const r of records) {
-    const p = chosen.find((c) => c.slug === r.project);
-    const issues = new Map((p?.snap?.sources.program.issues ?? []).map((i) => [i.id, i]));
-    const held = new Set(r.sessions.filter((s) => s.releasedAt === null).map((s) => s.ticket));
-    const ids = new Set([
-      ...r.events.map((e) => e.ticket),
-      ...r.waits.flatMap((w) => w.ticket ?? []),
-      ...r.validations.map((v) => v.ticket),
-    ]);
-    for (const id of ids) {
-      const issue = issues.get(id);
-      tickets[insightKey(r.project, id)] = {
-        title: issue?.title ?? null,
-        url: issue?.url ?? null,
-        inFlight: held.has(id),
-      };
-    }
-  }
+  // Each project's own numbers, for the page's table (THE-1021); the JSON summary needs none.
+  const byProject = (q.perProject ? chosen : []).map((p) => ({
+    slug: p.slug,
+    name: p.name,
+    insights: buildInsights({ records: records.filter((r) => r.project === p.slug), range: q.range, now }),
+  }));
   return {
     insights,
     range: q.range,
     project: q.project,
     projects: shown.map((p) => ({ slug: p.slug, name: p.name })),
-    tickets,
+    byProject,
     live,
   };
 }
@@ -732,12 +710,9 @@ async function shownProjects(opts: LoadOptions, scope: Scope | null) {
 /** How many entries a page of the Activity feed shows. */
 export const FEED_PAGE = 100;
 
-/** What the Activity page's address asks for. */
+/** What the Activity page's address asks for: its chip, and where an older page starts. */
 export interface ActivityQuery {
-  project: string | null;
-  ticket: string | null;
-  kind: FeedKind | null;
-  who: FeedWho | null;
+  show: ActivityShow;
   before: FeedCursor | null;
 }
 
@@ -746,61 +721,44 @@ export interface ActivityReading {
   /** Where the next, older page starts; null on the last one. */
   next: FeedCursor | null;
   projects: { slug: string; name: string }[];
-  /** The people the "who" filter offers. */
-  people: string[];
   /** Each ticket's title from the project's last reading of Linear, by `<project>/<ticket>`. */
   titles: Record<string, string>;
   /** False when the live data could not be read: the feed is unknown, not empty. */
   live: boolean;
 }
 
-/**
- * One page of the Activity feed of the scope's projects, or of one: Postgres
- * only. Null when `project` is not one the scope may see.
- */
+/** One page of the Activity feed of the scope's projects: Postgres only. */
 export async function loadActivity(
   opts: LoadOptions,
   scope: Scope | null,
   q: ActivityQuery,
   limit = FEED_PAGE,
-): Promise<ActivityReading | null> {
+): Promise<ActivityReading> {
   const now = opts.now();
   const { store, shown } = await shownProjects(opts, scope);
-  if (q.project !== null && !shown.some((p) => p.slug === q.project)) return null;
-  const projects = q.project === null ? shown.map((p) => p.slug) : [q.project];
   const reading: ActivityReading = {
     entries: [],
     next: null,
     projects: shown.map((p) => ({ slug: p.slug, name: p.name })),
-    people: [],
     titles: {},
     live: store !== null,
   };
   if (!store) return reading;
   try {
-    const [entries, people] = await withTimeout(
-      Promise.all([
-        store.feedPage({
-          projects,
-          before: q.before,
-          ticket: q.ticket,
-          kinds: q.kind ? [q.kind] : null,
-          who: q.who,
-          limit: limit + 1,
-          now,
-        }),
-        store.feedPeople(
-          shown.map((p) => p.slug),
-          now,
-        ),
-      ]),
+    const entries = await withTimeout(
+      store.feedPage({
+        projects: shown.map((p) => p.slug),
+        before: q.before,
+        ...SHOWS[q.show],
+        limit: limit + 1,
+        now,
+      }),
       opts.liveTimeoutMs ?? 4000,
       "reading the activity",
     );
     reading.entries = entries.slice(0, limit);
     const last = reading.entries.at(-1);
     reading.next = entries.length > limit && last ? { at: last.at, key: last.key } : null;
-    reading.people = people;
   } catch (err) {
     liveError(err);
     reading.live = false;

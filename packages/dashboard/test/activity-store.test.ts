@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type FeedEntry, type FeedKind, sinceSummary } from "@armada/core/read";
-import { catchupRecords, type FeedQuery, feedPage, feedPeople } from "../lib/activity-store.ts";
+import { catchupRecords, type FeedQuery, feedPage } from "../lib/activity-store.ts";
 import type { Database } from "../lib/db.ts";
 import {
   addInboxItem,
@@ -143,9 +143,8 @@ afterAll(() => db.end());
 const query = (over: Partial<FeedQuery> = {}): FeedQuery => ({
   projects: [P],
   before: null,
-  ticket: null,
   kinds: null,
-  who: null,
+  phase: null,
   limit: 100,
   now: NOW,
   ...over,
@@ -190,37 +189,23 @@ describe("feedPage", () => {
     expect(list.find((e) => e.kind === "decision")).toMatchObject({ text: "Lovely", ref: expect.any(Number) });
   });
 
-  test("filters by ticket, kind and who, in every source", async () => {
-    expect(kinds(await feedPage(db, query({ ticket: "W-1" })))).toEqual([
-      "merge W-1",
-      "decision:approved W-1",
-      "validation:validation W-1",
-      "report W-1",
-      "claim W-1",
-      "launch W-1",
-    ]);
+  test("filters by kind in every source, and the reports by phase", async () => {
     expect(kinds(await feedPage(db, query({ kinds: ["merge", "claim"] })))).toEqual([
       "claim W-2",
       "merge W-1",
       "claim W-1",
     ]);
-    expect(kinds(await feedPage(db, query({ who: { kind: "person", name: "Grace Hopper" } })))).toEqual([
-      "revoke W-4",
-      "request:launch-request W-3",
-    ]);
-    expect(
-      kinds(await feedPage(db, query({ who: { kind: "coordinator" }, kinds: ["coordinator", "answer"] }))),
-    ).toEqual([
+    expect(kinds(await feedPage(db, query({ kinds: ["coordinator", "answer"] })))).toEqual([
       "coordinator:stop -",
       "coordinator:start -",
       "answer:question W-2",
       "coordinator:stop -",
       "coordinator:start -",
     ]);
-    expect(kinds(await feedPage(db, query({ who: { kind: "agent" }, ticket: "W-2" })))).toEqual([
+    // The Activity page's "Blocks": the questions, and the reports that entered blocked (W-1's ready-to-merge is not one).
+    expect(kinds(await feedPage(db, query({ kinds: ["question", "report"], phase: "blocked" })))).toEqual([
       "question W-2",
       "report W-2",
-      "claim W-2",
     ]);
   });
 
@@ -241,11 +226,6 @@ describe("feedPage", () => {
   test("reads only the projects it is given", async () => {
     expect(kinds(await feedPage(db, query({ projects: ["gadgets"] })))).toEqual(["merge G-1"]);
     expect(await feedPage(db, query({ projects: [] }))).toEqual([]);
-  });
-
-  test("offers the people who acted", async () => {
-    expect(await feedPeople(db, [P], NOW)).toEqual(["Ada Lovelace", "Grace Hopper"]);
-    expect(await feedPeople(db, ["gadgets"], NOW)).toEqual([]);
   });
 });
 
