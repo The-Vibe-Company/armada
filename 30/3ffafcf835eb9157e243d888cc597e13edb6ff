@@ -1,0 +1,23 @@
+"design/dashboard-v7/Armada Dashboard.dc.html"
+  s_d658e7251951c2::t_5123e122c4eb8e 1-859
+design/dashboard-v7/github.md
+  s_d658e7251951c2::t_1d0103da91bf9d 1-20
+design/dashboard-v7/support.js
+  s_d658e7251951c2::t_dcdb44f9d564b1 1-1911
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "303ffafcf835eb9157e243d888cc597e13edb6ff",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
