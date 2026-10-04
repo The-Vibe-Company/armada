@@ -4008,9 +4008,17 @@ a.ui-figure:hover {
     padding: 0;
     justify-content: center;
   }
-  .sh-search-text,
   .sh-search-key {
     display: none;
+  }
+  /* Out of sight, still the button's name for a screen reader. */
+  .sh-search-text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
   .sh-scroll {
     padding-bottom: calc(64px + env(safe-area-inset-bottom));

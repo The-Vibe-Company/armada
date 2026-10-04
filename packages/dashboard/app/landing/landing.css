@@ -1484,8 +1484,14 @@
     padding: 0 8px;
     justify-content: flex-start;
   }
-  .lp-replica :is(.sh-search-text, .sh-search-key) {
+  .lp-replica .sh-search-key {
     display: inline;
+  }
+  .lp-replica .sh-search-text {
+    position: static;
+    width: auto;
+    height: auto;
+    clip: auto;
   }
 }
 .lp-pointer {
