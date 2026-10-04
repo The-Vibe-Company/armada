@@ -174,8 +174,17 @@ export async function createOrganization(form: FormData): Promise<void> {
   redirect("/");
 }
 
-function orgPage(result: { done: OrgNotice } | { error: OrgError }, path: string = ORGANIZATION_PATH): string {
-  return "done" in result ? `${path}?done=${result.done}` : `${path}?error=${result.error}`;
+/**
+ * The page a change comes back to, with its outcome: the members' page reads
+ * `done`/`error`; the API keys tab, which shares its page with the vault's own
+ * codes, reads `key-done`/`key-error` (THE-1021).
+ */
+function orgPage(
+  result: { done: OrgNotice } | { error: OrgError },
+  path: string = ORGANIZATION_PATH,
+  prefix: "" | "key-" = "",
+): string {
+  return "done" in result ? `${path}?${prefix}done=${result.done}` : `${path}?${prefix}error=${result.error}`;
 }
 
 /** Runs one change on the viewer's organization, then shows its page (the members', or `path`) with its outcome. */
@@ -183,14 +192,15 @@ async function change(
   done: OrgNotice,
   run: (organizationId: string, h: Headers) => Promise<unknown>,
   path: string = ORGANIZATION_PATH,
+  prefix: "" | "key-" = "",
 ): Promise<void> {
   const viewer = await requireMember();
   let target: string;
   try {
     await run(viewer.organization.id, await headers());
-    target = orgPage({ done }, path);
+    target = orgPage({ done }, path, prefix);
   } catch (err) {
-    target = orgPage({ error: orgError(err) }, path);
+    target = orgPage({ error: orgError(err) }, path, prefix);
   }
   redirect(target);
 }
@@ -311,6 +321,7 @@ export async function revokeApiKey(form: FormData): Promise<void> {
     "revoked",
     (_, h) => auth.api.deleteApiKey({ body: { keyId: text(form, "key") }, headers: h }),
     KEYS_PATH,
+    "key-",
   );
 }
 

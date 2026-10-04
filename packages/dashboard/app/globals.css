@@ -1323,6 +1323,22 @@ button.chip:hover {
   transform: translateX(-100%);
   animation: ui-shimmer 1.4s linear infinite;
 }
+.ui-skel.is-title {
+  height: 22px;
+  border-radius: var(--r-sm);
+}
+.ui-skel-rows {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--line);
+}
+.ui-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 36px;
+  border-bottom: 1px solid var(--line-soft);
+}
 @keyframes ui-shimmer {
   to {
     transform: translateX(100%);
@@ -3001,6 +3017,10 @@ a.pj-title:hover {
   font-size: 12px;
   color: var(--text-3);
 }
+.org-sub.is-wrap {
+  white-space: normal;
+  line-height: 1.45;
+}
 .org-b {
   font-size: 12.5px;
   color: var(--text-2);
@@ -3077,6 +3097,26 @@ a.pj-title:hover {
 }
 .org-panel .ui-form {
   flex-wrap: wrap;
+}
+/* An API key, shown once after it is created. */
+.ui-secret {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in oklab, var(--green) 40%, transparent);
+  border-radius: var(--r);
+  background: color-mix(in oklab, var(--green) 8%, transparent);
+}
+.ui-secret-title {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ui-secret-value {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: var(--text-soft);
 }
 .org-note {
   margin: 0;

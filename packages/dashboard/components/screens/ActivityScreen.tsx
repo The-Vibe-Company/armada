@@ -76,11 +76,7 @@ export function ActivityScreen({
             if (here) lined = true;
             return (
               <Fragment key={d.day}>
-                {dated && (
-                  <li className="act-day" aria-hidden>
-                    {d.label}
-                  </li>
-                )}
+                {dated && <li className="act-day">{d.label}</li>}
                 {d.fresh.map((e) => (
                   <Entry key={e.key} t={t} e={e} r={r} zone={zone} names={names} />
                 ))}

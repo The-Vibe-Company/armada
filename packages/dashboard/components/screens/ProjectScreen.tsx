@@ -164,7 +164,11 @@ function ReadyRow({ ticket: r }: { ticket: ReadyTicket }) {
         {r.title}
       </a>
       <span className="pj-labels">
-        {error && <span style={{ color: "var(--red)" }}>{t.requestErrors[error]}</span>}
+        {error && (
+          <span role="alert" style={{ color: "var(--red)" }}>
+            {t.requestErrors[error]}
+          </span>
+        )}
         {r.labels.map((l) => (
           <span key={l} className="pj-label">
             {l}

@@ -3,7 +3,7 @@ import { cookies, headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { cancelInvitation, inviteMember, removeMember, updateMemberRole } from "@/app/auth-actions";
 import { CopyLink } from "@/components/CopyLink";
-import { Disclose, OrgBar, OrgPage, OrgRow, OrgRows } from "@/components/org";
+import { Disclose, Named, OrgBar, OrgPage, OrgRow, OrgRows } from "@/components/org";
 import { Button, Form, Input, Notice, Select } from "@/components/page";
 import { invitationUrl, isRole, ROLES, type Role } from "@/lib/accounts";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
@@ -97,7 +97,7 @@ export default async function Organization({ searchParams }: { searchParams: Par
               d={
                 manager &&
                 !self && (
-                  <Disclose label={o.manage}>
+                  <Disclose label={<Named label={o.manage} name={m.user.name || m.user.email} />}>
                     <Form action={updateMemberRole}>
                       <input type="hidden" name="member" value={m.id} />
                       {roles(`role-${m.id}`, m.role)}
@@ -123,7 +123,7 @@ export default async function Organization({ searchParams }: { searchParams: Par
             color="var(--amber)"
             d={
               manager && (
-                <Disclose label={o.manage}>
+                <Disclose label={<Named label={o.manage} name={i.email} />}>
                   <CopyLink url={invitationUrl(settings.baseUrl, i.id)} label={o.copyLink} done={o.copied} />
                   <Form action={cancelInvitation}>
                     <input type="hidden" name="invitation" value={i.id} />

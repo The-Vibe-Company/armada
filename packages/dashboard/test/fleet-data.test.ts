@@ -557,7 +557,7 @@ describe("insights (THE-893)", () => {
     await recordEvent(db, { ...base, kind: "claim", phase: "planning", at: w.at(-3 * 3_600_000) });
     await recordEvent(db, { ...base, kind: "merge", phase: "merged", at: w.at(-3_600_000) });
 
-    const reading = await loadInsights(w.opts, HOME, { range: "7d", project: null });
+    const reading = await loadInsights(w.opts, HOME, { range: "7d", project: null, perProject: true });
     expect(reading?.live).toBe(true);
     expect(reading?.projects).toEqual([{ slug: "widgets", name: "Widgets" }]);
     expect(reading?.insights.merged.count).toBe(1);

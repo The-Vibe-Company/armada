@@ -59,6 +59,16 @@ export function Disclose({
   );
 }
 
+/** A row's action named for screen readers by what it acts on: "Manage" reads "Manage Ada Lovelace". */
+export function Named({ label, name }: { label: ReactNode; name: string }) {
+  return (
+    <>
+      {label}
+      <span className="sr-only"> {name}</span>
+    </>
+  );
+}
+
 /** A list's title over its rows, when a tab holds more than one list. */
 export function OrgHeading({ children, side }: { children: ReactNode; side?: ReactNode }) {
   return (
@@ -78,6 +88,7 @@ export function OrgRow({
   a,
   sub,
   subMono = false,
+  subWrap = false,
   b,
   bMono = false,
   c,
@@ -87,6 +98,8 @@ export function OrgRow({
   a: ReactNode;
   sub?: ReactNode;
   subMono?: boolean;
+  /** A detail on as many lines as it needs (a key's explanation). */
+  subWrap?: boolean;
   b?: ReactNode;
   bMono?: boolean;
   c?: ReactNode;
@@ -97,7 +110,9 @@ export function OrgRow({
     <li className="org-row">
       <span className="org-a">
         <span className="org-name">{a}</span>
-        {sub && <span className={subMono ? "org-sub mono" : "org-sub"}>{sub}</span>}
+        {sub && (
+          <span className={["org-sub", subMono && "mono", subWrap && "is-wrap"].filter(Boolean).join(" ")}>{sub}</span>
+        )}
       </span>
       <span className={bMono ? "org-b mono" : "org-b"}>{b}</span>
       <span className="org-c" style={color ? { color } : undefined}>

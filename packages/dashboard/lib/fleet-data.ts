@@ -621,7 +621,7 @@ export interface InsightsReading {
   /** The project filter; null for every project. */
   project: string | null;
   projects: { slug: string; name: string }[];
-  /** The same numbers for each project shown, in the registry's order (THE-1021: the "By project" table). */
+  /** The same numbers for each project shown, in the registry's order, when asked (`perProject`: the page's "By project" table, THE-1021). */
   byProject: { slug: string; name: string; insights: FleetInsights }[];
   /** False when the live data could not be read: the numbers are empty, not zero. */
   live: boolean;
@@ -636,7 +636,7 @@ export interface InsightsReading {
 export async function loadInsights(
   opts: LoadOptions,
   scope: Scope | null,
-  q: { range: InsightRange; project: string | null },
+  q: { range: InsightRange; project: string | null; perProject?: boolean },
 ): Promise<InsightsReading | null> {
   const now = opts.now();
   const { store, shown } = await shownProjects(opts, scope);
@@ -676,7 +676,8 @@ export async function loadInsights(
     }
   }
   const insights = buildInsights({ records, range: q.range, now });
-  const byProject = chosen.map((p) => ({
+  // Each project's own numbers, for the page's table (THE-1021); the JSON summary needs none.
+  const byProject = (q.perProject ? chosen : []).map((p) => ({
     slug: p.slug,
     name: p.name,
     insights: buildInsights({ records: records.filter((r) => r.project === p.slug), range: q.range, now }),

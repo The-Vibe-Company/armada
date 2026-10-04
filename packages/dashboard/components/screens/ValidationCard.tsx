@@ -380,7 +380,8 @@ export function Decide({
     );
   if (!ctx.live) return <p className="calm">{t.needsLive}</p>;
   const keys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    // The note box has no one button to send: its decision is the button the owner clicks.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !note) {
       e.preventDefault();
       e.currentTarget.form?.requestSubmit();
     } else if (e.key === "Escape") setChanging(false);

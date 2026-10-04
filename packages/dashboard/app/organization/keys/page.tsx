@@ -5,7 +5,7 @@ import { notFound } from "next/navigation";
 import { revokeApiKey } from "@/app/auth-actions";
 import { deleteKey, saveKey } from "@/app/keys-actions";
 import { ApiKeyForm } from "@/components/ApiKeyForm";
-import { Disclose, OrgBar, OrgHeading, OrgNone, OrgPage, OrgRow, OrgRows } from "@/components/org";
+import { Disclose, Named, OrgBar, OrgHeading, OrgNone, OrgPage, OrgRow, OrgRows } from "@/components/org";
 import { Button, Form, Input, Notice } from "@/components/page";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
 import { accountsModeOf, KEYS_PATH } from "@/lib/accounts-settings";
@@ -49,7 +49,13 @@ export async function generateMetadata(): Promise<Metadata> {
   return { title: `${t.keys.nav} — Armada` };
 }
 
-type Params = Promise<{ error?: string | string[]; done?: string | string[]; project?: string | string[] }>;
+type Params = Promise<{
+  error?: string | string[];
+  done?: string | string[];
+  "key-error"?: string | string[];
+  "key-done"?: string | string[];
+  project?: string | string[];
+}>;
 
 const pick = <T extends string>(list: readonly T[], v: string | string[] | undefined): T | null =>
   typeof v === "string" && (list as readonly string[]).includes(v) ? (v as T) : null;
@@ -69,9 +75,9 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   const manager = owner || viewer.organization.role === "admin";
   const error = pick<KeysError>(KEYS_ERRORS, params.error);
   const done = pick<KeysNotice>(KEYS_NOTICES, params.done);
-  // The API key forms come back with the members' page's codes.
-  const orgError = pick<OrgError>(ORG_ERRORS, params.error);
-  const orgDone = pick<OrgNotice>(ORG_NOTICES, params.done);
+  // Revoking an API key comes back with its own parameters: the vault's codes overlap the organization's.
+  const orgError = pick<OrgError>(ORG_ERRORS, params["key-error"]);
+  const orgDone = pick<OrgNotice>(ORG_NOTICES, params["key-done"]);
   const day = new Intl.DateTimeFormat(lang === "fr" ? "fr-FR" : "en-GB", { day: "numeric", month: "short" });
   const date = new Intl.DateTimeFormat(lang === "fr" ? "fr-FR" : "en-GB", {
     day: "numeric",
@@ -167,7 +173,7 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
   const editor = (id: string, label: string, name: string, scope: "own" | "organization" | "project", set: boolean) => {
     const secret = isWorkerSecretName(name) || SECRET_KINDS[name as SecretName]?.secret !== false;
     return (
-      <Disclose label={o.manage}>
+      <Disclose label={<Named label={o.manage} name={label} />}>
         <Form action={saveKey}>
           {slotFields(name, scope)}
           <label className="sr-only" htmlFor={id}>
@@ -205,6 +211,7 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
         a={k.labels[label]}
         sub={info?.value ?? k.hints[label]}
         subMono={!!info?.value}
+        subWrap={!info?.value}
         b={info ? setBy(info) : null}
         c={info ? k.isSet : k.notSet}
         color={info ? "var(--green)" : "var(--text-3)"}

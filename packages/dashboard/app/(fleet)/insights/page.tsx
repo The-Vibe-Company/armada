@@ -22,7 +22,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function InsightsPage() {
   const [{ opts, scope }, jar] = await Promise.all([fleetOf(), cookies()]);
   const t = STRINGS[languageOf(jar.get(LANGUAGE_COOKIE)?.value)];
-  const reading = await loadInsights(opts, scope, { range: INSIGHTS_RANGE, project: null });
+  const reading = await loadInsights(opts, scope, { range: INSIGHTS_RANGE, project: null, perProject: true });
   if (!reading) notFound();
   return <InsightsScreen t={t} reading={reading} />;
 }
