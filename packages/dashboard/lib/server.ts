@@ -282,12 +282,11 @@ export async function refreshMarked(keys: string[]): Promise<void> {
 
 /**
  * The Fleet overview the viewer may read: their organization's projects, or
- * every project under the password gate. `timeline` keeps the live
- * timeline's history, which pages leave out (`withoutTimeline`).
+ * every project under the password gate, without the timeline's history
+ * (`withoutTimeline`).
  */
-export async function getOverview(opts: { timeline?: boolean } = {}): Promise<FleetOverview> {
-  const overview = await overviewOfRequest();
-  return opts.timeline ? overview : withoutTimeline(overview);
+export async function getOverview(): Promise<FleetOverview> {
+  return withoutTimeline(await overviewOfRequest());
 }
 
 // Read once per render: the shell and an agent's page both need it.

@@ -143,9 +143,9 @@ export function harnessCounts(rows: Pick<FleetRow, "runtime">[]): Record<Harness
 // ------------------------------------------------------------------ addresses
 
 export const paths = {
-  /** The sessions in flight, grouped by coordinator (THE-916). */
+  /** The sessions in flight, grouped by state (THE-1020). */
   overview: "/",
-  /** The overview filtered to one coordinator's group. */
+  /** The overview filtered to one project's sessions. */
   coordinator: (slug: string) => `/?coordinator=${encodeURIComponent(slug)}`,
   projects: "/projects",
   project: (slug: string) => `/projects/${encodeURIComponent(slug)}`,
@@ -195,11 +195,11 @@ export function placeOf(pathname: string): Place {
 }
 
 /**
- * The menu's sections (THE-916): the overview, whose items are the
- * coordinators, then Activity, Insights and the organization. A page out of
- * the menu (an agent, a project, the validations) belongs to the overview.
+ * The menu's sections (THE-1020, design/dashboard-v7): the overview, the
+ * validations, Activity, Insights and the organization. A page out of the
+ * menu (an agent, a project) belongs to the overview.
  */
-export const SECTIONS = ["overview", "activity", "insights", "organization"] as const;
+export const SECTIONS = ["overview", "validations", "activity", "insights", "organization"] as const;
 export type Section = (typeof SECTIONS)[number] | null;
 
 export function sectionOf(place: Place): Section {
@@ -208,9 +208,10 @@ export function sectionOf(place: Place): Section {
     case "agent":
     case "projects":
     case "project":
+      return "overview";
     case "validations":
     case "validation":
-      return "overview";
+      return "validations";
     case "insights":
     case "activity":
     case "organization":
@@ -231,7 +232,11 @@ export type Crumb =
   | { kind: "agent"; ticket: string; href: null }
   | { kind: "organization-page"; page: "keys" | "github" | "workers"; href: null };
 
-export function crumbsOf(place: Place, from: Place | null): Crumb[] {
+/**
+ * The breadcrumbs (design/dashboard-v7): a project and an agent sit under the
+ * overview, an agent under its project when it is known (`agentProject`).
+ */
+export function crumbsOf(place: Place, agentProject: string | null = null): Crumb[] {
   switch (place.kind) {
     case "overview":
       return [{ kind: "overview", href: null }];
@@ -239,7 +244,7 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
       return [{ kind: "projects", href: null }];
     case "project":
       return [
-        { kind: "projects", href: paths.projects },
+        { kind: "overview", href: paths.overview },
         { kind: "project", slug: place.slug, href: null },
       ];
     case "validations":
@@ -251,13 +256,9 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
       ];
     case "agent": {
       const last: Crumb = { kind: "agent", ticket: place.ticket, href: null };
-      if (from?.kind === "project")
-        return [
-          { kind: "projects", href: paths.projects },
-          { kind: "project", slug: from.slug, href: paths.project(from.slug) },
-          last,
-        ];
-      return [{ kind: "overview", href: paths.overview }, last];
+      const home: Crumb = { kind: "overview", href: paths.overview };
+      if (!agentProject) return [home, last];
+      return [home, { kind: "project", slug: agentProject, href: paths.project(agentProject) }, last];
     }
     case "organization":
       return place.page === "members"
@@ -280,10 +281,10 @@ export function crumbsOf(place: Place, from: Place | null): Crumb[] {
 /**
  * Where Esc leads from a page: an agent's page back to the overview, project
  * or list it was opened from (else the overview), a project's page to the
- * projects; a list stays. Always a page of the app, never the browser's history.
+ * overview; a list stays. Always a page of the app, never the browser's history.
  */
 export function escapeTarget(place: Place, fromPath: string | null): string | null {
-  if (place.kind === "project") return paths.projects;
+  if (place.kind === "project") return paths.overview;
   if (place.kind === "validation") return paths.validations;
   if (place.kind !== "agent") return null;
   const from = fromPath === null ? null : placeOf(fromPath);
@@ -291,13 +292,6 @@ export function escapeTarget(place: Place, fromPath: string | null): string | nu
     from?.kind === "overview" || from?.kind === "projects" || from?.kind === "project" || from?.kind === "validations";
   return back && fromPath ? fromPath : paths.overview;
 }
-
-// --------------------------------------------------------------------- density
-
-export const DENSITIES = ["compact", "airy"] as const;
-export type Density = (typeof DENSITIES)[number];
-export const DENSITY_COOKIE = "armada-density";
-export const densityOf = (v: string | null | undefined): Density => (v === "airy" ? "airy" : "compact");
 
 /** The component sheet at /design: in development and in the demo only. */
 export const designPageEnabled = (env: Record<string, string | undefined>) =>

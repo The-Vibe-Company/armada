@@ -8,7 +8,7 @@
 // to it.
 //
 // Server-safe: the organization's pages render these on the server. The parts
-// that need the shell (the header's slot, the density) are in page-client.tsx.
+// that need the shell (the header's slot) are in page-client.tsx.
 import Link from "next/link";
 import type {
   ButtonHTMLAttributes,
@@ -20,7 +20,7 @@ import type {
   SelectHTMLAttributes,
 } from "react";
 
-export { DensityToggle, HeaderActions, PageHeader } from "./page-client";
+export { HeaderActions, PageHeader } from "./page-client";
 
 const cx = (...names: (string | false | null | undefined)[]) => names.filter(Boolean).join(" ");
 
@@ -371,7 +371,7 @@ export function SectionBody({ children, className }: { children: ReactNode; clas
 }
 
 /**
- * A line of a list: 40 px compact, 48 px airy, a hairline under it. With
+ * A line of a list: 36 px, a hairline under it. With
  * `href` it opens a page: j/k moves through these, Enter opens the selected
  * one, and its page is prefetched. Without, it is a static line (a member, a
  * key, a ticket ready to start).

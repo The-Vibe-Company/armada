@@ -18,7 +18,7 @@ import {
 
 const NOW = new Date("2026-10-01T12:00:00Z");
 const ago = (days: number) => new Date(NOW.getTime() - days * 24 * 3_600_000).toISOString();
-const ctx: SearchContext = { t: STRINGS.en, lang: "en", density: "compact", organization: false, live: true };
+const ctx: SearchContext = { t: STRINGS.en, lang: "en", organization: false, live: true };
 
 const row = (id: string, title: string, over: Record<string, unknown> = {}) => ({
   id,
@@ -290,7 +290,7 @@ describe("⌘K's ranking", () => {
     expect(top("insights")?.href).toBe("/insights");
     expect(top("activity")?.href).toBe("/activity");
     const fr = searchItems(overview, index, { ...ctx, t: STRINGS.fr, lang: "fr" });
-    expect(flatten(search(fr, "tendances"))[0]?.href).toBe("/insights");
+    expect(flatten(search(fr, "activité"))[0]?.href).toBe("/activity");
   });
 
   test("results come grouped, the group of the best match first; near ties go to the recent picks", () => {
@@ -322,7 +322,7 @@ describe("⌘K's ranking", () => {
 
 describe("⌘K's actions", () => {
   const actions = items.filter((i) => i.kind === "action");
-  test("answer the oldest open decision, launch what is ready, open the coordinator, copy a branch, switch language or density", () => {
+  test("answer the oldest open decision, launch what is ready, open the coordinator, copy a branch, switch language", () => {
     expect(actions.find((a) => a.key === "action:answer")?.action).toEqual({
       kind: "answer",
       project: "widgets",
@@ -346,11 +346,8 @@ describe("⌘K's actions", () => {
       kind: "copy",
       text: "feature/wid-7-onboarding",
     });
-    expect(
-      actions.filter((a) => a.action?.kind === "language" || a.action?.kind === "density").map((a) => a.action),
-    ).toEqual([
+    expect(actions.filter((a) => a.action?.kind === "language").map((a) => a.action)).toEqual([
       { kind: "language", to: "fr" },
-      { kind: "density", to: "airy" },
     ]);
   });
 

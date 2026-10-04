@@ -67,7 +67,7 @@ function Fact({ k, children, color }: { k: string; children: ReactNode; color?: 
 }
 
 export function ProjectScreen() {
-  const { t, density } = useShell();
+  const { t } = useShell();
   const { overview } = useFleet();
   const slug = decodeURIComponent(String(useParams<{ slug: string }>().slug ?? ""));
   const project = overview.projects.find((p) => p.slug === slug);
@@ -139,7 +139,7 @@ export function ProjectScreen() {
             <p>{t.shell.noAgents}</p>
           </SectionBody>
         ) : (
-          rows.map((r) => <AgentRow key={r.id} row={r} airy={density === "airy"} />)
+          rows.map((r) => <AgentRow key={r.id} row={r} />)
         )}
       </Section>
       <Section label={t.shell.readyToStart} count={ready.length} side={t.projectPages.routedBy}>

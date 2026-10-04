@@ -15,6 +15,20 @@
   --lp-glass: rgba(14, 14, 16, 0.62);
   /* The quietest text: --text-3, lifted to 4.5:1 on every surface of the page (WCAG AA). */
   --lp-dim: #8a8a90;
+  /* The night sky (THE-899): the landing keeps its own planes and ink; its
+     replica of the dashboard takes the dashboard's (.lp-replica-window). */
+  --bg: #060709;
+  --surface: #0c0d10;
+  --card: #14151a;
+  --text: #f2f1ee;
+  --text-2: #b6b6bd;
+  --text-3: #8e8e97;
+  --line: rgba(255, 255, 255, 0.06);
+  --line-strong: rgba(255, 255, 255, 0.11);
+  --fill: rgba(255, 255, 255, 0.05);
+  --fill-2: rgba(255, 255, 255, 0.08);
+  --fill-3: rgba(255, 255, 255, 0.11);
+  --track: rgba(255, 255, 255, 0.07);
   font-size: 16px;
   line-height: 1.5;
   overflow-x: clip;
@@ -1393,52 +1407,42 @@
   position: relative;
 }
 .lp-replica-window {
+  /* The dashboard's planes and ink (globals.css), not the landing's night sky. */
+  --bg: #0f1012;
+  --surface: #0f1012;
+  --card: #121316;
+  --text: #e6e7e9;
+  --text-2: #a3a6ad;
+  --text-3: #84888f;
+  --line: #1c1d21;
+  --line-strong: #24262b;
+  --fill: rgba(255, 255, 255, 0.035);
+  --fill-2: rgba(255, 255, 255, 0.06);
+  --fill-3: rgba(255, 255, 255, 0.09);
+  --track: #24262b;
   display: flex;
   height: 900px;
-  padding: 8px 8px 8px 0;
-  border-radius: 18px;
+  border-radius: 14px;
   background: var(--bg);
   box-shadow:
     0 0 0 1px oklch(1 0 0 / 0.08),
     0 1px 0 oklch(1 0 0 / 0.06) inset,
     0 80px 160px -50px rgba(0, 0, 0, 0.95);
   overflow: hidden;
+  color: var(--text);
   font-size: 13px;
   line-height: 1.5;
   text-align: left;
   user-select: none;
 }
-.lp-replica-rail {
-  flex: none;
-  width: 52px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-  padding-top: 10px;
-}
-.lp-replica-nav {
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  background: var(--fill);
-}
-.lp-replica-nav.is-on {
-  margin-top: 10px;
-  background: var(--fill-3);
+.lp-replica-org {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
 }
 .lp-replica-main {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  border-radius: var(--r-md);
-  background: var(--surface);
-  box-shadow: 0 0 0 1px var(--line);
-  overflow: hidden;
-}
-.lp-replica-crumb {
-  font-weight: 500;
 }
 .lp-replica-scroll {
   flex: 1;
@@ -1447,19 +1451,41 @@
   -webkit-mask-image: linear-gradient(180deg, #000 85%, transparent);
   mask-image: linear-gradient(180deg, #000 85%, transparent);
 }
-/* The board (THE-968, THE-988) fits the window: its five columns share it, never scroll. */
-.lp-replica .ov-board {
-  --ov-wide: minmax(0, 1fr);
-  justify-content: stretch;
-}
-/* A "To validate" badge that arrives (the hand-back's merge, THE-931) grows in. */
-.lp-replica .ui-pill {
-  transition:
-    opacity 400ms var(--lp-ease),
-    transform 400ms var(--lp-ease);
+/* A row that changes state (the hand-back's merge, THE-931) fades in where it lands. */
+.lp-replica .ov-row {
   @starting-style {
     opacity: 0;
-    transform: scale(0.9);
+  }
+  transition: opacity 400ms var(--lp-ease);
+}
+/* The sidebar stays the desk's whatever the screen: the window is a desk's, shrunk. */
+@media (max-width: 719px) {
+  .lp-replica .sh-side {
+    width: var(--sidebar);
+    height: auto;
+    display: flex;
+    padding: 12px 10px;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+  }
+  .lp-replica .sh-side > :is(.sh-nav, .sh-projects, .sh-live) {
+    display: flex;
+  }
+  .lp-replica .sh-side > .sh-item {
+    display: flex;
+  }
+  .lp-replica .sh-side > .spacer {
+    display: block;
+  }
+  .lp-replica .sh-search {
+    width: auto;
+    height: 30px;
+    margin-bottom: 10px;
+    padding: 0 8px;
+    justify-content: flex-start;
+  }
+  .lp-replica :is(.sh-search-text, .sh-search-key) {
+    display: inline;
   }
 }
 .lp-pointer {

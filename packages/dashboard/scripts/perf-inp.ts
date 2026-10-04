@@ -14,7 +14,13 @@ const RUNS = 5;
 /** How many sessions to validate the decision is measured on: each records its decision, so each runs once. */
 const DECISIONS = 3;
 /** The pages it opens; an agent's tabs are in its "Details", which `?tab=` opens (THE-916). */
-export const INP_PAGES = ["/", `/agents/${LONG_AGENT}?tab=activity`, `/agents/${TO_VALIDATE}`, "/agents/GAD-9"];
+export const INP_PAGES = [
+  "/",
+  "/?view=preview",
+  `/agents/${LONG_AGENT}?tab=activity`,
+  `/agents/${TO_VALIDATE}`,
+  "/agents/GAD-9",
+];
 
 declare global {
   interface Window {
@@ -96,9 +102,9 @@ export async function measureInteractions(base: string, cookie: string, slowdown
   try {
     const out: Interaction[] = [];
 
-    // The overview is the agents list, grouped by coordinator (THE-916).
+    // The overview is one list of every session, grouped by state (THE-1020).
     const agents = await open(browser, `${base}/`, cookie, slowdown);
-    const rows = await agents.locator("a.sc-agent[data-row]").count();
+    const rows = await agents.locator("a.ov-row[data-row]").count();
     out.push({
       name: `Open the ⌘K palette (overview, ${rows} rows)`,
       ms: await typical(
@@ -114,20 +120,38 @@ export async function measureInteractions(base: string, cookie: string, slowdown
       ),
     });
     out.push({
-      name: "Filter the agents by harness",
+      name: "Filter the overview by project",
       ms: await typical(
         agents,
         async () => {
-          await agents.locator('a[role="tab"][href="/?harness=claude-code"]').click();
-          await agents.waitForURL(/harness=claude-code/);
+          await agents.locator('a.ov-chip[href="/?coordinator=gadgets"]').click();
+          await agents.waitForURL(/coordinator=gadgets/);
         },
         async () => {
-          await agents.locator('a[role="tab"][href="/"]').click();
+          await agents.locator('a.ov-chip[href="/"]').click();
           await agents.waitForURL((url) => url.pathname === "/" && !url.search);
         },
       ),
     });
     await agents.context().close();
+
+    // List + preview: a click on a row shows its session in the pane.
+    const split = await open(browser, `${base}/?view=preview`, cookie, slowdown);
+    const pick = (n: number) => split.locator("a.ov-row[data-row]").nth(n);
+    out.push({
+      name: "Select a session in the preview pane",
+      ms: await typical(
+        split,
+        async () => {
+          await pick(1).click();
+          await split.locator('a.ov-row[aria-current="true"]').nth(0).waitFor();
+        },
+        async () => {
+          await pick(0).click();
+        },
+      ),
+    });
+    await split.context().close();
 
     const agent = await open(browser, `${base}/agents/${LONG_AGENT}?tab=activity`, cookie, slowdown);
     const entries = await agent.locator(".ui-columns-main .ui-row").count();

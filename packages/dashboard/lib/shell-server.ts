@@ -1,5 +1,5 @@
 // What the shell needs from the server on a full load (THE-866): the
-// overview, the viewer's language and density, and who is signed in with
+// overview, the viewer's language and time zone, and who is signed in with
 // their organizations, and their saved views. Pages read the rest from the
 // shell's poll.
 import "server-only";
@@ -7,10 +7,10 @@ import { cookies, headers } from "next/headers";
 import type { Account } from "@/components/shell/context";
 import type { Access } from "./access";
 import { requireAccounts } from "./accounts-server";
+import { ZONE_COOKIE, zoneOf } from "./activity-view";
 import { appDatabase } from "./app-db";
 import { passwordRequired } from "./auth-server";
 import type { SavedView } from "./filters";
-import { DENSITY_COOKIE, densityOf } from "./fleet-view";
 import { AUTHOR_COOKIE, LANGUAGE_COOKIE } from "./i18n";
 import { overviewTag } from "./live-http";
 import { authorOf, getOverview, languageOf } from "./server";
@@ -47,7 +47,7 @@ export async function shellProps(access: Access) {
     initial,
     initialTag: overviewTag(initial),
     initialLanguage: languageOf(jar.get(LANGUAGE_COOKIE)?.value),
-    initialDensity: densityOf(jar.get(DENSITY_COOKIE)?.value),
+    zone: zoneOf(jar.get(ZONE_COOKIE)?.value),
     account,
     canLogOut: access.kind === "password" && passwordRequired(),
     initialAuthor: account ? account.name : authorOf(jar.get(AUTHOR_COOKIE)?.value),

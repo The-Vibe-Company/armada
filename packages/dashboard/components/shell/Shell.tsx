@@ -1,47 +1,33 @@
 "use client";
 
-// The frame every screen lives in (THE-866, Night watch THE-899): the
-// sidebar (THE-916: the coordinators, then Activity, Insights and the
-// organization), the deck (the main panel, its horizon in the state of what the
-// page shows, lib/horizon.ts) with its header bar (the page kit's
-// PageHeader: breadcrumbs, key hints, the page's actions), ⌘K search and the
-// keyboard (j/k move through the rows of the page, Enter opens, Esc goes
-// back). On a phone the sidebar is THE-891's top bar (the mark, the
-// organization, search) and the sections a tab bar at the bottom. Pages render inside it from the overview it polls (`useFleet`).
 import type { FleetOverview } from "@armada/core/read";
+// The frame every screen lives in (THE-1020, design/dashboard-v7): the
+// sidebar (the mark, the organization, search, the overview and the
+// validations with their counts, Activity, Insights, one line per project
+// with its coordinator and what is blocked in it, the organization and the
+// live reading) and the main panel under its header bar (the page kit's
+// PageHeader: breadcrumbs, the page's actions), ⌘K search and the keyboard
+// (j/k move through the rows of the page, Enter opens, Esc goes back). On a
+// phone the sidebar is a top bar (the mark, the organization, search) and the
+// sections a tab bar at the bottom. Pages render inside it from the overview
+// it polls (`useFleet`).
 import Link from "next/link";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { signOut, switchOrganization } from "@/app/auth-actions";
-import { projectChecks } from "@/lib/coordinator-view";
 import type { SavedView } from "@/lib/filters";
-import {
-  type Crumb,
-  crumbsOf,
-  type Density,
-  escapeTarget,
-  type Place,
-  paths,
-  placeOf,
-  type Section,
-  sectionOf,
-} from "@/lib/fleet-view";
-import { horizonOf } from "@/lib/horizon";
+import { type Crumb, crumbsOf, escapeTarget, paths, placeOf, type Section, sectionOf } from "@/lib/fleet-view";
 import { LANGUAGES, type Language, type Strings } from "@/lib/i18n";
 import { ownsKeys } from "@/lib/keyboard";
-import { pendingValidations } from "@/lib/overview-view";
-import { LiveMark } from "../mark";
 import { Alert, Button } from "../page";
 import { HeaderSlotProvider, PageHeader } from "../page-client";
-import { Kbd } from "../ui";
 import { useLazy } from "../use-lazy";
 import { Announcer } from "./Announcer";
 import { type Account, FleetProvider, useFleet, useNow, useShell } from "./context";
 import { ChevronIcon, SectionIcon } from "./icons";
-import { Logo, SearchIcon } from "./Logo";
-import { MergeMoment } from "./MergeMoment";
 import { Notifier } from "./Notifier";
 import { NotifyMenu } from "./NotifyMenu";
+import { prefetched, Sidebar, useNav } from "./Sidebar";
 import { ViewsProvider } from "./views";
 import { VisitProvider } from "./visit";
 
@@ -52,7 +38,7 @@ export function Shell({
   initial,
   initialTag,
   initialLanguage,
-  initialDensity,
+  zone,
   account,
   canLogOut,
   initialAuthor,
@@ -63,7 +49,8 @@ export function Shell({
   /** The ETag `/api/fleet` gives `initial`: the first poll answers 304 while nothing changed. */
   initialTag: string;
   initialLanguage: Language;
-  initialDensity: Density;
+  /** The viewer's time zone, from its cookie. */
+  zone: string;
   account: Account | null;
   canLogOut: boolean;
   initialAuthor: string;
@@ -76,7 +63,7 @@ export function Shell({
       initial={initial}
       initialTag={initialTag}
       initialLanguage={initialLanguage}
-      initialDensity={initialDensity}
+      zone={zone}
       account={account}
       canLogOut={canLogOut}
       initialAuthor={initialAuthor}
@@ -106,11 +93,10 @@ function useFrom(pathname: string): string | null {
 function Frame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { t, density } = useShell();
-  const { overview, failed } = useFleet();
+  const { t, account } = useShell();
+  const { overview } = useFleet();
   const place = useMemo(() => placeOf(pathname), [pathname]);
   const fromPath = useFrom(pathname);
-  const from = useMemo(() => (fromPath === null ? null : placeOf(fromPath)), [fromPath]);
   const [palette, setPalette] = useState(false);
   const Palette = useLazy(loadPalette);
   const [menu, setMenu] = useState(false);
@@ -181,13 +167,13 @@ function Frame({ children }: { children: ReactNode }) {
   }, [palette, menu, place, fromPath, router, rows, select]);
 
   const section = sectionOf(place);
-  const listPage =
-    place.kind === "overview" || place.kind === "projects" || place.kind === "validations" || place.kind === "activity";
-  const detailPage = place.kind === "agent" || place.kind === "project" || place.kind === "validation";
-  const crumbs = crumbsOf(place, from);
+  const agentProject =
+    place.kind === "agent"
+      ? (overview.rows.find((r) => r.id.toLowerCase() === place.ticket.toLowerCase())?.project ?? null)
+      : null;
+  const crumbs = crumbsOf(place, agentProject);
   const names = new Map(overview.projects.map((p) => [p.slug, p.name]));
   const here = crumbs.at(-1);
-  const horizon = useMemo(() => horizonOf(overview, place, failed), [overview, place, failed]);
 
   return (
     // The approval link is opened from a phone as often as a desk: on a narrow screen it takes the whole width.
@@ -195,26 +181,17 @@ function Frame({ children }: { children: ReactNode }) {
       <a className="sh-skip" href="#content">
         {t.a11y.skip}
       </a>
-      <Sidebar section={section} place={place} menu={menu} setMenu={setMenu} onSearch={() => setPalette(true)} />
-      <main className="sh-main" id="content" tabIndex={-1} data-density={density} data-horizon={horizon}>
+      <Sidebar
+        section={section}
+        place={place}
+        org={<OrgMenu open={menu} setOpen={setMenu} label={account?.organization.name ?? ""} />}
+        onSearch={() => setPalette(true)}
+      />
+      <main className="sh-main" id="content" tabIndex={-1}>
         <HeaderSlotProvider>
           <PageHeader
             heading={here ? crumbLabel(t, here, names) : t.htmlTitle}
             title={<Crumbs crumbs={crumbs} names={names} />}
-            hints={
-              detailPage ? (
-                <>
-                  <Kbd>esc</Kbd>
-                  {t.shell.back}
-                </>
-              ) : listPage ? (
-                <>
-                  <Kbd>j k</Kbd>
-                  {t.shell.navigate} <Kbd>↵</Kbd>
-                  {t.shell.open}
-                </>
-              ) : null
-            }
           />
           <div className="sh-scroll" ref={main}>
             <FleetAlert />
@@ -225,7 +202,6 @@ function Frame({ children }: { children: ReactNode }) {
       <TabBar section={section} />
       {palette && Palette && <Palette onClose={() => setPalette(false)} />}
       <Announcer />
-      <MergeMoment />
       <Notifier />
     </div>
   );
@@ -279,44 +255,14 @@ function Crumbs({ crumbs, names }: { crumbs: Crumb[]; names: Map<string, string>
 }
 
 /**
- * The coordinator a page is about, for its menu item: the one the overview is
- * filtered on, a project's, an agent's own.
- */
-function useCoordinator(place: Place): string | null {
-  const { overview } = useFleet();
-  const params = useSearchParams();
-  if (place.kind === "overview") return params.get("coordinator") ?? params.get("project");
-  if (place.kind === "project") return place.slug;
-  if (place.kind === "agent")
-    return overview.rows.find((r) => r.id.toLowerCase() === place.ticket.toLowerCase())?.project ?? null;
-  return null;
-}
-
-/** The menu's sections (THE-916): the overview, then Activity, Insights and, with accounts, the organization. */
-function useNav() {
-  const { overview } = useFleet();
-  const { account } = useShell();
-  const checks = pendingValidations(overview).length;
-  const nav: { key: NonNullable<Section>; href: string; count: number | null; hot: boolean }[] = [
-    { key: "overview", href: paths.overview, count: checks || null, hot: checks > 0 },
-    { key: "activity", href: paths.activity, count: null, hot: false },
-    { key: "insights", href: paths.insights, count: null, hot: false },
-  ];
-  if (account) nav.push({ key: "organization", href: paths.organization, count: null, hot: false });
-  return nav;
-}
-
-// Insights, Activity and the organization render on the server from Postgres: opened on demand, not on every page's load.
-const prefetched = (key: NonNullable<Section>) => key === "overview";
-
-/**
  * The sections on a phone (THE-899): a tab bar at the bottom, each with its
  * label and, when something waits for the viewer, its count. Shown under
  * 720 px only, where the sidebar's sections are hidden.
  */
 function TabBar({ section }: { section: Section }) {
-  const { t } = useShell();
-  const nav = useNav();
+  const { t, account } = useShell();
+  const nav: { key: NonNullable<Section>; href: string; count: number | null; hot: boolean }[] = useNav();
+  if (account) nav.push({ key: "organization", href: paths.organization, count: null, hot: false });
   return (
     <nav className="sh-tabbar" aria-label={t.a11y.sections}>
       {nav.map((n) => (
@@ -329,121 +275,10 @@ function TabBar({ section }: { section: Section }) {
         >
           <SectionIcon section={n.key} size={18} />
           <span className="sh-tab-label">{t.shell.tab[n.key]}</span>
-          {n.hot && n.count !== null && (
-            <span className="sh-tab-badge">
-              {n.count}
-              <span className="sr-only"> · {t.overview.toValidateBadge}</span>
-            </span>
-          )}
+          {n.hot && n.count !== null && <span className="sh-tab-badge">{n.count}</span>}
         </Link>
       ))}
     </nav>
-  );
-}
-
-const COORDINATOR_COLOR = { active: "var(--done)", idle: "var(--active)", unknown: "var(--text-3)" } as const;
-
-function Sidebar({
-  section,
-  place,
-  menu,
-  setMenu,
-  onSearch,
-}: {
-  section: Section;
-  place: Place;
-  menu: boolean;
-  setMenu: (open: boolean) => void;
-  onSearch: () => void;
-}) {
-  const { t, account } = useShell();
-  const { overview } = useFleet();
-  const nav = useNav();
-  const coordinator = useCoordinator(place);
-  const [home, ...more] = nav;
-  return (
-    <aside className="sh-side" aria-label={t.a11y.sidebar}>
-      <div className="sh-brand">
-        <Link href={paths.overview} prefetch className="sh-brand-home" title="Armada">
-          <Logo />
-          <span className="sh-label sh-brand-name">Armada</span>
-        </Link>
-        <span className="spacer sh-label" />
-        <OrgMenu open={menu} setOpen={setMenu} label={account?.organization.name ?? ""} />
-      </div>
-      <button type="button" className="sh-search" onClick={onSearch} title={`${t.shell.search} (⌘K)`}>
-        <SearchIcon />
-        <span className="sh-label">{t.shell.search}</span>
-        <span className="spacer sh-label" />
-        <Kbd>⌘K</Kbd>
-      </button>
-      <nav className="sh-nav" aria-label={t.shell.coordinators}>
-        {home && (
-          <Link
-            href={home.href}
-            prefetch
-            className="sh-nav-item"
-            aria-current={place.kind === "overview" && coordinator === null ? "page" : undefined}
-            title={t.shell.coordinators}
-          >
-            <SectionIcon section="overview" />
-            <span className="sh-label sh-nav-label">{t.shell.coordinators}</span>
-            <span className="sh-count">{overview.rows.length}</span>
-            <Badge n={home.count ?? 0} />
-          </Link>
-        )}
-        {overview.projects.map((p) => (
-          <Link
-            key={p.slug}
-            href={paths.coordinator(p.slug)}
-            prefetch={false}
-            className="sh-item"
-            title={p.name}
-            aria-current={coordinator === p.slug ? "page" : undefined}
-          >
-            <span className="sh-item-icon">
-              <span
-                className={`sc-coord-mark is-${p.coordinator.state}`}
-                style={{ color: COORDINATOR_COLOR[p.coordinator.state] }}
-                aria-hidden
-              />
-            </span>
-            <span className="sh-label">{p.name}</span>
-            <span className="sh-count">{overview.rows.filter((r) => r.project === p.slug).length}</span>
-            <Badge n={projectChecks(overview, p.slug)} />
-          </Link>
-        ))}
-      </nav>
-      <nav className="sh-group" aria-label={t.a11y.sections}>
-        {more.map((n) => (
-          <Link
-            key={n.key}
-            href={n.href}
-            prefetch={prefetched(n.key)}
-            className="sh-item"
-            aria-current={section === n.key ? "page" : undefined}
-            title={t.shell.tab[n.key]}
-          >
-            <SectionIcon section={n.key} size={14} />
-            <span className="sh-label">{t.shell.tab[n.key]}</span>
-          </Link>
-        ))}
-      </nav>
-      <span className="spacer" />
-      <LiveStatus />
-    </aside>
-  );
-}
-
-/** What the owner has to validate, in orange; "2 · To validate" to a screen reader. */
-function Badge({ n }: { n: number }) {
-  const { t } = useShell();
-  if (!n) return null;
-  return (
-    <span className="sh-badge" title={t.overview.toValidate(n)}>
-      {n}
-      <span className="sr-only"> · {t.overview.toValidateBadge}</span>
-    </span>
   );
 }
 
@@ -467,20 +302,6 @@ function FleetAlert() {
     >
       {checkedAt !== null && t.staleReading(now - checkedAt)}
     </Alert>
-  );
-}
-
-/** The fleet's pulse: the formation, its lead ship lit on each poll, amber while a poll fails. */
-function LiveStatus() {
-  const { t } = useShell();
-  const { checkedAt, failed } = useFleet();
-  const now = useNow();
-  const label = failed ? t.shell.offline : checkedAt === null ? t.shell.liveWaiting : t.shell.live(now - checkedAt);
-  return (
-    <div className={`sh-live ${failed ? "is-failed" : ""}`} title={label}>
-      <LiveMark size={16} state={failed ? "paused" : "live"} beat={checkedAt ?? undefined} />
-      <span className="sh-label tnum">{label}</span>
-    </div>
   );
 }
 
@@ -525,7 +346,7 @@ function OrgMenu({ open, setOpen, label }: { open: boolean; setOpen: (open: bool
         aria-label={t.shell.organizationMenu}
         onClick={() => setOpen(!open)}
       >
-        <span className="sh-label sh-org-name">{label}</span>
+        <span className="sh-org-name">{label}</span>
         <ChevronIcon />
       </button>
       {open && (

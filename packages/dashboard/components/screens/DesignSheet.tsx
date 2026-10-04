@@ -17,7 +17,6 @@ import {
   CardMeta,
   CardTitle,
   Columns,
-  DensityToggle,
   Figure,
   Figures,
   Form,
@@ -95,13 +94,6 @@ export function DesignSheet() {
                   <span aria-current="page">{t.shell.nav.overview}</span>
                 </span>
               }
-              hints={
-                <>
-                  <Kbd>j k</Kbd>
-                  {t.shell.navigate} <Kbd>↵</Kbd>
-                  {t.shell.open}
-                </>
-              }
             />
             <StatusHeader
               lead="11 agents in flight."
@@ -115,12 +107,12 @@ export function DesignSheet() {
                 </>
               }
             />
-            <Toolbar end={<DensityToggle />}>
+            <Toolbar>
               <Tabs
-                label={t.shell.harnessHeading}
+                label="tabs"
                 value="all"
                 items={[
-                  { key: "all", label: t.shell.all, count: 10, dot: "var(--text-3)" },
+                  { key: "all", label: "All", count: 10, dot: "var(--text-3)" },
                   ...HARNESSES.map((h, k) => ({
                     key: h,
                     label: HARNESS_NAME[h],
@@ -379,7 +371,7 @@ export function DesignSheet() {
         <Kbd>j k</Kbd>
       </Specimen>
 
-      <Specimen name="Tabs · DensityToggle">
+      <Specimen name="Tabs">
         <Tabs
           label="tabs"
           value="activity"
@@ -389,7 +381,6 @@ export function DesignSheet() {
             { key: "terminal", label: "Terminal" },
           ]}
         />
-        <DensityToggle />
       </Specimen>
 
       <Specimen name="Steps">

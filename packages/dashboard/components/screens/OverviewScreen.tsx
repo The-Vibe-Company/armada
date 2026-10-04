@@ -1,143 +1,169 @@
 "use client";
 
-// The overview (THE-916): the Agents page's filters and density (THE-869),
-// its sessions in flight as a board (THE-968): one lane per coordinator, five
-// columns, a ticket's flow from its plan to its merge (THE-988,
-// lib/coordinator-view.ts); what needs the owner, what is stuck or silent are
-// badges on the cards, and the Merged column ends on the coordinator's last
-// merged tickets. Each
-// lane's header says the project, its coordinator's harness, active or idle
-// and since when, how many sessions run and, in orange, how many the owner has
-// to validate; the lanes with something to validate come first. On a desk the
-// columns line up from lane to lane, and a column no lane fills is a narrow
-// strip; on a phone each lane scrolls sideways a column at a time, its empty
-// columns narrow. The filters live in the address (THE-895: ?coordinator=,
-// ?harness=, ?state=, ?q=, ?sort=… sorts each column), and the live timeline
-// (THE-868) sits under the board, compact.
-// `Overview` draws it on the filters it is given: the landing's replica
+// The overview (THE-1020, design/dashboard-v7): one sentence for what is
+// blocked and what waits for the owner, a card per project, then every
+// session in flight and every ticket merged today in one list, grouped by
+// state (blocked, waiting for your decision, in progress, ready to merge,
+// merged today) or by project. Each row says why it is in its state, in the
+// state's color, with its step on a six-step bar. "List + preview" keeps the
+// rows short and shows the selected session beside them, its action first
+// (OverviewPreview.tsx, loaded apart); on a phone the list comes first and a
+// row opens the session's page. The view lives in the address
+// (lib/coordinator-view.ts: ?coordinator=, ?group=, ?view=, ?ticket=).
+// `Overview` draws it on the view it is given: the landing's replica
 // (components/landing/Replica.tsx, THE-931), which has no router, plays it.
-import type { FleetRow, MergedTicket, ProjectOverview } from "@armada/core/read";
-import dynamic from "next/dynamic";
+import type { ProjectOverview } from "@armada/core/read";
 import Link from "next/link";
-import { type CSSProperties, type ReactNode, useCallback, useId, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
+import { type MouseEvent, useCallback, useMemo, useState } from "react";
 import {
-  BOARD_COLUMNS,
-  type BoardColumn,
-  type CardBadge,
-  type CoordinatorGroup,
-  cardBadges,
-  checksOf,
-  coordinatorGroups,
-  laneColumns,
-  overviewLine,
-  ownerChecks,
+  groupItems,
+  type ItemGroup,
+  type OverviewItem,
+  type OverviewView,
+  overviewHeadline,
+  overviewHref,
+  parseOverviewView,
+  projectSummaries,
+  type Reason,
+  type SessionGroup,
 } from "@/lib/coordinator-view";
-import { filterAgents, hasFilters } from "@/lib/filters";
-import { coordinatorHarness, HARNESS_NAME, HARNESSES, harnessOf, paths } from "@/lib/fleet-view";
-import { LONGEST_TIMES } from "@/lib/i18n";
-import { FilterFields, type ListFilterControl, useListFilters } from "../FilterBar";
-import {
-  Alert,
-  Button,
-  DensityToggle,
-  LONG_LIST,
-  Notice,
-  Page,
-  Section,
-  SectionBody,
-  StatusHeader,
-  Toolbar,
-} from "../page";
+import { paths } from "@/lib/fleet-view";
+import { LONGEST_TIMES, type Strings } from "@/lib/i18n";
+import { Alert, HeaderActions, LONG_LIST, Notice } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Dot, EmptyState, harnessColor, PhasePill, Steady, Tabs } from "../ui";
-import { MergedCard, SessionCard } from "./SessionCard";
+import { useOverviewItems } from "../shell/use-items";
+import { RelativeTime, Steady } from "../ui";
+import { useLazy } from "../use-lazy";
 
-// The timeline is its own chunk (THE-892): the list does not wait for its code.
-const LiveTimeline = dynamic(() => import("../timeline/Timeline").then((m) => m.LiveTimeline));
+// The preview pane is its own chunk (THE-892): the list does not wait for its code.
+const loadPreview = () => import("./OverviewPreview").then((m) => m.OverviewPreview);
 
-export function OverviewScreen() {
-  return <Overview {...useListFilters("agents")} />;
+/** Each state's color: a dot, its group's header, its reason. */
+export const GROUP_COLOR: Record<SessionGroup, string> = {
+  blocked: "var(--red)",
+  you: "var(--amber)",
+  running: "var(--blue)",
+  ready: "var(--green)",
+  merged: "var(--text-3)",
+};
+
+const COORDINATOR_COLOR = { active: "var(--green)", idle: "var(--amber)", unknown: "var(--text-3)" } as const;
+
+/** A row's reason line, in the viewer's language. */
+export function reasonText(t: Strings, r: Reason, now: number): string {
+  const o = t.overview.reasons;
+  switch (r.kind) {
+    case "question":
+      return o.question(r.text);
+    case "ci":
+      return o.ci(r.pr);
+    case "conflict":
+      return o.conflict(r.pr);
+    case "silent":
+      return o.silent(t.duration(r.since ? Math.max(0, now - Date.parse(r.since)) : 0));
+    case "blocked":
+      return o.blocked(r.text);
+    case "plan":
+      return o.plan;
+    case "merge":
+      return o.merge(r.pr, r.ci ? t.overview.ci[r.ci] : "");
+    case "validation":
+      return r.text;
+    case "owner-question":
+      return o.ownerQuestion(r.text);
+    case "awaiting-validation":
+      return o.awaitingValidation;
+    case "ready":
+      return o.ready(r.by, r.pr, r.ci ? t.overview.ci[r.ci] : "");
+    case "merged":
+      return o.merged(r.pr);
+    case "working":
+      return r.text ?? o.working;
+  }
 }
 
-/** The overview on the filters it is given, their links, and how to change them. */
-export function Overview({ filters, go, hrefFor }: ListFilterControl) {
-  const { t, density } = useShell();
+/** Where a row opens: its session's page, else (merged earlier today) its pull request. */
+export const itemHref = (i: OverviewItem) => (i.row || !i.pr ? paths.agent(i.id) : i.pr.url);
+
+/** The six steps, the done ones grey, the one at work in its state's color. */
+export function StepBar({ step, color, wide = false }: { step: number; color: string; wide?: boolean }) {
+  const { t } = useShell();
+  const steps = t.overview.steps;
+  const label = steps[Math.min(step, steps.length - 1)] ?? "";
+  return (
+    <span className={wide ? "ov-steps is-wide" : "ov-steps"} role="img" aria-label={t.overview.stepLabel(label)}>
+      {steps.map((s, k) => (
+        <span key={s} style={{ background: k < step ? "var(--step-done)" : k === step ? color : "var(--step-next)" }} />
+      ))}
+    </span>
+  );
+}
+
+export function OverviewScreen() {
+  const params = useSearchParams();
+  const view = useMemo(() => parseOverviewView(params), [params]);
+  // The selection changes the address without a navigation: the pane follows at once.
+  const [picked, setPicked] = useState<{ from: string | null; ticket: string } | null>(null);
+  const ticket = picked && picked.from === view.ticket ? picked.ticket : view.ticket;
+  const select = useCallback(
+    (id: string) => {
+      setPicked({ from: view.ticket, ticket: id });
+      window.history.replaceState(null, "", overviewHref({ ...view, ticket: id }));
+    },
+    [view],
+  );
+  return (
+    <Overview
+      view={{ ...view, ticket }}
+      hrefFor={(patch) => overviewHref({ ...view, ticket, ...patch })}
+      select={select}
+    />
+  );
+}
+
+/** The overview on the view it is given, the links that change it, and how to select a session. */
+export function Overview({
+  view,
+  hrefFor,
+  select,
+}: {
+  view: OverviewView;
+  hrefFor: (patch: Partial<OverviewView>) => string;
+  select: (id: string) => void;
+}) {
+  const { t } = useShell();
   const { overview, failed } = useFleet();
-  const { harness } = filters;
-  const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
-  const checks = useMemo(() => ownerChecks(overview), [overview]);
-  // "Needs me" keeps what the owner has to validate.
-  const mine = useCallback((r: FleetRow) => checksOf(checks, r).length > 0, [checks]);
-  // The tabs count what the other filters keep.
-  const all = useMemo(
-    () => filterAgents(overview.rows, { ...filters, harness: null }, names, mine),
-    [overview, filters, names, mine],
-  );
-  const groups = useMemo(() => {
-    const rows = filterAgents(overview.rows, filters, names, mine);
-    // A coordinator with nothing in flight shows while the view is filtered on nothing but it.
-    const empty = !hasFilters({ ...filters, project: null });
-    const kept = filters.project ? overview.projects.filter((p) => p.slug === filters.project) : overview.projects;
-    return coordinatorGroups({ ...overview, projects: kept }, rows, { sorted: filters.sort !== null, empty });
-  }, [overview, filters, names, mine]);
-  const line = overviewLine(overview);
-  const shown = groups.reduce((n, g) => n + g.rows.length, 0);
-  // The last merges show on the whole board, or one coordinator's: a filter on sessions keeps sessions only.
-  const merges = !hasFilters({ ...filters, project: null, sort: null });
-  const lanes = useMemo(
-    () => groups.map((g) => ({ group: g, columns: laneColumns(g.rows), merged: merges ? g.project.merged : [] })),
-    [groups, merges],
-  );
-  // A desk's columns line up from lane to lane: those no lane fills are narrow.
-  const filled = useMemo(
-    () => BOARD_COLUMNS.filter((c) => lanes.some((l) => l.columns[c].length || (c === "merged" && l.merged.length))),
-    [lanes],
-  );
-  const unread = overview.projects.filter((p) => p.error || p.reading);
+  const all = useOverviewItems();
+  const projects = overview.projects;
+  const project = projects.some((p) => p.slug === view.project) ? view.project : null;
+  const items = useMemo(() => (project ? all.filter((i) => i.project === project) : all), [all, project]);
+  const groups = useMemo(() => groupItems(items, view.group, projects), [items, view.group, projects]);
+  const head = overviewHeadline(all, projects.length);
+  const summaries = useMemo(() => projectSummaries(projects, all), [projects, all]);
+  const names = useMemo(() => new Map(projects.map((p) => [p.slug, p.name])), [projects]);
+  const unread = projects.filter((p) => p.error || p.reading);
+  const preview = view.view === "preview";
+  const selected = preview ? (items.find((i) => i.id === view.ticket) ?? groups[0]?.items[0] ?? null) : null;
 
   return (
-    <Page
-      status={
-        <StatusHeader
-          lead={`${t.overview.line.coordinators(line.coordinators)} · ${t.overview.line.running(line.running)}`}
-          then={
-            line.toValidate ? (
-              <span className="ov-yours">· {t.overview.line.toValidate(line.toValidate)}</span>
-            ) : (
-              `· ${t.overview.line.nothing}`
-            )
-          }
-        />
-      }
-      toolbar={
-        <>
-          <Toolbar end={<DensityToggle />}>
-            <Tabs
-              label={t.shell.harnessHeading}
-              value={harness ?? "all"}
-              push
-              items={[
-                {
-                  key: "all",
-                  label: t.shell.all,
-                  count: all.length,
-                  dot: "var(--text-3)",
-                  href: hrefFor({ harness: null }),
-                },
-                ...HARNESSES.map((h) => ({
-                  key: h,
-                  label: HARNESS_NAME[h],
-                  count: all.filter((r) => harnessOf(r.runtime) === h).length,
-                  dot: harnessColor(h),
-                  href: hrefFor({ harness: h }),
-                })),
-              ]}
-            />
-          </Toolbar>
-          <FilterFields list="agents" omit={["harness"]} filters={filters} go={go} />
-        </>
-      }
-    >
+    <div className="ov">
+      <HeaderActions>
+        <nav className="ov-views" aria-label={t.overview.views.label}>
+          {(["list", "preview"] as const).map((v) => (
+            <Link
+              key={v}
+              href={hrefFor({ view: v })}
+              scroll={false}
+              prefetch={false}
+              className="ov-view"
+              aria-current={view.view === v ? "true" : undefined}
+            >
+              {t.overview.views[v]}
+            </Link>
+          ))}
+        </nav>
+      </HeaderActions>
       {overview.live.state === "unreachable" && !failed && (
         <Alert tone="warn" title={t.live.unreachable}>
           {t.unreachableBanner(overview.live.error)}
@@ -153,181 +179,286 @@ export function Overview({ filters, go, hrefFor }: ListFilterControl) {
           <Notice key={p.slug}>{t.readingProject(p.name)}</Notice>
         ),
       )}
-      {overview.projects.length === 0 ? (
-        <EmptyState title={t.noProjects} hint={t.noProjectsHint} />
-      ) : groups.length === 0 || (shown === 0 && hasFilters({ ...filters, project: null, harness: null })) ? (
-        <EmptyState title={t.filters.noMatch} hint={t.filters.noMatchHint}>
-          <Button
-            type="button"
-            onClick={() => go({ project: null, state: null, profile: null, mine: false, q: "", harness: null })}
-          >
-            {t.filters.clear}
-          </Button>
-        </EmptyState>
+      <div className="ov-head">
+        <p className="ov-headline">{t.overview.headline(head.blocked, head.you)}</p>
+        <p className="ov-subline">
+          {t.overview.subline({
+            live: head.live,
+            projects: head.projects,
+            running: head.running,
+            ready: head.ready,
+            merged: head.merged,
+          })}
+        </p>
+      </div>
+      {projects.length === 0 ? (
+        <div className="ov-empty">
+          <p>{t.noProjects}</p>
+          <p className="faint">{t.noProjectsHint}</p>
+        </div>
       ) : (
-        lanes.map(({ group: g, columns, merged }) => (
-          <CoordinatorSection key={g.project.slug} group={g}>
-            {g.rows.length === 0 && merged.length === 0 ? (
-              <SectionBody>
-                <p>{t.overview.nothingRunning}</p>
-              </SectionBody>
-            ) : (
-              <Board
-                columns={columns}
-                merged={merged}
-                filled={filled}
-                long={all.length > LONG_LIST}
-                airy={density === "airy"}
-                badges={(r) => cardBadges(checks, r)}
-              />
-            )}
-          </CoordinatorSection>
-        ))
-      )}
-      {overview.projects.length > 0 && <LiveTimeline project={filters.project} compact />}
-    </Page>
-  );
-}
-
-/** A grid's tracks: a column in `wide` takes its share, any other is a narrow strip. */
-const tracks = (wide: readonly BoardColumn[]) =>
-  BOARD_COLUMNS.map((c) => (wide.includes(c) ? "var(--ov-wide)" : "var(--ov-narrow)")).join(" ");
-
-/**
- * One lane's board: its five columns, each a group named by its heading (the
- * column and its count) and holding its cards in a list; Merged holds the
- * sessions whose pull request merged, then the coordinator's last merged
- * tickets (`merged`). On a desk the columns some lane fills (`filled`) are
- * wide in every lane; on a phone, those this lane fills.
- */
-function Board({
-  columns,
-  merged,
-  filled,
-  long,
-  airy,
-  badges,
-}: {
-  columns: Record<BoardColumn, FleetRow[]>;
-  merged: readonly MergedTicket[];
-  filled: readonly BoardColumn[];
-  long: boolean;
-  airy: boolean;
-  badges: (r: FleetRow) => CardBadge[];
-}) {
-  const { t } = useShell();
-  const id = useId();
-  const count = (c: BoardColumn) => columns[c].length + (c === "merged" ? merged.length : 0);
-  const lane = tracks(BOARD_COLUMNS.filter((c) => count(c)));
-  return (
-    <div className="ov-lane">
-      <div
-        className={long ? "ov-board is-long" : "ov-board"}
-        style={{ "--ov-board": tracks(filled), "--ov-lane": lane } as CSSProperties}
-      >
-        {BOARD_COLUMNS.map((c) => {
-          const cards = columns[c];
-          const done = c === "merged" ? merged : [];
-          const n = cards.length + done.length;
-          return (
-            // biome-ignore lint/a11y/useSemanticElements: a column of cards, named by its heading; a fieldset would mean form fields
-            <div
-              key={c}
-              role="group"
-              aria-labelledby={`${id}-${c}`}
-              className={`ov-col is-${c}${n ? "" : " is-empty"}${filled.includes(c) ? "" : " is-narrow"}`}
-            >
-              <h3 className="ov-col-h" id={`${id}-${c}`}>
-                <span className="ov-col-name">{t.overview.columns[c]}</span> <span className="ui-count">{n}</span>
-              </h3>
-              {n > 0 && (
-                <ol className="ov-cards">
-                  {cards.map((r) => (
-                    <li key={`${r.project}-${r.id}`}>
-                      <SessionCard row={r} airy={airy} badges={badges(r)} />
-                    </li>
-                  ))}
-                  {done.map((m) => (
-                    <li key={`merged-${m.id}`}>
-                      <MergedCard ticket={m} />
-                    </li>
-                  ))}
-                </ol>
+        <>
+          <ul className="ov-projects">
+            {summaries.map((s) => (
+              <li key={s.project.slug}>
+                <ProjectCard summary={s} />
+              </li>
+            ))}
+          </ul>
+          <div className="ov-bar">
+            <nav className="ov-chips" aria-label={t.overview.filterLabel}>
+              <Chip href={hrefFor({ project: null })} on={project === null} label={t.overview.all} count={all.length} />
+              {projects.map((p) => (
+                <Chip
+                  key={p.slug}
+                  href={hrefFor({ project: p.slug })}
+                  on={project === p.slug}
+                  label={p.name}
+                  count={all.filter((i) => i.project === p.slug).length}
+                />
+              ))}
+            </nav>
+            <span className="spacer" />
+            <span className="ov-groupby" id="ov-groupby">
+              {t.overview.groupBy}
+            </span>
+            <nav className="ov-chips" aria-labelledby="ov-groupby">
+              <Chip href={hrefFor({ group: "state" })} on={view.group === "state"} label={t.overview.byState} />
+              <Chip href={hrefFor({ group: "project" })} on={view.group === "project"} label={t.overview.byProject} />
+            </nav>
+          </div>
+          {groups.length === 0 ? (
+            <div className="ov-empty is-dashed">
+              {project ? (
+                <>
+                  {t.overview.noMatch}{" "}
+                  <Link href={hrefFor({ project: null })} scroll={false} prefetch={false}>
+                    {t.overview.clear}
+                  </Link>
+                </>
+              ) : (
+                t.overview.nothingRunning
               )}
             </div>
-          );
-        })}
-      </div>
+          ) : preview ? (
+            <div className="ov-split">
+              <List
+                groups={groups}
+                names={names}
+                compact
+                selected={selected}
+                select={select}
+                long={items.length > LONG_LIST}
+              />
+              <aside className="ov-pane" aria-label={selected ? selected.id : t.overview.views.preview}>
+                <Pane item={selected} names={names} />
+              </aside>
+            </div>
+          ) : (
+            <List groups={groups} names={names} long={items.length > LONG_LIST} />
+          )}
+        </>
+      )}
     </div>
   );
 }
 
-const COORDINATOR_COLOR = { active: "var(--done)", idle: "var(--active)", unknown: "var(--text-3)" } as const;
-
-/** A coordinator's diamond, filled while it is active. */
-function CoordinatorMark({ state }: { state: ProjectOverview["coordinator"]["state"] }) {
-  return <span className={`sc-coord-mark is-${state}`} style={{ color: COORDINATOR_COLOR[state] }} aria-hidden />;
+function Pane({ item, names }: { item: OverviewItem | null; names: Map<string, string> }) {
+  const Preview = useLazy(loadPreview);
+  if (!item || !Preview) return null;
+  return (
+    <Preview key={`${item.project}/${item.id}`} item={item} projectName={names.get(item.project) ?? item.project} />
+  );
 }
 
-/**
- * One coordinator's lane: its header (the project, which opens the overview
- * filtered to it; the harness; active or idle and since when; what the owner
- * has to validate) and its board.
- */
-function CoordinatorSection({
-  group: { project: p, rows, toValidate },
-  children,
+function Chip({ href, on, label, count }: { href: string; on: boolean; label: string; count?: number }) {
+  return (
+    <Link href={href} scroll={false} prefetch={false} className="ov-chip" aria-current={on ? "true" : undefined}>
+      {label}
+      {count !== undefined && <span className="ov-chip-n">{count}</span>}
+    </Link>
+  );
+}
+
+/** One project: its progress, what is blocked, what waits for the owner, what runs, its coordinator. */
+function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummaries>[number] }) {
+  const { t } = useShell();
+  const now = useNow();
+  const p: ProjectOverview = s.project;
+  const c = t.overview.card;
+  const progress = p.progress;
+  const pct = progress?.total ? Math.round((progress.done / progress.total) * 100) : 0;
+  const idle = p.coordinator.seenAt ? t.duration(Math.max(0, now - Date.parse(p.coordinator.seenAt))) : "";
+  const coordinator =
+    s.coordinator === "active"
+      ? t.overview.coordinator.active
+      : s.coordinator === "idle"
+        ? t.overview.coordinator.idle(idle)
+        : t.overview.coordinator.unknown;
+  return (
+    <Link href={paths.project(p.slug)} prefetch={false} className="ov-project">
+      <span className="ov-project-head">
+        <span className="ov-project-name">{p.name}</span>
+        <span className="spacer" />
+        {progress && (
+          <span className="ov-project-n" title={c.progress(progress.done, progress.total)}>
+            {progress.done} / {progress.total}
+          </span>
+        )}
+      </span>
+      <span className="ov-project-bar" aria-hidden>
+        <span style={{ width: `${pct}%` }} />
+      </span>
+      <span className="ov-project-facts">
+        <span style={{ color: s.blocked ? "var(--red)" : "var(--text-3)" }}>{c.blocked(s.blocked)}</span>
+        <span style={{ color: s.you ? "var(--amber)" : "var(--text-3)" }}>{c.you(s.you)}</span>
+        <span>{c.running(s.running)}</span>
+        <span className="ov-project-coord" style={{ color: COORDINATOR_COLOR[s.coordinator] }}>
+          <span className="ov-diamond" aria-hidden />
+          <Steady
+            widest={[
+              t.overview.coordinator.active,
+              t.overview.coordinator.unknown,
+              ...LONGEST_TIMES.map((n) => t.overview.coordinator.idle(t.duration(n))),
+            ]}
+          >
+            {coordinator}
+          </Steady>
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+/** The list: its groups, each a sticky header over its rows. */
+function List({
+  groups,
+  names,
+  compact = false,
+  selected = null,
+  select,
+  long,
 }: {
-  group: CoordinatorGroup;
-  children: ReactNode;
+  groups: ItemGroup[];
+  names: Map<string, string>;
+  compact?: boolean;
+  selected?: OverviewItem | null;
+  select?: (id: string) => void;
+  long: boolean;
 }) {
   const { t } = useShell();
   const now = useNow();
-  const c = p.coordinator;
-  const h = coordinatorHarness(c.harness);
-  const ms = c.seenAt ? Math.max(0, now - Date.parse(c.seenAt)) : 0;
   return (
-    <Section
-      id={`coordinator-${p.slug}`}
-      icon={<CoordinatorMark state={c.state} />}
-      label={
-        <Link href={paths.coordinator(p.slug)} prefetch={false} className="ov-group-link">
-          {p.name}
-        </Link>
-      }
-      count={rows.length}
-      side={
-        <span className="ov-group-side">
-          {h && (
-            <span className="ui-harness">
-              <Dot color={harnessColor(h)} />
-              {h === "other"
-                ? t.shell.agent.terminal
-                : h === "conductor"
-                  ? HARNESS_NAME[h]
-                  : t.shell.local(HARNESS_NAME[h])}
-            </span>
-          )}
-          <span className="ov-group-state" style={{ color: COORDINATOR_COLOR[c.state] }}>
-            {c.state === "unknown" ? (
-              t.shell.coordinatorUnknown
-            ) : (
-              // Active and idle share one box: a coordinator that turns idle as the clock moves moves nothing either.
-              <Steady
-                widest={LONGEST_TIMES.flatMap((n) => [
-                  t.shell.coordinatorActive(t.ago(n)),
-                  t.shell.coordinatorIdle(t.duration(n)),
-                ])}
-              >
-                {c.state === "active" ? t.shell.coordinatorActive(t.ago(ms)) : t.shell.coordinatorIdle(t.duration(ms))}
-              </Steady>
-            )}
-          </span>
-          {toValidate > 0 && <PhasePill tone="waiting">{t.overview.toValidate(toValidate)}</PhasePill>}
-        </span>
-      }
+    <div className={long ? "ov-list is-long" : "ov-list"}>
+      {groups.map((g) => {
+        const color = g.group ? GROUP_COLOR[g.group] : COORDINATOR_COLOR[g.project?.coordinator.state ?? "unknown"];
+        const label = g.group ? t.overview.groups[g.group] : (g.project?.name ?? g.key);
+        const hint = g.group ? t.overview.groupHints[g.group] : projectHint(t, g.project, now);
+        return (
+          <section key={g.key} className="ov-group" aria-labelledby={`ov-g-${g.key}`}>
+            <h2 className="ov-group-h" id={`ov-g-${g.key}`}>
+              <span className="ov-dot" style={{ background: color }} aria-hidden />
+              <span className="ov-group-name">{label}</span>
+              <span className="ov-group-n">{g.items.length}</span>
+              {!compact && hint && <span className="ov-group-hint">{hint}</span>}
+            </h2>
+            {g.items.map((i) => (
+              <Row
+                key={`${i.project}/${i.id}`}
+                item={i}
+                projectName={names.get(i.project) ?? i.project}
+                compact={compact}
+                selected={selected === i}
+                select={select}
+              />
+            ))}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function projectHint(t: Strings, p: ProjectOverview | null, now: number) {
+  if (!p) return "";
+  const c = p.coordinator;
+  if (c.state === "active") return t.overview.coordinatorHint.active;
+  if (c.state === "idle")
+    return t.overview.coordinatorHint.idle(t.duration(c.seenAt ? Math.max(0, now - Date.parse(c.seenAt)) : 0));
+  return t.overview.coordinatorHint.unknown;
+}
+
+/** On a desk the pane shows a row; on a phone, where it is hidden, the row opens its page. */
+const paneShown = () => {
+  const pane = document.querySelector<HTMLElement>(".ov-pane");
+  return !!pane && pane.offsetParent !== null;
+};
+
+function Row({
+  item: i,
+  projectName,
+  compact,
+  selected,
+  select,
+}: {
+  item: OverviewItem;
+  projectName: string;
+  compact: boolean;
+  selected: boolean;
+  select?: (id: string) => void;
+}) {
+  const { t } = useShell();
+  const now = useNow();
+  const color = GROUP_COLOR[i.group];
+  const href = itemHref(i);
+  const external = !href.startsWith("/");
+  const onClick =
+    compact && select
+      ? (e: MouseEvent) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || !paneShown()) return;
+          e.preventDefault();
+          select(i.id);
+        }
+      : undefined;
+  const reason = reasonText(t, i.reason, now);
+  const quiet = i.group === "running" || i.group === "merged";
+  const last = (
+    <span className="ov-last">
+      <span className="sr-only">{i.group === "merged" ? t.overview.groups.merged : t.overview.lastReport} </span>
+      <RelativeTime at={i.last} format="duration" />
+    </span>
+  );
+  return (
+    <Link
+      href={href}
+      prefetch={false}
+      data-row
+      className={compact ? "ov-row is-compact" : "ov-row"}
+      aria-current={selected ? "true" : undefined}
+      style={selected ? { boxShadow: `inset 2px 0 0 ${color}` } : undefined}
+      onClick={onClick}
+      {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
     >
-      {children}
-    </Section>
+      <span className="ov-dot" style={{ background: color }} aria-hidden />
+      <span className="ov-id">{i.id}</span>
+      {compact ? (
+        <span className="ov-title">
+          {i.title}
+          <span className="sr-only"> · {reason}</span>
+        </span>
+      ) : (
+        <>
+          <span className="ov-main">
+            <span className="ov-title">{i.title}</span>
+            <span className="ov-reason" style={{ color: quiet ? "var(--text-2)" : color }}>
+              {reason}
+            </span>
+          </span>
+          <span className="ov-proj">{projectName}</span>
+          <StepBar step={i.step} color={color} />
+        </>
+      )}
+      {last}
+    </Link>
   );
 }

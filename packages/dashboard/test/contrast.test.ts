@@ -38,12 +38,13 @@ const ratio = (a: Rgba, b: Rgba) => {
 };
 
 /**
- * Night watch's planes (THE-899): the sky (--bg), the deck (--surface), bands,
- * instruments (--card, --panel-3) and wells (--sunken, --code); then the fills
+ * The planes (THE-899, THE-1020): the sidebar (--side), the page (--bg,
+ * --surface), bands, instruments (--card, --panel-3) and wells (--sunken,
+ * --code); then the fills
  * drawn over the sky, the deck and an instrument (a tab bar, a field, a stat
  * chip, the current entry), and the menus' and toasts' glass over the sky.
  */
-const SURFACES = ["bg", "surface", "card", "sunken", "code", "band", "panel-3"];
+const SURFACES = ["side", "bg", "surface", "card", "sunken", "code", "band", "panel-3"];
 const FILLS = ["hover", "fill", "fill-2"];
 const backgrounds = [
   ...SURFACES.map((s) => ({ name: s, rgb: color(s) })),
@@ -54,7 +55,15 @@ const backgrounds = [
 ];
 
 /** Every token text is written in. --raised (a selected tab, an avatar) takes --text and --text-2 only. */
-const TEXT = ["text", "text-2", "text-3", "done", "active", "frontier", "critical", "accent"];
+const TEXT = [
+  "text",
+  "text-soft",
+  "text-2",
+  "text-3",
+  ...["done", "active", "frontier", "critical", "accent"],
+  // The overview's states (design/dashboard-v7).
+  ...["red", "amber", "blue", "green"],
+];
 /** Marks: harness dots, the faint mark step, the focus ring. */
 const MARKS = ["text-4", "h-conductor", "h-claude-code", "h-codex", "h-other", "frontier"];
 

@@ -23,6 +23,13 @@ function Shape({ section }: { section: NonNullable<Section> }) {
           <rect x="9" y="9" width="5" height="5" rx="1.5" />
         </>
       );
+    case "validations":
+      return (
+        <>
+          <rect x="2" y="2" width="12" height="12" rx="3" />
+          <path d="M5.5 8.2l1.8 1.8 3.4-3.6" strokeLinecap="round" strokeLinejoin="round" />
+        </>
+      );
     case "insights":
       return <path d="M2.5 13.5h11M4.5 11V8M8 11V4.5M11.5 11V6.5" strokeLinecap="round" />;
     case "activity":
