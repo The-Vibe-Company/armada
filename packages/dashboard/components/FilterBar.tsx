@@ -1,12 +1,5 @@
 "use client";
 
-// A list's filters (THE-895), in its address: project, harness, state or
-// phase, profile, "needs me", words, and an order. Each choice is a new entry
-// in the history, so back and forward step through the views; typing
-// replaces the entry it started, so one search is one step. The page reads
-// the same URL (`useListFilters`), so a link opens the same view. "Save
-// view" names the filters and pins them in the sidebar (saved views).
-import { LABEL_PHASES } from "@armada/core/read";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ViewError } from "@/lib/filters";
@@ -23,7 +16,7 @@ import {
   profileOf,
   type SortKey,
 } from "@/lib/filters";
-import { AGENT_STATUSES, HARNESS_NAME, HARNESSES } from "@/lib/fleet-view";
+import { HARNESS_NAME, HARNESSES } from "@/lib/fleet-view";
 import { Button, Form, Input, Select, Toolbar } from "./page";
 import { useFleet, useShell } from "./shell/context";
 import { useViews } from "./shell/views";
@@ -234,24 +227,6 @@ function StateFilter({
   return (
     <Select aria-label={f.state} value={value ?? ""} onChange={(e) => onPick(e.target.value || null)}>
       <option value="">{f.anyState}</option>
-      {list === "agents" && (
-        <>
-          <optgroup label={f.statuses}>
-            {AGENT_STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {t.shell.groups[s]}
-              </option>
-            ))}
-          </optgroup>
-          <optgroup label={f.phases}>
-            {LABEL_PHASES.map((p) => (
-              <option key={p} value={p}>
-                {t.shell.phases[p]}
-              </option>
-            ))}
-          </optgroup>
-        </>
-      )}
       {list === "projects" &&
         LISTS.projects.states.map((h) => (
           <option key={h} value={h}>

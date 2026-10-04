@@ -299,7 +299,7 @@ export function Unit({ children }: { children: ReactNode }) {
 
 /**
  * The row of tabs and filters under the header bar, with what goes on its
- * right (the density toggle) in `end`. Leave it out when a page has none.
+ * right in `end`. Leave it out when a page has none.
  */
 export function Toolbar({ children, end }: { children?: ReactNode; end?: ReactNode }) {
   return (

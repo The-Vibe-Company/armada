@@ -147,7 +147,7 @@ export interface TabItem<K extends string> {
 }
 
 /**
- * A segmented control: the harness filter, the density, an agent's tabs. One
+ * A segmented control: an agent's tabs, a list's choices. One
  * stop of the Tab key (THE-891): the arrows, Home and End move between its
  * tabs, Enter or Space picks one. `controls` names what the tabs show (the
  * agent's activity, files and attachments).

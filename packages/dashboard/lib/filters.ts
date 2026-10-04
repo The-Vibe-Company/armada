@@ -51,22 +51,13 @@ const HEALTHS = ["blocked", "watch", "on-track"] as const satisfies readonly Pro
 
 interface ListRule {
   path: string;
-  /** The address's name for the project filter: the overview's groups are coordinators (THE-916). */
-  projectParam?: string;
   fields: readonly FilterField[];
   states: readonly string[];
   sorts: readonly SortKey[];
 }
 
+// The overview (THE-1020) has no list of its own here: its view is lib/coordinator-view.ts's.
 export const LISTS = {
-  // The overview (THE-1020): its project filter; its grouping and view are lib/coordinator-view.ts's.
-  agents: {
-    path: "/",
-    projectParam: "coordinator",
-    fields: ["project"],
-    states: [],
-    sorts: [],
-  },
   projects: {
     path: "/projects",
     fields: ["project", "harness", "state", "profile", "mine", "q", "sort"],
@@ -121,10 +112,8 @@ export function parseFilters(list: FilterList, params: Params): ListFilters {
   const harness = params.get("harness");
   const state = params.get("state");
   const sort = params.get("sort");
-  // `?project=` still reads on the overview: the links and views from before THE-916.
-  const param = rule.projectParam ?? "project";
   return {
-    project: has("project") ? (token(param) ?? (param === "project" ? null : token("project"))) : null,
+    project: has("project") ? token("project") : null,
     harness: has("harness") && (HARNESSES as readonly string[]).includes(harness ?? "") ? (harness as Harness) : null,
     state: has("state") && state && rule.states.includes(state) ? state : null,
     profile: has("profile") ? token("profile", PROFILE) : null,
@@ -135,10 +124,9 @@ export function parseFilters(list: FilterList, params: Params): ListFilters {
 }
 
 /** The filters as a query string, without "?": one order, defaults left out, so equal views have equal URLs. */
-export function filterQuery(list: FilterList, f: ListFilters): string {
+export function filterQuery(_list: FilterList, f: ListFilters): string {
   const out = new URLSearchParams();
-  const rule: ListRule = LISTS[list];
-  if (f.project) out.set(rule.projectParam ?? "project", f.project);
+  if (f.project) out.set("project", f.project);
   if (f.harness) out.set("harness", f.harness);
   if (f.state) out.set("state", f.state);
   if (f.profile) out.set("profile", f.profile);
@@ -160,7 +148,7 @@ export function canonicalQuery(list: FilterList, query: string): string {
   return own ? own(q) : filterQuery(list, parseFilters(list, new URLSearchParams(q)));
 }
 
-export const hasFilters = (f: ListFilters): boolean => filterQuery("agents", f) !== "";
+export const hasFilters = (f: ListFilters): boolean => filterQuery("projects", f) !== "";
 
 /** Every word of the query in the text, whatever the case. */
 function holds(text: string, q: string): boolean {

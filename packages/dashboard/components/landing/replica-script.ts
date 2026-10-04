@@ -17,7 +17,7 @@ function rowOf(o: FleetOverview, id: string): FleetRow | undefined {
   return o.rows.find((r) => r.id === id);
 }
 
-/** A row's column on the board, after its phase or its timeline changed. */
+/** A row's step, after its phase or its timeline changed. */
 function restep(o: FleetOverview, id: string) {
   const row = rowOf(o, id);
   const tl = o.timeline?.rows.find((r) => r.id === id)?.timeline;

@@ -62,7 +62,7 @@ describe("filters in the address", () => {
           sort: "report",
         }),
       ],
-      ["agents", f({ project: "widgets" })],
+      ["validations", f({ project: "widgets" })],
       ["projects", f({ state: "watch", sort: "phase", harness: "conductor" })],
       ["validations", f({ state: "approved", q: "email", sort: "age" })],
       ["validations", NO_FILTERS],
@@ -79,15 +79,9 @@ describe("filters in the address", () => {
     expect(canonicalQuery("projects", "?sort=age&q=x&project=widgets")).toBe("project=widgets&q=x&sort=age");
   });
 
-  test("the overview (THE-1020) is the agents list, filtered on a project only; its old `project=` still reads", () => {
-    expect(listOfPath("/")).toBe("agents");
-    // Its state, harness, profile, needs-me and sort filters are gone: an old link opens it unfiltered.
-    expect(canonicalQuery("agents", "coordinator=widgets&state=error&harness=codex&sort=age")).toBe(
-      "coordinator=widgets",
-    );
-    expect(parseFilters("agents", new URLSearchParams("project=widgets")).project).toBe("widgets");
-    expect(parseFilters("agents", new URLSearchParams("coordinator=gadgets&project=widgets")).project).toBe("gadgets");
-    expect(canonicalQuery("agents", "sort=age&project=widgets")).toBe("coordinator=widgets");
+  test("the overview (THE-1020) is no list of filters: its view is its own, and its saved views are gone", () => {
+    expect(listOfPath("/")).toBeNull();
+    expect(checkView({ name: "Red CI", list: "agents", query: "state=error" })).toEqual({ ok: false, problem: "list" });
   });
 
   test("what a list does not understand is dropped: unknown keys and values, another list's states, a phase sort on validations", () => {
@@ -98,7 +92,7 @@ describe("filters in the address", () => {
       ),
     );
     expect(parsed).toEqual({ ...NO_FILTERS, q: "x".repeat(100) });
-    expect(parseFilters("agents", new URLSearchParams("state=on-track&harness=boat")).state).toBeNull();
+    expect(parseFilters("validations", new URLSearchParams("state=on-track&harness=boat")).state).toBeNull();
     expect(parseFilters("projects", new URLSearchParams("state=on-track")).state).toBe("on-track");
     // A profile is named as armada.toml names it.
     const spaced = f({ profile: "opus 4" });
@@ -179,13 +173,11 @@ describe("saved views", () => {
       ok: true,
       view: { name: "Red CI", list: "projects", query: "state=blocked&sort=age" },
     });
-    expect(checkView({ name: " ", list: "agents", query: "" })).toEqual({ ok: false, problem: "name" });
-    expect(checkView({ name: "x".repeat(41), list: "agents", query: "" })).toEqual({ ok: false, problem: "name" });
+    expect(checkView({ name: " ", list: "projects", query: "" })).toEqual({ ok: false, problem: "name" });
+    expect(checkView({ name: "x".repeat(41), list: "projects", query: "" })).toEqual({ ok: false, problem: "name" });
     expect(checkView({ name: "Mine", list: "settings", query: "" })).toEqual({ ok: false, problem: "list" });
     const view = { list: "projects" as const, query: "state=blocked&sort=age" };
     expect(viewHref(view)).toBe("/projects?state=blocked&sort=age");
-    // A view saved on /agents before THE-916 opens the overview on the same coordinator.
-    expect(viewHref({ list: "agents", query: "project=widgets" })).toBe("/?coordinator=widgets");
   });
 
   test("/activity (THE-894) keeps its own address: a view of it is canonical, without the page cursor", () => {

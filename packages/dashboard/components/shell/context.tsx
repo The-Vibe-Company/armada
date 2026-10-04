@@ -57,7 +57,7 @@ export interface Shell {
   t: Strings;
   lang: Language;
   setLanguage: (lang: Language) => void;
-  /** The viewer's time zone (the `armada-tz` cookie, UTC until the browser sets it): "today" is its day. */
+  /** The viewer's time zone (the `armada-tz` cookie on the server, the browser's own once it runs): "today" is its day. */
   zone: string;
   /** With accounts; null under the shared-password gate. */
   account: Account | null;
@@ -193,7 +193,7 @@ export function FleetProvider({
   initial,
   initialTag = null,
   initialLanguage,
-  zone,
+  zone: initialZone,
   account,
   canLogOut,
   initialAuthor,
@@ -213,6 +213,12 @@ export function FleetProvider({
   const now = useClock(initial.generatedAt);
   const [lang, setLang] = useState(initialLanguage);
   const [author, setAuthor] = useState(initialAuthor);
+  // The cookie's zone renders on the server; the browser's own takes over once it runs (a first visit has no cookie).
+  const [zone, setZone] = useState(initialZone);
+  useEffect(() => {
+    const own = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (own) setZone(own);
+  }, []);
 
   const shell = useMemo<Shell>(
     () => ({

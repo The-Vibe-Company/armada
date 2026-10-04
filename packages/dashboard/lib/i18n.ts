@@ -650,7 +650,6 @@ const en = {
       openPr: (n: number) => `Open #${n}`,
       openValidation: "Open the validation",
       seeShots: "See the screenshots",
-      choose: "Select a session to see it here.",
       action: {
         question: (ago: string) => `The worker asked the coordinator a question ${ago}. No answer yet.`,
         ci: (pr: number, checks: string) => `CI fails on #${pr}${checks ? ` (${checks})` : ""}.`,
@@ -874,8 +873,6 @@ const en = {
     allHarnesses: "All harnesses",
     state: "State",
     anyState: "Any state",
-    statuses: "Status",
-    phases: "Phase",
     health: "Health",
     outcomes: {
       pending: "To decide",
@@ -889,7 +886,6 @@ const en = {
     sort: "Sort",
     sortDefault: "Default order",
     sorts: {
-      agents: { age: "Longest in flight", report: "Latest report", phase: "By phase" },
       projects: { age: "Quietest first", report: "Latest activity", phase: "By health" },
       validations: { age: "Oldest first", report: "Latest first" },
     },
@@ -1137,7 +1133,7 @@ const en = {
         PageHeader:
           "The bar on top: breadcrumbs on the left, the page's buttons on the right. The shell draws it; a page adds its buttons with HeaderActions and never a title of its own.",
         StatusHeader:
-          "Where things stand, first: one sentence in display type, its quieter second half, a line, and Stat chips that open what they count. Rendered with the page, under the horizon.",
+          "Where things stand, first: one sentence in display type, its quieter second half, a line, and Stat chips that open what they count. Rendered with the page.",
         Toolbar: "Tabs and filters, their companions in end. Left out when a page has none, never an empty row.",
         Section:
           "A band: an icon or status dot, a label, a count, a side. Rows go inside; anything else in a SectionBody.",
@@ -1874,7 +1870,6 @@ const fr: Strings = {
       openPr: (n) => `Ouvrir #${n}`,
       openValidation: "Ouvrir la validation",
       seeShots: "Voir les captures",
-      choose: "Choisis une session pour la voir ici.",
       action: {
         question: (ago) => `Le worker a posé une question au coordinateur ${ago}. Pas encore de réponse.`,
         ci: (pr, checks) => `La CI échoue sur #${pr}${checks ? ` (${checks})` : ""}.`,
@@ -2084,8 +2079,6 @@ const fr: Strings = {
     allHarnesses: "Tous les harness",
     state: "État",
     anyState: "Tous les états",
-    statuses: "Statut",
-    phases: "Phase",
     health: "Santé",
     outcomes: {
       pending: "À décider",
@@ -2099,7 +2092,6 @@ const fr: Strings = {
     sort: "Tri",
     sortDefault: "Ordre par défaut",
     sorts: {
-      agents: { age: "Plus longtemps en vol", report: "Dernier rapport", phase: "Par phase" },
       projects: { age: "Plus calmes d'abord", report: "Activité récente", phase: "Par santé" },
       validations: { age: "Plus anciennes d'abord", report: "Plus récentes d'abord" },
     },
@@ -2340,7 +2332,7 @@ const fr: Strings = {
         PageHeader:
           "La barre du haut : le fil d'Ariane à gauche, les raccourcis à droite. Le shell la dessine ; une page y ajoute ses boutons avec HeaderActions, jamais un titre à elle.",
         StatusHeader:
-          "Où en sont les choses, d'abord : une phrase en grand, sa seconde moitié plus discrète, une ligne, et des Stat qui ouvrent ce qu'elles comptent. Rendue avec la page, sous l'horizon.",
+          "Où en sont les choses, d'abord : une phrase en grand, sa seconde moitié plus discrète, une ligne, et des Stat qui ouvrent ce qu'elles comptent. Rendue avec la page.",
         Toolbar:
           "Onglets et filtres, leurs compléments dans end. Absente quand une page n'en a pas, jamais une ligne vide.",
         Section:

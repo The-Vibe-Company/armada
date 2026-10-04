@@ -1,8 +1,7 @@
 // The formation, used with restraint (THE-899, design/dashboard-v5): the live
 // mark (its lead ship brightens on each poll, the formation assembles while
 // loading, the lead ship turns amber when a reading failed), the formation
-// at rest of an empty state, and the ship a live session flies on the
-// timeline and a merged ticket leaves on. Server-safe, CSS only: the beat is
+// at rest of an empty state, and the ship of a session's flight path. Server-safe, CSS only: the beat is
 // a class the shell's live line re-keys on each poll.
 import { MARK } from "./shell/Logo";
 

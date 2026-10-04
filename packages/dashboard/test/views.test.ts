@@ -44,34 +44,35 @@ describe("saved views", () => {
 
   test("saving a name again replaces its filters; a bad name or list is refused; twenty at most", async () => {
     const db = await tempDb();
-    await saveView(db, ADA, { name: "Red CI", list: "agents", query: "coordinator=widgets" }, T0);
+    await saveView(db, ADA, { name: "Red CI", list: "validations", query: "state=pending" }, T0);
     await saveView(db, ADA, { name: "Red CI", list: "projects", query: "state=blocked" }, T0);
     expect(await listViews(db, ADA)).toEqual([
       { id: expect.any(String), name: "Red CI", list: "projects", query: "state=blocked" },
     ]);
-    expect(await saveView(db, ADA, { name: "", list: "agents", query: "" })).toEqual({ ok: false, problem: "name" });
+    expect(await saveView(db, ADA, { name: "", list: "projects", query: "" })).toEqual({ ok: false, problem: "name" });
     expect(await saveView(db, ADA, { name: "x", list: "keys", query: "" })).toEqual({ ok: false, problem: "list" });
-    for (let k = 1; k < VIEWS_MAX; k++) await saveView(db, ADA, { name: `View ${k}`, list: "agents", query: `q=${k}` });
-    expect(await saveView(db, ADA, { name: "One more", list: "agents", query: "" })).toEqual({
+    for (let k = 1; k < VIEWS_MAX; k++)
+      await saveView(db, ADA, { name: `View ${k}`, list: "projects", query: `q=${k}` });
+    expect(await saveView(db, ADA, { name: "One more", list: "projects", query: "" })).toEqual({
       ok: false,
       problem: "full",
     });
     // Saving a name already kept replaces it: allowed at the limit.
-    expect((await saveView(db, ADA, { name: "View 3", list: "agents", query: "q=three" })).ok).toBe(true);
+    expect((await saveView(db, ADA, { name: "View 3", list: "projects", query: "q=three" })).ok).toBe(true);
     expect(await scalar(db, "SELECT count(*) FROM saved_views WHERE person = 'ada'")).toBe(VIEWS_MAX);
   });
 
   test("a person removes their own views only; their organization or account gone takes them along", async () => {
     const db = await tempDb();
-    const saved = await saveView(db, ADA, { name: "Red CI", list: "agents", query: "state=error" }, T0);
+    const saved = await saveView(db, ADA, { name: "Red CI", list: "projects", query: "state=blocked" }, T0);
     const id = saved.ok ? (saved.views[0]?.id ?? "") : "";
     expect(await deleteView(db, BOB, id)).toEqual([]);
     expect(await listViews(db, ADA)).toHaveLength(1);
     expect(await deleteView(db, ADA, "not-an-id")).toHaveLength(1);
     expect(await deleteView(db, ADA, id)).toEqual([]);
 
-    await saveView(db, ADA, { name: "Again", list: "agents", query: "" }, T0);
-    await saveView(db, ADA_ELSEWHERE, { name: "There", list: "agents", query: "" }, T0);
+    await saveView(db, ADA, { name: "Again", list: "projects", query: "" }, T0);
+    await saveView(db, ADA_ELSEWHERE, { name: "There", list: "projects", query: "" }, T0);
     await db.query(`DELETE FROM "organization" WHERE id = 'org-b'`);
     expect(await listViews(db, ADA_ELSEWHERE)).toEqual([]);
     await db.query(`DELETE FROM "user" WHERE id = 'ada'`);

@@ -61,7 +61,7 @@ export function Sidebar({
         <span className="spacer" />
         {org}
       </div>
-      <button type="button" className="sh-search" onClick={onSearch} aria-label={`${t.shell.search} (⌘K)`}>
+      <button type="button" className="sh-search" onClick={onSearch}>
         <SearchIcon />
         <span className="sh-search-text">{t.shell.searchTicket}</span>
         <kbd className="sh-search-key">⌘K</kbd>

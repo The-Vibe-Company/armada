@@ -2994,7 +2994,7 @@ a.ui-figure:hover {
 /* design/dashboard-v7: one sentence, a card per project, the filters, then
    one list grouped by state or project, alone or beside the preview pane.
    Its phone layout follows its own width (a container), so the landing's
-   replica keeps the desk's. */
+   replica, a desk shrunk to 820 px at the narrowest, keeps the desk's. */
 .ov {
   container: ov / inline-size;
   display: flex;
@@ -3404,8 +3404,8 @@ a.ui-figure:hover {
   gap: 6px;
   padding-top: 6px;
 }
-/* On a phone the preview is the session's own page: the toggle would show the list alone. */
-@media (max-width: 719px) {
+/* The pane needs 720 px beside the 228 px sidebar: narrower, the preview is the session's own page. */
+@media (max-width: 947px) {
   .ov-views {
     display: none;
   }
@@ -3544,7 +3544,7 @@ a.ui-figure:hover {
     border-right: 0;
   }
 }
-@container ov (max-width: 599px) {
+@container ov (max-width: 559px) {
   .ov-head {
     padding: 20px 16px 14px;
   }
