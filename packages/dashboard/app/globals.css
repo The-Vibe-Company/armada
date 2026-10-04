@@ -3955,9 +3955,6 @@ a.ui-figure:hover {
   padding: 20px;
   gap: 12px;
 }
-.vd-list.is-decided .vd-card {
-  opacity: 0.86;
-}
 /* Under 720 px (a phone, or a laptop at 200% zoom, THE-891): the sidebar is
    a bar on top (the mark, the organization, search), the sections a tab bar
    at the bottom, and the page takes the whole width. The approval page alone

@@ -4,7 +4,6 @@ import {
   canonicalQuery,
   checkView,
   type FILTER_LISTS,
-  filterAgents,
   filterHref,
   filterProjects,
   filterQuery,
@@ -46,25 +45,24 @@ const rows = [
   row("WID-3", { phase: "awaiting-approval", since: at(3), lastReport: at(4) }),
   row("GAD-1", { project: "gadgets", title: "Rotate the keys", since: at(2), lastReport: null, silent: true }),
 ];
-const ids = (list: { id: string }[]) => list.map((r) => r.id);
 const f = (over: Partial<ListFilters>): ListFilters => ({ ...NO_FILTERS, ...over });
 
 describe("filters in the address", () => {
   test("round trip: what a view writes reads back the same, in one order, defaults left out", () => {
     const views: [(typeof FILTER_LISTS)[number], ListFilters][] = [
       [
-        "agents",
+        "projects",
         f({
           project: "widgets",
           harness: "claude-code",
-          state: "error",
+          state: "blocked",
           profile: "opus",
           mine: true,
           q: "magic link",
           sort: "report",
         }),
       ],
-      ["agents", f({ state: "awaiting-approval" })],
+      ["agents", f({ project: "widgets" })],
       ["projects", f({ state: "watch", sort: "phase", harness: "conductor" })],
       ["validations", f({ state: "approved", q: "email", sort: "age" })],
       ["validations", NO_FILTERS],
@@ -81,12 +79,15 @@ describe("filters in the address", () => {
     expect(canonicalQuery("projects", "?sort=age&q=x&project=widgets")).toBe("project=widgets&q=x&sort=age");
   });
 
-  test("the overview (THE-916) is the agents list, filtered on a coordinator; its old `project=` still reads", () => {
+  test("the overview (THE-1020) is the agents list, filtered on a project only; its old `project=` still reads", () => {
     expect(listOfPath("/")).toBe("agents");
-    expect(filterHref("agents", f({ project: "widgets", state: "error" }))).toBe("/?coordinator=widgets&state=error");
+    // Its state, harness, profile, needs-me and sort filters are gone: an old link opens it unfiltered.
+    expect(canonicalQuery("agents", "coordinator=widgets&state=error&harness=codex&sort=age")).toBe(
+      "coordinator=widgets",
+    );
     expect(parseFilters("agents", new URLSearchParams("project=widgets")).project).toBe("widgets");
     expect(parseFilters("agents", new URLSearchParams("coordinator=gadgets&project=widgets")).project).toBe("gadgets");
-    expect(canonicalQuery("agents", "sort=age&project=widgets")).toBe("coordinator=widgets&sort=age");
+    expect(canonicalQuery("agents", "sort=age&project=widgets")).toBe("coordinator=widgets");
   });
 
   test("what a list does not understand is dropped: unknown keys and values, another list's states, a phase sort on validations", () => {
@@ -101,32 +102,13 @@ describe("filters in the address", () => {
     expect(parseFilters("projects", new URLSearchParams("state=on-track")).state).toBe("on-track");
     // A profile is named as armada.toml names it.
     const spaced = f({ profile: "opus 4" });
-    expect(parseFilters("agents", new URLSearchParams(filterQuery("agents", spaced)))).toEqual(spaced);
-    expect(parseFilters("agents", new URLSearchParams("profile=a%0Ab")).profile).toBeNull();
+    expect(parseFilters("projects", new URLSearchParams(filterQuery("projects", spaced)))).toEqual(spaced);
+    expect(parseFilters("projects", new URLSearchParams("profile=a%0Ab")).profile).toBeNull();
     expect(listOfPath("/agents/WID-1")).toBeNull();
   });
 });
 
 describe("applied to the lists", () => {
-  test("agents: project, harness, status or phase, profile, needs me and words", () => {
-    expect(ids(filterAgents(rows, f({ project: "widgets" })))).toEqual(["WID-1", "WID-2", "WID-3"]);
-    expect(ids(filterAgents(rows, f({ harness: "claude-code" })))).toEqual(["WID-2"]);
-    expect(ids(filterAgents(rows, f({ state: "silent" })))).toEqual(["GAD-1"]);
-    expect(ids(filterAgents(rows, f({ state: "shipping" })))).toEqual(["WID-2"]);
-    expect(ids(filterAgents(rows, f({ profile: "sonnet" })))).toEqual(["WID-2"]);
-    expect(ids(filterAgents(rows, f({ mine: true })))).toEqual(["WID-3"]);
-    expect(ids(filterAgents(rows, f({ q: "rotate KEYS" })))).toEqual(["GAD-1"]);
-    expect(ids(filterAgents(rows, f({ q: "gadget" }), new Map([["gadgets", "Gadget works"]])))).toEqual(["GAD-1"]);
-  });
-
-  test("agents sort by age (longest in flight), last report (latest first, none last) and phase (plan to merge)", () => {
-    expect(ids(filterAgents(rows, f({ sort: "age" })))).toEqual(["WID-2", "GAD-1", "WID-3", "WID-1"]);
-    expect(ids(filterAgents(rows, f({ sort: "report" })))).toEqual(["WID-2", "WID-1", "WID-3", "GAD-1"]);
-    expect(ids(filterAgents(rows, f({ sort: "phase" })))).toEqual(["WID-1", "WID-3", "GAD-1", "WID-2"]);
-    // Sorting never changes the list it was given.
-    expect(ids(rows)).toEqual(["WID-1", "WID-2", "WID-3", "GAD-1"]);
-  });
-
   const project = (slug: string, over: Record<string, unknown> = {}) => ({
     slug,
     name: slug[0]?.toUpperCase() + slug.slice(1),
@@ -193,15 +175,15 @@ describe("applied to the lists", () => {
 
 describe("saved views", () => {
   test("a view is named, checked and kept canonical; it opens its list with its filters", () => {
-    expect(checkView({ name: "  Red   CI ", list: "agents", query: "sort=age&state=error&bogus=1" })).toEqual({
+    expect(checkView({ name: "  Red   CI ", list: "projects", query: "sort=age&state=blocked&bogus=1" })).toEqual({
       ok: true,
-      view: { name: "Red CI", list: "agents", query: "state=error&sort=age" },
+      view: { name: "Red CI", list: "projects", query: "state=blocked&sort=age" },
     });
     expect(checkView({ name: " ", list: "agents", query: "" })).toEqual({ ok: false, problem: "name" });
     expect(checkView({ name: "x".repeat(41), list: "agents", query: "" })).toEqual({ ok: false, problem: "name" });
     expect(checkView({ name: "Mine", list: "settings", query: "" })).toEqual({ ok: false, problem: "list" });
-    const view = { list: "agents" as const, query: "state=error&sort=age" };
-    expect(viewHref(view)).toBe("/?state=error&sort=age");
+    const view = { list: "projects" as const, query: "state=blocked&sort=age" };
+    expect(viewHref(view)).toBe("/projects?state=blocked&sort=age");
     // A view saved on /agents before THE-916 opens the overview on the same coordinator.
     expect(viewHref({ list: "agents", query: "project=widgets" })).toBe("/?coordinator=widgets");
   });

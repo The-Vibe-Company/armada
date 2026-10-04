@@ -31,10 +31,10 @@ const T0 = new Date("2026-10-01T12:00:00Z");
 describe("saved views", () => {
   test("are each person's, per organization, in the order they were pinned, kept canonical", async () => {
     const db = await tempDb();
-    const saved = await saveView(db, ADA, { name: "Red CI", list: "agents", query: "sort=age&state=error" }, T0);
+    const saved = await saveView(db, ADA, { name: "Red CI", list: "projects", query: "sort=age&state=blocked" }, T0);
     expect(saved).toEqual({
       ok: true,
-      views: [{ id: expect.any(String), name: "Red CI", list: "agents", query: "state=error&sort=age" }],
+      views: [{ id: expect.any(String), name: "Red CI", list: "projects", query: "state=blocked&sort=age" }],
     });
     await saveView(db, ADA, { name: "Mine", list: "validations", query: "mine=1" }, new Date(T0.getTime() + 1000));
     expect((await listViews(db, ADA)).map((v) => v.name)).toEqual(["Red CI", "Mine"]);
@@ -44,7 +44,7 @@ describe("saved views", () => {
 
   test("saving a name again replaces its filters; a bad name or list is refused; twenty at most", async () => {
     const db = await tempDb();
-    await saveView(db, ADA, { name: "Red CI", list: "agents", query: "state=error" }, T0);
+    await saveView(db, ADA, { name: "Red CI", list: "agents", query: "coordinator=widgets" }, T0);
     await saveView(db, ADA, { name: "Red CI", list: "projects", query: "state=blocked" }, T0);
     expect(await listViews(db, ADA)).toEqual([
       { id: expect.any(String), name: "Red CI", list: "projects", query: "state=blocked" },

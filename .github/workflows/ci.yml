@@ -99,7 +99,7 @@ jobs:
           nohup bun run start > "$RUNNER_TEMP/dashboard.log" 2>&1 &
           for i in $(seq 60); do curl -sf -o /dev/null http://localhost:4822/landing && exit 0; sleep 1; done
           cat "$RUNNER_TEMP/dashboard.log"; exit 1
-      # axe on every page in English and French, compact and airy; 320 px
+      # axe on every page in English and French; 320 px
       # without sideways scroll and no motion under reduced motion; the
       # keyboard's promises. The runner's Google Chrome runs it.
       - name: Check every page

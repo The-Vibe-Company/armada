@@ -14,7 +14,7 @@ They live in `packages/dashboard/perf/budgets.json`.
 | Cumulative Layout Shift | 0, as Lighthouse shows it (three decimals) | the same pages |
 | Largest Contentful Paint | under 2.5 s on mobile | the same pages |
 | First-load JS per route, gzipped | its baseline plus 5% | every route of `next build` |
-| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on the overview (`/`, 250 rows), filter the agents by harness, switch an agent's tab in its Details (both ways, on 350 activity rows), decide a validation on a session to validate (median of the demo's three: `/agents/WID-18`, `GAD-9`, `THE-862`) |
+| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on the overview (`/`, 250 rows), filter the overview by project, select a session in its preview pane (`/?view=preview`), switch an agent's tab in its Details (both ways, on 350 activity rows), decide a validation on a session to validate (median of the demo's three: `/agents/WID-18`, `GAD-9`, `THE-862`) |
 
 How they are measured:
 

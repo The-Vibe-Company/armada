@@ -10,17 +10,9 @@
 // `<FilterBar list="…" />` in its toolbar. A list that reads its own address
 // (THE-894's /activity, a server-rendered GET form) gives its canonical query
 // in `OWN_ADDRESS` instead: its views are saved and pinned the same way.
-import {
-  type AgentPhase,
-  type FleetOverview,
-  type FleetRow,
-  LABEL_PHASES,
-  type OwnerValidation,
-  type ProjectHealth,
-  type ProjectOverview,
-} from "@armada/core/read";
+import type { FleetOverview, FleetRow, OwnerValidation, ProjectHealth, ProjectOverview } from "@armada/core/read";
 import { activityHref, activityQuery } from "./activity-view";
-import { AGENT_STATUSES, agentState, decisionsOf, HARNESSES, type Harness, harnessOf } from "./fleet-view";
+import { decisionsOf, HARNESSES, type Harness, harnessOf } from "./fleet-view";
 import { pendingValidations } from "./overview-view";
 import { coordinatorHarness, lastActivity } from "./project-view";
 
@@ -67,13 +59,13 @@ interface ListRule {
 }
 
 export const LISTS = {
-  // The overview (THE-916): the sessions in flight, grouped by coordinator.
+  // The overview (THE-1020): its project filter; its grouping and view are lib/coordinator-view.ts's.
   agents: {
     path: "/",
     projectParam: "coordinator",
-    fields: ["project", "harness", "state", "profile", "mine", "q", "sort"],
-    states: [...AGENT_STATUSES, ...LABEL_PHASES],
-    sorts: SORTS,
+    fields: ["project"],
+    states: [],
+    sorts: [],
   },
   projects: {
     path: "/projects",
@@ -185,48 +177,6 @@ const byTime = (a: string | null | undefined, b: string | null | undefined) => (
 // ------------------------------------------------------------------- agents
 
 export const profileOf = (r: Pick<FleetRow, "profile" | "session">) => r.session?.profile ?? r.profile ?? null;
-
-/** From plan to merge, as the pipeline draws it. */
-const PHASE_ORDER: readonly AgentPhase[] = [
-  "planning",
-  "awaiting-approval",
-  "implementing",
-  "awaiting-validation",
-  "shipping",
-  "blocked",
-  "ready-to-merge",
-  "merged",
-  "released",
-];
-
-/**
- * The sessions a view keeps, in its order: by age the longest in flight
- * first, by last report the freshest first, by phase from plan to merge.
- */
-export function filterAgents(
-  rows: FleetRow[],
-  f: ListFilters,
-  names: Map<string, string> = new Map(),
-  /** What "needs me" keeps; the overview's (THE-916) is what the owner has to validate. */
-  needsMe: (r: FleetRow) => boolean = (r) => agentState(r).status === "waiting",
-): FleetRow[] {
-  const kept = rows.filter((r) => {
-    const s = agentState(r);
-    if (f.project && r.project !== f.project) return false;
-    if (f.harness && harnessOf(r.runtime) !== f.harness) return false;
-    if (f.state && s.status !== f.state && r.phase !== f.state) return false;
-    if (f.profile && profileOf(r) !== f.profile) return false;
-    if (f.mine && !needsMe(r)) return false;
-    const text = [r.id, r.title, names.get(r.project) ?? r.project, r.runtime, profileOf(r), r.session?.branch];
-    return holds(text.filter(Boolean).join(" "), f.q);
-  });
-  if (f.sort === "age") return kept.sort((a, b) => byTime(a.since, b.since));
-  if (f.sort === "report")
-    return kept.sort((a, b) => byTime(b.lastReport ?? b.lastUpdate, a.lastReport ?? a.lastUpdate));
-  if (f.sort === "phase")
-    return kept.sort((a, b) => PHASE_ORDER.indexOf(a.phase) - PHASE_ORDER.indexOf(b.phase) || byTime(a.since, b.since));
-  return kept;
-}
 
 // ------------------------------------------------------------------ projects
 
