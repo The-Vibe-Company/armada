@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.54](https://github.com/The-Vibe-Company/armada/compare/v0.2.53...v0.2.54) (2026-10-04)
+
+
+### Features
+
+* **dashboard:** rebuild the other pages on the sober v7 design ([#188](https://github.com/The-Vibe-Company/armada/issues/188)) ([2450f9b](https://github.com/The-Vibe-Company/armada/commit/2450f9b350742f9b65d005f544b0eddad20226a9))
+
 ## [0.2.53](https://github.com/The-Vibe-Company/armada/compare/v0.2.52...v0.2.53) (2026-10-04)
 
 
