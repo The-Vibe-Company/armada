@@ -6,6 +6,7 @@ import type { Fleet } from "../src/live.ts";
 import {
   askOwnerToMerge,
   type LocalRepo,
+  MERGE_LEASE_TTL_MS,
   type MergeAttempt,
   type MergeContext,
   type MergeForge,
@@ -1154,32 +1155,36 @@ describe("merge lease", () => {
 });
 
 describe("shared merge holds", () => {
-  test.each([false, true])("an unticketed fix requires a durable override audit (comment fails: %s)", async (fails) => {
-    const live = tempFleet();
-    const first = await live.fleet.openHold({ kind: "manual", reason: "api deploy is broken" });
-    const second = await live.fleet.openHold({ kind: "main-red", ref: BASE, reason: "main tests failed" });
-    const s = setup({ live });
-    Object.assign(s.forge.pr, { title: "fix(release): repair the deployment", headRef: "fix/deployment" });
-    if (fails) {
-      s.forge.comment = async () => {
-        throw new Error("GitHub unavailable");
-      };
-      expect(
-        await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, throughHold: "repairs the failure" })),
-      ).toContain("could not record the --no-ticket reason on #9 (GitHub unavailable); nothing was merged");
-      expect(s.forge.merges).toEqual([]);
-    } else {
-      expect(
-        (await mergePullRequest(s.ctx, { pr: 9, noTicket: true, throughHold: "repairs the failure" })).merged,
-      ).toBe(true);
-      expect(s.forge.comments).toHaveLength(1);
-      const comment = s.forge.comments[0]?.body;
-      expect(comment).toContain(`merged through holds #${first.id}, #${second.id}: repairs the failure`);
-      expect(comment?.match(/repairs the failure/g)).toEqual(["repairs the failure"]);
-    }
-    expect(s.linear.writes).toEqual([]);
-    expect((await live.fleet.holds()).map((h) => h.id)).toEqual([first.id, second.id]);
-  });
+  test.each(["success", "comment-fails", "retry"])(
+    "an unticketed fix requires a durable override audit (%s)",
+    async (mode) => {
+      const live = tempFleet();
+      const first = await live.fleet.openHold({ kind: "manual", reason: "api deploy is broken" });
+      const second = await live.fleet.openHold({ kind: "main-red", ref: BASE, reason: "main tests failed" });
+      const s = setup({ live });
+      Object.assign(s.forge.pr, { title: "fix(release): repair the deployment", headRef: "fix/deployment" });
+      if (mode === "retry") s.forge.answers.push({ ok: false, message: "503", transient: true, effect: false });
+      if (mode === "comment-fails") {
+        s.forge.comment = async () => {
+          throw new Error("GitHub unavailable");
+        };
+        expect(
+          await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, throughHold: "repairs the failure" })),
+        ).toContain("could not record the --no-ticket reason on #9 (GitHub unavailable); nothing was merged");
+        expect(s.forge.merges).toEqual([]);
+      } else {
+        expect(
+          (await mergePullRequest(s.ctx, { pr: 9, noTicket: true, throughHold: "repairs the failure" })).merged,
+        ).toBe(true);
+        expect(s.forge.comments).toHaveLength(1);
+        const comment = s.forge.comments[0]?.body;
+        expect(comment).toContain(`merged through holds #${first.id}, #${second.id}: repairs the failure`);
+        expect(comment?.match(/repairs the failure/g)).toEqual(["repairs the failure"]);
+      }
+      expect(s.linear.writes).toEqual([]);
+      expect((await live.fleet.holds()).map((h) => h.id)).toEqual([first.id, second.id]);
+    },
+  );
 
   test("both coordinators refuse until every hold is cleared; a fix records every override", async () => {
     const live = tempFleet();
@@ -1224,23 +1229,58 @@ describe("shared merge holds", () => {
   });
 });
 
-test("a pause opened during the checklist stops the merge or joins the recorded override", async () => {
-  for (const throughHold of [undefined, "repairs the failure"]) {
+test("a pause opened during checks, preflight or retry stops merging or joins the audit", async () => {
+  for (const stage of ["checklist", "preflight", "retry"]) {
+    for (const throughHold of [undefined, "repairs the failure"]) {
+      const live = tempFleet();
+      const s = setup({ live });
+      let holdId = 0;
+      const open = async () => {
+        holdId = (await live.fleet.openHold({ kind: "manual", reason: `pause during ${stage}` })).id;
+      };
+      if (stage === "checklist") {
+        s.forge.onCompare = async () => {
+          s.forge.onCompare = null;
+          await open();
+        };
+      } else {
+        let attempts = 0;
+        s.ctx.forge.beforeMerge = async () => {
+          if (++attempts === (stage === "retry" ? 2 : 1)) await open();
+        };
+        if (stage === "retry") s.forge.answers.push({ ok: false, message: "503", transient: true, effect: false });
+      }
+      if (throughHold) {
+        expect((await mergePullRequest(s.ctx, { pr: 9, throughHold })).merged).toBe(true);
+        expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toContain(
+          `merged through hold #${holdId}: ${throughHold}`,
+        );
+      } else {
+        expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toContain(`pause during ${stage}`);
+        expect(s.forge.pr.state).toBe("open");
+        expect(s.forge.merges).toHaveLength(stage === "retry" ? 1 : 0);
+      }
+    }
+  }
+});
+
+test("slow preflight guards must retain lease ownership before the initial merge or a retry", async () => {
+  for (const expireOnAttempt of [1, 2]) {
     const live = tempFleet();
     const s = setup({ live });
-    let holdId = 0;
-    s.forge.onCompare = async () => {
-      s.forge.onCompare = null;
-      holdId = (await live.fleet.openHold({ kind: "manual", reason: "pause during checks" })).id;
+    let attempts = 0;
+    s.ctx.forge.beforeMerge = async () => {
+      if (++attempts === expireOnAttempt) {
+        live.clock.advance(MERGE_LEASE_TTL_MS + 1);
+        expect(await live.fleet.acquireLease({ name: "merge", holder: "another-coordinator", ttlMs: 60_000 })).toEqual({
+          acquired: true,
+        });
+      }
     };
-    if (throughHold) {
-      expect((await mergePullRequest(s.ctx, { pr: 9, throughHold })).merged).toBe(true);
-      expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toContain(
-        `merged through hold #${holdId}: ${throughHold}`,
-      );
-    } else {
-      expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toContain("pause during checks");
-      expect(s.forge.merges).toEqual([]);
-    }
+    if (expireOnAttempt === 2) s.forge.answers.push({ ok: false, message: "503", transient: true, effect: false });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toContain("merge lock could not be renewed");
+    expect(s.forge.pr.state).toBe("open");
+    expect(s.forge.merges).toHaveLength(expireOnAttempt - 1);
+    expect(s.linear.writes).toEqual([]);
   }
 });

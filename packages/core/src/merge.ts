@@ -45,6 +45,8 @@ export interface MergeForge {
   diff(number: number): Promise<string>;
   /** Squash-merges only if the head is still `sha`. Never deletes the branch. */
   merge(number: number, sha: string): Promise<MergeAttempt>;
+  /** Runtime guards, awaited before the final hold and lease checks on each merge attempt. */
+  beforeMerge?(number: number, sha: string): Promise<void>;
   /** Posts an audit comment on the pull request; rejects if it could not be recorded. */
   comment(number: number, body: string): Promise<void>;
   /** A commit's parents and tree; null when GitHub does not know it. */
@@ -1011,7 +1013,13 @@ export async function askOwnerToMerge(
 }
 
 /** Merges pinned to `sha`, retrying GitHub 5xx after re-reading the state; then reads MERGED back. */
-async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, ticket: string | null): Promise<MergePull> {
+async function mergePinned(
+  ctx: MergeContext,
+  pull: MergePull,
+  sha: string,
+  ticket: string | null,
+  beforeMerge: () => Promise<void>,
+): Promise<MergePull> {
   const n = `#${pull.number}`;
   const closeByHand = ticket ? `; if it merged, close ${ticket} by hand` : "";
   let readError = "";
@@ -1024,6 +1032,7 @@ async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, tick
     });
   };
   for (let attempt = 0; ; attempt++) {
+    await beforeMerge();
     const res = await ctx.forge.merge(pull.number, sha);
     if (res.ok) break;
     // Whatever the error, GitHub may have merged anyway: read the state first.
@@ -1252,39 +1261,47 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
       : null;
     const handBackId = handBacks?.find((item) => item.kind === "hand-back")?.id ?? null;
     await recheck(ctx, input, run, c);
-    // Local checks and owner reads can take minutes; include pauses opened since the first read.
-    const latestHolds = await checkHolds(ctx, input);
-    const overridden = [...new Map([...holds, ...latestHolds].map((h) => [h.id, h])).values()];
-    const override = overridden.length
-      ? `merged through ${overridden.length === 1 ? "hold" : "holds"} ${overridden.map((h) => `#${h.id}`).join(", ")}: ${input.throughHold?.trim() ?? ""}`
-      : "";
-    if (override) c.lines.push(override);
-    const reason = input.noTicket ? mergeReason(input) : null;
-    if (input.noTicket && (reason || override)) {
-      const named = programTicket(config, c.pull);
-      const audit = reason ? `${reason}.${override ? ` ${override}.` : ""}` : `${override}.`;
-      const body = `Armada merge --no-ticket at ${c.sha}: ${audit}${named ? ` ${named} stays open; its ticket and worker are left unchanged.` : " No ticket is closed."}`;
-      try {
-        await ctx.forge.comment(c.pull.number, body);
-      } catch (err) {
-        throw new Refusal(
-          `could not record the --no-ticket reason on #${c.pull.number} (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
-          `armada merge ${input.pr} --no-ticket${reason ? ' --reason "<why the ticket stays open>"' : ""}${override ? ' --through-hold "<why this fixes the pause>"' : ""} again once GitHub answers`,
-        );
+    const overridden = new Map(holds.map((h) => [h.id, h]));
+    let override = "";
+    let recordedAudit: string | null = null;
+    const beforeMerge = async () => {
+      await ctx.forge.beforeMerge?.(c.pull.number, c.sha);
+      // Checks, runtime guards and retry waits can take minutes; refresh pauses before each attempt.
+      for (const hold of await checkHolds(ctx, input)) overridden.set(hold.id, hold);
+      override = overridden.size
+        ? `merged through ${overridden.size === 1 ? "hold" : "holds"} ${[...overridden.keys()].map((id) => `#${id}`).join(", ")}: ${input.throughHold?.trim() ?? ""}`
+        : "";
+      const reason = input.noTicket ? mergeReason(input) : null;
+      if (input.noTicket && (reason || override)) {
+        const named = programTicket(config, c.pull);
+        const audit = reason ? `${reason}.${override ? ` ${override}.` : ""}` : `${override}.`;
+        const body = `Armada merge --no-ticket at ${c.sha}: ${audit}${named ? ` ${named} stays open; its ticket and worker are left unchanged.` : " No ticket is closed."}`;
+        if (body !== recordedAudit) {
+          try {
+            await ctx.forge.comment(c.pull.number, body);
+          } catch (err) {
+            throw new Refusal(
+              `could not record the --no-ticket reason on #${c.pull.number} (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
+              `armada merge ${input.pr} --no-ticket${reason ? ' --reason "<why the ticket stays open>"' : ""}${override ? ' --through-hold "<why this fixes the pause>"' : ""} again once GitHub answers`,
+            );
+          }
+          recordedAudit = body;
+          c.lines.push(
+            reason
+              ? `Recorded --no-ticket reason on #${c.pull.number}: ${reason}`
+              : `Recorded hold override on #${c.pull.number}.`,
+          );
+        }
       }
-      c.lines.push(
-        reason
-          ? `Recorded --no-ticket reason on #${c.pull.number}: ${reason}`
-          : `Recorded hold override on #${c.pull.number}.`,
-      );
-    }
-    if (!(await renew()))
-      throw new Refusal(
-        "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged",
-        `armada merge ${input.pr} again`,
-      );
-    say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
-    const merged = await mergePinned(ctx, c.pull, c.sha, c.ticket?.id ?? null);
+      if (!(await renew()))
+        throw new Refusal(
+          "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged",
+          `armada merge ${input.pr} again`,
+        );
+      say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
+    };
+    const merged = await mergePinned(ctx, c.pull, c.sha, c.ticket?.id ?? null, beforeMerge);
+    if (override) c.lines.push(override);
     const lines = [
       ...c.lines,
       `Merged #${merged.number} into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"} (head ${merged.headSha}).`,
