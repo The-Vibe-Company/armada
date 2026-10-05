@@ -466,16 +466,27 @@ describe("armada ask, inbox and answer", () => {
         "    Options:",
         "    1. SQLite",
         "    2. Redis",
-        'For herdr, armada answer delivers automatically. Deliver each other answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+        'armada answer delivers to herdr and Conductor workers; for Claude Code deliver with the guide first, then record it: armada answer <id> "<answer>".',
         "1 worker in flight (DEMO-7) — act on the items above, then keep watching: armada watch",
         "",
       ].join("\n"),
     );
 
     w.reset();
-    expect(await run(["answer", "1", "SQLite, for the first slice."], { ...coordinator, env: w.io.env })).toBe(0);
+    const exec: Io["exec"] = async (_cmd, args) => ({
+      code: 0,
+      stdout: JSON.stringify(
+        args[1] === "session"
+          ? { workspaceId: "ws-1", sessionId: "s-1", status: "idle" }
+          : args[1] === "workspace"
+            ? { workspaceId: "ws-1", status: "ready" }
+            : { messageId: args.at(-1), state: "sent" },
+      ),
+      stderr: "",
+    });
+    expect(await run(["answer", "1", "SQLite, for the first slice."], { ...coordinator, env: w.io.env, exec })).toBe(0);
     expect(w.out()).toBe(
-      "Answer posted on DEMO-7 (blocked).\nInbox item #1 resolved.\nThe worker resumes once it reports its phase again.\nhttps://linear.app/acme/issue/DEMO-7\n",
+      "Delivered to DEMO-7's Conductor session (conductor).\nAnswer posted on DEMO-7 (blocked).\nInbox item #1 resolved.\nThe worker resumes once it reports its phase again.\nhttps://linear.app/acme/issue/DEMO-7\n",
     );
     expect(w.store.items[0]).toMatchObject({ kind: "question", resolution: "SQLite, for the first slice." });
 

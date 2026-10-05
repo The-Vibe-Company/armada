@@ -17,7 +17,7 @@ const homes: string[] = [];
 afterEach(async () => {
   await Promise.all(homes.splice(0).map((h) => rm(h, { recursive: true, force: true })));
 });
-async function fixture(harness = "codex") {
+async function fixture(harness = "codex", runtime = "herdr") {
   const home = await mkdtemp(join(tmpdir(), "armada-runtime-"));
   homes.push(home);
   const store = memoryFleet();
@@ -25,6 +25,7 @@ async function fixture(harness = "codex") {
   const api = fakeArmada({ keys: { armada_key_CANARY_runtime: "runtime" }, store, clock });
   const linear = new FakeLinear();
   linear.add("DEMO-7", { labels: [{ id: "phase-implementing", name: "implementing", group: "Agent phase" }] });
+  const inputs: (string | undefined)[] = [];
   const calls: string[][] = [],
     out: string[] = [],
     err: string[] = [];
@@ -50,8 +51,19 @@ async function fixture(harness = "codex") {
     ghToken: () => null,
     fetch: api.fetch,
     linearWriter: () => linear,
-    exec: async (cmd, args) => {
+    exec: async (cmd, args, options) => {
       calls.push([cmd, ...args]);
+      if (cmd === "conductor") {
+        if (failure) return { code: 3, stdout: "", stderr: "private prompt armada_launch_CANARY" };
+        const result =
+          args[1] === "session"
+            ? { workspaceId: "cw8", sessionId: "cs9", status: state }
+            : args[1] === "workspace"
+              ? { workspaceId: "cw8", status: "ready" }
+              : { messageId: args.at(-1), state: state === "working" ? "queued" : "sent" };
+        if (args[1] === "message") inputs.push(options?.input);
+        return { code: 0, stdout: JSON.stringify(result), stderr: "" };
+      }
       if (cmd === "git") {
         const value =
           args[0] === "status"
@@ -107,8 +119,8 @@ async function fixture(harness = "codex") {
     "widgets",
     {
       ticket: "DEMO-7",
-      runtime: "Herdr",
-      handle: rawHandle,
+      runtime: runtime === "conductor" ? "Conductor" : "Herdr",
+      handle: runtime === "conductor" ? "cw8/cs9" : rawHandle,
       branch,
       phase: "implementing",
       resuming: false,
@@ -119,6 +131,7 @@ async function fixture(harness = "codex") {
   return {
     io,
     calls,
+    inputs,
     store,
     linear,
     api,
@@ -153,6 +166,365 @@ test("a fresh coordinator finds a blocked claim before its next report, answers 
   expect(f.linear.bodies.at(-1)).toContain("Approved\n\n'\" $(never) `never`");
   expect(await run(["inbox", "--json"], { ...f.io })).toBe(0);
   expect(JSON.parse(f.out.at(-1) ?? "{}").items).toEqual([]);
+});
+
+test("Conductor plan answers and notes deliver in one command with distinct stable keys", async () => {
+  const f = await fixture("codex", "conductor");
+  f.change({ state: "working" });
+  const id = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "plan",
+    body: "Build it?",
+    author: "cw8/cs9",
+    at: NOW,
+  });
+  const text = "Approved\n'\" $(never) `never`";
+  expect(await run(["answer", `#${id}`, text], f.io)).toBe(0);
+  const sends = () => f.calls.filter((c) => c[0] === "conductor" && c[1] === "--json" && c[2] === "message");
+  expect(sends()).toHaveLength(1);
+  expect(sends()[0]?.slice(0, 8)).toEqual([
+    "conductor",
+    "--json",
+    "message",
+    "create",
+    "--session",
+    "cs9",
+    "--message-file",
+    "-",
+  ]);
+  expect(sends()[0]?.[8]).toBe("--message-id");
+  expect(sends()[0]?.[9]).toMatch(/^[a-f0-9-]{14}8[a-f0-9-]{21}$/);
+  expect(f.inputs).toEqual([text]);
+  expect(f.linear.bodies.at(-1)).toContain("answer: Approved");
+  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).not.toBeNull();
+  expect(f.out.join("")).toContain("Conductor session (conductor, queued)");
+  const nextPlan = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "plan",
+    body: "Revised plan",
+    author: "cw8/cs9",
+    at: NOW,
+  });
+  expect(await run(["answer", "--note", "DEMO-7", text], f.io)).toBe(0);
+  expect((await f.store.getInboxItem("widgets", nextPlan))?.resolvedAt).not.toBeNull();
+  expect(await run(["answer", "--note", "DEMO-7", text], f.io)).toBe(0);
+  expect(sends()[1]?.at(-1)).not.toBe(sends()[0]?.at(-1));
+  expect(sends()[2]?.at(-1)).toBe(sends()[1]?.at(-1));
+});
+
+test("Conductor retry after Armada recording failure reuses the message id", async () => {
+  const f = await fixture("codex", "conductor");
+  const id = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "plan",
+    body: "Proceed?",
+    author: "cw8/cs9",
+    at: NOW,
+  });
+  const fetch = f.io.fetch;
+  let fail = true;
+  f.io.fetch = async (url, options) => {
+    if (String(url).endsWith("/fleet/answer") && fail) {
+      fail = false;
+      return new Response("unavailable", { status: 503 });
+    }
+    if (!fetch) throw new Error("test fetch missing");
+    return fetch(url, options);
+  };
+  expect(await run(["answer", String(id), "approved"], f.io)).toBe(0);
+  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+  expect(await run(["answer", String(id), "approved"], f.io)).toBe(0);
+  const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
+  expect(sends).toHaveLength(2);
+  expect(sends[1]?.at(-1)).toBe(sends[0]?.at(-1));
+  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).not.toBeNull();
+});
+
+test.each([
+  { name: "auth", code: 3, archived: false, missing: false, message: "Conductor is not signed in" },
+  { name: "unavailable", code: 0, archived: false, missing: true, message: "Conductor is unavailable" },
+  { name: "archived", code: 0, archived: true, missing: false, message: "workspace is archived" },
+])("Conductor $name leaves the question open with no record", async ({ code, archived, missing, message }) => {
+  const f = await fixture("codex", "conductor");
+  const id = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "question",
+    body: "Proceed?",
+    author: "cw8/cs9",
+    at: NOW,
+  });
+  const exec = f.io.exec;
+  f.io.exec = async (cmd, args, options) => {
+    if (missing) throw Object.assign(new Error("CANARY"), { code: "ENOENT" });
+    if (code) return { code, stdout: "", stderr: "armada_launch_CANARY" };
+    if (archived && args[1] === "workspace")
+      return { code: 0, stdout: JSON.stringify({ workspaceId: "cw8", status: "archived" }), stderr: "" };
+    return exec?.(cmd, args, options) ?? { code: 1, stdout: "", stderr: "" };
+  };
+  expect(await run(["answer", String(id), "approved"], f.io)).toBe(1);
+  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+  expect(f.linear.writes).toEqual([]);
+  expect(f.calls.some((c) => c[0] === "conductor" && c[2] === "message")).toBe(false);
+  expect(f.err.join("")).toContain(message);
+  expect(f.err.join("")).not.toContain("CANARY");
+});
+
+test("Conductor notes reach a failed session and changed text gets a new delivery id", async () => {
+  const f = await fixture("codex", "conductor");
+  f.change({ state: "error" });
+  expect(await run(["answer", "--note", "DEMO-7", "resume"], f.io)).toBe(0);
+  expect(await run(["answer", "--note", "DEMO-7", "resume with main"], f.io)).toBe(0);
+  const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
+  expect(sends).toHaveLength(2);
+  expect(sends[0]?.at(-1)).not.toBe(sends[1]?.at(-1));
+});
+
+test.each(["herdr", "conductor"])(
+  "old questions are refused before %s delivery by item and ticket",
+  async (runtime) => {
+    const f = await fixture("codex", runtime);
+    const id = await f.store.addInboxItem({
+      project: "widgets",
+      ticket: "DEMO-7",
+      recipient: "coordinator",
+      kind: "question",
+      body: "Proceed?",
+      author: "old",
+      at: new Date(NOW.getTime() - 1000),
+    });
+    for (const target of [String(id), "DEMO-7"]) expect(await run(["answer", target, "approved"], f.io)).toBe(1);
+    expect(f.calls).toEqual([]);
+    expect(f.linear.writes).toEqual([]);
+    expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+  },
+);
+
+test.each(["none", "tracker", "provenance"])(
+  "a bound unclaimed Conductor launch is guarded before note delivery (replacement at %s)",
+  async (replacement) => {
+    const f = await fixture("codex", "conductor");
+    await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
+    f.linear.add("DEMO-7", { labels: [] });
+    f.store.launches.push({
+      id: "launch-2",
+      project: "widgets",
+      ticket: "DEMO-7",
+      launchedAt: new Date(NOW.getTime() + 1000).toISOString(),
+      tokenUsedAt: null,
+      tokenExpiresAt: new Date(NOW.getTime() + 3600_000).toISOString(),
+      runtime: "Conductor",
+      handle: "cw8/cs9",
+      endedAt: null,
+    });
+    const read = f.linear.readTicket.bind(f.linear);
+    f.linear.readTicket = async (ticket) => {
+      const result = await read(ticket);
+      if (replacement === "tracker" && f.store.launches[0]) f.store.launches[0].id = "replacement";
+      return result;
+    };
+    const exec = f.io.exec;
+    f.io.exec = async (cmd, args, options) => {
+      const result = await exec?.(cmd, args, options);
+      if (replacement === "provenance" && args[1] === "workspace" && f.store.launches[0])
+        f.store.launches[0].id = "replacement";
+      return result ?? { code: 1, stdout: "", stderr: "" };
+    };
+    expect(await run(["answer", "--note", "DEMO-7", "resume before claim"], f.io)).toBe(replacement === "none" ? 0 : 1);
+    const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
+    expect(sends).toHaveLength(replacement === "none" ? 1 : 0);
+    expect(f.linear.writes).toEqual([]);
+  },
+);
+
+test("a pre-claim note retry keeps its id after the same launch claims", async () => {
+  const f = await fixture("codex", "conductor");
+  await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
+  f.store.launches.push({
+    id: "launch-2",
+    project: "widgets",
+    ticket: "DEMO-7",
+    launchedAt: new Date(NOW.getTime() + 1000).toISOString(),
+    tokenUsedAt: null,
+    runtime: "Conductor",
+    handle: "cw8/cs9",
+    endedAt: null,
+  });
+  const fetch = f.io.fetch;
+  let fail = true;
+  f.io.fetch = async (url, options) => {
+    if (String(url).endsWith("/fleet/answer") && fail) {
+      fail = false;
+      return new Response("unavailable", { status: 503 });
+    }
+    if (!fetch) throw new Error("test fetch missing");
+    return fetch(url, options);
+  };
+  expect(await run(["answer", "--note", "DEMO-7", "resume"], f.io)).toBe(0);
+  await recordClaim(
+    f.store,
+    "widgets",
+    {
+      ticket: "DEMO-7",
+      runtime: "Conductor",
+      handle: "cw8/cs9",
+      branch,
+      phase: "implementing",
+      resuming: false,
+      profile: null,
+      workerSessionId: "launch-2",
+    },
+    new Date(NOW.getTime() + 2000),
+  );
+  expect(await run(["answer", "--note", "DEMO-7", "resume"], f.io)).toBe(0);
+  const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
+  expect(sends).toHaveLength(2);
+  expect(sends[1]?.at(-1)).toBe(sends[0]?.at(-1));
+});
+
+test.each(["herdr", "conductor"])(
+  "a changed %s branch refuses delivery even when claim ids are preserved",
+  async (runtime) => {
+    const f = await fixture("codex", runtime);
+    const id = await f.store.addInboxItem({
+      project: "widgets",
+      ticket: "DEMO-7",
+      recipient: "coordinator",
+      kind: "question",
+      body: "Proceed?",
+      author: "worker",
+      at: NOW,
+    });
+    const read = f.linear.readTicket.bind(f.linear);
+    f.linear.readTicket = async (ticket) => {
+      const result = await read(ticket);
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-7",
+        runtime: runtime === "conductor" ? "Conductor" : "Herdr",
+        handle: runtime === "conductor" ? "cw8/cs9" : rawHandle,
+        branch: "feature/demo-7-replacement",
+        at: NOW,
+      });
+      return result;
+    };
+    expect(await run(["answer", String(id), "approved"], f.io)).toBe(1);
+    expect(f.calls).toEqual([]);
+    expect(f.linear.writes).toEqual([]);
+    expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+  },
+);
+
+test.each([
+  { runtime: "herdr", at: "delivery" },
+  { runtime: "conductor", at: "delivery" },
+  { runtime: "herdr", at: "comment" },
+  { runtime: "conductor", at: "comment" },
+])("replacement after $runtime $at prevents subsequent recording", async ({ runtime, at }) => {
+  const f = await fixture("codex", runtime);
+  const id = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "question",
+    body: "Proceed?",
+    author: "worker",
+    at: NOW,
+  });
+  const replace = async () => {
+    await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
+    await recordClaim(
+      f.store,
+      "widgets",
+      {
+        ticket: "DEMO-7",
+        runtime: runtime === "conductor" ? "Conductor" : "Herdr",
+        handle: runtime === "conductor" ? "cw8/cs10" : JSON.stringify({ ...handle, pane: "w8:p10" }),
+        branch,
+        phase: "implementing",
+        resuming: false,
+        profile: null,
+      },
+      new Date(NOW.getTime() + 1000),
+    );
+  };
+  const exec = f.io.exec;
+  f.io.exec = async (cmd, args, options) => {
+    const result = await exec?.(cmd, args, options);
+    if (
+      at === "delivery" &&
+      ((cmd === "conductor" && args[1] === "message") || (cmd === "herdr" && args[0] === "pane" && args[1] === "run"))
+    )
+      await replace();
+    return result ?? { code: 1, stdout: "", stderr: "" };
+  };
+  const comment = f.linear.comment.bind(f.linear);
+  f.linear.comment = async (uuid, body) => {
+    const result = await comment(uuid, body);
+    if (at === "comment") await replace();
+    return result;
+  };
+  expect(await run(["answer", String(id), "approved"], f.io)).toBe(1);
+  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+  expect(f.linear.bodies).toHaveLength(at === "comment" ? 1 : 0);
+  expect(f.api.calls.some((c) => c.path === "fleet/answer")).toBe(false);
+});
+
+test("a stored Conductor blocked state does not advertise a herdr-only approval", async () => {
+  const f = await fixture("codex", "conductor");
+  await f.store.observeRuntime({
+    project: "widgets",
+    ticket: "DEMO-7",
+    handle: "cw8/cs9",
+    claimedAt: NOW.toISOString(),
+    state: "blocked",
+    at: NOW,
+  });
+  // This reader has no native runtime; it sees only the stored API state.
+  expect(await run(["inbox", "--json"], { ...f.io, exec: undefined })).toBe(0);
+  expect(JSON.parse(f.out.at(-1) ?? "{}").items.some((i: { kind: string }) => i.kind === "runtime-blocked")).toBe(
+    false,
+  );
+});
+
+test("Claude Code answers still direct the coordinator to deliver with its guide", async () => {
+  const f = await fixture();
+  await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
+  await recordClaim(
+    f.store,
+    "widgets",
+    {
+      ticket: "DEMO-7",
+      runtime: "Claude Code",
+      handle: "subagent-1",
+      branch,
+      phase: "implementing",
+      resuming: false,
+      profile: null,
+    },
+    NOW,
+  );
+  const id = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "question",
+    body: "Proceed?",
+    author: "subagent-1",
+    at: NOW,
+  });
+  expect(await run(["answer", String(id), "approved"], f.io)).toBe(0);
+  expect(f.calls).toEqual([]);
+  expect(f.out.join("")).toContain("Deliver with the armada-runtime-claude-code guide first");
+  expect(f.linear.bodies.at(-1)).toContain("answer: approved");
+  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).not.toBeNull();
 });
 
 test("failed runtime delivery leaves questions open and writes no answer; failed validation never prompts", async () => {
@@ -367,42 +739,46 @@ test("a live herdr claim receives an answer despite stale tracker phase labels",
   expect(await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([]);
 });
 
-test("an answer validated for an old claim never reaches its replacement", async () => {
-  const f = await fixture();
-  const id = await f.store.addInboxItem({
-    project: "widgets",
-    ticket: "DEMO-7",
-    recipient: "coordinator",
-    kind: "question",
-    body: "Proceed?",
-    author: rawHandle,
-    at: NOW,
-  });
-  const read = f.linear.readTicket.bind(f.linear);
-  f.linear.readTicket = async (ticket) => {
-    const result = await read(ticket);
-    await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
-    await recordClaim(
-      f.store,
-      "widgets",
-      {
-        ticket: "DEMO-7",
-        runtime: "Herdr",
-        handle: JSON.stringify({ ...handle, pane: "w8:p10" }),
-        branch,
-        phase: "implementing",
-        resuming: false,
-        profile: null,
-      },
-      new Date(NOW.getTime() + 1000),
-    );
-    return result;
-  };
-  expect(await run(["answer", String(id), "yes"], f.io)).toBe(1);
-  expect(f.calls.some((c) => c[0] === "herdr" && ["prompt", "run"].includes(c[2] ?? ""))).toBe(false);
-  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
-  expect(f.linear.writes).toEqual([]);
-});
+test.each(["herdr", "conductor"])(
+  "an answer validated for an old %s claim never reaches its replacement",
+  async (runtime) => {
+    const f = await fixture("codex", runtime);
+    const id = await f.store.addInboxItem({
+      project: "widgets",
+      ticket: "DEMO-7",
+      recipient: "coordinator",
+      kind: "question",
+      body: "Proceed?",
+      author: rawHandle,
+      at: NOW,
+    });
+    const read = f.linear.readTicket.bind(f.linear);
+    f.linear.readTicket = async (ticket) => {
+      const result = await read(ticket);
+      await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
+      await recordClaim(
+        f.store,
+        "widgets",
+        {
+          ticket: "DEMO-7",
+          runtime: runtime === "conductor" ? "Conductor" : "Herdr",
+          handle: runtime === "conductor" ? "cw8/cs10" : JSON.stringify({ ...handle, pane: "w8:p10" }),
+          branch,
+          phase: "implementing",
+          resuming: false,
+          profile: null,
+        },
+        new Date(NOW.getTime() + 1000),
+      );
+      return result;
+    };
+    expect(await run(["answer", String(id), "yes"], f.io)).toBe(1);
+    expect(f.calls.some((c) => c[0] === "herdr" && ["prompt", "run"].includes(c[2] ?? ""))).toBe(false);
+    expect(f.calls.some((c) => c[0] === "conductor" && c[2] === "create")).toBe(false);
+    expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+    expect(f.linear.writes).toEqual([]);
+  },
+);
 
 test("reused runtime IDs in another repository are neither observed nor messaged", async () => {
   const f = await fixture();

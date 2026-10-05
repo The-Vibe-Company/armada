@@ -3,10 +3,12 @@ import {
   ArmadaApiError,
   type ArmadaConfig,
   type Credentials,
+  type Delivery,
   deliveryKey,
   type Fleet,
   machinePaths,
   OBSERVABLE_RUNTIMES,
+  type PendingLaunch,
   processAlive,
   Refusal,
   type RuntimeHandle,
@@ -18,7 +20,7 @@ import {
 } from "@armada/core";
 import type { Io } from "./io.ts";
 import { requireSignIn } from "./login.ts";
-import { claimRef, guarded, runtimeFor } from "./runtimes/adapter.ts";
+import { claimRef, guarded, launchRef, runtimeFor } from "./runtimes/adapter.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
 const observing = new Set<string>();
@@ -122,22 +124,22 @@ export async function deliverToRuntime(
   expected?: RuntimeHandle | null,
   config?: ArmadaConfig,
   message: { item?: number | null; kind?: "answer" | "note" | "login" } = {},
-): Promise<boolean> {
-  const h = await fleet.runtimeHandle(ticket);
-  if (!h || runtimeNameOf(h.runtime) === "claude-code" || !runtimeNameOf(h.runtime)) return false;
-  if (!expected)
-    throw new Refusal(`${ticket}'s claim changed before delivery; no answer was delivered`, "armada inbox");
-  const target = claimRef(expected);
+  launch?: PendingLaunch | null,
+): Promise<Delivery | null> {
+  const target = expected && !expected.releasedAt ? claimRef(expected) : launch ? launchRef(launch) : null;
+  if (!target) throw new Refusal(`${ticket}'s claim is missing or changed; no answer was delivered`, "armada inbox");
+  const adapter = runtimeFor(io, config, target.runtime);
+  if (!adapter.can.deliver) return null;
   if (target.releasedAt) throw new Refusal(`${ticket}'s worker has ended; no answer was delivered`, "armada status");
-  const adapter = runtimeFor(io, config, expected.runtime);
-  await guarded(fleet, target, "active", () =>
+  return guarded(fleet, target, "active", () =>
     adapter.deliver(target, {
       text,
       kind: message.kind ?? "answer",
       key: deliveryKey({
-        project: expected.project,
+        project: config?.project.slug ?? expected?.project ?? "",
         ticket,
-        claimedAt: target.claimedAt,
+        // Claiming does not create a new generation for a bound launch.
+        claimedAt: target.launchId ? null : target.claimedAt,
         launchId: target.launchId,
         item: message.item ?? null,
         kind: message.kind ?? "answer",
@@ -145,7 +147,6 @@ export async function deliverToRuntime(
       }),
     }),
   );
-  return true;
 }
 
 export async function stop(io: Io, config: ArmadaConfig, credentials: Credentials, args: WorkerArgs) {

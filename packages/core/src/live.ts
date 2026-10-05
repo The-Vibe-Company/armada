@@ -63,7 +63,7 @@ export interface LatestEvent {
   at: string;
 }
 
-import { OBSERVABLE_RUNTIMES, type RuntimeState, runtimeNameOf } from "./runtime.ts";
+import { type RuntimeState, runtimeNameOf } from "./runtime.ts";
 
 export { RUNTIME_STATES, type RuntimeState } from "./runtime.ts";
 
@@ -225,6 +225,8 @@ export type LeaseResult = { acquired: true } | { acquired: false; held: Lease | 
  * claimed the ticket since: the newest launch of its ticket, not ended.
  */
 export interface PendingLaunch {
+  /** Worker session identity; optional for older servers. */
+  id?: string;
   ticket: string;
   launchedAt: string;
   /** When the worker signed in with the launch token; null while it never did. */
@@ -608,12 +610,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
   await store.resolveInboxItems({ project, ticket, kind: "answer-request", resolution: text, at });
   if (n === 0 && plans === 0 && a.ticket) {
     const held = await store.getRuntimeHandle(project, ticket);
-    if (
-      held &&
-      OBSERVABLE_RUNTIMES.includes(runtimeNameOf(held.runtime) as "herdr" | "conductor") &&
-      !held.releasedAt &&
-      held.runtimeState?.state === "blocked"
-    ) {
+    if (held && runtimeNameOf(held.runtime) === "herdr" && !held.releasedAt && held.runtimeState?.state === "blocked") {
       // Harness approvals have no worker-authored question. Keep the delivered
       // answer in the same indexed answer history so the inbox clears until the
       // next blocked transition, even if the terminal stays blocked briefly.
@@ -953,7 +950,9 @@ async function readInboxAndFlight(
     if (asking.has(h.ticket)) continue;
     const observation = h.runtimeState;
     const answer = answered[h.ticket];
-    const runtimeBlocked = freshRuntimeState(observation, o.now, o.silentAfterMinutes, h.claimedAt) === "blocked";
+    const runtimeBlocked =
+      runtimeNameOf(h.runtime) === "herdr" &&
+      freshRuntimeState(observation, o.now, o.silentAfterMinutes, h.claimedAt) === "blocked";
     if (runtimeBlocked && planning.has(h.ticket)) continue;
     if (runtimeBlocked && observation && (!answer || answer < (observation.since ?? observation.at))) {
       entries.push({

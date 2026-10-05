@@ -3,7 +3,7 @@ name: armada-runtime-conductor
 description: Runtime guide for running Armada workers on Conductor Cloud. Use when an Armada coordinator must launch a worker on a ticket, send it a message, check whether a silent worker is still alive, or stop and archive it. Four fixed sections, each with the exact conductor command and how to read its output.
 ---
 
-Herdr and Conductor workers use Armada’s integrated runtime interface; Claude Code subagents use their guide. `armada status` and `armada inbox` publish Conductor’s live state, and `armada stop` archives it after release or merge. Launch and message commands below remain the guide path until their integrated commands ship. This guide tells the coordinator how to launch, message, check and stop a worker with the `conductor` command line tool, and what to record in Armada afterwards. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
+Herdr and Conductor workers use Armada’s integrated runtime interface; Claude Code subagents use their guide. `armada status` and `armada inbox` publish Conductor’s live state, and `armada stop` archives it after release or merge. Answers and notes use `armada answer`; launch commands below remain the guide path until integrated launch ships. This guide tells the coordinator how to launch, message, check and stop a worker with the `conductor` command line tool, and what to record in Armada afterwards. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
 
 - On a Mac, the app ships the CLI at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, which is not on PATH. `armada doctor` looks for it and prints the fix: a link from a directory already on PATH (`ln -s "/Applications/Conductor.app/Contents/Resources/bin/conductor" ~/.local/bin/conductor`), or a PATH line for your shell profile.
 - Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication, 4 server error.
@@ -71,11 +71,16 @@ rm -f /tmp/abc-12-brief.md
 ## Message
 
 ```sh
-printf '%s\n' "Plan approved. Go on." | conductor --json message create --session <sessionId> --message-file -
-conductor --json message create --session <sessionId> --message-file - < /tmp/abc-12-answer.md
+armada answer <item> "Plan approved. Go on."
+armada answer --note ABC-12 "Main moved; bring origin/main in before hand-back."
+armada answer <item> --message-file /tmp/abc-12-answer.md
 ```
 
-The output is `{"messageId": …, "state": "sent"}`. Exit code 0 means Conductor accepted the message, not that the worker read it: check that the session turns `working`, then read its reply in the transcript. Use it to deliver an answer, a plan approval, or a heads-up that the default branch moved. Then record it in Armada: `armada answer <item> "<answer>"` for a question from `armada inbox`, `armada answer --note ABC-12 "<message>"` for a message the worker did not ask for.
+One command delivers to the stored Conductor session, posts the answer or note on the ticket, then records it in Armada. An answer closes its question or plan; a note also resolves the ticket's open plan, as in the existing coordinator note workflow. The receipt names Conductor and says `queued` when a turn is still working. Accepted does not mean read: check the session's status and reply.
+
+If recording fails after delivery, rerun the same command with the same text. Armada uses a stable message id tied to the worker generation, inbox item and text; Conductor deduplicates retries. Changed text is a new message. An old question, ended claim or replaced launch is refused before delivery; an archived workspace needs `armada relaunch ABC-12`. A failed session can receive a message to resume. Missing Conductor or its sign-in leaves the question open.
+
+Bound launches can receive notes before claiming when Armada has their launch identity and session. Older unbound launches use the manual appendix below. Claude Code subagents still require delivery with their runtime guide before recording.
 
 ## Status
 
@@ -130,6 +135,17 @@ armada stop ABC-12
 ```
 
 Run this after the pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"`. Armada refuses while the worker still holds the ticket. It checks the exact stored claim and session’s workspace, waits for the final turn to finish (polling every 15 seconds for up to ten minutes), then cancels if needed and archives. A replaced claim is refused before any runtime write; an already archived workspace is safe to record again.
+
+## Without Armada: manual message
+
+Use this only when Armada has no bound launch or claim, such as replacing a refused launch token. For registered workers, use `armada answer` so generation checks and retry deduplication apply.
+
+```sh
+printf '%s\n' "Plan approved. Go on." | conductor --json message create --session <sessionId> --message-file -
+conductor --json message create --session <sessionId> --message-file - < /tmp/abc-12-answer.md
+```
+
+The output contains `messageId` and `state` (`sent` or `queued`). Exit 0 means accepted; check the session and reply. Manual delivery without `--message-id` has no retry deduplication. Do not follow a manual send with an integrated `armada answer` for that worker: it would deliver again.
 
 ## Without Armada: manual stop and archive
 

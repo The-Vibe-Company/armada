@@ -150,12 +150,12 @@ const COMMAND_HELP: Record<string, string> = {
                     Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed
 `,
   answer: `  answer <item|ticket> "<answer>"
-                    Coordinator: deliver to a herdr worker and record the answer. For other
-                    runtimes, deliver with the runtime guide first. Resolves the question or
+                    Coordinator: deliver to a herdr or Conductor worker and record the answer.
+                    For Claude Code, deliver with the runtime guide first. Resolves the question or
                     plan and posts it on the ticket. A ticket id also answers a live herdr block.
                     A hand-back id can clear a merged/closed PR or a Done/Canceled ticket
   answer --note <ticket|plan item> "<message>"
-                    Coordinator: record a delivered note; an open plan is resolved
+                    Coordinator: deliver and record a note; a targeted open plan is resolved
 `,
   merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
         [--reason <why>] [--ask-owner --reason <why>]

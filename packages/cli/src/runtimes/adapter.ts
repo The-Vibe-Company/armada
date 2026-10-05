@@ -2,8 +2,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   type ArmadaConfig,
   type ClaimRef,
+  type Delivery,
   type Fleet,
   type HerdrProfile,
+  type PendingLaunch,
   RuntimeError,
   type RuntimeHandle,
   type RuntimeName,
@@ -57,11 +59,7 @@ export interface OutgoingMessage {
   key: string;
   kind: "answer" | "note" | "login";
 }
-export interface Delivery {
-  via: string;
-  messageId: string | null;
-  queued: boolean;
-}
+export type { Delivery } from "@armada/core";
 export interface RuntimeReading {
   state: RuntimeState;
   since: string | null;
@@ -136,6 +134,12 @@ export function claimRef(h: RuntimeHandle): ClaimRef {
     branch: h.branch,
   };
 }
+export function launchRef(l: PendingLaunch): ClaimRef {
+  const runtime = runtimeNameOf(l.runtime);
+  if (!runtime || !l.handle || !l.id)
+    throw new RuntimeError("the launch has no bound runtime identity", "invalid", "armada status");
+  return { ticket: l.ticket, runtime, handle: l.handle, claimedAt: null, launchId: l.id, releasedAt: null };
+}
 const stale = (ticket: string) =>
   new RuntimeError(`${ticket}'s claim changed; left the runtime untouched`, "stale", "armada inbox");
 const guards = new AsyncLocalStorage<{ fleet: Fleet; expected: ClaimRef; rule: "active" | "ended" }>();
@@ -146,11 +150,18 @@ function same(a: ClaimRef, b: ClaimRef): boolean {
     a.handle === b.handle &&
     a.claimedAt === b.claimedAt &&
     a.launchId === b.launchId &&
-    a.releasedAt === b.releasedAt
+    a.releasedAt === b.releasedAt &&
+    (a.branch ?? null) === (b.branch ?? null)
   );
 }
 async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "ended") {
   const h = await fleet.runtimeHandle(expected.ticket);
+  if (expected.claimedAt === null) {
+    if (rule !== "active" || (h && !h.releasedAt)) throw stale(expected.ticket);
+    const l = (await fleet.pendingLaunches()).find((l) => l.ticket === expected.ticket);
+    if (!l?.id || !l.handle || !l.runtime || !same(launchRef(l), expected)) throw stale(expected.ticket);
+    return;
+  }
   if (
     !h ||
     runtimeNameOf(h.runtime) !== expected.runtime ||
