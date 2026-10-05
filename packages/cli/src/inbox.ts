@@ -6,6 +6,7 @@ import {
   askCoordinator,
   type Credentials,
   checkInbox,
+  freshRuntimeState,
   type InboxEntry,
   type InboxReport,
   type Rearm,
@@ -14,7 +15,7 @@ import {
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
-import { deliverHerdr, observingFleet } from "./runtime.ts";
+import { deliverToRuntime, observingFleet } from "./runtime.ts";
 import { coordinatorHandle, rearmFor, remember, shown } from "./watch.ts";
 import { currentTicket, liveFleet, readMessage, type WorkerArgs, withContext } from "./worker.ts";
 
@@ -61,7 +62,10 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
               throw new Refusal("cannot read the herdr claim before delivery", "armada whoami");
             return false;
           }
-          const delivered = await deliverHerdr(io, fleet, ticket, message, claim);
+          const delivered = await deliverToRuntime(io, fleet, ticket, message, claim, config, {
+            kind: note ? "note" : "answer",
+            item: /^\d+$/.test(target) ? Number(target) : null,
+          });
           if (!delivered && runtime?.toLowerCase() === "herdr")
             throw new Refusal("the herdr claim is missing or changed; no answer was delivered", "armada status");
           return delivered;
@@ -134,7 +138,7 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   const { fleet, warning } = liveFleet(io, config, credentials);
   if (!fleet)
     throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
-  const report = await checkInbox(observingFleet(io, fleet), {
+  const report = await checkInbox(observingFleet(io, fleet, config), {
     project: config.project.slug,
     coordinator: coordinatorHandle(io),
     facts: detectCoordinator(io),
@@ -152,7 +156,27 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     open: report.items.length,
     act: report.items.length > 0,
   });
-  io.stdout(a.json ? `${JSON.stringify({ ...report, watch: next }, null, 2)}\n` : renderInbox(report, next));
+  const runtimes = (await fleet.runtimeHandles().catch(() => []))
+    .filter((h) => h.runtimeState)
+    .map((h) => ({
+      ticket: h.ticket,
+      runtime: h.runtime,
+      state:
+        freshRuntimeState(
+          h.runtimeState,
+          (io.now ?? (() => new Date()))(),
+          config.policy.silentAfterMinutes,
+          h.claimedAt,
+        ) ?? "unknown",
+    }));
+  io.stdout(
+    a.json
+      ? `${JSON.stringify({ ...report, runtimes, watch: next }, null, 2)}\n`
+      : renderInbox(report, next).replace(
+          next.line,
+          `${runtimes.map((h) => `${h.ticket} · ${h.runtime} · live ${h.state}`).join("\n")}${runtimes.length ? "\n" : ""}${next.line}`,
+        ),
+  );
   for (const w of report.warnings) io.stderr(`armada: warning: ${w}\n`);
   return 0;
 }

@@ -7,7 +7,7 @@ The coordinator turns the owner's intent into merged pull requests. Each worker 
 
 **Standing authority.** Unless the owner said otherwise, they delegate reversible technical decisions, plan approval and merging to you: act, then report. Escalate only product decisions, irreversible or outward-facing actions, and anything that spends money.
 
-**Use the worker's runtime guide.** Launching, messaging, checking and stopping a worker go through the runtime guide skill for the worker's runtime: `armada-runtime-conductor` for a Conductor workspace, `armada-runtime-claude-code` for a subagent of your own Claude Code session (the `Runtime:` line of `armada brief` names it). For persistent local workers, `armada-runtime-herdr` uses Armada's integrated launch, state, answer and safe stop commands. Other runtimes are delivered separately and Armada records what happened.
+**Use the worker's runtime interface.** Herdr and Conductor workers use integrated commands; Claude Code subagents use the `armada-runtime-claude-code` guide. `armada status` and `armada inbox` read both persistent runtimes' live state. `armada stop <ticket>` archives a Conductor workspace after release or merge and safely removes a clean, pushed herdr worktree. Follow `armada-runtime-conductor` for Conductor launch and message delivery until those integrated commands ship; `armada-runtime-herdr` already uses integrated launch and answer. Use the matching guide when a runtime operation reports a limitation.
 
 ## Take over a run
 
