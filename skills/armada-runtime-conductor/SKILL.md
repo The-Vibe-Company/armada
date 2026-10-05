@@ -3,7 +3,7 @@ name: armada-runtime-conductor
 description: Runtime guide for running Armada workers on Conductor Cloud. Use when an Armada coordinator must launch a worker on a ticket, send it a message, check whether a silent worker is still alive, or stop and archive it. Four fixed sections, each with the exact conductor command and how to read its output.
 ---
 
-Armada records Conductor and Claude Code runtime actions separately; persistent herdr workers use integrated commands. This guide tells the coordinator how to launch, message, check and stop a worker with the `conductor` command line tool, and what to record in Armada afterwards. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
+Herdr and Conductor workers use Armada’s integrated runtime interface; Claude Code subagents use their guide. `armada status` and `armada inbox` publish Conductor’s live state, and `armada stop` archives it after release or merge. Launch and message commands below remain the guide path until their integrated commands ship. This guide tells the coordinator how to launch, message, check and stop a worker with the `conductor` command line tool, and what to record in Armada afterwards. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
 
 - On a Mac, the app ships the CLI at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, which is not on PATH. `armada doctor` looks for it and prints the fix: a link from a directory already on PATH (`ln -s "/Applications/Conductor.app/Contents/Resources/bin/conductor" ~/.local/bin/conductor`), or a PATH line for your shell profile.
 - Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication, 4 server error.
@@ -124,6 +124,16 @@ jq -r '.data[].content.rawPayload | .type // .event.type // "(no payload)"' /tmp
 ```
 
 ## Stop and archive
+
+```sh
+armada stop ABC-12
+```
+
+Run this after the pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"`. Armada refuses while the worker still holds the ticket. It checks the exact stored claim and session’s workspace, waits for the final turn to finish (polling every 15 seconds for up to ten minutes), then cancels if needed and archives. A replaced claim is refused before any runtime write; an already archived workspace is safe to record again.
+
+## Without Armada: manual stop and archive
+
+Only use this appendix when Armada does not hold the worker’s claim. For registered workers, use `armada stop` so its generation guard protects replacement sessions.
 
 ```sh
 conductor --json session cancel <sessionId>

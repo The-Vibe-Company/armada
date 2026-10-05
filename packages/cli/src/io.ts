@@ -10,13 +10,15 @@ export interface ExecResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** The child exceeded its bound; mutating runtimes may have applied the request. */
+  timedOut?: boolean;
 }
 
 /** Runs a program (git, gh) without a shell and returns its exit code and output. */
 export type Exec = (
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs?: number; maxOutputBytes?: number },
+  options: { cwd: string; timeoutMs?: number; maxOutputBytes?: number; input?: string },
 ) => Promise<ExecResult>;
 
 /**

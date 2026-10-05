@@ -141,7 +141,7 @@ const COMMAND_HELP: Record<string, string> = {
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
   stop: `  stop <ticket>
-                    Stop a herdr worker and archive its worktree only when clean and fully pushed
+                    Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed
 `,
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: deliver to a herdr worker and record the answer. For other
@@ -745,6 +745,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     const command = commandOf(argv);
     const next = nextStep(err, command && Object.hasOwn(COMMAND_HELP, command) ? command : null);
     io.stderr(`armada: ${err instanceof Error ? err.message : String(err)}\n${next ? `Next: ${next}\n` : ""}`);
-    return err instanceof UsageError || err instanceof ConfigError ? 2 : 1;
+    return err instanceof UsageError ||
+      err instanceof ConfigError ||
+      (err instanceof Refusal && err.cause instanceof UsageError)
+      ? 2
+      : 1;
   }
 }

@@ -237,6 +237,15 @@ export async function readWatchState(paths: MachinePaths, project: string): Prom
     inFlight: strings(r.inFlight),
     readAt: stringOr(r.readAt),
     stopped: stringOr(r.stopped),
+    ...(typeof r.runtimeObserved === "object" && r.runtimeObserved !== null && !Array.isArray(r.runtimeObserved)
+      ? {
+          runtimeObserved: Object.fromEntries(
+            Object.entries(r.runtimeObserved).filter(
+              ([_, v]) => typeof v === "string" && Number.isFinite(Date.parse(v)),
+            ),
+          ) as Record<string, string>,
+        }
+      : {}),
   };
 }
 
