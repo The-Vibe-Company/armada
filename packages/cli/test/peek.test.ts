@@ -12,6 +12,7 @@ import {
   recordClaim,
   resolveCredentials,
   updateCredentialStore,
+  updateWatchState,
 } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, pullResponse } from "../../core/test/support.ts";
@@ -145,7 +146,9 @@ test("peek shows local runtime facts, redacted reply and commands and keeps its 
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-7"))?.runtimeState?.state).toBe("working");
   const saved = await readWatchState(f.paths, "widgets.peek");
   expect(saved?.peek?.[f.handle]).toBe("ev_3");
-  expect(await run(["peek", "DEMO-7", "--json"], f.io)).toBe(0);
+  await updateWatchState(f.paths, "widgets@coordinator", { root: "/work/widgets" });
+  f.io.cwd = "/tmp";
+  expect(await run(["peek", "DEMO-7", "--project", "widgets", "--json"], f.io)).toBe(0);
   const json = JSON.parse(f.out.at(-1) ?? "{}");
   expect(json.runtime.lastReply.text).toContain("Running tests");
   expect(json.runtime.actions.map((a: { exit: number }) => a.exit)).toEqual([0, 1]);
@@ -161,8 +164,15 @@ test("peek reads a local herdr worker through the same command", async () => {
   expect(json.runtime.lastReply.text).toBe("Tests pass [redacted]");
   const native = f.io.exec;
   if (!native) throw new Error("missing fake exec");
+  await updateWatchState(f.paths, "widgets@coordinator", { root: "/work/widgets" });
+  f.io.cwd = "/tmp";
+  const gitRoots: string[] = [];
   f.io.now = () => new Date("2026-07-01T12:20:00Z");
   f.io.exec = async (cmd, args, options) => {
+    if (cmd === "git") {
+      gitRoots.push(options.cwd ?? "");
+      if (options.cwd === "/tmp") return { code: 1, stdout: "", stderr: "not a git repository" };
+    }
     const result = await native(cmd, args, options);
     if (cmd === "herdr" && args[0] === "agent") {
       const body = JSON.parse(result.stdout);
@@ -171,8 +181,13 @@ test("peek reads a local herdr worker through the same command", async () => {
     }
     return result;
   };
-  expect(await run(["peek", "DEMO-7", "--json"], f.io)).toBe(0);
-  expect(JSON.parse(f.out.at(-1) ?? "{}").runtime.since).toBe("2026-07-01T12:20:00.000Z");
+  expect(await run(["peek", "DEMO-7", "--project", "widgets", "--json"], f.io)).toBe(0);
+  const next = JSON.parse(f.out.at(-1) ?? "{}");
+  expect(next.runtime.since).toBe("2026-07-01T12:20:00.000Z");
+  expect(next.runtime.unavailable).toBeNull();
+  expect(next.runtime.lastReply.text).toBe("Tests pass [redacted]");
+  expect(gitRoots).toContain("/work/widgets");
+  expect(gitRoots).not.toContain("/tmp");
 });
 
 test.each(["Conductor", "Herdr"])("peek reads a bound %s launch before sign-in or claim", async (runtime) => {
