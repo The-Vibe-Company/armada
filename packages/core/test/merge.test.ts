@@ -1154,6 +1154,33 @@ describe("merge lease", () => {
 });
 
 describe("shared merge holds", () => {
+  test.each([false, true])("an unticketed fix requires a durable override audit (comment fails: %s)", async (fails) => {
+    const live = tempFleet();
+    const first = await live.fleet.openHold({ kind: "manual", reason: "api deploy is broken" });
+    const second = await live.fleet.openHold({ kind: "main-red", ref: BASE, reason: "main tests failed" });
+    const s = setup({ live });
+    Object.assign(s.forge.pr, { title: "fix(release): repair the deployment", headRef: "fix/deployment" });
+    if (fails) {
+      s.forge.comment = async () => {
+        throw new Error("GitHub unavailable");
+      };
+      expect(
+        await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true, throughHold: "repairs the failure" })),
+      ).toContain("could not record the --no-ticket reason on #9 (GitHub unavailable); nothing was merged");
+      expect(s.forge.merges).toEqual([]);
+    } else {
+      expect(
+        (await mergePullRequest(s.ctx, { pr: 9, noTicket: true, throughHold: "repairs the failure" })).merged,
+      ).toBe(true);
+      expect(s.forge.comments).toHaveLength(1);
+      const comment = s.forge.comments[0]?.body;
+      expect(comment).toContain(`merged through holds #${first.id}, #${second.id}: repairs the failure`);
+      expect(comment?.match(/repairs the failure/g)).toEqual(["repairs the failure"]);
+    }
+    expect(s.linear.writes).toEqual([]);
+    expect((await live.fleet.holds()).map((h) => h.id)).toEqual([first.id, second.id]);
+  });
+
   test("both coordinators refuse until every hold is cleared; a fix records every override", async () => {
     const live = tempFleet();
     const first = await live.fleet.openHold({ kind: "manual", reason: "api deploy is broken" });
@@ -1172,8 +1199,8 @@ describe("shared merge holds", () => {
     const fix = setup({ live });
     expect((await mergePullRequest(fix.ctx, { pr: 9, throughHold: "repairs the failure" })).merged).toBe(true);
     const comment = fix.linear.get("DEMO-7").comments[0]?.status?.summary;
-    expect(comment).toContain(`merged through hold #${first.id}: repairs the failure`);
-    expect(comment).toContain(`merged through hold #${second.id}: repairs the failure`);
+    expect(comment).toContain(`merged through holds #${first.id}, #${second.id}: repairs the failure`);
+    expect(comment?.match(/repairs the failure/g)).toEqual(["repairs the failure"]);
     await live.fleet.clearHold({ id: first.id, reason: "deploy verified" });
     await live.fleet.clearHold({ id: second.id, reason: "main green" });
     expect(await live.fleet.holds()).toEqual([]);

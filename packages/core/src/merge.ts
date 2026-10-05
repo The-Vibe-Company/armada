@@ -1255,23 +1255,28 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
     // Local checks and owner reads can take minutes; include pauses opened since the first read.
     const latestHolds = await checkHolds(ctx, input);
     const overridden = [...new Map([...holds, ...latestHolds].map((h) => [h.id, h])).values()];
-    const override = overridden
-      .map((h) => `merged through hold #${h.id}: ${input.throughHold?.trim() ?? ""}`)
-      .join("; ");
+    const override = overridden.length
+      ? `merged through ${overridden.length === 1 ? "hold" : "holds"} ${overridden.map((h) => `#${h.id}`).join(", ")}: ${input.throughHold?.trim() ?? ""}`
+      : "";
     if (override) c.lines.push(override);
     const reason = input.noTicket ? mergeReason(input) : null;
-    if (reason) {
+    if (input.noTicket && (reason || override)) {
       const named = programTicket(config, c.pull);
-      const body = `Armada merge --no-ticket at ${c.sha}: ${reason}.${override ? ` ${override}.` : ""}${named ? ` ${named} stays open; its ticket and worker are left unchanged.` : " No ticket is closed."}`;
+      const audit = reason ? `${reason}.${override ? ` ${override}.` : ""}` : `${override}.`;
+      const body = `Armada merge --no-ticket at ${c.sha}: ${audit}${named ? ` ${named} stays open; its ticket and worker are left unchanged.` : " No ticket is closed."}`;
       try {
         await ctx.forge.comment(c.pull.number, body);
       } catch (err) {
         throw new Refusal(
           `could not record the --no-ticket reason on #${c.pull.number} (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
-          `armada merge ${input.pr} --no-ticket --reason "<why the ticket stays open>" again once GitHub answers`,
+          `armada merge ${input.pr} --no-ticket${reason ? ' --reason "<why the ticket stays open>"' : ""}${override ? ' --through-hold "<why this fixes the pause>"' : ""} again once GitHub answers`,
         );
       }
-      c.lines.push(`Recorded --no-ticket reason on #${c.pull.number}: ${reason}`);
+      c.lines.push(
+        reason
+          ? `Recorded --no-ticket reason on #${c.pull.number}: ${reason}`
+          : `Recorded hold override on #${c.pull.number}.`,
+      );
     }
     if (!(await renew()))
       throw new Refusal(
