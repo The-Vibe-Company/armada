@@ -60,6 +60,7 @@ const isAuthApi = (pathname: string) => pathname === AUTH_API_PREFIX || pathname
  * database cannot be read.
  */
 export async function accountsGuard(request: NextRequest, { env, session }: AccountsGateDeps): Promise<NextResponse> {
+  if (request.method === "GET" && request.nextUrl.pathname === "/api/cron/owner") return NextResponse.next();
   const { pathname, search } = request.nextUrl;
   // The CLI's routes carry a token or an API key, the webhooks a signature, never a cookie; each checks its own.
   if (isCliApi(pathname) || isWebhook(pathname)) return NextResponse.next();
