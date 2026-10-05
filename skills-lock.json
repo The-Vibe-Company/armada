@@ -34,7 +34,7 @@
       "sourceType": "github",
       "skillPath": "skills/armada-worker/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "c77ef21e4028a6bed2b5caafcae63a8819f0cc33278cadcfa8ee9d06a121b663"
+      "computedHash": "c0c9e224354974ee8a3769c6c1ba2659be885615080b48040943247331f1dedd"
     },
     "better-ui": {
       "source": "jakubkrehel/skills",

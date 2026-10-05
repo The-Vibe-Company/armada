@@ -11,6 +11,7 @@ import {
   claimTicket,
   createLinearWriter,
   type Fleet,
+  fetchMergePull,
   fetchPullRequest,
   fleetClient,
   isLabelPhase,
@@ -133,6 +134,17 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
             number,
             ...(io.fetch ? { fetch: io.fetch } : {}),
           })
+      : null,
+    readReviewThreads: token
+      ? async (number) =>
+          (
+            await fetchMergePull({
+              token,
+              repository: config.github.repository,
+              number,
+              ...(io.fetch ? { fetch: io.fetch } : {}),
+            })
+          )?.reviewThreads ?? null
       : null,
     now: io.now ?? (() => new Date()),
   };
