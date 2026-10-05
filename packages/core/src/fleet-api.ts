@@ -353,6 +353,9 @@ export async function serveFleet(
           const input = { project: slug, ticket: ticketOf(b), handle: text(b, "handle", LINE_MAX), claimedAt, at };
           if (op === "runtime/stop") return store.stopRuntime(input);
           if (!RUNTIME_STATES.includes(b.state as RuntimeState)) throw new Invalid("unknown runtime state");
+          const since = optText(b, "since", 40);
+          if (since !== null && (!Number.isFinite(Date.parse(since)) || Date.parse(since) > at.getTime()))
+            throw new Invalid("since must be a timestamp no later than the observation");
           const sequence = b.sequence;
           if (
             sequence !== undefined &&
@@ -362,6 +365,7 @@ export async function serveFleet(
           return store.observeRuntime({
             ...input,
             state: b.state as RuntimeState,
+            ...(since === null ? {} : { since }),
             ...(sequence === undefined ? {} : { sequence }),
           });
         }
