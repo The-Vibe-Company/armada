@@ -210,6 +210,11 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       );
     if (item.resolvedAt)
       throw new Refusal(`inbox item #${itemId} was already resolved at ${item.resolvedAt}`, "armada inbox");
+    if (item.kind === "hold")
+      throw new Refusal(
+        `inbox item #${itemId} is a merge hold; clear the hold to resume merges`,
+        'armada hold clear <hold-id> --reason "<why>"',
+      );
     if (item.kind === "hand-back" && item.recipient === "coordinator") return answerHandBack(ctx, item, text, warnings);
     if (item.recipient !== "coordinator" || !ANSWERABLE.includes(item.kind))
       throw new Refusal(

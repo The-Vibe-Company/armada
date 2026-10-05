@@ -556,3 +556,17 @@ MIT. The bundled Alibaba review workflow retains Apache-2.0; each shipping skill
 includes its license and attribution notices.
 
 Persistent local workers: `armada status`, `inbox` and `watch` publish herdr state for the dashboard. `armada stop <ticket>` archives only a clean worktree whose commits are on its verified remote upstream, retaining its branch. See [`armada-runtime-herdr`](skills/armada-runtime-herdr/SKILL.md) for all four runtime operations.
+
+### Pause and resume merges
+
+A coordinator can pause a project's merges with a reason. The pause is stored in Armada, shared with every coordinator, and stays until explicitly cleared. Status, watch and the inbox show it.
+
+```sh
+armada hold add "api deploy is broken"
+armada hold                         # list the open holds
+armada merge 42 --through-hold "repairs the broken deploy"
+# Verify recovery, then resume:
+armada hold clear 4 --reason "deploy smoke checks pass"
+```
+
+Normal merges refuse with each hold's reason and id. `--through-hold` lets a fix pass every open hold and records the reason with every hold id on the merged ticket; it leaves the pauses open. Clear every open hold to resume normal merges. The server also refuses a merge lease to an older CLI that does not read holds, preserving the shared pause across coordinator versions. Holds never expire, and repeated clears report who cleared the hold and when. `--wait` stops when it sees a hold. `--no-lock` skips both the merge lease and checking holds, and prints that warning.

@@ -554,7 +554,7 @@ describe("armada merge", () => {
       ", merged without lock (--no-lock); merged on its own (no merge rule)",
     );
     expect(out.warnings[0]).toBe(
-      "merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now",
+      "merged without the merge lock (--no-lock), merge holds were not checked: make sure no other coordinator merges in widgets now",
     );
   });
 
@@ -1151,4 +1151,68 @@ describe("merge lease", () => {
       false,
     ]);
   });
+});
+
+describe("shared merge holds", () => {
+  test("both coordinators refuse until every hold is cleared; a fix records every override", async () => {
+    const live = tempFleet();
+    const first = await live.fleet.openHold({ kind: "manual", reason: "api deploy is broken" });
+    const second = await live.fleet.openHold({ kind: "main-red", ref: BASE, reason: "main tests failed" });
+    for (const holder of ["coordinator-a", "coordinator-b"]) {
+      const s = setup({ live: tempFleet({ store: live.store, clock: live.clock }), holder });
+      const message = await refusal(mergePullRequest(s.ctx, { pr: 9 }));
+      expect(message).toContain(`hold #${first.id}`);
+      expect(message).toContain("api deploy is broken");
+      expect(message).toContain(`hold #${second.id}`);
+      expect(message).toContain("--through-hold");
+      expect(s.forge.merges).toEqual([]);
+      expect(s.forge.reads).toBe(0);
+    }
+    const fix = setup({ live });
+    expect((await mergePullRequest(fix.ctx, { pr: 9, throughHold: "repairs the failure" })).merged).toBe(true);
+    const comment = fix.linear.get("DEMO-7").comments[0]?.status?.summary;
+    expect(comment).toContain(`merged through hold #${first.id}: repairs the failure`);
+    expect(comment).toContain(`merged through hold #${second.id}: repairs the failure`);
+    await live.fleet.clearHold({ id: first.id, reason: "deploy verified" });
+    await live.fleet.clearHold({ id: second.id, reason: "main green" });
+    expect(await live.fleet.holds()).toEqual([]);
+  });
+
+  test("a hold opened while waiting stops the next poll; unavailable holds fail closed", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    s.forge.pr.checks = [{ name: "test", state: "pending" }];
+    s.forge.pr.ci = "pending";
+    s.ctx.sleep = async () => {
+      await live.fleet.openHold({ kind: "manual", reason: "stop during wait" });
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, wait: { timeoutMs: 60_000 } }))).toContain(
+      "stop during wait",
+    );
+    expect(s.forge.merges).toEqual([]);
+    const down = setup({ live: tempFleet({ fail: (op) => (op === "holds" ? new Error("connection reset") : null) }) });
+    expect(await refusal(mergePullRequest(down.ctx, { pr: 9 }))).toContain("unavailable");
+    expect(down.forge.merges).toEqual([]);
+  });
+});
+
+test("a pause opened during the checklist stops the merge or joins the recorded override", async () => {
+  for (const throughHold of [undefined, "repairs the failure"]) {
+    const live = tempFleet();
+    const s = setup({ live });
+    let holdId = 0;
+    s.forge.onCompare = async () => {
+      s.forge.onCompare = null;
+      holdId = (await live.fleet.openHold({ kind: "manual", reason: "pause during checks" })).id;
+    };
+    if (throughHold) {
+      expect((await mergePullRequest(s.ctx, { pr: 9, throughHold })).merged).toBe(true);
+      expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toContain(
+        `merged through hold #${holdId}: ${throughHold}`,
+      );
+    } else {
+      expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toContain("pause during checks");
+      expect(s.forge.merges).toEqual([]);
+    }
+  }
 });

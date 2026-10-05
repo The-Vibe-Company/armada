@@ -173,7 +173,7 @@ export interface SessionRecord extends RuntimeHandle {
  * decision on a validation (THE-885), which the coordinator carries out
  * (merges, or relays it to the worker) and then resolves.
  */
-export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | "decision" | RequestKind;
+export type InboxKind = "hold" | "question" | "plan" | "request" | "hand-back" | "note" | "decision" | RequestKind;
 export type InboxRecipient = "coordinator" | "worker";
 
 export interface InboxItem {
@@ -208,6 +208,44 @@ export interface NewRequest {
   pr?: number | null;
   at: Date;
 }
+
+export const MERGE_LEASE = "merge";
+
+export const HOLD_KINDS = ["manual", "deploy", "main-red"] as const;
+export type HoldKind = (typeof HOLD_KINDS)[number];
+
+/** A standing merge pause: clearing it is an explicit, recorded decision. */
+export interface MergeHold {
+  id: number;
+  project: string;
+  kind: HoldKind;
+  ref: string | null;
+  reason: string;
+  openedBy: string | null;
+  openedAt: string;
+  clearedAt: string | null;
+  clearedBy: string | null;
+  clearReason: string | null;
+}
+export interface OpenHold {
+  kind: HoldKind;
+  ref?: string | null;
+  reason: string;
+}
+export interface ClearHoldResult {
+  hold: MergeHold;
+  cleared: boolean;
+}
+
+/** The stored inbox item names the hold id, which is distinct from its inbox id. */
+export const holdBody = (hold: MergeHold) =>
+  `Merges paused: ${hold.reason} (${hold.kind}, hold #${hold.id}). Resume: armada hold clear ${hold.id} --reason "<why>"; merge a fix with --through-hold "<why>".`;
+
+/** Used by both the merge command and server lease gate, including older coordinators. */
+export const holdsPaused = (holds: readonly MergeHold[], now: Date) =>
+  `merges paused: ${holds.map((h) => `${h.kind}: ${h.reason} (hold #${h.id}, ${Math.max(0, Math.floor((now.getTime() - Date.parse(h.openedAt)) / 60_000))} min old)`).join("; ")}; nothing was merged`;
+export const holdsNext = (holds: readonly MergeHold[], pr: number | string = "<pr>") =>
+  `armada hold clear ${holds[0]?.id} --reason "<why>" to resume, or armada merge ${pr} --through-hold "<why this fixes the pause>"`;
 
 export interface Lease {
   project: string;
@@ -258,6 +296,15 @@ type Item = { project: string; ticket: string; author: string | null; body: stri
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
 export interface FleetStore {
+  openHold(input: OpenHold & { project: string; author: string | null; at: Date }): Promise<MergeHold>;
+  clearHold(input: {
+    project: string;
+    id: number;
+    reason: string;
+    author: string | null;
+    at: Date;
+  }): Promise<ClearHoldResult | null>;
+  openHolds(project: string): Promise<MergeHold[]>;
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
@@ -1131,6 +1178,9 @@ export function freshRuntimeState(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  holds(): Promise<MergeHold[]>;
+  openHold(input: OpenHold): Promise<MergeHold>;
+  clearHold(input: { id: number; reason: string }): Promise<ClearHoldResult | null>;
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";
@@ -1178,7 +1228,7 @@ export interface Fleet {
   validations(q: { ticket?: string; pr?: number }): Promise<Validation[]>;
   /** Records a ticket done without a pull request after the owner's approval (`armada done`). */
   done(d: { ticket: string; message: string }): Promise<MergeRecorded>;
-  acquireLease(l: { name: string; holder: string; ttlMs: number }): Promise<LeaseResult>;
-  renewLease(l: { name: string; holder: string; ttlMs: number }): Promise<boolean>;
+  acquireLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<LeaseResult>;
+  renewLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<boolean>;
   releaseLease(l: { name: string; holder: string }): Promise<void>;
 }

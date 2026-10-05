@@ -343,6 +343,7 @@ describe("armada claim, report and release", () => {
       "fleet/coordinator",
       "fleet/events/latest",
       "fleet/launches",
+      "fleet/holds",
       "fleet/heartbeats/latest",
       "fleet/runtime/handles",
       "fleet/events/state",
@@ -540,4 +541,39 @@ describe("armada ask, inbox and answer", () => {
     expect(await run(["answer", "3"], w.io)).toBe(2);
     expect(w.err()).toContain("answer needs the text");
   });
+});
+
+test("hold commands share the pause with status and clear it idempotently", async () => {
+  const w = worker(SIGNED_IN);
+  w.net.rest = recordedFetch().fetch;
+  expect(await run(["hold", "add", "api deploy is broken", "--json"], w.io)).toBe(0);
+  const hold = JSON.parse(w.out());
+  expect(hold).toMatchObject({ kind: "manual", reason: "api deploy is broken" });
+  w.reset();
+  expect(await run(["hold"], w.io)).toBe(0);
+  expect(w.out()).toContain(`hold #${hold.id}`);
+  w.reset();
+  expect(await run(["status"], w.io)).toBe(0);
+  expect(w.out()).toContain(`Merges paused since 10:00 UTC: api deploy is broken (hold #${hold.id})`);
+  w.reset();
+  expect(await run(["hold", "clear", String(hold.id), "--reason", "smoke passes"], w.io)).toBe(0);
+  expect(w.out()).toContain(`Cleared hold #${hold.id}`);
+  w.reset();
+  expect(await run(["hold", "clear", String(hold.id), "--reason", "repeat"], w.io)).toBe(0);
+  expect(w.out()).toContain("already cleared by");
+  expect(w.out()).toContain("smoke passes");
+  w.reset();
+  w.net.rest = recordedFetch().fetch;
+  expect(await run(["status", "--json"], w.io)).toBe(0);
+  expect(JSON.parse(w.out()).holds).toEqual([]);
+  for (const args of [
+    ["hold", "add", " "],
+    ["hold", "clear", "1"],
+    ["hold", "clear", "0", "--reason", "fix"],
+    ["hold", "--reason", "dismiss"],
+    ["merge", "9", "--through-hold", " "],
+  ]) {
+    w.reset();
+    expect(await run(args, w.io)).toBe(2);
+  }
 });

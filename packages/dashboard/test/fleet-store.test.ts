@@ -432,3 +432,61 @@ describe("leases", () => {
     expect(await getLease(db, P, "merge")).toBeNull();
   });
 });
+
+test("merge holds deduplicate automatic pauses and atomically open and resolve their inbox items", async () => {
+  const database = await tempDatabase();
+  try {
+    const store = fleetStore(database);
+    await store.ensureProject(
+      { slug: "hold-test", name: "Hold test", repository: "acme/widgets", programRoot: "DEMO-1" },
+      at(0),
+    );
+    const input = {
+      project: "hold-test",
+      kind: "deploy" as const,
+      ref: "api",
+      reason: "smoke failed",
+      author: "Ada",
+      at: at(0),
+    };
+    const hold = await store.openHold(input);
+    expect((await store.openHold({ ...input, author: "Grace", at: at(1) })).id).toBe(hold.id);
+    const manual = await store.openHold({ ...input, kind: "manual", ref: null });
+    expect((await store.openHold({ ...input, kind: "manual", ref: null })).id).not.toBe(manual.id);
+    const inbox = await store.openInboxItems({ project: input.project, recipient: "coordinator" });
+    expect(inbox).toHaveLength(3);
+    expect(inbox[0]).toMatchObject({ kind: "hold", ticket: null, author: "Ada" });
+    expect(inbox[0]?.body).toContain(`hold #${hold.id}`);
+    expect(
+      await store.clearHold({ project: "elsewhere", id: hold.id, reason: "wrong project", author: "Grace", at: at(2) }),
+    ).toBeNull();
+    const cleared = await store.clearHold({
+      project: input.project,
+      id: hold.id,
+      reason: "verified",
+      author: "Grace",
+      at: at(2),
+    });
+    if (!cleared) throw new Error("expected the cleared hold");
+    expect(cleared).toMatchObject({
+      cleared: true,
+      hold: { clearedBy: "Grace", clearedAt: at(2).toISOString(), clearReason: "verified" },
+    });
+    expect(
+      await store.clearHold({ project: input.project, id: hold.id, reason: "repeat", author: "Ada", at: at(3) }),
+    ).toEqual({ ...cleared, cleared: false });
+    expect(
+      (await store.openInboxItems({ project: input.project, recipient: "coordinator" })).map((i) => i.body),
+    ).not.toContain(inbox[0]?.body);
+    expect(await store.openHolds("elsewhere")).toEqual([]);
+    expect((await store.openHold(input)).id).not.toBe(hold.id);
+    const count = (await store.openHolds(input.project)).length;
+    await database.query("ALTER TABLE inbox_items ADD CONSTRAINT reject_test_holds CHECK (kind <> 'hold') NOT VALID");
+    await expect(
+      store.openHold({ ...input, kind: "main-red", ref: "abcdef", reason: "tests failed" }),
+    ).rejects.toThrow();
+    expect(await store.openHolds(input.project)).toHaveLength(count);
+  } finally {
+    await database.end();
+  }
+});

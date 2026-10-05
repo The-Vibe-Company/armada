@@ -217,9 +217,11 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
   const number = prNumber(arg, config.github.repository);
   const noTicket = !!a.options["no-ticket"];
   if (noTicket && a.options.ticket) throw new UsageError("--no-ticket and --ticket cannot go together");
+  if (a.options["through-hold"] !== undefined && !a.options["through-hold"].trim())
+    throw new UsageError("--through-hold needs a reason");
   const wait = !!a.options.wait;
   const askOwner = a.options["ask-owner"] === "true";
-  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"]))
+  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"] || a.options["through-hold"]))
     throw new UsageError("--ask-owner only asks the owner: it goes with --reason (and --ticket), nothing else");
   if (askOwner && !a.options.reason?.trim())
     throw new UsageError(
@@ -338,6 +340,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
     reason: a.options.reason ?? null,
+    throughHold: a.options["through-hold"],
   });
   // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
   const project = config.project.slug;

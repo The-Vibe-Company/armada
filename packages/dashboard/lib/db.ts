@@ -725,6 +725,27 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 22,
     statements: ["DROP TABLE IF EXISTS saved_views"],
   },
+  {
+    // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
+    version: 24,
+    statements: [
+      `CREATE TABLE merge_holds (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug),
+        kind text NOT NULL CHECK (kind IN ('manual', 'deploy', 'main-red')),
+        ref text,
+        reason text NOT NULL,
+        opened_by text,
+        opened_at timestamptz NOT NULL,
+        cleared_at timestamptz,
+        cleared_by text,
+        clear_reason text,
+        inbox_id bigint REFERENCES inbox_items(id)
+      )`,
+      "CREATE UNIQUE INDEX merge_holds_one_open ON merge_holds(project, kind, ref) WHERE cleared_at IS NULL",
+      "CREATE INDEX merge_holds_open ON merge_holds(project, cleared_at)",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

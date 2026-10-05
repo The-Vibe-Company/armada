@@ -8,6 +8,7 @@ import type {
   FleetStore,
   InboxItem,
   Lease,
+  MergeHold,
   PendingLaunch,
   ProjectRecord,
   RuntimeHandle,
@@ -15,7 +16,7 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
-import { unusedLaunchExpired } from "../src/live.ts";
+import { holdBody, unusedLaunchExpired } from "../src/live.ts";
 import type { Validation } from "../src/validations.ts";
 
 interface EventRow extends Omit<EventInput, "at"> {
@@ -55,6 +56,7 @@ export function memoryFleet(): FleetStore & {
   const handles = new Map<string, HandleRow>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
+  const holds: (MergeHold & { itemId: number })[] = [];
   const leases = new Map<string, Lease>();
   const presence = new Map<string, { handle: string | null; cliVersion: string | null; at: string }>();
   const coordinators = new Map<string, CoordinatorPresence>();
@@ -109,6 +111,62 @@ export function memoryFleet(): FleetStore & {
     launches,
     validations,
 
+    async openHold(input) {
+      const ref = input.kind === "manual" ? null : (input.ref ?? null);
+      const existing =
+        ref === null
+          ? null
+          : holds.find((h) => h.project === input.project && h.kind === input.kind && h.ref === ref && !h.clearedAt);
+      if (existing) {
+        const { itemId: _, ...hold } = existing;
+        return { ...hold };
+      }
+      const hold: MergeHold = {
+        id: holds.length + 1,
+        project: input.project,
+        kind: input.kind,
+        ref,
+        reason: input.reason,
+        openedBy: input.author,
+        openedAt: input.at.toISOString(),
+        clearedAt: null,
+        clearedBy: null,
+        clearReason: null,
+      };
+      const itemId = insert({
+        project: input.project,
+        ticket: null,
+        kind: "hold",
+        recipient: "coordinator",
+        author: input.author,
+        body: holdBody(hold),
+        createdAt: hold.openedAt,
+        requestQuestion: null,
+        requestProfile: null,
+      });
+      holds.push({ ...hold, itemId });
+      return { ...hold };
+    },
+    async clearHold(input) {
+      const row = holds.find((h) => h.project === input.project && h.id === input.id);
+      if (!row) return null;
+      const cleared = !row.clearedAt;
+      if (cleared) {
+        row.clearedAt = input.at.toISOString();
+        row.clearedBy = input.author;
+        row.clearReason = input.reason;
+        const item = items.find((i) => i.id === row.itemId);
+        if (item) {
+          item.resolvedAt = row.clearedAt;
+          item.resolution = input.reason;
+        }
+      }
+      const { itemId: _, ...hold } = row;
+      return { hold: { ...hold }, cleared };
+    },
+    async openHolds(project) {
+      return holds.filter((h) => h.project === project && !h.clearedAt).map(({ itemId: _, ...hold }) => ({ ...hold }));
+    },
     async ensureProject(p, at) {
       if (projects.has(p.slug)) return;
       const t = at.toISOString();
