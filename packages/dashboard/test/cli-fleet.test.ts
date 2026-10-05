@@ -18,7 +18,8 @@ import type { Database } from "../lib/db.ts";
 import type { Scope } from "../lib/fleet-data.ts";
 import { fleetStore, liveStore } from "../lib/fleet-store.ts";
 import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
-import { vaultModeOf } from "../lib/vault.ts";
+import { listEvents, vaultModeOf } from "../lib/vault.ts";
+import { listWorkers } from "../lib/workers.ts";
 import { tempDatabase } from "./support.ts";
 
 // The fleet's live data through the Armada API (THE-850): core's CLI client
@@ -502,6 +503,68 @@ describe("the fleet through the Armada API", () => {
     await w.release({ ticket: "WID-10", reason: "done" });
     const left = await coordinator.inbox({ ...read, etag: changed?.etag ?? null });
     expect(left?.inFlight).not.toContain("WID-10");
+  });
+
+  test("a coordinator binds one launch session, keeps it through sign-in and refuses a different or ended binding", async () => {
+    const signIn = { kind: "session" as const, token: ownerToken };
+    const coordinator = fleetOf(signIn);
+    await coordinator.register();
+    const made = await api.launchToken(signIn, { project: WIDGETS.slug, ticket: "WID-95" });
+    const binding = { ...made.worker, runtime: "conductor" as const, handle: "ws-95/session-1" };
+    await api.bindLaunch(signIn, binding);
+    await api.bindLaunch({ kind: "api-key", key: apiKey }, binding);
+    expect(await refusal(api.bindLaunch(signIn, { ...binding, handle: "ws-95/session-2" }))).toEqual([
+      409,
+      expect.stringContaining("different session"),
+    ]);
+    expect(await refusal(api.bindLaunch(signIn, { ...binding, runtime: "herdr" }))).toEqual([
+      409,
+      expect.stringContaining("different session"),
+    ]);
+    expect(await refusal(api.bindLaunch({ kind: "api-key", key: otherKey }, binding))).toEqual([
+      403,
+      expect.stringContaining("organization"),
+    ]);
+    expect(await refusal(api.bindLaunch(signIn, { ...binding, ticket: "WID-96" }))).toEqual([
+      409,
+      expect.stringContaining("ended or unknown"),
+    ]);
+    expect(await refusal(api.bindLaunch(signIn, { ...binding, handle: "" }))).toEqual([
+      400,
+      expect.stringContaining("runtime and session"),
+    ]);
+    expect(await coordinator.pendingLaunches()).toContainEqual(
+      expect.objectContaining({
+        ticket: "WID-95",
+        runtime: "conductor",
+        handle: binding.handle,
+        tokenUsedAt: null,
+      }),
+    );
+    const session = await api.exchangeLaunchToken(made.token, "ws-95/session-2");
+    const workerSignIn = { kind: "worker" as const, token: session.token, ticket: "WID-95", project: WIDGETS.slug };
+    expect(await refusal(api.bindLaunch(workerSignIn, binding))).toEqual([403, expect.stringContaining("worker")]);
+    const organization = session.organization.id;
+    const worker = (await listWorkers(client, organization)).find((w) => w.id === made.worker.id);
+    expect(worker).toMatchObject({ runtime: "conductor", handle: binding.handle });
+    expect(worker?.runtimeMismatch).toContain("ws-95/session-2");
+    expect(
+      (await listEvents(client, organization)).filter((e) => e.actor.id === made.worker.id).map((e) => e.detail),
+    ).toContainEqual(expect.stringContaining("runtime session mismatch"));
+    await api.bindLaunch(signIn, binding);
+    const fast = await api.launchToken(signIn, { project: WIDGETS.slug, ticket: "WID-97" });
+    await api.exchangeLaunchToken(fast.token, "ws-97/session-1");
+    await api.bindLaunch(signIn, { ...fast.worker, runtime: "conductor", handle: "ws-97/session-1" });
+    expect(await coordinator.pendingLaunches()).toContainEqual(
+      expect.objectContaining({
+        ticket: "WID-97",
+        runtime: "conductor",
+        handle: "ws-97/session-1",
+      }),
+    );
+    await api.endWorkers(signIn, { project: WIDGETS.slug, ticket: "WID-97", reason: "released" });
+    await api.endWorkers(signIn, { project: WIDGETS.slug, ticket: "WID-95", reason: "released" });
+    expect(await refusal(api.bindLaunch(signIn, binding))).toEqual([409, expect.stringContaining("ended or unknown")]);
   });
 
   test("a launch no claim followed is in flight, then not started, told apart by its token's use; its claim or its end clears it", async () => {

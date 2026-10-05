@@ -54,7 +54,10 @@ export interface Worker {
   endedAt: string | null;
   endReason: EndReason | null;
   endedBy: string | null;
-  /** The worker's runtime session, as its sign-in named it; null when it named none. */
+  /** The runtime and session bound at launch, or reported at sign-in when unbound. */
+  runtime: string | null;
+  /** A sign-in mismatch, read from the audit event on the launch list only. */
+  runtimeMismatch?: string | null;
   handle: string | null;
 }
 
@@ -87,7 +90,7 @@ const hhmm = (iso: string) => `${iso.slice(0, 16)}Z`;
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
 const COLUMNS = `"id", "organizationId", "project", "ticket", "launchedByKind", "launchedById", "launchedByLabel",
-  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel", "runtimeHandle"`;
+  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel", "runtime", "runtimeHandle"`;
 
 function workerOf(r: Row): Worker {
   const reason = str(r.endReason);
@@ -110,7 +113,9 @@ function workerOf(r: Row): Worker {
     endReason:
       reason === "released" || reason === "merged" || reason === "revoked" || reason === "expired" ? reason : null,
     endedBy: str(r.endedByLabel),
+    runtime: str(r.runtime),
     handle: str(r.runtimeHandle),
+    ...(r.runtimeMismatch !== undefined ? { runtimeMismatch: str(r.runtimeMismatch) } : {}),
   };
 }
 
@@ -165,9 +170,41 @@ export async function createLaunch(
     endedAt: null,
     endReason: null,
     endedBy: null,
+    runtime: null,
     handle: null,
   };
   return { worker, token };
+}
+
+/** Bind the launch to one runtime session, even before the worker signs in. */
+export async function bindLaunch(
+  client: Database,
+  input: { organization: string; project: string; ticket: string; id: string; runtime: string; handle: string },
+): Promise<"bound" | "conflict" | "gone"> {
+  return transaction(client, async (tx) => {
+    const args = [input.id, input.organization, input.project, input.ticket.toUpperCase()];
+    const found = await tx.query(
+      `SELECT ${COLUMNS} FROM "armada_worker"
+       WHERE "id" = $1 AND "organizationId" = $2 AND "project" = $3 AND "ticket" = $4 FOR UPDATE`,
+      args,
+    );
+    const row = found.rows[0];
+    if (!row || row.endedAt) return "gone";
+    if (row.runtimeHandle !== null) {
+      if (row.runtimeHandle !== input.handle || (row.runtime !== null && row.runtime !== input.runtime))
+        return "conflict";
+      if (row.runtime === input.runtime) return "bound";
+      // A fast worker may sign in before the coordinator receives the launch result.
+      // The matching handle permits filling its still-unknown runtime.
+    }
+    await tx.query(
+      `UPDATE "armada_worker" SET "runtime" = $5, "runtimeHandle" = $6
+       WHERE "id" = $1 AND "organizationId" = $2 AND "project" = $3 AND "ticket" = $4
+         AND "endedAt" IS NULL AND ("runtimeHandle" IS NULL OR ("runtimeHandle" = $6 AND "runtime" IS NULL))`,
+      [...args, input.runtime, input.handle],
+    );
+    return "bound";
+  });
 }
 
 // ------------------------------------------------------------ exchange
@@ -236,19 +273,22 @@ export async function exchangeLaunch(
   // One conditional write: of two exchanges racing, one wins.
   const won = await client.query(
     `UPDATE "armada_worker" SET "tokenUsedAt" = $1, "sessionHash" = $2, "sessionExpiresAt" = $3, "sessionSeenAt" = $1,
-       "runtimeHandle" = $5
-     WHERE "id" = $4 AND "tokenUsedAt" IS NULL AND "endedAt" IS NULL AND "tokenExpiresAt" > $1`,
+       "runtimeHandle" = COALESCE("runtimeHandle", $5)
+     WHERE "id" = $4 AND "tokenUsedAt" IS NULL AND "endedAt" IS NULL AND "tokenExpiresAt" > $1 RETURNING ${COLUMNS}`,
     [at, hashOf(token), expires, found.id, handle],
   );
-  if (won.rowCount !== 1) return refuse("used", "used by another exchange at the same time");
-  const worker: Worker = { ...found, tokenUsedAt: at, sessionExpiresAt: expires, sessionSeenAt: at, handle };
+  if (won.rowCount !== 1 || !won.rows[0]) return refuse("used", "used by another exchange at the same time");
+  const worker = workerOf(won.rows[0]);
+  const mismatch = handle && worker.handle !== handle;
   await recordEvent(client, found.organization, {
     at,
     action: "exchange",
     project: found.project,
     keys: [],
     actor: workerActor(worker),
-    detail: `launch token for ${found.project} ${found.ticket} used; worker session started`,
+    detail: mismatch
+      ? `runtime session mismatch for ${found.project} ${found.ticket}: reported ${handle}; kept ${worker.runtime ?? "unknown"} ${worker.handle}`
+      : `launch token for ${found.project} ${found.ticket} used; worker session started`,
   });
   return { ok: true, worker, token };
 }
@@ -374,7 +414,14 @@ export async function endTicketWorkers(
 /** The organization's launches, newest first. */
 export async function listWorkers(client: Database, organization: string, limit = 100): Promise<Worker[]> {
   const rs = await client.query(
-    `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 ORDER BY "createdAt" DESC, "id" LIMIT $2`,
+    `SELECT w.*, mismatch."detail" AS "runtimeMismatch" FROM (
+       SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 ORDER BY "createdAt" DESC, "id" LIMIT $2
+     ) w LEFT JOIN LATERAL (
+       SELECT "detail" FROM "armada_secret_event" WHERE "organizationId" = $1
+         AND "actorKind" = 'worker' AND "actorId" = w."id" AND "action" = 'exchange'
+         AND "detail" LIKE 'runtime session mismatch%'
+       ORDER BY "at" DESC, "id" DESC LIMIT 1
+     ) mismatch ON true ORDER BY w."createdAt" DESC, w."id"`,
     [organization, limit],
   );
   return rs.rows.map(workerOf);

@@ -594,11 +594,12 @@ export function memoryFleet(): FleetStore & {
             ),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
-        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, handle }) => ({
+        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle }) => ({
           ticket,
           launchedAt,
           tokenUsedAt,
           tokenExpiresAt,
+          runtime,
           handle,
         }));
     },

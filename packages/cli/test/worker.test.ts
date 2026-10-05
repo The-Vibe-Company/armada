@@ -351,12 +351,12 @@ describe("armada claim, report and release", () => {
 
   test("armada status lists the workers launched that never claimed, under their own heading", async () => {
     const w = worker(SIGNED_IN);
-    const launch = { project: "widgets", tokenUsedAt: null, handle: null, endedAt: null };
+    const launch = { project: "widgets", tokenUsedAt: null, runtime: null, handle: null, endedAt: null };
     w.store.launches.push(
       { ...launch, ticket: "DEMO-7", launchedAt: "2026-03-04T09:35:00.000Z" },
       { ...launch, ticket: "DEMO-8", launchedAt: "2026-03-04T09:40:00.000Z", tokenUsedAt: "2026-03-04T09:42:00.000Z" },
       // Within the 10 minutes `not_started_minutes` gives it.
-      { ...launch, ticket: "DEMO-9", launchedAt: "2026-03-04T09:55:00.000Z" },
+      { ...launch, ticket: "DEMO-9", launchedAt: "2026-03-04T09:55:00.000Z", runtime: "conductor", handle: "ws-9/s-9" },
       { ...launch, ticket: "DEMO-10", launchedAt: "2026-03-04T07:00:00.000Z" },
     );
     w.net.rest = recordedFetch().fetch;
@@ -370,7 +370,7 @@ describe("armada claim, report and release", () => {
         "  DEMO-8   launched 20 min ago · signed in 18 min ago, no claim",
       ].join("\n"),
     );
-    expect(w.out()).toContain("DEMO-9   launched");
+    expect(w.out()).toContain("DEMO-9   launched 5 min ago · launch token never used · conductor · ws-9/s-9");
     expect(w.out()).toContain("Cancel: armada launch revoke DEMO-9");
     expect(w.out()).not.toContain("DEMO-10  launched");
   });
