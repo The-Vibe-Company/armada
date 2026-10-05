@@ -533,7 +533,10 @@ export function fakeArmada(
   const keys = new Map(Object.entries(o.keys ?? {}));
   const calls: ArmadaCall[] = [];
   const launches = new Map<string, { project: string; ticket: string; used: boolean }>();
-  const workers = new Map<string, { project: string; ticket: string; ended: string | null }>();
+  const workers = new Map<
+    string,
+    { project: string; ticket: string; ended: string | null; createdAt: string; id: string }
+  >();
   const secrets = new Map(Object.entries(o.secrets ?? {}).map(([p, v]) => [p, new Map(Object.entries(v))]));
   const end = (ticket: string, why: string) => {
     for (const w of workers.values()) if (w.ticket === ticket && !w.ended) w.ended = why;
@@ -594,7 +597,9 @@ export function fakeArmada(
         clock,
         call.path.slice("fleet/".length),
         call.body,
-        worker ? { kind: "worker", ticket: worker.ticket, project: worker.project } : { kind: "organization" },
+        worker
+          ? { kind: "worker", ticket: worker.ticket, project: worker.project, sessionId: worker.id }
+          : { kind: "organization" },
         call.version,
       );
     }
@@ -692,7 +697,13 @@ export function fakeArmada(
         );
       launch.used = true;
       const t = `armada_worker_CANARY_${workers.size + 1}`;
-      workers.set(t, { project: launch.project, ticket: launch.ticket, ended: null });
+      workers.set(t, {
+        project: launch.project,
+        ticket: launch.ticket,
+        ended: null,
+        createdAt: clock.now().toISOString(),
+        id: `wk-${workers.size + 1}`,
+      });
       return Response.json({
         schemaVersion: 1,
         token: t,
@@ -703,9 +714,19 @@ export function fakeArmada(
     }
     if (route === "POST workers/end") {
       if (!person) return Response.json({ error: "not signed in to Armada", next: "armada login" }, { status: 401 });
-      const before = [...workers.values()].filter((w) => w.ticket === body.ticket && !w.ended).length;
-      end(String(body.ticket), `the ticket was ${String(body.reason)}`);
-      return Response.json({ ended: before });
+      let ended = 0;
+      for (const w of workers.values()) {
+        if (
+          w.project !== body.project ||
+          w.ticket !== body.ticket ||
+          w.ended ||
+          (typeof body.claimedAt === "string" && Date.parse(w.createdAt) > Date.parse(body.claimedAt))
+        )
+          continue;
+        w.ended = `the ticket was ${String(body.reason)}`;
+        ended++;
+      }
+      return Response.json({ ended });
     }
     if (worker && route === "GET session")
       return Response.json({

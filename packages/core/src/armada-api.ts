@@ -573,7 +573,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
     /** Ends the worker sessions of a ticket, once its pull request is merged or it is released; how many ended. */
     async endWorkers(
       signIn: ArmadaSignIn,
-      target: { project: string; ticket: string; reason: "merged" | "released" },
+      target: { project: string; ticket: string; reason: "merged" | "released"; claimedAt?: string | null },
     ): Promise<number> {
       const { status, body } = await call("POST", "workers/end", { signIn, body: target });
       if (status !== 200) throw refusal(status, body, "Armada did not end the ticket's workers");
