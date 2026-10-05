@@ -63,8 +63,9 @@ export interface LatestEvent {
   at: string;
 }
 
-export const RUNTIME_STATES = ["working", "blocked", "idle", "done", "unknown"] as const;
-export type RuntimeState = (typeof RUNTIME_STATES)[number];
+import { OBSERVABLE_RUNTIMES, type RuntimeState, runtimeNameOf } from "./runtime.ts";
+
+export { RUNTIME_STATES, type RuntimeState } from "./runtime.ts";
 
 export interface RuntimeObservation {
   /** Runtime transition counter, including changes between observations. */
@@ -307,6 +308,7 @@ export interface FleetStore {
     handle: string;
     claimedAt: string;
     state: RuntimeState;
+    since?: string;
     sequence?: number;
     at: Date;
   }): Promise<boolean>;
@@ -604,7 +606,12 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
   await store.resolveInboxItems({ project, ticket, kind: "answer-request", resolution: text, at });
   if (n === 0 && plans === 0 && a.ticket) {
     const held = await store.getRuntimeHandle(project, ticket);
-    if (held?.runtime.toLowerCase() === "herdr" && !held.releasedAt && held.runtimeState?.state === "blocked") {
+    if (
+      held &&
+      OBSERVABLE_RUNTIMES.includes(runtimeNameOf(held.runtime) as "herdr" | "conductor") &&
+      !held.releasedAt &&
+      held.runtimeState?.state === "blocked"
+    ) {
       // Harness approvals have no worker-authored question. Keep the delivered
       // answer in the same indexed answer history so the inbox clears until the
       // next blocked transition, even if the terminal stays blocked briefly.
@@ -1116,8 +1123,9 @@ export function freshRuntimeState(
   minutes: number,
   claimedAt?: string,
 ): RuntimeState | null {
-  if (!observation || (claimedAt && (observation.at < claimedAt || (observation.since ?? observation.at) < claimedAt)))
-    return null;
+  // A session can start its turn before the worker claims. The observation is
+  // generation-checked by the store; its transition time may legitimately precede the claim.
+  if (!observation || (claimedAt && observation.at < claimedAt)) return null;
   const age = now.getTime() - Date.parse(observation.at);
   return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
     ? observation.state
@@ -1153,6 +1161,7 @@ export interface Fleet {
     handle: string;
     claimedAt: string;
     state: RuntimeState;
+    since?: string;
     sequence?: number;
   }): Promise<boolean>;
   stopRuntime(input: { ticket: string; handle: string; claimedAt: string }): Promise<boolean>;

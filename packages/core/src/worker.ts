@@ -10,24 +10,13 @@ import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
 import { handBackProblems, transitionProblem } from "./phases.ts";
+import { Refusal } from "./refusal.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
 import { isShippingStage } from "./types.ts";
 import { type ValidationChoice, validationClaimLine } from "./validations.ts";
 
-/**
- * The command was understood but the tracker state forbids it (exit code 1).
- * `next` is the one command to run next, printed after the reason.
- */
-export class Refusal extends Error {
-  override name = "Refusal";
-  constructor(
-    message: string,
-    readonly next: string,
-  ) {
-    super(message);
-  }
-}
+export { Refusal } from "./refusal.ts";
 
 export interface WorkerContext {
   config: ArmadaConfig;
