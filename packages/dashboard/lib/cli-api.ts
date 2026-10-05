@@ -29,6 +29,7 @@ import {
   MASKED_LAUNCH_TOKEN_REFUSAL,
   MINIMUM_CLI_VERSION,
   parseProject,
+  RUNTIME_NAMES,
   serveFleet,
   upgradeLine,
 } from "@armada/core/read";
@@ -56,6 +57,7 @@ import {
   workerSecretRefusal,
 } from "./vault";
 import {
+  bindLaunch,
   createLaunch,
   endTicketWorkers,
   endWorker,
@@ -464,6 +466,55 @@ async function exchange(a: CliAccounts, request: Request, now: Date): Promise<Re
     },
     { headers: NO_STORE },
   );
+}
+
+/** A coordinator records the runtime session returned by its launch adapter. */
+async function bindLaunchSession(a: CliAccounts, request: Request, now: Date): Promise<Response> {
+  const identity = await identify(a, credentialOf(request), now);
+  if (identity instanceof Response) return identity;
+  if (identity.via === "worker") return refuse(403, `${WORKER_SCOPE}: it binds no launch`, "the coordinator does it");
+  const holder = holderOf(identity);
+  if (!holder) return noOrganization(a);
+  const body = await jsonBody(request);
+  if (
+    !isProjectSlug(body.project) ||
+    !isTicketId(body.ticket) ||
+    typeof body.id !== "string" ||
+    !/^[a-zA-Z0-9_-]{1,128}$/.test(body.id) ||
+    typeof body.runtime !== "string" ||
+    !RUNTIME_NAMES.some((name) => name === body.runtime) ||
+    typeof body.handle !== "string" ||
+    !body.handle.trim() ||
+    body.handle.length > 500 ||
+    Array.from(body.handle).some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)
+  )
+    return refuse(
+      400,
+      "binding a launch needs its project, ticket, id, runtime and session",
+      "update Armada and retry",
+    );
+  const projects = await projectsOf(a.client, holder.organization.id);
+  if (!projects.some((p) => p.slug === body.project))
+    return refuse(
+      403,
+      "this project is not registered to your organization",
+      "armada status in the project's repository",
+    );
+  const result = await bindLaunch(a.client, {
+    organization: holder.organization.id,
+    project: body.project,
+    ticket: body.ticket,
+    id: body.id,
+    runtime: body.runtime,
+    handle: body.handle.trim(),
+  });
+  if (result !== "bound")
+    return refuse(
+      409,
+      result === "conflict" ? "this launch already records a different session" : "this launch is ended or unknown",
+      "armada status; inspect the launch before retrying",
+    );
+  return Response.json({ id: body.id, ticket: body.ticket.toUpperCase() }, { headers: NO_STORE });
 }
 
 async function revokeLaunch(a: CliAccounts, request: Request, now: Date, specific = false): Promise<Response> {
@@ -959,6 +1010,7 @@ async function answerCli(request: Request, path: string[], deps: CliApiDeps, lat
   }
   if (route === "POST credentials") return credentials(a, request, deps, now, latest);
   if (route === "POST launch-tokens") return launch(a, request, deps, now);
+  if (route === "POST launch-tokens/bind") return bindLaunchSession(a, request, now);
   if (route === "POST launch-tokens/exchange") return exchange(a, request, now);
   if (route === "POST workers/end") return endWorkers(a, request, now);
   if (route === "POST workers/revoke") return revokeLaunch(a, request, now);
