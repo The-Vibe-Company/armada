@@ -1,16 +1,19 @@
 // Interface strings in English and French. The language is the dashboard's
 // own setting: the viewer's choice (a cookie), else ARMADA_DASHBOARD_LANGUAGE,
 // else English. Tracker content (titles, statuses, questions) is shown as is.
+
 import type {
   AgentPhase,
   CiState,
   CoordinatorState,
+  MainHealth,
   RequestKind,
   RequestRefusalCode,
   StatusType,
   ValidationKind,
   ValidationOutcome,
 } from "@armada/core/read";
+import { MAIN_HISTORY_WINDOW, mainHealthLine } from "@armada/core/read";
 import type { ActivityShow, EntryKind } from "./activity-view";
 import type { SessionGroup } from "./coordinator-view";
 import type { AgentStatus, PageKind, Section, StatusReason } from "./fleet-view";
@@ -485,6 +488,7 @@ const en = {
   } satisfies Record<RequestError, string>,
   overview: {
     locale: "en-GB",
+    mainHealth: mainHealthLine,
     /** The overview's states (THE-1020), most urgent first, and what each means. */
     groups: {
       blocked: "Blocked",
@@ -1372,6 +1376,18 @@ const fr: Strings = {
   },
   overview: {
     locale: "fr-FR",
+    mainHealth: (h: MainHealth) => {
+      const ref = (c: { sha: string; pr: number | null }) => (c.pr === null ? c.sha.slice(0, 7) : `#${c.pr}`);
+      const since = h.redBeyondWindow
+        ? `en échec depuis plus de ${MAIN_HISTORY_WINDOW} commits`
+        : `en échec depuis ${h.redSince ? ref(h.redSince) : "une date inconnue"}`;
+      const fix = h.fixRunning ? `, un correctif est en cours (${ref(h.fixRunning)})` : "";
+      const failing =
+        h.redSince?.failing.length && !h.redBeyondWindow
+          ? ` (${h.redSince.failing.join(", ")} en échec sur ${h.redSince.sha.slice(0, 7)})`
+          : "";
+      return `${h.branch} ${since}${fix}${failing}`;
+    },
     groups: {
       blocked: "Bloqué",
       you: "Attend ta décision",
