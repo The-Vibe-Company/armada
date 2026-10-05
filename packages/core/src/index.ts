@@ -29,6 +29,7 @@ export * from "./routing.ts";
 export * from "./runtime.ts";
 export * from "./setup.ts";
 export * from "./skills.ts";
+export * from "./specs.ts";
 export * from "./status.ts";
 export * from "./timeline.ts";
 export * from "./types.ts";
