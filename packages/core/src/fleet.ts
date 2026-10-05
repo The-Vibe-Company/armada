@@ -346,6 +346,35 @@ export interface FrontierLabels {
   parked: string;
 }
 
+function available(m: Model, i: Issue): boolean {
+  return (
+    m.isLeaf(i) &&
+    isNotStarted(i) &&
+    !i.agentPhase &&
+    m.openBlockersOf(i).length === 0 &&
+    !i.prs.some((p) => p.state === "open")
+  );
+}
+
+export interface UnblockedTickets {
+  ready: Candidate[];
+  parked: Issue[];
+  nowWaitsOn: { id: string; on: string[] }[];
+}
+
+/** Direct dependents after a blocker closes, using the same rules as the frontier. */
+export function unblockedBy(m: Model, ticket: string, labels: FrontierLabels): UnblockedTickets {
+  const dependents = m.program.filter((i) => !isClosed(i) && i.blockedBy.some((b) => b.id === ticket));
+  return {
+    ready: frontier(m, labels).filter((c) => c.issue.blockedBy.some((b) => b.id === ticket)),
+    parked: dependents.filter((i) => i.labels.includes(labels.parked) && available(m, i)),
+    nowWaitsOn: dependents.flatMap((i) => {
+      const on = m.openBlockersOf(i);
+      return on.length ? [{ id: i.id, on }] : [];
+    }),
+  };
+}
+
 /**
  * The frontier: leaves not started, not held by an agent, not parked, with
  * every blocked-by ticket closed and no open pull request. Ranked: ready label
@@ -364,15 +393,7 @@ export function frontier(m: Model, labels: FrontierLabels): Candidate[] {
   };
   const critical = criticalIds(m);
   return m.program
-    .filter(
-      (i) =>
-        m.isLeaf(i) &&
-        isNotStarted(i) &&
-        !i.agentPhase &&
-        !i.labels.includes(labels.parked) &&
-        m.openBlockersOf(i).length === 0 &&
-        !i.prs.some((p) => p.state === "open"),
-    )
+    .filter((i) => available(m, i) && !i.labels.includes(labels.parked))
     .map((issue) => {
       const spec = m.specOf(issue.id);
       const unlocksAll = [...transitive(issue.id)];

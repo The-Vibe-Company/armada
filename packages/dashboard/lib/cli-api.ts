@@ -518,11 +518,14 @@ async function endWorkers(a: CliAccounts, request: Request, now: Date): Promise<
       "ending a ticket's workers needs the project, the ticket and why (merged or released)",
       "armada merge or armada release",
     );
+  if (body.claimedAt != null && (typeof body.claimedAt !== "string" || !Number.isFinite(Date.parse(body.claimedAt))))
+    return refuse(400, "claimedAt must be a timestamp", "armada release");
   const ended = await endTicketWorkers(a.client, {
     organization: holder.organization.id,
     project: body.project,
     ticket: body.ticket,
     reason,
+    claimedAt: body.claimedAt as string | null | undefined,
     by: holder.actor,
     now,
   });

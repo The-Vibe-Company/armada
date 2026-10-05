@@ -351,11 +351,22 @@ export async function revokePendingLaunch(
 /** Ends every launch of a ticket: its pull request merged, or the ticket released. */
 export async function endTicketWorkers(
   client: Database,
-  input: { organization: string; project: string; ticket: string; reason: EndReason; by: Actor; now: Date },
+  input: {
+    organization: string;
+    project: string;
+    ticket: string;
+    reason: EndReason;
+    by: Actor;
+    now: Date;
+    claimedAt?: string | null;
+  },
 ): Promise<Worker[]> {
   return end(
     client,
-    { sql: `"project" = $2 AND "ticket" = $3`, args: [input.project, input.ticket.toUpperCase()] },
+    {
+      sql: `"project" = $2 AND "ticket" = $3${input.claimedAt ? ' AND "createdAt" <= $4::timestamptz' : ""}`,
+      args: [input.project, input.ticket.toUpperCase(), ...(input.claimedAt ? [input.claimedAt] : [])],
+    },
     input,
   );
 }
