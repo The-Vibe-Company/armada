@@ -220,7 +220,7 @@ async function watchUntil(
       throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
     const before = paths ? await readWatchState(paths, project) : null;
     await remember(io, project, { root: dirname(configPath), stopped: null });
-    const report = await watchInbox(observingFleet(watchingIo, fleet), {
+    const report = await watchInbox(observingFleet(watchingIo, fleet, config), {
       project,
       signal: controller.signal,
       coordinator: coordinatorHandle(io),

@@ -6,6 +6,7 @@
 // the fleet here, and the CLI writes it through the Armada API (THE-850,
 // `cli-api.ts`). Losing this data loses live detail, never progress: Linear
 // stays the record.
+
 import type {
   Attachment,
   CatchupRecords,
@@ -42,7 +43,13 @@ import type {
   ValidationOutcome,
   WorkerProfile,
 } from "@armada/core/read";
-import { isShippingStage, REQUEST_KINDS, TIMELINE_HOURS, UNUSED_LAUNCH_GRACE_MS } from "@armada/core/read";
+import {
+  isShippingStage,
+  OBSERVABLE_RUNTIMES,
+  REQUEST_KINDS,
+  TIMELINE_HOURS,
+  UNUSED_LAUNCH_GRACE_MS,
+} from "@armada/core/read";
 import { catchupRecords, type FeedQuery, feedPage } from "./activity-store";
 import { captionedAttachments, ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
@@ -556,18 +563,29 @@ export async function observeRuntime(
     handle: string;
     claimedAt: string;
     state: RuntimeState;
+    since?: string;
     sequence?: number;
     at: Date;
   },
 ): Promise<boolean> {
   const result = await db.query(
     `UPDATE runtime_handles SET runtime_state = $5, runtime_observed_at = $6,
-       runtime_changed_at = CASE WHEN runtime_state IS DISTINCT FROM $5
-         OR ($7::bigint IS NOT NULL AND runtime_state_sequence IS DISTINCT FROM $7) THEN $6 ELSE runtime_changed_at END,
+       runtime_changed_at = COALESCE($8::timestamptz, CASE WHEN runtime_state IS DISTINCT FROM $5
+         OR ($7::bigint IS NOT NULL AND runtime_state_sequence IS DISTINCT FROM $7) THEN $6 ELSE runtime_changed_at END),
        runtime_state_sequence = COALESCE($7::bigint, runtime_state_sequence)
      WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND released_at IS NULL
-       AND lower(runtime) = 'herdr' AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
-    [input.project, input.ticket, input.handle, input.claimedAt, input.state, input.at, input.sequence ?? null],
+       AND lower(runtime) = ANY($9::text[]) AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
+    [
+      input.project,
+      input.ticket,
+      input.handle,
+      input.claimedAt,
+      input.state,
+      input.at,
+      input.sequence ?? null,
+      input.since ?? null,
+      OBSERVABLE_RUNTIMES,
+    ],
   );
   return result.rowCount > 0;
 }
@@ -580,8 +598,8 @@ export async function stopRuntime(
   return transaction(db, async (tx) => {
     const held = await tx.query(
       `UPDATE runtime_handles SET released_at = COALESCE(released_at, $5)
-       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND lower(runtime) = 'herdr' RETURNING ticket`,
-      [input.project, input.ticket, input.handle, input.claimedAt, input.at],
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND lower(runtime) = ANY($6::text[]) RETURNING ticket`,
+      [input.project, input.ticket, input.handle, input.claimedAt, input.at, OBSERVABLE_RUNTIMES],
     );
     if (!held.rowCount) return false;
     await tx.query(
