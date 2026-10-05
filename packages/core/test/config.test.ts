@@ -13,6 +13,19 @@ const problemsOf = (text: string) => {
 };
 
 describe("armada.toml", () => {
+  test("spec title styles default to N, accept totals explicitly, and reject other values", () => {
+    expect(parseConfig(DEMO_TOML).tracker.specTitles).toBe("N");
+    expect(parseConfig(DEMO_TOML.replace("[tracker]", '[tracker]\nspec_titles = "N/M"')).tracker.specTitles).toBe(
+      "N/M",
+    );
+    for (const value of ['"M"', "1", '"n"'])
+      expect(problemsOf(DEMO_TOML.replace("[tracker]", `[tracker]\nspec_titles = ${value}`))).toContain(
+        '"tracker.spec_titles" must be "N" or "N/M"',
+      );
+    expect(
+      configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+    ).toContain('spec_titles = "N"');
+  });
   test("silence and quiet thresholds are independently configurable positive minutes", () => {
     const configured = parseConfig(`${DEMO_TOML}\n[policy]\nsilence_minutes = 12\nquiet_minutes = 50\n`);
     expect([configured.policy.silentAfterMinutes, configured.policy.quietAfterMinutes]).toEqual([12, 50]);
@@ -25,6 +38,7 @@ describe("armada.toml", () => {
       project: { name: "Widgets", slug: "widgets" },
       tracker: {
         programRoot: "DEMO-1",
+        specTitles: "N",
         language: "en",
         readyLabel: "ready-for-agent",
         parkedLabel: "parked",
