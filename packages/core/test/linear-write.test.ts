@@ -22,6 +22,46 @@ function graphql(answers: Record<string, unknown>) {
 }
 
 describe("Linear write adapter", () => {
+  test("creates a child issue and updates its title through the only write adapter", async () => {
+    const { writer, sent } = graphql({
+      CreateIssue: {
+        data: {
+          issueCreate: {
+            success: true,
+            issue: { id: "uuid-8", identifier: "DEMO-8", url: "https://linear.app/acme/issue/DEMO-8" },
+          },
+        },
+      },
+      Update: { data: { issueUpdate: { success: true } } },
+    });
+    const input = { teamId: "team-1", parentId: "uuid-root", title: "Spec 3 — Images", description: "## In short" };
+    expect(await writer.createIssue(input)).toEqual({
+      uuid: "uuid-8",
+      id: "DEMO-8",
+      url: "https://linear.app/acme/issue/DEMO-8",
+    });
+    await writer.updateTicket("uuid-8", { title: "Spec 4 — Images" });
+    expect(sent).toEqual([
+      { operation: "CreateIssue", variables: { input } },
+      { operation: "Update", variables: { id: "uuid-8", input: { title: "Spec 4 — Images" } } },
+    ]);
+  });
+  test("a create refused or timed out is never replayed", async () => {
+    const { writer } = graphql({ CreateIssue: { data: { issueCreate: { success: false, issue: null } } } });
+    const input = { teamId: "team-1", parentId: "uuid-root", title: "Spec 1 — Login", description: "## In short" };
+    await expect(writer.createIssue(input)).rejects.toThrow("refused to create");
+    let calls = 0;
+    const timed = createLinearWriter({
+      apiKey: "synthetic",
+      labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
+      fetch: async () => {
+        calls++;
+        throw new DOMException("timed out", "TimeoutError");
+      },
+    });
+    await expect(timed.createIssue(input)).rejects.toThrow("no answer within 30 s");
+    expect(calls).toBe(1);
+  });
   test("a timed-out query retries once; comment mutations are never replayed", async () => {
     let calls = 0;
     const writer = createLinearWriter({

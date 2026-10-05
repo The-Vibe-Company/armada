@@ -60,7 +60,21 @@ export interface Ticket {
   warnings: string[];
 }
 
+export interface IssueCreate {
+  teamId: string;
+  parentId: string;
+  title: string;
+  description: string;
+}
+
+export interface CreatedIssue {
+  uuid: string;
+  id: string;
+  url: string;
+}
+
 export interface TicketChange {
+  title?: string;
   stateId?: string;
   assigneeId?: string;
   addLabelIds?: string[];
@@ -73,7 +87,8 @@ export interface LinearWriter {
   readTicket(id: string): Promise<Ticket | null>;
   /** Labels of a group that a ticket of `teamId` may carry (team labels first, then workspace labels). */
   groupLabels(group: string, teamId: string): Promise<TicketLabel[]>;
-  /** One update: state, assignee and label changes are applied together. */
+  createIssue(input: IssueCreate): Promise<CreatedIssue>;
+  /** One update: title, state, assignee and label changes are applied together. */
   updateTicket(uuid: string, change: TicketChange): Promise<void>;
   comment(uuid: string, body: string): Promise<{ id: string }>;
   deleteComment(id: string): Promise<void>;
@@ -118,6 +133,10 @@ const GROUP_LABELS_QUERY = /* GraphQL */ `
 const VIEWER_QUERY = "query Viewer { viewer { id name } }";
 const UPDATE_MUTATION = /* GraphQL */ `
   mutation Update($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`;
+const CREATE_MUTATION = /* GraphQL */ `
+  mutation CreateIssue($input: IssueCreateInput!) {
+    issueCreate(input: $input) { success issue { id identifier url } }
+  }`;
 const COMMENT_MUTATION = /* GraphQL */ `
   mutation Comment($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id } } }`;
 const DELETE_COMMENT_MUTATION = /* GraphQL */ `
@@ -221,8 +240,18 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
         if (!byName.has(l.name)) byName.set(l.name, { id: l.id, name: l.name, group });
       return [...byName.values()];
     },
+    async createIssue(input) {
+      const data = await gql<{
+        issueCreate: { success: boolean; issue: { id: string; identifier: string; url: string } | null };
+      }>({ ...opts, retry: false }, CREATE_MUTATION, { input });
+      const created = data.issueCreate?.issue;
+      if (!data.issueCreate?.success || !created?.id || !created.identifier || !created.url)
+        throw new LinearError("Linear refused to create the issue");
+      return { uuid: created.id, id: created.identifier, url: created.url };
+    },
     async updateTicket(uuid, change) {
       const input: Record<string, unknown> = {};
+      if (change.title !== undefined) input.title = change.title;
       if (change.stateId) input.stateId = change.stateId;
       if (change.assigneeId) input.assigneeId = change.assigneeId;
       if (change.addLabelIds?.length) input.addedLabelIds = change.addLabelIds;
