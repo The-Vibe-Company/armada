@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
-import { entryKey, inboxTag } from "../src/live.ts";
+import { entryKey, eventCursor, inboxTag } from "../src/live.ts";
 import {
   EMPTY_WATCH_STATE,
+  followFleet,
   rearm,
   releaseEntry,
   stopHookDecision,
@@ -343,4 +344,248 @@ describe("the stop hook", () => {
     expect(why(decide(state(), { env: { ARMADA_STOP_HOOK: "off" } }))).toBe("ARMADA_STOP_HOOK=off");
     expect(decide(state(), { env: { ARMADA_STOP_HOOK: "on" } }).block).toBe(true);
   });
+});
+
+describe("follow", () => {
+  test("question then hand-back keep the stream running, acknowledge after print and restart without repeats", async () => {
+    const live = tempFleet();
+    await holding(live, "DEMO-2");
+    let step = 0;
+    const saved: { seen: string[]; cursor: string; eventIds: number[] }[] = [];
+    const o = options(live, {
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (++step === 1) await live.fleet.ask({ ticket: "DEMO-2", body: "Which table?" });
+        if (step === 2) await handBack(live, "DEMO-2");
+      },
+    }).o;
+    const stream = followFleet(live.fleet, {
+      ...o,
+      until: new Date(NOW.getTime() + 60000),
+      onPrinted: async (s) => {
+        saved.push(s);
+      },
+    });
+    expect((await stream.next()).value).toMatchObject({ kind: "question", new: true });
+    expect(saved).toHaveLength(0);
+    expect((await stream.next()).value).toMatchObject({ kind: "hand-back", new: true });
+    expect(saved).toHaveLength(1);
+    expect((await stream.next()).done).toBe(true);
+    expect(step).toBe(4);
+    const state = saved.at(-1);
+    if (!state) throw new Error("no printed state saved");
+    const restarted = followFleet(live.fleet, { ...o, ...state, until: new Date(live.clock.now().getTime() + 15000) });
+    expect((await restarted.next()).done).toBe(true);
+    expect(live.statuses).toContain(304);
+  });
+
+  test("look-back finds a late commit once, pages forward and respects ticket/kind filters", async () => {
+    const live = tempFleet();
+    await holding(live, "DEMO-2");
+    let step = 0;
+    const stream = followFleet(live.fleet, {
+      ...options(live).o,
+      kinds: ["report"],
+      tickets: ["DEMO-2"],
+      cursor: eventCursor(0, NOW.toISOString()),
+      until: new Date(NOW.getTime() + 45000),
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (++step === 1) {
+          for (let i = 0; i < 205; i++)
+            await live.store.recordEvent({
+              project: P,
+              ticket: "DEMO-2",
+              kind: "report",
+              message: `event ${i}`,
+              at: live.clock.now(),
+            });
+          await live.store.recordEvent({ project: P, ticket: "DEMO-3", kind: "report", at: live.clock.now() });
+          await live.store.recordEvent({ project: P, ticket: "DEMO-2", kind: "heartbeat", at: live.clock.now() });
+        }
+        if (step === 2)
+          await live.store.recordEvent({
+            project: P,
+            ticket: "DEMO-2",
+            kind: "report",
+            message: "late",
+            at: new Date(NOW.getTime() + 10000),
+          });
+      },
+    });
+    const lines = [];
+    for await (const line of stream) lines.push(line);
+    expect(lines).toHaveLength(206);
+    expect(lines.at(-1)?.body).toBe("late");
+    expect(new Set(lines.map((l) => l.id)).size).toBe(206);
+    expect(lines.at(-1)?.cursor).toBe(lines.at(-2)?.cursor);
+  });
+});
+
+test("follow state alarms can recur after clearing and idle never ends an unbounded follow", async () => {
+  const live = tempFleet();
+  const alarm = {
+    id: null,
+    kind: "silent" as const,
+    ticket: "DEMO-2",
+    author: null,
+    body: "worker silent",
+    createdAt: NOW.toISOString(),
+    new: false,
+  };
+  let reads = 0;
+  const stream = followFleet(
+    {
+      ...live.fleet,
+      inbox: async () => ({
+        items: ++reads === 2 ? [] : [alarm],
+        inFlight: ["DEMO-2"],
+        etag: String(reads),
+        warnings: [],
+      }),
+    },
+    { ...options(live).o, until: new Date(NOW.getTime() + 45000) },
+  );
+  expect((await stream.next()).value).toMatchObject({ kind: "silent" });
+  expect((await stream.next()).value).toMatchObject({ kind: "silent", new: true });
+  expect((await stream.next()).done).toBe(true);
+
+  const abort = new AbortController();
+  let idles = 0;
+  const pending = followFleet(live.fleet, {
+    ...options(live).o,
+    signal: abort.signal,
+    onIdle: () => {
+      idles++;
+    },
+    sleep: async (ms) => {
+      expect(ms).toBe(60000);
+      abort.abort(new Error("test stopped"));
+    },
+  }).next();
+  await expect(pending).rejects.toThrow("test stopped");
+  expect(idles).toBe(1);
+});
+
+test("handover filters ordinary reports on the server and returns304 between handovers", async () => {
+  const live = tempFleet();
+  await holding(live, "DEMO-2");
+  let step = 0;
+  const lines = [];
+  for await (const line of followFleet(live.fleet, {
+    ...options(live).o,
+    kinds: ["handover"],
+    until: new Date(NOW.getTime() + 60000),
+    sleep: async (ms) => {
+      await live.clock.sleep(ms);
+      if (++step === 1)
+        await live.store.recordEvent({
+          project: P,
+          ticket: "DEMO-2",
+          kind: "report",
+          phase: "implementing",
+          at: live.clock.now(),
+        });
+      if (step === 3)
+        await live.store.recordEvent({
+          project: P,
+          ticket: "DEMO-2",
+          kind: "report",
+          phase: "ready-to-merge",
+          at: live.clock.now(),
+        });
+    },
+  }))
+    lines.push(line);
+  expect(lines.map((l) => l.kind)).toEqual(["handover"]);
+  expect(live.statuses.filter((s) => s === 200)).toHaveLength(2); // initial inbox and the handover
+});
+
+test("follow retains the highest500 identities through late commits and further bursts", async () => {
+  const live = tempFleet();
+  await holding(live, "DEMO-2");
+  let step = 0;
+  const lines = [];
+  for await (const line of followFleet(live.fleet, {
+    ...options(live).o,
+    kinds: ["report"],
+    until: new Date(NOW.getTime() + 75000),
+    sleep: async (ms) => {
+      await live.clock.sleep(ms);
+      if (++step === 1)
+        for (let i = 0; i < 1000; i++)
+          await live.store.recordEvent({
+            project: P,
+            ticket: "DEMO-2",
+            kind: "report",
+            message: String(i),
+            at: live.clock.now(),
+          });
+      if (step === 2)
+        await live.store.recordEvent({
+          project: P,
+          ticket: "DEMO-2",
+          kind: "report",
+          message: "late",
+          at: new Date(NOW.getTime() + 10000),
+        });
+      if (step === 3)
+        for (let i = 0; i < 251; i++)
+          await live.store.recordEvent({
+            project: P,
+            ticket: "DEMO-2",
+            kind: "report",
+            message: `more ${i}`,
+            at: live.clock.now(),
+          });
+    },
+  }))
+    lines.push(line);
+  expect(lines).toHaveLength(1252);
+  expect(new Set(lines.map((l) => l.id)).size).toBe(1252);
+  expect(lines.filter((l) => l.body === "late")).toHaveLength(1);
+  expect(live.statuses.slice(-2)).toEqual([304, 304]);
+});
+
+test("cross-machine resume recovers higher IDs with older timestamps and later commits without a cache", async () => {
+  const live = tempFleet();
+  await holding(live, "DEMO-2");
+  await live.store.recordEvent({
+    project: P,
+    ticket: "DEMO-2",
+    kind: "report",
+    at: new Date(NOW.getTime() + 20000),
+    message: "printed",
+  });
+  const cursor = eventCursor(2, new Date(NOW.getTime() + 20000).toISOString());
+  await live.store.recordEvent({
+    project: P,
+    ticket: "DEMO-2",
+    kind: "report",
+    at: new Date(NOW.getTime() + 10000),
+    message: "late before resume",
+  });
+  let step = 0;
+  const lines = [];
+  for await (const line of followFleet(live.fleet, {
+    ...options(live).o,
+    cursor,
+    kinds: ["report"],
+    until: new Date(NOW.getTime() + 45000),
+    sleep: async (ms) => {
+      await live.clock.sleep(ms);
+      if (++step === 1)
+        await live.store.recordEvent({
+          project: P,
+          ticket: "DEMO-2",
+          kind: "report",
+          at: new Date(NOW.getTime() + 15000),
+          message: "late after resume",
+        });
+    },
+  }))
+    lines.push(line);
+  expect(lines.map((l) => l.body)).toEqual(["late before resume", "late after resume"]);
+  expect(lines.every((l) => l.cursor === cursor)).toBe(true);
+  expect(live.statuses.slice(-2)).toEqual([304, 304]);
 });

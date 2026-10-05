@@ -54,7 +54,15 @@ For a middle insertion, `armada spec add "<name>" --at 5` previews only; inspect
 
 ## Keep watching
 
-You only learn of something new when a command you run ends. So while a worker is in flight, always have exactly one `armada watch` running, in the background (in Claude Code, a Bash command with `run_in_background`; in another runtime, its own way of running a command in the background). It waits until something needs you (a question, a plan, a request, a hand-back, a silent worker or one that never started, you have not been shown yet), prints it and exits, and you are woken. Armada being down or a command time limit does not end it, and it tells the dashboard you are at work.
+You only learn of something new when a command you run ends. So while a worker is in flight, always have exactly one `armada watch` running, in the background (in Claude Code, a Bash command with `run_in_background`; in another runtime, its own way of running a command in the background). It waits until something needs you (a question, a plan, a request, a hand-back, a silent worker or one that never started, you have not been shown yet), prints it and exits, and you are woken. Armada being down does not end it; a harness time limit may kill it, and it tells the dashboard you are at work.
+
+
+Use `armada watch --follow` only where every output line reaches you: a terminal, a herdr pane, or a harness tool that turns each background output line into a notification (for example Claude Code's Monitor tool, where available). It prints each question, plan, hand-back, request or worker alarm and keeps running; a printed line is marked seen even if the harness did not read it. Harnesses that wake only when a command ends must keep plain `armada watch`.
+
+- Set `--for` below the harness's command limit: `armada watch --follow --for 50` ends cleanly after 50 minutes and prints `resume: armada watch --follow ...`. Plain `armada watch --for 50` is bounded too.
+- Restarted follow resumes this machine's stored cursor and seen entries. `--since <cursor>` on another machine reads events after that cursor and shows every open inbox entry once, marked `open`. Follow keeps polling while idle (every 60 s; every 15 s with workers in flight); requests are short and unchanged reads answer 304.
+- `--tickets ABC-1,ABC-2` and `--kinds question,hand-back` filter lines. Informational events are opt-in: `--kinds claim,report,release,merge,handover` or `--kinds all`; `handover` is a report entering ready-to-merge. `--json` prints NDJSON with a cursor on every line. `--mine` is refused until "Show each coordinator only its own work" lands; `--all` uses the current whole-project scope.
+- Follow and plain watch share one lock per project on this machine. `armada watch --stop` stops either; the stop hook accepts either as a running watch.
 
 - `armada inbox` and `armada status` run fine while a watch runs: never stop it to read the inbox or the fleet. To stop this project's watch, use `armada watch --stop`, never `pkill` or `killall` patterns: those can kill other projects' watches on the same machine.
 - Start it as soon as a worker is in flight, and start it again right after acting on what it returned. Never end your turn with a worker in flight and no watch running: that is how a hand-back sits unmerged.

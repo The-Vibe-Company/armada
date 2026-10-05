@@ -446,6 +446,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
         retry: [
           "events/latest",
           "events/state",
+          "events/since",
           "heartbeats/latest",
           "runtime/handles",
           "runtime/handle",
