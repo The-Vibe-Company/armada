@@ -28,6 +28,7 @@ import {
   WORKER_SESSION_PREFIX,
   waitForApproval,
   workerSessionVariable,
+  writeKeysFallback,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { loadCredentials, type Machine } from "./auth.ts";
@@ -125,6 +126,8 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
     // Keys of earlier versions are never read again: none stays on the machine.
     ...RETIRED,
   });
+  // The new sign-in must be tried immediately, even after the old one was refused.
+  await writeKeysFallback(p, null).catch(() => {});
   io.stdout(
     `Signed in to ${hostOf(credentials.armadaApi.url)} as ${describeIdentity(identity)}.\nThe key is stored in ${p.credentials}.\n`,
   );
@@ -221,6 +224,7 @@ export async function login(io: Io, o: LoginOptions): Promise<number> {
     // Keys of earlier versions are never read again: none stays on the machine.
     ...RETIRED,
   });
+  await writeKeysFallback(p, null).catch(() => {});
   // The session this one replaces is revoked on the Armada that issued it, not left behind.
   if (previous && previous !== token)
     await apiOf(io, storedAt(machine))
