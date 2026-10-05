@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Fetch, GITHUB_GRAPHQL } from "@armada/core";
+import { type Fetch, GITHUB_GRAPHQL, type RawIssue } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
   ARMADA_URL,
@@ -31,7 +31,7 @@ const BRANCH = "feature/demo-18-expire-idle-sessions";
 const KEY = "armada_key_CANARY_coordinator";
 
 /** A coordinator's terminal, signed in to the fake Armada with an organization API key unless `signedIn` is false. */
-async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
+async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boolean; unblocks?: boolean } = {}) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "armada-merge-test-")));
   dirs.push(home);
   const origin = join(home, "origin.git");
@@ -62,7 +62,7 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
   git("remote", "add", "origin", origin);
   await write(
     "armada.toml",
-    `${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]\nlocal_commands = ["test -f src/share.ts", "grep -q shareListByLink src/lists.ts"]\n`,
+    `${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]\nlocal_commands = ["test -f src/share.ts", "grep -q shareListByLink src/lists.ts"]\n${unblocks ? '[conductor.profiles.backend]\nagent = "codex"\nmodel = "example-model"\neffort = "high"\n' : ""}`,
   );
   await write("src/lists.ts", "export function shareList(id: string) {\n  return id;\n}\n");
   await write("src/menu.ts", 'import { shareList } from "./lists";\nshareList("a");\n');
@@ -119,7 +119,39 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
     return { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr };
   };
 
-  const linearProgram = recordedFetch().fetch;
+  const linearProgram = recordedFetch({
+    linear: unblocks
+      ? (recorded) => {
+          const nodes = recorded.Children.find((r) => r.data.issues.nodes.some((i) => i.identifier === "DEMO-12"))?.data
+            .issues.nodes as RawIssue[] | undefined;
+          const template = nodes?.find((i) => i.identifier === "DEMO-12");
+          if (!nodes || !template) throw new Error("missing fixture template");
+          for (const [id, labels, blockers] of [
+            ["DEMO-19", ["ready-for-agent"], []],
+            ["DEMO-20", [], []],
+            ["DEMO-21", ["ready-for-agent", "parked"], []],
+            ["DEMO-22", ["ready-for-agent"], ["EXT-1"]],
+            ["DEMO-23", ["ready-for-agent"], []],
+          ] as const) {
+            nodes.push({
+              ...structuredClone(template),
+              id: `uuid-${id}`,
+              identifier: id,
+              title: `Follow-up ${id}`,
+              state: { name: id === "DEMO-23" ? "Triage" : "Backlog", type: id === "DEMO-23" ? "triage" : "backlog" },
+              labels: { pageInfo: { hasNextPage: false }, nodes: labels.map((name) => ({ name, parent: null })) },
+              inverseRelations: {
+                pageInfo: { hasNextPage: false },
+                nodes: ["DEMO-18", ...blockers].map((identifier) => ({
+                  type: "blocks",
+                  issue: { identifier, state: { type: "started" } },
+                })),
+              },
+            });
+          }
+        }
+      : undefined,
+  });
   const store = memoryFleet();
   const armada = fakeArmada({ keys: { [KEY]: "coordinator" }, store });
   const net = { armadaDown: false };
@@ -129,7 +161,18 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
       return armada.fetch(url, init);
     }
     if (url === "https://api.github.com/repos/acme/widgets/pulls/9") return new Response(`${diff}\n`);
-    if (url !== GITHUB_GRAPHQL) return linearProgram(url, init);
+    if (url !== GITHUB_GRAPHQL) {
+      const response = await linearProgram.fetch(url, init);
+      if (!unblocks) return response;
+      // The post-close read sees the writer's state, while relation states can still be old.
+      expect(linear.get("DEMO-18").statusType).toBe(merged ? "completed" : "started");
+      const body = (await response.json()) as { data: { issues?: { nodes: RawIssue[] } } };
+      for (const i of body.data.issues?.nodes ?? [])
+        if (i.identifier === "DEMO-18" && i.state) {
+          i.state.type = linear.get("DEMO-18").statusType;
+        }
+      return Response.json(body);
+    }
     const { query, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
     if (/query Compare/.test(query)) {
       const compare =
@@ -241,11 +284,66 @@ async function fixture({ signedIn = true }: { signedIn?: boolean } = {}) {
     armada,
     store,
     net,
+    linearReads: () => linearProgram.calls.filter((c) => c.operation === "Root").length,
     merged: () => merged,
     out: () => out.join(""),
     err: () => err.join(""),
   };
 }
+
+test.each([false, true])("merge lists unblocked tickets and routed launch hints (json=%s)", async (json) => {
+  const f = await fixture({ unblocks: true });
+  expect(await run(["merge", "9", ...(json ? ["--json"] : [])], f.io)).toBe(0);
+  expect(f.err()).not.toContain("warning");
+  expect(f.linearReads()).toBe(1);
+  if (json)
+    expect(JSON.parse(f.out()).unblocked).toEqual({
+      ready: [
+        {
+          id: "DEMO-19",
+          readyForAgent: true,
+          reason: "ready for an agent",
+          route: { profile: "backend", why: "the only profile in armada.toml" },
+          launch: "armada brief DEMO-19 --prompt --profile backend",
+        },
+        {
+          id: "DEMO-20",
+          readyForAgent: false,
+          reason: "no ready label",
+          route: { profile: "backend", why: "the only profile in armada.toml" },
+          launch: null,
+        },
+        {
+          id: "DEMO-23",
+          readyForAgent: false,
+          reason: "in triage",
+          route: { profile: "backend", why: "the only profile in armada.toml" },
+          launch: null,
+        },
+      ],
+      parked: ["DEMO-21"],
+      nowWaitsOn: [{ id: "DEMO-22", on: ["EXT-1"] }],
+    });
+  else {
+    expect(f.out()).toContain(
+      "Unblocked by DEMO-18: DEMO-19 (ready for an agent), DEMO-20 (no ready label), DEMO-23 (in triage), DEMO-21 (parked)",
+    );
+    expect(f.out()).toContain("armada brief DEMO-19 --prompt --profile backend (the only profile in armada.toml)");
+    expect(f.out()).toContain("DEMO-22 now waits only on EXT-1");
+    expect(f.out()).not.toContain("armada brief DEMO-20");
+    expect(f.out()).not.toContain("armada brief DEMO-21");
+    expect(f.out()).not.toContain("armada brief DEMO-23");
+  }
+});
+
+test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "configuration only"] }])(
+  "a merge that closes no ticket lists nothing (%s)",
+  async ({ options }) => {
+    const f = await fixture();
+    expect(await run(["merge", "9", "--json", ...options], f.io)).toBe(0);
+    expect(JSON.parse(f.out()).unblocked).toBeNull();
+  },
+);
 
 test("armada merge test-merges a head behind main, merges it pinned to its SHA and says who to tell", async () => {
   const f = await fixture();
