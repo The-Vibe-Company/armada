@@ -44,6 +44,14 @@ A coordinator may start cold, on a laptop or in a fresh cloud session, with noth
 
 Repeat from step 1.
 
+## Cut and repair specs
+
+Specs are direct children of the configured program root. Armada reads both `Spec N — Name` and the legacy `Spec N/M — Name`; use `armada spec add "<name>"` to append one with the **In short** template and print its URL, then fill in the outcome, why, observable checks and dependencies before cutting its tickets.
+
+The default `[tracker] spec_titles = "N"` leaves existing titles alone on append. Tell projects whose own rules require N/M to set `[tracker] spec_titles = "N/M"`: adding then previews changes to every total and needs `--apply`. Both forms remain readable regardless of that setting.
+
+For a middle insertion, `armada spec add "<name>" --at 5` previews only; inspect the suffix renames, then repeat with `--apply`. In N mode, earlier titles stay untouched and shifted legacy titles keep their denominator. `armada spec renumber` previews a stable repair of gaps, duplicates and stale totals; `--apply` normalizes all titles to the configured style. Writes are sequential and stop on failure with the unconfirmed operations listed. Inspect Linear before retrying a failed write, which may have arrived, and preview a repair as needed. These commands refuse worker sessions.
+
 ## Keep watching
 
 You only learn of something new when a command you run ends. So while a worker is in flight, always have exactly one `armada watch` running, in the background (in Claude Code, a Bash command with `run_in_background`; in another runtime, its own way of running a command in the background). It waits until something needs you (a question, a plan, a request, a hand-back, a merge hold, a silent worker or one that never started, you have not been shown yet), prints it and exits, and you are woken. Armada being down or a command time limit does not end it, and it tells the dashboard you are at work.
