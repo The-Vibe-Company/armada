@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
 import { NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
 import { attachPullRequests } from "./github.ts";
+import type { Job, JobObservation, JobQuery, JobStart } from "./jobs.ts";
 import { buildModel, isClosed } from "./model.ts";
 import type { RequestKind } from "./request-kinds.ts";
 import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest, ShippingStage } from "./types.ts";
@@ -261,6 +262,11 @@ type Item = { project: string; ticket: string; author: string | null; body: stri
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
 export interface FleetStore {
+  startJob(input: JobStart & { project: string; startedBy: string | null; at: Date }): Promise<Job>;
+  getJob(project: string, id: number): Promise<Job | null>;
+  listJobs(project: string, query: JobQuery): Promise<Job[]>;
+  /** Only open jobs change; terminal jobs cannot be revived by a delayed observation. */
+  observeJob(input: JobObservation & { project: string; at: Date }): Promise<Job | null>;
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
@@ -1141,6 +1147,9 @@ export function freshRuntimeState(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  startJob(input: JobStart): Promise<Job>;
+  listJobs(query: JobQuery): Promise<Job[]>;
+  observeJob(input: JobObservation): Promise<Job | null>;
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";

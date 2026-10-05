@@ -209,6 +209,7 @@ describe("armada status --all", () => {
       { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GADG-1" },
       NOW,
     );
+    await store.startJob({ project: "widgets", ticket: "DEMO-11", name: "eval", startedBy: "worker", at: NOW });
     const armada = fakeArmada({ keys: { [KEY]: "registry" }, store });
     const { io, out, err } = fakeIo(
       {},
@@ -232,6 +233,8 @@ describe("armada status --all", () => {
       ["GET", "projects", KEY],
       ["POST", "fleet/coordinator", KEY],
       ["POST", "fleet/coordinator", KEY],
+      ["POST", "fleet/job/list", KEY],
+      ["POST", "fleet/job/list", KEY],
     ]);
     const all = JSON.parse(out());
     expect(
@@ -248,6 +251,7 @@ describe("armada status --all", () => {
       ],
       ["widgets", null, null],
     ]);
+    expect(all.projects[1].report.jobs[0]).toMatchObject({ ticket: "DEMO-11", state: "starting", name: "eval" });
     expect(all.projects[1].report.inFlight.map((t: { id: string }) => t.id)).toEqual(["DEMO-18", "DEMO-16", "DEMO-11"]);
     expect(out() + err()).not.toContain(KEY);
   });

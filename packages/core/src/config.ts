@@ -1,12 +1,22 @@
 // armada.toml v0: one project = one repository + one tracker program root.
 // Secrets never live in this file; tokens come from the environment.
 import { parse, TomlError } from "smol-toml";
+import { JOB_NAME } from "./jobs.ts";
+
+export interface JobConfig {
+  start: string;
+  status: string | null;
+  stop: string;
+  silenceMinutes: number;
+  maxHours: number | null;
+}
 
 export const CONFIG_FILE = "armada.toml";
 
 export type SpecTitleStyle = "N" | "N/M";
 
 export interface ArmadaConfig {
+  jobs: Record<string, JobConfig>;
   project: {
     name: string;
     /** Stable identifier of the project, lowercase letters, digits and dashes. */
@@ -487,6 +497,36 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(herdrProfiles).some((profile) => profile.when)
   )
     problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
+  const jobs: Record<string, JobConfig> = {};
+  const jobsRaw = raw.jobs ?? {};
+  if (!isTable(jobsRaw)) problems.push('"jobs" must be a table of job definitions');
+  else
+    for (const [name, j] of Object.entries(jobsRaw)) {
+      const path = `jobs.${name}`;
+      if (!JOB_NAME.test(name) || name === "__proto__") {
+        problems.push(`"${path}" is not a usable job name`);
+        continue;
+      }
+      if (!isTable(j)) {
+        problems.push(`"${path}" must be a table`);
+        continue;
+      }
+      known.push([path, j, ["start", "status", "stop", "silence_minutes", "max_hours"]]);
+      const positive = (key: string, fallback: number | null): number | null => {
+        const v = j[key];
+        if (v === undefined) return fallback;
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+        problems.push(`"${path}.${key}" must be a positive number`);
+        return fallback;
+      };
+      jobs[name] = {
+        start: str(j, path, "start"),
+        status: j.status === undefined ? null : str(j, path, "status"),
+        stop: str(j, path, "stop"),
+        silenceMinutes: positive("silence_minutes", 15) ?? 15,
+        maxHours: positive("max_hours", null),
+      };
+    }
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
 
@@ -608,6 +648,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   }
 
   const config: ArmadaConfig = {
+    jobs,
     project: {
       name: str(project, "project", "name"),
       slug: str(project, "project", "slug", { pattern: SLUG, hint: "lowercase letters, digits and dashes" }),
@@ -703,6 +744,16 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # [[policy.validation]]
 # when = "a design ticket: a mockup, a visual direction or the look of a new screen"
 # then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
+
+# Long runs go through \`armada job\` on a runner that survives the terminal.
+# Commands run with sh -c here, with ARMADA_JOB_ID, ARMADA_JOB_REF,
+# ARMADA_TICKET and ARMADA_PROJECT set. No provider is required.
+# [jobs.eval]
+# start = "./scripts/start-eval.sh"   # returns within 2 min; last stdout line is the runner reference
+# status = "./scripts/job-status.sh" # last line: running|succeeded|failed [progress, e.g. 37/120 cases]
+# stop = "./scripts/stop-eval.sh"     # exit 0 means stopped
+# silence_minutes = 15
+# max_hours = 12                     # overdue, never auto-stopped
 
 [brief]
 # extra = "docs/worker-conventions.md"  # a file every worker brief carries under "Project conventions"

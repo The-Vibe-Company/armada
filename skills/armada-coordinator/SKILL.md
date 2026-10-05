@@ -9,6 +9,10 @@ The coordinator turns the owner's intent into merged pull requests. Each worker 
 
 **Use the worker's runtime interface.** Herdr and Conductor workers use integrated commands; Claude Code subagents use the `armada-runtime-claude-code` guide. `armada status` and `armada inbox` read both persistent runtimes' live state. `armada stop <ticket>` archives a Conductor workspace after release or merge and safely removes a clean, pushed herdr worktree. Follow `armada-runtime-conductor` for Conductor launch and message delivery until those integrated commands ship; `armada-runtime-herdr` already uses integrated launch and answer. Use the matching guide when a runtime operation reports a limitation.
 
+## Long jobs
+
+- **Long runs go through `armada job`, never in your session.** Declare the project's runner commands in `[jobs.<name>]`, dispatch with `armada job start <name> --ticket <id>`, then use `armada job status` for fresh observations or `armada job list` for stored progress. The runner must survive terminal/session restarts; Armada only tracks it. Workers only access their own ticket's jobs. Stop deliberately with `armada job stop <id>`; a Done ticket or an overdue job is never auto-stopped.
+
 ## Take over a run
 
 A coordinator may start cold, on a laptop or in a fresh cloud session, with nothing but the repository and a sign-in to Armada. Everything it needs is in the tracker, GitHub and Armada; the Armada [runbook](https://github.com/The-Vibe-Company/armada/blob/main/docs/runbook.md) says how to start one.

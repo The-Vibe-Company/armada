@@ -220,3 +220,39 @@ Without a coordination ticket, skip step 1: the next coordinator resumes from `a
 - A fact the coordinator could not find in the repository, the tracker or Armada: add it to the skill or to this runbook in a pull request, so the next coordinator finds it.
 
 Local worker controls follow the [`armada-runtime-herdr`](../skills/armada-runtime-herdr/SKILL.md) guide. `armada status`, `inbox` and each `watch` poll read herdr state and store it on Armada; the dashboard shows it beside the last report without contacting the local machine. `armada answer` delivers herdr answers before recording them, including a harness approval answered by ticket. After merge or release, `armada stop <ticket>` verifies the saved worktree, refreshes its remote upstream, refuses dirty or unpushed work, and removes only the clean checkout while retaining the branch. Worker reports, questions and heartbeats also self-report their phase to herdr, with nonfatal warnings on failure.
+
+## Track a long job on a surviving runner
+
+Long runs go through `armada job`, never in a coordinator or worker terminal session. The project owns the runner (a CI run, VM, cloud workspace or another service) and its secrets. Armada stores its reference and last observation in Postgres; the server never executes project code. A new machine signed in to the same project can read the same jobs.
+
+Declare commands in `armada.toml`:
+
+```toml
+[jobs.eval]
+start = "./scripts/start-eval.sh"
+status = "./scripts/job-status.sh"
+stop = "./scripts/stop-eval.sh"
+silence_minutes = 15
+max_hours = 12
+```
+
+The CLI executes each with `sh -c` in the directory containing `armada.toml`. It sets `ARMADA_JOB_ID` (the durable job id), `ARMADA_JOB_REF` (empty for start), `ARMADA_TICKET` and `ARMADA_PROJECT`. Commands inherit the terminal environment. Use `armada run -- armada job ...` when the runner command needs the project's secrets.
+
+The start command must dispatch to a runner that survives the terminal and return within two minutes. Its last nonblank stdout line is the runner's reference (run id or URL); a nonzero exit means not started. Armada reserves a `starting` record first so the command can attach the job id to its run. A successful dispatch becomes `running`; a failed dispatch becomes `failed`. A timeout or execution failure whose outcome is unknown becomes `lost`: inspect the runner before dispatching again. A command whose result cannot be recorded prints the job id and runner reference for recovery; it is never retried automatically.
+
+The status command's last nonblank line is `running`, `succeeded` or `failed`, optionally followed by progress text. `running 37/120 cases` produces an approximate completion time from the elapsed time and fraction. Unparseable output or a failed poll leaves the last observation intact. Omit `status` for a runner that will push its own observations (the push/alert command is a separate feature). Stop's exit code zero means stopped. Status and stop are also bounded to two minutes. The CLI captures output, displays only the runner reference and parsed progress, and never prints command stderr.
+
+```sh
+armada job start eval --ticket ABC-12
+armada job status            # poll every open job on this project
+armada job status 42         # poll one job; completed records are read only
+armada job list              # read every stored job; never run a command
+armada job list --ticket ABC-12
+armada job stop 42
+# After an observation outage, record the outcome without running a shell command:
+armada job recover 42 --ref runner-123 --state running
+```
+
+Workers default to their claimed ticket and can start, observe and read only that ticket's jobs. Other terminals use their organization sign-in. All commands accept `--json`; list/status output is an array of job records. `armada status` reads open jobs without running status commands and includes their latest progress, runner reference and ETA. An open job past `max_hours` is overdue, and a job whose Linear ticket is Done carries a note. Neither condition automatically stops it. `silence_minutes` configures the threshold for the subsequent job-alert feature; this feature does not send alerts.
+
+A successful start with no stdout reference is still recorded and shown with `no runner reference`; status and stop refuse to contact it. Find the existing run on the runner, then attach its reference with `armada job recover <id> --ref <reference>`. Recovery runs no shell command, keeps existing references fixed, and cannot change a terminal job's outcome. Use `--state failed`, `--state lost` or `--state stopped` to finalize a starting record after an observation outage when that outcome is known. Repair the runner's start command before dispatching another job. Closing a terminal never stops an already-dispatched runner.

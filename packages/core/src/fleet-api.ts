@@ -6,7 +6,9 @@
 // own ticket. Every request names the whole project (slug, name, repository,
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
+
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
@@ -55,7 +57,17 @@ import {
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
-export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat", "validate"] as const;
+export const WORKER_FLEET_OPS = [
+  "claim",
+  "report",
+  "ask",
+  "release",
+  "heartbeat",
+  "validate",
+  "job/start",
+  "job/observe",
+  "job/list",
+] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
@@ -107,6 +119,7 @@ const SHA = /^[0-9a-f]{7,64}$/;
 
 /** A request the server will not run as sent. */
 class Invalid extends Error {}
+class JobScopeError extends Error {}
 
 type Body = Record<string, unknown>;
 
@@ -251,7 +264,7 @@ export async function serveFleet(
   const at = deps.now();
   try {
     if (caller.kind === "worker") {
-      const ticket = isWorkerFleetOp(op) ? ticketOf(b) : null;
+      const ticket = op === "job/list" && b.ticket == null ? caller.ticket : isWorkerFleetOp(op) ? ticketOf(b) : null;
       if (ticket !== caller.ticket)
         return refuse(
           403,
@@ -261,6 +274,50 @@ export async function serveFleet(
     }
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "job/start": {
+          const name = text(b, "name", 64);
+          if (!JOB_NAME.test(name) || name === "__proto__") throw new Invalid("name must be a configured job name");
+          return store.startJob({
+            project: slug,
+            ticket: ticketOf(b),
+            name,
+            startedBy: caller.kind === "worker" ? (caller.sessionId ?? caller.ticket) : (caller.author ?? null),
+            at,
+          });
+        }
+        case "job/list":
+          return store.listJobs(slug, {
+            ...(b.ticket == null
+              ? caller.kind === "worker"
+                ? { ticket: caller.ticket }
+                : {}
+              : { ticket: ticketOf(b) }),
+            ...(b.open === undefined ? {} : { open: bool(b, "open") }),
+            ...(b.id === undefined ? {} : { id: idOf(b, "id") }),
+          });
+        case "job/observe": {
+          const id = idOf(b, "id");
+          const ticket = ticketOf(b);
+          const job = await store.getJob(slug, id);
+          if (!job || job.ticket !== ticket) throw new JobScopeError();
+          if (!JOB_STATES.includes(b.state as JobState) || b.state === "starting")
+            throw new Invalid("unknown job observation state");
+          const ref = b.ref === undefined ? undefined : optText(b, "ref", JOB_REF_MAX);
+          if (ref !== undefined && job.ref !== null && ref !== job.ref)
+            throw new Invalid("runner reference is already recorded and cannot change");
+          const eta = optText(b, "eta", 40);
+          if (eta !== null && !Number.isFinite(Date.parse(eta))) throw new Invalid("eta must be a timestamp");
+          return store.observeJob({
+            project: slug,
+            id,
+            ticket,
+            state: b.state as Exclude<JobState, "starting">,
+            ...(ref === undefined ? {} : { ref }),
+            progress: optText(b, "progress", JOB_PROGRESS_MAX),
+            eta: eta === null ? null : new Date(eta).toISOString(),
+            at,
+          });
+        }
         case "claim":
           return recordClaim(
             store,
@@ -511,6 +568,7 @@ export async function serveFleet(
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
+    if (err instanceof JobScopeError) return refuse(403, "job is not on this ticket and project", "armada job list");
     if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
     if (err instanceof Invalid)
       return refuse(400, `fleet ${op}: ${err.message}`, "update the CLI: npm install -g @the-vibe-company/armada");
@@ -621,6 +679,9 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
   const call = async <T>(op: FleetOp, input: object): Promise<T> =>
     (await o.api.fleet(o.signIn, op, { project: o.project, input }, CALL_TIMEOUT_MS)) as T;
   return {
+    startJob: (input) => call<Job>("job/start", input),
+    listJobs: (query) => call<Job[]>("job/list", query),
+    observeJob: (input) => call<Job | null>("job/observe", input),
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),

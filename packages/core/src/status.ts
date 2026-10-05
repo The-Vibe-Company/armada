@@ -4,6 +4,7 @@ import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
 import { freshEvent, frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
+import { type Job, type JobSummary, jobOverdue } from "./jobs.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
   followedLaunches,
@@ -112,6 +113,8 @@ export interface NotStartedLaunch extends PendingLaunch {
 }
 
 export interface StatusReport {
+  /** Open long jobs from Armada; absent when their optional live read was unavailable. */
+  jobs?: JobSummary[];
   progress?: { done: number; total: number };
   schemaVersion: typeof STATUS_SCHEMA_VERSION;
   generatedAt: string;
@@ -142,6 +145,7 @@ export interface StatusReport {
 }
 
 export interface BuildStatusInput {
+  jobs?: Job[];
   config: ArmadaConfig;
   program: ProgramData;
   forge: ForgeData | null;
@@ -171,6 +175,7 @@ export function buildStatus({
   lastEvents,
   heartbeats,
   live,
+  jobs,
   launches = [],
   extraWarnings = [],
   now,
@@ -213,6 +218,15 @@ export function buildStatus({
   });
 
   return {
+    ...(jobs
+      ? {
+          jobs: jobs.map((job) => ({
+            ...job,
+            overdue: jobOverdue(job, config.jobs?.[job.name]?.maxHours, now),
+            ticketDone: issues.some((i) => i.id === job.ticket && i.statusType === "completed"),
+          })),
+        }
+      : {}),
     schemaVersion: STATUS_SCHEMA_VERSION,
     progress: {
       done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
@@ -352,6 +366,7 @@ const byMergeTime = (a: PullRequest, b: PullRequest) =>
   (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
 export interface LoadStatusOptions {
+  jobs?: () => Promise<Job[]>;
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
@@ -466,7 +481,13 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents] =
+  const jobsP: Promise<{ jobs?: Job[]; warning?: string }> = opts.jobs
+    ? opts.jobs().then(
+        (jobs) => ({ jobs }),
+        (err) => ({ warning: `Armada's jobs could not be read (${err instanceof Error ? err.message : String(err)})` }),
+      )
+    : Promise.resolve({});
+  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents, jobs] =
     await Promise.all([
       readStatusSources(config, opts),
       eventsP,
@@ -474,6 +495,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
       opts.heartbeats?.().catch(() => undefined),
       opts.runtimeHandles?.().catch(() => undefined),
       opts.latestEvents?.().catch(() => undefined),
+      jobsP,
     ]);
   return buildStatus({
     config,
@@ -492,7 +514,8 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }
       : {}),
     ...(launches.launches ? { launches: launches.launches } : {}),
-    extraWarnings: [events.warning, launches.warning].filter((w): w is string => !!w),
+    ...(jobs.jobs ? { jobs: jobs.jobs } : {}),
+    extraWarnings: [events.warning, launches.warning, jobs.warning].filter((w): w is string => !!w),
     now: now(),
   });
 }

@@ -8,6 +8,7 @@ import { type Io, missingKey } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { recordPresence } from "./presence.ts";
 import { renderStatus } from "./render.ts";
+import { liveFleet } from "./worker.ts";
 
 export interface ProjectStatus {
   slug: string;
@@ -53,7 +54,9 @@ export async function statusAll(io: Io, json: boolean): Promise<number> {
             ? (await api.credentials(signIn, { project: p.slug })).linear?.apiKey
             : undefined;
         await recordPresence(io, config, credentials);
+        const { fleet } = liveFleet(io, config, credentials);
         const report = await loadStatus(config, {
+          ...(fleet ? { jobs: () => fleet.listJobs({ open: true }) } : {}),
           linearApiKey: own ?? linearApiKey,
           githubToken: credentials.githubToken,
           ...(io.fetch ? { fetch: io.fetch } : {}),

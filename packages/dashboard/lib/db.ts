@@ -737,6 +737,22 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 24,
     statements: ['ALTER TABLE "armada_worker" ADD COLUMN IF NOT EXISTS "runtime" text'],
   },
+  {
+    // THE-1125: durable references to jobs dispatched on a project's own runner.
+    version: 25,
+    statements: [
+      `CREATE TABLE jobs (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug),
+        ticket text NOT NULL, name text NOT NULL, ref text,
+        state text NOT NULL CHECK (state IN ('starting','running','succeeded','failed','stopped','lost')),
+        progress text, eta timestamptz, started_by text,
+        started_at timestamptz NOT NULL, observed_at timestamptz NOT NULL, finished_at timestamptz
+      )`,
+      "CREATE INDEX jobs_open_idx ON jobs (project, state, id DESC) WHERE state IN ('starting','running')",
+      "CREATE INDEX jobs_ticket_idx ON jobs (project, ticket, id DESC)",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
