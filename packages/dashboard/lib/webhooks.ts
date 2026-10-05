@@ -35,7 +35,7 @@ export const MAX_BODY_BYTES = 1_000_000;
 export const LINEAR_MAX_AGE_MS = 60_000;
 
 /** The GitHub events that change what the Fleet view shows of a pull request. */
-export const GITHUB_EVENTS = ["pull_request", "check_suite", "check_run", "status"] as const;
+export const GITHUB_EVENTS = ["pull_request", "check_suite", "check_run", "status", "push"] as const;
 
 export interface WebhookDeps {
   secrets: WebhookSecrets;
