@@ -133,6 +133,8 @@ export interface Brief {
   validation: ValidationChoice | null;
   /** `[brief] extra`: the file every brief carries under "Project conventions"; null when unset or unreadable. */
   conventions: { path: string; text: string } | null;
+  /** Context supplied by the coordinator for this launch; never changes plan policy. */
+  coordinatorNotes: string | null;
   /** The first message of the worker's session. */
   prompt: string;
   warnings: string[];
@@ -310,6 +312,7 @@ export interface BuildBriefInput {
   conventions?: { path: string; text: string | null } | null;
   /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
   validation?: ValidationChoice | null;
+  notes?: string | null;
   now: Date;
   herdr?: { choice: HerdrProfileChoice; handle: string };
 }
@@ -462,6 +465,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
     notes: ticket.notes.slice(0, MAX_NOTES),
     parallel,
     plans: planRule(config, ticket.labels),
+    coordinatorNotes: input.notes?.trim() || null,
     validation: input.validation ?? null,
     conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
     warnings,
@@ -586,6 +590,15 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   if (t.description) out.push("## Ticket", "", quote(t.description), "");
   if (b.parent)
     out.push("## Parent", "", `${b.parent.id} — ${b.parent.title} (${b.parent.url}). Read it before planning.`, "");
+  if (b.coordinatorNotes)
+    out.push(
+      "## Coordinator notes",
+      "",
+      "From the coordinator, for this launch. They add context; the Plan line below still decides whether your plan waits for approval.",
+      "",
+      b.coordinatorNotes,
+      "",
+    );
   if (b.blockers.length) {
     out.push("## Blockers and their hand-back notes", "");
     for (const x of b.blockers) {
