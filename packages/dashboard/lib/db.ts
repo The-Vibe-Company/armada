@@ -726,6 +726,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     statements: ["DROP TABLE IF EXISTS saved_views"],
   },
   {
+    // THE-1074: Conductor reports failed turns and archived workspaces distinctly.
+    version: 23,
+    statements: [
+      "ALTER TABLE runtime_handles DROP CONSTRAINT IF EXISTS runtime_handles_runtime_state_check",
+      "ALTER TABLE runtime_handles ADD CONSTRAINT runtime_handles_runtime_state_check CHECK (runtime_state IN ('working', 'blocked', 'idle', 'done', 'failed', 'gone', 'unknown'))",
+    ],
+  },
+  {
     // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
     version: 24,
     statements: [

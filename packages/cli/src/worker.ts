@@ -35,7 +35,7 @@ import { apiOf } from "./api.ts";
 import { reportHerdr } from "./herdr.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
 import { sessionHandle } from "./login.ts";
-import { observeHerdr } from "./runtime.ts";
+import { observeRuntimes } from "./runtime.ts";
 
 /**
  * The project's live data through Armada, signed in as this terminal: a
@@ -87,7 +87,7 @@ export function statusLive(
         heartbeats: () => fleet.heartbeatTimes(),
         launches: () => fleet.pendingLaunches(),
         holds: () => fleet.holds(),
-        runtimeHandles: () => observeHerdr(io, fleet),
+        runtimeHandles: () => observeRuntimes(io, fleet, config),
       }
     : undefined;
 }
