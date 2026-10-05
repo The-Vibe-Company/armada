@@ -13,6 +13,7 @@ import {
   type CredentialStore,
   type Credentials,
   ensurePersonalConfig,
+  type KeysFallback,
   type KeysPurpose,
   type MachinePaths,
   machinePaths,
@@ -20,12 +21,14 @@ import {
   type PersonalConfig,
   RETIRED_VARIABLES,
   readCredentialStore,
+  readKeysFallback,
   readPersonalConfig,
   resolveCredentials,
   STORED_KEYS,
   storedWorkers,
   storeIsExposed,
   updateCredentialStore,
+  writeKeysFallback,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type Io, UsageError } from "./io.ts";
@@ -35,22 +38,32 @@ export interface Machine {
   paths: MachinePaths | null;
   store: CredentialStore | null;
   personal: { exists: boolean; config: PersonalConfig } | null;
+  keysFallback: KeysFallback | null;
 }
 
 export async function loadMachine(io: Io): Promise<Machine> {
   const paths = machinePaths(io.env);
-  if (!paths) return { paths, store: null, personal: null };
-  const [store, personal] = await Promise.all([
+  if (!paths) return { paths, store: null, personal: null, keysFallback: null };
+  const [store, personal, keysFallback] = await Promise.all([
     readCredentialStore(paths.credentials),
     readPersonalConfig(paths.config),
+    readKeysFallback(paths),
   ]);
-  return { paths, store, personal };
+  return { paths, store, personal, keysFallback };
 }
 
 const _hhmm = (iso: string) => `${iso.slice(0, 16).replace("T", " ")} UTC`;
 
 /** Keys Armada could give that the environment does not set: only then is Armada asked. */
 const wantsArmada = (env: Io["env"]) => !env.LINEAR_API_KEY?.trim();
+
+const KEYS_RETRY_MS = 5 * 60_000;
+const KEYS_WARNING_MS = 60 * 60_000;
+
+async function rememberKeysFallback(machine: Machine, fallback: KeysFallback | null): Promise<void> {
+  machine.keysFallback = fallback;
+  if (machine.paths) await writeKeysFallback(machine.paths, fallback).catch(() => {});
+}
 
 /**
  * The organization's Linear key from Armada, kept in memory only. Armada
@@ -61,9 +74,19 @@ const wantsArmada = (env: Io["env"]) => !env.LINEAR_API_KEY?.trim();
  * ticket stops here, whatever keys the machine has, and so does a CLI older
  * than Armada expects, with the one line that upgrades it.
  */
-async function fromArmada(io: Io, credentials: Credentials, purpose: KeysPurpose | null): Promise<ArmadaKeys | null> {
+async function fromArmada(
+  io: Io,
+  machine: Machine,
+  credentials: Credentials,
+  purpose: KeysPurpose | null,
+): Promise<ArmadaKeys | null> {
   const signIn = credentials.armadaSignIn;
   if (!signIn) return null;
+  const canRemember = signIn.kind !== "worker" && !!credentials.linearApiKey && machine.paths !== null;
+  const now = (io.now?.() ?? new Date()).getTime();
+  const previous = machine.keysFallback;
+  const age = previous ? now - Date.parse(previous.failedAt) : null;
+  if (canRemember && age !== null && age >= 0 && age < KEYS_RETRY_MS) return null;
   let answer: ArmadaKeysAnswer;
   try {
     answer = await apiOf(io, credentials.armadaApi.url).credentials(signIn, purpose);
@@ -72,11 +95,27 @@ async function fromArmada(io: Io, credentials: Credentials, purpose: KeysPurpose
     if ((err.signedOut || err.status === 403) && signIn.kind === "worker") throw err;
     // Older than the server expects: its one upgrade line, rather than a run on a reading it cannot trust.
     if (err.upgrade) throw err;
-    if (err.status === 503) return null;
+    if (err.status === 503 && (signIn.kind === "worker" || err.message.includes(": this Armada keeps no keys")))
+      return null;
     if (!credentials.linearApiKey) throw err;
+    const retryable = err.status === null || err.status === 401 || err.status === 429 || err.status >= 500;
+    if (canRemember && retryable) {
+      const warningAge = previous ? now - Date.parse(previous.warnedAt) : null;
+      const warn = warningAge === null || warningAge < 0 || warningAge >= KEYS_WARNING_MS;
+      const at = new Date(now).toISOString();
+      const reason = `${err.message}${err.next ? `. Next: ${err.next}` : ""}`;
+      await rememberKeysFallback(machine, { reason, failedAt: at, warnedAt: warn ? at : (previous?.warnedAt ?? at) });
+      if (warn)
+        io.stderr(
+          `! Armada gave no keys (${err.message}); using this machine's key. Said once an hour; armada auth status shows the source.${err.next ? ` Next: ${err.next}` : ""}\n`,
+        );
+      return null;
+    }
+    if (err.status === 503) return null; // Without a machine store, retain the existing behavior.
     io.stderr(`! Armada gave no keys (${err.message}); using this machine's${err.next ? `. Next: ${err.next}` : ""}\n`);
     return null;
   }
+  if (signIn.kind !== "worker") await rememberKeysFallback(machine, null);
   for (const w of answer.warnings) io.stderr(`! Armada: ${w}\n`);
   return {
     linearApiKey: answer.linear
@@ -154,15 +193,15 @@ export async function loadCredentials(
         `cd into the repository of ${signIn.project}`,
       );
     // Always asked, even when the environment has every key: the session is renewed, and checked.
-    const keys = await fromArmada(io, local, purpose);
+    const keys = await fromArmada(io, machine, local, purpose);
     return { machine, credentials: keys ? resolveCredentials({ ...sources, armada: keys }) : local };
   }
   if (!armada || !signIn || !wantsArmada(io.env)) return { machine, credentials: local };
-  const keys = await fromArmada(io, local, purpose);
+  const keys = await fromArmada(io, machine, local, purpose);
   return { machine, credentials: keys ? resolveCredentials({ ...sources, armada: keys }) : local };
 }
 
-const describeSource = (s: CredentialSource): string => {
+export const describeSource = (s: CredentialSource): string => {
   switch (s.kind) {
     case "env":
       return `environment (${s.variable})`;
@@ -248,6 +287,7 @@ export async function authLogin(io: Io): Promise<number> {
 
 export interface AuthStatus {
   schemaVersion: 1;
+  armadaKeys: { lastFailure: string | null; lastFailureAt: string | null };
   keys: { variable: string; label: string; present: boolean; source: CredentialSource | null }[];
   credentialsFile: { path: string; exists: boolean; mode: string | null } | null;
   personalConfig: { path: string; exists: boolean } | null;
@@ -269,6 +309,10 @@ export function buildAuthStatus(machine: Machine, credentials: Credentials): Aut
   ].map((k) => ({ ...k, present: k.source !== null }));
   return {
     schemaVersion: 1,
+    armadaKeys: {
+      lastFailure: machine.keysFallback?.reason ?? null,
+      lastFailureAt: machine.keysFallback?.failedAt ?? null,
+    },
     keys,
     credentialsFile: machine.store
       ? {
@@ -312,6 +356,8 @@ export function renderAuthStatus(status: AuthStatus): string {
     lines.push(
       `Personal config   ${status.personalConfig.path}${status.personalConfig.exists ? "" : " (not created yet)"}`,
     );
+  if (status.armadaKeys.lastFailure)
+    lines.push(`Last keys failure  ${status.armadaKeys.lastFailureAt}: ${status.armadaKeys.lastFailure}`);
   for (const w of status.warnings) lines.push(`! ${w}`);
   const { signIn } = status;
   const api = signIn.api.source.kind === "default" ? "built in" : describeSource(signIn.api.source);
