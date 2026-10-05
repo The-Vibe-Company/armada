@@ -27,6 +27,7 @@ import {
   type MergeContext,
   type MergeForge,
   type MergeOutcome,
+  type MergePull,
   mergePullRequest,
   parsePullRequestUrl,
   readStatusSources,
@@ -212,7 +213,17 @@ function render(o: MergeOutcome): string {
   return `${out.join("\n")}\n`;
 }
 
-export async function merge(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs, configPath: string) {
+export async function merge(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  a: WorkerArgs,
+  configPath: string,
+  guards?: {
+    readPull?: (pull: MergePull) => void;
+    beforeMerge?: (number: number, sha: string) => Promise<void>;
+  },
+) {
   const [arg, ...extra] = a.rest;
   if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const number = prNumber(arg, config.github.repository);
@@ -246,10 +257,17 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     linear: io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts),
     forge: {
       mainHealth: () => fetchMainHealth({ ...gh, requiredChecks: config.gates.requiredChecks }),
-      readPull: (n) => fetchMergePull({ ...gh, number: n }),
+      readPull: async (n) => {
+        const pull = await fetchMergePull({ ...gh, number: n });
+        if (pull) guards?.readPull?.(pull);
+        return pull;
+      },
       compare: (base, head) => fetchComparison({ ...gh, base, head }),
       diff: (n) => fetchPullDiff({ ...gh, number: n }),
-      merge: ghMerge(exec, repoDir, config.github.repository),
+      merge: async (number, sha) => {
+        await guards?.beforeMerge?.(number, sha);
+        return ghMerge(exec, repoDir, config.github.repository)(number, sha);
+      },
       comment: async (number, body) => {
         const result = await ghAttempt(exec, repoDir, [
           "pr",
