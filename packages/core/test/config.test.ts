@@ -220,6 +220,24 @@ describe("armada.toml", () => {
     });
   });
 
+  test("native Conductor project and base overrides are optional and reject invalid ids or branches", () => {
+    expect(
+      parseConfig(`${DEMO_TOML}\n[conductor]\nproject_id = "project-1"\nbase_branch = "release/widget"`).conductor,
+    ).toMatchObject({ projectId: "project-1", baseBranch: "release/widget" });
+    for (const branch of ["release/.hidden", "topic.lock/child", "/topic", ".hidden"]) {
+      expect(
+        problemsOf(`${DEMO_TOML}\n[conductor]\nbase_branch = "${branch}"`).some((p) =>
+          p.includes("conductor.base_branch"),
+        ),
+      ).toBe(true);
+    }
+    for (const key of ["project_id", "base_branch"]) {
+      expect(
+        problemsOf(`${DEMO_TOML}\n[conductor]\n${key} = "-invalid name"`).some((p) => p.includes(`conductor.${key}`)),
+      ).toBe(true);
+    }
+  });
+
   test("Conductor profiles need an agent, a model and an effort, and the default must exist", () => {
     const text = DEMO_TOML.concat(
       '\n[conductor]\ndefault_profile = "fast"\n[conductor.profiles.opus]\nagent = "claude"\nmodel = "opus-5-5-1m"\nfast_mode = "yes"\nmodle = "x"\n',
