@@ -340,6 +340,65 @@ describe("the end of a worker", () => {
     expect((await exchange(unused)).body.error).toBe("this launch was revoked before its token was used");
   });
 
+  test("a coordinator release ends old launches but spares a newer replacement and its claim", async () => {
+    now = at(2900);
+    const old = String((await exchange(await launch("ABC-39"))).body.token);
+    const project = { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "ABC-1" };
+    const claim = {
+      ticket: "ABC-39",
+      runtime: "Conductor",
+      handle: "ws/old",
+      branch: null,
+      phase: "implementing",
+      resuming: false,
+      profile: null,
+    };
+    const call = (op: string, input: unknown, token: string) =>
+      cli("POST", `fleet/${op}`, { token, body: { project, input } });
+    expect((await call("claim", claim, old)).status).toBe(200);
+    const claimedAt = now.toISOString();
+    now = at(2901);
+    const replacement = String((await exchange(await launch(claim.ticket))).body.token);
+    expect((await call("claim", { ...claim, handle: "ws/new" }, replacement)).status).toBe(200);
+    const release = { ticket: claim.ticket, reason: "old worker", handle: claim.handle, claimedAt };
+    expect((await call("release", release, old)).body.result).toEqual({ released: false });
+    expect((await call("release", release, ownerToken)).body.result).toEqual({ released: false });
+    expect(
+      (
+        await cli("POST", "workers/end", {
+          token: ownerToken,
+          body: { project: "widgets", ticket: claim.ticket, reason: "released", claimedAt: "bad" },
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await cli("POST", "workers/end", {
+          token: ownerToken,
+          body: { project: "widgets", ticket: claim.ticket, reason: "released", claimedAt },
+        })
+      ).body.ended,
+    ).toBe(1);
+    expect((await keysFor(old, { command: "report", project: "widgets", ticket: claim.ticket })).status).toBe(401);
+    expect(
+      (
+        await call(
+          "report",
+          {
+            ticket: claim.ticket,
+            phase: "implementing",
+            previous: "implementing",
+            summary: "working",
+            message: "working",
+          },
+          replacement,
+        )
+      ).status,
+    ).toBe(200);
+    expect((await call("release", { ticket: claim.ticket, reason: "done" }, replacement)).body.result).toEqual({
+      released: true,
+    });
+  });
   test("a release ends the worker's session; a merge ends every session of the ticket", async () => {
     now = at(3000);
     const released = String((await exchange(await launch("ABC-40"))).body.token);

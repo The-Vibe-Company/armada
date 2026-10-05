@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import type { Fetch } from "@armada/core";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type Fetch, formatWorkerSession } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
   ARMADA_URL,
@@ -14,6 +17,11 @@ import {
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 import { detectCoordinator } from "../src/presence.ts";
+
+const dirs: string[] = [];
+afterEach(async () => {
+  for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
+});
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const KEY = "armada_key_CANARY_fleet";
@@ -58,6 +66,67 @@ function worker(
 }
 
 describe("armada claim, report and release", () => {
+  test("coordinator release pins its claim and spares a worker launched afterward", async () => {
+    const clock = fakeClock(NOW);
+    const w = worker(SIGNED_IN, { clock });
+    w.io.now = clock.now;
+    w.linear.add("DEMO-7");
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-old/session"], w.io)).toBe(0);
+    const claimTime = NOW.toISOString();
+    // A replacement launch is already signed in but has not claimed yet.
+    w.armada.workers.set("armada_worker_CANARY_old", {
+      project: "widgets",
+      ticket: "DEMO-7",
+      id: "wk-old",
+      createdAt: claimTime,
+      ended: null,
+    });
+    clock.advance(60_000);
+    w.armada.workers.set("armada_worker_CANARY_new", {
+      project: "widgets",
+      ticket: "DEMO-7",
+      id: "wk-new",
+      createdAt: clock.now().toISOString(),
+      ended: null,
+    });
+    expect(await run(["release", "--ticket", "DEMO-7", "--reason", "replace old worker"], w.io)).toBe(0);
+    expect(w.armada.calls.find((c) => c.path === "fleet/release")?.body).toMatchObject({
+      input: { handle: "ws-old/session", claimedAt: claimTime },
+    });
+    expect(w.armada.calls.find((c) => c.path === "workers/end")?.body).toMatchObject({ claimedAt: claimTime });
+    expect(w.armada.workers.get("armada_worker_CANARY_old")?.ended).toBe("the ticket was released");
+    expect(w.armada.workers.get("armada_worker_CANARY_new")?.ended).toBeNull();
+    const home = await mkdtemp(join(tmpdir(), "armada-release-"));
+    dirs.push(home);
+    await mkdir(join(home, "armada"));
+    await writeFile(
+      join(home, "armada", "credentials"),
+      `ARMADA_WORKER_SESSION_DEMO_7=${formatWorkerSession({ api: ARMADA_URL, token: "armada_worker_CANARY_new", ticket: "DEMO-7", project: "widgets", organization: "org-1", id: "wk-new" })}\n`,
+    );
+    const replacement = {
+      ...w.io,
+      env: {
+        LINEAR_API_KEY: "k",
+        ARMADA_API_URL: ARMADA_URL,
+        XDG_CONFIG_HOME: home,
+        CONDUCTOR_WORKSPACE_ID: "ws-new",
+        CONDUCTOR_SESSION_ID: "session",
+      },
+    };
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-new/session"], replacement)).toBe(0);
+    const before = w.linear.writes.length;
+    const old = {
+      ...w.io,
+      env: { LINEAR_API_KEY: "k", CONDUCTOR_WORKSPACE_ID: "ws-old", CONDUCTOR_SESSION_ID: "session" },
+    };
+    expect(await run(["release", "--reason", "late release"], old)).toBe(1);
+    expect(w.err()).toContain("you were replaced; stop here");
+    expect(w.linear.writes.length).toBe(before);
+    expect(await run(["report", "implementing", "--message", "replacement working"], replacement)).toBe(0);
+    expect((await w.store.getRuntimeHandle("widgets", "DEMO-7"))?.handle).toBe("ws-new/session");
+    expect((await w.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+  });
+
   test("--stage reaches shipping events and refuses invalid phase or value", async () => {
     const w = worker(SIGNED_IN);
     w.linear.add("DEMO-7", { labels: [{ id: "phase-implementing", name: "implementing", group: "Agent phase" }] });
@@ -136,6 +205,7 @@ describe("armada claim, report and release", () => {
     expect(fleet.map((c) => [c.path, c.apiKey])).toEqual([
       ["fleet/claim", KEY],
       ["fleet/report", KEY],
+      ["fleet/runtime/handle", KEY],
       ["fleet/release", KEY],
     ]);
   });

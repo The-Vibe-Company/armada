@@ -92,6 +92,18 @@ export interface RuntimeHandle {
   workerSessionId?: string | null;
 }
 
+/** Optional identity of the claim being released; workers also carry their server session id. */
+export interface ReleaseGuard {
+  handle?: string | null;
+  claimedAt?: string | null;
+  workerSessionId?: string | null;
+}
+
+export interface ReleaseRecord extends ReleaseGuard {
+  ticket: string;
+  reason: string;
+}
+
 export interface HeartbeatRecord {
   ticket: string;
   handle: string;
@@ -286,7 +298,7 @@ export interface FleetStore {
     at: Date;
   }): Promise<void>;
   /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
-  releaseRuntimeHandle(project: string, ticket: string, at: Date): Promise<void>;
+  releaseRuntimeHandle(project: string, ticket: string, at: Date, guard?: ReleaseGuard): Promise<boolean>;
   /** Sessions still holding a ticket of the project, by ticket id. */
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
@@ -525,16 +537,17 @@ export async function recordQuestion(
 export async function recordRelease(
   store: FleetStore,
   project: string,
-  r: { ticket: string; reason: string },
+  r: ReleaseRecord,
   at: Date,
-): Promise<void> {
+): Promise<{ released: boolean }> {
   const resolution = `ticket released: ${r.reason}`;
-  await store.releaseRuntimeHandle(project, r.ticket, at);
+  if (!(await store.releaseRuntimeHandle(project, r.ticket, at, r))) return { released: false };
   await store.resolvePlans({ project, ticket: r.ticket, resolution, at });
   // No worker is left to take an answer.
   await store.resolveInboxItems({ project, ticket: r.ticket, kind: "question", resolution, at });
   await store.resolveInboxItems({ project, ticket: r.ticket, kind: "answer-request", resolution, at });
   await store.recordEvent({ project, ticket: r.ticket, kind: "release", message: r.reason, at });
+  return { released: true };
 }
 
 export interface AnswerRecord {
@@ -1167,7 +1180,7 @@ export interface Fleet {
   claim(c: ClaimRecord): Promise<InboxItem[]>;
   report(r: ReportRecord): Promise<InboxItem[]>;
   ask(q: { ticket: string; body: string }): Promise<number>;
-  release(r: { ticket: string; reason: string }): Promise<void>;
+  release(r: Omit<ReleaseRecord, "workerSessionId">): Promise<{ released: boolean }>;
   /** The coordinator's inbox; null when its entries are still those of `q.etag` (not modified). */
   inbox(q: InboxQuery): Promise<InboxRead | null>;
   /** One inbox item, open or resolved; null when the project has no such item. */

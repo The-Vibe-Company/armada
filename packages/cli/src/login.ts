@@ -132,7 +132,7 @@ async function loginWithApiKey(io: Io, credentials: Credentials): Promise<number
 }
 
 /** The worker's runtime session when its environment names one (Conductor's), sent with its launch token. */
-function sessionHandle(io: Io): string | null {
+export function sessionHandle(io: Io): string | null {
   const workspace = io.env.CONDUCTOR_WORKSPACE_ID?.trim();
   const session = io.env.CONDUCTOR_SESSION_ID?.trim();
   return workspace && session ? `${workspace}/${session}` : null;

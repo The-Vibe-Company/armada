@@ -1,7 +1,7 @@
 // What a worker does to the tracker: claim a ticket, report a phase, release
-// it. Linear is written first and is the record; the fleet's live data gets
-// the detail afterwards, through Armada, and any failure there becomes a
-// warning, never a failure.
+// it. Linear is the record. Release checks claim identity through Armada
+// before changing Linear; other commands record live detail afterwards.
+// Unavailable live data warns; a known replacement refuses the release.
 import { ArmadaApiError } from "./armada-api.ts";
 import { type ArmadaConfig, routingLabelKey } from "./config.ts";
 import type { MergePull } from "./github.ts";
@@ -31,9 +31,14 @@ export class Refusal extends Error {
 
 export interface WorkerContext {
   config: ArmadaConfig;
+  /** Runtime identity when invoked by a worker, never a coordinator's handle. */
+  workerHandle?: string | null;
+  workerPane?: string | null;
+  workerSession?: boolean;
   linear: LinearWriter;
   /**
-   * The fleet's live data, asked for only once Linear has been written.
+   * The fleet's live data. A release checks its claim before writing Linear;
+   * other worker writes record live data after writing Linear.
    * `fleet` is null when this terminal cannot reach it (not signed in to
    * Armada); `warning` then says why.
    */
@@ -72,6 +77,8 @@ export interface Outcome {
   inbox: InboxItem[] | null;
   /** The ticket read back after the write (claim and report); null when it was not read. */
   state?: TicketState | null;
+  /** Snapshot used to guard a coordinator release and bound session termination. */
+  releasedClaim?: RuntimeHandle | null;
 }
 
 const LIVE_TIMEOUT_MS = 20_000;
@@ -598,7 +605,52 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
       `${ticket.id} is not claimed; there is nothing to release`,
       "armada status, to see which tickets are in flight",
     );
+  const holder = activeClaimComments(ticket.comments)[0]?.claim;
+  let replaced = !!(ctx.workerHandle && holder?.session && holder.session !== ctx.workerHandle);
+  if (ctx.workerPane && holder?.runtime?.toLowerCase() === "herdr" && holder.session) {
+    try {
+      replaced = (JSON.parse(holder.session) as { pane?: string }).pane !== ctx.workerPane;
+    } catch {
+      replaced = true;
+    }
+  }
+  if (replaced)
+    throw new Refusal(
+      `${ticket.id} is held by ${holder?.session} since ${holder?.at}: you were replaced; stop here`,
+      "report it to the coordinator",
+    );
   const warnings = [...ticket.warnings];
+  // Signed-in workers cannot read coordinator runtime operations; the server
+  // supplies their worker session guard. Coordinators pin the claim they saw.
+  const held = ctx.workerSession
+    ? null
+    : await live(ctx, warnings, "read the release claim", (fleet) => fleet.runtimeHandle(ticket.id));
+  // Keep a released snapshot too: Linear may have failed after the guarded
+  // release, and retrying that same claim must still be safe.
+  const releasedClaim = held;
+  if (held && holder?.session && held.handle !== holder.session)
+    throw new Refusal(
+      `${ticket.id} is held by ${held.handle} since ${held.claimedAt}: you were replaced; stop here`,
+      "report it to the coordinator",
+    );
+  if (!ctx.workerSession && !releasedClaim && !warnings.length)
+    warnings.push("Armada: no release claim was read; live release and worker session cleanup were skipped");
+  // No unguarded fallback after an unavailable/missing coordinator snapshot.
+  const released =
+    ctx.workerSession || releasedClaim
+      ? await live(ctx, warnings, "record the release", (fleet) =>
+          fleet.release({
+            ticket: ticket.id,
+            reason: input.reason.trim(),
+            handle: ctx.workerHandle ?? releasedClaim?.handle ?? null,
+            claimedAt: releasedClaim?.claimedAt ?? null,
+          }),
+        )
+      : null;
+  // A known stale claim is a refusal, not an optional-live-data warning.
+  // Check before Linear writes so the replacement's labels survive as well.
+  if (released && !released.released)
+    throw new Refusal(`${ticket.id}: you were replaced; stop here`, "report it to the coordinator");
   const back = ticket.statusType === "started" ? firstState(ticket.states, "unstarted", "backlog") : null;
   await linear.updateTicket(ticket.uuid, {
     ...(back ? { stateId: back.id } : {}),
@@ -606,8 +658,5 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   });
   await linear.comment(ticket.uuid, `Agent status: released — ${input.reason.trim()}`);
   const lines = [`Released ${ticket.id}${back ? `, moved back to ${back.name}` : ""}.`];
-  await live(ctx, warnings, "record the release", (fleet) =>
-    fleet.release({ ticket: ticket.id, reason: input.reason.trim() }),
-  );
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null };
+  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null, releasedClaim };
 }
