@@ -26,6 +26,12 @@ With several workers in flight, main often moves between a green hand-back and i
 
 When none of the required checks ran on the head (a release pull request opened with the workflow's own token gets no CI run), it passes with a note, on GitHub's own state (`UNSTABLE` included, when nothing failed) and the checks that did run, once the head is a minute old; a younger head, or a head this run updated (its update starts CI), is waited for (`--wait`) or refused.
 
+## Default-branch CI
+
+`armada status` and the dashboard read the default branch's last 20 commits. "main red since #N" names the oldest failing merge since the last green commit, with its failing checks and short SHA; a running commit on top adds "a fix is running (#M)". Unchecked commits, including releases, neither start nor end the streak. With no green boundary in the history window, the reading says "red for more than 20 commits" instead of blaming an unproven first merge. A direct commit uses its short SHA when no squash PR number is available.
+
+Configured `[gates] required_checks` decide health; without them, GitHub's rollup does. A green reading clears the warning. Older snapshots have no reading until the next GitHub refresh. `armada merge` includes the red reading as a note only. The shared merge pause and coordinator wake-up are added separately by THE-1104; this reading alone does not block a merge. THE-1102's queue can use the same fresh `mainHealth` adapter.
+
 ## Before
 
 1. The worker has handed back: `Agent phase` is `ready-to-merge` and you have the full 40-character head SHA it reported.

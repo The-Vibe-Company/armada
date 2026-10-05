@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { buildLane, frontier, inFlight, unblockedBy } from "../src/fleet.ts";
+import { buildLane, frontier, inFlight, mainHealth, mainHealthLine, unblockedBy } from "../src/fleet.ts";
 import { buildModel } from "../src/model.ts";
-import type { Comment, Issue } from "../src/types.ts";
+import type { Comment, Issue, MainCommit } from "../src/types.ts";
 import { issue } from "./support.ts";
 
 const program = (...children: Issue[]) =>
@@ -333,4 +333,80 @@ describe("tickets in flight", () => {
     ]);
     expect(lanes.find((l) => l.issue.id === "P-2")?.since).toBe("2026-03-04T09:55:00Z");
   });
+});
+
+test("main health tracks checked commits, required gates and the first red merge", () => {
+  const fail = (message: string): never => {
+    throw new Error(message);
+  };
+  const commit = (n: number, ci: MainCommit["ci"], checks = [{ name: "test", state: ci }]): MainCommit => ({
+    branch: "trunk",
+    sha: String(n).padStart(40, "a"),
+    at: `2026-01-01T00:${String(n).padStart(2, "0")}:00Z`,
+    headline: `change (#${n})`,
+    ci,
+    checks,
+  });
+  const green = commit(10, "success");
+  const first = commit(11, "failure");
+  const red = commit(12, "failure");
+  const running = commit(13, "pending");
+  const release = commit(14, "none", []);
+  expect(mainHealth([{ ...green, checksComplete: false }], ["test"])?.state).toBe("running");
+  expect(mainHealth([{ ...green, checksComplete: false }], [])?.state).toBe("green");
+  expect(mainHealth([{ ...first, checksComplete: false }, green], ["test"])?.state).toBe("red");
+  expect(mainHealth([green], ["test"])?.state).toBe("green");
+  const health = mainHealth([red, first, green], ["test"]);
+  expect(health).toMatchObject({
+    branch: "trunk",
+    head: red.sha,
+    state: "red",
+    redSince: { sha: first.sha, pr: 11, failing: ["test"] },
+    fixRunning: null,
+    redBeyondWindow: false,
+  });
+  expect(mainHealth([running, red, first, green], ["test"])).toMatchObject({
+    state: "running",
+    redSince: { pr: 11 },
+    fixRunning: { pr: 13 },
+  });
+  expect(mainHealth([release, red, release, first, green], ["test"])).toMatchObject({
+    head: release.sha,
+    state: "red",
+    redSince: { pr: 11 },
+    fixRunning: null,
+  });
+  expect(mainHealth([release, running, red, green], ["test"])).toMatchObject({
+    head: release.sha,
+    fixRunning: { pr: 13 },
+  });
+  expect(mainHealth([release, green], ["test"])?.state).toBe("green");
+  expect(mainHealth([release], ["test"])?.state).toBe("none");
+  expect(mainHealth([], [])).toBeNull();
+  expect(mainHealth([running, green], [])).toMatchObject({ state: "running", redSince: null, fixRunning: null });
+  expect(mainHealth([red, first], [])).toMatchObject({ state: "red", redBeyondWindow: true });
+  expect(mainHealth([red, first], [], true)).toMatchObject({ redBeyondWindow: false, redSince: { pr: 11 } });
+  const window = Array.from({ length: 20 }, (_, i) => commit(40 - i, "failure"));
+  expect(mainHealth(window, [])?.redBeyondWindow).toBe(true);
+  expect(
+    mainHealth(
+      [
+        commit(15, "failure", [
+          { name: "optional", state: "failure" },
+          { name: "test", state: "success" },
+        ]),
+      ],
+      ["test"],
+    )?.state,
+  ).toBe("green");
+  expect(mainHealth([commit(15, "success", [{ name: "optional", state: "success" }])], ["test"])?.state).toBe(
+    "running",
+  );
+  expect(mainHealth([commit(15, "failure", [{ name: "test", state: "success" }])], [])?.state).toBe("red");
+  expect(mainHealth([{ ...first, headline: "fix checks directly" }, green], [])?.redSince?.pr).toBeNull();
+  expect(mainHealthLine(health ?? fail("missing health"))).toContain("trunk red since #11 (test failing on");
+  expect(mainHealthLine(mainHealth([running, red, first, green], ["test"]) ?? fail("missing health"))).toContain(
+    "trunk red since #11, a fix is running (#13)",
+  );
+  expect(mainHealthLine(mainHealth(window, []) ?? fail("missing health"))).toBe("trunk red for more than 20 commits");
 });

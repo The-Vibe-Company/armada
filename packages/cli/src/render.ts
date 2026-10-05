@@ -1,6 +1,6 @@
 // Human-readable rendering of a status report. Plain text, no colors, so the
 // output reads the same in a terminal, a log or an agent transcript.
-import type { InFlightTicket, StatusReport } from "@armada/core";
+import { type InFlightTicket, mainHealthLine, type StatusReport } from "@armada/core";
 
 const MIN = 60_000;
 
@@ -59,6 +59,7 @@ export function renderStatus(r: StatusReport): string {
 
   for (const h of r.holds ?? [])
     out.push(`Merges paused since ${h.openedAt.slice(11, 16)} UTC: ${h.reason} (hold #${h.id})`);
+  if (r.main) out.push(mainHealthLine(r.main));
 
   out.push("", `In flight (${r.inFlight.length})`);
   if (!r.inFlight.length) out.push("  nobody is working");

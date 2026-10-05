@@ -161,6 +161,8 @@ export interface FleetTimeline {
 export type CoordinatorState = "active" | "idle" | "unknown";
 
 export interface ProjectOverview {
+  /** Default-branch CI, carried from the stored forge snapshot. */
+  main?: StatusReport["main"];
   owner: string | null;
   progress: { done: number; total: number } | null;
   health: ProjectHealth | null;
@@ -454,6 +456,7 @@ export function buildOverview(input: {
       inboxTrack: coordinatorTrack({ reads: p.live?.inboxReads ?? [], silentAfterMinutes, now: input.now }),
     });
     projects.push({
+      main: p.report?.main ?? null,
       owner: p.owner ?? null,
       progress: p.report?.progress ?? null,
       health: p.report

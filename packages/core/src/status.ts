@@ -1,7 +1,15 @@
 // `armada status`: one JSON-serializable reading of the fleet, shared by the
 // CLI and, later, the dashboard.
 import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
-import { freshEvent, frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
+import {
+  freshEvent,
+  frontier,
+  inFlight,
+  type LaneFlag,
+  type LaneOptions,
+  mainHealth,
+  waitingPullRequests,
+} from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
@@ -18,7 +26,7 @@ import {
 } from "./live.ts";
 import { buildModel, isDone, type Model } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
-import type { AgentPhase, CiState, ForgeData, ProgramData, PullRequest, ShippingStage } from "./types.ts";
+import type { AgentPhase, CiState, ForgeData, MainHealth, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 
 export const STATUS_SCHEMA_VERSION = 1;
 
@@ -114,6 +122,8 @@ export interface NotStartedLaunch extends PendingLaunch {
 
 export interface StatusReport {
   holds?: MergeHold[];
+  /** Default-branch CI; absent in older reports, null when unavailable. */
+  main?: MainHealth | null;
   progress?: { done: number; total: number };
   schemaVersion: typeof STATUS_SCHEMA_VERSION;
   generatedAt: string;
@@ -220,6 +230,7 @@ export function buildStatus({
   return {
     schemaVersion: STATUS_SCHEMA_VERSION,
     ...(holds ? { holds } : {}),
+    main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
     progress: {
       done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
       total: m.program.filter(m.isLeaf).length,
