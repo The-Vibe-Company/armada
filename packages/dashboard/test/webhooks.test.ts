@@ -266,16 +266,16 @@ describe("refreshes and their lease", () => {
 });
 
 describe("the GitHub App's webhook", () => {
-  test("a pull request or check event marks the repository's project; the refresh reads GitHub only", async () => {
+  test("a pull request, check or push event marks the repository's project; the refresh reads GitHub only", async () => {
     const w = await project();
-    for (const event of ["pull_request", "check_run", "status"]) {
+    for (const event of ["pull_request", "check_suite", "check_run", "status", "push"]) {
       const res = await handleGithubWebhook(w.github(event, { repository: { full_name: "acme/widgets" } }), w.deps);
       expect(res.status).toBe(202);
       expect(await res.json()).toEqual({ marked: 1 });
     }
-    expect(w.refreshed).toHaveLength(3);
+    expect(w.refreshed).toHaveLength(5);
     await refreshProject(WIDGETS, w.store, w.opts);
-    // One refresh for the three deliveries: they only marked it.
+    // One refresh for the five deliveries: they only marked it.
     expect(w.asks).toEqual([{ linearSince: null, touched: [], forge: true }]);
   });
 
