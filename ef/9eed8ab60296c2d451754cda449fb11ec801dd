@@ -1,0 +1,21 @@
+.agents/skills/armada-coordinator/MERGE.md
+  s_d658e7251951c2::t_52072d68c6aec1 36
+skills-lock.json
+  s_d658e7251951c2::t_989c723a33fe9f 8-9,15,22,29,36,49,86,93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ef9eed8ab60296c2d451754cda449fb11ec801dd",
+  "prompts": {},
+  "sessions": {
+    "s_d658e7251951c2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0cf2ced-2bdf-45f0-afe3-62c9cf64923f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "StanGirard <stan@quivr.app>"
+    }
+  }
+}
