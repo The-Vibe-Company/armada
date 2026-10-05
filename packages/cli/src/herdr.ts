@@ -163,15 +163,33 @@ const credentialNames = (env: Io["env"], extra: string[]) =>
 export class Herdr {
   private setupShell: { workspace: string; pane: string } | null = null;
 
-  constructor(private readonly io: Io) {}
+  constructor(
+    private readonly io: Io,
+    private readonly beforeWrite?: () => Promise<void>,
+  ) {}
 
   private async call(args: string[], timeoutMs = 40_000): Promise<Record<string, unknown>> {
     const operation = args.slice(0, 2).join(" ");
+    if (
+      ![
+        "status --json",
+        "workspace get",
+        "workspace list",
+        "worktree list",
+        "agent get",
+        "agent list",
+        "agent wait",
+        "pane get",
+        "pane read",
+      ].includes(operation)
+    )
+      await this.beforeWrite?.();
     let reply: Record<string, unknown> | null;
     let code: number;
     try {
       if (!this.io.exec) throw new Error("no exec");
       const out = await this.io.exec("herdr", args, { cwd: this.io.cwd, timeoutMs });
+      if (out.timedOut) throw new HerdrError("herdr request timed out; inspect its pane before retrying", "timeout");
       code = out.code;
       // Herdr's terminal writes acknowledge success with no output by default.
       // Only these operations may omit JSON; reads and topology stay strict.
@@ -183,7 +201,8 @@ export class Herdr {
       )
         return {};
       reply = object(JSON.parse(out.stdout || out.stderr));
-    } catch {
+    } catch (error) {
+      if (error instanceof HerdrError) throw error;
       throw new UsageError(`herdr ${operation} failed; inspect the runtime with herdr agent list`);
     }
     const error = object(reply?.error);
@@ -207,6 +226,7 @@ export class Herdr {
       return server.running;
     };
     if (await status(5_000)) return;
+    await this.beforeWrite?.();
     if (
       !this.io.detach ||
       !(await this.io.detach("herdr", ["server"], { cwd: this.io.cwd, env: runtimeEnvironment(this.io.env) }))
@@ -287,6 +307,40 @@ export class Herdr {
     // prevents the harness from starting; never touch any pre-existing pane.
     await this.call(["pane", "close", rootPane]);
     return { workspace, pane, agent, path };
+  }
+
+  /** A relaunch gets a fresh, sanitized pane; the old occupant stays until confirmed idle. */
+  async resume(handle: HerdrClaimHandle, input: { ticket: string; secrets: string[] }): Promise<HerdrHandle> {
+    const tree = await this.worktree(handle);
+    const tab = object(
+      (
+        await this.call([
+          "tab",
+          "create",
+          "--workspace",
+          handle.workspace,
+          "--cwd",
+          tree.path,
+          "--no-focus",
+          ...credentialNames(this.io.env, input.secrets).flatMap((name) => ["--env", `${name}=`]),
+          "--env",
+          `ARMADA_TICKET=${input.ticket}`,
+        ])
+      ).result,
+    );
+    const pane = object(tab?.root_pane);
+    if (!id(pane?.pane_id) || pane.workspace_id !== handle.workspace || pane.pane_id === handle.pane)
+      throw new UsageError("invalid herdr relaunch pane response");
+    const agent = `relaunch-${pane.pane_id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+    if (!/^[a-z][a-z0-9_-]{0,31}$/i.test(agent)) throw new UsageError("invalid herdr relaunch agent name");
+    return { workspace: handle.workspace, pane: pane.pane_id, agent, path: tree.path };
+  }
+
+  async closeIdlePane(handle: HerdrClaimHandle): Promise<void> {
+    const state = await this.state(handle);
+    if (state !== "idle" && state !== "done")
+      throw new UsageError("worker resumed before pane close; retained its pane");
+    await this.call(["pane", "close", handle.pane]);
   }
 
   /** Ask the runtime for a real checkout path, respecting its loaded worktrees.directory. */
@@ -633,13 +687,16 @@ export class Herdr {
     else this.checkAgent(await this.call(["agent", "prompt", handle.pane, text]), handle);
   }
 
-  async quiesce(handle: HerdrClaimHandle): Promise<void> {
+  async quiesce(handle: HerdrClaimHandle, waitMs = 5000): Promise<void> {
     const state = await this.state(handle);
     if (state === "idle" || state === "done") return;
     if (state === "unknown") throw new UsageError("cannot stop an unverified active turn; wait for herdr idle state");
     await this.call(["agent", "send-keys", handle.pane, "ctrl+c"], 5_000);
     const agent = this.checkAgent(
-      await this.call(["agent", "wait", handle.pane, "--until", "idle", "--until", "done", "--timeout", "5000"], 7_000),
+      await this.call(
+        ["agent", "wait", handle.pane, "--until", "idle", "--until", "done", "--timeout", String(waitMs)],
+        waitMs + 2000,
+      ),
       handle,
     );
     if (agent.agent_status !== "idle" && agent.agent_status !== "done")
