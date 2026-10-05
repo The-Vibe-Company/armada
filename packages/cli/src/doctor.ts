@@ -28,7 +28,7 @@ import {
   STORED_KEYS,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
-import { loadCredentials, type Machine } from "./auth.ts";
+import { describeSource, loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
 import {
   detectLocalTools,
@@ -400,6 +400,22 @@ export async function buildDoctor(
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
     ...keyFileChecks(machine, credentials),
+    {
+      id: "linear-key",
+      level: credentials.sources.linearApiKey ? "ok" : "warning",
+      message: `LINEAR_API_KEY: ${credentials.sources.linearApiKey ? describeSource(credentials.sources.linearApiKey) : "missing"}`,
+      fix: credentials.sources.linearApiKey ? null : "armada auth login",
+    } satisfies Check,
+    ...(machine.keysFallback
+      ? [
+          {
+            id: "armada-keys",
+            level: "warning" as const,
+            message: `Last keys failure at ${machine.keysFallback.failedAt}: ${machine.keysFallback.reason}`,
+            fix: "armada auth status",
+          },
+        ]
+      : []),
     ...(await labelChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
     ...(config?.conductor.projectId || config?.conductor.baseBranch
