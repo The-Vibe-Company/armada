@@ -1,4 +1,5 @@
 // Cleanup runs only after GitHub confirmed the pinned merge and Armada ended its worker generation.
+import { dirname, resolve } from "node:path";
 import { type ArmadaConfig, type Credentials, type MergeOutcome, runtimeNameOf, shellWord } from "@armada/core";
 import type { Io } from "./io.ts";
 import { archiveClaimKey, claimRef, guarded, redactRuntimeText, runtimeFor } from "./runtimes/adapter.ts";
@@ -18,7 +19,7 @@ export async function afterMerge(
   config: ArmadaConfig,
   credentials: Credentials,
   outcome: MergeOutcome,
-  opts: { noArchive?: boolean; keepOpen?: boolean },
+  opts: { noArchive?: boolean; keepOpen?: boolean; configPath?: string },
 ): Promise<ArchiveResult | null> {
   const a = outcome.archive;
   if (!outcome.merged || outcome.pr.mergeCommit === null || !outcome.ticket || !a) return null;
@@ -37,9 +38,10 @@ export async function afterMerge(
       `No runtime guide is installed for ${a.runtime ?? "the worker's runtime"}, so Armada has nothing to archive for ${who}: a local session or subagent ends with its task; stop it yourself if it still runs.`,
     );
   }
+  const configPath = opts.configPath ? resolve(io.cwd, opts.configPath) : null;
   const recovery = `armada stop ${shellWord(outcome.ticket.id)} --merged-pr ${shellWord(outcome.pr.url)}${
     a.source === "armada" && a.claim?.releasedAt ? ` --claim-key ${archiveClaimKey(claimRef(a.claim))}` : ""
-  }`;
+  }${configPath ? ` --config ${shellWord(configPath)}` : ""}`;
   const failure = (detail: string) => {
     const safe = redactRuntimeText(detail).replace(/\s+/g, " ").trim();
     io.stderr(
@@ -68,7 +70,7 @@ export async function afterMerge(
     const { fleet } = liveFleet(io, config, credentials);
     if (!fleet) return failure("Armada is unavailable");
     const ref = claimRef(h);
-    const adapter = runtimeFor(io, config, h.runtime);
+    const adapter = runtimeFor(configPath ? { ...io, cwd: dirname(configPath) } : io, config, h.runtime);
     const archived = await guarded(fleet, ref, "ended", () =>
       adapter.archive(ref, { reason: "merged", whenWorking: "wait", waitMs: 600_000 }),
     );

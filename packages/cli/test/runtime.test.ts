@@ -530,44 +530,61 @@ test("DeepSeek profiles keep their model label while report, heartbeat, answer a
   expect(f.calls).toContainEqual(["herdr", "worktree", "remove", "--workspace", handle.workspace]);
 });
 
-test.each(["matching", "active-replacement", "ended-replacement", "no-key-replacement", "wrong-pr", "stale-key"])(
-  "merge recovery stops only the ended merged generation (%s)",
-  async (scenario) => {
-    const f = await fixture();
-    const url = "https://github.com/acme/widgets/pull/9";
-    const merged = await recordMerge(
-      f.store,
-      "widgets",
-      {
-        ticket: "DEMO-7",
-        number: 9,
-        url,
-        mergeCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      },
-      NOW,
-    );
-    if (!merged.handle) throw new Error("missing merged fixture claim");
-    const key = archiveClaimKey(claimRef(merged.handle));
-    if (scenario.includes("replacement")) {
-      await f.store.saveRuntimeHandle({
-        project: "widgets",
-        ticket: "DEMO-7",
-        runtime: "Herdr",
-        handle: rawHandle,
-        branch,
-        at: new Date(NOW.getTime() + 1000),
-      });
-      if (scenario === "ended-replacement" || scenario === "no-key-replacement")
-        await f.store.releaseRuntimeHandle("widgets", "DEMO-7", new Date(NOW.getTime() + 2000));
-    }
-    const args = ["stop", "DEMO-7", "--merged-pr", scenario === "wrong-pr" ? `${url}0` : url];
-    if (scenario !== "no-key-replacement") args.push("--claim-key", scenario === "stale-key" ? "0".repeat(64) : key);
-    expect(await run(args, f.io)).toBe(scenario === "matching" ? 0 : 1);
-    if (scenario === "matching") expect(f.calls).toContainEqual(["herdr", "worktree", "remove", "--workspace", "w8"]);
-    else {
-      expect(f.calls).toEqual([]);
-      expect(f.err.join(" ")).toContain("left its workspace untouched");
-    }
-  },
-);
+test.each([
+  "matching",
+  "matching-config",
+  "active-replacement",
+  "ended-replacement",
+  "no-key-replacement",
+  "wrong-pr",
+  "stale-key",
+])("merge recovery stops only the ended merged generation (%s)", async (scenario) => {
+  const f = await fixture();
+  if (scenario === "matching-config") {
+    f.io.cwd = "/outside";
+    const exec = f.io.exec;
+    f.io.exec = async (cmd, argv, opts) => {
+      if (cmd === "git" && argv.includes("--git-common-dir") && opts?.cwd === "/outside")
+        return { code: 128, stdout: "", stderr: "not a git repository" };
+      if (!exec) throw new Error("missing fixture exec");
+      return exec(cmd, argv, opts);
+    };
+  }
+  const url = "https://github.com/acme/widgets/pull/9";
+  const merged = await recordMerge(
+    f.store,
+    "widgets",
+    {
+      ticket: "DEMO-7",
+      number: 9,
+      url,
+      mergeCommit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      headSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    },
+    NOW,
+  );
+  if (!merged.handle) throw new Error("missing merged fixture claim");
+  const key = archiveClaimKey(claimRef(merged.handle));
+  if (scenario.includes("replacement")) {
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "Herdr",
+      handle: rawHandle,
+      branch,
+      at: new Date(NOW.getTime() + 1000),
+    });
+    if (scenario === "ended-replacement" || scenario === "no-key-replacement")
+      await f.store.releaseRuntimeHandle("widgets", "DEMO-7", new Date(NOW.getTime() + 2000));
+  }
+  const args = ["stop", "DEMO-7", "--merged-pr", scenario === "wrong-pr" ? `${url}0` : url];
+  if (scenario === "matching-config") args.push("--config", "/work/widgets/armada.toml");
+  if (scenario !== "no-key-replacement") args.push("--claim-key", scenario === "stale-key" ? "0".repeat(64) : key);
+  expect(await run(args, f.io)).toBe(scenario.startsWith("matching") ? 0 : 1);
+  if (scenario.startsWith("matching"))
+    expect(f.calls).toContainEqual(["herdr", "worktree", "remove", "--workspace", "w8"]);
+  else {
+    expect(f.calls).toEqual([]);
+    expect(f.err.join(" ")).toContain("left its workspace untouched");
+  }
+});

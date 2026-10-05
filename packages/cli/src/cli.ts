@@ -678,7 +678,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         : undefined;
       const { credentials } = await loadCredentials(io, scope ? { worker: scope } : { project: config.project.slug });
       if (command === "inbox") await recordPresence(io, config, credentials);
-      return await worker(io, config, credentials, args);
+      return await worker(command === "stop" ? { ...io, cwd: dirname(path) } : io, config, credentials, args);
     }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch", args.project);

@@ -522,6 +522,8 @@ test("CLI accepts --no-ticket --reason and posts its audit comment without endin
 test.each([
   "confirmed",
   "confirmed-json",
+  "confirmed-external",
+  "failed-external",
   "failed-json",
   "unrecorded",
   "unconfirmed",
@@ -539,7 +541,13 @@ test.each([
   const f = await fixture();
   const handle = "ws-18/ses-18";
   const json = scenario.endsWith("-json");
-  const succeeds = ["confirmed", "confirmed-json", "unrecorded"].includes(scenario);
+  const succeeds = ["confirmed", "confirmed-json", "confirmed-external", "unrecorded"].includes(scenario);
+  const projectRoot = f.io.cwd;
+  const configPath = join(projectRoot, "fleet config.toml");
+  if (scenario.endsWith("-external")) {
+    await writeFile(configPath, await readFile(join(projectRoot, "armada.toml"), "utf8"));
+    f.io.cwd = tmpdir();
+  }
   if (scenario === "unrecorded") {
     const fetch = f.io.fetch as Fetch;
     f.io.fetch = (url, init) =>
@@ -572,6 +580,7 @@ test.each([
   const exec = f.io.exec as Exec;
   f.io.exec = async (command, args, options) => {
     if (command !== "conductor") return exec(command, args, options);
+    expect(options?.cwd).toBe(projectRoot);
     calls.push(args);
     if (scenario === "shared-later") {
       await f.store.saveRuntimeHandle({
@@ -609,8 +618,9 @@ test.each([
     }
     return { code: 0, stdout: JSON.stringify(body), stderr: "" };
   };
-  const flags =
-    scenario === "no-archive"
+  const flags = scenario.endsWith("-external")
+    ? ["--config", configPath]
+    : scenario === "no-archive"
       ? ["--no-archive"]
       : scenario === "dry-run"
         ? ["--dry-run"]
@@ -659,6 +669,7 @@ test.each([
     expect(f.err()).toContain("run armada stop DEMO-18");
     expect(f.err() + f.out()).not.toContain("CANARY");
     expect(f.err() + f.out()).not.toContain("private runtime output");
+    if (scenario === "failed-external") expect(f.err()).toContain(`--config '${configPath}'`);
   }
 });
 

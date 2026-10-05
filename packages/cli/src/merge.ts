@@ -367,6 +367,7 @@ export async function merge(
   for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
   if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
   const archive = await afterMerge(io, config, credentials, o, {
+    configPath,
     noArchive: !!a.options["no-archive"],
     keepOpen: !!a.options["keep-open"],
   });
