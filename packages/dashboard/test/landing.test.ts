@@ -3,6 +3,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { CIPHER, COMMANDS, LAUNCH_TOKEN_HOURS, SETUP } from "../components/landing/content";
 import { BREAK_AT, createSky, INTRO, LIME, step } from "../components/landing/flock";
+import { stepForKey } from "../components/landing/MethodSteps";
 import { ASKED, delivered, HANDED_BACK, handedBack, opening, toValidate } from "../components/landing/replica-script";
 import { TRANSCRIPT } from "../components/landing/transcript";
 import { checksOf, overviewItems, ownerChecks } from "../lib/coordinator-view";
@@ -93,6 +94,26 @@ describe("the landing page", () => {
     // They read the server only in the shell's poll (FleetProvider), and in the overview's preview pane (a
     // session's history). The replica runs in ShowcaseProvider, which never polls, and shows the list alone.
     expect(offenders.sort()).toEqual(["components/screens/use-activity.ts", "components/shell/context.tsx"]);
+  });
+});
+
+describe("the method (THE-1049)", () => {
+  test("never holds the scroll: no sticky stage, no block taller than the screen, no scroll or wheel listener", () => {
+    const own = [...reach(join(ROOT, "app/landing/page.tsx"))].filter((f) => /\/(components|app)\/landing\//.test(f));
+    expect(own.map((f) => relative(ROOT, f))).toContain("components/landing/MethodSteps.tsx");
+    const css = read(join(ROOT, "app/landing/landing.css"));
+    expect(css).not.toMatch(/position:\s*sticky/);
+    const tall = [...css.matchAll(/(\d+(?:\.\d+)?)[sdl]?vh\b/g)].filter(([, n]) => Number(n) > 100).map(([m]) => m);
+    expect(tall).toEqual([]);
+    const listens = /addEventListener\(\s*"(scroll|wheel|touchmove|mousewheel)"|\bon(Scroll|Wheel|TouchMove)\b/;
+    expect(own.filter((f) => listens.test(read(f))).map((f) => relative(ROOT, f))).toEqual([]);
+  });
+
+  test("moves between its steps with the arrow keys, Home and End, wrapping at both ends", () => {
+    expect([stepForKey("ArrowRight", 0, 5), stepForKey("ArrowDown", 3, 5)]).toEqual([1, 4]);
+    expect([stepForKey("ArrowRight", 4, 5), stepForKey("ArrowDown", 4, 5)]).toEqual([0, 0]);
+    expect([stepForKey("ArrowLeft", 0, 5), stepForKey("ArrowUp", 2, 5)]).toEqual([4, 1]);
+    expect([stepForKey("Home", 3, 5), stepForKey("End", 1, 5), stepForKey("Enter", 2, 5)]).toEqual([0, 4, null]);
   });
 });
 

@@ -723,26 +723,29 @@
 
 /* ---------------------------------------------------------------- method */
 
+/* The method (THE-1049): a section like the others, never pinned. Its
+   steps are tabs, and each scene's story runs on `--l` (0 to 1): its last
+   frame by default, played from 0 by an animation while its step is shown. */
+@property --l {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
 .lp-method {
-  --p: 0;
+  --lp-scene-time: 7s;
+  /* The scenes' play state: paused until MethodSteps says the section is on screen. */
+  --lp-play: paused;
   position: relative;
-  height: 520vh;
+  padding: clamp(80px, 10vw, 128px) 0;
   /* Laid out as it comes near the screen, as the sections below (THE-892). */
   content-visibility: auto;
-}
-.lp-method-stage {
-  position: sticky;
-  top: 0;
-  height: 100svh;
-  display: flex;
-  align-items: center;
-  overflow: hidden;
+  contain-intrinsic-size: auto 760px;
 }
 .lp-method-inner {
   width: 100%;
   max-width: var(--lp-max);
   margin: 0 auto;
-  padding: 88px var(--lp-pad) 32px;
+  padding: 0 var(--lp-pad);
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 540px);
   gap: clamp(32px, 6vw, 80px);
@@ -754,27 +757,25 @@
   gap: 28px;
   min-width: 0;
 }
+/* Every step's words in one cell: the block keeps the tallest one's height, so changing step moves nothing. */
 .lp-method-steps {
-  position: relative;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  height: clamp(220px, 21vw, 300px);
+  display: grid;
 }
 .lp-method-step {
-  position: absolute;
-  inset: 0;
+  grid-area: 1 / 1;
   display: flex;
   flex-direction: column;
   gap: 18px;
   opacity: 0;
-  transform: translateY(24px);
-  filter: blur(6px);
+  visibility: hidden;
   transition:
-    opacity 500ms var(--lp-ease),
-    transform 500ms var(--lp-ease),
-    filter 500ms var(--lp-ease);
-  pointer-events: none;
+    opacity 200ms var(--lp-ease),
+    visibility 0s 200ms;
+}
+.lp-method-step.is-active {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 400ms var(--lp-ease);
 }
 .lp-method-title {
   margin: 0;
@@ -792,88 +793,69 @@
   color: var(--text-2);
   text-wrap: pretty;
 }
+
+/* The steps: one segment each, full once passed, filling while its scene plays. */
 .lp-method-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
   max-width: 460px;
 }
-.lp-method-track {
+.lp-method-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--lp-dim);
+  font: 13px var(--font-sans);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 150ms ease;
+}
+.lp-method-tab .lp-mono {
+  font-size: 11px;
+  color: var(--lp-dim);
+}
+.lp-method-tab[data-state="done"] {
+  color: var(--text-2);
+}
+.lp-method-tab[aria-selected="true"] {
+  color: var(--text);
+}
+@media (hover: hover) and (pointer: fine) {
+  .lp-method-tab:hover {
+    color: var(--text);
+  }
+}
+.lp-method-tab:focus-visible {
+  outline: 2px solid var(--frontier);
+  outline-offset: 4px;
+}
+.lp-method-seg {
   position: relative;
   height: 2px;
+  margin-bottom: 10px;
   border-radius: 1px;
   background: var(--track);
   overflow: hidden;
 }
+/* One gradient across the five segments, from the frontier's blue to the merge's lime. */
 .lp-method-fill {
   position: absolute;
   inset: 0;
-  background: linear-gradient(90deg, var(--frontier), var(--done));
-  transform: scaleX(var(--p));
+  background: linear-gradient(90deg, var(--frontier), var(--done)) calc(var(--i) * 25%) 0 / 500% 100%;
+  transform: scaleX(0);
   transform-origin: 0 50%;
 }
-.lp-method-labels {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-}
-.lp-method-labels > span {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 13px;
-  color: var(--lp-dim);
-  transition: color 300ms ease;
-}
-.lp-method-labels .lp-mono {
-  font-size: 11px;
-  color: var(--lp-dim);
-}
-
-/* The step reached: its words, its label, its window title. Earlier labels stay lit. */
-.lp-method[data-step="0"] .lp-method-step[data-index="0"],
-.lp-method[data-step="1"] .lp-method-step[data-index="1"],
-.lp-method[data-step="2"] .lp-method-step[data-index="2"],
-.lp-method[data-step="3"] .lp-method-step[data-index="3"],
-.lp-method[data-step="4"] .lp-method-step[data-index="4"] {
-  opacity: 1;
+.lp-method-tab:is([data-state="done"], [data-state="active"]) .lp-method-fill {
   transform: none;
-  filter: none;
-  pointer-events: auto;
-}
-.lp-method[data-step="0"] .lp-method-step[data-index="1"],
-.lp-method[data-step="1"] .lp-method-step[data-index="2"],
-.lp-method[data-step="2"] .lp-method-step[data-index="3"],
-.lp-method[data-step="3"] .lp-method-step[data-index="4"] {
-  transform: translateY(24px);
-}
-.lp-method[data-step="1"] .lp-method-step[data-index="0"],
-.lp-method[data-step="2"] .lp-method-step[data-index="1"],
-.lp-method[data-step="3"] .lp-method-step[data-index="2"],
-.lp-method[data-step="4"] .lp-method-step[data-index="3"] {
-  transform: translateY(-24px);
-}
-.lp-method[data-step="0"] .lp-method-labels [data-index="0"],
-.lp-method[data-step="1"] .lp-method-labels [data-index="1"],
-.lp-method[data-step="2"] .lp-method-labels [data-index="2"],
-.lp-method[data-step="3"] .lp-method-labels [data-index="3"],
-.lp-method[data-step="4"] .lp-method-labels [data-index="4"],
-.lp-method[data-step="0"] .lp-window-titles [data-index="0"],
-.lp-method[data-step="1"] .lp-window-titles [data-index="1"],
-.lp-method[data-step="2"] .lp-window-titles [data-index="2"],
-.lp-method[data-step="3"] .lp-window-titles [data-index="3"],
-.lp-method[data-step="4"] .lp-window-titles [data-index="4"] {
-  color: var(--text);
-  opacity: 1;
-}
-.lp-method[data-step="1"] .lp-method-labels [data-index="0"],
-.lp-method[data-step="2"] .lp-method-labels [data-index="0"],
-.lp-method[data-step="2"] .lp-method-labels [data-index="1"],
-.lp-method[data-step="3"] .lp-method-labels :is([data-index="0"], [data-index="1"], [data-index="2"]),
-.lp-method[data-step="4"]
-  .lp-method-labels
-  :is([data-index="0"], [data-index="1"], [data-index="2"], [data-index="3"]) {
-  color: var(--text-2);
 }
 
 .lp-method-window {
@@ -882,26 +864,85 @@
 }
 .lp-window-body {
   position: relative;
-  height: min(480px, calc(100svh - 230px));
-  min-height: 340px;
+  height: 460px;
 }
 
-/* A scene: shown around its fifth of the scroll, its story scrubbed by `--l` (0 to 1). */
+/* The scene of the step shown; the others fade out on their last frame. */
 .lp-scene {
-  --l: clamp(0, calc((var(--p) - var(--a)) * 5 / 0.85), 1);
-  --in: clamp(0, calc((var(--p) - var(--a) + 0.015) * 40), 1);
-  --out: clamp(0, calc((var(--a) + 0.2 + 0.015 - var(--p)) * 40), 1);
   position: absolute;
   inset: 0;
   padding: 26px;
-  opacity: min(var(--in), var(--out));
-  transform: translateY(calc((1 - var(--in)) * 16px + (1 - var(--out)) * -16px));
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 200ms var(--lp-ease),
+    visibility 0s 200ms;
 }
-.lp-scene.is-0 {
-  --in: 1;
+.lp-method[data-step="0"] .lp-scene.is-0,
+.lp-method[data-step="1"] .lp-scene.is-1,
+.lp-method[data-step="2"] .lp-scene.is-2,
+.lp-method[data-step="3"] .lp-scene.is-3,
+.lp-method[data-step="4"] .lp-scene.is-4 {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 300ms var(--lp-ease);
 }
-.lp-scene.is-4 {
-  --out: 1;
+.lp-method[data-step="0"] .lp-window-titles [data-index="0"],
+.lp-method[data-step="1"] .lp-window-titles [data-index="1"],
+.lp-method[data-step="2"] .lp-window-titles [data-index="2"],
+.lp-method[data-step="3"] .lp-window-titles [data-index="3"],
+.lp-method[data-step="4"] .lp-window-titles [data-index="4"] {
+  color: var(--text);
+  opacity: 1;
+}
+
+/* Played: the scene of the step shown runs its story, then holds its last frame
+   until the next step (its end is MethodSteps' cue); its segment fills meanwhile.
+   Paused while the section is off screen. Never under reduced motion. */
+.lp-method[data-playing] {
+  --lp-play: running;
+}
+@keyframes lp-scene-play {
+  from {
+    --l: 0;
+  }
+  75%,
+  to {
+    --l: 1;
+  }
+}
+@keyframes lp-seg-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lp-method[data-motion] .lp-method-step {
+    transform: translateY(8px);
+    transition:
+      opacity 200ms var(--lp-ease),
+      transform 200ms var(--lp-ease),
+      visibility 0s 200ms;
+  }
+  .lp-method[data-motion] .lp-method-step.is-active {
+    transform: none;
+    transition:
+      opacity 400ms var(--lp-ease),
+      transform 400ms var(--lp-ease);
+  }
+  .lp-method[data-motion][data-step="0"] .lp-scene.is-0,
+  .lp-method[data-motion][data-step="1"] .lp-scene.is-1,
+  .lp-method[data-motion][data-step="2"] .lp-scene.is-2,
+  .lp-method[data-motion][data-step="3"] .lp-scene.is-3,
+  .lp-method[data-motion][data-step="4"] .lp-scene.is-4 {
+    animation: lp-scene-play var(--lp-scene-time) linear both var(--lp-play);
+  }
+  .lp-method[data-motion] .lp-method-tab[data-state="active"] .lp-method-fill {
+    animation: lp-seg-fill var(--lp-scene-time) linear both var(--lp-play);
+  }
 }
 .lp-k {
   --k: clamp(0, calc((var(--l) - var(--t)) / var(--span)), 1);
@@ -1256,20 +1297,17 @@
 
 @media (max-width: 860px) {
   .lp-method {
-    height: 600vh;
+    contain-intrinsic-size: auto 870px;
   }
   .lp-method-inner {
     grid-template-columns: minmax(0, 1fr);
-    padding-top: 76px;
     gap: 18px;
-    align-content: start;
-    height: 100%;
   }
   .lp-method-words {
     gap: 14px;
   }
-  .lp-method-steps {
-    height: 150px;
+  .lp-method-words .lp-eyebrow {
+    order: -2;
   }
   .lp-method-step {
     gap: 10px;
@@ -1280,50 +1318,19 @@
   .lp-method-body {
     font-size: 14.5px;
   }
+  /* The five steps: a compact row above the words and the window. */
   .lp-method-rail {
     order: -1;
+    max-width: none;
   }
   .lp-window-body {
-    height: calc(100svh - 360px);
-    min-height: 300px;
+    height: 440px;
   }
   .lp-scene {
     padding: 18px;
   }
   .lp-bubble {
     font-size: 14px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  /* The still method: every step one after the other, the window at its end. */
-  .lp-method {
-    height: auto;
-    --p: 1;
-  }
-  .lp-method-stage {
-    position: static;
-    height: auto;
-    padding: 80px 0;
-  }
-  .lp-method-steps {
-    height: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 36px;
-  }
-  .lp-method[data-step] .lp-method-step[data-index],
-  .lp-method[data-step] .lp-window-titles [data-index="4"] {
-    position: static;
-    opacity: 1;
-    transform: none;
-    filter: none;
-  }
-  .lp-method[data-step] .lp-window-titles [data-index]:not([data-index="4"]) {
-    opacity: 0;
-  }
-  .lp-method-rail {
-    display: none;
   }
 }
 
