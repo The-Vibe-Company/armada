@@ -407,3 +407,19 @@ describe("fleet overview", () => {
     expect(o.projects[0]?.merged).toEqual(merged);
   });
 });
+
+test("the overview carries each project's default-branch health", () => {
+  const r = reading("widgets", [], null);
+  if (!r.report) throw new Error("missing report fixture");
+  r.report.main = {
+    branch: "main",
+    head: "a".repeat(40),
+    state: "red",
+    redSince: { sha: "a".repeat(40), pr: 17, at: NOW.toISOString(), failing: ["test"] },
+    fixRunning: null,
+    redBeyondWindow: false,
+  };
+  const o = buildOverview({ projects: [r, reading("older", [], null)], live: { state: "ok", error: null }, now: NOW });
+  expect(o.projects[0]?.main).toEqual(r.report.main);
+  expect(o.projects[1]?.main).toBeNull();
+});

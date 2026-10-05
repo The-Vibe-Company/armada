@@ -76,7 +76,7 @@ The app signs people in and reads GitHub for the dashboard (pull requests, CI ch
 
 Without webhooks the dashboard refreshes a project's reading of Linear and GitHub when someone looks at it and it is older than a minute. With them, a change shows within seconds and nothing runs while nobody looks.
 
-1. Create a secret for GitHub (`openssl rand -hex 32`). On the GitHub App's settings, turn the webhook on: URL `<dashboard>/api/webhooks/github`, that secret; Permissions & events > Subscribe to events: Pull request, Check suite, Check run, Status.
+1. Create a secret for GitHub (`openssl rand -hex 32`). On the GitHub App's settings, turn the webhook on: URL `<dashboard>/api/webhooks/github`, that secret; Permissions & events > Subscribe to events: Pull request, Check suite, Check run, Status, Push (refreshes the default branch before CI starts).
 2. In Linear, Settings > API > Webhooks: a new webhook to `<dashboard>/api/webhooks/linear` for Issues, Comments, Issue attachments and Issue labels. Copy its signing secret.
 3. On the deployment, set `ARMADA_GITHUB_WEBHOOK_SECRET` and `ARMADA_LINEAR_WEBHOOK_SECRET`, and redeploy.
 4. Check: GitHub's Recent Deliveries and Linear's webhook page show answers 202. Change a ticket's label or push to a pull request: the Fleet view shows it within about ten seconds, and the top bar's "Linear and GitHub read … ago" resets.

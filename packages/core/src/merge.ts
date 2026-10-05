@@ -5,12 +5,13 @@
 // the handed-back SHA, read MERGED back, then close the ticket. With --wait the
 // pull request is first brought up to date and waited for, without the lease.
 import type { ArmadaConfig } from "./config.ts";
-import type { UnblockedTickets } from "./fleet.ts";
+import { mainHealthLine, type UnblockedTickets } from "./fleet.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
 import type { Fleet, Lease, MergeRecorded, RuntimeHandle } from "./live.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
 import type { FrontierTicket } from "./status.ts";
+import type { MainHealth } from "./types.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
@@ -26,6 +27,8 @@ export interface MergeAttempt {
 
 /** GitHub as `armada merge` sees it. The CLI implements it with the GraphQL API and `gh`. */
 export interface MergeForge {
+  /** Fresh default-branch CI, shared with queue draining. */
+  mainHealth?(): Promise<MainHealth | null>;
   readPull(number: number): Promise<MergePull | null>;
   /** Where `head` stands against the branch `base`; null when GitHub cannot compare them. */
   compare(base: string, head: string): Promise<Comparison | null>;
@@ -88,6 +91,8 @@ export interface MergeUnblocked {
 }
 
 export interface MergeContext {
+  /** An already-read health result, when a caller has one. */
+  mainHealth?: MainHealth | null;
   config: ArmadaConfig;
   linear: LinearWriter;
   forge: MergeForge;
@@ -678,6 +683,12 @@ async function look(ctx: MergeContext, input: MergeInput, run: Run): Promise<Loo
     lineage,
     now: ctx.now(),
   });
+  try {
+    const health = ctx.mainHealth ?? (await ctx.forge.mainHealth?.());
+    if (health?.redSince) a.notes.push(mainHealthLine(health));
+  } catch {
+    a.notes.push("default-branch CI could not be read; check it on GitHub");
+  }
   const behind = a.behind || (cmp?.behindBy ?? 0) > 0;
   const testable =
     MERGEABLE_STATES.has(pull.mergeStateStatus) && ctx.config.gates.localCommands.length > 0 && ctx.repo !== null;
