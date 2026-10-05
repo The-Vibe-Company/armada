@@ -358,3 +358,30 @@ describe("refreshStatusSources", () => {
     expect(calls).toHaveLength(1);
   });
 });
+
+test("default-branch health reaches status JSON and old forge snapshots remain readable", async () => {
+  const { fetch } = recordedFetch();
+  const sources = await readStatusSources(demoConfig(), {
+    linearApiKey: "synthetic-key",
+    githubToken: "synthetic-token",
+    fetch,
+    now: () => NOW,
+  });
+  const config = parseConfig(`${DEMO_TOML}\n[gates]\nrequired_checks = ["test"]`);
+  const forge = sources.forge;
+  if (!forge) throw new Error("missing forge fixture");
+  expect(buildStatus({ config, ...sources, now: NOW }).main).toBeNull();
+  const main = [
+    {
+      branch: "trunk",
+      sha: "a".repeat(40),
+      at: NOW.toISOString(),
+      headline: "change (#17)",
+      ci: "failure" as const,
+      checks: [{ name: "test", state: "failure" as const }],
+    },
+  ];
+  expect(
+    buildStatus({ config, ...sources, forge: { ...forge, main, mainComplete: true }, now: NOW }).main,
+  ).toMatchObject({ branch: "trunk", state: "red", redSince: { pr: 17 } });
+});

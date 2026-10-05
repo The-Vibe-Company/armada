@@ -16,6 +16,7 @@ import {
   createLinearWriter,
   fetchCommit,
   fetchComparison,
+  fetchMainHealth,
   fetchMergePull,
   fetchPreview,
   fetchPullDiff,
@@ -244,6 +245,7 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     config,
     linear: io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts),
     forge: {
+      mainHealth: () => fetchMainHealth({ ...gh, requiredChecks: config.gates.requiredChecks }),
       readPull: (n) => fetchMergePull({ ...gh, number: n }),
       compare: (base, head) => fetchComparison({ ...gh, base, head }),
       diff: (n) => fetchPullDiff({ ...gh, number: n }),
