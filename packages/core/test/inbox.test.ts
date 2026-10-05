@@ -323,6 +323,7 @@ describe("the coordinator's inbox", () => {
         ticket,
         launchedAt: at(minutes).toISOString(),
         tokenUsedAt: null,
+        runtime: null,
         handle: null,
         endedAt: null,
       });
@@ -562,6 +563,7 @@ describe("the coordinator's inbox", () => {
         ticket,
         launchedAt: at(minutesAgo).toISOString(),
         tokenUsedAt: null,
+        runtime: null,
         handle: null,
         endedAt: null,
         ...more,

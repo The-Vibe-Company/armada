@@ -6,6 +6,7 @@ import { OrgBar, OrgNone, OrgPage, OrgRow, OrgRows } from "@/components/org";
 import { Form, Notice } from "@/components/page";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
 import { accountsModeOf } from "@/lib/accounts-settings";
+import { sessionLink } from "@/lib/fleet-view";
 import { LANGUAGE_COOKIE, STRINGS, WORKERS_ERRORS, type WorkersError } from "@/lib/i18n";
 import { languageOf } from "@/lib/server";
 import { listWorkers, type WorkerState, workerState } from "@/lib/workers";
@@ -77,11 +78,27 @@ export default async function Workers({ searchParams }: { searchParams: Params }
             : x.sessionSeenAt
               ? w.lastSeen(when(x.sessionSeenAt))
               : null;
+          const link = sessionLink(x.runtime, x.handle);
           return (
             <OrgRow
               key={x.id}
               a={<span className="mono">{x.ticket}</span>}
-              sub={`${x.project} · ${w.launchedBy(x.launchedBy.label)}, ${when(x.createdAt)}`}
+              sub={
+                <>
+                  {`${x.project} · ${w.launchedBy(x.launchedBy.label)}, ${when(x.createdAt)}`}
+                  {link && (
+                    <div>
+                      <a className="org-link" href={link}>
+                        {t.agentPage.openSession}
+                      </a>
+                    </div>
+                  )}
+                  {x.runtimeMismatch && (
+                    <div style={{ color: "var(--red)", overflowWrap: "anywhere" }}>{x.runtimeMismatch}</div>
+                  )}
+                </>
+              }
+              subWrap={Boolean(x.runtimeMismatch)}
               b={session ?? token}
               c={w.states[state]}
               color={COLOR[state]}

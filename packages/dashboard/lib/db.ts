@@ -733,6 +733,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE runtime_handles ADD CONSTRAINT runtime_handles_runtime_state_check CHECK (runtime_state IN ('working', 'blocked', 'idle', 'done', 'failed', 'gone', 'unknown'))",
     ],
   },
+  {
+    version: 24,
+    statements: ['ALTER TABLE "armada_worker" ADD COLUMN IF NOT EXISTS "runtime" text'],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
