@@ -48,12 +48,17 @@ export const GROUP_COLOR: Record<SessionGroup, string> = {
   merged: "var(--text-3)",
 };
 
+export const itemColor = (item: Pick<OverviewItem, "group" | "reason">) =>
+  item.reason.kind === "runtime" && item.reason.state === "gone" ? "var(--text-3)" : GROUP_COLOR[item.group];
+
 const COORDINATOR_COLOR = { active: "var(--green)", idle: "var(--amber)", unknown: "var(--text-3)" } as const;
 
 /** A row's reason line, in the viewer's language. */
 export function reasonText(t: Strings, r: Reason, now: number): string {
   const o = t.overview.reasons;
   switch (r.kind) {
+    case "runtime":
+      return t.shell.runtimeState[r.state];
     case "question":
       return o.question(r.text);
     case "ci":
@@ -431,7 +436,7 @@ function Row({
 }) {
   const { t } = useShell();
   const now = useNow();
-  const color = GROUP_COLOR[i.group];
+  const color = itemColor(i);
   const href = itemHref(i);
   const external = !href.startsWith("/");
   const onClick =

@@ -8,7 +8,7 @@ import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, issue, NOW } 
 import { run } from "../src/cli.ts";
 import { herdrPhase, parseHerdrHandle, reportHerdr } from "../src/herdr.ts";
 import type { Io } from "../src/io.ts";
-import { observeHerdr } from "../src/runtime.ts";
+import { observeRuntimes } from "../src/runtime.ts";
 
 const handle = { workspace: "w8", pane: "w8:p9", agent: "demo-7" };
 const rawHandle = JSON.stringify(handle);
@@ -219,11 +219,11 @@ test("unknown/runtime failures preserve reports instead of inventing a fresh wor
       return true;
     },
   } as unknown as Fleet;
-  await observeHerdr(f.io, fleet);
+  await observeRuntimes(f.io, fleet);
   expect(writes).toHaveLength(1);
   expect(writes[0]).toMatchObject({ state: "unknown" });
   f.change({ failure: true });
-  await observeHerdr(f.io, fleet);
+  await observeRuntimes(f.io, fleet);
   expect(writes).toHaveLength(1);
 });
 
