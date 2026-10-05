@@ -9,6 +9,7 @@
 import type { Attachment } from "./attachments.ts";
 import { HttpRequestError, httpRequest } from "./http.ts";
 import type { Fetch } from "./linear.ts";
+import type { RuntimeName } from "./runtime.ts";
 
 /**
  * How a terminal proves who it is: the session of `armada login`, an
@@ -589,6 +590,17 @@ export function armadaApi(opts: ArmadaApiOptions) {
       if (typeof body.id !== "string" || typeof body.ticket !== "string")
         throw new ArmadaApiError(`Armada (${host}) answered the revoked launch in a shape this CLI does not know`);
       return { id: body.id, ticket: body.ticket };
+    },
+
+    /** Records the runtime session created for this launch, before worker sign-in. */
+    async bindLaunch(
+      signIn: ArmadaSignIn,
+      target: { project: string; ticket: string; id: string; runtime: RuntimeName; handle: string },
+    ): Promise<void> {
+      const { status, body } = await call("POST", "launch-tokens/bind", { signIn, body: target });
+      if (status !== 200) throw refusal(status, body, "Armada did not bind this launch session");
+      if (body.id !== target.id || body.ticket !== target.ticket.toUpperCase())
+        throw new ArmadaApiError(`Armada (${host}) answered a different bound launch`);
     },
 
     /** Failure cleanup targets its own launch; older servers safely refuse this distinct route. */
