@@ -80,6 +80,50 @@ The output is `{"messageId": …, "state": "sent"}`. Exit code 0 means Conductor
 ## Status
 
 ```sh
+armada peek ABC-12
+armada peek ABC-12 --actions 10 --json
+```
+
+Peek reads the claimed session or a bound launch before claim. It shows the runtime state and when it began, the worker's last reply, recent commands and exit codes, report and heartbeat ages, pull request checks and open questions. Times follow the coordinator's `TZ`. Runtime transcript secrets are masked; no runtime command writes to the worker. A fresh observation is published to Armada for status and the dashboard. The separate machine cursor and bounded reply/action tail make repeat reads incremental; “older events skipped” means the 20-page cap was reached, and the next peek continues from the saved cursor.
+
+`working` means a turn is running; `idle` means it ended, so compare the last report with its reply before nudging it to continue. `failed` means the last turn failed; `archived` means the workspace ended but its retained transcript can still be read. An unreachable runtime shows Armada's stored state and observation age. Check a new launch's setup reply before launching again.
+
+**Read the transcript** with `armada peek ABC-12` first. Use `--json` when a script needs the same facts; the raw Conductor recipes are in the “Without Armada” appendix.
+
+## Stop and archive
+
+```sh
+armada stop ABC-12
+```
+
+Run this after the pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"`. Armada refuses while the worker still holds the ticket. It checks the exact stored claim and session’s workspace, waits for the final turn to finish (polling every 15 seconds for up to ten minutes), then cancels if needed and archives. A replaced claim is refused before any runtime write; an already archived workspace is safe to record again.
+
+## Without Armada: manual stop and archive
+
+Only use this appendix when Armada does not hold the worker’s claim. For registered workers, use `armada stop` so its generation guard protects replacement sessions.
+
+```sh
+conductor --json session cancel <sessionId>
+conductor --json workspace archive <workspaceId>
+```
+
+- `session cancel` stops the running turn: `{"status", "canceledQueuedMessages"}`, and the session is `idle` within seconds. The workspace stays; a message starts a new turn. Use it on a worker that runs the wrong thing.
+- `workspace archive` answers `{"status": "archived"}`. Archive a worker's workspace after its pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"` for a worker that stops without handing back. The branch and the pull request stay on GitHub.
+- **Wait for `idle` before archiving.** A hand-back often arrives while the worker's session is still `working`: `armada report ready-to-merge` runs inside its last turn, which then writes its final reply. Archive only once `session status` answers `idle`. Poll it every 15 seconds; if it is still `working` after 10 minutes, cancel the turn and archive (the transcript keeps what it was doing). Run the whole block as one command; it can take up to 10 minutes, so run it in the background or give it a longer command timeout:
+
+```sh
+for i in $(seq 40); do
+  [ "$(conductor --json session status <sessionId> | jq -r .status)" = working ] || break
+  sleep 15
+done
+[ "$(conductor --json session status <sessionId> | jq -r .status)" = working ] && conductor --json session cancel <sessionId>
+conductor --json workspace archive <workspaceId>
+```
+- After an archive, `session status` still answers `idle`; `workspace status` says `archived`.
+
+## Without Armada: status and transcript
+
+```sh
 conductor --json session status <sessionId>
 ```
 
@@ -122,34 +166,3 @@ Another agent, or a filter that prints nothing: count the event types, look at o
 ```sh
 jq -r '.data[].content.rawPayload | .type // .event.type // "(no payload)"' /tmp/abc-12-events.json | sort | uniq -c
 ```
-
-## Stop and archive
-
-```sh
-armada stop ABC-12
-```
-
-Run this after the pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"`. Armada refuses while the worker still holds the ticket. It checks the exact stored claim and session’s workspace, waits for the final turn to finish (polling every 15 seconds for up to ten minutes), then cancels if needed and archives. A replaced claim is refused before any runtime write; an already archived workspace is safe to record again.
-
-## Without Armada: manual stop and archive
-
-Only use this appendix when Armada does not hold the worker’s claim. For registered workers, use `armada stop` so its generation guard protects replacement sessions.
-
-```sh
-conductor --json session cancel <sessionId>
-conductor --json workspace archive <workspaceId>
-```
-
-- `session cancel` stops the running turn: `{"status", "canceledQueuedMessages"}`, and the session is `idle` within seconds. The workspace stays; a message starts a new turn. Use it on a worker that runs the wrong thing.
-- `workspace archive` answers `{"status": "archived"}`. Archive a worker's workspace after its pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"` for a worker that stops without handing back. The branch and the pull request stay on GitHub.
-- **Wait for `idle` before archiving.** A hand-back often arrives while the worker's session is still `working`: `armada report ready-to-merge` runs inside its last turn, which then writes its final reply. Archive only once `session status` answers `idle`. Poll it every 15 seconds; if it is still `working` after 10 minutes, cancel the turn and archive (the transcript keeps what it was doing). Run the whole block as one command; it can take up to 10 minutes, so run it in the background or give it a longer command timeout:
-
-```sh
-for i in $(seq 40); do
-  [ "$(conductor --json session status <sessionId> | jq -r .status)" = working ] || break
-  sleep 15
-done
-[ "$(conductor --json session status <sessionId> | jq -r .status)" = working ] && conductor --json session cancel <sessionId>
-conductor --json workspace archive <workspaceId>
-```
-- After an archive, `session status` still answers `idle`; `workspace status` says `archived`.

@@ -27,6 +27,7 @@ import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
+import { peek, requirePeekCoordinator } from "./peek.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
@@ -146,6 +147,11 @@ const COMMAND_HELP: Record<string, string> = {
   watch --stop      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
+  peek: `  peek <ticket> [--actions <n>] [--json]
+                    Coordinator: read the worker's runtime, reply, last commands (default 5,
+                    up to 100), report, heartbeat, PR checks and open inbox in local TZ.
+                    Includes bound launches before claim; runtime is never changed
+`,
   stop: `  stop <ticket>
                     Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed
 `,
@@ -251,6 +257,7 @@ const COMMAND_HELP: Record<string, string> = {
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
+  "peek",
   "attach",
   "status",
   "secrets",
@@ -272,6 +279,7 @@ const CONFIG_OPTION = new Set([
   "setup",
 ]);
 const JSON_OPTION = new Set([
+  "peek",
   "skills",
   ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach"),
   "doctor",
@@ -348,6 +356,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "actions",
   "at",
   "every",
   "parent",
@@ -403,6 +412,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  peek: ["actions"],
   spec: ["at", "apply"],
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
@@ -643,6 +653,21 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, scope ? { worker: scope } : { project: config.project.slug });
       if (command === "inbox") await recordPresence(io, config, credentials);
       return await worker(io, config, credentials, args);
+    }
+    if (args.command === "peek") {
+      const { text } = await findConfig(io, args.config, "peek");
+      const config = parseConfig(text);
+      const local = await loadCredentials(io, {
+        armada: false,
+        worker: {
+          command: "peek",
+          project: config.project.slug,
+          ticket: (stored) => currentTicket(io, config, undefined, stored),
+        },
+      });
+      requirePeekCoordinator(local.credentials);
+      // Peek needs fleet sign-in and optional local GitHub credentials, never a Linear key.
+      return await peek(io, config, local.credentials, args);
     }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch");

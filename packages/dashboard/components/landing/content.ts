@@ -45,6 +45,7 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   { name: "done", role: "coordinator", what: "Close a design ticket the owner approved" },
   { name: "inbox", role: "coordinator", what: "Questions, plans, requests, hand-backs, silent workers" },
   { name: "watch", role: "coordinator", what: "Wait in the background until something needs you" },
+  { name: "peek", role: "coordinator", what: "See a worker’s live state, reply, commands, checks and questions" },
   { name: "stop", role: "coordinator", what: "Stop a local worker after its work is pushed" },
   { name: "answer", role: "coordinator", what: "Deliver local worker answers and record decisions" },
   { name: "merge", role: "coordinator", what: "Check a hand-back and squash-merge it, pinned to its SHA" },
