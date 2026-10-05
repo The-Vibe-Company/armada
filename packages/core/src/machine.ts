@@ -3,7 +3,7 @@
 // the only code that touches those files. It never logs or returns a value in
 // an error; values leave it only through resolveCredentials.
 import { randomBytes } from "node:crypto";
-import { chmod, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { parse, TomlError } from "smol-toml";
 import { ConfigError } from "./config.ts";
@@ -247,6 +247,40 @@ export async function readWatchState(paths: MachinePaths, project: string): Prom
         }
       : {}),
   };
+}
+
+/** Known checkouts, newest watch reading first, including named coordinator watches. */
+export async function readWatchProjects(paths: MachinePaths): Promise<{ project: string; root: string }[]> {
+  const dir = join(paths.dir, "watch");
+  let files: string[];
+  try {
+    files = await readdir(dir);
+  } catch (err) {
+    if (missing(err)) return [];
+    throw new Error(`cannot read ${dir}: ${(err as NodeJS.ErrnoException).code ?? "unknown error"}`);
+  }
+  const projects = await Promise.all(
+    files
+      .filter((file) => file.endsWith(".json"))
+      .sort()
+      .map(async (file) => {
+        const name = file.slice(0, -5);
+        const project = name.split("@")[0];
+        const state = await readWatchState(paths, name);
+        if (!project || !state?.root || !isAbsolute(state.root)) return null;
+        const readAt = Date.parse(state.readAt ?? "");
+        const at = Number.isFinite(readAt)
+          ? readAt
+          : await stat(join(dir, file))
+              .then((s) => s.mtimeMs)
+              .catch(() => 0);
+        return { project, root: state.root, at };
+      }),
+  );
+  return projects
+    .filter((p) => p !== null)
+    .sort((a, b) => b.at - a.at)
+    .map(({ project, root }) => ({ project, root }));
 }
 
 /** Sets some fields of the project's watch state, keeping the others; returns the state written. */
