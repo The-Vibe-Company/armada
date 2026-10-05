@@ -9,6 +9,8 @@ export interface CiConfig {
 
 export const CONFIG_FILE = "armada.toml";
 
+export type SpecTitleStyle = "N" | "N/M";
+
 export interface ArmadaConfig {
   project: {
     name: string;
@@ -18,6 +20,8 @@ export interface ArmadaConfig {
   tracker: {
     /** Identifier of the Linear issue at the root of the program, e.g. ABC-1. */
     programRoot: string;
+    /** Style used when creating and renumbering specs; both forms are always readable. */
+    specTitles: SpecTitleStyle;
     /** Language of owner-facing output (BCP 47 tag). Tracker comments stay in English. */
     language: string;
     /** Label that marks a ticket as specified enough for an agent to take. */
@@ -312,7 +316,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   // left alone so newer sections do not break older readers.
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
-    ["tracker", tracker, ["program_root", "language", "ready_label", "parked_label", "labels"]],
+    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["ci", ciT, ["failure_patterns"]],
@@ -624,12 +628,19 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
   }
 
+  let specTitles: SpecTitleStyle = "N";
+  if (tracker.spec_titles !== undefined) {
+    if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
+    else problems.push('"tracker.spec_titles" must be "N" or "N/M"');
+  }
+
   const config: ArmadaConfig = {
     project: {
       name: str(project, "project", "name"),
       slug: str(project, "project", "slug", { pattern: SLUG, hint: "lowercase letters, digits and dashes" }),
     },
     tracker: {
+      specTitles,
       programRoot: str(tracker, "tracker", "program_root", {
         pattern: ISSUE_ID,
         hint: "an issue identifier such as ABC-1",
@@ -684,6 +695,7 @@ slug = ${q(p.slug)}          # stable id: lowercase letters, digits and dashes
 
 [tracker]
 program_root = ${q(p.programRoot)}  # Linear issue at the root of the program
+spec_titles = "N"       # "N/M" keeps totals and updates them when adding a spec
 language = "en"          # language of owner-facing output
 ready_label = "ready-for-agent"
 # parked_label = "parked"  # a ticket with this label is parked on purpose: never listed as work to start
