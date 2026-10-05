@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.55](https://github.com/The-Vibe-Company/armada/compare/v0.2.54...v0.2.55) (2026-10-05)
+
+
+### Bug Fixes
+
+* **dashboard:** drop unused saved views table ([#190](https://github.com/The-Vibe-Company/armada/issues/190)) ([b7569bd](https://github.com/The-Vibe-Company/armada/commit/b7569bd15b239c6a72c61a8e0c95828eae58f9ac))
+
 ## [0.2.54](https://github.com/The-Vibe-Company/armada/compare/v0.2.53...v0.2.54) (2026-10-04)
 
 
