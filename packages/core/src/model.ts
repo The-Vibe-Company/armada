@@ -11,8 +11,8 @@ export const isClosed = (i: { statusType: StatusType }) => CLOSED.includes(i.sta
 export const isStarted = (i: { statusType: StatusType }) => i.statusType === "started";
 export const isNotStarted = (i: { statusType: StatusType }) => NOT_STARTED.includes(i.statusType);
 
-/** Spec convention: a direct child of the root titled "Spec N/M — Name" (em dash, en dash or hyphen). */
-export const SPEC_TITLE = /^Spec\s+(\d+)\s*\/\s*(\d+)\s*[—–-]\s*(.+)$/;
+/** Spec convention: a direct child of the root titled "Spec N — Name" or "Spec N/M — Name" (em dash, en dash or hyphen). */
+export const SPEC_TITLE = /^Spec\s+(\d+)(?:\s*\/\s*(\d+))?\s*[—–-]\s*(.+)$/;
 
 export type NodeState = "done" | "canceled" | "active" | "frontier" | "blocked";
 
@@ -21,6 +21,12 @@ export interface Spec {
   ordinal: number;
   name: string;
 }
+
+/** Stable order shared by fleet views and spec repair plans. */
+export const compareSpecs = (a: Spec, b: Spec) =>
+  a.ordinal - b.ordinal ||
+  a.issue.createdAt.localeCompare(b.issue.createdAt) ||
+  a.issue.id.localeCompare(b.issue.id, "en", { numeric: true });
 
 export interface Model {
   root: Issue;
@@ -64,7 +70,7 @@ export function buildModel(issues: Issue[], rootId: string): Model {
       const m = issue.title.trim().match(SPEC_TITLE);
       return m?.[1] && m[3] ? [{ issue, ordinal: Number(m[1]), name: m[3].trim() }] : [];
     })
-    .sort((a, b) => a.ordinal - b.ordinal || a.issue.createdAt.localeCompare(b.issue.createdAt));
+    .sort(compareSpecs);
   const specById = new Map(specs.map((s) => [s.issue.id, s]));
 
   const specOf = (id: string): Spec | null => {
