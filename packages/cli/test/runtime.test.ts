@@ -248,7 +248,7 @@ test("Conductor retry after Armada recording failure reuses the message id", asy
 
 test.each([
   { name: "auth", code: 3, archived: false, missing: false, message: "Conductor is not signed in" },
-  { name: "unavailable", code: 0, archived: false, missing: true, message: "Conductor is unavailable" },
+  { name: "unavailable", code: 0, archived: false, missing: true, message: "Conductor CLI is missing" },
   { name: "archived", code: 0, archived: true, missing: false, message: "workspace is archived" },
 ])("Conductor $name leaves the question open with no record", async ({ code, archived, missing, message }) => {
   const f = await fixture("codex", "conductor");
