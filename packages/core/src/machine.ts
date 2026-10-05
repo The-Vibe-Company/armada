@@ -402,3 +402,39 @@ export async function addNoticedRelease(paths: MachinePaths, version: string): P
   const text = `${JSON.stringify({ noticed: noticed.slice(-NOTICED_KEPT) }, null, 2)}\n`;
   await writePrivate(paths, releasesFile(paths), text, 0o644);
 }
+
+/** Non-secret memory of a keys fallback, shared by this machine's commands. */
+export interface KeysFallback {
+  reason: string;
+  failedAt: string;
+  warnedAt: string;
+}
+
+const keysFallbackFile = (paths: MachinePaths) => join(paths.dir, "keys-fallback.json");
+
+/** Missing, unreadable or malformed memory never prevents asking Armada. */
+export async function readKeysFallback(paths: MachinePaths): Promise<KeysFallback | null> {
+  try {
+    const raw = JSON.parse(await readFile(keysFallbackFile(paths), "utf8")) as Partial<KeysFallback> | null;
+    if (
+      typeof raw?.reason !== "string" ||
+      typeof raw.failedAt !== "string" ||
+      !Number.isFinite(Date.parse(raw.failedAt)) ||
+      typeof raw.warnedAt !== "string" ||
+      !Number.isFinite(Date.parse(raw.warnedAt))
+    )
+      return null;
+    return { reason: raw.reason, failedAt: raw.failedAt, warnedAt: raw.warnedAt };
+  } catch {
+    return null;
+  }
+}
+
+/** A successful keys answer clears the memory; writes replace it atomically. */
+export async function writeKeysFallback(paths: MachinePaths, fallback: KeysFallback | null): Promise<void> {
+  if (!fallback) {
+    await rm(keysFallbackFile(paths), { force: true });
+    return;
+  }
+  await writePrivate(paths, keysFallbackFile(paths), `${JSON.stringify(fallback, null, 2)}\n`, 0o644);
+}
