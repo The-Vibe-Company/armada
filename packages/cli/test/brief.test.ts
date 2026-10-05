@@ -197,9 +197,10 @@ describe("armada brief", () => {
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     expect(prompt).toContain(
-      `\nnpm install -g @the-vibe-company/armada@${version}\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page --profile opus\narmada heartbeat --every 5m --ticket DEMO-13 --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --parent "$PPID" --background\n`,
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada skill armada-worker\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page --profile opus\narmada heartbeat --every 5m --ticket DEMO-13 --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --parent "$PPID" --background\n`,
     );
     expect(prompt).toContain("git branch -m feature/demo-13-show-a-sign-in-page");
+    expect(prompt).toContain("After installing Armada, read your skill with `armada skill armada-worker`");
     expect(prompt).toContain("## Ticket\n\n> ## In short\n>\n> A page with an email field.\n");
     expect(text).not.toContain("Warnings:");
     // The hand-back is the ready-to-merge comment, not the newer "Merged, thanks."
@@ -348,6 +349,9 @@ describe("armada brief", () => {
     // The handle is the subagent's name, which the coordinator gives it at launch.
     expect(prompt).toContain(
       "\narmada claim DEMO-13 --runtime claude-code --handle demo-13 --branch feature/demo-13-show-a-sign-in-page --profile local --reason 'short ticket'\narmada heartbeat --every 5m --ticket DEMO-13 --handle demo-13 --parent \"$PPID\"\n",
+    );
+    expect(prompt).toContain(
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada skill armada-worker\narmada claim DEMO-13`,
     );
     expect(prompt).toContain("run_in_background: true");
     expect(prompt).toContain("Your worktree starts on a branch Claude Code named");

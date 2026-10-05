@@ -95,7 +95,7 @@ No cron is needed: nothing reads Linear or GitHub on a timer, so the database ca
    conductor auth whoami
    ```
 
-2. Open a checkout of the repository on its default branch, up to date, and start your agent there (for example `claude` or `codex`). The skills are in `.agents/skills`, linked from `.claude/skills`.
+2. Open a checkout of the repository on its default branch, up to date, and start your agent there (for example `claude` or `codex`). The skills are in `.agents/skills`, linked from `.claude/skills`. The five `armada-*` entries are discovery pointers: run `armada skill armada-coordinator` and follow its output; read linked files with `armada skill armada-coordinator MERGE.md`. Instructions follow the installed CLI version, so instruction-only releases require no setup PR. Install the version named in a worker brief before running `armada skill armada-worker`. The shipping, review and learning packages remain vendored because they include scripts. Run `armada init` once to convert older full copies, then only when doctor flags changed pointer descriptions or vendored packages.
 3. Give it the launch prompt below. Its handle is one you choose and that names the session, for example `coordinator-<your name>-laptop`, and its runtime is the one it runs in (`claude-code`, `codex`).
 
 The laptop must stay awake and online while the coordinator runs: when it sleeps, nobody answers the workers. For a long run, start the coordinator in Conductor Cloud instead.

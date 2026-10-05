@@ -1,4 +1,4 @@
-// The skills Armada vendors into every managed repository. Their files live in
+// The skills Armada delivers to every managed repository. Their files live in
 // `skills/` at the root of the Armada repository and are bundled as text, so
 // the single published bundle carries them. Folder hashes use the `npx skills`
 // algorithm, so skills-lock.json stays readable by that tool.
@@ -17,11 +17,12 @@ export interface SkillFile {
 
 export interface BundledSkill {
   name: string;
+  delivery: "pointer" | "vendored";
   files: SkillFile[];
 }
 
 /** Every skill a repository needs to be run by Armada. A missing one is an error. */
-export const BUNDLED_SKILLS: readonly BundledSkill[] = bundledSkills;
+export const BUNDLED_SKILLS: readonly BundledSkill[] = bundledSkills as BundledSkill[];
 
 /**
  * Hash of a skill folder as `npx skills` computes it: sha256 over every file,
@@ -34,4 +35,27 @@ export function skillFolderHash(files: readonly { path: string; content: string 
     hash.update(f.content);
   }
   return hash.digest("hex");
+}
+
+/** Stable discovery metadata plus instructions resolved by the installed CLI. */
+export function pointerText(skill: BundledSkill, ref?: string): string {
+  const main = skill.files.find((f) => f.path === "SKILL.md")?.content;
+  const frontmatter = main?.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
+  const name = frontmatter?.match(/^name:[^\n]*/m)?.[0];
+  const description = frontmatter?.match(/^description:[^\n]*(?:\n[ \t]+[^\n]*)*/m)?.[0];
+  if (!name || !description) throw new Error(`skill ${skill.name} has no discovery frontmatter`);
+  return `---
+${name}
+${description}
+---
+
+This project's Armada instructions come from the Armada CLI the brief installed. Run \`armada skill ${skill.name}\` and follow its output; for a linked file, \`armada skill ${skill.name} <file>\`. If the command is missing, install the version your brief names.
+
+[Browse the instructions on GitHub](https://github.com/${SKILLS_SOURCE}/blob/${ref ?? "main"}/skills/${skill.name}/SKILL.md).
+`;
+}
+
+/** Files kept in the project; a pointer's tag is the release recorded in its lock. */
+export function deliveredSkillFiles(skill: BundledSkill, ref?: string): SkillFile[] {
+  return skill.delivery === "pointer" ? [{ path: "SKILL.md", content: pointerText(skill, ref) }] : skill.files;
 }

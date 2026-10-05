@@ -35,6 +35,7 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   },
   { name: "doctor", role: "you", what: "What the repository lacks, with the fix for each" },
   { name: "init", role: "you", what: "One pull request that sets the repository up" },
+  { name: "skill", role: "both", what: "Read instructions from the installed Armada version" },
   { name: "skills", role: "you", what: "Update the bundled skills on the current branch" },
   { name: "claim", role: "worker", what: "Take a ticket: In Progress, phase planning" },
   { name: "report", role: "worker", what: "Report a phase; the same phase again is a heartbeat" },

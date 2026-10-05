@@ -515,7 +515,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   const out: string[] = [
     `# ${t.id} — ${t.title}`,
     "",
-    `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. Follow the \`armada-worker\` skill (\`${WORKER_SKILL_PATH}\`) and the repository's \`AGENTS.md\`. Never merge.`,
+    `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. After installing Armada, read your skill with \`armada skill armada-worker\` and follow its output and the repository's \`AGENTS.md\`. Never merge.`,
     "",
     ...(subagent
       ? [
@@ -529,12 +529,13 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     ...(subagent
       ? [
-          "Run install, login and claim first. Immediately after claim, run the final heartbeat line as a separate Bash tool call with `run_in_background: true`; keep that Bash owned by this subagent.",
+          "Run install, read the worker skill, login and claim first. Immediately after claim, run the final heartbeat line as a separate Bash tool call with `run_in_background: true`; keep that Bash owned by this subagent.",
           "",
         ]
       : []),
     "```sh",
     b.install,
+    "armada skill armada-worker",
     ...(b.launch ? [b.launch.command] : []),
     b.claimCommand,
     `armada heartbeat --every 5m --ticket ${t.id} --handle ${b.handle ? shellWord(b.handle) : subagent ? subagentName(t.id) : CONDUCTOR_HANDLE} --parent "$PPID"${subagent ? "" : " --background"}`,
@@ -548,7 +549,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     ...(b.launch
       ? [
           "",
-          `\`armada login --launch-token\` signs this workspace in to Armada as the worker of ${t.id}, with a one-time token valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC. Run it first, once.`,
+          `\`armada login --launch-token\` signs this workspace in to Armada as the worker of ${t.id}, with a one-time token valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC. Run it once before claim.`,
         ]
       : []),
     "",

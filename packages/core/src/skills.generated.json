@@ -1,6 +1,7 @@
 [
   {
     "name": "armada-coordinator",
+    "delivery": "pointer",
     "files": [
       {
         "path": "MERGE.md",
@@ -14,6 +15,7 @@
   },
   {
     "name": "armada-runtime-claude-code",
+    "delivery": "pointer",
     "files": [
       {
         "path": "SKILL.md",
@@ -23,6 +25,7 @@
   },
   {
     "name": "armada-runtime-conductor",
+    "delivery": "pointer",
     "files": [
       {
         "path": "SKILL.md",
@@ -32,6 +35,7 @@
   },
   {
     "name": "armada-runtime-herdr",
+    "delivery": "pointer",
     "files": [
       {
         "path": "SKILL.md",
@@ -41,6 +45,7 @@
   },
   {
     "name": "armada-worker",
+    "delivery": "pointer",
     "files": [
       {
         "path": "SKILL.md",
@@ -50,6 +55,7 @@
   },
   {
     "name": "capture-learning-tools",
+    "delivery": "vendored",
     "files": [
       {
         "path": "LICENSE",
@@ -123,6 +129,7 @@
   },
   {
     "name": "review-code-dev",
+    "delivery": "vendored",
     "files": [
       {
         "path": "LICENSE",
@@ -160,6 +167,7 @@
   },
   {
     "name": "ship-pr-dev",
+    "delivery": "vendored",
     "files": [
       {
         "path": "LICENSE",
