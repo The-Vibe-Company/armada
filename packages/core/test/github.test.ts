@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { fetchForge, ticketIdFromBranch } from "../src/github.ts";
+import { fetchForge, fetchMainHealth, ticketIdFromBranch } from "../src/github.ts";
 import { NOW, recordedFetch } from "./support.ts";
 
 describe("ticketIdFromBranch", () => {
@@ -70,4 +70,83 @@ test("GitHub reads recover from a temporary HTTP status", async () => {
   expect(forge.prs.length).toBeGreaterThan(0);
   expect(calls).toBe(2);
   expect(waits).toEqual([1000]);
+});
+
+test("reads default-branch history in the forge snapshot and focused health adapter", async () => {
+  const sha = "a".repeat(40);
+  const github = {
+    data: {
+      repository: {
+        open: { nodes: [] },
+        closed: { nodes: [] },
+        defaultBranchRef: {
+          name: "trunk",
+          target: {
+            history: {
+              pageInfo: { hasNextPage: false },
+              nodes: [
+                {
+                  oid: sha,
+                  committedDate: NOW.toISOString(),
+                  messageHeadline: "change (#17)",
+                  statusCheckRollup: {
+                    state: "FAILURE",
+                    contexts: {
+                      nodes: [
+                        { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "FAILURE" },
+                        { __typename: "StatusContext", context: "deploy", state: "SUCCESS" },
+                      ],
+                    },
+                  },
+                },
+                {
+                  oid: "b".repeat(40),
+                  committedDate: NOW.toISOString(),
+                  messageHeadline: "release",
+                  statusCheckRollup: null,
+                },
+              ],
+            },
+          },
+        },
+      },
+    },
+  };
+  const recorded = recordedFetch({ github });
+  const opts = { token: "synthetic-token", repository: "acme/widgets", fetch: recorded.fetch };
+  const forge = await fetchForge(opts);
+  expect(forge.main).toEqual([
+    {
+      checksComplete: true,
+      branch: "trunk",
+      sha,
+      at: NOW.toISOString(),
+      headline: "change (#17)",
+      ci: "failure",
+      checks: [
+        { name: "test", state: "failure" },
+        { name: "deploy", state: "success" },
+      ],
+    },
+    {
+      checksComplete: true,
+      branch: "trunk",
+      sha: "b".repeat(40),
+      at: NOW.toISOString(),
+      headline: "release",
+      ci: "none",
+      checks: [],
+    },
+  ]);
+  expect(forge.mainComplete).toBe(true);
+  expect(recorded.calls[0]?.operation).toBe("Pulls");
+  expect(await fetchMainHealth({ ...opts, requiredChecks: ["test"] })).toMatchObject({
+    branch: "trunk",
+    head: sha,
+    state: "red",
+    redSince: { pr: 17 },
+    redBeyondWindow: false,
+  });
+  const empty = recordedFetch({ github: { data: { repository: { defaultBranchRef: null } } } });
+  expect(await fetchMainHealth({ ...opts, fetch: empty.fetch })).toBeNull();
 });

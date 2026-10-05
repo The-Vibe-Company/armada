@@ -1,6 +1,6 @@
 // Human-readable rendering of a status report. Plain text, no colors, so the
 // output reads the same in a terminal, a log or an agent transcript.
-import type { InFlightTicket, StatusReport } from "@armada/core";
+import { type InFlightTicket, mainHealthLine, type StatusReport } from "@armada/core";
 
 const MIN = 60_000;
 
@@ -56,6 +56,8 @@ export function renderStatus(r: StatusReport): string {
   out.push(`${r.project.name} · ${r.programRoot.id} ${r.programRoot.title}`);
   const gh = r.sources.github.error ? `GitHub not read: ${r.sources.github.error}` : `GitHub ${r.project.repository}`;
   out.push(`Read ${r.generatedAt.slice(0, 16).replace("T", " ")} UTC · Linear ${r.programRoot.id} · ${gh}`);
+
+  if (r.main) out.push(mainHealthLine(r.main));
 
   out.push("", `In flight (${r.inFlight.length})`);
   if (!r.inFlight.length) out.push("  nobody is working");
