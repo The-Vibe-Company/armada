@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GITHUB_GRAPHQL, LINEAR_ENDPOINT } from "../../core/src/index.ts";
+import { GITHUB_GRAPHQL, LINEAR_ENDPOINT, machinePaths, updateWatchState } from "../../core/src/index.ts";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 import { renderStatus } from "../src/render.ts";
@@ -27,6 +27,181 @@ function fakeIo(
   };
   return { io, out: () => out.join(""), err: () => err.join("") };
 }
+
+describe("project config resolution", () => {
+  function pathsOf(home: string) {
+    const paths = machinePaths({ XDG_CONFIG_HOME: home });
+    if (!paths) throw new Error("temporary machine store missing");
+    return paths;
+  }
+
+  async function withMachine(check: (home: string) => Promise<void>) {
+    const home = await mkdtemp(join(tmpdir(), "armada-config-"));
+    try {
+      await check(home);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }
+
+  test("--config overrides ARMADA_CONFIG, --project and the upward search", async () => {
+    await withMachine(async (home) => {
+      const { io, out } = fakeIo(
+        { "/tmp/chosen.toml": DEMO_TOML, "/tmp/armada.toml": "invalid" },
+        { XDG_CONFIG_HOME: home, ARMADA_CONFIG: "missing.toml", LINEAR_API_KEY: "k", GITHUB_TOKEN: "t" },
+      );
+      io.cwd = "/tmp";
+      expect(await run(["status", "--config", "chosen.toml", "--project", "unknown", "--json"], io)).toBe(0);
+      expect(JSON.parse(out()).project.slug).toBe("widgets");
+    });
+  });
+
+  test("ARMADA_CONFIG resolves absolute and relative paths from /tmp before --project", async () => {
+    await withMachine(async (home) => {
+      for (const config of ["/tmp/settings/project.toml", "settings/project.toml"]) {
+        const { io, out } = fakeIo(
+          { "/tmp/settings/project.toml": DEMO_TOML, "/tmp/armada.toml": "invalid" },
+          { XDG_CONFIG_HOME: home, ARMADA_CONFIG: config, LINEAR_API_KEY: "k", GITHUB_TOKEN: "t" },
+        );
+        io.cwd = "/tmp";
+        expect(await run(["status", "--project=unknown", "--json"], io)).toBe(0);
+        expect(JSON.parse(out()).project.slug).toBe("widgets");
+      }
+    });
+  });
+
+  test("ARMADA_CONFIG selects the inbox project from /tmp", async () => {
+    await withMachine(async (home) => {
+      const store = memoryFleet();
+      const key = "armada_key_CANARY_config";
+      const api = fakeArmada({ store, keys: { [key]: "config test" } });
+      const { io, out } = fakeIo(
+        { "/checkout/armada.toml": DEMO_TOML },
+        {
+          XDG_CONFIG_HOME: home,
+          ARMADA_CONFIG: "/checkout/armada.toml",
+          ARMADA_API_KEY: key,
+          ARMADA_API_URL: ARMADA_URL,
+          LINEAR_API_KEY: "k",
+        },
+      );
+      io.cwd = "/tmp";
+      io.fetch = api.fetch;
+      expect(await run(["inbox", "--json"], io)).toBe(0);
+      expect(JSON.parse(out()).project).toBe("widgets");
+    });
+  });
+
+  test("--project finds a previously watched checkout from /tmp before upward search", async () => {
+    await withMachine(async (home) => {
+      await updateWatchState(pathsOf(home), "widgets", { root: "/checkout" });
+      const { io, out } = fakeIo(
+        { "/checkout/armada.toml": DEMO_TOML, "/tmp/armada.toml": "invalid" },
+        { XDG_CONFIG_HOME: home, LINEAR_API_KEY: "k", GITHUB_TOKEN: "t" },
+      );
+      io.cwd = "/tmp";
+      expect(await run(["--project", "widgets", "status", "--json"], io)).toBe(0);
+      expect(JSON.parse(out()).project.slug).toBe("widgets");
+    });
+  });
+
+  test("spec renumber honors environment and project selectors from /tmp", async () => {
+    await withMachine(async (home) => {
+      await updateWatchState(pathsOf(home), "widgets", { root: "/checkout" });
+      for (const selector of ["env", "project"]) {
+        const { io, out } = fakeIo(
+          { "/checkout/armada.toml": DEMO_TOML },
+          {
+            XDG_CONFIG_HOME: home,
+            LINEAR_API_KEY: "synthetic-key",
+            ...(selector === "env" ? { ARMADA_CONFIG: "/checkout/armada.toml" } : {}),
+          },
+        );
+        io.cwd = "/tmp";
+        const linear = new FakeLinear();
+        io.linearWriter = () => linear;
+        const args = selector === "project" ? ["--project", "widgets"] : [];
+        expect(await run(["spec", "renumber", "--json", ...args], io)).toBe(0);
+        expect(JSON.parse(out())).toMatchObject({ applied: false, create: null, created: null });
+        expect(linear.writes).toEqual([]);
+      }
+    });
+  });
+
+  test("--project uses the most recent named coordinator's watch root", async () => {
+    await withMachine(async (home) => {
+      const paths = pathsOf(home);
+      await updateWatchState(paths, "widgets", { root: "/old", readAt: "2026-03-01T00:00:00Z" });
+      await updateWatchState(paths, "widgets@alpha", { root: "/recent", readAt: "2026-03-04T00:00:00Z" });
+      await updateWatchState(paths, "widgets@beta", { root: "/older", readAt: "2026-03-02T00:00:00Z" });
+      const { io, out } = fakeIo(
+        { "/recent/armada.toml": DEMO_TOML },
+        { XDG_CONFIG_HOME: home, LINEAR_API_KEY: "k", GITHUB_TOKEN: "t" },
+      );
+      io.cwd = "/tmp";
+      expect(await run(["status", "--project", "widgets", "--json"], io)).toBe(0);
+      expect(JSON.parse(out()).project.slug).toBe("widgets");
+    });
+  });
+
+  test("unknown projects list valid known slugs and suggest --config without falling back", async () => {
+    await withMachine(async (home) => {
+      const paths = pathsOf(home);
+      await updateWatchState(paths, "widgets@alpha", { root: "/widgets" });
+      await updateWatchState(paths, "gadgets", { root: "/gadgets" });
+      await writeFile(join(paths.dir, "watch", "broken.json"), "not JSON");
+      await updateWatchState(paths, "empty", { root: null });
+      const { io, err } = fakeIo({ "/tmp/armada.toml": DEMO_TOML }, { XDG_CONFIG_HOME: home });
+      io.cwd = "/tmp";
+      expect(await run(["status", "--project", "unknown"], io)).toBe(2);
+      expect(err()).toContain('unknown project "unknown"');
+      expect(err()).toContain("Known projects on this machine: gadgets, widgets");
+      expect(err()).toContain("armada status --config <file>");
+      const empty = fakeIo({}, {});
+      expect(await run(["status", "--project", "unknown"], empty.io)).toBe(2);
+      expect(empty.err()).toContain("Known projects on this machine: none");
+    });
+  });
+
+  test("explicit missing files and removed watched checkouts fail without upward fallback", async () => {
+    await withMachine(async (home) => {
+      await updateWatchState(pathsOf(home), "widgets", { root: "/removed" });
+      for (const selector of ["config", "env", "project"]) {
+        const { io, err } = fakeIo(
+          { "/tmp/armada.toml": DEMO_TOML },
+          { XDG_CONFIG_HOME: home, ...(selector === "env" ? { ARMADA_CONFIG: "missing.toml" } : {}) },
+        );
+        io.cwd = "/tmp";
+        const args = selector === "env" ? [] : [`--${selector}`, selector === "config" ? "missing.toml" : "widgets"];
+        expect(await run(["status", ...args], io)).toBe(2);
+        expect(err()).toContain(
+          selector === "project" ? "/removed/armada.toml does not exist" : "/tmp/missing.toml does not exist",
+        );
+        expect(err()).toContain("--config <file>");
+      }
+    });
+  });
+
+  test("hook stop ignores external selectors and keeps the hook's cwd", async () => {
+    await withMachine(async (home) => {
+      await updateWatchState(pathsOf(home), "widgets", {
+        root: "/coordinator",
+        inFlight: ["DEMO-11"],
+      });
+      const { io, out } = fakeIo(
+        { "/coordinator/armada.toml": DEMO_TOML, "/worker/armada.toml": DEMO_TOML },
+        { XDG_CONFIG_HOME: home, ARMADA_CONFIG: "/coordinator/armada.toml" },
+      );
+      io.cwd = "/coordinator";
+      io.readStdin = async () => JSON.stringify({ cwd: "/worker" });
+      expect(await run(["hook", "stop", "--config", "/coordinator/armada.toml", "--project", "widgets"], io)).toBe(0);
+      expect(out()).toBe("");
+      io.readStdin = async () => JSON.stringify({ cwd: "/coordinator" });
+      expect(await run(["hook", "stop"], io)).toBe(0);
+      expect(JSON.parse(out()).decision).toBe("block");
+    });
+  });
+});
 
 describe("armada status", () => {
   test("human status shows the recorded profile and reason", async () => {
