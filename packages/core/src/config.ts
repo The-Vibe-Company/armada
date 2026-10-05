@@ -1,6 +1,11 @@
 // armada.toml v0: one project = one repository + one tracker program root.
 // Secrets never live in this file; tokens come from the environment.
 import { parse, TomlError } from "smol-toml";
+import { failurePattern } from "./ci.ts";
+
+export interface CiConfig {
+  failurePatterns: string[];
+}
 
 export const CONFIG_FILE = "armada.toml";
 
@@ -32,6 +37,7 @@ export interface ArmadaConfig {
     /** owner/name */
     repository: string;
   };
+  ci: CiConfig;
   gates: {
     /**
      * CI checks that must be green on the head of a pull request before a
@@ -277,6 +283,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   if (!isTable(policy)) problems.push(`"policy" must be a table`);
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
+  const ci = raw.ci ?? {};
+  if (!isTable(ci)) problems.push(`"ci" must be a table`);
+  const ciT = isTable(ci) ? ci : {};
   const gates = raw.gates === undefined ? {} : raw.gates;
   if (!isTable(gates)) problems.push(`"gates" must be a table`);
   const gatesT = isTable(gates) ? gates : {};
@@ -306,6 +315,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker", tracker, ["program_root", "language", "ready_label", "parked_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
+    ["ci", ciT, ["failure_patterns"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     [
       "policy",
@@ -597,6 +607,23 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"gates.local_commands" must be a list of shell commands`);
   }
 
+  let failurePatterns: string[] = [];
+  if (ciT.failure_patterns !== undefined) {
+    const v = ciT.failure_patterns;
+    if (Array.isArray(v) && v.every((p) => typeof p === "string" && p.trim())) {
+      failurePatterns = [...new Set(v)];
+      for (const [i, pattern] of failurePatterns.entries()) {
+        try {
+          failurePattern(pattern);
+        } catch {
+          problems.push(
+            `"ci.failure_patterns[${i + 1}]" must be a valid regex with exactly one capture group for the test name`,
+          );
+        }
+      }
+    } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
+  }
+
   const config: ArmadaConfig = {
     project: {
       name: str(project, "project", "name"),
@@ -619,6 +646,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
+    ci: { failurePatterns },
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,

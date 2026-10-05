@@ -699,15 +699,17 @@ function refuse(ctx: MergeContext, run: Run, l: Look, problems: string[], hints:
     `${label(pull, ticket)} cannot be merged:\n${problems.map((p) => `  - ${p}`).join("\n")}${
       hints.length ? `\nHints (not blocking):\n${hints.map((h) => `  - ${h}`).join("\n")}` : ""
     }${updatedNote(run, pull)}`,
-    pull.state !== "open"
-      ? `gh pr view ${n} --repo ${ctx.config.github.repository}`
-      : !ticket
-        ? `gh pr checks ${n} --repo ${ctx.config.github.repository}; armada merge ${n} --no-ticket once it is fixed`
-        : ticket.agentPhase !== "ready-to-merge"
-          ? ctx.lockRequired
-            ? `armada inbox --wait, until ${ticket.id} is handed back`
-            : `armada status, until ${ticket.id} shows ready-to-merge`
-          : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
+    pull.checks.some((c) => c.state === "failure")
+      ? `armada ci why ${n}, then fix the failed checks before merging`
+      : pull.state !== "open"
+        ? `gh pr view ${n} --repo ${ctx.config.github.repository}`
+        : !ticket
+          ? `gh pr checks ${n} --repo ${ctx.config.github.repository}; armada merge ${n} --no-ticket once it is fixed`
+          : ticket.agentPhase !== "ready-to-merge"
+            ? ctx.lockRequired
+              ? `armada inbox --wait, until ${ticket.id} is handed back`
+              : `armada status, until ${ticket.id} shows ready-to-merge`
+            : `armada answer --note ${ticket.id} "<what to fix>", once you told its worker; merge again after its next hand-back`,
   );
 }
 
