@@ -84,7 +84,7 @@ export function renderStatus(r: StatusReport): string {
     out.push("", `Pending launches (${pending.length})`);
     for (const l of pending) {
       out.push(
-        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.handle ? ` · ${l.handle}` : ""}`,
+        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.runtime ? ` · ${l.runtime}` : ""}${l.handle ? ` · ${l.handle}` : ""}`,
       );
       const title = r.notStarted.find((launch) => launch.ticket === l.ticket)?.title;
       if (title) out.push(`${indent}${truncate(title, 90)}`);
