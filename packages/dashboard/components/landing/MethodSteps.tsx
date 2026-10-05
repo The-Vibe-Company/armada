@@ -52,6 +52,8 @@ export function MethodSteps({ steps, children }: { steps: readonly Step[]; child
   };
 
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    // The browser's own shortcuts (Alt+← for Back, Ctrl+Home…) stay the browser's.
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
     const next = stepForKey(e.key, step, steps.length);
     if (next === null) return;
     e.preventDefault();

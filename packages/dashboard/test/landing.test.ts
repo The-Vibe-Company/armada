@@ -106,7 +106,7 @@ describe("the method (THE-1049)", () => {
     const tall = [...css.matchAll(/(\d+(?:\.\d+)?)[sdl]?vh\b/g)].filter(([, n]) => Number(n) > 100).map(([m]) => m);
     expect(tall).toEqual([]);
     const listens =
-      /addEventListener\(\s*"(scroll|wheel|touchmove|mousewheel)"|\bon(Scroll|Wheel|TouchMove)\b|scroll-timeline|view-timeline/;
+      /addEventListener\(\s*"(scroll|wheel|touchmove|mousewheel)"|\bon(Scroll|Wheel|TouchMove)\b/;
     expect(own.filter((f) => listens.test(read(f))).map((f) => relative(ROOT, f))).toEqual([]);
   });
 

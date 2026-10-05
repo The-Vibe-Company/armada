@@ -739,7 +739,7 @@
   padding: clamp(80px, 10vw, 128px) 0;
   /* Laid out as it comes near the screen, as the sections below (THE-892). */
   content-visibility: auto;
-  contain-intrinsic-size: auto 820px;
+  contain-intrinsic-size: auto 760px;
 }
 .lp-method-inner {
   width: 100%;
@@ -1297,7 +1297,7 @@
 
 @media (max-width: 860px) {
   .lp-method {
-    contain-intrinsic-size: auto 960px;
+    contain-intrinsic-size: auto 870px;
   }
   .lp-method-inner {
     grid-template-columns: minmax(0, 1fr);
