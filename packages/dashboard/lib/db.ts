@@ -720,6 +720,11 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 21,
     statements: ["DELETE FROM saved_views WHERE list = 'agents'"],
   },
+  {
+    // Saved views have no consumers since THE-1021; the owner approved deleting their data (THE-1029).
+    version: 22,
+    statements: ["DROP TABLE IF EXISTS saved_views"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
