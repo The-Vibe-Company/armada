@@ -375,13 +375,32 @@ export function memoryFleet(): FleetStore & {
       });
       return { active: true, claimedAt: handle.claimedAt };
     },
-    async releaseRuntimeHandle(project, ticket, at) {
-      for (const session of sessions)
-        if (session.project === project && session.ticket === ticket && !session.releasedAt)
-          session.releasedAt = at.toISOString();
+    async releaseRuntimeHandle(project, ticket, at, guard) {
       const h = handles.get(key(project, ticket));
+      const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
+      if (guarded && !h) return !guard?.claimedAt;
+      if (
+        guarded &&
+        h &&
+        ((guard?.handle && h.handle !== guard.handle) ||
+          (guard?.claimedAt && h.claimedAt !== new Date(guard.claimedAt).toISOString()) ||
+          (guard?.workerSessionId && h.workerSessionId && h.workerSessionId !== guard.workerSessionId))
+      )
+        return false;
+      for (const session of sessions)
+        if (
+          session.project === project &&
+          session.ticket === ticket &&
+          !session.releasedAt &&
+          (!guarded ||
+            (h
+              ? session.handle === h.handle && session.claimedAt === h.claimedAt
+              : !guard?.handle || session.handle === guard.handle))
+        )
+          session.releasedAt = at.toISOString();
       if (h && !h.releasedAt) h.releasedAt = at.toISOString();
       profiles.delete(key(project, ticket));
+      return true;
     },
     async openRuntimeHandles(project) {
       return [...handles.values()]

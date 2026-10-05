@@ -31,6 +31,7 @@ import type {
   ProjectInput,
   ProjectInsightRecords,
   ProjectRecord,
+  ReleaseGuard,
   RequestStore,
   RuntimeHandle,
   RuntimeState,
@@ -478,17 +479,52 @@ export async function saveRuntimeHandle(
 }
 
 /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
-export async function releaseRuntimeHandle(db: Database, project: string, ticket: string, at: Date): Promise<void> {
-  await transaction(db, async (tx) => {
+export async function releaseRuntimeHandle(
+  db: Database,
+  project: string,
+  ticket: string,
+  at: Date,
+  guard?: ReleaseGuard,
+): Promise<boolean> {
+  return transaction(db, async (tx) => {
+    // Lock and compare the current claim before touching history or its profile.
+    const held = (
+      await tx.query(
+        "SELECT handle, claimed_at, released_at, worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 FOR UPDATE",
+        [project, ticket],
+      )
+    ).rows[0];
+    // A missing optional live row is not evidence of a replacement. An
+    // explicit claim timestamp must still match; a matching released row
+    // permits retrying after a Linear failure without touching a new claim.
+    const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
+    // With no row locked, never issue a ticket-wide mutation: a replacement
+    // could insert its claim after this read.
+    if (guarded && !held) return !guard?.claimedAt;
+    if (
+      guarded &&
+      held &&
+      ((guard?.handle && held.handle !== guard.handle) ||
+        (guard?.claimedAt && isoAt(held.claimed_at) !== new Date(guard.claimedAt).toISOString()) ||
+        (guard?.workerSessionId && held.worker_session_id && held.worker_session_id !== guard.workerSessionId))
+    )
+      return false;
     await tx.query(
-      "UPDATE fleet_sessions SET released_at = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
-      [project, ticket, at],
+      "UPDATE fleet_sessions SET released_at = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND ($4::text IS NULL OR handle = $4) AND ($5::timestamptz IS NULL OR claimed_at = $5)",
+      [
+        project,
+        ticket,
+        at,
+        guarded ? (held?.handle ?? guard?.handle ?? null) : null,
+        guarded ? (held?.claimed_at ?? null) : null,
+      ],
     );
     await tx.query(
       "UPDATE runtime_handles SET released_at = $1 WHERE project = $2 AND ticket = $3 AND released_at IS NULL",
       [at, project, ticket],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [project, ticket]);
+    return true;
   });
 }
 
@@ -1025,7 +1061,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
   observeRuntime: (input) => observeRuntime(db, input),
   stopRuntime: (input) => stopRuntime(db, input),
-  releaseRuntimeHandle: (project, ticket, at) => releaseRuntimeHandle(db, project, ticket, at),
+  releaseRuntimeHandle: (project, ticket, at, guard) => releaseRuntimeHandle(db, project, ticket, at, guard),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addInboxItem: (item) => addInboxItem(db, item),

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { NewRequest } from "@armada/core/read";
+import { type NewRequest, recordRelease } from "@armada/core/read";
 import type { Database } from "../lib/db.ts";
 import {
   acquireLease,
@@ -7,6 +7,7 @@ import {
   addRequest,
   assignUnownedProjects,
   coordinatorPresence,
+  fleetStore,
   getLease,
   getRuntimeHandle,
   heartbeatTimes,
@@ -68,6 +69,107 @@ describe("the project registry", () => {
 });
 
 describe("live data", () => {
+  test("a stale release leaves the replacement claim, profile, plans and questions untouched", async () => {
+    const project = "guarded-release";
+    await upsertProject(
+      db,
+      { slug: project, name: "Release", repository: "acme/release", programRoot: "WID-1" },
+      at(0),
+    );
+    const ticket = "WID-97";
+    const store = fleetStore(db);
+    await saveRuntimeHandle(db, {
+      project,
+      ticket,
+      runtime: "Conductor",
+      handle: "ws/s",
+      branch: null,
+      workerSessionId: "worker-new",
+      at: at(5),
+    });
+    await saveWorkerProfile(db, {
+      project,
+      ticket,
+      profile: {
+        name: "test",
+        agent: "codex",
+        model: "test",
+        effort: "high",
+        fastMode: false,
+        routed: null,
+        reason: null,
+        why: "test",
+      },
+      at: at(5),
+    });
+    const common = {
+      project,
+      ticket,
+      recipient: "coordinator" as const,
+      author: "ws/s",
+      body: "replacement item",
+      at: at(6),
+    };
+    const ids: number[] = [];
+    for (const kind of ["plan", "question", "answer-request"] as const)
+      ids.push(await addInboxItem(db, { ...common, kind }));
+    const before = await lastEventTimes(db, project);
+    for (const guard of [
+      { handle: "ws/s", claimedAt: at(0).toISOString() },
+      { workerSessionId: "worker-old" },
+      { handle: "old/s" },
+    ]) {
+      expect(await recordRelease(store, project, { ticket, reason: "late", ...guard }, at(7))).toEqual({
+        released: false,
+      });
+      expect((await getRuntimeHandle(db, project, ticket))?.releasedAt).toBeNull();
+      expect((await getRuntimeHandle(db, project, ticket))?.profile).toBe("test");
+      expect(
+        (await openInboxItems(db, { project, recipient: "coordinator", ticket })).filter((item) =>
+          ids.includes(item.id),
+        ),
+      ).toHaveLength(3);
+      expect(await lastEventTimes(db, project)).toEqual(before);
+    }
+    expect(
+      await recordRelease(
+        store,
+        project,
+        { ticket, reason: "done", handle: "ws/s", claimedAt: at(5).toISOString(), workerSessionId: "worker-new" },
+        at(8),
+      ),
+    ).toEqual({ released: true });
+    expect((await getRuntimeHandle(db, project, ticket))?.releasedAt).toBe(at(8).toISOString());
+    expect(
+      (await openInboxItems(db, { project, recipient: "coordinator", ticket })).filter((item) => ids.includes(item.id)),
+    ).toHaveLength(0);
+    expect(
+      await recordRelease(
+        store,
+        project,
+        { ticket, reason: "retry", handle: "ws/s", claimedAt: at(5).toISOString(), workerSessionId: "worker-new" },
+        at(9),
+      ),
+    ).toEqual({ released: true });
+    const missing = "WID-96";
+    expect(
+      await recordRelease(
+        store,
+        project,
+        { ticket: missing, reason: "missing", handle: "ws/missing", claimedAt: at(0).toISOString() },
+        at(9),
+      ),
+    ).toEqual({ released: false });
+    expect(
+      await recordRelease(
+        store,
+        project,
+        { ticket: missing, reason: "Linear-only claim", handle: "ws/missing", workerSessionId: "worker-missing" },
+        at(9),
+      ),
+    ).toEqual({ released: true });
+  });
+
   test("shipping detail persists on events and session reports, and a later phase clears it", async () => {
     const project = "shipping-stages";
     await upsertProject(db, { slug: project, name: "Stages", repository: "acme/stages", programRoot: "WID-1" }, at(0));

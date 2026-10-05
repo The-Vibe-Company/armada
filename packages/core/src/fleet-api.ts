@@ -296,8 +296,22 @@ export async function serveFleet(
           );
         case "ask":
           return recordQuestion(store, slug, { ticket: ticketOf(b), body: text(b, "body", BODY_MAX) }, at);
-        case "release":
-          return recordRelease(store, slug, { ticket: ticketOf(b), reason: text(b, "reason", BODY_MAX) }, at);
+        case "release": {
+          const claimedAt = optText(b, "claimedAt", 40);
+          if (claimedAt && !Number.isFinite(Date.parse(claimedAt))) throw new Invalid("claimedAt must be a timestamp");
+          return recordRelease(
+            store,
+            slug,
+            {
+              ticket: ticketOf(b),
+              reason: text(b, "reason", BODY_MAX),
+              handle: optText(b, "handle", LINE_MAX),
+              claimedAt,
+              workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
+            },
+            at,
+          );
+        }
         case "register":
           return store.upsertProject(
             { ...project, owner: caller.kind === "organization" ? (caller.author ?? null) : null },
@@ -622,7 +636,8 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     claim: (c: ClaimRecord) => call<InboxItem[]>("claim", c),
     report: (r: ReportRecord) => call<InboxItem[]>("report", r),
     ask: (q) => call<number>("ask", q),
-    release: (r) => call<null>("release", r).then(() => undefined),
+    // An older server returned null after releasing successfully.
+    release: (r) => call<{ released: boolean } | null>("release", r).then((result) => result ?? { released: true }),
     // Null: not modified (304).
     inbox: (q: InboxQuery) => call<InboxRead | null>("inbox", q),
     inboxItem: (id) => call<StoredInboxItem | null>("inbox/item", { id }),

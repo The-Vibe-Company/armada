@@ -26,6 +26,53 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
+  test("release validates guards and always checks a worker caller's session identity", async () => {
+    const { fleet, store } = tempFleet();
+    await store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "Conductor",
+      handle: "ws/new",
+      branch: null,
+      workerSessionId: "new",
+      at: NOW,
+    });
+    for (const input of [{ claimedAt: "yesterday" }, { handle: 42 }]) {
+      expect(
+        (
+          await serveFleet(
+            store,
+            {
+              op: "release",
+              project: DEMO_PROJECT,
+              caller: { kind: "organization" },
+              input: { ticket: "DEMO-7", reason: "late", ...input },
+            },
+            { now: () => NOW },
+          )
+        ).status,
+      ).toBe(400);
+    }
+    const old = await serveFleet(
+      store,
+      {
+        op: "release",
+        project: DEMO_PROJECT,
+        caller: { kind: "worker", ticket: "DEMO-7", sessionId: "old" },
+        input: { ticket: "DEMO-7", reason: "late", workerSessionId: "new" },
+      },
+      { now: () => NOW },
+    );
+    expect(old.body.result).toEqual({ released: false });
+    expect(await fleet.release({ ticket: "DEMO-7", reason: "late", handle: "ws/old" })).toEqual({ released: false });
+    expect(store.events).toHaveLength(0);
+    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+    expect(
+      await fleet.release({ ticket: "DEMO-7", reason: "done", handle: "ws/new", claimedAt: NOW.toISOString() }),
+    ).toEqual({ released: true });
+    expect(store.events).toHaveLength(1);
+  });
+
   test("a worker session claims, reports, asks, validates and releases its own ticket, and nothing else", async () => {
     const { fleet, store } = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7" } });
     expect(await fleet.claim(claim("DEMO-7"))).toEqual([]);

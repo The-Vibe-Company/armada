@@ -366,6 +366,79 @@ describe("report", () => {
 });
 
 describe("release", () => {
+  test("a failed coordinator snapshot never falls back to an unguarded release", async () => {
+    const live = tempFleet();
+    const { linear, ctx } = setup({ live });
+    linear.add("DEMO-7");
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-old/session" });
+    ctx.fleet = async () => ({
+      fleet: {
+        ...live.fleet,
+        runtimeHandle: async () => {
+          throw new Error("unreachable");
+        },
+      },
+      warning: null,
+    });
+    const out = await releaseTicket(ctx, { ticket: "DEMO-7", reason: "retry later" });
+    expect(out.warnings.join(" ")).toContain("unreachable");
+    expect(out.releasedClaim).toBeNull();
+    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+    expect(live.store.events.map((e) => e.kind)).toEqual(["claim"]);
+  });
+
+  test.each([false, true])("a release can retry after Linear fails (worker session: %s)", async (workerSession) => {
+    const live = tempFleet({
+      caller: workerSession ? { kind: "worker", ticket: "DEMO-7", sessionId: "current" } : { kind: "organization" },
+    });
+    const { linear, ctx } = setup({ live });
+    ctx.workerSession = workerSession;
+    ctx.workerHandle = workerSession ? "ws-old/session" : null;
+    linear.add("DEMO-7");
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-old/session" });
+    const update = linear.updateTicket.bind(linear);
+    linear.updateTicket = async () => {
+      throw new Error("Linear unavailable");
+    };
+    await expect(releaseTicket(ctx, { ticket: "DEMO-7", reason: "done" })).rejects.toThrow("Linear unavailable");
+    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    linear.updateTicket = update;
+    expect((await releaseTicket(ctx, { ticket: "DEMO-7", reason: "done" })).lines.join(" ")).toContain(
+      "Released DEMO-7",
+    );
+    expect(labelsOf(linear, "DEMO-7")).toEqual([]);
+  });
+
+  test("a current worker releases a Linear-only claim when optional live recording failed", async () => {
+    const live = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7", sessionId: "current" } });
+    const { linear, ctx } = setup();
+    linear.add("DEMO-7");
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws/current" });
+    ctx.fleet = async () => ({ fleet: live.fleet, warning: null });
+    ctx.workerSession = true;
+    ctx.workerHandle = "ws/current";
+    expect((await releaseTicket(ctx, { ticket: "DEMO-7", reason: "done" })).warnings).toEqual([]);
+    expect(labelsOf(linear, "DEMO-7")).toEqual([]);
+    expect(live.store.events.map((e) => e.kind)).toEqual(["release"]);
+  });
+
+  test("a replaced worker refuses before changing Linear's replacement claim", async () => {
+    const live = tempFleet();
+    const { linear, ctx } = setup({ live });
+    linear.add("DEMO-7");
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "ws-new/session" });
+    ctx.workerHandle = "ws-old/session";
+    const before = linear.writes.length;
+    expect(await refusal(releaseTicket(ctx, { ticket: "DEMO-7", reason: "late release" }))).toContain(
+      "you were replaced; stop here",
+    );
+    expect(linear.writes.length).toBe(before);
+    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+    ctx.workerHandle = "ws-new/session";
+    await releaseTicket(ctx, { ticket: "DEMO-7", reason: "done" });
+    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+  });
+
   test("removes the agent labels, moves the ticket back and closes the handle", async () => {
     const live = tempFleet();
     const db = live.store;
