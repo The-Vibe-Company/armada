@@ -52,7 +52,7 @@ async function fixture(runtime: RuntimeName = "conductor") {
     timedOut = false,
     mismatch = false,
     missingAcknowledgement = false;
-  const calls: { command: string; args: string[]; input?: string }[] = [];
+  const calls: { command: string; args: string[]; input?: string; timeoutMs?: number }[] = [];
   const output: string[] = [];
   let beforeRead: (() => Promise<void>) | null = null;
   let beforeReadAfter = 1;
@@ -68,7 +68,7 @@ async function fixture(runtime: RuntimeName = "conductor") {
     stdout: (t) => output.push(t),
     stderr: (t) => output.push(t),
     exec: async (command, args, options) => {
-      calls.push({ command, args, input: options.input });
+      calls.push({ command, args, input: options.input, timeoutMs: options.timeoutMs });
       if (command === "git")
         return { code: 0, stdout: args[0] === "branch" ? branch : "/work/widgets/.git", stderr: "" };
       if (command === "herdr") {
@@ -160,6 +160,8 @@ async function fixture(runtime: RuntimeName = "conductor") {
     runtimeHandles: () => store.openRuntimeHandles(config.project.slug),
     observeRuntime: (input: Parameters<Fleet["observeRuntime"]>[0]) =>
       store.observeRuntime({ ...input, project: config.project.slug, at: clock.now() }),
+    stopRuntime: (input: Parameters<Fleet["stopRuntime"]>[0]) =>
+      store.stopRuntime({ ...input, project: config.project.slug, at: clock.now() }),
   } as Fleet;
   return {
     io,
@@ -320,7 +322,7 @@ test("Conductor preflight, launch, transcript and failures keep secret text off 
     [3, "auth"],
     [4, "unavailable"],
     [2, "invalid"],
-    [1, "not-found"],
+    [1, "unavailable"],
   ] as const) {
     f.set({ failure: exit });
     expect(await codeOf(f.adapter.observe(f.target))).toBe(code);
@@ -402,12 +404,13 @@ test("Conductor observations are throttled across processes, retain failed reads
   if (!paths) throw new Error("missing test machine paths");
   await updateWatchState(paths, config.project.slug, { readAt: NOW.toISOString() });
   const oldWatch = await readWatchState(paths, config.project.slug);
+  f.clock.advance(8 * 60_000);
   f.set({ state: "error" });
   await observeRuntimes(f.io, f.fleet, config);
   // A concurrent ordinary watch may commit a snapshot read before the reservation.
   await writeFile(watchFiles(paths, config.project.slug).state, JSON.stringify({ ...oldWatch, stopped: "done" }));
   await observeRuntimes({ ...f.io }, f.fleet, config);
-  expect(f.calls.filter((c) => c.args.includes("status")).length).toBe(1);
+  expect(f.calls.filter((c) => c.args.includes("status")).length).toBe(2);
   expect((await f.fleet.runtimeHandle("DEMO-7"))?.runtimeState?.state).toBe("failed");
   expect(
     freshRuntimeState(
@@ -518,4 +521,73 @@ test("Claude Code refuses every adapter operation with the manual guide and exec
   expect(await run(["stop", "DEMO-7"], f.io)).toBe(1);
   expect(f.output.join("")).toContain("armada-runtime-claude-code");
   expect(f.calls).toEqual([]);
+});
+
+test("Conductor observes only stale heartbeats and readings, using bounded reads; archives end the exact claim", async () => {
+  const f = await fixture();
+  await observeRuntimes(f.io, f.fleet, config);
+  expect(f.calls).toEqual([]);
+  f.clock.advance(8 * 60_000);
+  await observeRuntimes(f.io, f.fleet, config);
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.runtimeState?.state).toBe("working");
+  expect(f.calls.every((c) => c.timeoutMs === 5000)).toBe(true);
+  const count = f.calls.length;
+  f.clock.advance(4 * 60_000);
+  await observeRuntimes({ ...f.io }, f.fleet, config);
+  expect(f.calls.length).toBe(count);
+  f.clock.advance(60_000);
+  f.set({ archived: true });
+  await observeRuntimes(f.io, f.fleet, config);
+  expect(await f.fleet.runtimeHandles()).toEqual([]);
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.releasedAt).toBe(f.clock.now().toISOString());
+});
+
+test("missing or unsigned Conductor retains the current claim and prints no error", async () => {
+  const f = await fixture();
+  f.clock.advance(8 * 60_000);
+  f.set({ failure: 3 });
+  await observeRuntimes(f.io, f.fleet, config);
+  expect((await f.fleet.runtimeHandle("DEMO-7"))?.runtimeState).toBeNull();
+  expect(f.output).toEqual([]);
+  f.clock.advance(60_000);
+  await observeRuntimes(
+    {
+      ...f.io,
+      exec: async () => {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      },
+    },
+    f.fleet,
+    config,
+  );
+  expect((await f.fleet.runtimeHandles()).length).toBe(1);
+  expect(f.output).toEqual([]);
+});
+
+test("an archive observation cannot close a replacement claim", async () => {
+  const f = await fixture();
+  f.clock.advance(8 * 60_000);
+  const original = f.fleet.stopRuntime;
+  f.fleet.stopRuntime = async (input) => {
+    await f.store.releaseRuntimeHandle(config.project.slug, "DEMO-7", f.clock.now());
+    f.clock.advance(1000);
+    await recordClaim(
+      f.store,
+      config.project.slug,
+      {
+        ticket: "DEMO-7",
+        runtime: "conductor",
+        handle: "ws-new/ses-new",
+        branch: "feature/demo-7",
+        phase: "implementing",
+        resuming: false,
+        profile: null,
+      },
+      f.clock.now(),
+    );
+    return original(input);
+  };
+  f.set({ archived: true });
+  await observeRuntimes(f.io, f.fleet, config);
+  expect(await f.fleet.runtimeHandles()).toMatchObject([{ handle: "ws-new/ses-new", releasedAt: null }]);
 });

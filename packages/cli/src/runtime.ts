@@ -2,6 +2,7 @@
 import {
   ArmadaApiError,
   type ArmadaConfig,
+  CONFIG_DEFAULTS,
   type Credentials,
   deliveryKey,
   type Fleet,
@@ -54,6 +55,10 @@ export async function observeRuntimes(io: Io, fleet: Fleet, config?: ArmadaConfi
       const observed = { ...saved?.runtimeObserved };
       const eligible = local.filter((h) => {
         if (runtimeNameOf(h.runtime) !== "conductor") return true;
+        const age = now.getTime() - Date.parse(h.lastHeartbeatAt ?? h.claimedAt);
+        if (age <= (config?.policy.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes) * 30_000) return false;
+        const readingAge = now.getTime() - Date.parse(h.runtimeState?.at ?? "");
+        if (Number.isFinite(readingAge) && readingAge >= 0 && readingAge < 5 * 60_000) return false;
         const key = `${h.handle}@${h.claimedAt}`;
         const last = Date.parse(observed[key] ?? "");
         if (Number.isFinite(last) && now.getTime() >= last && now.getTime() - last < 60_000) return false;
@@ -70,6 +75,11 @@ export async function observeRuntimes(io: Io, fleet: Fleet, config?: ArmadaConfi
         eligible.map(async (h) => {
           try {
             const reading = await runtimeFor(io, config, h.runtime).observe(claimRef(h));
+            if (reading.state === "gone" && runtimeNameOf(h.runtime) === "conductor") {
+              changed =
+                (await fleet.stopRuntime({ ticket: h.ticket, handle: h.handle, claimedAt: h.claimedAt })) || changed;
+              return;
+            }
             const input = {
               ticket: h.ticket,
               handle: h.handle,
