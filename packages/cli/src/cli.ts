@@ -35,6 +35,7 @@ import { CommandError, fsRepoView } from "./repo.ts";
 import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { updateSkills } from "./skills.ts";
+import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, stopWatch, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
@@ -53,6 +54,13 @@ const COMMAND_HELP: Record<string, string> = {
                     Keep the current worker session alive through Armada only, with no
                     Linear comment. Stops with the parent or the released/revoked session.
                     --background detaches from the command shell and keeps a PID file
+`,
+  spec: `  spec add "<name>" [--at <position>] [--apply]
+  spec renumber [--apply]
+                    Coordinator: create a spec under the program root with the In short
+                    template. Plain append creates immediately if no titles must change.
+                    --at and renumber preview changes; --apply writes them sequentially.
+                    [tracker] spec_titles = "N/M" opts into updating every total.
 `,
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
   status --all      The same for every project registered by \`armada init\`
@@ -342,6 +350,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "at",
   "every",
   "parent",
   "runtime",
@@ -378,6 +387,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "apply",
   "stop",
   "background",
   "dry-run",
@@ -396,6 +406,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  spec: ["at", "apply"],
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
@@ -654,6 +665,22 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       await recordPresence(io, config, credentials);
       return await merge(io, config, credentials, args, path);
+    }
+    if (args.command === "spec") {
+      const { text } = await findConfig(io, args.config, "spec");
+      const config = parseConfig(text);
+      // Identify this checkout's worker before requesting any coordinator keys.
+      const local = await loadCredentials(io, {
+        armada: false,
+        worker: {
+          command: "spec",
+          project: config.project.slug,
+          ticket: (stored) => currentTicket(io, config, undefined, stored),
+        },
+      });
+      requireSpecCoordinator(local.credentials);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await specCommand(io, config, credentials, args);
     }
     if (args.command === "brief") {
       const { path, text } = await findConfig(io, args.config, "brief");
