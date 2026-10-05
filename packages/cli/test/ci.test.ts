@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { GITHUB_GRAPHQL } from "../../core/src/github.ts";
+import { machinePaths, updateWatchState } from "../../core/src/machine.ts";
 import { DEMO_TOML, recordedFetch } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
 
@@ -150,4 +154,36 @@ test("no failures reports no failing checks without claiming green CI", async ()
   const f = fixture({ empty: true });
   expect(await run(["ci", "why", "--branch", "main"], f.io)).toBe(0);
   expect(f.out()).toContain("No failing checks reported on this head");
+});
+
+test("CI project selection uses the watched repository outside its checkout with GitHub credentials alone", async () => {
+  const machineDir = await mkdtemp(join(tmpdir(), "armada-ci-project-"));
+  try {
+    const paths = machinePaths({ XDG_CONFIG_HOME: machineDir });
+    if (!paths) throw new Error("temporary machine store missing");
+    await updateWatchState(paths, "widgets", { root: "/selected" });
+    for (const cwd of ["/outside", "/other"]) {
+      const f = fixture();
+      f.io.cwd = cwd;
+      f.io.env.XDG_CONFIG_HOME = machineDir;
+      f.io.readFile = async (p) =>
+        p === "/selected/armada.toml"
+          ? DEMO_TOML
+          : p === "/other/armada.toml"
+            ? DEMO_TOML.replace("acme/widgets", "acme/other")
+            : null;
+      const fetch = f.io.fetch;
+      if (!fetch) throw new Error("fixture fetch missing");
+      f.io.fetch = async (url, init) => {
+        if (url === GITHUB_GRAPHQL)
+          expect(JSON.parse(String(init.body)).variables).toMatchObject({ owner: "acme", name: "widgets" });
+        return fetch(url, init);
+      };
+      expect(await run(["ci", "why", "9", "--project", "widgets", "--json"], f.io)).toBe(0);
+      expect(JSON.parse(f.out()).explanations[0].tests).toContain("widgets > saves a draft");
+      expect(f.err()).toBe("");
+    }
+  } finally {
+    await rm(machineDir, { recursive: true, force: true });
+  }
 });

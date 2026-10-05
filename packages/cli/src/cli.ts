@@ -656,7 +656,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       return await heartbeat(io, config, credentials, { ...args, config: path });
     }
     if (args.command === "ci") {
-      const { path, text } = await findConfig(io, args.config, "ci");
+      const { path, text } = await findConfig(io, args.config, "ci", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { armada: false });
       return await ciWhy(io, config, credentials, args);
