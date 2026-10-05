@@ -726,7 +726,15 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     statements: ["DROP TABLE IF EXISTS saved_views"],
   },
   {
-    // Owner chat alerts (THE-1097). Migration 23 reserved for THE-1074.
+    // THE-1074: Conductor reports failed turns and archived workspaces distinctly.
+    version: 23,
+    statements: [
+      "ALTER TABLE runtime_handles DROP CONSTRAINT IF EXISTS runtime_handles_runtime_state_check",
+      "ALTER TABLE runtime_handles ADD CONSTRAINT runtime_handles_runtime_state_check CHECK (runtime_state IN ('working', 'blocked', 'idle', 'done', 'failed', 'gone', 'unknown'))",
+    ],
+  },
+  {
+    // Owner chat alerts (THE-1097). Follows THE-1074 migration 23.
     version: 24,
     statements: [
       `CREATE TABLE owner_channels (

@@ -4,6 +4,7 @@
 // worker's session through the runtime guide, then records it (`armada answer`).
 // Runtime delivery is injected by the CLI; other runtimes use their guide.
 import { entryKey, type Fleet, handBackPr, type InboxEntry, type InboxKind, type StoredInboxItem } from "./live.ts";
+import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "./runtime.ts";
 import type { AgentPhase } from "./types.ts";
 import { live, type Outcome, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
 
@@ -230,7 +231,8 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       const observation = handle?.runtimeState;
       const runtimeBlocked =
         ctx.deliverAnswer &&
-        handle?.runtime.toLowerCase() === "herdr" &&
+        !!handle &&
+        OBSERVABLE_RUNTIMES.includes(runtimeNameOf(handle.runtime) as "herdr" | "conductor") &&
         !handle.releasedAt &&
         observation?.state === "blocked" &&
         Date.parse(observation.at) <= ctx.now().getTime() &&
@@ -264,9 +266,14 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     ticketId && ctx.deliverAnswer
       ? await live(ctx, warnings, `read the claim of ${ticketId}`, (fleet) => fleet.runtimeHandle(ticketId))
       : null;
-  if (claim?.runtime.toLowerCase() === "herdr" && claim.releasedAt)
-    throw new Refusal("the herdr worker has ended; no answer was delivered", "armada inbox");
-  if (claim?.runtime.toLowerCase() === "herdr" && answered && answered.createdAt < claim.claimedAt)
+  if (claim && OBSERVABLE_RUNTIMES.includes(runtimeNameOf(claim.runtime) as "herdr" | "conductor") && claim.releasedAt)
+    throw new Refusal("the runtime worker has ended; no answer was delivered", "armada inbox");
+  if (
+    claim &&
+    OBSERVABLE_RUNTIMES.includes(runtimeNameOf(claim.runtime) as "herdr" | "conductor") &&
+    answered &&
+    answered.createdAt < claim.claimedAt
+  )
     throw new Refusal("the question belongs to an earlier worker claim; no answer was delivered", "armada inbox");
   let url = "";
   if (ticketId) {
@@ -274,8 +281,11 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     if (!ticket) throw new Refusal(`ticket ${ticketId} not found in Linear`, "armada inbox");
     url = ticket.url;
     warnings.push(...ticket.warnings);
-    const herdrClaim = claim?.runtime.toLowerCase() === "herdr" && !claim.releasedAt;
-    if (!ticket.agentPhase && !herdrClaim) {
+    const integratedClaim =
+      !!claim &&
+      OBSERVABLE_RUNTIMES.includes(runtimeNameOf(claim.runtime) as "herdr" | "conductor") &&
+      !claim.releasedAt;
+    if (!ticket.agentPhase && !integratedClaim) {
       if (input.note)
         throw new Refusal(
           `${ticket.id} has no agent phase: no worker holds it, so there is no one to tell`,
@@ -292,7 +302,9 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       // Delivery happens only after validation and before either record is written.
       // Throwing leaves the question/plan open, with no successful answer comment.
       if (ctx.deliverAnswer && (await ctx.deliverAnswer(ticket.id, text, claim?.runtime ?? ticket.agentRuntime, claim)))
-        lines.push(`Delivered to ${ticket.id}'s herdr pane.`);
+        lines.push(
+          `Delivered to ${ticket.id}'s ${runtimeNameOf(claim?.runtime) === "herdr" ? "herdr pane" : "runtime session"}.`,
+        );
       if (ticket.agentPhase) {
         await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));
         lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);

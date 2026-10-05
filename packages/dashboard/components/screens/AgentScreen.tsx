@@ -26,7 +26,7 @@ import { useOverviewItems } from "../shell/use-items";
 import { EmptyState, RelativeTime, Tabs } from "../ui";
 import { RequestAction } from "./AgentActions";
 import { Action, entryText } from "./OverviewPreview";
-import { GROUP_COLOR } from "./OverviewScreen";
+import { itemColor } from "./OverviewScreen";
 import { useActivity } from "./use-activity";
 
 const TABS = ["summary", "files"] as const;
@@ -84,7 +84,7 @@ function Agent({
   const { zone } = useShell();
   const a = t.agentPage;
   const row = item.row;
-  const color = GROUP_COLOR[item.group];
+  const color = itemColor(item);
   const projectName = project?.name ?? item.project;
   const harness = row ? HARNESS_NAME[harnessOf(row.session?.runtime ?? row.runtime)] : null;
   const files = row?.pr?.files ?? [];

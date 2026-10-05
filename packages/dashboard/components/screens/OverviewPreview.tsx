@@ -19,7 +19,7 @@ import { decisionCards, handBackPr, sentRequest } from "@/lib/overview-view";
 import { type ActionContext, splitQuestion } from "../Actions";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { DecisionActions } from "./DecisionCard";
-import { GROUP_COLOR, itemHref, StepBar } from "./OverviewScreen";
+import { itemColor, itemHref, StepBar } from "./OverviewScreen";
 import { useActivity } from "./use-activity";
 import { Decide } from "./ValidationCard";
 
@@ -30,7 +30,7 @@ export function OverviewPreview({ item, projectName }: { item: OverviewItem; pro
   const { t, account, author, setAuthor, zone } = useShell();
   const { overview, failed, version, refresh } = useFleet();
   const now = useNow();
-  const color = GROUP_COLOR[item.group];
+  const color = itemColor(item);
   const ctx: ActionContext = {
     t,
     signer: { name: author, set: setAuthor, fixed: account !== null },
@@ -193,6 +193,8 @@ export function Action({ item, ctx, projectName }: { item: OverviewItem; ctx: Ac
     );
 
   switch (r.kind) {
+    case "runtime":
+      return <Title>{t.shell.runtimeState[r.state]}</Title>;
     case "question":
       return (
         <>
