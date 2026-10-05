@@ -1165,6 +1165,7 @@ describe("shared merge holds", () => {
       expect(message).toContain("api deploy is broken");
       expect(message).toContain(`hold #${second.id}`);
       expect(message).toContain("--through-hold");
+      expect(message).toContain(`Next: armada hold clear ${first.id} --reason`);
       expect(s.forge.merges).toEqual([]);
       expect(s.forge.reads).toBe(0);
     }

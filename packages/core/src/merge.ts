@@ -4,6 +4,7 @@
 // Order: take the per-project merge lease, check everything, merge pinned to
 // the handed-back SHA, read MERGED back, then close the ticket. With --wait the
 // pull request is first brought up to date and waited for, without the lease.
+import { ArmadaApiError } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import type { UnblockedTickets } from "./fleet.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
@@ -522,10 +523,12 @@ export async function withLease<T>(
         await timed(fleet.releaseLease(key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
         throw err instanceof Refusal
           ? err
-          : new Refusal(
-              `the ${o.name} lock could not be taken (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
-              "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
-            );
+          : err instanceof ArmadaApiError && err.status === 409 && err.next
+            ? new Refusal(err.message, err.next)
+            : new Refusal(
+                `the ${o.name} lock could not be taken (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
+                "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
+              );
       },
     );
     if (got.acquired) break;
