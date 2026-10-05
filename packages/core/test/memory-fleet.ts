@@ -16,6 +16,7 @@ import type {
   WorkerProfile,
 } from "../src/live.ts";
 import { unusedLaunchExpired } from "../src/live.ts";
+import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
 
 interface EventRow extends Omit<EventInput, "at"> {
@@ -302,7 +303,8 @@ export function memoryFleet(): FleetStore & {
     async observeRuntime(input) {
       const h = handles.get(key(input.project, input.ticket));
       if (
-        h?.runtime.toLowerCase() !== "herdr" ||
+        !h ||
+        !OBSERVABLE_RUNTIMES.includes(runtimeNameOf(h.runtime) as "herdr" | "conductor") ||
         h.releasedAt ||
         h.handle !== input.handle ||
         h.claimedAt !== input.claimedAt ||
@@ -317,15 +319,22 @@ export function memoryFleet(): FleetStore & {
         ...(sequence === undefined ? {} : { sequence }),
         state: input.state,
         at: input.at.toISOString(),
-        since: sameTransition
-          ? (h.runtimeState?.since ?? h.runtimeState?.at ?? input.at.toISOString())
-          : input.at.toISOString(),
+        since:
+          input.since ??
+          (sameTransition
+            ? (h.runtimeState?.since ?? h.runtimeState?.at ?? input.at.toISOString())
+            : input.at.toISOString()),
       };
       return true;
     },
     async stopRuntime(input) {
       const h = handles.get(key(input.project, input.ticket));
-      if (h?.runtime.toLowerCase() !== "herdr" || h.handle !== input.handle || h.claimedAt !== input.claimedAt)
+      if (
+        !h ||
+        !OBSERVABLE_RUNTIMES.includes(runtimeNameOf(h.runtime) as "herdr" | "conductor") ||
+        h.handle !== input.handle ||
+        h.claimedAt !== input.claimedAt
+      )
         return false;
       if (!h.releasedAt) await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
       return true;
