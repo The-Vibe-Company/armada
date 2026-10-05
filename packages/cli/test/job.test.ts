@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { machinePaths, updateWatchState } from "@armada/core";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { ExecResult, Io } from "../src/io.ts";
@@ -106,6 +107,28 @@ describe("armada job", () => {
     expect(s.printed().out).toContain("stopped");
     expect(await run(["job", "status"], fresh)).toBe(0);
     expect(s.printed().out).toBe("No jobs.\n");
+  });
+
+  test("project and environment selectors dispatch from outside the checkout at the selected repository root", async () => {
+    const s = await setup();
+    const paths = machinePaths(s.io.env);
+    if (!paths) throw new Error("test machine paths missing");
+    await updateWatchState(paths, "widgets", { root: s.root });
+    for (const selector of ["project", "env"]) {
+      const io = {
+        ...s.io,
+        cwd: dirname(s.root),
+        env: { ...s.io.env, ...(selector === "env" ? { ARMADA_CONFIG: join(s.root, "armada.toml") } : {}) },
+      };
+      expect(
+        await run(
+          ["job", "start", "eval", "--ticket", "DEMO-7", ...(selector === "project" ? ["--project", "widgets"] : [])],
+          io,
+        ),
+      ).toBe(0);
+      s.printed();
+      expect(s.execs.at(-1)).toMatchObject({ options: { cwd: s.root, env: { ARMADA_PROJECT: "widgets" } } });
+    }
   });
 
   test("a worker defaults to its own ticket and reads only its jobs without requesting keys", async () => {

@@ -654,7 +654,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       return await attachCommand(io, config, credentials, args);
     }
     if (args.command === "job") {
-      const { path, text } = await findConfig(io, args.config, "job");
+      const { path, text } = await findConfig(io, args.config, "job", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, {
         armada: false,
