@@ -33,6 +33,7 @@ async function machine(env: Record<string, string> = {}) {
     ghToken: () => null,
     fetch: recorded.fetch,
     now: () => NOW,
+    sleep: async () => {},
     interactive: true,
     prompt: async (question, { hidden }) => {
       asked.push({ question, hidden });

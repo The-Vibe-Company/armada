@@ -30,7 +30,7 @@ import {
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type HerdrHandle, herdrWorktreePath, herdrWorktreesDirectory, parseHerdrHandle } from "./herdr.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { detectLocalTools, ensureLocalProfile } from "./local-tools.ts";
 import { requireSignIn } from "./login.ts";
 import { runtimeFor } from "./runtimes/adapter.ts";
@@ -97,7 +97,7 @@ async function launchLocal(
   if (!io.exec) throw new UsageError("local launch needs process execution");
   const ticketId = input.toUpperCase();
   const now = io.now ?? (() => new Date());
-  const linear = { apiKey: credentials.linearApiKey, fetch: io.fetch ?? fetch };
+  const linear = { apiKey: credentials.linearApiKey, ...httpOptions(io) };
   const [ticket, program] = await Promise.all([
     fetchBriefTicket(linear, ticketId),
     fetchProgram({ ...linear, rootId: config.tracker.programRoot, labels: config.tracker.labels, now }),

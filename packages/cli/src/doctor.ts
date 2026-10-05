@@ -30,6 +30,7 @@ import {
 import { apiOf } from "./api.ts";
 import { loadCredentials, type Machine } from "./auth.ts";
 import type { Io } from "./io.ts";
+import { httpOptions } from "./io.ts";
 import {
   detectLocalTools,
   dshInformation,
@@ -156,7 +157,7 @@ async function labelChecks(io: Io, config: ArmadaConfig | null, credentials: Cre
       },
     ];
   try {
-    const state = await readLabels(config, { apiKey: linearApiKey, ...(io.fetch ? { fetch: io.fetch } : {}) });
+    const state = await readLabels(config, { apiKey: linearApiKey, ...httpOptions(io) });
     return checkLabels(state);
   } catch (err) {
     return [

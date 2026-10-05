@@ -4,6 +4,7 @@ import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
 import { freshEvent, frontier, inFlight, type LaneFlag, type LaneOptions, waitingPullRequests } from "./fleet.ts";
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
+import type { HttpRetryOptions } from "./http.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
   followedLaunches,
@@ -351,7 +352,7 @@ export function mergedTickets(
 const byMergeTime = (a: PullRequest, b: PullRequest) =>
   (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
-export interface LoadStatusOptions {
+export interface LoadStatusOptions extends HttpRetryOptions {
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
@@ -376,14 +377,14 @@ export interface StatusSources {
 /** Reads the project's program from Linear and its pull requests from GitHub. A GitHub failure is kept, not thrown. */
 export async function readStatusSources(
   config: ArmadaConfig,
-  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now">,
+  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now" | "sleep" | "random" | "onRetry">,
 ): Promise<StatusSources> {
   const now = opts.now ?? (() => new Date());
   const programP = fetchProgram({
     apiKey: opts.linearApiKey,
     rootId: config.tracker.programRoot,
     labels: config.tracker.labels,
-    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    ...opts,
     now,
   });
   const [program, forge] = await Promise.all([programP, readForge(config, opts, now)]);
@@ -401,7 +402,7 @@ function readForge(
   return fetchForge({
     token: opts.githubToken,
     repository: config.github.repository,
-    ...(opts.fetch ? { fetch: opts.fetch } : {}),
+    ...opts,
     now,
   }).then(
     (forge) => ({ forge, forgeError: null }),
@@ -424,7 +425,7 @@ export async function refreshStatusSources(
   config: ArmadaConfig,
   previous: StatusSources,
   ask: SourcesRefresh,
-  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now">,
+  opts: Pick<LoadStatusOptions, "linearApiKey" | "githubToken" | "fetch" | "now" | "sleep" | "random" | "onRetry">,
 ): Promise<StatusSources> {
   const now = opts.now ?? (() => new Date());
   const programP =
@@ -437,7 +438,7 @@ export async function refreshStatusSources(
           previous: previous.program,
           since: ask.linearSince,
           ...(ask.touched ? { touched: ask.touched } : {}),
-          ...(opts.fetch ? { fetch: opts.fetch } : {}),
+          ...opts,
           now,
         });
   const forgeP = ask.forge

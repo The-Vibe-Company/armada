@@ -2,7 +2,14 @@
 // recently closed ones with their CI rollup and mergeability. The rollup's
 // check runs need a token with the Checks permission: the dashboard's GitHub
 // App installation token has it (THE-851), fine-grained personal tokens do not.
-import { type Fetch, HttpRequestError, httpRequest } from "./http.ts";
+import {
+  type Fetch,
+  HttpRequestError,
+  type HttpRequestOptions,
+  HttpStatusError,
+  httpRequest,
+  retryStatus,
+} from "./http.ts";
 import type { CiState, ForgeData, Issue, ProgramData, PullRequest } from "./types.ts";
 
 export const GITHUB_GRAPHQL = "https://api.github.com/graphql";
@@ -140,7 +147,7 @@ const PULLS_QUERY = /* GraphQL */ `${PULL_FIELDS}
     }
   }`;
 
-export interface FetchForgeOptions {
+export interface FetchForgeOptions extends HttpRequestOptions {
   token: string;
   /** owner/name */
   repository: string;
@@ -161,7 +168,7 @@ async function githubQuery<T>(
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
       body: JSON.stringify({ query, variables }),
     },
-    { ...opts, retry: true },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
       const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
@@ -169,6 +176,7 @@ async function githubQuery<T>(
       return json;
     },
   ).catch((err: unknown) => {
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
     if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
     throw err;
   });
@@ -248,7 +256,7 @@ const FILE_QUERY = /* GraphQL */ `
     repository(owner: $owner, name: $name) { object(expression: $expression) { ... on Blob { text } } }
   }`;
 
-export interface FetchFileOptions {
+export interface FetchFileOptions extends HttpRequestOptions {
   token: string;
   /** owner/name */
   repository: string;
@@ -268,7 +276,7 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
       body: JSON.stringify({ query: FILE_QUERY, variables: { owner, name, expression: `HEAD:${opts.path}` } }),
     },
-    { ...opts, retry: true },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
       const json = (await res.json()) as {
@@ -280,6 +288,7 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
       return json.data.repository.object?.text ?? null;
     },
   ).catch((err: unknown) => {
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
     if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
     throw err;
   });
@@ -389,12 +398,13 @@ export async function fetchPullDiff(opts: FetchForgeOptions & { number: number }
       method: "GET",
       headers: { Accept: "application/vnd.github.diff", Authorization: `Bearer ${opts.token}` },
     },
-    { ...opts, retry: true },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading the diff of #${opts.number}`);
       return res.text();
     },
   ).catch((err: unknown) => {
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
     if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
     throw err;
   });

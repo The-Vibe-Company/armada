@@ -53,3 +53,21 @@ describe("fetchForge", () => {
     );
   });
 });
+
+test("GitHub reads recover from a temporary HTTP status", async () => {
+  let calls = 0;
+  const waits: number[] = [];
+  const recorded = recordedFetch();
+  const forge = await fetchForge({
+    token: "synthetic-token",
+    repository: "acme/widgets",
+    random: () => 0.5,
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
+    fetch: async (url, init) => (++calls === 1 ? new Response("busy", { status: 502 }) : recorded.fetch(url, init)),
+  });
+  expect(forge.prs.length).toBeGreaterThan(0);
+  expect(calls).toBe(2);
+  expect(waits).toEqual([1000]);
+});

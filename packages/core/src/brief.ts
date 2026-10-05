@@ -9,6 +9,7 @@
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import { herdrChoice } from "./herdr-profile.ts";
+import type { HttpRetryOptions } from "./http.ts";
 import {
   type Connection,
   type Fetch,
@@ -258,10 +259,12 @@ export function normalizeBriefTicket(raw: RawBriefIssue, warnings: string[] = []
 }
 
 export async function fetchBriefTicket(opts: LinearRequestOptions, id: string): Promise<BriefTicket | null> {
-  const data = await gql<{ issue: RawBriefIssue | null }>(opts, BRIEF_QUERY, { id }).catch((err: unknown) => {
-    if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
-    throw err;
-  });
+  const data = await gql<{ issue: RawBriefIssue | null }>({ ...opts, retry: true }, BRIEF_QUERY, { id }).catch(
+    (err: unknown) => {
+      if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
+      throw err;
+    },
+  );
   const raw = data.issue;
   if (!raw) return null;
   const warnings: string[] = [];
@@ -644,7 +647,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 
 // ------------------------------------------------------------------ load
 
-export interface LoadBriefOptions {
+export interface LoadBriefOptions extends HttpRetryOptions {
   prompt?: boolean;
   linearApiKey: string;
   ticket: string;
@@ -673,7 +676,7 @@ export interface LoadBriefOptions {
 export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): Promise<Brief | ProfileSelectionBrief> {
   const launchHint = "a one-time token is made when you print the prompt (--prompt)";
   const now = opts.now ?? (() => new Date());
-  const linear = { apiKey: opts.linearApiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) };
+  const linear = { apiKey: opts.linearApiKey, ...opts };
   // Fail on a bad profile before any network call.
   try {
     checkRequestedProfile(config, opts.profile);
