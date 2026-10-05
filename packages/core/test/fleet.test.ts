@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildLane, frontier, inFlight } from "../src/fleet.ts";
+import { buildLane, frontier, inFlight, unblockedBy } from "../src/fleet.ts";
 import { buildModel } from "../src/model.ts";
 import type { Comment, Issue } from "../src/types.ts";
 import { issue } from "./support.ts";
@@ -13,6 +13,31 @@ const program = (...children: Issue[]) =>
 const ids = (xs: { issue: Issue }[]) => xs.map((x) => x.issue.id);
 
 const labels = { ready: "ready-for-agent", parked: "parked" };
+
+test("a closed blocker reveals ready, unspecified, parked and still-blocked dependents", () => {
+  const waits = [{ id: "P-2", statusType: "started" as const }];
+  const m = program(
+    issue("P-2", { statusType: "completed" }),
+    issue("P-3", { blockedBy: waits, labels: [labels.ready] }),
+    issue("P-4", { blockedBy: waits }),
+    issue("P-5", { blockedBy: waits, labels: [labels.ready, labels.parked] }),
+    issue("P-6", { blockedBy: [...waits, { id: "EXT-1", statusType: "started" }] }),
+    issue("P-7", { blockedBy: waits, statusType: "completed" }),
+    issue("P-8", { blockedBy: waits, agentPhase: "implementing" }),
+    issue("P-9", { labels: [labels.ready] }),
+    issue("P-10", { blockedBy: waits, prs: [{ url: "u", number: 1, repo: "a/b", title: "", state: "open" }] }),
+    issue("P-11", { blockedBy: waits, labels: [labels.ready], statusType: "triage" }),
+  );
+  const unblocked = unblockedBy(m, "P-2", labels);
+  expect(unblocked.ready.map((c) => [c.issue.id, c.readyForAgent])).toEqual([
+    ["P-3", true],
+    ["P-4", false],
+    ["P-11", false],
+  ]);
+  expect(unblocked.parked.map((i) => i.id)).toEqual(["P-5"]);
+  expect(unblocked.nowWaitsOn).toEqual([{ id: "P-6", on: ["EXT-1"] }]);
+  expect(unblockedBy(m, "P-9", labels)).toEqual({ ready: [], parked: [], nowWaitsOn: [] });
+});
 
 describe("frontier", () => {
   test("a ticket is ready when it is not started and every blocked-by ticket is closed", () => {

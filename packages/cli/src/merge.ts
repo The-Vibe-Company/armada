@@ -9,6 +9,8 @@ import {
   AGENTS_SKILLS_DIR,
   type ArmadaConfig,
   askOwnerToMerge,
+  buildModel,
+  buildStatus,
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
@@ -19,7 +21,6 @@ import {
   fetchPullDiff,
   LINEAR_KEY,
   type LocalRepo,
-  loadStatus,
   MERGE_WAIT_DEFAULT_MS,
   type MergeAttempt,
   type MergeContext,
@@ -27,7 +28,10 @@ import {
   type MergeOutcome,
   mergePullRequest,
   parsePullRequestUrl,
+  readStatusSources,
+  shellWord,
   type TestMergeResult,
+  unblockedBy,
 } from "@armada/core";
 import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
@@ -179,6 +183,14 @@ function render(o: MergeOutcome): string {
   const out = [...o.lines, o.pr.url, ...(o.ticket ? [o.ticket.url] : [])];
   if (o.hints.length) out.push("Hints for you to judge (not blocking):", ...o.hints.map((h) => `  - ${h}`));
   if (!o.merged) return `${out.join("\n")}\n`;
+  if (o.ticket && o.unblocked) {
+    const { ready, parked, nowWaitsOn } = o.unblocked;
+    const tickets = [...ready.map((t) => `${t.id} (${t.reason})`), ...parked.map((id) => `${id} (parked)`)];
+    if (tickets.length) out.push(`Unblocked by ${o.ticket.id}: ${tickets.join(", ")}`);
+    for (const t of ready)
+      if (t.launch) out.push(`  ${t.launch}${t.route ? ` # ${t.route.why.replace(/\s+/g, " ")}` : ""}`);
+    for (const t of nowWaitsOn) out.push(`${t.id} now waits only on ${t.on.join(", ")}`);
+  }
   if (!o.workers.length) out.push("No other worker is in flight.");
   else {
     out.push(`Tell these workers in flight what landed on ${o.pr.base} (bring it in, shared files, new checks):`);
@@ -257,13 +269,42 @@ export async function merge(io: Io, config: ArmadaConfig, credentials: Credentia
     // Signed in, the merge lock is required: two coordinators merge one after the other.
     lockRequired: !!credentials.armadaSignIn,
     fleet: async () => live,
-    inFlight: async () =>
-      (await loadStatus(config, { linearApiKey, githubToken: null, ...fetchOpt, now })).inFlight.map((t) => ({
-        id: t.id,
-        title: t.title,
-        phase: t.phase,
-        runtime: t.runtime,
-      })),
+    afterRead: async (ticket) => {
+      const sources = await readStatusSources(config, { linearApiKey, githubToken: null, ...fetchOpt, now });
+      const status = buildStatus({ config, ...sources, now: now() });
+      const unblocked = ticket
+        ? unblockedBy(buildModel(sources.program.issues, sources.program.rootId), ticket, {
+            ready: config.tracker.readyLabel,
+            parked: config.tracker.parkedLabel,
+          })
+        : null;
+      return {
+        inFlight: status.inFlight,
+        unblocked: unblocked
+          ? {
+              ready: unblocked.ready.map((c) => {
+                const route = status.frontier.find((t) => t.id === c.issue.id)?.route ?? null;
+                const reason = c.readyForAgent
+                  ? ("ready for an agent" as const)
+                  : c.issue.labels.includes(config.tracker.readyLabel)
+                    ? ("in triage" as const)
+                    : ("no ready label" as const);
+                return {
+                  id: c.issue.id,
+                  readyForAgent: c.readyForAgent,
+                  reason,
+                  route,
+                  launch: c.readyForAgent
+                    ? `armada brief ${shellWord(c.issue.id)} --prompt${route ? ` --profile ${shellWord(route.profile)}` : ""}`
+                    : null,
+                };
+              }),
+              parked: unblocked.parked.map((i) => i.id),
+              nowWaitsOn: unblocked.nowWaitsOn,
+            }
+          : null,
+      };
+    },
     holder: `${io.env.USER || "coordinator"}@${hostname()} ${randomUUID().slice(0, 8)}`,
     now,
     sleep: io.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
