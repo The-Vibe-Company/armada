@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, fakeArmada, fakeLinearLabels } from "../../core/test/support.ts";
+import { ARMADA_URL, fakeArmada, fakeLinearLabels, recordedFetch } from "../../core/test/support.ts";
 import { version as VERSION } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
 import type { Exec, Io } from "../src/io.ts";
@@ -101,6 +101,7 @@ async function fixture() {
   git(work, "commit", "--quiet", "--message", "chore: start");
   git(work, "push", "--quiet", "--set-upstream", "origin", "main");
 
+  const github = recordedFetch();
   const gh = fakeGh();
   const linear = fakeLinearLabels();
   // The project registry is the fleet's, on Armada.
@@ -108,6 +109,9 @@ async function fixture() {
   const api = fakeArmada({ keys: { armada_coordinator_key: "coordinator" }, store: registry });
   const exec: Exec = async (command, args, { cwd }) => {
     if (command === "gh") return gh.run(args);
+    // Keep git transport on the local bare repository while presenting its GitHub identity to doctor.
+    if (command === "git" && args.join(" ") === "remote get-url origin")
+      return { code: 0, stdout: "git@github.com:acme/widgets.git\n", stderr: "" };
     if (command === "python3")
       return {
         code: 0,
@@ -124,6 +128,7 @@ async function fixture() {
     env: {
       XDG_CONFIG_HOME: join(home, "config"),
       LINEAR_API_KEY: "lin_test",
+      GITHUB_TOKEN: "gh_test",
       ARMADA_API_URL: ARMADA_URL,
       ARMADA_API_KEY: "armada_coordinator_key",
     },
@@ -131,7 +136,12 @@ async function fixture() {
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
-    fetch: (url, init) => (url.startsWith(ARMADA_URL) ? api.fetch(url, init) : linear.fetch(url, init)),
+    fetch: (url, init) =>
+      url.startsWith(ARMADA_URL)
+        ? api.fetch(url, init)
+        : url.startsWith("https://api.github.com/")
+          ? github.fetch(url, init)
+          : linear.fetch(url, init),
     exec,
   };
   /** Runs one command and returns its exit code with everything it printed. */

@@ -476,3 +476,22 @@ export async function fetchPreview(opts: FetchForgeOptions & { sha: string }): P
   const vercel = commit?.status?.contexts.find((c) => /vercel/i.test(c.context) && c.state === "SUCCESS");
   return https(vercel?.targetUrl);
 }
+
+/** Canonical GitHub repository name, including redirects after a rename or transfer. */
+export async function fetchRepository(opts: FetchForgeOptions): Promise<{ fullName: string }> {
+  return httpRequest(
+    `https://api.github.com/repos/${opts.repository}`,
+    { method: "GET", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${opts.token}` } },
+    { ...opts, retry: true },
+    async (response) => {
+      if (!response.ok) throw new GithubError(`GitHub API HTTP ${response.status}`);
+      const body = (await response.json()) as { full_name?: unknown };
+      if (typeof body.full_name !== "string" || !/^[a-z0-9-]+\/[a-z0-9_.-]+$/i.test(body.full_name))
+        throw new GithubError("GitHub API returned no valid repository full_name");
+      return { fullName: body.full_name };
+    },
+  ).catch((err: unknown) => {
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    throw err;
+  });
+}

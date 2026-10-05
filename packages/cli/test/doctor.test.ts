@@ -7,11 +7,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Check, checkPublished, NPM_REGISTRY_URL, type ServerCli } from "@armada/core";
-import { ARMADA_URL, type FakeVault, fakeArmada, NOW } from "../../core/test/support.ts";
+import { type Check, checkPublished, type Fetch, NPM_REGISTRY_URL, type ServerCli } from "@armada/core";
+import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
-import { BUNDLED_CONDUCTOR } from "../src/doctor.ts";
+import { BUNDLED_CONDUCTOR, buildDoctor } from "../src/doctor.ts";
 import type { Exec, Io } from "../src/io.ts";
 
 // Canary secrets: no output may ever contain them.
@@ -341,5 +341,101 @@ describe("armada doctor: the secrets the project expects", () => {
     expect((await out.doctor()).find((c) => c.id === "secrets")?.message).toBe(
       "the project expects the secrets OPENAI_API_KEY; not checked: not signed in to Armada",
     );
+  });
+});
+
+describe("armada doctor: repository identity", () => {
+  test("origin mismatch, equivalent forms, GitHub rename and unavailable checks", async () => {
+    const github = recordedFetch({ repository: { full_name: "new-org/new-widgets" } });
+    const requests: { command: string; args: string[]; cwd: string; timeoutMs?: number }[] = [];
+    let remote: string | null = "git@github.com:acme/other.git";
+    let fail = false;
+    const exec: Exec = async (command, args, options) => {
+      if (args.join(" ") === "remote get-url origin") {
+        requests.push({ command, args, ...options });
+        if (fail) throw new Error("CANARY remote credentials");
+        return { code: remote === null ? 2 : 0, stdout: remote ?? "", stderr: "CANARY remote credentials" };
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    };
+    const t = await terminal({}, {}, null, { toml: DEMO_TOML });
+    let token: string | undefined = "CANARY-github-token";
+    let fetch: Fetch = github.fetch;
+    const check = async () => {
+      const report = await buildDoctor(
+        {
+          cwd: t.home,
+          env: { XDG_CONFIG_HOME: t.home, GITHUB_TOKEN: token },
+          readFile: async () => null,
+          stdout: () => {},
+          stderr: () => {},
+          ghToken: () => null,
+          exec,
+          fetch,
+        },
+        version,
+      );
+      expect(JSON.stringify(report)).not.toContain("CANARY");
+      return report.checks.filter((c) => ["git-origin", "github-repository"].includes(c.id));
+    };
+    expect(await check()).toEqual([
+      {
+        id: "git-origin",
+        level: "error",
+        message: "origin names acme/other, but armada.toml names acme/widgets",
+        fix: 'set [github] repository = "acme/other" in armada.toml, or run `git remote set-url origin https://github.com/acme/widgets.git` if the configured repository is correct',
+      },
+      {
+        id: "github-repository",
+        level: "warning",
+        message: "GitHub reports acme/widgets as new-org/new-widgets: the repository was renamed or moved",
+        fix: 'set [github] repository = "new-org/new-widgets" in armada.toml',
+      },
+    ]);
+    expect(requests[0]).toMatchObject({
+      command: "git",
+      args: ["remote", "get-url", "origin"],
+      cwd: t.home,
+      timeoutMs: 10_000,
+    });
+    expect(github.calls[0]).toEqual({
+      url: "https://api.github.com/repos/acme/widgets",
+      operation: "Repository",
+      variables: {},
+      authorization: `Bearer ${token}`,
+    });
+    fetch = recordedFetch({ repository: { full_name: "ACME/Widgets" } }).fetch;
+    for (const form of [
+      "https://github.com/ACME/widgets.git",
+      "git@github.com:acme/Widgets",
+      "ssh://git@github.com/acme/widgets.git",
+    ]) {
+      remote = form;
+      expect((await check()).map((c) => c.level)).toEqual(["ok", "ok"]);
+    }
+    token = undefined;
+    expect((await check())[1]).toMatchObject({
+      level: "warning",
+      message: "GitHub repository not checked: no GitHub token",
+    });
+    remote = null;
+    expect((await check())[0]).toMatchObject({
+      level: "error",
+      message: "origin repository not checked: git could not read origin",
+    });
+    fail = true;
+    expect((await check())[0]?.level).toBe("error");
+    fail = false;
+    remote = "https://CANARY@other.test/acme/widgets";
+    expect((await check())[0]).toMatchObject({
+      level: "error",
+      message: "origin is not a recognized GitHub repository remote",
+    });
+    token = "CANARY-github-token";
+    fetch = async () => new Response(null, { status: 404 });
+    expect((await check())[1]).toMatchObject({
+      level: "warning",
+      message: "GitHub repository not checked: GitHub API HTTP 404",
+    });
   });
 });
