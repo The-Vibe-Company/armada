@@ -27,6 +27,8 @@ export const STOP_HOOK_VARIABLE = "ARMADA_STOP_HOOK";
 export interface WatchState {
   /** The checkout (directory of armada.toml) where `armada watch` last ran: the coordinator's. */
   root: string | null;
+  /** Last attempted Conductor observation, per handle and generation (60 s throttle). */
+  runtimeObserved?: Record<string, string>;
   /** Entries the coordinator was shown (`entryKey`), by `inbox` or `watch`: they do not wake a watch again. */
   seen: string[];
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */
