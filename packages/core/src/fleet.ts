@@ -4,7 +4,8 @@
 
 import { freshRuntimeState, type RuntimeObservation } from "./live.ts";
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
-import type { ShippingStage } from "./types.ts";
+import { checkIssues } from "./phases.ts";
+import type { MainCommit, MainHealth, ShippingStage } from "./types.ts";
 import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASES, type PullRequest } from "./types.ts";
 
 const MIN = 60_000;
@@ -483,4 +484,78 @@ export function waitingPullRequests(m: Model, prs: PullRequest[]): WaitingPr[] {
     .filter((p) => p.state === "open")
     .map((pr) => ({ pr, ticket: ticketOf.get(pr.url) ?? null }))
     .sort((a, b) => a.pr.number - b.pr.number);
+}
+
+export const MAIN_HISTORY_WINDOW = 20;
+
+/** Default-branch CI, ignoring unchecked commits and looking back to the last green. */
+export function mainHealth(
+  commits: readonly MainCommit[],
+  requiredChecks: readonly string[],
+  historyComplete = false,
+): MainHealth | null {
+  const head = commits[0];
+  if (!head) return null;
+  const stateOf = (c: MainCommit): MainHealth["state"] => {
+    if (!c.checks.length && c.ci === "none") return "none";
+    if (!requiredChecks.length)
+      return c.ci === "success" ? "green" : c.ci === "failure" ? "red" : c.ci === "none" ? "none" : "running";
+    const issues = checkIssues(c.checks, requiredChecks);
+    return issues.some((i) => !i.pending) ? "red" : issues.length || c.checksComplete === false ? "running" : "green";
+  };
+  const checked = commits.map((commit) => ({ commit, state: stateOf(commit) })).filter((c) => c.state !== "none");
+  const newest = checked[0];
+  const result: MainHealth = {
+    branch: head.branch,
+    head: head.sha,
+    state: newest?.state ?? "none",
+    redSince: null,
+    fixRunning: null,
+    redBeyondWindow: false,
+  };
+  if (!newest || newest.state === "green") return result;
+  const pr = (c: MainCommit) => {
+    const match = c.headline.match(/\(#(\d+)\)\s*$/);
+    return match ? Number(match[1]) : null;
+  };
+  let foundGreen = false;
+  for (const { commit, state } of checked) {
+    if (state === "green") {
+      foundGreen = true;
+      break;
+    }
+    if (state === "red")
+      result.redSince = {
+        sha: commit.sha,
+        pr: pr(commit),
+        at: commit.at,
+        failing: [
+          ...new Set(
+            commit.checks
+              .filter((c) => c.state === "failure" && (!requiredChecks.length || requiredChecks.includes(c.name)))
+              .map((c) => c.name),
+          ),
+        ],
+      };
+  }
+  if (result.redSince) {
+    result.redBeyondWindow = !foundGreen && !historyComplete;
+    if (newest.state === "running") result.fixRunning = { sha: newest.commit.sha, pr: pr(newest.commit) };
+  }
+  return result;
+}
+
+/** The shared English reading used by the CLI and merge notes. */
+export function mainHealthLine(health: MainHealth): string {
+  const ref = (c: { sha: string; pr: number | null }) => (c.pr === null ? c.sha.slice(0, 7) : `#${c.pr}`);
+  if (!health.redSince)
+    return `${health.branch} ${health.state === "running" ? "checks running" : health.state === "none" ? "has no checks" : "green"}`;
+  const since = health.redBeyondWindow
+    ? `red for more than ${MAIN_HISTORY_WINDOW} commits`
+    : `red since ${ref(health.redSince)}`;
+  const fix = health.fixRunning ? `, a fix is running (${ref(health.fixRunning)})` : "";
+  const failing = health.redSince.failing.length
+    ? ` (${health.redSince.failing.join(", ")} failing on ${health.redSince.sha.slice(0, 7)})`
+    : "";
+  return `${health.branch} ${since}${fix}${health.redBeyondWindow ? "" : failing}`;
 }
