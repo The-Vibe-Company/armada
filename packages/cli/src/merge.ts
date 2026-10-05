@@ -187,7 +187,8 @@ function render(o: MergeOutcome): string {
     const { ready, parked, nowWaitsOn } = o.unblocked;
     const tickets = [...ready.map((t) => `${t.id} (${t.reason})`), ...parked.map((id) => `${id} (parked)`)];
     if (tickets.length) out.push(`Unblocked by ${o.ticket.id}: ${tickets.join(", ")}`);
-    for (const t of ready) if (t.launch) out.push(`  ${t.launch}${t.route ? ` (${t.route.why})` : ""}`);
+    for (const t of ready)
+      if (t.launch) out.push(`  ${t.launch}${t.route ? ` # ${t.route.why.replace(/\s+/g, " ")}` : ""}`);
     for (const t of nowWaitsOn) out.push(`${t.id} now waits only on ${t.on.join(", ")}`);
   }
   if (!o.workers.length) out.push("No other worker is in flight.");

@@ -328,7 +328,12 @@ test.each([false, true])("merge lists unblocked tickets and routed launch hints 
     expect(f.out()).toContain(
       "Unblocked by DEMO-18: DEMO-19 (ready for an agent), DEMO-20 (no ready label), DEMO-23 (in triage), DEMO-21 (parked)",
     );
-    expect(f.out()).toContain("armada brief DEMO-19 --prompt --profile backend (the only profile in armada.toml)");
+    expect(f.out()).toContain("armada brief DEMO-19 --prompt --profile backend # the only profile in armada.toml");
+    const launchLine = f
+      .out()
+      .split("\n")
+      .find((line) => line.trimStart().startsWith("armada brief"));
+    expect(spawnSync("sh", ["-n"], { input: launchLine, encoding: "utf8" }).status).toBe(0);
     expect(f.out()).toContain("DEMO-22 now waits only on EXT-1");
     expect(f.out()).not.toContain("armada brief DEMO-20");
     expect(f.out()).not.toContain("armada brief DEMO-21");
