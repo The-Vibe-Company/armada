@@ -3,14 +3,14 @@ name: armada-runtime-conductor
 description: Runtime guide for running Armada workers on Conductor Cloud. Use when an Armada coordinator must launch a worker on a ticket, send it a message, check whether a silent worker is still alive, or stop and archive it. Four fixed sections, each with the exact conductor command and how to read its output.
 ---
 
-Herdr and Conductor workers use Armada’s integrated runtime interface; Claude Code subagents use their guide. `armada status` and `armada inbox` publish Conductor’s live state, and `armada stop` archives it after release or merge. Answers and notes use `armada answer`; launch commands below remain the guide path until integrated launch ships. This guide tells the coordinator how to launch, message, check and stop a worker with the `conductor` command line tool, and what to record in Armada afterwards. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
+Herdr and Conductor workers use Armada’s integrated runtime interface; Claude Code subagents use their guide. `armada status` and `armada inbox` publish Conductor’s live state, and `armada stop` archives it after release or merge. Native launch uses `armada launch`; answers and notes use `armada answer`. This guide tells the coordinator how to launch, message, check and stop a worker and how to use the `conductor` command line tool when a manual operation is needed. It was checked against `conductor` 0.89.x (the desktop app's CLI, macOS) and 0.1.x (the CLI inside a Conductor Cloud workspace, Linux); every command below works in both. `conductor --version` prints yours; if a flag is refused, compare with `conductor <command> --help`.
 
 - On a Mac, the app ships the CLI at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, which is not on PATH. `armada doctor` looks for it and prints the fix: a link from a directory already on PATH (`ln -s "/Applications/Conductor.app/Contents/Resources/bin/conductor" ~/.local/bin/conductor`), or a PATH line for your shell profile.
 - Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication, 4 server error.
 - On exit code 3, `conductor auth whoami` checks the token the CLI uses (it exits 0 when the token works). Do not rely on `conductor auth status`: it only looks for a macOS Keychain entry and fails on Linux ("Keychain storage is only supported on macOS"). In a Conductor Cloud workspace the CLI reads `CONDUCTOR_API_KEY` from the environment and needs no login; on a Mac, `conductor auth login` stores a token in the Keychain.
 - A worker is one workspace with one session. Its Armada handle is `<workspaceId>/<sessionId>`; the worker's claim comment carries it, so `armada status` and the ticket always lead back to the session.
 - A worker needs no key in its workspace: the prompt of `armada brief` carries a one-time launch token, and the worker's first command exchanges it for a session limited to its ticket, through which Armada gives each command its keys. The token works once, within the hour, so a copy left in a transcript is useless once used.
-- Never type a secret value into a command, a file or a message: name the variable and let your shell expand it. The expanded value is still in the `conductor` process's arguments while it runs, so launch from a machine only you use.
+- Native launch requires an Armada sign-in (`armada login`). Armada passes the brief through stdin and never prints its token; do not pass keys through Conductor’s `--env`.
 
 ## Launch
 
@@ -20,51 +20,17 @@ Workers in `awaiting-approval`, `blocked` or `awaiting-validation` end their tur
 
 1. Pick a ready ticket from `armada status` that does not collide with work in flight.
 2. Read the ticket and parent, then choose its profile. A matching label rule wins; otherwise match the profiles' `when` rules by most files/work. Mixed front-end/back-end work: choose the larger part and say why with `--profile <name> --reason "<why>"`. An optional `armada brief ABC-12` or `--json` preview helps resolve the choice and warnings, but is read-only: neither creates a launch token nor marks a worker in flight. If the choice is still needed, `--prompt` refuses before minting anything.
-3. **Make one brief call for the launch:** `--prompt --profile-line` writes only the worker prompt to stdout and the selected profile (agent, model, effort, fast mode, runtime and reason) to stderr. Read that line to configure Conductor; no second brief is needed for the profile. Keep any `--profile` and `--reason` flags on this call. Resolve warnings before launching. Never cut a launch message from the human view or `--json`: they carry no token. Write the prompt to a file only you can read, then add what only you know (the boundary with a parallel worker, a decision not yet on the ticket). The token works once, within the hour; if you cancel or the runtime launch fails, use `armada launch revoke ABC-12`. Generate a fresh prompt if its token has expired.
+3. Launch with one command, keeping the selected profile and its reason:
 
 ```sh
-(umask 077; armada brief ABC-12 --prompt --profile-line > /tmp/abc-12-brief.md)
+armada launch ABC-12 --runtime conductor --profile <name> --reason "<why>" --notes notes.md
 ```
 
-4. Create the workspace with every value from the profile. Never leave the agent, model or effort to Conductor's defaults. Add `--fast-mode` when the profile says fast mode. Run the whole block as one command: shell state does not carry over between separate calls.
+`--profile`, `--reason` and `--notes` are optional when routing settles the profile and there is no extra context. `--notes -` reads stdin. A notes path is relative to the command’s current folder; the file must exist, be nonempty and fit within 16 KB. Notes add context only: the brief’s Plan line still decides whether the worker waits. Put conventions every worker needs in `[brief] extra` instead.
 
-```sh
-conductor --json workspace create \
-  --repo-url https://github.com/<owner>/<name> \
-  --branch main \
-  --name "ABC-12 <short title>" \
-  --agent claude --model opus-5-5-1m --effort high \
-  --message-file - \
-  --env ARMADA_TICKET=ABC-12 \
-  < /tmp/abc-12-brief.md > /tmp/abc-12-launch.json
-rm -f /tmp/abc-12-brief.md
-jq -r '"\(.workspaceId)/\(.sessionId)"' /tmp/abc-12-launch.json
-```
+Use `--dry-run` to inspect settings and preflight without creating a token or workspace. Native launch checks the ticket, pending launches, the profile and Conductor sign-in, then takes a launch lease before minting the token. It creates one workspace with the profile’s explicit agent, model, effort and fast mode. `[conductor] project_id` selects a Conductor project instead of the configured repository URL; `base_branch` overrides origin’s default branch. Conductor creates its own branch; the brief tells the worker to rename it to Linear’s suggested branch.
 
-If the prompt has no launch token, its stderr warning says why. Not signed in: `armada login` (a headless coordinator sets `ARMADA_API_KEY`), then generate a new prompt; `armada doctor` checks the sign-in. Only on an Armada that keeps no keys yet (no accounts or no vault), pass the keys the read-only brief's environment table marks `required`, from your shell or from Armada's credentials file (`in credentials file`: the `set -a` line loads it without printing it; drop it when every variable is set in your shell). The subshell keeps the keys out of the rest of your session. Without a launch token the worker is not signed in to Armada: its claims and reports reach Linear only, with a warning. When Conductor's organization environment still holds the keys, every workspace already has them: use the first block.
-
-```sh
-(
-  set -a; . "${XDG_CONFIG_HOME:-$HOME/.config}/armada/credentials"; set +a
-  [ -n "$LINEAR_API_KEY" ] || { echo "LINEAR_API_KEY is missing" >&2; exit 1; }
-  conductor --json workspace create \
-    --repo-url https://github.com/<owner>/<name> \
-    --branch main \
-    --name "ABC-12 <short title>" \
-    --agent claude --model opus-5-5-1m --effort high \
-    --message-file - \
-    --env ARMADA_TICKET=ABC-12 \
-    --env LINEAR_API_KEY="$LINEAR_API_KEY" \
-    < /tmp/abc-12-brief.md > /tmp/abc-12-launch.json
-)
-rm -f /tmp/abc-12-brief.md
-```
-
-- `--branch` is the base branch (the default branch). Conductor creates a branch named `conductor/<slug of --name>`; the brief tells the worker to rename it to the ticket's branch.
-- The output has `workspaceId`, `sessionId`, `deepLink` and `initialMessage` (`messageId`, `state: "queued"`). Keep the handle the `jq` line prints, and give the owner the `deepLink` when they want to watch.
-- Conductor sets `CONDUCTOR_WORKSPACE_ID` and `CONDUCTOR_SESSION_ID` inside the workspace, and signs `gh` in for the worker's pushes. The brief's first commands install your Armada version (`npm install -g`), sign in with the launch token (`armada login --launch-token`) and claim the ticket. `--env` values are not shown back by `workspace get`.
-- Keys in Conductor's organization environment reach every workspace, workers included: once Armada keeps the organization's keys, they belong on Armada's Keys page, not there.
-- An unknown agent, model or effort fails the command. Check the ids with `conductor model` (each agent's models, efforts and defaults) and fix the profile in `armada.toml`.
+4. Keep the printed workspace/session handle and session link. Known launch failures revoke that exact token. A lost answer or create runtime error is recovered through a bounded repository/time search without repeating create; workspace and session names may have changed. Only a unique candidate still bearing the requested workspace and session names is adopted automatically. Renamed, ambiguous or incomplete results retain the pending launch and name visible candidate ids and recovery commands. An unavailable or malformed recovery search also retains the pending launch; only a completed search with no candidate cancels it automatically. Never run a second launch before checking the first. A warning about session binding leaves the launched worker running: its first sign-in records the same handle.
 
 5. **Check the claim.** Within a few minutes, `armada status` lists the ticket in flight, phase `planning`, runtime `Conductor`, and the ticket's claim comment reads `session: <workspaceId>/<sessionId>` and `profile: <name>`. No claim after `[policy] not_started_minutes` (ten by default): `armada watch` and `armada inbox` show a `not-started` entry; status lists it under "Pending launches" with `armada launch revoke ABC-12`. It says whether the worker never used its launch token (it never reached its login line) or signed in and stopped before its claim. An unused token expired more than an hour ago produces one `not started (token expired)` inbox notice, then clears. Exchanged launches without a claim stop being followed after 24 hours and remain revocable. Read the transcript (Status section). A worker whose launch token was refused (already used, or more than an hour old) needs a new one: `armada brief ABC-12 --prompt --profile-line` again, and message it only the `armada login --launch-token …` line of the new `--prompt` output (Message section). A worker cut off from Armada was revoked (Organization > Workers says by whom) or left idle for three days: ask the owner before you give a revoked worker a new token. If the worker cannot claim for another reason, fix the cause and message it; as a last resort record the handle yourself with `armada claim ABC-12 --runtime conductor --handle <workspaceId>/<sessionId> --profile <name>`, adding the brief's `--reason` for an override.
 
@@ -169,3 +135,17 @@ done
 conductor --json workspace archive <workspaceId>
 ```
 - After an archive, `session status` still answers `idle`; `workspace status` says `archived`.
+
+## Without native Armada launch: manual Conductor creation
+
+Use this only for a deliberately manual launch. Prepare a worker brief and explicit settings yourself; do not pass secret environment variables. For Armada-managed workers, use `armada launch` so preflight, pending-launch protection, token cancellation and recovery are automatic.
+
+```sh
+conductor --json workspace create \
+  --repo-url https://github.com/<owner>/<name> --branch main \
+  --name "ABC-12 <short title>" --session-name ABC-12 \
+  --agent claude --model <model-id> --effort high \
+  --message-file - --env ARMADA_TICKET=ABC-12 < worker-brief.md
+```
+
+The answer names `workspaceId`, `sessionId`, `deepLink` and the initial-message acknowledgement. Check these and the worker’s claim; a manually minted Armada token must be revoked with `armada launch revoke ABC-12` when the launch fails.
