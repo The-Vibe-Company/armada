@@ -21,6 +21,16 @@ export const CLAUDE_SETTINGS = ".claude/settings.json";
  */
 export const STOP_HOOK_COMMAND = "armada hook stop 2>/dev/null || true";
 export const GITIGNORE = ".gitignore";
+/** Paths init may merge automatically; armada.toml is allowed only on first setup. */
+export const SETUP_PATHS = [
+  `${AGENTS_SKILLS_DIR}/**`,
+  `${CLAUDE_SKILLS_DIR}/**`,
+  SKILLS_LOCK_FILE,
+  CONDUCTOR_SETTINGS,
+  CLAUDE_SETTINGS,
+  GITIGNORE,
+  CONFIG_FILE,
+] as const;
 /** ship-pr-dev writes its run artifacts here and refuses to start unless git ignores them. */
 export const SHIP_ARTIFACTS = "plans/ship-pr-dev/";
 
