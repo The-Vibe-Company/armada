@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GITHUB_GRAPHQL, LINEAR_ENDPOINT, machinePaths, updateWatchState } from "../../core/src/index.ts";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 import { renderStatus } from "../src/render.ts";
@@ -102,6 +102,29 @@ describe("project config resolution", () => {
       io.cwd = "/tmp";
       expect(await run(["--project", "widgets", "status", "--json"], io)).toBe(0);
       expect(JSON.parse(out()).project.slug).toBe("widgets");
+    });
+  });
+
+  test("spec renumber honors environment and project selectors from /tmp", async () => {
+    await withMachine(async (home) => {
+      await updateWatchState(pathsOf(home), "widgets", { root: "/checkout" });
+      for (const selector of ["env", "project"]) {
+        const { io, out } = fakeIo(
+          { "/checkout/armada.toml": DEMO_TOML },
+          {
+            XDG_CONFIG_HOME: home,
+            LINEAR_API_KEY: "synthetic-key",
+            ...(selector === "env" ? { ARMADA_CONFIG: "/checkout/armada.toml" } : {}),
+          },
+        );
+        io.cwd = "/tmp";
+        const linear = new FakeLinear();
+        io.linearWriter = () => linear;
+        const args = selector === "project" ? ["--project", "widgets"] : [];
+        expect(await run(["spec", "renumber", "--json", ...args], io)).toBe(0);
+        expect(JSON.parse(out())).toMatchObject({ applied: false, create: null, created: null });
+        expect(linear.writes).toEqual([]);
+      }
     });
   });
 
