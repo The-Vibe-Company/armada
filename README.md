@@ -74,8 +74,10 @@ vendored `review-code-dev` setup notes for supported platforms and exact fixes.
 `armada init` fixes the repository setup in one go:
 
 1. It creates the missing Linear labels (a missing group goes in the team of the program root).
-2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the branch `armada/init-<version>` and opens a pull request with `gh`. Your own checkout is not touched. Running it again rebuilds that branch and updates the same pull request. When the default branch already has everything, no pull request is opened.
+2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the stable branch `armada/setup` and opens a pull request with `gh`. Your own checkout is not touched. Running it again, including with a newer CLI version, rebuilds that branch and updates the same open pull request. The first run replaces legacy `armada/init-*` pull requests, closing each with a link to the replacement. When the default branch already has everything, no pull request is opened.
 3. It registers the project (slug, name, repository, program root) on Armada, for the organization the terminal is signed in to, so `armada status --all` and the dashboard list it. A slug another organization already holds is refused.
+
+`armada init --merge` waits for the same checks as `armada merge <n> --no-ticket --wait` and merges the setup pull request itself. It refuses changes outside `.agents/skills/**`, `.claude/skills/**`, `skills-lock.json`, `.conductor/settings.toml`, `.claude/settings.json` and `.gitignore`; `armada.toml` is allowed only when the default branch has none.
 
 To update the bundled skills on an existing ticket branch, run `armada skills update`.
 It uses init's vendoring rules for skills, links, `skills-lock.json` and the shipping
