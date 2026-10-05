@@ -54,7 +54,7 @@ gh pr merge <n> --squash --match-head-commit <full-sha>
 
 ## The release pull request
 
-Some repositories publish through release-please: every merge to the default branch opens or updates one release pull request, and merging it tags the version and publishes it. When the repository's rules (`AGENTS.md`) say to merge it after each merge, do it right after the ticket's merge, without a hand-back: no worker owns it.
+Some repositories publish through release-please: every merge to the default branch opens or updates one release pull request, and merging it tags the version and publishes it. Follow the repository's release rules (`AGENTS.md`). When they specify a release train, leave the release pull request open after each ticket's merge: the train merges it at the scheduled time and tags and publishes in the same run. One release pull request carries everything merged since the last release.
 
 - **What it looks like.** Title `chore(main): release <version>`, opened by `github-actions`, label `autorelease: pending`, and a diff that only touches the changelog, the manifest and version fields. It is opened with the workflow's own token, so **no CI check runs on it** (only checks from apps such as Vercel, if any) and `mergeStateStatus` is often `UNSTABLE` (`armada merge --no-ticket` accepts it when none of the required checks ran and nothing failed). Both are expected: the publish job runs the repository's checks again before publishing. Anything else in the diff, or a `DIRTY` state, is not expected: stop and tell the owner.
 - **Find it and its head:**
@@ -63,14 +63,16 @@ Some repositories publish through release-please: every merge to the default bra
 gh pr list --state open --label "autorelease: pending" --json number,title,headRefOid,mergeStateStatus
 ```
 
-- **Merge it** with `armada merge <n> --no-ticket`: no ticket owns it, and no required check runs on it (see "No ticket" above). By hand, pin it to that head, like any merge, and without `--delete-branch`:
+- **Urgent fix on a release train.** Run the release workflow named by the repository's rules, for example:
 
 ```sh
-gh pr merge <n> --squash --match-head-commit <full-sha>
+gh workflow run release.yml
 ```
 
-- **Check the publish.** After a minute or two the new version is on the registry, for example `npm view <package> version` for an npm package (the package is named in `AGENTS.md` or the release workflow). If it is not, open the Release run (`gh run list --workflow release.yml --limit 3`), fix the cause and re-run its failed jobs: a later push does not publish a version already tagged.
-- Release-please updates the same pull request on each merge to the default branch; one release pull request can carry several merges.
+The workflow merges the pending release pull request and publishes it at once. Use this only when the repository's rules allow a manual release; ordinary ticket merges wait for the train.
+
+- **Repositories without a train.** Only when the repository's rules ask the coordinator to merge release pull requests, use `armada merge <n> --no-ticket`: no ticket owns it, and no required check runs on it (see "No ticket" above). A manual merge must still pin the checked head and leave out `--delete-branch`.
+- **Check the publish.** After the scheduled or manual Release run finishes, check the registry, for example `npm view <package> version` for an npm package (the package is named in `AGENTS.md` or the release workflow). If it is not published, open the Release run (`gh run list --workflow release.yml --limit 3`, using the repository's workflow name), fix the cause and re-run its failed jobs: a later push does not publish a version already tagged.
 
 ## Paused merges
 
