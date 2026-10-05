@@ -393,20 +393,25 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
   }
 
   await open(page, "/landing");
-  await check("the landing's method steps are tabs: the arrow keys, Home and End move the focus and the step", async () => {
-    await page.getByRole("tab", { name: /Grill/ }).focus();
-    await page.keyboard.press("ArrowRight");
-    const next = await focused(page);
-    await page.keyboard.press("End");
-    const last = await focused(page);
-    const shown = await page.getByRole("tabpanel").textContent();
-    return (
-      next.includes("method-tab-1") &&
-      last.includes("method-tab-4") &&
-      (await page.locator("#method-tab-4").getAttribute("aria-selected")) === "true" &&
-      !!shown?.includes("The coordinator merges.")
-    );
-  });
+  await check(
+    "the landing's method steps are tabs: the arrow keys, Home and End move the focus and the step",
+    async () => {
+      await page.getByRole("tab", { name: /Grill/ }).focus();
+      await page.keyboard.press("ArrowRight");
+      const next = await focused(page);
+      await page.keyboard.press("End");
+      const last = await focused(page);
+      // The panels just left fade out over 200 ms: read the one the last tab controls.
+      const shown = page.locator("#method-panel-4");
+      return (
+        next.includes("method-tab-1") &&
+        last.includes("method-tab-4") &&
+        (await page.locator("#method-tab-4").getAttribute("aria-selected")) === "true" &&
+        (await shown.isVisible()) &&
+        !!(await shown.textContent())?.includes("The coordinator merges.")
+      );
+    },
+  );
   await context.close();
 }
 
