@@ -34,6 +34,7 @@ import {
 import { apiOf } from "./api.ts";
 import { reportHerdr } from "./herdr.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
+import { sessionHandle } from "./login.ts";
 import { observeHerdr } from "./runtime.ts";
 
 /**
@@ -125,6 +126,13 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
   return {
     config,
     linear,
+    workerSession: credentials.armadaSignIn?.kind === "worker",
+    workerHandle: !credentials.armadaSignIn || credentials.armadaSignIn.kind === "worker" ? sessionHandle(io) : null,
+    workerPane:
+      io.env.HERDR_ENV === "1" &&
+      (!credentials.armadaSignIn || credentials.armadaSignIn.kind === "worker" || io.env.ARMADA_TICKET)
+        ? io.env.HERDR_PANE_ID?.trim()
+        : null,
     fleet: async () => live,
     readPull: token
       ? (number) =>
@@ -299,15 +307,20 @@ export async function release(io: Io, config: ArmadaConfig, credentials: Credent
   const reason = a.options.reason?.trim();
   if (!reason) throw new UsageError("--reason is required: why the ticket is given back");
   const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
-  const code = await withContext(io, config, credentials, a.json, (ctx) => releaseTicket(ctx, { ticket, reason }));
-  await endWorkerSessions(io, config, credentials, ticket, "released", a.json);
+  let claimedAt: string | null = null;
+  const code = await withContext(io, config, credentials, a.json, async (ctx) => {
+    const outcome = await releaseTicket(ctx, { ticket, reason });
+    claimedAt = outcome.releasedClaim?.claimedAt ?? null;
+    return outcome;
+  });
+  if (code === 0) await endWorkerSessions(io, config, credentials, ticket, "released", a.json, claimedAt);
   return code;
 }
 
 /**
  * Ends the ticket's worker sessions on Armada once it is released or merged:
  * a worker signs itself out and forgets its session; a signed-in coordinator
- * ends every session of the ticket. Not signed in, there is nothing to end. A
+ * ends sessions launched by the released claim's time (all on merge). Not signed in, there is nothing to end. A
  * failure only warns: the session ends on its own when idle, and the Workers
  * page revokes it.
  */
@@ -318,6 +331,7 @@ export async function endWorkerSessions(
   ticket: string,
   reason: "released" | "merged",
   quiet: boolean,
+  claimedAt?: string | null,
 ): Promise<void> {
   const signIn = credentials.armadaSignIn;
   if (!signIn) return;
@@ -333,7 +347,17 @@ export async function endWorkerSessions(
 `);
       return;
     }
-    const ended = await api.endWorkers(signIn, { project: config.project.slug, ticket, reason });
+    if (reason === "released" && !claimedAt) {
+      io.stderr(`armada: warning: no release claim timestamp for ${ticket}; its worker sessions were kept on Armada
+`);
+      return;
+    }
+    const ended = await api.endWorkers(signIn, {
+      project: config.project.slug,
+      ticket,
+      reason,
+      ...(claimedAt ? { claimedAt } : {}),
+    });
     if (ended && !quiet)
       io.stdout(`Ended ${ended === 1 ? "the worker session" : `${ended} worker sessions`} of ${ticket} on Armada.
 `);
