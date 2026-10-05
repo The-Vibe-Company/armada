@@ -36,7 +36,7 @@ Never paste a key into a prompt, a ticket, a file in the repository or a chat. A
 For a fleet that ran with the keys in Conductor's organization environment:
 
 1. Enter the keys on Armada's Keys page (Organization > Keys), and create an organization API key for cloud coordinators (Organization page).
-2. Check from a terminal with none of the keys in its environment: `armada login`, then `armada doctor` says `signed in to <Armada> as <you>, <organization>`, and `armada auth status` shows each key from `Armada: …`. `armada brief <ticket>` and `--json` are read-only: they show `Launch: a one-time token is made when you print the prompt (--prompt)`, without a token or a launch row. At launch, one `armada brief <ticket> --prompt --profile-line` call supplies the worker prompt on stdout and the chosen profile and reason on stderr.
+2. Check from a terminal with none of the keys in its environment: `armada login`, then `armada doctor` says `signed in to <Armada> as <you>, <organization>`, and `armada auth status` shows each key from `Armada: …`. `armada brief <ticket>` and `--json` are read-only: they show `Launch: a one-time token is made when you print the prompt (--prompt)`, without a token or a launch row. Launch Conductor or herdr with `armada launch <ticket> --runtime conductor|herdr`; use `armada brief <ticket> --prompt` for guided Claude Code launches.
 3. Remove `LINEAR_API_KEY`, and any database variable of earlier versions, from the settings of Conductor's organization cloud computer. Workspaces started afterwards no longer have them; running ones keep what they started with until they are archived.
 4. Start the next coordinator with its API key (below). On a laptop that kept keys in its credentials file, `armada doctor` warns once Armada gives the same ones: `armada auth logout` removes them and keeps the sign-in.
 
@@ -83,6 +83,16 @@ Without webhooks the dashboard refreshes a project's reading of Linear and GitHu
 
 No cron is needed: nothing reads Linear or GitHub on a timer, so the database can scale to zero when nobody looks.
 
+## Get owner alerts in chat
+
+1. Deploy with accounts and `ARMADA_SECRETS_KEY`. An owner or admin opens Organization > Notifications.
+2. Paste a public HTTPS webhook, choose Slack-compatible text or signed JSON, and optionally filter to a project. For JSON, enter a signing secret of at least 16 characters that the receiver shares; verify the exact body with HMAC-SHA256 and the `x-armada-signature: sha256=…` header.
+3. Choose language (initially `[tracker] language`), time zone and quiet hours, save, then **Send a test**. The page shows who set it, when, and the last delivery state; neither the address nor the signing secret returns to the page. Leave those fields blank on later saves to preserve them.
+4. Check that a merge approval, work validation or escalated question sends its `/approve/<id>` link once. A coordinator that stops while its inbox waits sends an alert; it sends another only after returning and stopping again. Quiet-hour alerts are stored for the next summary (the summary ticket adds scheduling).
+5. On a paused channel, correct the endpoint and save to resume. HTTP 404/410 pause immediately; ten consecutive delivery failures pause too. Each failed alert is tried at most five times, at least a minute apart. Delivery errors are fixed codes, never provider response text.
+
+Cron is **off in production by default**, as the owner decided. Ticks ride on fleet traffic and dashboard polls, with a 60-second lease scoped to each project. With no traffic, a stopped coordinator is only noticed at the next call or poll. To opt into a scheduler, set `CRON_SECRET`, configure an authenticated GET to `/api/cron/owner`, and follow README > Watch the fleet for the Vercel `crons` entry (every 15 minutes requires a paid plan; free allows daily). Do not enable it as part of the default deployment. A tick reads stored snapshots and live rows only; it never calls Linear or GitHub.
+
 ## Start a coordinator on a laptop
 
 1. Install Armada (Node.js 22 or later) and sign in. `armada doctor` checks the repository and the sign-in; `armada auth status` shows where each key comes from, never a value.
@@ -103,6 +113,14 @@ The laptop must stay awake and online while the coordinator runs: when it sleeps
 Workers launched from a laptop need no key either: the brief's prompt carries their launch token.
 
 A coordinator in Claude Code can also run short tickets as its own background subagents, each in its own git worktree: give those tickets a profile with `runtime = "claude-code"` and follow the `armada-runtime-claude-code` skill. They die with the coordinator's session. Use herdr for persistent local workers, or Conductor for cloud workers.
+
+### Launch a Conductor worker
+
+Sign in to Armada, then run `armada launch <ticket> --runtime conductor`. The routed profile supplies the agent, model, effort and fast mode; use `--profile <name> --reason "<why>"` for a coordinator’s choice. `--notes notes.md` adds context from a file relative to the current folder (`--notes -` reads stdin); missing, empty or larger-than-16-KB notes are refused before making a token. Notes do not change plan approval. The command prints the ticket, profile, workspace/session ids and session link; its brief and one-time sign-in travel only through stdin.
+
+`--dry-run` shows settings, the command and preflight without launching. An optional `[conductor] project_id` selects the explicit Conductor project rather than the configured GitHub repository; `base_branch` overrides origin’s default. Runtime can be omitted when the chosen profile decides it. Claude Code profiles instead point to `armada brief <ticket> --prompt` and the Agent tool.
+
+Active claims, pending launches and another launch holding the ticket’s lease are refused. Known Conductor failures revoke the exact pending launch; uncertain create results are searched without retrying. Recovery checks stable repository, creation time and session ids, so renamed workspaces or sessions remain discoverable. An ambiguous or incomplete search retains the pending launch and prints visible candidate ids and inspection commands; inspect them, then bind or revoke the pending launch and archive unwanted workspaces before launching again. An unavailable bind route warns and leaves the worker running; its sign-in records the handle. Check the claim with `armada status`.
 
 ### Launch a persistent local worker
 

@@ -89,6 +89,9 @@ export interface ArmadaConfig {
     names: string[];
   };
   conductor: {
+    /** Optional explicit Conductor project and base branch for native launches. */
+    projectId?: string | null;
+    baseBranch?: string | null;
     /** Profile `armada brief` uses without `--profile`; null when none is declared. */
     defaultProfile: string | null;
     /** Launch settings by profile name, from `[conductor.profiles.<name>]`. */
@@ -333,7 +336,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ],
     ["brief", briefT, ["extra"]],
     ["secrets", secretsT, ["names"]],
-    ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
+    ["conductor", conductorT, ["default_profile", "profiles", "routing", "project_id", "base_branch"]],
     ["herdr", herdrT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
@@ -374,6 +377,23 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         `"conductor.default_profile" is "${defaultProfile}", but there is no [conductor.profiles.${defaultProfile}]`,
       );
   }
+  const projectId =
+    conductorT.project_id === undefined
+      ? null
+      : str(conductorT, "conductor", "project_id", {
+          pattern: /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/,
+          hint: "a Conductor project id",
+        });
+  const baseBranch =
+    conductorT.base_branch === undefined
+      ? null
+      : str(conductorT, "conductor", "base_branch", {
+          pattern:
+            /^(?![-/.])(?!.*\/\.)(?!.*\.lock(?:\/|$))(?!.*[\s~^:?*[\\])(?!.*\.\.)(?!.*@\{)(?!.*\/\/)(?!.*\/$)(?!.*\.$)(?!.*\.lock$)[^\s]+$/,
+          hint: "a git branch name",
+        });
+  if (baseBranch && [...baseBranch].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
+    problems.push('"conductor.base_branch" must be a git branch name');
   const routing: RoutingRule[] = [];
   const routingRaw = conductorT.routing ?? [];
   if (!Array.isArray(routingRaw)) problems.push(`"conductor.routing" must be a list of [[conductor.routing]] rules`);
@@ -668,7 +688,13 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     reservations,
     brief: { extra },
     secrets: { names: secretNames },
-    conductor: { defaultProfile, profiles, routing },
+    conductor: {
+      defaultProfile,
+      profiles,
+      routing,
+      ...(projectId ? { projectId } : {}),
+      ...(baseBranch ? { baseBranch } : {}),
+    },
     herdr: { defaultProfile: herdrDefaultProfile, profiles: herdrProfiles, routing: herdrRouting },
   };
   if (problems.length) throw new ConfigError(source, problems);
