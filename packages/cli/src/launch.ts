@@ -24,6 +24,7 @@ import {
   LINEAR_KEY,
   ProfileError,
   parseConfig,
+  shellWord,
   type ValidationChoice,
   ValidationChoiceError,
 } from "@armada/core";
@@ -32,6 +33,7 @@ import { Herdr, type HerdrHandle, herdrWorktreePath, herdrWorktreesDirectory } f
 import { type Io, missingKey, UsageError } from "./io.ts";
 import { detectLocalTools, ensureLocalProfile } from "./local-tools.ts";
 import { requireSignIn } from "./login.ts";
+import { preApprovalReason, preparePreApproval } from "./plan-approval.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
 export async function launch(
@@ -80,7 +82,8 @@ async function launchLocal(
     );
   const requested = o.profile?.trim() || null;
   const reason = o.reason?.trim() || null;
-  if (reason && !requested) throw new UsageError("--reason goes with --profile");
+  const approvalReason = preApprovalReason(o);
+  if (reason && !requested && !approvalReason) throw new UsageError("--reason goes with --profile");
   if (o.harness && !HERDR_HARNESSES.includes(o.harness as HerdrHarness))
     throw new UsageError("--harness must be claude, codex, opencode or deepseek (OpenCode + DeepSeek model)");
   try {
@@ -123,7 +126,12 @@ async function launchLocal(
       ticket: ticketId,
       requested: o.validation ?? null,
       reason: o["validation-reason"] ?? null,
-      command: `armada launch ${ticketId} --runtime herdr`,
+      command: [
+        `armada launch ${ticketId} --runtime herdr`,
+        ...["harness", "profile", "reason"].flatMap((key) => (o[key] ? [`--${key} ${shellWord(o[key])}`] : [])),
+        ...["pre-approve", "dry-run"].filter((key) => o[key] === "true").map((key) => `--${key}`),
+        ...(args.json ? ["--json"] : []),
+      ].join(" "),
     });
   } catch (error) {
     if (error instanceof ProfileError) throw new UsageError(error.message);
@@ -135,7 +143,15 @@ async function launchLocal(
     throw new UsageError(
       `profile "${choice.name}" uses ${choice.profile.harness}; choose a matching --profile with --reason to change harness`,
     );
-  if (o["dry-run"] === "true") return await launchPlan(io, args.json, { ticketId, choice, branch, version });
+  const approval = approvalReason ? await preparePreApproval(io, config, credentials, ticket, approvalReason) : null;
+  if (o["dry-run"] === "true")
+    return await launchPlan(io, args.json, {
+      ticketId,
+      choice,
+      branch,
+      version,
+      preApproval: approval?.preview ?? null,
+    });
   const execute = io.exec;
   const preflight: Io = {
     ...io,
@@ -170,6 +186,7 @@ async function launchLocal(
     throw new UsageError(`armada ${version} is not on npm yet; publish this version before launching local workers`);
   const api = apiOf(io, credentials.armadaApi.url);
   // Prerequisites and all policy judgments are settled before a one-time token is made.
+  const preApprovedReason = await approval?.apply();
   const launch = await api.launchToken(signIn, { project: config.project.slug, ticket: ticketId });
   const runtime = new Herdr(io);
   let handle: HerdrHandle | undefined;
@@ -188,6 +205,7 @@ async function launchLocal(
       now: now(),
       conventions,
       validation,
+      preApprovedReason,
       launch: {
         token: launch.token,
         expiresAt: launch.expiresAt,
@@ -256,7 +274,7 @@ async function launchLocal(
 async function launchPlan(
   io: Io,
   json: boolean,
-  input: { ticketId: string; choice: HerdrProfileChoice; branch: string; version: string },
+  input: { ticketId: string; choice: HerdrProfileChoice; branch: string; version: string; preApproval: string | null },
 ): Promise<number> {
   // The same read-only preflight launch runs, without install offers, prompts or writes.
   const openCode = herdrHarnessKind(input.choice.profile.harness) === "opencode";
@@ -305,6 +323,7 @@ async function launchPlan(
     ticket: input.ticketId,
     runtime: "herdr",
     dryRun: true,
+    preApproval: input.preApproval,
     profile: input.choice.name,
     profileWhy: input.choice.why,
     routed: input.choice.routed,
@@ -324,6 +343,7 @@ async function launchPlan(
       ? `${JSON.stringify(plan, null, 2)}\n`
       : `Launch plan for ${input.ticketId} (dry run: nothing is created)\n\nProfile    ${input.choice.name} — ${input.choice.why}\nHarness    ${plan.harnessDescription} (exact model: ${plan.model || "not set"}, effort ${plan.effort})\nBranch     ${plan.branch}\nWorktree   ${worktree ?? "unknown"}\nBase       ${base ?? "unknown"}\nPreflight  ${ready ? "ready" : "blocked"}\n`,
   );
+  if (!json && input.preApproval) io.stdout(`${input.preApproval}\n`);
   for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
   for (const gap of gaps) io.stderr(`armada: ${gap}\n`);
   return ready ? 0 : 1;

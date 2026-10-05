@@ -27,6 +27,7 @@ import {
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
+import { preApprovalReason, preparePreApproval } from "./plan-approval.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
 export interface BriefArgs {
@@ -53,7 +54,7 @@ export function hideLaunchToken(b: Brief): Brief {
   return { ...b, prompt: hide(b.prompt), launch: { ...b.launch, command: hide(b.launch.command) } };
 }
 
-export function renderBrief(b: Brief): string {
+export function renderBrief(b: Brief, preApprovedReason: string | null = null): string {
   const p = b.profile;
   const v = b.validation;
   const validationFlags = v
@@ -61,7 +62,7 @@ export function renderBrief(b: Brief): string {
       ? ` --validation ${v.rules.map((r) => r.index).join(",")}${v.reason ? ` --validation-reason ${shellWord(v.reason)}` : ""}`
       : " --validation none"
     : "";
-  const promptCommand = `armada brief ${b.ticket.id}${p && (b.routing?.source === "requested" || b.routing?.reason) ? ` --profile ${shellWord(p.name)}${b.routing?.reason ? ` --reason ${shellWord(b.routing.reason)}` : ""}` : ""}${validationFlags} --prompt`;
+  const promptCommand = `armada brief ${b.ticket.id}${p && (b.routing?.source === "requested" || b.routing?.reason) ? ` --profile ${shellWord(p.name)}${b.routing?.reason && !preApprovedReason ? ` --reason ${shellWord(b.routing.reason)}` : ""}` : ""}${preApprovedReason ? ` --pre-approve --reason ${shellWord(preApprovedReason)}` : ""}${validationFlags} --prompt`;
   const width = Math.max(...b.environment.map((v) => v.name.length + (v.value ? v.value.length + 1 : 0)));
   const out = [
     `Brief for ${b.ticket.id} — ${b.ticket.title} (${b.ticket.status})`,
@@ -152,6 +153,7 @@ function briefCommand(ticket: string, a: BriefArgs): string {
     `armada brief ${ticket}`,
     o.profile ? ` --profile ${shellWord(o.profile)}` : "",
     o.reason ? ` --reason ${shellWord(o.reason)}` : "",
+    o["pre-approve"] === "true" ? " --pre-approve" : "",
     o.prompt === "true" ? " --prompt" : "",
     o["profile-line"] === "true" ? " --profile-line" : "",
     a.json ? " --json" : "",
@@ -175,7 +177,8 @@ export async function brief(
   if (a.json && promptOnly) throw new UsageError("pass --json or --prompt, not both");
   const profile = a.options.profile?.trim() || null;
   const reason = a.options.reason?.trim() || null;
-  if (reason && !profile)
+  const approvalReason = preApprovalReason(a.options);
+  if (reason && !profile && !approvalReason)
     throw new UsageError("--reason goes with --profile: it says why the routed profile is not used");
   try {
     checkRequestedProfile(config, profile);
@@ -200,6 +203,16 @@ export async function brief(
       env: io.env,
       stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),
       prompt: promptOnly,
+      ...(approvalReason
+        ? {
+            preApprove: async (ticket) => {
+              const approval = await preparePreApproval(io, config, credentials, ticket, approvalReason);
+              if (promptOnly) return approval.apply();
+              ticket.warnings.push(approval.preview);
+              return null;
+            },
+          }
+        : {}),
       launch: launcher(io, config, credentials),
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
@@ -244,6 +257,6 @@ export async function brief(
   const next = await rearmFor(io, project, { inFlight: known, open: null });
   const shown = hideLaunchToken(b);
   if (a.json) io.stdout(`${JSON.stringify({ ...shown, watch: next }, null, 2)}\n`);
-  else io.stdout(`${renderBrief(shown)}\n\n----- once launched -----\n${next.line}\n`);
+  else io.stdout(`${renderBrief(shown, approvalReason)}\n\n----- once launched -----\n${next.line}\n`);
   return 0;
 }

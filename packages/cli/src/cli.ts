@@ -175,6 +175,7 @@ const COMMAND_HELP: Record<string, string> = {
                     [--profile <name> [--reason <why>]] [--validation <n|none>]
                     Create the ticket's worktree and start a persistent local worker
                     with its launch-token brief. Profiles follow [[herdr.routing]]
+                    --pre-approve --reason "<why>" adds the plan-approved label before launch
   launch <ticket> --runtime herdr --dry-run [--json]
                     Print the launch plan (profile and why, harness and exact model,
                     branch and worktree path, preflight) and create nothing: no
@@ -184,8 +185,10 @@ const COMMAND_HELP: Record<string, string> = {
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
 `,
-  brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
+  brief: `  brief <ticket> [--pre-approve --reason <why>] [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
         [--validation none | --validation <n,...> --validation-reason <why>]
+                    --pre-approve requires --reason and adds the configured plan-approved label
+                    only with --prompt; previews say what would change. needs-approval labels refuse it
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
@@ -376,6 +379,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "pre-approve",
   "stop",
   "background",
   "dry-run",
@@ -404,8 +408,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
-  brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
+  brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  launch: ["pre-approve", "runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],

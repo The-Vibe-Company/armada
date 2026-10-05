@@ -306,6 +306,8 @@ export interface BuildBriefInput {
   launch?: BriefLaunch | null;
   /** Why there is none: the terminal is not signed in, or Armada refused. */
   noLaunch?: string | null;
+  /** Why the coordinator added the pre-approved label for this launch. */
+  preApprovedReason?: string | null;
   /** The `[brief] extra` file as read from the repository; `text` is null when it could not be read. */
   conventions?: { path: string; text: string | null } | null;
   /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
@@ -461,7 +463,12 @@ export function buildBrief(input: BuildBriefInput): Brief {
     blockers: ticket.blockers.map(({ notes, ...b }) => ({ ...b, handBack: handBackNote(notes) })),
     notes: ticket.notes.slice(0, MAX_NOTES),
     parallel,
-    plans: planRule(config, ticket.labels),
+    plans: (() => {
+      const plans = planRule(config, ticket.labels);
+      return plans.rule === "pre-approved" && input.preApprovedReason
+        ? { ...plans, why: `${plans.why} (added at launch: ${input.preApprovedReason})` }
+        : plans;
+    })(),
     validation: input.validation ?? null,
     conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
     warnings,
@@ -646,6 +653,8 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 
 export interface LoadBriefOptions {
   prompt?: boolean;
+  /** Checks/applies explicit plan pre-approval after policy judgments, before token minting. Previews return no reason. */
+  preApprove?: (ticket: BriefTicket) => Promise<string | null>;
   linearApiKey: string;
   ticket: string;
   profile: string | null;
@@ -735,6 +744,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     if (err instanceof ValidationChoiceError) throw new BriefError(`${err.message}`, err.next);
     throw err;
   }
+  const preApprovedReason = await opts.preApprove?.(ticket);
   const launch = await launchForBrief(ticket, opts.prompt === true ? opts.launch : undefined);
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
@@ -751,6 +761,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     ...(opts.stored ? { stored: opts.stored } : {}),
     launch: made,
     noLaunch: missed?.reason ?? null,
+    preApprovedReason,
     conventions: opts.conventions ?? null,
     validation,
     now: now(),
