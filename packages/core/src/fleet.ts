@@ -2,13 +2,29 @@
 // frontier of tickets ready to start, and pull requests waiting. Pure functions
 // over the model; tolerant of missing forge data and missing status lines.
 
-import { freshRuntimeState, type RuntimeObservation } from "./live.ts";
+import type { RuntimeObservation } from "./live.ts";
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
 import { checkIssues } from "./phases.ts";
 import type { MainCommit, MainHealth, ShippingStage } from "./types.ts";
 import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASES, type PullRequest } from "./types.ts";
 
 const MIN = 60_000;
+
+/** A runtime reading expires with the project's liveness threshold. */
+export function freshRuntimeState(
+  observation: RuntimeObservation | null | undefined,
+  now: Date,
+  minutes: number,
+  claimedAt?: string,
+): RuntimeObservation["state"] | null {
+  // A session can start its turn before the worker claims. The observation is
+  // generation-checked by the store; its transition time may legitimately precede the claim.
+  if (!observation || (claimedAt && observation.at < claimedAt)) return null;
+  const age = now.getTime() - Date.parse(observation.at);
+  return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
+    ? observation.state
+    : null;
+}
 
 /** Phases where the coordinator or a human must act. */
 export const NEEDS_HUMAN: AgentPhase[] = ["awaiting-approval", "awaiting-validation", "blocked", "ready-to-merge"];

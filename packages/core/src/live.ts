@@ -9,7 +9,10 @@
 // record.
 import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
-import { liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+
+export { freshRuntimeState } from "./fleet.ts";
+
 import { attachPullRequests } from "./github.ts";
 import { buildModel, isClosed } from "./model.ts";
 import type { RequestKind } from "./request-kinds.ts";
@@ -1143,22 +1146,6 @@ export async function serveInbox(
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   const etag = inboxTag(items, inFlight);
   return q.etag === etag ? null : { items, inFlight, etag, warnings };
-}
-
-/** A runtime reading expires with the project's liveness threshold. */
-export function freshRuntimeState(
-  observation: RuntimeObservation | null | undefined,
-  now: Date,
-  minutes: number,
-  claimedAt?: string,
-): RuntimeState | null {
-  // A session can start its turn before the worker claims. The observation is
-  // generation-checked by the store; its transition time may legitimately precede the claim.
-  if (!observation || (claimedAt && observation.at < claimedAt)) return null;
-  const age = now.getTime() - Date.parse(observation.at);
-  return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
-    ? observation.state
-    : null;
 }
 
 // ------------------------------------------------------------------ the CLI's side

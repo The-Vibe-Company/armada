@@ -95,7 +95,15 @@ test("reads default-branch history in the forge snapshot and focused health adap
     },
   };
   const recorded = recordedFetch({ github });
-  const opts = { token: "synthetic-token", repository: "acme/widgets", fetch: recorded.fetch };
+  const opts = {
+    token: "synthetic-token",
+    repository: "acme/widgets",
+    fetch: async (url: string, init: RequestInit) => {
+      const { query } = JSON.parse(String(init.body)) as { query: string };
+      expect(query).toMatch(/history\(first: \d+\)/);
+      return recorded.fetch(url, init);
+    },
+  };
   const forge = await fetchForge(opts);
   expect(forge.main).toEqual([
     {
