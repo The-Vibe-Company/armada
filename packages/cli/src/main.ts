@@ -89,11 +89,21 @@ function openUrl(url: string): boolean {
   }
 }
 
-/** Runs git or gh without a shell; stdin is closed so nothing waits for input. */
-const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes }) =>
+/** Runs git or gh without a shell; optional input is piped without a shell. */
+const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input }) =>
   new Promise((done, fail) => {
-    const child = spawn(command, args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
-    const timer = timeoutMs ? setTimeout(() => child.kill("SIGKILL"), timeoutMs) : null;
+    const child = spawn(command, args, { cwd, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    let timedOut = false;
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          child.kill("SIGKILL");
+        }, timeoutMs)
+      : null;
+    if (input !== undefined) {
+      child.stdin?.on("error", () => {}); // An early exit can close stdin before the prompt is written.
+      child.stdin?.end(input);
+    }
     let stdout = "";
     let stderr = "";
     let bytes = 0;
@@ -107,10 +117,10 @@ const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes }) =>
       }
       return !oversized;
     };
-    child.stdout.setEncoding("utf8").on("data", (d: string) => {
+    child.stdout?.setEncoding("utf8").on("data", (d: string) => {
       if (accept(d)) stdout += d;
     });
-    child.stderr.setEncoding("utf8").on("data", (d: string) => {
+    child.stderr?.setEncoding("utf8").on("data", (d: string) => {
       if (accept(d)) stderr += d;
     });
     child.on("error", (err) => {
@@ -119,7 +129,7 @@ const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes }) =>
     });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      done({ code: oversized ? 1 : (code ?? 1), stdout, stderr });
+      done({ code: oversized ? 1 : (code ?? 1), stdout, stderr, timedOut });
     });
   });
 

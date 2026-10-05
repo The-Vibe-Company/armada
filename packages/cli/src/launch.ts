@@ -24,14 +24,17 @@ import {
   LINEAR_KEY,
   ProfileError,
   parseConfig,
+  RuntimeError,
   type ValidationChoice,
   ValidationChoiceError,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
-import { Herdr, type HerdrHandle, herdrWorktreePath, herdrWorktreesDirectory } from "./herdr.ts";
+import { type HerdrHandle, herdrWorktreePath, herdrWorktreesDirectory, parseHerdrHandle } from "./herdr.ts";
 import { type Io, missingKey, UsageError } from "./io.ts";
 import { detectLocalTools, ensureLocalProfile } from "./local-tools.ts";
 import { requireSignIn } from "./login.ts";
+import { runtimeFor } from "./runtimes/adapter.ts";
+import { HerdrAdapter } from "./runtimes/herdr.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
 export async function launch(
@@ -171,35 +174,58 @@ async function launchLocal(
   const api = apiOf(io, credentials.armadaApi.url);
   // Prerequisites and all policy judgments are settled before a one-time token is made.
   const launch = await api.launchToken(signIn, { project: config.project.slug, ticket: ticketId });
-  const runtime = new Herdr(io);
+  const runtime = runtimeFor({ ...io, cwd: repo }, config, "herdr");
+  if (!(runtime instanceof HerdrAdapter)) throw new UsageError("local runtime is unavailable");
   let handle: HerdrHandle | undefined;
   try {
-    await runtime.ensureServer();
-    handle = await runtime.create({ repo, branch, base, ticket: ticketId, secrets: config.secrets.names });
-    if (configSnapshot !== null && io.writeFile) await io.writeFile(join(handle.path, CONFIG_FILE), configSnapshot);
-    const b = buildBrief({
-      config,
-      ticket,
-      program,
-      profile: null,
-      version,
-      npm,
-      env: io.env,
-      now: now(),
-      conventions,
-      validation,
-      launch: {
-        token: launch.token,
-        expiresAt: launch.expiresAt,
-        apiUrl:
-          armadaAddress(credentials.armadaApi.url) === armadaAddress(DEFAULT_ARMADA_API_URL)
-            ? null
-            : armadaAddress(credentials.armadaApi.url),
+    await runtime.launchPrepared(
+      {
+        ticket: ticketId,
+        title: ticket.title,
+        repository: config.github.repository,
+        base,
+        branch,
+        from: { kind: "base" },
+        profile: {
+          name: choice.name,
+          agent: choice.profile.harness,
+          model: choice.profile.model,
+          effort: choice.profile.effort,
+          fastMode: false,
+          herdr: choice.profile,
+        },
+        prompt: "",
+        env: { ARMADA_TICKET: ticketId },
+        blankSecrets: config.secrets.names,
       },
-      herdr: { choice, handle: herdrClaimHandle(handle) },
-    });
-    await runtime.startChecked(handle, choice.profile);
-    await runtime.promptChecked(handle, choice.profile, b.prompt);
+      async (worker) => {
+        if (!worker.path) throw new UsageError("herdr did not return a worktree");
+        handle = { ...parseHerdrHandle(worker.handle), path: worker.path };
+        if (configSnapshot !== null && io.writeFile) await io.writeFile(join(handle.path, CONFIG_FILE), configSnapshot);
+        const b = buildBrief({
+          config,
+          ticket,
+          program,
+          profile: null,
+          version,
+          npm,
+          env: io.env,
+          now: now(),
+          conventions,
+          validation,
+          launch: {
+            token: launch.token,
+            expiresAt: launch.expiresAt,
+            apiUrl:
+              armadaAddress(credentials.armadaApi.url) === armadaAddress(DEFAULT_ARMADA_API_URL)
+                ? null
+                : armadaAddress(credentials.armadaApi.url),
+          },
+          herdr: { choice, handle: herdrClaimHandle(handle) },
+        });
+        return b.prompt;
+      },
+    );
   } catch (error) {
     // Keep the workspace for recovery; deletion could lose the worker's unpushed work.
     if (handle) io.stderr(`armada: local workspace retained: ${herdrClaimHandle(handle)}\n`);
@@ -214,7 +240,11 @@ async function launchLocal(
       );
     }
     throw new UsageError(
-      error instanceof UsageError || error instanceof BriefError ? error.message : "local worker launch failed",
+      error instanceof UsageError || error instanceof BriefError
+        ? error.message
+        : error instanceof RuntimeError && error.cause instanceof UsageError
+          ? error.cause.message
+          : "local worker launch failed",
       !revoked
         ? `armada launch revoke ${ticketId}`
         : handle
@@ -222,6 +252,7 @@ async function launchLocal(
           : "herdr agent list",
     );
   }
+  if (!handle) throw new UsageError("herdr did not return a worker handle");
   const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];
   const inFlightTickets = [...new Set([...known, ticketId])].sort();
   await remember(io, config.project.slug, { inFlight: inFlightTickets, readAt: now().toISOString() });
