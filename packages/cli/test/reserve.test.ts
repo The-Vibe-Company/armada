@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { machinePaths, updateWatchState } from "../../core/src/index.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
 
@@ -86,4 +87,19 @@ test("allocation flag mistakes are refused before writes; outages fail clearly w
   expect(await run(["reserve", "db-migration", "--next"], t.io)).toBe(2);
   expect(t.err.join("")).toContain("Ask the coordinator");
   expect(t.err.join("")).toContain("no Linear fallback");
+});
+
+test("reservation commands honor the watched project selector away from its checkout", async () => {
+  const t = await terminal();
+  const paths = machinePaths(t.io.env);
+  if (!paths) throw new Error("missing temporary machine paths");
+  await updateWatchState(paths, "widgets", { root: "/work/widgets" });
+  t.io.cwd = "/tmp";
+  expect(await run(["reserve", "fixture", "--project", "widgets", "--note", "selected project"], t.io)).toBe(0);
+  t.reset();
+  expect(await run(["reserve", "--list", "--project", "widgets"], t.io)).toBe(0);
+  expect(t.out.join("")).toContain("selected project");
+  t.reset();
+  expect(await run(["unreserve", "fixture", "--project", "widgets"], t.io)).toBe(0);
+  expect(t.out.join("")).toContain("Freed 1");
 });
