@@ -155,7 +155,8 @@ export async function peek(io: Io, config: ArmadaConfig, credentials: Credential
         detail: clean(fresh.detail),
         since:
           fresh.since ??
-          (handle?.runtimeState?.state === fresh.state
+          (handle?.runtimeState?.state === fresh.state &&
+          (fresh.sequence === undefined || handle.runtimeState.sequence === fresh.sequence)
             ? (handle.runtimeState.since ?? handle.runtimeState.at)
             : now.toISOString()),
         lastReply: fresh.lastReply ?? cache?.lastReply ?? null,

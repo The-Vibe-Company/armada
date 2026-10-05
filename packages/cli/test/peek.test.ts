@@ -159,6 +159,20 @@ test("peek reads a local herdr worker through the same command", async () => {
   const json = JSON.parse(f.out.at(-1) ?? "{}");
   expect(json.runtime.state).toBe("working");
   expect(json.runtime.lastReply.text).toBe("Tests pass [redacted]");
+  const native = f.io.exec;
+  if (!native) throw new Error("missing fake exec");
+  f.io.now = () => new Date("2026-07-01T12:20:00Z");
+  f.io.exec = async (cmd, args, options) => {
+    const result = await native(cmd, args, options);
+    if (cmd === "herdr" && args[0] === "agent") {
+      const body = JSON.parse(result.stdout);
+      body.result.agent.state_change_seq = 2;
+      return { ...result, stdout: JSON.stringify(body) };
+    }
+    return result;
+  };
+  expect(await run(["peek", "DEMO-7", "--json"], f.io)).toBe(0);
+  expect(JSON.parse(f.out.at(-1) ?? "{}").runtime.since).toBe("2026-07-01T12:20:00.000Z");
 });
 
 test.each(["Conductor", "Herdr"])("peek reads a bound %s launch before sign-in or claim", async (runtime) => {
