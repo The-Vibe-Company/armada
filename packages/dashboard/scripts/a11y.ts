@@ -120,7 +120,7 @@ async function open(page: Page, path: string) {
   if (landed !== path.split("?")[0]) fail(`${path} sent the viewer to ${landed}`);
   await page.evaluate(async () => {
     await document.fonts.ready;
-    // Entrances on the clock; a scroll-driven one (the landing's) ends only when scrolled, so 2 s at most.
+    // Entrances on the clock; a paused one (the landing's method, off screen) ends only once shown, so 2 s at most.
     const ending = document
       .getAnimations()
       .filter((a) => a.timeline === document.timeline && a.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
@@ -391,6 +391,22 @@ async function keyboard(browser: Browser, seeded: Seeded | null, list: Target[])
       return (await page.locator("#sh-menu").count()) === 0 && (await focused(page)).includes("sh-org-button");
     });
   }
+
+  await open(page, "/landing");
+  await check("the landing's method steps are tabs: the arrow keys, Home and End move the focus and the step", async () => {
+    await page.getByRole("tab", { name: /Grill/ }).focus();
+    await page.keyboard.press("ArrowRight");
+    const next = await focused(page);
+    await page.keyboard.press("End");
+    const last = await focused(page);
+    const shown = await page.getByRole("tabpanel").textContent();
+    return (
+      next.includes("method-tab-1") &&
+      last.includes("method-tab-4") &&
+      (await page.locator("#method-tab-4").getAttribute("aria-selected")) === "true" &&
+      !!shown?.includes("The coordinator merges.")
+    );
+  });
   await context.close();
 }
 
