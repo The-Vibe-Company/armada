@@ -303,6 +303,55 @@ describe("report", () => {
     ]);
   });
 
+  test("hand-back refuses unresolved review threads before writing, allows resolved threads and warns on unreadable threads", async () => {
+    const live = tempFleet();
+    const { ctx, linear } = await claimed({
+      live,
+      pull: {
+        url: "https://github.com/acme/widgets/pull/9",
+        number: 9,
+        repo: "acme/widgets",
+        title: "feat: widgets",
+        state: "open",
+        headSha: HEAD,
+        checks: [{ name: "test", state: "success" }],
+      },
+    });
+    const ticket = linear.get("DEMO-7");
+    ticket.labels = ticket.labels.map((l) =>
+      l.name === "planning" ? { ...l, id: "phase-shipping", name: "shipping" } : l,
+    );
+    const input = { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD } as const;
+    ctx.readReviewThreads = async (number) => {
+      expect(number).toBe(9);
+      return { total: 7, read: 7, unresolved: 7 };
+    };
+    const before = linear.writes.length;
+    const error = await refusal(reportPhase(ctx, input));
+    expect(error).toContain("7 unresolved review threads");
+    expect(error).toContain("fix or reply, then resolve every thread");
+    expect(linear.writes.length).toBe(before);
+    expect(live.store.items.filter((i) => i.kind === "hand-back")).toHaveLength(0);
+
+    ctx.readReviewThreads = async () => ({ total: 7, read: 7, unresolved: 0 });
+    const resolved = await reportPhase(ctx, input);
+    expect(resolved.warnings).toEqual([]);
+    expect(resolved.state?.phase).toBe("ready-to-merge");
+    expect(live.store.items.filter((i) => i.kind === "hand-back")).toHaveLength(1);
+
+    for (const read of [async () => null, async () => Promise.reject(new Error("GitHub unavailable"))]) {
+      ctx.readReviewThreads = read;
+      const unavailable = await reportPhase(ctx, input);
+      expect(unavailable.state?.phase).toBe("ready-to-merge");
+      expect(unavailable.warnings.join("\n")).toContain("could not read review threads for PR #9");
+    }
+
+    ctx.readReviewThreads = async () => ({ total: 101, read: 100, unresolved: 0 });
+    expect((await reportPhase(ctx, input)).warnings.join("\n")).toContain("could not read all review threads");
+    ctx.readReviewThreads = async () => ({ total: 101, read: 100, unresolved: 1 });
+    expect(await refusal(reportPhase(ctx, input))).toContain("at least 1 unresolved review thread;");
+  });
+
   test("losing Armada still writes Linear and warns", async () => {
     const { linear, ctx } = await claimed();
     const broken = { report: async () => Promise.reject(new Error("connection reset")) } as unknown as Fleet;

@@ -4,6 +4,7 @@
 // warning, never a failure.
 import { ArmadaApiError } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
+import type { MergePull } from "./github.ts";
 import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
@@ -39,6 +40,8 @@ export interface WorkerContext {
   fleet: () => Promise<{ fleet: Fleet | null; warning: string | null }>;
   /** Reads one pull request of the project repository; null without a GitHub token. */
   readPull: ((number: number) => Promise<PullRequest | null>) | null;
+  /** Optional review-thread read; failures warn without weakening the head and CI gate. */
+  readReviewThreads?: ((number: number) => Promise<MergePull["reviewThreads"] | null>) | null;
   /** Optional coordinator runtime delivery; true when the answer reached a local worker. */
   deliverAnswer?: (
     ticket: string,
@@ -493,6 +496,28 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       sha,
       requiredChecks: config.gates.requiredChecks,
     });
+    if (pr && inRepo) {
+      let threads: MergePull["reviewThreads"] | null = null;
+      try {
+        threads = (await ctx.readReviewThreads?.(pr.number)) ?? null;
+      } catch {
+        // The existing head and CI reading remains mandatory; only this extra read is best-effort.
+      }
+      if (!threads) {
+        warnings.push(
+          `could not read review threads for PR #${pr.number}; check and resolve every thread before merging`,
+        );
+      } else if (threads.unresolved) {
+        const count = threads.total > threads.read ? `at least ${threads.unresolved}` : `${threads.unresolved}`;
+        problems.push(
+          `PR #${pr.number} has ${count} unresolved review thread${threads.unresolved > 1 ? "s" : ""}; fix or reply, then resolve every thread`,
+        );
+      } else if (threads.total > threads.read) {
+        warnings.push(
+          `could not read all review threads for PR #${pr.number}; check and resolve every thread before merging`,
+        );
+      }
+    }
     if (problems.length)
       throw new Refusal(
         `${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
