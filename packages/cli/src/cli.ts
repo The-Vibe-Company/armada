@@ -9,8 +9,10 @@ import {
   LINEAR_KEY,
   LinearError,
   loadStatus,
+  machinePaths,
   parseConfig,
   Refusal,
+  readWatchProjects,
   skillsBehind,
   skillsBehindLine,
 } from "@armada/core";
@@ -280,7 +282,9 @@ Commands:
 ${Object.values(COMMAND_HELP).join("")}
 Options:
   --json            Print the result as JSON
-  --config <path>   Use this armada.toml instead of searching from the current directory
+  --config <path>   Use this armada.toml (overrides ARMADA_CONFIG and --project)
+  --project <slug>  Use the checkout this machine last watched for the project
+                    Config order: --config, ARMADA_CONFIG, --project, nearest armada.toml
 ${TICKET_HELP}  -h, --help        Show this help; \`armada <command> --help\` shows one command
   -v, --version     Print the version
 
@@ -316,7 +320,7 @@ export function commandHelp(command: string): string | null {
       ? `  --json            Print the result as JSON${command === "auth" ? " (auth status)" : ""}\n`
       : "",
     CONFIG_OPTION.has(command)
-      ? "  --config <path>   Use this armada.toml instead of searching from the current directory\n"
+      ? "  --config <path>   Use this armada.toml (overrides ARMADA_CONFIG and --project)\n  --project <slug>  Use the checkout this machine last watched for the project\n                    Config order: --config, ARMADA_CONFIG, --project, nearest armada.toml\n"
       : "",
     TICKET_OPTION.has(command) ? TICKET_HELP : "",
     "  -h, --help        Show this help (`armada --help` lists every command)\n",
@@ -331,9 +335,10 @@ interface Args {
   json: boolean;
   all: boolean;
   config: string | null;
+  project: string | null;
   help: boolean;
   version: boolean;
-  /** Options that take a value, other than --config. */
+  /** Options that take a value, other than --config and --project. */
   options: Record<string, string>;
   /** Everything after `--`, untouched: the command `armada run` runs. Null without `--`. */
   passthrough: string[] | null;
@@ -423,6 +428,7 @@ export function parseArgs(argv: string[]): Args {
     json: false,
     all: false,
     config: null,
+    project: null,
     help: false,
     version: false,
     options: {},
@@ -441,10 +447,14 @@ export function parseArgs(argv: string[]): Args {
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
     else if (name && FLAG_OPTIONS.includes(name) && named?.[2] === undefined) args.options[name] = "true";
-    else if (name && (name === "config" || VALUE_OPTIONS.includes(name))) {
+    else if (name && (name === "config" || name === "project" || VALUE_OPTIONS.includes(name))) {
       const v = named?.[2] ?? argv[++k];
       if (v === undefined) throw new UsageError(`--${name} needs a value`);
       if (name === "config") args.config = v;
+      else if (name === "project") {
+        if (!v.trim()) throw new UsageError("--project needs a non-empty slug");
+        args.project = v;
+      }
       // `--attach` repeats: one value per line.
       else if (name === "attach" && args.options.attach !== undefined) args.options.attach += `\n${v}`;
       else args.options[name] = v;
@@ -457,14 +467,27 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
-/** Finds armada.toml in `start` or the nearest parent directory. */
+/** Resolves explicit config, environment, watched project, then the nearest armada.toml. */
 export async function findConfig(
   io: Io,
   explicit: string | null,
   command = "status",
+  project: string | null = null,
 ): Promise<{ path: string; text: string }> {
-  if (explicit) {
-    const path = resolve(io.cwd, explicit);
+  let selected = explicit || io.env.ARMADA_CONFIG?.trim();
+  if (!selected && project) {
+    const paths = machinePaths(io.env);
+    const known = paths ? await readWatchProjects(paths) : [];
+    const checkout = known.find((p) => p.project === project);
+    if (!checkout)
+      throw new UsageError(
+        `unknown project "${project}". Known projects on this machine: ${[...new Set(known.map((p) => p.project))].sort().join(", ") || "none"}`,
+        `armada ${command} --config <file>, with the path of an ${CONFIG_FILE}`,
+      );
+    selected = join(checkout.root, CONFIG_FILE);
+  }
+  if (selected) {
+    const path = resolve(io.cwd, selected);
     const text = await io.readFile(path);
     if (text === null)
       throw new UsageError(
@@ -486,7 +509,7 @@ export async function findConfig(
 }
 
 async function status(io: Io, args: Args): Promise<number> {
-  const { path, text } = await findConfig(io, args.config, "status");
+  const { path, text } = await findConfig(io, args.config, "status", args.project);
   const config: ArmadaConfig = parseConfig(text, path);
   const { credentials } = await loadCredentials(io, { project: config.project.slug });
   const { linearApiKey, githubToken } = credentials;
@@ -515,7 +538,7 @@ function commandOf(argv: string[]): string | null {
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k] ?? "";
     const name = a.match(/^--([a-z-]+)$/)?.[1];
-    if (name && (name === "config" || VALUE_OPTIONS.includes(name))) k++;
+    if (name && (name === "config" || name === "project" || VALUE_OPTIONS.includes(name))) k++;
     else if (!a.startsWith("-")) return a;
   }
   return null;
@@ -568,7 +591,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
     if (args.command === "secrets" || args.command === "run") {
-      const { path, text } = await findConfig(io, args.config, args.command);
+      const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);
       // Fetching: the worker session of this ticket when the machine holds one, else this terminal's
       // sign-in. Setting is the coordinator's, never a worker session's, even on a machine that holds one.
@@ -588,7 +611,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       return await (args.command === "run" ? runCommand : secretsCommand)(io, config, credentials, args);
     }
     if (args.command === "attach") {
-      const { path, text } = await findConfig(io, args.config, "attach");
+      const { path, text } = await findConfig(io, args.config, "attach", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, {
         armada: false,
@@ -597,7 +620,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       return await attachCommand(io, config, credentials, args);
     }
     if (args.command === "heartbeat") {
-      const { path, text } = await findConfig(io, args.config, "heartbeat");
+      const { path, text } = await findConfig(io, args.config, "heartbeat", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, {
         armada: false,
@@ -607,13 +630,13 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
           ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
         },
       });
-      return await heartbeat(io, config, credentials, args);
+      return await heartbeat(io, config, credentials, { ...args, config: path });
     }
     const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
       args.command
     ];
     if (worker) {
-      const { path, text } = await findConfig(io, args.config, args.command);
+      const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);
       const command = args.command;
       // `validate <ticket> "<what>"` is the coordinator's form: the terminal's sign-in, never a worker session.
@@ -634,7 +657,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       return await worker(io, config, credentials, args);
     }
     if (args.command === "watch") {
-      const { path, text } = await findConfig(io, args.config, "watch");
+      const { path, text } = await findConfig(io, args.config, "watch", args.project);
       const config = parseConfig(text, path);
       if (args.options.stop === "true") {
         if (args.rest.length) throw new UsageError(`unexpected argument ${args.rest[0]}`);
@@ -644,27 +667,30 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       await recordPresence(io, config, credentials);
       return await watch(io, config, credentials, args, path);
     }
-    if (args.command === "hook") return await hookStop(io, args.rest, (at) => findConfig(at, null, "hook"));
+    if (args.command === "hook")
+      return await hookStop(io, args.rest, (at) =>
+        findConfig({ ...at, env: { ...at.env, ARMADA_CONFIG: undefined } }, null, "hook"),
+      );
     if (args.command === "merge") {
-      const { path, text } = await findConfig(io, args.config, "merge");
+      const { path, text } = await findConfig(io, args.config, "merge", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       await recordPresence(io, config, credentials);
       return await merge(io, config, credentials, args, path);
     }
     if (args.command === "brief") {
-      const { path, text } = await findConfig(io, args.config, "brief");
+      const { path, text } = await findConfig(io, args.config, "brief", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       if (args.options.prompt === "true") await recordPresence(io, config, credentials);
       return await brief(io, config, credentials, args, version, path);
     }
     if (args.command === "setup") {
-      const { path, text } = await findConfig(io, args.config, "setup");
+      const { path, text } = await findConfig(io, args.config, "setup", args.project);
       return await setupLocal(io, parseConfig(text, path), path, args);
     }
     if (args.command === "launch") {
-      const { path, text } = await findConfig(io, args.config, "launch");
+      const { path, text } = await findConfig(io, args.config, "launch", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       return await launch(io, config, credentials, args, version, path);
