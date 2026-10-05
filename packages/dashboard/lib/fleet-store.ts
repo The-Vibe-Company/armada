@@ -33,6 +33,9 @@ import type {
   ProjectRecord,
   ReleaseGuard,
   RequestStore,
+  Reservation,
+  ReserveRecord,
+  ReserveResult,
   RuntimeHandle,
   RuntimeState,
   SessionRecord,
@@ -485,8 +488,11 @@ export async function releaseRuntimeHandle(
   ticket: string,
   at: Date,
   guard?: ReleaseGuard,
+  merged = false,
 ): Promise<boolean> {
   return transaction(db, async (tx) => {
+    // Reservations and ticket endings share this lock, including an empty reservation key.
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
     // Lock and compare the current claim before touching history or its profile.
     const held = (
       await tx.query(
@@ -500,7 +506,13 @@ export async function releaseRuntimeHandle(
     const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
     // With no row locked, never issue a ticket-wide mutation: a replacement
     // could insert its claim after this read.
-    if (guarded && !held) return !guard?.claimedAt;
+    if (guarded && !held) {
+      if (guard?.claimedAt) return false;
+      // An optional claim write may have failed. End only reservations: their
+      // project lock prevents a replacement from reserving during this cleanup.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
     if (
       guarded &&
       held &&
@@ -524,6 +536,7 @@ export async function releaseRuntimeHandle(
       [at, project, ticket],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [project, ticket]);
+    await endReservations(tx, project, ticket, at, merged);
     return true;
   });
 }
@@ -1045,6 +1058,9 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  reserve: (input) => reserve(db, input),
+  reservations: (project) => reservations(db, project),
+  unreserve: (input) => unreserve(db, input),
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
@@ -1063,7 +1079,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
   observeRuntime: (input) => observeRuntime(db, input),
   stopRuntime: (input) => stopRuntime(db, input),
-  releaseRuntimeHandle: (project, ticket, at, guard) => releaseRuntimeHandle(db, project, ticket, at, guard),
+  releaseRuntimeHandle: (project, ticket, at, guard, merged) =>
+    releaseRuntimeHandle(db, project, ticket, at, guard, merged),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addInboxItem: (item) => addInboxItem(db, item),
@@ -1374,3 +1391,88 @@ export const liveStore = (db: Database): LiveStore => ({
   catchupRecords: (project, window, silentAfterMinutes, now) =>
     catchupRecords(db, project, window, silentAfterMinutes, now),
 });
+
+// ------------------------------------------------------------------ shared resources
+
+const RESERVATION_COLUMNS = "id, project, key, value, ticket, note, reserved_at, ended_at, merged";
+const reservationRow = (r: Row): Reservation => ({
+  id: Number(r.id),
+  project: String(r.project),
+  key: String(r.key),
+  value: String(r.value),
+  ticket: String(r.ticket),
+  note: text(r.note),
+  reservedAt: isoAt(r.reserved_at),
+  endedAt: iso(r.ended_at),
+  merged: r.merged === true,
+});
+
+/** A project lock serializes allocation even when this key has no rows yet. */
+export async function reserve(
+  db: Database,
+  input: ReserveRecord & { project: string; at: Date },
+): Promise<ReserveResult> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    let value = input.value ?? "";
+    if (input.next) {
+      // Names and exclusive keys can coexist with numbers: cast only integer text.
+      const max = await tx.query(
+        `SELECT max(value::numeric) AS value FROM reservations
+         WHERE project = $1 AND key = $2 AND (ended_at IS NULL OR merged) AND value ~ '^[+-]?[0-9]+$'`,
+        [input.project, input.key],
+      );
+      const greatest = BigInt(String(max.rows[0]?.value ?? "0"));
+      const floor = BigInt(input.floor ?? 0);
+      value = ((greatest > floor ? greatest : floor) + 1n).toString();
+    }
+    const inserted = await tx.query(
+      `INSERT INTO reservations (project, key, value, ticket, note, reserved_at)
+       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (project, key, value) WHERE ended_at IS NULL OR merged
+       DO NOTHING RETURNING ${RESERVATION_COLUMNS}`,
+      [input.project, input.key, value, input.ticket, input.note ?? null, input.at],
+    );
+    if (inserted.rows[0]) return { reserved: true, reservation: reservationRow(inserted.rows[0]) };
+    const holder = await tx.query(
+      `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND key = $2 AND value = $3 AND (ended_at IS NULL OR merged)`,
+      [input.project, input.key, value],
+    );
+    if (!holder.rows[0]) throw new Error("reservation holder disappeared");
+    return { reserved: false, holder: reservationRow(holder.rows[0]) };
+  });
+}
+
+export async function reservations(db: Queryable, project: string): Promise<Reservation[]> {
+  const rs = await db.query(
+    `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND (ended_at IS NULL OR merged) ORDER BY key, reserved_at, id`,
+    [project],
+  );
+  return rs.rows.map(reservationRow);
+}
+
+export async function unreserve(
+  db: Database,
+  input: { project: string; ticket: string; key: string; at: Date },
+): Promise<number> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    const rs = await tx.query(
+      "UPDATE reservations SET ended_at = $4 WHERE project = $1 AND ticket = $2 AND key = $3 AND ended_at IS NULL AND NOT merged",
+      [input.project, input.ticket, input.key, input.at],
+    );
+    return rs.rowCount ?? 0;
+  });
+}
+
+async function endReservations(
+  db: Queryable,
+  project: string,
+  ticket: string,
+  at: Date,
+  merged: boolean,
+): Promise<void> {
+  await db.query(
+    "UPDATE reservations SET ended_at = $3, merged = $4 WHERE project = $1 AND ticket = $2 AND ended_at IS NULL",
+    [project, ticket, at, merged],
+  );
+}

@@ -630,3 +630,32 @@ test("OpenCode first-run provider questions retain the worker pane before model 
   expect(f.calls.some((c) => c[1] === "pane" && c[2] === "close" && c[3] === f.handle.pane)).toBe(false);
   expect(f.prompt()).toBe("");
 });
+
+test("herdr launch briefs include declared shared keys and holders, or explicitly warn when unavailable", async () => {
+  const toml = `${local}\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n`;
+  const f = await fixture({ toml });
+  await f.armada.store.reserve({
+    project: "widgets",
+    ticket: "DEMO-12",
+    key: "db-migration",
+    next: true,
+    floor: 22,
+    at: NOW,
+  });
+  expect(await run(["launch", "demo-13", "--runtime", "herdr", "--harness", "codex", "--json"], f.io)).toBe(0);
+  expect(f.prompt()).toContain("db-migration: the next schema version");
+  expect(f.prompt()).toContain("db-migration = 23: DEMO-12");
+
+  const unavailable = await fixture({ toml });
+  const original = unavailable.io.fetch;
+  if (!original) throw new Error("missing fake fetch");
+  unavailable.io.fetch = (url, init) =>
+    url.endsWith("/fleet/reservations")
+      ? Promise.resolve(Response.json({ error: "offline" }, { status: 503 }))
+      : original(url, init);
+  expect(await run(["launch", "demo-13", "--runtime", "herdr", "--harness", "codex", "--json"], unavailable.io)).toBe(
+    0,
+  );
+  expect(unavailable.prompt()).toContain("Current holders unavailable: Armada could not read reservations");
+  expect(unavailable.prompt()).toContain("Ask the coordinator before choosing a value");
+});

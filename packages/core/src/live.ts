@@ -260,7 +260,35 @@ type Item = { project: string; ticket: string; author: string | null; body: stri
  * rows carry its slug and leases are scoped per project. The app implements
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
+/** A shared name or number, held by one ticket or permanently used by its merge. */
+export interface Reservation {
+  id: number;
+  project: string;
+  key: string;
+  value: string;
+  ticket: string;
+  note: string | null;
+  reservedAt: string;
+  endedAt: string | null;
+  merged: boolean;
+}
+
+export interface ReserveRecord {
+  ticket: string;
+  key: string;
+  value?: string;
+  next?: boolean;
+  floor?: number;
+  note?: string | null;
+}
+
+export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
+
 export interface FleetStore {
+  reserve(input: ReserveRecord & { project: string; at: Date }): Promise<ReserveResult>;
+  reservations(project: string): Promise<Reservation[]>;
+  unreserve(input: { project: string; ticket: string; key: string; at: Date }): Promise<number>;
+
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
@@ -300,7 +328,13 @@ export interface FleetStore {
     at: Date;
   }): Promise<void>;
   /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
-  releaseRuntimeHandle(project: string, ticket: string, at: Date, guard?: ReleaseGuard): Promise<boolean>;
+  releaseRuntimeHandle(
+    project: string,
+    ticket: string,
+    at: Date,
+    guard?: ReleaseGuard,
+    merged?: boolean,
+  ): Promise<boolean>;
   /** Sessions still holding a ticket of the project, by ticket id. */
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
@@ -684,7 +718,7 @@ export async function recordMerge(
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "decision", resolution: "merged", at });
-  await store.releaseRuntimeHandle(project, m.ticket, at);
+  await store.releaseRuntimeHandle(project, m.ticket, at, undefined, true);
   return { handle, resolved, open: await store.openRuntimeHandles(project) };
 }
 
@@ -1141,6 +1175,10 @@ export function freshRuntimeState(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  reserve(input: ReserveRecord): Promise<ReserveResult>;
+  reservations(ticket?: string): Promise<Reservation[]>;
+  unreserve(input: { ticket: string; key: string }): Promise<number>;
+
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";

@@ -25,6 +25,7 @@ import {
   ProfileError,
   parseConfig,
   RuntimeError,
+  reservationsForBrief,
   type ValidationChoice,
   ValidationChoiceError,
 } from "@armada/core";
@@ -36,6 +37,7 @@ import { requireSignIn } from "./login.ts";
 import { runtimeFor } from "./runtimes/adapter.ts";
 import { HerdrAdapter } from "./runtimes/herdr.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
+import { liveFleet } from "./worker.ts";
 
 export async function launch(
   io: Io,
@@ -167,6 +169,11 @@ async function launchLocal(
   const conventions = config.brief.extra
     ? { path: config.brief.extra, text: await io.readFile(join(dirname(configPath), config.brief.extra)) }
     : null;
+  const { fleet } = liveFleet(io, config, credentials);
+  const sharedResources = await reservationsForBrief(
+    fleet ? () => fleet.reservations() : undefined,
+    config.reservations.length > 0,
+  );
   const npm = await checkPublished(version, io.fetch ?? fetch);
   // An older package cannot understand the new local profile in the claim.
   if (npm.state === "missing")
@@ -203,6 +210,7 @@ async function launchLocal(
         handle = { ...parseHerdrHandle(worker.handle), path: worker.path };
         if (configSnapshot !== null && io.writeFile) await io.writeFile(join(handle.path, CONFIG_FILE), configSnapshot);
         const b = buildBrief({
+          ...sharedResources,
           config,
           ticket,
           program,
