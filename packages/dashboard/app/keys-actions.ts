@@ -46,6 +46,7 @@ async function target(form: FormData) {
   const back = (error: KeysError) => redirect(page({ error }, project));
   // A typed name as it is; a worker secret's in upper case, as the CLI takes it.
   const raw = text(form, "name");
+  if (raw === "owner-webhook") back("name");
   const name = isSecretName(raw) ? raw : raw.toUpperCase();
   const own = scope === "own";
   if (!isSecretName(name) && !isWorkerSecretName(name)) back("name");
