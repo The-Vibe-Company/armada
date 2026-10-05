@@ -172,7 +172,7 @@ export async function stopWatch(io: Io, project: string, json: boolean): Promise
   // The command must be the CLI's watch, not a wrapper, heartbeat or stop command.
   const isWatch =
     identity &&
-    /(?:^|\s)(?:\S*\/)?(?:armada(?:\.js)?|packages\/cli\/src\/(?:main|bin)\.ts)\s+(?:(?:--json|--all)\s+|--config(?:=\S+|\s+\S+)\s+)*watch(?:\s|$)/.test(
+    /(?:^|\s)(?:\S*\/)?(?:armada(?:\.js)?|packages\/cli\/src\/(?:main|bin)\.ts)\s+(?:(?:--json|--all)\s+|--(?:config|project)(?:=\S+|\s+\S+)\s+)*watch(?:\s|$)/.test(
       identity.command,
     ) &&
     !/(?:^|\s)--stop(?:\s|$)/.test(identity.command);
@@ -351,7 +351,7 @@ async function watchUntil(
       const seen = differentCursor ? [] : (before?.seen ?? []);
       await remember(io, project, { cursor, eventIds, seen });
       io.stderr(
-        `following ${project} as ${coordinatorHandle(io) ?? "coordinator"} from ${cursor}; stop: armada watch --stop\n`,
+        `following ${project} as ${coordinatorHandle(io) ?? "coordinator"} from ${cursor}; stop: armada watch --stop --project ${project}\n`,
       );
       for await (const line of followFleet(observingFleet(watchingIo, fleet, config), {
         ...common,

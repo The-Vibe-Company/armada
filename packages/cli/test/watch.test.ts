@@ -147,6 +147,7 @@ describe("armada watch", () => {
   test("stop recognizes source and bundled watches with global options before the command", async () => {
     for (const command of [
       "/usr/bin/bun packages/cli/src/main.ts --json watch",
+      "/usr/bin/node /usr/local/bin/armada --project widgets watch --follow",
       "/usr/bin/node /usr/local/bin/armada --config /work/widgets/armada.toml watch",
     ]) {
       const c = await coordinator();
