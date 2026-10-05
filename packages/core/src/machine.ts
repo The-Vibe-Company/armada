@@ -238,6 +238,8 @@ export async function readWatchState(paths: MachinePaths, project: string): Prom
     readAt: stringOr(r.readAt),
     stopped: stringOr(r.stopped),
     ...(typeof r.cursor === "string" ? { cursor: r.cursor } : {}),
+    ...(typeof r.baselinePending === "boolean" ? { baselinePending: r.baselinePending } : {}),
+    ...(typeof r.freshStart === "boolean" ? { freshStart: r.freshStart } : {}),
     ...(Array.isArray(r.eventIds)
       ? { eventIds: r.eventIds.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).slice(-500) }
       : {}),

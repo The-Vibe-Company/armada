@@ -537,6 +537,7 @@ test("follow NDJSON streams both items, persists, times out cleanly and shares t
   expect(lines.map((l) => l.kind)).toEqual(["question", "hand-back"]);
   expect(lines.every((l) => /^v1\./.test(l.cursor))).toBe(true);
   expect(c.err()).toContain("resume: armada watch --follow");
+  expect(c.err()).toContain("--project widgets");
   expect(await readWatchLock(c.paths, P)).toBeNull();
   expect((await readWatchState(c.paths, P))?.seen).toHaveLength(2);
   c.reset();

@@ -37,6 +37,8 @@ export interface WatchState {
   root: string | null;
   cursor?: string;
   eventIds?: number[];
+  baselinePending?: boolean;
+  freshStart?: boolean;
   /** Last attempted Conductor observation, per handle and generation (60 s throttle). */
   runtimeObserved?: Record<string, string>;
   /** Entries the coordinator was shown (`entryKey`), by `inbox` or `watch`: they do not wake a watch again. */
@@ -222,10 +224,17 @@ export interface FollowOptions extends WatchOptions {
   cursor?: string;
   /** A new watch seeds older events; an explicit resume also recovers higher IDs committed late. */
   freshStart?: boolean;
+  baselinePending?: boolean;
   eventIds?: readonly number[];
   kinds?: readonly string[];
   tickets?: readonly string[];
-  onPrinted?: (state: { seen: string[]; cursor: string; eventIds: number[] }) => Promise<void>;
+  onPrinted?: (state: {
+    seen: string[];
+    cursor: string;
+    eventIds: number[];
+    baselinePending: boolean;
+    freshStart: boolean;
+  }) => Promise<void>;
   onIdle?: () => void;
 }
 
@@ -236,7 +245,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
   const resumedAt = parseEventCursor(cursor);
   const seen = new Set(o.seen);
   let ids = [...(o.eventIds ?? [])];
-  let baseline = !ids.length;
+  let baseline = o.baselinePending ?? !ids.length;
   const freshStart = o.freshStart ?? !o.cursor;
   const kinds = o.kinds ?? FOLLOW_INBOX_KINDS;
   const eventKinds = FOLLOW_EVENT_KINDS.filter(
@@ -254,7 +263,14 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
     notStartedMinutes: o.notStartedMinutes,
     facts: o.facts,
   };
-  const save = () => o.onPrinted?.({ seen: [...seen], cursor, eventIds: ids });
+  const save = () =>
+    o.onPrinted?.({
+      seen: [...seen],
+      cursor,
+      eventIds: ids,
+      baselinePending: baseline,
+      freshStart: baseline && freshStart,
+    });
   const accepts = (kind: string, ticket: string | null) =>
     kinds.includes(kind) && (!o.tickets || (ticket !== null && o.tickets.includes(ticket)));
   while (!o.until || o.now() < o.until) {
@@ -363,7 +379,10 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
           }
           if (page.events.length < 200) break;
         }
-        baseline = false;
+        if (baseline) {
+          baseline = false;
+          await save();
+        }
       }
       first = false;
       failures = 0;

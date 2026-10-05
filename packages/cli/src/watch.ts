@@ -258,6 +258,8 @@ async function watchUntil(
     const flags = [
       "armada watch",
       ...(options.follow ? ["--follow"] : []),
+      "--project",
+      project,
       ...(options.cursor ? ["--since", options.cursor] : []),
       ...(options.tickets ? ["--tickets", options.tickets.join(",")] : []),
       ...(options.kinds ? ["--kinds", options.kinds.join(",")] : []),
@@ -349,14 +351,17 @@ async function watchUntil(
       const differentCursor = !!options.cursor && options.cursor !== before?.cursor;
       const eventIds = differentCursor ? [] : (before?.eventIds ?? []);
       const seen = differentCursor ? [] : (before?.seen ?? []);
-      await remember(io, project, { cursor, eventIds, seen });
+      const freshStart = differentCursor ? false : (before?.freshStart ?? (!options.cursor && !before?.cursor));
+      const baselinePending = differentCursor ? true : (before?.baselinePending ?? !eventIds.length);
+      await remember(io, project, { cursor, eventIds, seen, freshStart, baselinePending });
       io.stderr(
         `following ${project} as ${coordinatorHandle(io) ?? "coordinator"} from ${cursor}; stop: armada watch --stop --project ${project}\n`,
       );
       for await (const line of followFleet(observingFleet(watchingIo, fleet, config), {
         ...common,
         cursor,
-        freshStart: !options.cursor && !before?.cursor,
+        freshStart,
+        baselinePending,
         eventIds,
         seen,
         kinds: options.kinds,

@@ -589,3 +589,40 @@ test("cross-machine resume recovers higher IDs with older timestamps and later c
   expect(lines.every((l) => l.cursor === cursor)).toBe(true);
   expect(live.statuses.slice(-2)).toEqual([304, 304]);
 });
+
+test("a kill during historical baseline seeding resumes the seed without replaying old lines", async () => {
+  const live = tempFleet();
+  await holding(live, "DEMO-2");
+  for (let i = 0; i < 205; i++)
+    await live.store.recordEvent({
+      project: P,
+      ticket: "DEMO-2",
+      kind: "report",
+      message: `old ${i}`,
+      at: new Date(NOW.getTime() - 1000),
+    });
+  let checkpoint:
+    | { seen: string[]; cursor: string; eventIds: number[]; baselinePending: boolean; freshStart: boolean }
+    | undefined;
+  const cursor = eventCursor(0, NOW.toISOString());
+  const first = followFleet(live.fleet, {
+    ...options(live).o,
+    cursor,
+    freshStart: true,
+    kinds: ["report"],
+    onPrinted: async (state) => {
+      checkpoint = state;
+      throw new Error("killed while seeding");
+    },
+  });
+  await expect(first.next()).rejects.toThrow("killed while seeding");
+  if (!checkpoint) throw new Error("no baseline checkpoint");
+  expect(checkpoint.baselinePending).toBe(true);
+  const restarted = followFleet(live.fleet, {
+    ...options(live).o,
+    ...checkpoint,
+    kinds: ["report"],
+    until: new Date(NOW.getTime() + 15000),
+  });
+  expect((await restarted.next()).done).toBe(true);
+});
