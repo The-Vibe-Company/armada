@@ -40,6 +40,7 @@ export interface LaunchSpec {
   title: string;
   repository: string;
   base: string;
+  projectId?: string | null;
   branch: string;
   from: { kind: "base" } | { kind: "branch"; head: string } | { kind: "in-place"; previous: ClaimRef };
   profile: ResolvedProfile;
@@ -52,6 +53,12 @@ export interface Launched {
   link: string | null;
   path: string | null;
   state: RuntimeState;
+}
+export interface LaunchRecovery {
+  workers: Launched[];
+  /** Safe workspace/session ids for a manual decision, including incomplete searches. */
+  candidates: string[];
+  complete: boolean;
 }
 export interface OutgoingMessage {
   text: string;
@@ -109,6 +116,8 @@ export interface RuntimeAdapter {
   parse(handle: string): ParsedHandle;
   preflight(input: PreflightInput): Promise<PreflightCheck[]>;
   launch(spec: LaunchSpec): Promise<Launched>;
+  /** Read-only recovery after create may have succeeded; never retries a launch. */
+  recoverLaunch?(spec: LaunchSpec, since: string): Promise<LaunchRecovery>;
   deliver(target: ClaimRef, message: OutgoingMessage): Promise<Delivery>;
   observe(target: ClaimRef): Promise<RuntimeReading>;
   peek(target: ClaimRef, options: { actions: number; cursor: string | null }): Promise<Peek>;
