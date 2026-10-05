@@ -137,7 +137,7 @@ describe("fleet overview", () => {
       },
     );
     // Launched, never claimed: no lane, it waits like a silent worker.
-    const launched = { ticket: "W-5", launchedAt: at("09:15"), tokenUsedAt: null, handle: "ws-5" };
+    const launched = { ticket: "W-5", launchedAt: at("09:15"), tokenUsedAt: null, runtime: null, handle: "ws-5" };
     if (widgets.report)
       widgets.report.notStarted = [{ ...launched, title: "Parse", url: "u5", detail: "launched 45 min ago" }];
     const gadgets = reading("gadgets", [ticket("G-1", { phase: "awaiting-approval", since: at("08:00") })], {
