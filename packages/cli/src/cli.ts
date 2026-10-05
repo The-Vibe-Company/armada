@@ -83,12 +83,14 @@ const COMMAND_HELP: Record<string, string> = {
                     No terminal, CI and --json only print fixes and never install.
                     For harness first-run questions, the owner runs armada setup local
 `,
-  init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook]
+  init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook] [--merge]
                     Open one pull request that installs or updates it all, create the
                     missing Linear labels and register the project. The options are for
                     a repository without armada.toml (Linear issue at the program root).
                     It asks before adding the Claude Code stop hook to the repository's
                     .claude/settings.json (yes without a terminal); --no-stop-hook skips it
+                    Reuses armada/setup across versions and closes legacy armada/init-* PRs.
+                    --merge waits for the normal merge checks and merges only setup paths
 `,
   skills: `  skills update     Update all bundled skills, links and skills-lock.json in the current
                     checkout, and ignore shipping artifacts. No sign-in required; review
@@ -421,6 +423,7 @@ const FLAG_OPTIONS = [
   "note",
   "api-key",
   "no-stop-hook",
+  "merge",
   "org",
   "value-stdin",
   "ask-owner",
@@ -439,7 +442,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   inbox: ["wait", "timeout"],
   watch: ["stop"],
   answer: ["note", "message", "message-file"],
-  init: ["program-root", "name", "slug", "no-stop-hook"],
+  init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
@@ -772,6 +775,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         name: args.options.name ?? null,
         slug: args.options.slug ?? null,
         stopHook: args.options["no-stop-hook"] === "true" ? false : null,
+        merge: args.options.merge === "true",
       });
     }
     if (args.command === "login" || args.command === "logout" || args.command === "whoami") {
