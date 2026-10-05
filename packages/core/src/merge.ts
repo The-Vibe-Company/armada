@@ -5,10 +5,12 @@
 // the handed-back SHA, read MERGED back, then close the ticket. With --wait the
 // pull request is first brought up to date and waited for, without the lease.
 import type { ArmadaConfig } from "./config.ts";
+import type { UnblockedTickets } from "./fleet.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
 import type { Fleet, Lease, MergeRecorded, RuntimeHandle } from "./live.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
+import type { FrontierTicket } from "./status.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
@@ -73,6 +75,18 @@ export interface TicketInFlight {
   runtime: string | null;
 }
 
+export interface MergeUnblocked {
+  ready: {
+    id: string;
+    readyForAgent: boolean;
+    reason: "ready for an agent" | "no ready label" | "in triage";
+    route: FrontierTicket["route"];
+    launch: string | null;
+  }[];
+  parked: string[];
+  nowWaitsOn: UnblockedTickets["nowWaitsOn"];
+}
+
 export interface MergeContext {
   config: ArmadaConfig;
   linear: LinearWriter;
@@ -83,8 +97,8 @@ export interface MergeContext {
   fleet: () => Promise<{ fleet: Fleet | null; warning: string | null }>;
   /** True when this terminal is signed in to Armada: the merge lock is then required, and Armada being down refuses the merge. */
   lockRequired: boolean;
-  /** Tickets in flight in the project (the merged one may be among them). */
-  inFlight: () => Promise<TicketInFlight[]>;
+  /** One post-close reading for workers in flight and the closed ticket's dependents. Null names no closed ticket. */
+  afterRead: (ticket: string | null) => Promise<{ inFlight: TicketInFlight[]; unblocked: MergeUnblocked | null }>;
   /** Identifies this coordinator in the merge lease. */
   holder: string;
   now: () => Date;
@@ -140,6 +154,8 @@ export interface MergeOutcome {
   workers: WorkerToTell[];
   /** False when the workers in flight could not be listed (or for a dry run): `workers` is then not the whole fleet. */
   workersListed: boolean;
+  /** Dependents of the ticket just closed; null for a dry run, no-ticket merge or failed reading. */
+  unblocked: MergeUnblocked | null;
   /**
    * The merged worker's session to archive with its runtime guide. `guide` is
    * the installed guide skill, or null when the repository has none for that
@@ -968,6 +984,7 @@ export async function askOwnerToMerge(
     hints: [],
     workers: [],
     workersListed: false,
+    unblocked: null,
     archive: null,
     warnings,
   };
@@ -1288,9 +1305,12 @@ async function after(
 
   let workers: WorkerToTell[] = [];
   let listed = false;
+  let unblocked: MergeUnblocked | null = null;
   try {
     const handles = new Map<string, RuntimeHandle>((live$?.open ?? []).map((h) => [h.ticket, h]));
-    workers = (await ctx.inFlight())
+    const reading = await ctx.afterRead(ticket?.id ?? null);
+    unblocked = ticket ? reading.unblocked : null;
+    workers = reading.inFlight
       .filter((t) => t.id !== ticket?.id)
       .map((t) => ({
         ticket: t.id,
@@ -1302,7 +1322,7 @@ async function after(
     listed = true;
   } catch (err) {
     c.warnings.push(
-      `could not list the workers in flight (${err instanceof Error ? err.message : String(err)}); run armada status`,
+      `could not list the workers in flight${ticket ? " and unblocked tickets" : ""} (${err instanceof Error ? err.message : String(err)}); run armada status`,
     );
   }
   if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed };
@@ -1317,7 +1337,7 @@ async function after(
     c.warnings.push(`could not look for the ${expected} skill (${err instanceof Error ? err.message : String(err)})`);
   }
   const archive = { runtime, handle: live$?.handle?.handle ?? claim?.session ?? null, guide };
-  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed };
+  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed, unblocked };
 }
 
 function outcome(
@@ -1344,6 +1364,7 @@ function outcome(
     hints: c.hints,
     workers,
     workersListed: false,
+    unblocked: null,
     archive,
     warnings: c.warnings,
   };

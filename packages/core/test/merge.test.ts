@@ -169,10 +169,13 @@ function setup(o: { live?: ReturnType<typeof tempFleet> | null; toml?: string; h
         ? { fleet: o.live.fleet, warning: null }
         : { fleet: null, warning: o.down ? "Armada unreachable (connection refused)" : "not signed in to Armada" },
     lockRequired: !!o.live || !!o.down,
-    inFlight: async () => [
-      { id: "DEMO-7", title: "Share a list", phase: "ready-to-merge", runtime: "Conductor" },
-      { id: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code" },
-    ],
+    afterRead: async () => ({
+      inFlight: [
+        { id: "DEMO-7", title: "Share a list", phase: "ready-to-merge", runtime: "Conductor" },
+        { id: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code" },
+      ],
+      unblocked: null,
+    }),
     holder: o.holder ?? "coordinator-a",
     installedSkill: async (name) => name === "armada-runtime-conductor",
     now: () => NOW,
@@ -293,6 +296,9 @@ describe("the checklist refuses, naming the rule", () => {
 describe("armada merge", () => {
   test("a dry run checks everything, reports hints and writes nothing", async () => {
     const s = setup();
+    s.ctx.afterRead = async () => {
+      throw new Error("a dry run must not read after closing");
+    };
     s.forge.diffText = [
       "diff --git a/src/lists.ts b/src/lists.ts",
       "--- a/src/lists.ts",
@@ -311,6 +317,23 @@ describe("armada merge", () => {
     expect(out.hints).toEqual(["`shareList`, removed from src/lists.ts, still appears on main in src/menu.ts"]);
     expect(out.lines.at(-1)).toBe("Dry run: nothing was merged.");
     expect([s.forge.merges, s.linear.writes]).toEqual([[], []]);
+    expect(out.unblocked).toBeNull();
+  });
+
+  test("a failed post-close read warns without turning a confirmed merge into a failure", async () => {
+    const s = setup();
+    s.ctx.afterRead = async (ticket) => {
+      expect(ticket).toBe("DEMO-7");
+      expect(s.linear.get(ticket as string).statusType).toBe("completed");
+      throw new Error("Linear unavailable");
+    };
+    const out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.unblocked).toBeNull();
+    expect(out.workersListed).toBe(false);
+    expect(out.warnings).toContain(
+      "could not list the workers in flight and unblocked tickets (Linear unavailable); run armada status",
+    );
   });
 
   test("merges pinned to the handed-back SHA, closes the ticket and lists who to tell", async () => {

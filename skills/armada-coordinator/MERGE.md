@@ -50,7 +50,7 @@ gh pr merge <n> --squash --match-head-commit <full-sha>
 1. The ticket is Done, its `Agent phase` and `Agent runtime` labels removed, the pull request linked.
 2. Tell every in-flight worker what the merge changes for them: a shared file, a migration, a new check, code they must now reuse or delete.
 3. Archive the merged worker's workspace with the "Stop and archive" section of its runtime guide.
-4. Launch the tickets this merge unblocked.
+4. Read `Unblocked by <ticket>` in the merge output (also `unblocked` in `--json`): it names tickets ready for an agent, those without a ready label and those parked. Use each ready ticket's printed `armada brief <id> --prompt` command, with its routed profile when configured, to launch it. `now waits only on` names dependents that still have open blockers. A no-ticket merge lists no unblocked tickets.
 
 ## The release pull request
 
