@@ -1159,3 +1159,23 @@ describe("merge lease", () => {
     ]);
   });
 });
+
+test("main red is an informative merge note and health read failures do not block", async () => {
+  const s = setup();
+  s.ctx.forge.mainHealth = async () => ({
+    branch: "main",
+    head: BASE,
+    state: "red",
+    redSince: { sha: BASE, pr: 17, at: NOW.toISOString(), failing: ["test"] },
+    fixRunning: null,
+    redBeyondWindow: false,
+  });
+  const out = await mergePullRequest(s.ctx, { pr: 9, dryRun: true });
+  expect(out.lines).toContain("main red since #17 (test failing on fedcba9)");
+  expect(s.forge.merges).toEqual([]);
+  s.ctx.forge.mainHealth = async () => {
+    throw new Error("synthetic outage");
+  };
+  const unavailable = await mergePullRequest(s.ctx, { pr: 9, dryRun: true });
+  expect(unavailable.lines).toContain("default-branch CI could not be read; check it on GitHub");
+});

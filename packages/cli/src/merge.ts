@@ -16,6 +16,7 @@ import {
   createLinearWriter,
   fetchCommit,
   fetchComparison,
+  fetchMainHealth,
   fetchMergePull,
   fetchPreview,
   fetchPullDiff,
@@ -247,6 +248,7 @@ export async function merge(
     config,
     linear: io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts),
     forge: {
+      mainHealth: () => fetchMainHealth({ ...gh, requiredChecks: config.gates.requiredChecks }),
       readPull: async (n) => {
         const pull = await fetchMergePull({ ...gh, number: n });
         if (pull) guards?.readPull?.(pull);
