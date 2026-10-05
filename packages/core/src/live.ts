@@ -268,7 +268,9 @@ export interface PendingLaunch {
   /** When the worker signed in with the launch token; null while it never did. */
   tokenUsedAt: string | null;
   tokenExpiresAt?: string;
-  /** The worker's runtime session, as its sign-in named it; null when unknown. */
+  /** Runtime bound by the coordinator; null for older or unbound launches. */
+  runtime: string | null;
+  /** Session bound at launch, or reported at sign-in when unbound. */
   handle: string | null;
 }
 

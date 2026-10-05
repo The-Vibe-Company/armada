@@ -734,8 +734,12 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
-    // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
     version: 24,
+    statements: ['ALTER TABLE "armada_worker" ADD COLUMN IF NOT EXISTS "runtime" text'],
+  },
+  {
+    // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
+    version: 25,
     statements: [
       `CREATE TABLE merge_holds (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

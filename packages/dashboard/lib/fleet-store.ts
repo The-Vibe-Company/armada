@@ -975,8 +975,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtimeHandle" FROM (
-       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtimeHandle", "endedAt"
+    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle" FROM (
+       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -996,6 +996,7 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
     launchedAt: isoAt(r.createdAt),
     tokenUsedAt: iso(r.tokenUsedAt),
     tokenExpiresAt: isoAt(r.tokenExpiresAt),
+    runtime: text(r.runtime),
     handle: text(r.runtimeHandle),
   }));
 }
@@ -1036,6 +1037,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
           launchedAt: ended.createdAt,
           tokenExpiresAt: ended.tokenExpiresAt,
           tokenUsedAt: null,
+          runtime: ended.runtime,
           handle: ended.handle,
         });
     }
