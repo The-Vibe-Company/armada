@@ -1,6 +1,6 @@
 # Merging a pull request
 
-Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker session to archive. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
+Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker workspace it archived. Add `--no-archive` to leave the workspace open. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
 
 ## The owner's merge rule: `--reason` and `--ask-owner`
 
@@ -49,7 +49,7 @@ gh pr merge <n> --squash --match-head-commit <full-sha>
 
 1. The ticket is Done, its `Agent phase` and `Agent runtime` labels removed, the pull request linked.
 2. Tell every in-flight worker what the merge changes for them: a shared file, a migration, a new check, code they must now reuse or delete.
-3. Archive the merged worker's workspace with the "Stop and archive" section of its runtime guide.
+3. `armada merge` archives the merged worker's workspace after GitHub confirms the merge. Never archive before it prints "Merged". If cleanup fails, the merge still succeeds and prints the exact `armada stop <ticket>` command to finish it. `--no-archive` leaves the workspace open; shared workspaces and the coordinator's own workspace are retained.
 4. Read `Unblocked by <ticket>` in the merge output (also `unblocked` in `--json`): it names tickets ready for an agent, those without a ready label and those parked. Use each ready ticket's printed `armada brief <id> --prompt` command, with its routed profile when configured, to launch it. `now waits only on` names dependents that still have open blockers. A no-ticket merge lists no unblocked tickets.
 
 ## The release pull request
