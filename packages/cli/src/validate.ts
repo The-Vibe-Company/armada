@@ -12,7 +12,6 @@ import {
   excerptLines,
   parseChoices,
   readLabels,
-  redactSecrets,
   submitValidation,
 } from "@armada/core";
 import { attachItems } from "./attach.ts";
@@ -39,14 +38,12 @@ export async function readExcerpt(io: Io, raw: string) {
   };
 }
 
-async function validationFiles(io: Io, options: Record<string, string>, secrets: string[]) {
-  const excerpts = (await Promise.all(attachList(options.excerpt).map((raw) => readExcerpt(io, raw)))).map(
-    ({ label, text }) => ({ label: redactSecrets(label, secrets), text: redactSecrets(text, secrets) }),
-  );
+async function validationFiles(io: Io, options: Record<string, string>) {
+  const excerpts = await Promise.all(attachList(options.excerpt).map((raw) => readExcerpt(io, raw)));
   const file = options["details-file"];
   const details = file ? await io.readFile(resolve(io.cwd, file)) : null;
   if (file && details === null) throw new UsageError(`cannot read details file: ${file}`);
-  return { excerpts, details: details === null ? null : redactSecrets(details, secrets) };
+  return { excerpts, details };
 }
 
 const TICKET = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
@@ -100,38 +97,35 @@ export async function validate(io: Io, config: ArmadaConfig, credentials: Creden
   const ticket = named ?? currentTicket(io, config, a.options.ticket, credentials.workerTickets);
   const worker = !named && credentials.armadaSignIn?.kind === "worker";
   const items = attachList(a.options.attach);
-  const secrets = [
-    credentials.armadaSignIn?.kind === "api-key" ? credentials.armadaSignIn.key : credentials.armadaSignIn?.token,
-    credentials.linearApiKey,
-    credentials.githubToken,
-    ...config.secrets.names.map((name) => io.env[name]),
-  ].filter((value): value is string => !!value);
-  const samples = await validationFiles(io, a.options, secrets);
+  const samples = await validationFiles(io, a.options);
   if (worker) await ensurePhaseLabel(io, config, credentials);
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    submitValidation(ctx, {
-      ticket,
-      kind: "validation",
-      what,
-      checks: attachList(a.options.check),
-      ...samples,
-      uploadCount: items.length,
-      choices: parseChoices(a.options.choices),
-      attachments: [],
-      // Uploaded once every check passed: a refused submission leaves nothing behind.
-      upload: async () =>
-        items.length
-          ? (
-              await attachItems(io, config, credentials, {
-                ticket,
-                items,
-                ...(a.options.caption ? { caption: a.options.caption } : {}),
-                reference: "validation",
-              })
-            ).map((saved) => saved.attachment.id)
-          : [],
-      worker,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    submitValidation(
+      ctx,
+      redact({
+        ticket,
+        kind: "validation",
+        what,
+        checks: attachList(a.options.check),
+        ...samples,
+        uploadCount: items.length,
+        choices: parseChoices(a.options.choices),
+        attachments: [],
+        // Uploaded once every check passed: a refused submission leaves nothing behind.
+        upload: async () =>
+          items.length
+            ? (
+                await attachItems(io, config, credentials, {
+                  ticket,
+                  items,
+                  ...(a.options.caption ? { caption: redact({ caption: a.options.caption }).caption } : {}),
+                  reference: "validation",
+                })
+              ).map((saved) => saved.attachment.id)
+            : [],
+        worker,
+      }),
+    ),
   );
 }
 
@@ -145,16 +139,19 @@ export async function askOwner(io: Io, config: ArmadaConfig, credentials: Creden
   if (!choices || choices.length < 2) throw new UsageError(`give the owner at least two choices: ${usage}`);
   if (credentials.armadaSignIn?.kind === "worker")
     throw new UsageError("a worker asks the coordinator (armada ask), who escalates to the owner");
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    submitValidation(ctx, {
-      ticket: ticket.toUpperCase(),
-      kind: "question",
-      what: question,
-      checks: attachList(a.options.check),
-      choices,
-      attachments: [],
-      worker: false,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    submitValidation(
+      ctx,
+      redact({
+        ticket: ticket.toUpperCase(),
+        kind: "question",
+        what: question,
+        checks: attachList(a.options.check),
+        choices,
+        attachments: [],
+        worker: false,
+      }),
+    ),
   );
 }
 

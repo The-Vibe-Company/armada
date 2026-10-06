@@ -308,6 +308,72 @@ describe("armada claim, report and release", () => {
     }
   });
 
+  test("outgoing reports, plans, questions, validations and answers mask before API and Linear", async () => {
+    const w = worker({ ...SIGNED_IN, LINEAR_API_KEY: "synthetic-linear-key" });
+    w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+    w.linear.add("DEMO-7");
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], w.io)).toBe(0);
+    w.reset();
+    expect(
+      await run(
+        [
+          "report",
+          "implementing",
+          "--message",
+          "synthetic-project-secret sk-synthetic-unknown",
+          "--plan",
+          "synthetic-linear-key",
+        ],
+        w.io,
+      ),
+    ).toBe(0);
+    expect(
+      await run(["ask", "use synthetic-project-secret?", "--options", "synthetic-project-secret | continue"], w.io),
+    ).toBe(0);
+    expect(await run(["answer", "DEMO-7", "rotate synthetic-project-secret"], w.io)).toBe(0);
+    expect(await run(["validate", "DEMO-7", "check synthetic-project-secret"], w.io)).toBe(0);
+    expect(
+      await run(
+        ["ask-owner", "DEMO-7", "use synthetic-project-secret?", "--choices", "synthetic-project-secret | fine"],
+        w.io,
+      ),
+    ).toBe(0);
+    const written =
+      JSON.stringify(w.armada.calls.filter((c) => c.path.startsWith("fleet/"))) +
+      w.linear.bodies.join("\n") +
+      w.out() +
+      w.err();
+    expect(written).not.toContain("synthetic-project-secret");
+    expect(written).not.toContain("synthetic-linear-key");
+    expect(written).not.toContain("sk-synthetic-unknown");
+    expect(written).toContain("«secret CUSTOM_KEY»");
+    expect(written).toContain("«secret LINEAR_API_KEY»");
+    expect(w.err()).toContain("masked a value matching a key pattern");
+  });
+
+  test("a partial secret release still masks every readable value", async () => {
+    const w = worker(SIGNED_IN);
+    w.linear.add("DEMO-7");
+    const fetch = w.io.fetch;
+    w.io.fetch = async (url, init) => {
+      if (url.endsWith("/secrets/release"))
+        return Response.json({
+          schemaVersion: 1,
+          project: "widgets",
+          secrets: [{ name: "CUSTOM_KEY", value: "synthetic-readable-secret", scope: "project" }],
+          warnings: ["unreadable secret"],
+          missing: [],
+        });
+      if (!fetch) throw new Error("missing fetch");
+      return fetch(url, init);
+    };
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], w.io)).toBe(0);
+    expect(await run(["report", "implementing", "--message", "synthetic-readable-secret"], w.io)).toBe(0);
+    expect(w.linear.bodies.join("\n")).toContain("«secret CUSTOM_KEY»");
+    expect(w.linear.bodies.join("\n") + w.out() + w.err()).not.toContain("synthetic-readable-secret");
+    expect(w.err()).toContain("project secrets unavailable for masking");
+  });
+
   test("an unreachable Armada only warns; Linear is still written", async () => {
     const w = worker(SIGNED_IN);
     w.io.fetch = async (url, init) => {
@@ -318,7 +384,7 @@ describe("armada claim, report and release", () => {
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
     expect(w.err()).toMatch(
-      /^armada: warning: Armada: could not record the claim \(Armada \(armada\.example\.test\) unreachable: .+\); Linear is up to date\n$/,
+      /armada: warning: Armada: could not record the claim \(Armada \(armada\.example\.test\) unreachable: .+\); Linear is up to date\n$/,
     );
   });
 
@@ -327,7 +393,8 @@ describe("armada claim, report and release", () => {
     w.linear.add("DEMO-7");
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
-    expect(w.err()).toBe(
+    expect(w.err()).toContain("project secrets unavailable for masking");
+    expect(w.err()).toContain(
       "armada: warning: Armada: could not record the claim (not signed in to Armada); Linear is up to date\n",
     );
     expect(w.err()).not.toContain("CANARY");
@@ -558,16 +625,18 @@ test("validate reads inclusive excerpts, repeated checks and folded details with
     LINEAR_API_KEY: "synthetic-linear-credential",
     GITHUB_TOKEN: "synthetic-github-credential",
   });
+  w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
   w.linear.add("DEMO-7");
   const original = w.io.readFile;
   w.io.readFile = async (path) =>
     path === "/work/widgets/out.txt"
       ? Array.from(
           { length: 50 },
-          (_, n) => `Line ${n + 1}${n === 19 ? ` ${KEY}` : n === 20 ? " lin_api_example" : ""}`,
+          (_, n) =>
+            `Line ${n + 1}${n === 19 ? ` ${KEY}` : n === 20 ? " lin_api_example" : n === 21 ? " synthetic-project-secret" : ""}`,
         ).join("\n")
       : path === "/work/widgets/context.txt"
-        ? "Longer context synthetic-linear-credential"
+        ? "Longer context synthetic-linear-credential synthetic-project-secret"
         : original(path);
   w.io.readBinaryFile = async () => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const fetch = w.io.fetch;
@@ -602,12 +671,14 @@ test("validate reads inclusive excerpts, repeated checks and folded details with
     excerpts: [
       {
         label: "out.txt:10-40",
-        text: Array.from({ length: 31 }, (_, n) => `Line ${n + 10}${n === 10 || n === 11 ? " [redacted]" : ""}`).join(
-          "\n",
-        ),
+        text: Array.from(
+          { length: 31 },
+          (_, n) =>
+            `Line ${n + 10}${n === 10 ? " «secret ARMADA_API_KEY»" : n === 11 ? " «redacted»" : n === 12 ? " «secret CUSTOM_KEY»" : ""}`,
+        ).join("\n"),
       },
     ],
-    details: "Longer context [redacted]",
+    details: "Longer context «secret LINEAR_API_KEY» «secret CUSTOM_KEY»",
   });
   const before = w.armada.calls.filter((c) => c.path === "attachments").length;
   expect(await run(["validate", "DEMO-7", "Short", "--attach", "x.png", "--excerpt", "out.txt"], w.io)).toBe(1);

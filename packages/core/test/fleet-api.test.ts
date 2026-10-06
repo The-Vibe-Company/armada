@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
+import { redactor } from "../src/redact.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_PROJECT, fakeClock, NOW, tempFleet } from "./support.ts";
 
@@ -26,6 +27,68 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
+  test("masks prose from older clients, using injected project values plus patterns", async () => {
+    const store = memoryFleet();
+    const mask = redactor([{ name: "CUSTOM_KEY", value: "synthetic-project-secret" }]);
+    const send = (op: string, input: unknown) =>
+      serveFleet(
+        store,
+        { op, project: DEMO_PROJECT, caller: { kind: "organization" }, input },
+        { now: () => NOW, redact: mask.text },
+      );
+    expect((await send("claim", claim("DEMO-7"))).status).toBe(200);
+    expect(
+      (
+        await send("report", {
+          ticket: "DEMO-7",
+          phase: "implementing",
+          previous: "planning",
+          summary: "synthetic-project-secret sk-synthetic-unknown",
+          message: "sk-synthetic-unknown",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await send("ask", { ticket: "DEMO-7", body: "synthetic-project-secret" })).status).toBe(200);
+    expect((await send("answer", { ticket: "DEMO-7", text: "synthetic-project-secret", note: true })).status).toBe(200);
+    expect(
+      (
+        await send("validate", {
+          ticket: "DEMO-7",
+          kind: "validation",
+          what: "synthetic-project-secret",
+          choices: ["synthetic-project-secret", "ok"],
+        })
+      ).status,
+    ).toBe(200);
+    const persisted = JSON.stringify({
+      events: store.events,
+      inbox: await store.openInboxItems({ project: "widgets", recipient: "coordinator" }),
+      validations: await store.listValidations({ project: "widgets" }),
+    });
+    expect(persisted).not.toContain("synthetic-project-secret");
+    expect(persisted).not.toContain("sk-synthetic-unknown");
+    expect(persisted).toContain("«secret CUSTOM_KEY»");
+    expect(persisted).toContain("«redacted»");
+    // Hosts without stored values still protect key formats.
+    expect(
+      (
+        await serveFleet(
+          store,
+          {
+            op: "ask",
+            project: DEMO_PROJECT,
+            caller: { kind: "organization" },
+            input: { ticket: "DEMO-7", body: "ghp_syntheticpattern" },
+          },
+          { now: () => NOW },
+        )
+      ).status,
+    ).toBe(200);
+    expect(JSON.stringify(await store.openInboxItems({ project: "widgets", recipient: "coordinator" }))).not.toContain(
+      "ghp_syntheticpattern",
+    );
+  });
+
   test("release validates guards and always checks a worker caller's session identity", async () => {
     const { fleet, store } = tempFleet();
     await store.saveRuntimeHandle({
