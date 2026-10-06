@@ -332,7 +332,17 @@ export async function workerSession(client: Database, token: string, now: Date):
   const row = rs.rows[0];
   if (!row) return { ok: false, worker: null };
   const worker = workerOf(row);
-  if (workerState(worker, now) !== "active") return { ok: false, worker };
+  if (workerState(worker, now) !== "active") {
+    if (!worker.endedAt && worker.tokenUsedAt)
+      await endWorker(client, {
+        organization: worker.organization,
+        id: worker.id,
+        reason: "expired",
+        by: { kind: "dashboard", id: "", label: "Armada (session expired)" },
+        now,
+      });
+    return { ok: false, worker };
+  }
   const at = now.toISOString();
   const expires = new Date(now.getTime() + WORKER_IDLE_MS).toISOString();
   await client.query(
@@ -347,6 +357,7 @@ async function end(
   where: { sql: string; args: (string | null)[] },
   input: { organization: string; reason: EndReason; by: Actor; now: Date },
 ): Promise<Worker[]> {
+  if ("connect" in client) return transaction(client as Database, (tx) => end(tx, where, input));
   const rs = await client.query(
     `SELECT ${COLUMNS} FROM "armada_worker" WHERE "organizationId" = $1 AND "endedAt" IS NULL AND ${where.sql}`,
     [input.organization, ...where.args],
@@ -355,11 +366,33 @@ async function end(
   const ended: Worker[] = [];
   for (const row of rs.rows) {
     const w = workerOf(row);
+    // Claims and releases lock the project first too, so ending a worker cannot
+    // race a replacement claim or invert the handle/session lock order.
+    await client.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [w.project]);
     const done = await client.query(
-      `UPDATE "armada_worker" SET "endedAt" = $1, "endReason" = $2, "endedByLabel" = $3 WHERE "id" = $4 AND "endedAt" IS NULL`,
+      `UPDATE "armada_worker" SET "endedAt" = $1, "endReason" = $2, "endedByLabel" = $3 WHERE "id" = $4 AND "endedAt" IS NULL${input.reason === "expired" ? ' AND (("tokenUsedAt" IS NULL AND "tokenExpiresAt" <= $1) OR "sessionExpiresAt" <= $1)' : ""}`,
       [at, input.reason, input.by.label, w.id],
     );
     if (done.rowCount !== 1) continue;
+    const handles = await client.query(
+      `UPDATE runtime_handles SET released_at = $4 WHERE project = $1 AND ticket = $2
+       AND worker_session_id = $3 AND released_at IS NULL RETURNING handle, claimed_at`,
+      [w.project, w.ticket, w.id, at],
+    );
+    for (const h of handles.rows) {
+      await client.query(
+        `UPDATE fleet_sessions SET released_at = $5 WHERE project = $1 AND ticket = $2
+         AND handle = $3 AND claimed_at = $4 AND released_at IS NULL`,
+        [w.project, w.ticket, h.handle, h.claimed_at, at],
+      );
+      await client.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [w.project, w.ticket]);
+      await client.query(
+        `INSERT INTO events (project, ticket, kind, runtime, handle, message, created_at)
+         SELECT $1, $2, 'release', runtime, handle, $3, $4 FROM runtime_handles
+         WHERE project = $1 AND ticket = $2 AND worker_session_id = $5`,
+        [w.project, w.ticket, `worker session ${input.reason}`, at, w.id],
+      );
+    }
     ended.push({ ...w, endedAt: at, endReason: input.reason, endedBy: input.by.label });
     await recordEvent(client, input.organization, {
       at,

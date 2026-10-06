@@ -4,7 +4,7 @@ import { accountsModeOf } from "../lib/accounts-settings.ts";
 import type { Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliIdentity, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
-import { getRuntimeHandle } from "../lib/fleet-store.ts";
+import { fleetStore, getRuntimeHandle, saveRuntimeHandle } from "../lib/fleet-store.ts";
 import { listEvents, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
 import { EXCHANGES_PER_MINUTE, endWorker, listWorkers, workerState } from "../lib/workers.ts";
 import { tempDatabase } from "./support.ts";
@@ -519,4 +519,100 @@ describe("safety", () => {
       expect(((await res.json()) as { next: string }).next).toContain("ARMADA_AUTH_");
     }
   });
+});
+
+test("ended worker sessions release their exact claim and history, preserve replacements, and reconcile without tracker reads", async () => {
+  const project = { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "ABC-1" };
+  const person = { kind: "person" as const, id: "owner", label: "Olive Owner" };
+  const claim = async (ticket: string, handle: string) => {
+    const session = String((await exchange(await launch(ticket))).body.token);
+    expect(
+      (
+        await cli("POST", "fleet/claim", {
+          token: session,
+          body: {
+            project,
+            input: {
+              ticket,
+              runtime: "Conductor",
+              handle,
+              branch: null,
+              phase: "implementing",
+              resuming: false,
+              profile: null,
+            },
+          },
+        })
+      ).status,
+    ).toBe(200);
+    const worker = (await listWorkers(client, orgId)).find((w) => w.ticket === ticket);
+    if (!worker) throw new Error("worker missing");
+    return { session, worker };
+  };
+  now = at(9000);
+  const revoked = await claim("ABC-90", "ws/revoked");
+  const expired = await claim("ABC-91", "ws/expired");
+  const old = await claim("ABC-92", "ws/old");
+  now = at(9001);
+  const replacement = await claim("ABC-92", "ws/new");
+  await endWorker(client, { organization: orgId, id: revoked.worker.id, reason: "revoked", by: person, now });
+  await endWorker(client, { organization: orgId, id: old.worker.id, reason: "revoked", by: person, now });
+  expect((await getRuntimeHandle(client, "widgets", "ABC-90"))?.releasedAt).toBe(now.toISOString());
+  // Authentication that preceded revocation cannot resurrect the claim after the project lock is released.
+  await expect(
+    saveRuntimeHandle(client, {
+      project: "widgets",
+      ticket: "ABC-90",
+      runtime: "Conductor",
+      handle: "ws/revoked",
+      branch: null,
+      workerSessionId: revoked.worker.id,
+      at: now,
+    }),
+  ).rejects.toThrow("session ended");
+  expect((await getRuntimeHandle(client, "widgets", "ABC-90"))?.releasedAt).toBe(now.toISOString());
+
+  expect((await getRuntimeHandle(client, "widgets", "ABC-92"))?.workerSessionId).toBe(replacement.worker.id);
+  expect((await getRuntimeHandle(client, "widgets", "ABC-92"))?.releasedAt).toBeNull();
+  const history = await client.query(
+    "SELECT released_at FROM fleet_sessions WHERE project = $1 AND ticket = $2 AND handle = $3",
+    ["widgets", "ABC-90", "ws/revoked"],
+  );
+  expect(new Date(history.rows[0]?.released_at as string).toISOString()).toBe(now.toISOString());
+  expect((await fleetStore(client).latestEvents("widgets"))["ABC-90"]?.kind).toBe("release");
+  now = at(9000 + 73 * 60);
+  expect((await keysFor(expired.session, { command: "report", project: "widgets", ticket: "ABC-91" })).status).toBe(
+    401,
+  );
+  expect((await getRuntimeHandle(client, "widgets", "ABC-91"))?.releasedAt).toBe(now.toISOString());
+  expect((await listWorkers(client, orgId)).find((w) => w.id === expired.worker.id)?.endReason).toBe("expired");
+  const completed = await claim("ABC-93", "ws/complete");
+  const { serveInbox } = await import("../../core/src/live.ts");
+  now = new Date(now.getTime() + 60_000);
+  await serveInbox(
+    fleetStore(client),
+    "widgets",
+    { coordinator: null, silentAfterMinutes: 15, etag: null },
+    now,
+    null,
+    {
+      repository: "acme/widgets",
+      issues: [{ id: "ABC-93", statusType: "completed" }],
+      prs: [],
+      flight: {
+        after: now.toISOString(),
+        forge: null,
+        program: {
+          rootId: "ABC-1",
+          fetchedAt: now.toISOString(),
+          issues: [{ ...(await import("../../core/test/support.ts")).issue("ABC-1") }],
+          comments: [],
+          warnings: [],
+        },
+      },
+    },
+  );
+  expect((await getRuntimeHandle(client, "widgets", "ABC-93"))?.releasedAt).toBe(now.toISOString());
+  expect((await listWorkers(client, orgId)).find((w) => w.id === completed.worker.id)?.endReason).toBe("released");
+  expect((await cli("GET", "session", { token: completed.session })).status).toBe(401);
 });
