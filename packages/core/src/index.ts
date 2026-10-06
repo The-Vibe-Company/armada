@@ -21,6 +21,7 @@ export * from "./live.ts";
 export * from "./machine.ts";
 export * from "./merge.ts";
 export * from "./model.ts";
+export * from "./overlap.ts";
 export * from "./overview.ts";
 export * from "./phases.ts";
 export * from "./projects.ts";

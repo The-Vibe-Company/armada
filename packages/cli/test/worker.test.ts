@@ -543,3 +543,30 @@ describe("armada ask, inbox and answer", () => {
     expect(w.err()).toContain("answer needs the text");
   });
 });
+
+test("report accepts repeated --paths, records declarations in Linear and prints overlap warnings", async () => {
+  const w = worker(SIGNED_IN);
+  w.linear.add("DEMO-7");
+  await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/self"], w.io);
+  await w.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-8",
+    runtime: "conductor",
+    handle: "ws/other",
+    branch: null,
+    at: NOW,
+  });
+  await w.store.saveTicketPaths("widgets", "DEMO-8", ["src/**"], NOW);
+  w.reset();
+  expect(
+    await run(
+      ["report", "awaiting-approval", "--plan", "Change core", "--paths", "src/a.ts,docs/**", "--paths=skills/**"],
+      w.io,
+    ),
+  ).toBe(0);
+  expect(w.out()).toContain("Overlaps DEMO-8: src/a.ts");
+  expect(w.out()).toContain("Comparison incomplete");
+  expect(await w.store.ticketPaths("widgets")).toMatchObject({ "DEMO-7": ["src/a.ts", "docs/**", "skills/**"] });
+  expect(w.linear.bodies.at(-1)).toContain("Paths: src/a.ts, docs/**, skills/**");
+  expect(await run(["report", "implementing", "--message", "bad", "--paths", "../bad"], w.io)).toBe(1);
+});

@@ -764,7 +764,17 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX owner_pushes_unsent ON owner_pushes (channel, created_at) WHERE sent_at IS NULL`,
     ],
   },
-  { version: 26, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
+  {
+    version: 26,
+    statements: [
+      `CREATE TABLE ticket_paths (
+      project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+      ticket text NOT NULL, paths text[] NOT NULL, declared_at timestamptz NOT NULL,
+      PRIMARY KEY (project, ticket)
+    )`,
+    ],
+  },
+  { version: 27, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

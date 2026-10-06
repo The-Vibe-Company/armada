@@ -725,7 +725,11 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
   let storedConfig: ArmadaConfig | undefined;
-  if ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") {
+  if (
+    ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") ||
+    op === "overlap" ||
+    op === "report"
+  ) {
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
