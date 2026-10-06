@@ -50,10 +50,11 @@ Work through the inbox, oldest first.
 - **The owner's requests** from the dashboard, signed with their name:
   - `answer-request`: `armada answer <request id> "<the owner's answer>"`, which delivers and resolves the question or plan it names.
   - `launch-request`: launch the ticket as in step 5 (the claim resolves it), or decline it with `armada answer <request id> "<why>"` when it collides with work in flight.
+  - Merge pressed on a pull request handed back at its current head goes straight into the merge queue, queued by the owner; no item arrives, so keep `armada merge --drain` running. A press the dashboard could not queue arrives as a `merge-request`.
   - `merge-request`, `release-request`, `plan-changes`: merge, release or relay the plan changes, then answer the item with what you did.
   - `decision`: an approved merge, `armada merge <pr>`; requested changes or a choice, deliver them with `armada answer`; an approved design ticket, `armada done <ticket>`, then cut the ticket that builds it, blocked by this one.
 - **A missing secret.** A worker asks with `armada ask --secret <NAME>`. Run `armada secrets request <NAME> --ticket <id> --reason "<why>"` and send the printed link to an owner or admin, who types the value into the vault. Never ask for a value in chat; a pasted value must be rotated. When the inbox says `<NAME> is set`, tell the worker to re-run through `armada run`.
-- **Other entries**: `hand-back` (step 6), `queue-refused` and `linear-pending` (MERGE.md), `hold` and `deploy` (step 7), `job` and `job-silent` (REFERENCE.md), `unblocked` (step 5), `stopped`, `silent` and `not-started` (step 4), `version` (run `armada upgrade`).
+- **Other entries**: `hand-back` (step 6), `queue-stalled` (queued pull requests with no drain for 2 minutes: run `armada merge --drain`), `queue-refused` and `linear-pending` (MERGE.md), `hold` and `deploy` (step 7), `job` and `job-silent` (REFERENCE.md), `unblocked` (step 5), `stopped`, `silent` and `not-started` (step 4), `version` (run `armada upgrade`).
 
 Decide reversible choices yourself and prefer the option that keeps behaviour observable. Shared numbers and names (migrations, ports, versions) are never yours to hand out: workers take them with `armada reserve`, and `armada reserve --list` shows the holders.
 

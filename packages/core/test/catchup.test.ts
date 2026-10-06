@@ -47,9 +47,6 @@ describe("a visit", () => {
     expect(showSummary({ ...v, dismissedSince: iso(0) }, NOW)).toBe(false);
     // Back after an hour away: a new start, not the one dismissed.
     expect(showSummary({ ...v, dismissedSince: iso(0) }, new Date(T0 + 200 * 60_000))).toBe(true);
-  });
-
-  test("has no summary on the first visit", () => {
     expect(showSummary({ seenAt: null, since: null, backAt: null, dismissedSince: null }, NOW)).toBe(false);
   });
 });

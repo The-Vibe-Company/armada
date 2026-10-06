@@ -49,6 +49,7 @@ import type { DeferredLaunchResult } from "./deferred-launch.ts";
 import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
+import { queueLines } from "./render.ts";
 import { deliverToRuntime } from "./runtime.ts";
 import { claimRef, guarded, redactRuntimeText } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
@@ -301,12 +302,11 @@ export async function merge(
         throw new UsageError("use armada merge queue [--json] or armada merge queue remove <pr>");
       const entries = await fleet.queueList();
       const watch = await queueWatch();
-      let position = 0;
       io.stdout(
         a.json
           ? `${JSON.stringify({ entries, holds: [], watch, result: "Result: not merged (queue listed; nothing was merged)" }, null, 2)}\n`
           : entries.length
-            ? `${entries.map((e) => `${queueOpen(e) ? `${++position}.` : "  "} #${e.pr}  ${e.state}${e.ticket ? `  ${e.ticket}` : ""}${e.detail ? ` — ${e.detail}` : ""}`).join("\n")}\n`
+            ? `${queueLines(entries).join("\n")}\n`
             : "The merge queue is empty.\n",
       );
       if (!a.json) io.stdout(`${watch.line}\n`);

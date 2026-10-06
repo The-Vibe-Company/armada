@@ -26,6 +26,7 @@ function fixture(
   options: {
     choice?: string | null;
     json?: boolean;
+    interactive?: boolean;
     blocked?: boolean;
     changed?: boolean;
     explicit?: boolean;
@@ -52,7 +53,7 @@ function fixture(
   const io: Io = {
     cwd: "/work/widgets",
     env: { HOME: "/owner", LINEAR_API_KEY: "CANARY_private" },
-    interactive: true,
+    interactive: options.interactive ?? true,
     now: () => new Date(time),
     sleep: async (ms) => {
       time += ms;
@@ -215,14 +216,18 @@ test("cancel, invalid choice and concurrent config edits never save full or star
 });
 
 test("JSON and noninteractive setup never ask, save permissions, or start sessions", async () => {
-  const f = fixture({ json: true });
-  expect(await f.run()).toBe(1);
-  expect(f.questions).toEqual([]);
-  expect(f.writes).toEqual([]);
-  expect(f.calls).toEqual([]);
-  const result = JSON.parse(f.output());
-  expect(result.ready).toBe(false);
-  expect(result.next).toContain("armada setup local");
+  for (const options of [{ json: true }, { interactive: false }]) {
+    const f = fixture(options);
+    expect(await f.run()).toBe(1);
+    expect(f.questions).toEqual([]);
+    expect(f.writes).toEqual([]);
+    expect(f.calls).toEqual([]);
+    if (options.json) {
+      const result = JSON.parse(f.output());
+      expect(result.ready).toBe(false);
+      expect(result.next).toContain("armada setup local");
+    } else expect(f.output()).toContain("armada setup local");
+  }
 });
 
 test("saved explicit decisions survive subsequent setup and remaining questions are reported without answers", async () => {

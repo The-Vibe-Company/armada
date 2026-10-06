@@ -139,7 +139,7 @@ describe("a headless coordinator with an API key", () => {
     expect(await readFile(m.credentials, "utf8")).toBe("");
   });
 
-  test("ARMADA_API_KEY in the environment signs in with nothing stored, and wins over a stored session", async () => {
+  test("ARMADA_API_KEY in the environment signs in with nothing stored", async () => {
     const armada = fakeArmada({ keys: { [KEY]: "ci" } });
     const m = await machine(armada, { ARMADA_API_KEY: KEY });
     expect(await run(["whoami"], m.io)).toBe(0);

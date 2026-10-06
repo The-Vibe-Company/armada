@@ -14,6 +14,7 @@ import { Refusal } from "./refusal.ts";
 const TTL_MS = 10 * 60_000;
 const POLL_MS = 30_000;
 const BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000];
+const PROGRESS_MAX = 300;
 class TakenOver extends Refusal {
   constructor() {
     super("the queue was taken over", "armada merge --drain after its current holder finishes");
@@ -76,8 +77,26 @@ export async function drainMergeQueue(
         };
       },
     });
+  // The step the dashboard shows on the merging entry: best effort, an older Armada lacks it.
+  let current: QueueEntry | null = null;
+  let shown = "";
+  let recorded = Promise.resolve();
+  const progress = (line: string) => {
+    ctx.progress?.(line);
+    const detail = line.replace(/…$/, "").trim().slice(0, PROGRESS_MAX);
+    const entry = current;
+    if (!entry || !detail || detail === shown) return;
+    shown = detail;
+    recorded = recorded
+      .then(() => fleet.queueProgress({ id: entry.id, holder: ctx.holder, detail }))
+      .then(
+        () => {},
+        () => {},
+      );
+  };
   const run: MergeContext = {
     ...ctx,
+    progress,
     tick,
     sleep,
     linear: fenced(ctx.linear),
@@ -96,6 +115,8 @@ export async function drainMergeQueue(
     },
   };
   const finish = async (entry: QueueEntry, result: Omit<QueueFinish, "id" | "holder">) => {
+    current = null;
+    await recorded;
     await tick();
     if (!(await fleet.queueFinish({ ...result, id: entry.id, holder: ctx.holder }))) throw new TakenOver();
   };
@@ -121,6 +142,8 @@ export async function drainMergeQueue(
         await sleep(Math.max(1, Math.min(POLL_MS, Date.parse(pending.notBefore) - ctx.now().getTime())));
         continue;
       }
+      current = entry;
+      shown = "";
       let outcome: MergeOutcome;
       try {
         outcome = await mergePullRequest(run, {
@@ -171,7 +194,8 @@ export async function drainMergeQueue(
     }
   } finally {
     stopPulse?.();
-    await pulse;
+    current = null;
+    await Promise.all([pulse, recorded]);
     await fleet.releaseLease(lease).catch(() => {});
   }
 }

@@ -50,6 +50,14 @@ test("pause false still notifies, and healthy clears only an explicitly covered 
   const store = fleetStore(db);
   const failed = await store.recordDeploy({ ...failure("b", 3, false), target: "no-pause" });
   expect(failed.state).toBe("smoke-failed");
+  const notices = async () =>
+    (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).filter(
+      (item) => item.kind === "deploy" && item.body.includes("no-pause"),
+    );
+  const [notice] = await notices();
+  expect(notice).toMatchObject({ kind: "deploy", project: PROJECT });
+  expect(notice?.body).toContain("no-pause (b)");
+  if (!notice) throw new Error("missing no-pause failure notice");
   expect((await store.openHolds(PROJECT)).some((hold) => hold.ref === "no-pause")).toBe(false);
   const healthyWithoutCoverage = await store.recordDeploy({
     project: PROJECT,
@@ -61,6 +69,7 @@ test("pause false still notifies, and healthy clears only an explicitly covered 
     at: at(4),
   });
   expect(healthyWithoutCoverage.state).toBe("healthy");
+  expect((await notices()).map((item) => item.id)).toEqual([notice.id]);
   expect((await store.openHolds(PROJECT)).some((hold) => hold.ref === "no-pause")).toBe(false);
   await store.recordDeploy({
     project: PROJECT,
@@ -73,6 +82,8 @@ test("pause false still notifies, and healthy clears only an explicitly covered 
     at: at(5),
   });
   expect((await store.openHolds(PROJECT)).some((hold) => hold.ref === "no-pause")).toBe(false);
+  expect(await notices()).toEqual([]);
+  expect((await store.getInboxItem(PROJECT, notice?.id ?? 0))?.resolvedAt).toBe(at(5).toISOString());
   const remaining = await store.openInboxItems({ project: PROJECT, recipient: "coordinator" });
   expect(remaining).toHaveLength(1);
   expect(remaining[0]?.body).toContain("preview");

@@ -41,6 +41,17 @@ test("coordinator activity and inbox reads have separate clocks, reset after sil
     await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: false, at: at(51) });
     expect(await getCoordinatorPresence(db, "widgets")).toMatchObject({ startedAt: at(51).toISOString() });
     expect(await inboxReads(db, "widgets", at(25 * 60 + 3))).toEqual([]);
+    await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: true, at: at(52) });
+    const persisted = async () =>
+      (
+        await db.query("SELECT created_at FROM events WHERE project = $1 AND kind = 'inbox' ORDER BY created_at", [
+          "widgets",
+        ])
+      ).rows.map((row) => new Date(String(row.created_at)).toISOString());
+    expect(await persisted()).toEqual([at(1), at(2), at(52)].map((date) => date.toISOString()));
+    await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: true, at: at(7 * 24 * 60 + 2) });
+    // Strictly older than seven days is deleted; the boundary and newer rows survive.
+    expect(await persisted()).toEqual([at(2), at(52), at(7 * 24 * 60 + 2)].map((date) => date.toISOString()));
     expect(await getCoordinatorPresence(db, "gadgets")).toBeNull();
   } finally {
     await db.end();
@@ -149,14 +160,51 @@ test("steering requests deduplicate atomically per target, stay scoped and resol
       requestPlanChanges(store, { ...common, project: "gadgets", question: plan.id, text: "wrong project" }),
     ).rejects.toThrow("does not exist");
     await expect(requestPlanChanges(store, { ...common, question: plan.id, text: " " })).rejects.toThrow("empty");
-    const firstMerge = await requestMerge(store, { ...common, pr: 11, openPrs: [11, 12] });
-    const secondMerge = await requestMerge(store, { ...common, pr: 12, openPrs: [11, 12] });
-    expect(firstMerge).not.toBe(secondMerge);
-    await expect(requestMerge(store, { ...common, pr: 11, openPrs: [11] })).rejects.toThrow("already waits");
+    const prs = (...numbers: number[]) => numbers.map((number) => ({ number }));
+    const firstMerge = await requestMerge(store, { ...common, pr: 11, openPrs: prs(11, 12) });
+    const secondMerge = await requestMerge(store, { ...common, pr: 12, openPrs: prs(11, 12) });
+    if (firstMerge.kind !== "request" || secondMerge.kind !== "request") throw new Error("expected merge requests");
+    expect(firstMerge.id).not.toBe(secondMerge.id);
+    await expect(requestMerge(store, { ...common, pr: 11, openPrs: prs(11) })).rejects.toThrow("already waits");
     await expect(requestMerge(store, { ...common, pr: 13, openPrs: [] })).rejects.toThrow("not open");
+    // Handed back at its current head (THE-1103): the press joins the merge queue, queued by the owner.
+    const head = "a".repeat(40);
+    for (const [ticket, pr, sha] of [
+      ["WID-2", 14, head],
+      ["WID-3", 15, "b".repeat(40)],
+    ] as const)
+      await store.putHandBack({
+        project: "widgets",
+        ticket,
+        author: "one",
+        body: `Agent status: ready-to-merge — PR #${pr}, head ${sha}, CI green`,
+        at: at(2),
+      });
+    const pressed = { ...common, pr: 14, openPrs: [{ number: 14, headSha: head }] };
+    const queued = await requestMerge(store, pressed);
+    expect(queued).toMatchObject({ kind: "queued", position: 1 });
+    expect(await requestMerge(store, pressed)).toEqual({ kind: "already-queued", id: queued.id });
+    expect(await store.queueList("widgets", { since: at(0) })).toMatchObject([
+      {
+        pr: 14,
+        ticket: "WID-2",
+        headSha: head,
+        queuedBy: "Synthetic Owner",
+        reason: "merge asked on the dashboard by Synthetic Owner",
+      },
+    ]);
+    // Its head moved since the hand-back: the coordinator still decides, the ticket normalized.
+    const moved = await requestMerge(store, {
+      ...common,
+      pr: 15,
+      ticket: " wid-3 ",
+      openPrs: [{ number: 15, headSha: "c".repeat(40) }],
+    });
+    expect(moved.kind).toBe("request");
+    expect((await store.getInboxItem("widgets", moved.id))?.ticket).toBe("WID-3");
     const release = await requestRelease(store, { ...common, ticket: "WID-2" });
     await expect(requestRelease(store, { ...common, ticket: "WID-2" })).rejects.toThrow("already waits");
-    for (const id of [firstMerge, secondMerge, release])
+    for (const id of [firstMerge.id, secondMerge.id, release])
       await recordAnswer(store, "widgets", { item: id, ticket: null, note: false, text: "handled" }, at(4));
     expect((await store.getInboxItem("widgets", release))?.resolvedAt).toBe(at(4).toISOString());
     const forbidden = await serveFleet(
@@ -178,10 +226,12 @@ test("steering requests deduplicate atomically per target, stay scoped and resol
         caller: { kind: "organization", author: "Verified Person" },
         input: { kind: "merge-request", pr: 11, author: "Impersonator" },
       },
-      { now: () => at(5), openPrs: [11] },
+      { now: () => at(5), openPrs: [{ number: 11 }] },
     );
     expect(accepted.status).toBe(200);
-    expect((await store.getInboxItem("widgets", Number(accepted.body.result)))?.author).toBe("Verified Person");
+    expect((await store.getInboxItem("widgets", (accepted.body.result as { id: number }).id))?.author).toBe(
+      "Verified Person",
+    );
     await serveFleet(
       store,
       {

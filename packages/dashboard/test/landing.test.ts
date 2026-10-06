@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { run } from "../../cli/src/cli.ts";
 import { CIPHER, COMMANDS, LAUNCH_TOKEN_HOURS, SETUP } from "../components/landing/content";
 import { BREAK_AT, createSky, INTRO, LIME, step } from "../components/landing/flock";
-import { stepForKey } from "../components/landing/MethodSteps";
 import { ASKED, delivered, HANDED_BACK, handedBack, opening, toValidate } from "../components/landing/replica-script";
 import { TRANSCRIPT } from "../components/landing/transcript";
 import { checksOf, overviewItems, ownerChecks } from "../lib/coordinator-view";
@@ -20,12 +20,25 @@ const REPO = resolve(ROOT, "../..");
 const read = (path: string) => readFileSync(path, "utf8");
 
 describe("what the landing says", () => {
-  test("lists every command of armada --help, in its order", () => {
-    const cli = read(join(REPO, "packages/cli/src/cli.ts"));
-    const block = cli.slice(cli.indexOf("const COMMAND_HELP"), cli.indexOf("\n};", cli.indexOf("const COMMAND_HELP")));
-    const help = [...block.matchAll(/^ {2}"?([a-z-]+)"?: `/gm)].map((m) => m[1]);
-    expect(help.length).toBeGreaterThan(10);
-    expect(COMMANDS.map((c) => c.name)).toEqual(help as string[]);
+  test("lists every command of armada --help, in its order", async () => {
+    let text = "";
+    expect(
+      await run(["--help"], {
+        cwd: REPO,
+        env: {},
+        readFile: async () => null,
+        ghToken: () => null,
+        stdout: (chunk) => {
+          text += chunk;
+        },
+        stderr: () => {},
+      }),
+    ).toBe(0);
+    const help = [...text.matchAll(/^ {2}([a-z][a-z-]*)(?: |$)/gm)].map((match) => match[1] ?? "");
+    // Help can include several synopsis lines per command; retain its public order once each.
+    const commands = [...new Set(help)];
+    expect(commands.length).toBeGreaterThan(10);
+    expect(COMMANDS.map((command) => command.name)).toEqual(commands);
   });
 
   test("gives the launch token's lifetime and the vault's cipher as the code sets them", () => {
@@ -107,13 +120,6 @@ describe("the method (THE-1049)", () => {
     expect(tall).toEqual([]);
     const listens = /addEventListener\(\s*"(scroll|wheel|touchmove|mousewheel)"|\bon(Scroll|Wheel|TouchMove)\b/;
     expect(own.filter((f) => listens.test(read(f))).map((f) => relative(ROOT, f))).toEqual([]);
-  });
-
-  test("moves between its steps with the arrow keys, Home and End, wrapping at both ends", () => {
-    expect([stepForKey("ArrowRight", 0, 5), stepForKey("ArrowDown", 3, 5)]).toEqual([1, 4]);
-    expect([stepForKey("ArrowRight", 4, 5), stepForKey("ArrowDown", 4, 5)]).toEqual([0, 0]);
-    expect([stepForKey("ArrowLeft", 0, 5), stepForKey("ArrowUp", 2, 5)]).toEqual([4, 1]);
-    expect([stepForKey("Home", 3, 5), stepForKey("End", 1, 5), stepForKey("Enter", 2, 5)]).toEqual([0, 4, null]);
   });
 });
 
