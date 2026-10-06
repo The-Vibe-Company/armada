@@ -35,6 +35,7 @@ import {
   watchInbox,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { coordinatorName, validCoordinator } from "./coordinator.ts";
 import { renderEntries } from "./inbox.ts";
 import { type Io, UsageError, type WatchSignal } from "./io.ts";
 import { requireSignIn } from "./login.ts";
@@ -61,7 +62,7 @@ export async function remember(io: Io, project: string, patch: Partial<WatchStat
   const paths = machinePaths(io.env);
   if (!paths) return;
   try {
-    await updateWatchState(paths, project, patch);
+    await updateWatchState(paths, project, patch, await coordinatorName(io, project));
   } catch (err) {
     io.stderr(
       `armada: warning: could not keep the watch state (${err instanceof Error ? err.message : String(err)})\n`,
@@ -73,9 +74,10 @@ export async function remember(io: Io, project: string, patch: Partial<WatchStat
 export async function watchOf(io: Io, project: string): Promise<{ state: WatchState | null; running: number | null }> {
   const paths = machinePaths(io.env);
   if (!paths) return { state: null, running: null };
+  const name = await coordinatorName(io, project);
   const [state, running] = await Promise.all([
-    readWatchState(paths, project),
-    runningWatch(paths, project, alive(io)).catch(() => null),
+    readWatchState(paths, project, name),
+    runningWatch(paths, project, alive(io), name).catch(() => null),
   ]);
   return { state, running };
 }
@@ -88,7 +90,8 @@ export async function rearmFor(
 ): Promise<Rearm> {
   const { running } = await watchOf(io, project);
   const paths = machinePaths(io.env);
-  const mode = paths && running ? (await readWatchLockInfo(paths, project))?.mode : undefined;
+  const mode =
+    paths && running ? (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode : undefined;
   return rearm({ ...o, running, mode });
 }
 
@@ -140,24 +143,23 @@ export async function watch(io: Io, config: ArmadaConfig, credentials: Credentia
 }
 
 /** Stops only a holder whose process identity still matches this project's lock. No network or credentials. */
-export async function stopWatch(io: Io, project: string, json: boolean): Promise<number> {
+export async function stopWatch(io: Io, project: string, json: boolean, override?: string): Promise<number> {
+  const name = override === undefined ? await coordinatorName(io, project) : validCoordinator(override);
   const paths = machinePaths(io.env);
-  const lock = paths ? await readWatchLockInfo(paths, project) : null;
+  const lock = paths ? await readWatchLockInfo(paths, project, name) : null;
   const print = (pid: number | null) => {
     const line =
       pid === null
-        ? `no watch running for ${project}`
-        : lock?.mode === "follow"
-          ? `Stopped armada watch following ${project} (pid ${pid}).`
-          : `Stopped armada watch for ${project} (pid ${pid}).`;
-    io.stdout(json ? `${JSON.stringify({ project, stopped: pid, line }, null, 2)}\n` : `${line}\n`);
+        ? `no watch running for ${project}${name === "default" ? "" : ` (${name})`}`
+        : `Stopped armada watch ${lock?.mode === "follow" ? "following" : "for"} ${project}${name === "default" ? "" : ` (${name})`} (pid ${pid}).`;
+    io.stdout(json ? `${JSON.stringify({ project, coordinator: name, stopped: pid, line }, null, 2)}\n` : `${line}\n`);
   };
   if (!paths || !lock) {
     print(null);
     return 0;
   }
   if (!alive(io)(lock.pid)) {
-    await releaseWatchLock(paths, project, lock.pid, lock.identity ?? undefined);
+    await releaseWatchLock(paths, project, lock.pid, lock.identity ?? undefined, name);
     print(null);
     return 0;
   }
@@ -180,6 +182,7 @@ export async function stopWatch(io: Io, project: string, json: boolean): Promise
   if (
     !identity ||
     identity.project !== project ||
+    (identity.coordinatorName ?? "default") !== name ||
     configProject !== project ||
     !isWatch ||
     !process ||
@@ -187,7 +190,7 @@ export async function stopWatch(io: Io, project: string, json: boolean): Promise
     process.command !== identity.command ||
     process.cwd !== identity.cwd ||
     !io.signalProcess ||
-    !sameWatchLock(await readWatchLockInfo(paths, project), lock)
+    !sameWatchLock(await readWatchLockInfo(paths, project, name), lock)
   ) {
     throw new Refusal(
       `cannot verify armada watch for ${project} (pid ${lock.pid}); left the process and lock untouched`,
@@ -198,11 +201,11 @@ export async function stopWatch(io: Io, project: string, json: boolean): Promise
     await io.signalProcess(lock.pid, "SIGTERM");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ESRCH") throw err;
-    await releaseWatchLock(paths, project, lock.pid, identity);
+    await releaseWatchLock(paths, project, lock.pid, identity, name);
     print(null);
     return 0;
   }
-  await releaseWatchLock(paths, project, lock.pid, identity);
+  await releaseWatchLock(paths, project, lock.pid, identity, name);
   print(lock.pid);
   return 0;
 }
@@ -245,6 +248,9 @@ async function watchUntil(
 ): Promise<number> {
   requireSignIn(credentials);
   const project = config.project.slug;
+  const name = await coordinatorName(io, project, dirname(configPath));
+  // The running watch keeps its role even if another terminal changes this checkout preference.
+  io = { ...io, coordinatorRoot: dirname(configPath), env: { ...io.env, ARMADA_COORDINATOR: name } };
   const paths: MachinePaths | null = machinePaths(io.env);
   const pid = io.pid ?? process.pid;
   const controller = new AbortController();
@@ -257,6 +263,7 @@ async function watchUntil(
   const until = options.minutes === undefined ? undefined : new Date(now(io).getTime() + options.minutes * 60000);
   const resume = () => {
     const flags = [
+      ...(name === "default" ? [] : [`ARMADA_COORDINATOR=${name}`]),
       "armada watch",
       ...(options.follow ? ["--follow"] : []),
       "--project",
@@ -276,14 +283,24 @@ async function watchUntil(
     });
     controller.signal.throwIfAborted();
     const inspected = await io.inspectProcess?.(pid);
-    identity = inspected ? { ...inspected, project, configPath } : undefined;
+    identity = inspected
+      ? { ...inspected, project, configPath, ...(name === "default" ? {} : { coordinatorName: name }) }
+      : undefined;
     controller.signal.throwIfAborted();
     if (paths) {
-      const lock = await takeWatchLock(paths, project, pid, alive(io), identity, options.follow ? "follow" : undefined);
+      const lock = await takeWatchLock(
+        paths,
+        project,
+        pid,
+        alive(io),
+        identity,
+        options.follow ? "follow" : undefined,
+        name,
+      );
       taken = lock.taken;
       controller.signal.throwIfAborted();
       if (!lock.taken) {
-        const mode = (await readWatchLockInfo(paths, project))?.mode;
+        const mode = (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode;
         const line =
           mode === "follow"
             ? `armada watch is following for ${project} (pid ${lock.pid}).`
@@ -307,7 +324,7 @@ async function watchUntil(
     const { fleet, warning } = liveFleet(watchingIo, config, credentials);
     if (!fleet)
       throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
-    const before = paths ? await readWatchState(paths, project) : null;
+    const before = paths ? await readWatchState(paths, project, name) : null;
     await remember(io, project, { root: dirname(configPath), stopped: null });
     if (until && !io.sleep)
       cancelDeadline = watchDeadline(
@@ -323,7 +340,8 @@ async function watchUntil(
       project,
       signal: controller.signal,
       coordinator: coordinatorHandle(io),
-      facts: detectCoordinator(io),
+      facts: { ...detectCoordinator(io), name },
+      coordinatorName: name,
       silentAfterMinutes: config.policy.silentAfterMinutes,
       quietAfterMinutes: config.policy.quietAfterMinutes,
       notStartedMinutes: config.policy.notStartedMinutes,
@@ -356,7 +374,7 @@ async function watchUntil(
       const baselinePending = differentCursor ? true : (before?.baselinePending ?? !eventIds.length);
       await remember(io, project, { cursor, eventIds, seen, freshStart, baselinePending });
       io.stderr(
-        `following ${project} as ${coordinatorHandle(io) ?? "coordinator"} from ${cursor}; stop: armada watch --stop --project ${project}\n`,
+        `following ${project} as coordinator ${name} (${coordinatorHandle(io) ?? "terminal"}) from ${cursor}; stop: armada watch --stop --name ${name} --project ${project}\n`,
       );
       for await (const line of followFleet(observingFleet(watchingIo, fleet, config), {
         ...common,
@@ -405,7 +423,7 @@ async function watchUntil(
     if (!stoppedBy && !timedOut) throw err;
     if (timedOut) resume();
   } finally {
-    if (paths && taken) await releaseWatchLock(paths, project, pid, identity).catch(() => {});
+    if (paths && taken) await releaseWatchLock(paths, project, pid, identity, name).catch(() => {});
     unsubscribe?.();
     cancelDeadline?.();
   }
@@ -437,7 +455,7 @@ export async function hookStop(
     const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : io.cwd;
     const { path, text } = await findConfig({ ...io, cwd });
     const project = parseConfig(text, path).project.slug;
-    const { state, running } = await watchOf(io, project);
+    const { state, running } = await watchOf({ ...io, coordinatorRoot: dirname(path) }, project);
     const d = stopHookDecision({ project, root: dirname(path), state, watching: running, env: io.env });
     if (d.block) io.stdout(`${JSON.stringify({ decision: "block", reason: d.reason })}\n`);
   } catch {}

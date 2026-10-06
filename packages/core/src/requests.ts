@@ -176,7 +176,7 @@ export async function requestLaunch(db: RequestStore, input: LaunchRequestInput)
   return item;
 }
 
-type SteeringInput = { project: string; author: string; now: Date };
+type SteeringInput = { project: string; author: string; coordinator?: string | null; now: Date };
 
 export async function requestMerge(
   db: RequestStore,
@@ -188,6 +188,7 @@ export async function requestMerge(
     project: input.project,
     ticket: input.ticket ?? null,
     kind: "merge-request",
+    coordinator: input.coordinator,
     author: requestAuthor(input.author),
     body: `Please merge PR #${input.pr}.`,
     question: null,
@@ -208,6 +209,7 @@ export async function requestRelease(db: RequestStore, input: SteeringInput & { 
     project: input.project,
     ticket,
     kind: "release-request",
+    coordinator: input.coordinator,
     author: requestAuthor(input.author),
     body: `Please release ${ticket}.`,
     question: null,
@@ -236,6 +238,7 @@ export async function requestPlanChanges(
     project: input.project,
     ticket: plan.ticket,
     kind: "plan-changes",
+    coordinator: input.coordinator,
     author,
     body,
     question: plan.id,
@@ -308,6 +311,7 @@ export async function requestDeferredLaunch(
     profile: string | null;
     after?: string | null;
     author: string;
+    coordinator?: string | null;
     now: Date;
   },
 ): Promise<DeferredLaunch> {
@@ -364,6 +368,7 @@ export async function requestDeferredLaunch(
     ticket,
     kind: "launch-request",
     author,
+    coordinator: input.coordinator,
     body: `${ticket} will launch once ${state.blockers.join(", ")} ${state.blockers.length === 1 ? "is" : "are"} done`,
     question: null,
     profile,

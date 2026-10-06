@@ -18,6 +18,7 @@ import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
   type ClaimRecord,
+  type CoordinatorRecord,
   type EventsRead,
   eventCursor,
   type Fleet,
@@ -104,6 +105,8 @@ export const FLEET_OPS = [
   "digest/send",
   "register",
   "coordinator",
+  "coordinators",
+  "coordinators/take",
   "request",
   "events/latest",
   "events/state",
@@ -140,12 +143,14 @@ export const LEASE_TTL_MAX_MS = 60 * 60_000;
 /** Who calls: a terminal of the project's organization, or a worker session bound to one ticket. */
 export type FleetCaller =
   | { kind: "organization"; author?: string | null; launchAuthor?: string | null }
-  | { kind: "worker"; ticket: string; sessionId?: string };
+  | { kind: "worker"; ticket: string; sessionId?: string; coordinator?: string | null };
 
 export interface FleetAnswer {
   status: number;
   body: Record<string, unknown>;
 }
+
+export const COORDINATOR = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 const TICKET = /^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/;
 // The project as armada.toml allows it (`config.ts`), within lengths no real project reaches.
@@ -184,6 +189,12 @@ function optText(b: Body, key: string, max: number): string | null {
   if (typeof v !== "string") throw new Invalid(`${key} must be text`);
   if (v.length > max) throw new Invalid(`${key} has at most ${max} characters`);
   return v;
+}
+
+function coordinatorNameOf(b: Body, key = "coordinatorName", fallback = "default"): string {
+  const name = b[key] === undefined ? fallback : b[key];
+  if (typeof name !== "string" || !COORDINATOR.test(name)) throw new Invalid(`${key} must match ${COORDINATOR.source}`);
+  return name;
 }
 
 function pathsOf(b: Body): string[] {
@@ -287,6 +298,7 @@ const refuse = (status: number, error: string, next: string): FleetAnswer => ({ 
 
 /** An inbox read whose entries did not change: answered 304, with no body. */
 const NOT_MODIFIED = Symbol("not modified");
+const TRANSFER_REFUSED = Symbol("transfer refused");
 
 export interface ServeFleetDeps {
   sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
@@ -334,6 +346,17 @@ export async function serveFleet(
           "the coordinator does it",
         );
     }
+    const coordinatorName =
+      caller.kind === "worker"
+        ? (caller.coordinator ?? null)
+        : coordinatorNameOf(
+            b,
+            b.coordinatorName === undefined && op !== "inbox" && b.coordinator !== undefined
+              ? "coordinator"
+              : op === "coordinator" && b.coordinatorName === undefined && b.name !== undefined
+                ? "name"
+                : "coordinatorName",
+          );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
         case "deploy/record": {
@@ -470,6 +493,7 @@ export async function serveFleet(
               resuming: bool(b, "resuming"),
               profile: profileOf(b.profile),
               workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
+              coordinator: coordinatorName,
             },
             at,
           );
@@ -542,10 +566,34 @@ export async function serveFleet(
             at,
           );
         case "coordinator":
-          return store.recordCoordinatorSeen({ project: slug, facts: coordinatorFacts(b), inboxRead: false, at });
+          return store.recordCoordinatorSeen({
+            project: slug,
+            name: coordinatorName ?? "default",
+            facts: { ...coordinatorFacts(b), name: coordinatorName ?? "default" },
+            inboxRead: false,
+            at,
+          });
+        case "coordinators":
+          return store.listCoordinators(slug);
+        case "coordinators/take": {
+          if (!Array.isArray(b.tickets) || b.tickets.length < 1 || b.tickets.length > 100)
+            throw new Invalid("tickets must contain 1 to 100 ticket ids");
+          const tickets = [...new Set(b.tickets.map((ticket) => ticketOf({ ticket })))];
+          const from = b.from === undefined ? undefined : coordinatorNameOf(b, "from");
+          const taken = await store.transferTickets({
+            project: slug,
+            tickets,
+            to: coordinatorName ?? "default",
+            from,
+            at,
+          });
+          if (!taken) return TRANSFER_REFUSED;
+          return true;
+        }
         case "request": {
           const common = {
             project: slug,
+            coordinator: coordinatorName,
             author: caller.kind === "organization" ? (caller.author ?? "coordinator") : "",
             now: at,
           };
@@ -562,6 +610,7 @@ export async function serveFleet(
               profile: optText(b, "profile", LINE_MAX),
               after: b.after == null ? null : ticketOf(b, "after"),
               author: caller.kind === "organization" ? (caller.launchAuthor ?? caller.author ?? "") : "",
+              coordinator: coordinatorName,
               now: at,
             });
           }
@@ -704,6 +753,7 @@ export async function serveFleet(
           const held = model && flight ? deferredHeld(model, flight, at, handles, events) : null;
           return items
             .filter((i) => i.kind === "launch-request" && i.request?.deferred)
+            .filter((i) => b.coordinatorName === undefined || !i.coordinator || i.coordinator === coordinatorName)
             .map((i) =>
               deferredLaunchState(
                 i,
@@ -732,6 +782,7 @@ export async function serveFleet(
             slug,
             {
               coordinator: optText(b, "coordinator", LINE_MAX),
+              ...(b.coordinatorName === undefined ? {} : { coordinatorName: coordinatorName ?? "default" }),
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
               silentAfterMinutes: silent,
               quietAfterMinutes: positiveMinutes(b, "quietAfterMinutes"),
@@ -767,6 +818,7 @@ export async function serveFleet(
             store,
             slug,
             {
+              coordinator: coordinatorName,
               text: text(b, "text", BODY_MAX),
               note: bool(b, "note"),
               ticket: b.ticket === null || b.ticket === undefined ? null : ticketOf(b),
@@ -898,6 +950,12 @@ export async function serveFleet(
           return store.releaseLease({ project: slug, name: text(b, "name", 64), holder: text(b, "holder", LINE_MAX) });
       }
     })();
+    if (result === TRANSFER_REFUSED)
+      return refuse(
+        409,
+        "tickets were not transferred: a ticket is missing or its owner changed",
+        "armada coordinator list, then retry with the current --from",
+      );
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
@@ -1009,13 +1067,30 @@ const CALL_TIMEOUT_MS = 15_000;
  * refusal or failure is an `ArmadaApiError`; worker commands turn it into a
  * warning, since Linear is the record.
  */
-export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSignIn; project: ProjectInput }): Fleet {
-  const call = async <T>(op: FleetOp, input: object): Promise<T> =>
-    (await o.api.fleet(o.signIn, op, { project: o.project, input }, CALL_TIMEOUT_MS)) as T;
+export function fleetClient(o: {
+  api: Pick<ArmadaApi, "fleet">;
+  signIn: ArmadaSignIn;
+  project: ProjectInput;
+  coordinatorName?: string | (() => Promise<string>);
+}): Fleet {
+  const call = async <T>(op: FleetOp, input: object): Promise<T> => {
+    const coordinatorName = typeof o.coordinatorName === "function" ? await o.coordinatorName() : o.coordinatorName;
+    return (await o.api.fleet(
+      o.signIn,
+      op,
+      {
+        project: o.project,
+        input: { ...input, ...(coordinatorName === undefined ? {} : { coordinatorName }) },
+      },
+      CALL_TIMEOUT_MS,
+    )) as T;
+  };
   return {
     recordDeploy: (input) => call("deploy/record", input),
     deployState: (input = {}) => call("deploy/state", input),
 
+    coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
+    takeTickets: (input) => call<boolean>("coordinators/take", input),
     startJob: (input) => call<Job>("job/start", input),
     listJobs: (query) => call<Job[]>("job/list", query),
     observeJob: (input) => call<Job | null>("job/observe", input),

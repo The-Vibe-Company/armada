@@ -25,6 +25,7 @@ export const SETUP: { command: string; note: string }[] = [
 /** Every command of `armada --help`, in its order, with what it is for in a few words. */
 export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" | "you"; what: string }[] = [
   { name: "deploy", role: "coordinator", what: "Watch merged deploys, check health and pause on failure" },
+  { name: "coordinator", role: "coordinator", what: "Choose a named role, list coordinators and take over tickets" },
   { name: "reserve", role: "worker", what: "Reserve a shared name or number for your ticket." },
   { name: "unreserve", role: "worker", what: "Free your ticket's open shared resources." },
   { name: "ci", role: "both", what: "Explain failing tests, first errors and runner problems" },
