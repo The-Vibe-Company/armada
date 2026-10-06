@@ -237,6 +237,12 @@ export async function measureInteractions(base: string, cookie: string, slowdown
           },
         ),
       });
+      // Without ARMADA_DASHBOARD_AUTHOR or an account the request needs a name: give one, as the owner would once.
+      const name = page.locator('input[name="author"]:visible');
+      if (await name.count()) {
+        await name.fill("Perf");
+        await name.blur();
+      }
       out.push({
         name: "Approve with A on the Validations page",
         ms: await measure(page, async () => {

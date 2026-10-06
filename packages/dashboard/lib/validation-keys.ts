@@ -68,7 +68,7 @@ export function validationKey(press: KeyPress, state: DecideState): KeyAction | 
 export function nextOpen(
   pending: readonly Pick<OwnerValidation, "id">[],
   current: number,
-  sent: ReadonlySet<number>,
+  sent: { has: (id: number) => boolean },
 ): number | null {
   const left = pending.filter((v) => v.id !== current && !sent.has(v.id));
   const at = pending.findIndex((v) => v.id === current);

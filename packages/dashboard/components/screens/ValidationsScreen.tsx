@@ -22,7 +22,7 @@ import type { ActionContext } from "../Actions";
 import { Alert } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { RelativeTime } from "../ui";
-import { type DecideKeys, VALIDATION_COLOR, ValidationDetail, validationTitle } from "./ValidationCard";
+import { type DecideKeys, type Sent, VALIDATION_COLOR, ValidationDetail, validationTitle } from "./ValidationCard";
 
 const MINUTE = 60_000;
 
@@ -32,7 +32,10 @@ const MINUTE = 60_000;
  * the overview shows them decided, so a key never decides one twice, and the
  * last one said for a while.
  */
-const sentHere: { ids: Set<number>; last: { ticket: string; at: number } | null } = { ids: new Set(), last: null };
+const sentHere: { sent: Map<number, Sent>; last: { ticket: string; at: number } | null } = {
+  sent: new Map(),
+  last: null,
+};
 const SAID_MS = 20_000;
 
 function useActionContext(): ActionContext {
@@ -68,8 +71,12 @@ function Validations({ chosen }: { chosen: number | null }) {
   const names = useMemo(() => new Map(overview.projects.map((p) => [p.slug, p.name])), [overview]);
   const split = useMemo(() => splitValidations(overview.validations ?? []), [overview]);
   const [, sentOne] = useState(0);
-  const pending = split.pending.filter((v) => !sentHere.ids.has(v.id));
-  const said = sentHere.last && now - sentHere.last.at < SAID_MS ? sentHere.last.ticket : null;
+  const pending = split.pending.filter((v) => !sentHere.sent.has(v.id));
+  // Said after the first paint, so a screen reader hears it on the screen the next one opened on.
+  const [said, setSaid] = useState<string | null>(null);
+  useEffect(() => {
+    setSaid(sentHere.last && now - sentHere.last.at < SAID_MS ? sentHere.last.ticket : null);
+  }, [now]);
   const { decided } = split;
   const selected =
     chosen === null ? (pending[0] ?? null) : ([...split.pending, ...decided].find((v) => v.id === chosen) ?? null);
@@ -88,14 +95,26 @@ function Validations({ chosen }: { chosen: number | null }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  // Once recorded, the next waiting one opens; none left, the list says so.
-  const latest = useRef(split.pending);
-  latest.current = split.pending;
-  const advance = (id: number, ticket: string) => {
-    sentHere.ids.add(id);
+  // Once recorded, the next waiting one opens; none left, the list says so. Not
+  // when the owner moved on while it was sent: the screen left, or shows another.
+  const latest = useRef({ pending: split.pending, shown: selected?.id ?? null, mounted: false });
+  latest.current.pending = split.pending;
+  latest.current.shown = selected?.id ?? null;
+  useEffect(() => {
+    const here = latest.current;
+    here.mounted = true;
+    return () => {
+      here.mounted = false;
+    };
+  }, []);
+  const advance = (id: number, ticket: string, sent: Sent) => {
+    sentHere.sent.set(id, sent);
     sentHere.last = { ticket, at: Date.now() };
+    const { pending: waiting, shown, mounted } = latest.current;
+    if (!mounted) return;
     sentOne((n) => n + 1);
-    const next = nextOpen(latest.current, id, sentHere.ids);
+    if (shown !== id) return;
+    const next = nextOpen(waiting, id, sentHere.sent);
     router.push(next === null ? paths.validations : paths.validation(next));
   };
   const row = (v: OwnerValidation) => {
@@ -182,7 +201,8 @@ function Validations({ chosen }: { chosen: number | null }) {
             v={selected}
             projectName={names.get(selected.project) ?? selected.project}
             keys={decide}
-            onDone={() => advance(selected.id, selected.ticket)}
+            onDone={(sent) => advance(selected.id, selected.ticket, sent)}
+            sentBefore={selected.decision ? null : (sentHere.sent.get(selected.id) ?? null)}
           />
         ) : (
           <p className="pg-none">{chosen === null ? s.noPending : s.notFound}</p>

@@ -47,7 +47,8 @@ const CI_COLOR: Record<CiState, string> = {
 export const validationTitle = (v: OwnerValidation) =>
   (v.kind === "merge" ? v.title : null) ?? v.what.split("\n").find((l) => l.trim()) ?? v.ticket;
 
-interface Sent {
+/** A decision as shown once sent, before the overview has it. */
+export interface Sent {
   body: string;
   author: string | null;
   at: string;
@@ -59,6 +60,7 @@ export function ValidationDetail({
   projectName,
   keys,
   onDone,
+  sentBefore,
 }: {
   ctx: ActionContext;
   v: OwnerValidation;
@@ -66,7 +68,9 @@ export function ValidationDetail({
   /** The page's keys reach the buttons through this (the Validations page). */
   keys?: Ref<DecideKeys>;
   /** Once the decision is recorded: the page opens the next one. */
-  onDone?: () => void;
+  onDone?: (sent: Sent) => void;
+  /** Sent from this tab on an earlier visit, not in the overview yet: shown as sent. */
+  sentBefore?: Sent | null;
 }) {
   const { t, now } = ctx;
   const s = t.validations;
@@ -145,7 +149,7 @@ export function ValidationDetail({
           {v.decision.note && <span className="vd-outcome-note">« {v.decision.note} »</span>}
         </div>
       ) : (
-        <Decide ctx={ctx} v={v} projectName={projectName} note keys={keys} onDone={onDone} />
+        <Decide ctx={ctx} v={v} projectName={projectName} note keys={keys} onDone={onDone} sentBefore={sentBefore} />
       )}
     </article>
   );
@@ -371,6 +375,7 @@ export function Decide({
   note = false,
   keys,
   onDone,
+  sentBefore = null,
   children,
 }: {
   ctx: ActionContext;
@@ -382,8 +387,10 @@ export function Decide({
   note?: boolean;
   /** The page's keys (the Validations page, with the note): A, C, 1–6, then ⌘↵ or Esc in the note. */
   keys?: Ref<DecideKeys>;
-  /** Called once the decision is recorded. */
-  onDone?: () => void;
+  /** Called once the decision is recorded, with what was sent. */
+  onDone?: (sent: Sent) => void;
+  /** Already sent from this tab: shown as sent, no buttons. */
+  sentBefore?: Sent | null;
   /** More buttons, after the decision's (the overview's pane: the validation's page). */
   children?: ReactNode;
 }) {
@@ -394,7 +401,8 @@ export function Decide({
   const [missing, setMissing] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
   const form = useRef<HTMLFormElement>(null);
-  const [sent, markSent, unmark] = useSent<Sent>(ctx.version);
+  const [justSent, markSent, unmark] = useSent<Sent>(ctx.version);
+  const sent = justSent ?? sentBefore;
   const shown = useRef<Sent | null>(null);
   const req = useRequest(decideValidation, {
     start: (form) => {
@@ -416,7 +424,7 @@ export function Decide({
       if (shown.current) markSent(shown.current);
       setDraft("");
       ctx.refresh();
-      onDone?.();
+      if (shown.current) onDone?.(shown.current);
     },
     undo: () => unmark(),
   });

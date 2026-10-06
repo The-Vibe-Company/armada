@@ -32,7 +32,7 @@ bun run build
 bun run perf bundles                      # first-load JS per route against the baselines
 ARMADA_DEMO_DATABASE_URL=postgres://localhost/fleet bun run demo:seed fleet
 ARMADA_DEMO_DATABASE_URL=postgres://localhost/large bun run demo:seed large
-export ARMADA_DASHBOARD_PASSWORD=local-check
+export ARMADA_DASHBOARD_PASSWORD=local-check ARMADA_DASHBOARD_AUTHOR=local-check   # requests are signed by this name, as in CI
 ARMADA_DATABASE_URL=postgres://localhost/fleet ARMADA_DASHBOARD_DEMO=fleet bunx next start --port 4822 &
 ARMADA_DATABASE_URL=postgres://localhost/large ARMADA_DASHBOARD_DEMO=large bunx next start --port 4823 &
 bun run perf inp http://localhost:4823    # seed `large` again before another run: it answers a question
