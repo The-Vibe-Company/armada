@@ -94,6 +94,8 @@ export interface WatchOptions {
   coordinator: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  launchGraceMinutes?: number;
+  ciWaitMinutes?: number;
   quietAfterMinutes?: number;
   /** `policy.not_started_minutes`. */
   notStartedMinutes?: number;
@@ -165,6 +167,8 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     coordinatorName: o.coordinatorName,
     scope: o.scope,
     silentAfterMinutes: o.silentAfterMinutes,
+    launchGraceMinutes: o.launchGraceMinutes,
+    ciWaitMinutes: o.ciWaitMinutes,
     quietAfterMinutes: o.quietAfterMinutes,
     ...(o.facts ? { facts: o.facts } : {}),
     ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
@@ -322,6 +326,8 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
     coordinatorName: o.coordinatorName,
     scope: o.scope,
     silentAfterMinutes: o.silentAfterMinutes,
+    launchGraceMinutes: o.launchGraceMinutes,
+    ciWaitMinutes: o.ciWaitMinutes,
     quietAfterMinutes: o.quietAfterMinutes,
     notStartedMinutes: o.notStartedMinutes,
     facts: o.facts,

@@ -65,6 +65,8 @@ describe("armada.toml", () => {
         attachmentsProjectMb: 200,
         attachmentsRetentionDays: 30,
         silentAfterMinutes: 15,
+        launchGraceMinutes: 15,
+        ciWaitMinutes: 45,
         quietAfterMinutes: 45,
         coordinatorMinutes: 10,
         notStartedMinutes: 10,
@@ -482,6 +484,20 @@ test("tracker lint is opt-in with configurable defaults and rejects invalid rule
   ])
     expect(problemsOf(`${DEMO_TOML}\n[tracker.lint]\n${field}`).join(" ")).toContain("tracker.lint");
   expect(problemsOf(DEMO_TOML.replace("[tracker]", "[tracker]\nlint = false")).join(" ")).toContain("tracker.lint");
+});
+
+test("silence allowances inherit the configured silence and validate explicit CI and grace values", () => {
+  const source = `${DEMO_TOML}\n[policy]\nsilence_minutes = 20`;
+  expect(parseConfig(source).policy).toMatchObject({
+    silentAfterMinutes: 20,
+    launchGraceMinutes: 20,
+    ciWaitMinutes: 45,
+  });
+  expect(
+    parseConfig(source.replace("[policy]", "[policy]\nlaunch_grace_minutes = 0\nci_wait_minutes = 70")).policy,
+  ).toMatchObject({ launchGraceMinutes: 0, ciWaitMinutes: 70 });
+  for (const setting of ["launch_grace_minutes = -1", "ci_wait_minutes = 0", 'ci_wait_minutes = "later"'])
+    expect(() => parseConfig(source.replace("[policy]", `[policy]\n${setting}`))).toThrow();
 });
 
 test("git signing defaults to inherit, accepts off, rejects invalid values and typos", () => {

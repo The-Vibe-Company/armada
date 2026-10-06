@@ -85,6 +85,8 @@ export interface ArmadaConfig {
   policy: {
     /** A working agent with no heartbeat for longer than this shows as silent; old clients use reports. */
     silentAfterMinutes: number;
+    launchGraceMinutes: number;
+    ciWaitMinutes: number;
     quietAfterMinutes: number;
     /** An open item older than this in the coordinator's inbox shows "waiting for the coordinator" on the dashboard. */
     coordinatorMinutes: number;
@@ -225,6 +227,8 @@ export const CONFIG_DEFAULTS = {
   runtimeGroup: "Agent runtime",
   runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
   silentAfterMinutes: 15,
+  launchGraceMinutes: 15,
+  ciWaitMinutes: 45,
   quietAfterMinutes: 45,
   coordinatorMinutes: 10,
   notStartedMinutes: 10,
@@ -392,6 +396,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       policyT,
       [
         "silence_minutes",
+        "launch_grace_minutes",
+        "ci_wait_minutes",
         "quiet_minutes",
         "silent_after_minutes",
         "coordinator_minutes",
@@ -679,6 +685,15 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     if (typeof v === "number" && Number.isFinite(v) && v > 0) silentAfterMinutes = v;
     else problems.push(`"policy.${silenceKey}" must be a positive number`);
   }
+  const allowance = (key: string, fallback: number, zero = false): number => {
+    const value = policyT[key];
+    if (value === undefined) return fallback;
+    if (typeof value === "number" && Number.isFinite(value) && (zero ? value >= 0 : value > 0)) return value;
+    problems.push(`"policy.${key}" must be a ${zero ? "nonnegative" : "positive"} number`);
+    return fallback;
+  };
+  const launchGraceMinutes = allowance("launch_grace_minutes", silentAfterMinutes, true);
+  const ciWaitMinutes = allowance("ci_wait_minutes", CONFIG_DEFAULTS.ciWaitMinutes);
   let coordinatorMinutes: number = CONFIG_DEFAULTS.coordinatorMinutes;
   let quietAfterMinutes: number = CONFIG_DEFAULTS.quietAfterMinutes;
   if (policyT.quiet_minutes !== undefined) {
@@ -871,6 +886,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,
+      launchGraceMinutes,
+      ciWaitMinutes,
       quietAfterMinutes,
       coordinatorMinutes,
       notStartedMinutes,
@@ -949,7 +966,9 @@ sign = "inherit"        # "off" disables commit signing only in new Herdr worktr
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
 
 [policy]
-silence_minutes = 15     # a worker with no heartbeat for longer than this shows as silent
+silence_minutes = 15     # silence since the newest report, heartbeat or answer
+launch_grace_minutes = 15 # extra allowance before the first report or heartbeat; defaults to silence_minutes
+ci_wait_minutes = 45     # shipping --stage ci has this silence allowance
 quiet_minutes = 45       # alive but without a report: a coordinator-only note
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
 # not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started

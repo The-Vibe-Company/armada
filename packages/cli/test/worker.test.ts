@@ -493,7 +493,7 @@ describe("armada ask, inbox and answer", () => {
         runtime: "Conductor",
         handle,
         branch: null,
-        at: new Date(NOW.getTime() - 30 * 60_000),
+        at: new Date(NOW.getTime() - 40 * 60_000),
       });
 
     expect(await run(["inbox", "--json"], cli.io)).toBe(0);
