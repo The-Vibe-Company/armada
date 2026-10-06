@@ -222,6 +222,7 @@ export interface SessionRecord extends RuntimeHandle {
  * (merges, or relays it to the worker) and then resolves.
  */
 export type InboxKind =
+  | "hold"
   | "queue-refused"
   | "question"
   | "plan"
@@ -264,6 +265,44 @@ export interface NewRequest {
   pr?: number | null;
   at: Date;
 }
+
+export const MERGE_LEASE = "merge";
+
+export const HOLD_KINDS = ["manual", "deploy", "main-red"] as const;
+export type HoldKind = (typeof HOLD_KINDS)[number];
+
+/** A standing merge pause: clearing it is an explicit, recorded decision. */
+export interface MergeHold {
+  id: number;
+  project: string;
+  kind: HoldKind;
+  ref: string | null;
+  reason: string;
+  openedBy: string | null;
+  openedAt: string;
+  clearedAt: string | null;
+  clearedBy: string | null;
+  clearReason: string | null;
+}
+export interface OpenHold {
+  kind: HoldKind;
+  ref?: string | null;
+  reason: string;
+}
+export interface ClearHoldResult {
+  hold: MergeHold;
+  cleared: boolean;
+}
+
+/** The stored inbox item names the hold id, which is distinct from its inbox id. */
+export const holdBody = (hold: MergeHold) =>
+  `Merges paused: ${hold.reason} (${hold.kind}, hold #${hold.id}). Resume: armada hold clear ${hold.id} --reason "<why>"; merge a fix with --through-hold "<why>".`;
+
+/** Used by both the merge command and server lease gate, including older coordinators. */
+export const holdsPaused = (holds: readonly MergeHold[], now: Date) =>
+  `merges paused: ${holds.map((h) => `${h.kind}: ${h.reason} (hold #${h.id}, ${Math.max(0, Math.floor((now.getTime() - Date.parse(h.openedAt)) / 60_000))} min old)`).join("; ")}; nothing was merged`;
+export const holdsNext = (holds: readonly MergeHold[], pr: number | string = "<pr>") =>
+  `armada hold clear ${holds[0]?.id} --reason "<why>" to resume, or armada merge ${pr} --through-hold "<why this fixes the pause>"`;
 
 export interface Lease {
   project: string;
@@ -342,6 +381,16 @@ export interface ReserveRecord {
 export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
 
 export interface FleetStore {
+  openHold(input: OpenHold & { project: string; author: string | null; at: Date }): Promise<MergeHold>;
+  clearHold(input: {
+    project: string;
+    id: number;
+    reason: string;
+    author: string | null;
+    at: Date;
+  }): Promise<ClearHoldResult | null>;
+  openHolds(project: string): Promise<MergeHold[]>;
+
   digestRecords(
     project: string,
     since: string | null,
@@ -1345,6 +1394,10 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  holds(): Promise<MergeHold[]>;
+  openHold(input: OpenHold): Promise<MergeHold>;
+  clearHold(input: { id: number; reason: string }): Promise<ClearHoldResult | null>;
+
   digest(request: DigestRequest): Promise<DigestResult>;
   sendDigest(request: DigestRequest): Promise<DigestResult>;
   reserve(input: ReserveRecord): Promise<ReserveResult>;
@@ -1406,7 +1459,7 @@ export interface Fleet {
   queueNext(q: { holder: string }): Promise<QueueNext>;
   queueFinish(q: QueueFinish): Promise<boolean>;
   queueRemove(q: { pr: number }): Promise<boolean>;
-  acquireLease(l: { name: string; holder: string; ttlMs: number }): Promise<LeaseResult>;
-  renewLease(l: { name: string; holder: string; ttlMs: number }): Promise<boolean>;
+  acquireLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<LeaseResult>;
+  renewLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<boolean>;
   releaseLease(l: { name: string; holder: string }): Promise<void>;
 }
