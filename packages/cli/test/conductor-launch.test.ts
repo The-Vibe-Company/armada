@@ -317,7 +317,7 @@ test("notes and profile refusals mint no token", async () => {
 test("known create failure revokes the exact launch and never leaks native output", async () => {
   const f = await fixture();
   f.set({ fail: 4 });
-  await expect(f.launch()).rejects.toThrow("Conductor is unavailable");
+  await expect(f.launch()).rejects.toThrow("Conductor server error during workspace create (exit 4)");
   expect(f.revoked).toEqual(["wk-1"]);
   expect(f.bindings).toEqual([]);
   expect(f.output()).toContain("revoked the pending launch");

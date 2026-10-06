@@ -135,7 +135,14 @@ async function fixture(runtime: RuntimeName = "conductor") {
           ...(!missingAcknowledgement ? { initialMessage: { messageId: "msg-first", state: "queued" } } : {}),
         });
       if (a[0] === "--version") return { code: 0, stdout: "0.90.1", stderr: "" };
-      if (a[0] === "auth") return json({ signedIn: true });
+      // Conductor 0.90.1 ignores --json here. Outside a workspace its table can
+      // contain invalid UTF-8, decoded by Node to the replacement character.
+      if (a[0] === "auth")
+        return {
+          code: 0,
+          stdout: `Email         worker@example.test\nUser ID       synthetic-user\nWorkspace ID  ${Buffer.from([0xff]).toString("utf8")}\n`,
+          stderr: "",
+        };
       if (a[0] === "model")
         return json({
           agents: [{ agent: "codex", models: ["synthetic-model"], efforts: ["high"], fastModeModels: [] }],
@@ -392,6 +399,53 @@ test("Conductor preflight, launch, transcript and failures keep secret text off 
   expect(await codeOf(f.adapter.launch(spec))).toBe("unknown-outcome");
   expect(f.output.join("")).not.toContain(canary);
 });
+
+test.each(["peek", "deliver", "archive"] as const)(
+  "Conductor %s identifies the failed native operation without exposing its output",
+  async (operation) => {
+    const f = await fixture();
+    f.set({ state: "idle" });
+    expect((await f.adapter.observe(f.target)).state).toBe("idle");
+    let target = f.target;
+    if (operation === "archive") {
+      await f.store.releaseRuntimeHandle(config.project.slug, target.ticket, NOW);
+      const ended = await f.fleet.runtimeHandle(target.ticket);
+      if (!ended) throw new Error("missing ended claim");
+      target = claimRef(ended);
+      expect(target.releasedAt).toBe(NOW.toISOString());
+    }
+    const native = f.io.exec;
+    if (!native) throw new Error("missing fake exec");
+    const failedOperation =
+      operation === "peek" ? "workspace status" : operation === "deliver" ? "message create" : "workspace archive";
+    let attempted = false;
+    f.io.exec = async (command, args, options) => {
+      if (args.slice(1, 3).join(" ") === failedOperation) {
+        attempted = true;
+        return { code: 4, stdout: canary, stderr: "private native error" };
+      }
+      return native(command, args, options);
+    };
+    const action =
+      operation === "peek"
+        ? f.adapter.peek(target, { actions: 1, cursor: null })
+        : guarded<unknown>(f.fleet, target, operation === "archive" ? "ended" : "active", () =>
+            operation === "deliver"
+              ? f.adapter.deliver(target, { text: "resume", key: "msg-key", kind: "answer" })
+              : f.adapter.archive(target, { reason: "merged", whenWorking: "refuse", waitMs: 0 }),
+          );
+    try {
+      await action;
+      throw new Error("expected native failure");
+    } catch (error) {
+      if (!(error instanceof RuntimeError)) throw error;
+      expect(attempted).toBe(true);
+      expect(error.code).toBe("unavailable");
+      expect(error.message).toBe(`Conductor server error during ${failedOperation} (exit 4)`);
+      expect(error.message + error.next).not.toMatch(/CANARY|private native error/);
+    }
+  },
+);
 
 test("Conductor refuses active archive, verifies workspace ownership, waits boundedly and stops only ended generations", async () => {
   const f = await fixture();

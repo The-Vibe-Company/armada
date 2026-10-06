@@ -182,7 +182,7 @@ export class ConductorAdapter implements RuntimeAdapter {
           code,
           "conductor model",
         );
-      if (code === "unavailable" && !mutation)
+      if (code === "unavailable")
         throw new RuntimeError(
           `Conductor ${r.code === 4 ? "server error" : "CLI failed"} during ${operation} (exit ${r.code})`,
           code,
@@ -214,6 +214,8 @@ export class ConductorAdapter implements RuntimeAdapter {
       const version = rawVersion.match(/^(\d+\.\d+\.\d+)(?:[-+][\w.-]+)?$/)?.[1];
       if (!version) throw invalid();
       checks.push({ level: "ok", message: `Conductor ${version} is available`, fix: null });
+      // Conductor 0.90.1 prints a human table even with --json (and may emit
+      // invalid UTF-8 outside a workspace). Only its exit code proves sign-in.
       await this.exec(["auth", "whoami"]);
       checks.push({ level: "ok", message: "Conductor is signed in", fix: null });
       const catalog = await this.call(["model"]);
