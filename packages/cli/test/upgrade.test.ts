@@ -34,6 +34,7 @@ function terminal(o: { missing?: number; fail?: string; installed?: string; setu
                     fix: o.setup ? "run armada init" : null,
                   },
                   { id: "github-rules", level: "warning", fix: "change branch rules" },
+                  { id: "optional:deploy", level: "info", message: "[deploy] optional", fix: null },
                 ],
               }))
             : "",

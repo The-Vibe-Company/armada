@@ -22,9 +22,11 @@ import {
   fetchBranchRules,
   fetchRepository,
   GithubError,
+  type InfoCheck,
   installCommand,
   LINEAR_KEY,
   mergeCompatibility,
+  optionalFeatures,
   parseConfig,
   projectOf,
   RETIRED_VARIABLES,
@@ -54,7 +56,7 @@ export interface DoctorReport {
   schemaVersion: 1;
   root: string;
   armadaVersion: string;
-  checks: Check[];
+  checks: (Check | InfoCheck)[];
   errors: number;
   warnings: number;
 }
@@ -635,6 +637,7 @@ export async function buildDoctor(
   const signing = await readSigning(io, root);
   const checks = [
     ...(await checkRepository(fsRepoView(root), armadaVersion)),
+    ...(config ? optionalFeatures(config) : []),
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
     ...keyFileChecks(machine, credentials),

@@ -65,6 +65,49 @@ const bad = (id: string, level: Exclude<CheckLevel, "ok">, message: string, fix:
   fix,
 });
 
+export type InfoCheck = Omit<Check, "level"> & { level: "info" };
+
+/** Optional adoption hints only: parsed defaults do not tell us which keys were explicitly written. */
+export function optionalFeatures(config: ArmadaConfig): InfoCheck[] {
+  const checks: InfoCheck[] = [];
+  const info = (id: string, message: string) =>
+    checks.push({ id: `optional:${id}`, level: "info", message, fix: null });
+  if (!config.deploy?.targets.length)
+    info(
+      "deploy",
+      "[deploy] optional: add [[deploy.target]] with a live source and smoke command to check deployments after merges",
+    );
+  if (!config.ci.knownFailures.length)
+    info(
+      "flakes",
+      "[ci] optional: add [[ci.known_failure]] with check, pattern and root-cause ticket to rerun known flakes once",
+    );
+  if (!config.acceptance.length)
+    info("acceptance", "[[acceptance]] optional: declare live build or preview checks required before hand-back");
+  if (!Object.keys(config.jobs).length)
+    info("jobs", "[jobs.<name>] optional: declare start, status and stop commands for long runs on a surviving runner");
+  if (!config.policy.validations.length && !config.policy.mergeApproval)
+    info(
+      "policy",
+      "[policy] optional: add merge_approval or [[policy.validation]] for owner checks; tune plans, plan labels, silence_minutes and launch_grace_minutes here",
+    );
+  if (config.merge.notifyPaths.length === 1 && config.merge.notifyPaths[0] === ".github/workflows/**")
+    info(
+      "merge",
+      "[merge] uses default notify_paths: optionally add shared build or schema paths to notify affected workers after merges",
+    );
+  // These settings live outside TOML: discovery pointers, never a claim that they are missing.
+  info(
+    "notifications",
+    "Organization > Notifications: check owner alerts, quiet hours, time zone and digest times/days; [tracker] language supplies the initial language",
+  );
+  info(
+    "coordinators",
+    "Coordinator roles: use armada coordinator use <name> or ARMADA_COORDINATOR; roles are not an armada.toml section",
+  );
+  return checks;
+}
+
 /** Effective Git values, read by the CLI; key contents never enter the classification. */
 export type SigningConfig = Partial<
   Record<

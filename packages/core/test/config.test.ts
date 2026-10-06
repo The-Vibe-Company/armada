@@ -272,6 +272,19 @@ describe("armada.toml", () => {
     expect(text).toContain("# [herdr]");
     expect(text).toContain("# [herdr.profiles.claude]");
     expect(text).toContain('# permissions = "ask"');
+    // A fresh project can enable these examples without fixing unknown keys or competing live sources.
+    // Double comments mark alternatives; every single-comment key is accepted by the parser.
+    const examples = text.replace(/^# (?=\[|[a-z_]+ =)(.*)$/gm, "$1");
+    const enabled = parseConfig(examples);
+    expect(enabled.deploy?.targets[0]).toMatchObject({
+      githubEnvironment: "production",
+      liveShaCommand: null,
+      smoke: expect.any(String),
+    });
+    expect(enabled.ci.knownFailures).toHaveLength(1);
+    expect(enabled.acceptance).toHaveLength(1);
+    expect(enabled.jobs.eval?.start).toBe("./scripts/start-eval.sh");
+    expect(enabled.policy.validations).toHaveLength(1);
     const { conductor, ...rest } = parseConfig(text);
     const { conductor: _none, ...demo } = parseConfig(DEMO_TOML);
     expect(rest).toEqual(demo);
