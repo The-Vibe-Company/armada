@@ -17,6 +17,7 @@ export * from "./linear.ts";
 export * from "./live.ts";
 export * from "./model.ts";
 export * from "./npm.ts";
+export * from "./overlap.ts";
 export * from "./overview.ts";
 export * from "./projects.ts";
 export * from "./request-kinds.ts";
