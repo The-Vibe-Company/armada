@@ -20,7 +20,7 @@ import { type ActionContext, splitQuestion } from "../Actions";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { DecisionActions } from "./DecisionCard";
 import { JobStrip } from "./JobStrip";
-import { itemColor, itemHref, StepBar } from "./OverviewScreen";
+import { itemColor, itemHref, StepBar } from "./OverviewRow";
 import { useActivity } from "./use-activity";
 import { Decide } from "./ValidationCard";
 
