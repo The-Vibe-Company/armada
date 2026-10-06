@@ -16,7 +16,8 @@
     "fonts": "bun scripts/fonts.ts",
     "landing": "bun scripts/landing.ts",
     "perf": "bun scripts/perf.ts",
-    "a11y": "bun scripts/a11y.ts"
+    "a11y": "bun scripts/a11y.ts",
+    "test:browser:install": "playwright-core install --only-shell chromium"
   },
   "dependencies": {
     "@armada/core": "workspace:*",

@@ -15,6 +15,7 @@ Armada runs a fleet of coding agents on one project: Linear holds the plan and p
 ## Commands
 
 - `bun install`
+- `bun run test:browser:install`: install the Chromium headless shell pinned by Playwright before testing (CI adds `--with-deps` for Ubuntu).
 - `bun run verify`: lint (Biome), typecheck (`tsc`) and tests (`bun test`). CI runs the same on every pull request.
 - `bun run format`: apply Biome formatting and safe fixes.
 - `cd packages/cli && npm pack`: build `dist/armada.js` (Bun bundles `core` for Node) and pack the npm tarball. CI installs that tarball and runs it on every pull request.
