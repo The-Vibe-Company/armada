@@ -839,11 +839,20 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
     await store.queueFinish({ project, id: first.id, holder: "b", outcome: "merged", detail: null, at: at(1) }),
   ).toBe(false);
   // A lost session's successor resumes its unfinished entry before taking another.
-  await store.acquireLease({ project, name: "merge-queue", holder: "b", ttlMs: 60_000, at: at(3) });
+  await store.acquireLease({ project, name: "merge-queue", holder: "b", ttlMs: 600_000, at: at(3) });
   expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: { id: first.id } });
   expect(
     await store.queueFinish({ project, id: first.id, holder: "a", outcome: "merged", detail: null, at: at(3) }),
   ).toBe(false);
+  expect(
+    await store.queueFinish({ project, id: first.id, holder: "b", outcome: "paused", detail: "paused", at: at(3) }),
+  ).toBe(true);
+  expect((await store.queueList(project, { since: at(0) }))[0]).toMatchObject({
+    state: "queued",
+    attempts: 0,
+    finishedAt: null,
+  });
+  expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: { id: first.id } });
   expect(
     await store.queueFinish({
       project,
@@ -860,7 +869,11 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
     attempts: 1,
     detail: "CI running",
   });
-  expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: { pr: 15 } });
+  expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: null });
+  expect(await store.queueNext({ project, holder: "b", at: at(5) })).toMatchObject({ entry: { pr: 12 } });
+  await store.queueFinish({ project, id: first.id, holder: "b", outcome: "retry", detail: null, at: at(5) });
+  expect(await store.queueRemove({ project, pr: 12, at: at(5) })).toBe(true);
+  expect(await store.queueNext({ project, holder: "b", at: at(5) })).toMatchObject({ entry: { pr: 15 } });
   const second = (await store.queueList(project, { since: at(0) }))[1]!;
   expect(
     await store.queueFinish({
@@ -895,8 +908,8 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
   expect(await store.openInboxItems({ project, recipient: "coordinator" })).toMatchObject([
     { kind: "queue-refused", ticket: "WID-12", body: expect.stringContaining("head moved") },
   ]);
-  expect(await store.queueRemove({ project, pr: 12, at: at(3) })).toBe(true);
-  expect(await store.queueList(project, { since: at(4) })).toEqual([]);
+  expect(await store.queueRemove({ project, pr: 12, at: at(3) })).toBe(false);
+  expect(await store.queueList(project, { since: at(6) })).toEqual([]);
   expect(await store.queueAdd({ ...input, at: at(4) })).toMatchObject({ position: 1 });
 });
 
