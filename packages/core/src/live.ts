@@ -18,6 +18,7 @@ import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } 
 export { freshRuntimeState } from "./fleet.ts";
 
 import { attachPullRequests } from "./github.ts";
+import type { Job, JobObservation, JobQuery, JobStart } from "./jobs.ts";
 import type { QueueAdded, QueueEntry, QueueFinish, QueueInput, QueueNext } from "./merge-queue.ts";
 import { buildModel, isClosed } from "./model.ts";
 import { type OverlapReading, type OverlapWorker, overlapLines, overlaps } from "./overlap.ts";
@@ -392,6 +393,12 @@ export type ReserveResult = { reserved: true; reservation: Reservation } | { res
 export interface FleetStore {
   recordDeploy(input: DeployInput & { project: string; at: Date }): Promise<DeployRecord>;
   deployState(project: string, query: DeployQuery): Promise<DeployRecord[]>;
+
+  startJob(input: JobStart & { project: string; startedBy: string | null; at: Date }): Promise<Job>;
+  getJob(project: string, id: number): Promise<Job | null>;
+  listJobs(project: string, query: JobQuery): Promise<Job[]>;
+  /** Only open jobs change; terminal jobs cannot be revived by a delayed observation. */
+  observeJob(input: JobObservation & { project: string; at: Date }): Promise<Job | null>;
   openHold(input: OpenHold & { project: string; author: string | null; at: Date }): Promise<MergeHold>;
   clearHold(input: {
     project: string;
@@ -1435,6 +1442,10 @@ export async function serveInbox(
 export interface Fleet {
   recordDeploy(input: DeployInput): Promise<DeployRecord>;
   deployState(query?: DeployQuery): Promise<DeployRecord[]>;
+
+  startJob(input: JobStart): Promise<Job>;
+  listJobs(query: JobQuery): Promise<Job[]>;
+  observeJob(input: JobObservation): Promise<Job | null>;
   holds(): Promise<MergeHold[]>;
   openHold(input: OpenHold): Promise<MergeHold>;
   clearHold(input: { id: number; reason: string }): Promise<ClearHoldResult | null>;

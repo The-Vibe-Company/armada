@@ -169,7 +169,7 @@ export async function deploy(
       cwd,
       timeoutMs: Math.max(1, Math.min(remainingMs, 60_000)),
       maxOutputBytes: 64 * 1024,
-      killTree: true,
+      processGroup: true,
       env: { ...io.env, ARMADA_DEPLOY_SHA: liveSha, ARMADA_DEPLOY_TARGET: target.name },
     });
     return {

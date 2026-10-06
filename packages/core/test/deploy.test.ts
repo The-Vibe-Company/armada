@@ -126,6 +126,9 @@ test("deploy targets validate live source, unique names, range and unknown keys"
     smoke: null,
     timeoutMinutes: 20,
   });
+  const withJobs = parseConfig(`${text}\n[jobs.eval]\nstart = "dispatch"\nstop = "cancel"`);
+  expect(withJobs.deploy?.targets[0]?.name).toBe("api");
+  expect(withJobs.jobs.eval?.start).toBe("dispatch");
   for (const extra of [
     'live_sha_command = "version"',
     "timeout_minutes = 0",

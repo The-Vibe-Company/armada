@@ -17,6 +17,7 @@ export * from "./heartbeat.ts";
 export * from "./herdr-profile.ts";
 export * from "./inbox.ts";
 export * from "./insights.ts";
+export * from "./jobs.ts";
 export * from "./labels.ts";
 export * from "./linear.ts";
 export * from "./linear-write.ts";

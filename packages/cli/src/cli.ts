@@ -31,6 +31,7 @@ import { hold } from "./hold.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
+import { jobCommand } from "./job.ts";
 import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
@@ -76,6 +77,16 @@ const COMMAND_HELP: Record<string, string> = {
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
                     or HTTPS links. Prints a dashboard URL for each attachment.
                     --for keeps a free reference for an owner validation item
+`,
+  job: `  job start <name> [--ticket <id>]
+  job status [<id>]
+  job stop <id>
+  job list [--ticket <id>]
+  job recover <id> [--ref <reference>] [--state <state>]
+                    Track long jobs on the project's own runner through [jobs.<name>].
+                    start reserves an id, dispatches within 2 minutes and saves the runner
+                    reference. status polls open jobs; list reads stored progress only.
+                    Workers can only access their own ticket's jobs. Needs Armada sign-in
 `,
   heartbeat: `  heartbeat --every 5m --parent <agent-pid> [--background] [--ticket <id>] [--handle <id>]
                     Keep the current worker session alive through Armada only, with no
@@ -336,6 +347,7 @@ const COMMAND_HELP: Record<string, string> = {
 
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set([
+  "job",
   "report",
   "release",
   "ask",
@@ -347,6 +359,7 @@ const TICKET_OPTION = new Set([
   "unreserve",
 ]);
 const CONFIG_OPTION = new Set([
+  "job",
   "peek",
   "deploy",
   "reserve",
@@ -434,7 +447,11 @@ export function commandHelp(command: string): string | null {
     CONFIG_OPTION.has(command)
       ? "  --config <path>   Use this armada.toml (overrides ARMADA_CONFIG and --project)\n  --project <slug>  Use the checkout this machine last watched for the project\n                    Config order: --config, ARMADA_CONFIG, --project, nearest armada.toml\n"
       : "",
-    TICKET_OPTION.has(command) ? TICKET_HELP : "",
+    TICKET_OPTION.has(command)
+      ? command === "job"
+        ? "  --ticket <id>     Ticket for start/list; defaults to this worker's ticket for start\n"
+        : TICKET_HELP
+      : "",
     "  -h, --help        Show this help (`armada --help` lists every command)\n",
   ];
   return `Usage: armada ${command} [options]\n\n${block}\nOptions:\n${options.join("")}`;
@@ -457,6 +474,8 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "ref",
+  "state",
   "actions",
   "value",
   "floor",
@@ -539,6 +558,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  job: ["ticket", "ref", "state"],
   peek: ["actions"],
   deploy: ["sha", "target"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
@@ -825,6 +845,19 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         worker: { command: "attach", project: config.project.slug, ticket: () => args.rest[0]?.toUpperCase() ?? null },
       });
       return await attachCommand(io, config, credentials, args);
+    }
+    if (args.command === "job") {
+      const { path, text } = await findConfig(io, args.config, "job", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, {
+        armada: false,
+        worker: {
+          command: "job",
+          project: config.project.slug,
+          ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
+        },
+      });
+      return await jobCommand(io, config, credentials, args, path);
     }
     if (args.command === "reserve" || args.command === "unreserve") {
       const { text } = await findConfig(io, args.config, args.command, args.project);

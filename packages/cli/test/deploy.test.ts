@@ -47,6 +47,7 @@ test("watch commands are bounded, run at repo root with deploy environment, and 
     expect(options.cwd).toBe("/work/widgets");
     if (command === "git") return { code: 0, stdout: "", stderr: "" };
     expect(command).toBe("sh");
+    expect(options.processGroup).toBe(true);
     expect(options.env?.ARMADA_DEPLOY_TARGET).toBe("api");
     expect(options.timeoutMs).toBeLessThanOrEqual(60_000);
     if (args[1] === "version") return { code: 0, stdout: live, stderr: "" };
