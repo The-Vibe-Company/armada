@@ -6,11 +6,13 @@
 // own ticket. Every request names the whole project (slug, name, repository,
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
+
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { attachPullRequests } from "./github.ts";
+import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
@@ -80,10 +82,13 @@ export const WORKER_FLEET_OPS = [
   "release",
   "heartbeat",
   "validate",
+  "overlap",
+  "job/start",
+  "job/observe",
+  "job/list",
   "reserve",
   "reservations",
   "unreserve",
-  "overlap",
 ] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
@@ -153,6 +158,7 @@ const SHA = /^[0-9a-f]{7,64}$/;
 
 /** A request the server will not run as sent. */
 class Invalid extends Error {}
+class JobScopeError extends Error {}
 class Held extends Error {
   constructor(
     message: string,
@@ -327,7 +333,7 @@ export async function serveFleet(
   const at = deps.now();
   try {
     if (caller.kind === "worker") {
-      const ticket = isWorkerFleetOp(op) ? ticketOf(b) : null;
+      const ticket = op === "job/list" && b.ticket == null ? caller.ticket : isWorkerFleetOp(op) ? ticketOf(b) : null;
       if (ticket !== caller.ticket)
         return refuse(
           403,
@@ -350,6 +356,50 @@ export async function serveFleet(
           );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "job/start": {
+          const name = text(b, "name", 64);
+          if (!JOB_NAME.test(name) || name === "__proto__") throw new Invalid("name must be a configured job name");
+          return store.startJob({
+            project: slug,
+            ticket: ticketOf(b),
+            name,
+            startedBy: caller.kind === "worker" ? (caller.sessionId ?? caller.ticket) : (caller.author ?? null),
+            at,
+          });
+        }
+        case "job/list":
+          return store.listJobs(slug, {
+            ...(b.ticket == null
+              ? caller.kind === "worker"
+                ? { ticket: caller.ticket }
+                : {}
+              : { ticket: ticketOf(b) }),
+            ...(b.open === undefined ? {} : { open: bool(b, "open") }),
+            ...(b.id === undefined ? {} : { id: idOf(b, "id") }),
+          });
+        case "job/observe": {
+          const id = idOf(b, "id");
+          const ticket = ticketOf(b);
+          const job = await store.getJob(slug, id);
+          if (!job || job.ticket !== ticket) throw new JobScopeError();
+          if (!JOB_STATES.includes(b.state as JobState) || b.state === "starting")
+            throw new Invalid("unknown job observation state");
+          const ref = b.ref === undefined ? undefined : optText(b, "ref", JOB_REF_MAX);
+          if (ref !== undefined && job.ref !== null && ref !== job.ref)
+            throw new Invalid("runner reference is already recorded and cannot change");
+          const eta = optText(b, "eta", 40);
+          if (eta !== null && !Number.isFinite(Date.parse(eta))) throw new Invalid("eta must be a timestamp");
+          return store.observeJob({
+            project: slug,
+            id,
+            ticket,
+            state: b.state as Exclude<JobState, "starting">,
+            ...(ref === undefined ? {} : { ref }),
+            progress: optText(b, "progress", JOB_PROGRESS_MAX),
+            eta: eta === null ? null : new Date(eta).toISOString(),
+            at,
+          });
+        }
         case "digest":
         case "digest/send": {
           const since = optText(b, "since", 40);
@@ -876,6 +926,7 @@ export async function serveFleet(
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
+    if (err instanceof JobScopeError) return refuse(403, "job is not on this ticket and project", "armada job list");
     if (err instanceof Held) return refuse(409, err.message, err.next);
     if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
     if (err instanceof Invalid)
@@ -1004,6 +1055,9 @@ export function fleetClient(o: {
   return {
     coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
     takeTickets: (input) => call<boolean>("coordinators/take", input),
+    startJob: (input) => call<Job>("job/start", input),
+    listJobs: (query) => call<Job[]>("job/list", query),
+    observeJob: (input) => call<Job | null>("job/observe", input),
     digest: (input) => call("digest", input),
     sendDigest: (input) => call("digest/send", input),
     reserve: (input) => call("reserve", input),
