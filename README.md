@@ -706,4 +706,17 @@ pause_on_failure = true
 
 With `paths`, a merge that touches none of the globs prints one skip line and starts no watcher or deploy hold. Globs match repository-relative paths, including dot files. Missing or incomplete changed-file coverage (including renames whose original path is unknown) keeps the watcher. Omit `paths` to watch every merge on the target's branch. For an affected target, the live commit must equal the merged commit or be a verified descendant; smoke then runs as usual.
 
+For commands that need a machine-specific linked folder, declare the setting by name:
+
+```toml
+[[deploy.target]]
+name = "worker"
+live_sha_command = 'cd "$DEPLOY_LINK_DIR" && hosting-cli live-sha'
+requires_env = ["DEPLOY_LINK_DIR"]
+```
+
+On each coordinator machine, run `armada config set deploy.env.DEPLOY_LINK_DIR /path/to/linked-service` from the project checkout. Non-secret values are stored per project in `~/.config/armada/projects/<slug>.json` (or `$XDG_CONFIG_HOME/armada/projects/<slug>.json`), outside the repository. Machine values win over the process environment; only declared names are added to the target's live and smoke commands. Use `armada config unset deploy.env.DEPLOY_LINK_DIR` to return to the process environment. A damaged settings file produces a diagnostic and uses the process environment; `armada config set` repairs it. Keep secrets in Armada's vault and use `armada run` for commands that need them.
+
+`armada doctor` names each target's missing settings and gives the exact `armada config set` fixes. Empty environment values count as missing. After a merge, a target missing a required setting emits one `deploy check skipped: <VAR> not set on this machine` warning and records `skipped (not configured on this machine)` without a merge hold or failure inbox item. A configured command that fails still pauses merges. After configuration, `armada deploy watch` can retry the skipped SHA. A machine-local skip preserves any real observation already recorded by another watcher for the same SHA.
+
 `armada deploy status` shows each target's latest state and any open deploy hold; `armada status` includes deploy states. Commands run at the repository root with `ARMADA_DEPLOY_SHA` and `ARMADA_DEPLOY_TARGET`, bounded to one minute and the deploy deadline. Declare `armada run -- <command>` when a command needs project secrets. Watchers share smoke results for the same live SHA. If background startup fails, the merge prints a command to run in a persistent terminal. See the [deployment runbook](docs/runbook.md#check-deployments-after-merges) for recovery and logs.

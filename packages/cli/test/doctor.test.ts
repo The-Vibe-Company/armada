@@ -768,3 +768,35 @@ describe("armada doctor: commit signing", () => {
     }
   });
 });
+
+test("doctor names missing deploy settings per target and gives a working machine-config fix", async () => {
+  const toml = `${DEMO_TOML}\n[[deploy.target]]\nname = "api"\nlive_sha_command = "version"\nrequires_env = ["DEPLOY_LINK_DIR", "DEPLOY_REGION"]\n`;
+  const t = await terminal({}, {}, null, { toml });
+  const [check] = await t.doctor(["deploy-env:api"]);
+  expect(check).toMatchObject({
+    level: "warning",
+    message: "api: DEPLOY_LINK_DIR, DEPLOY_REGION not set on this machine; deploy check will be skipped",
+  });
+  expect(check?.fix).toBe(
+    `armada config set deploy.env.DEPLOY_LINK_DIR <value> --config '${join(t.home, "armada.toml")}'\narmada config set deploy.env.DEPLOY_REGION <value> --config '${join(t.home, "armada.toml")}'`,
+  );
+  expect(await run(["config", "set", "deploy.env.DEPLOY_LINK_DIR", "/synthetic/linked folder"], t.io)).toBe(0);
+  // Clear the config command's output before doctor emits JSON.
+  await t.doctor([]);
+  t.io.env.DEPLOY_REGION = "test-region";
+  const [configured] = await t.doctor(["deploy-env:api"]);
+  expect(configured).toMatchObject({ level: "ok", fix: null });
+  const settingsFile = join(t.home, "armada", "projects", "widgets.json");
+  await writeFile(settingsFile, '{"deploy":{"env":{"DEPLOY_LINK_DIR":"PRIVATE-corrupt-file-sentinel"');
+  const damaged = await t.doctor(["deploy-env:api", "deploy-machine-settings"]);
+  expect(damaged.find((c) => c.id === "deploy-machine-settings")).toMatchObject({ level: "warning" });
+  expect(damaged.find((c) => c.id === "deploy-machine-settings")?.message).not.toContain(
+    "PRIVATE-corrupt-file-sentinel",
+  );
+  expect(damaged.find((c) => c.id === "deploy-env:api")?.fix).toContain("armada config set deploy.env.DEPLOY_LINK_DIR");
+  expect(await run(["config", "set", "deploy.env.DEPLOY_LINK_DIR", "/repaired/linked-service"], t.io)).toBe(0);
+  await t.doctor([]);
+  expect(await t.doctor(["deploy-env:api", "deploy-machine-settings"])).toEqual([
+    expect.objectContaining({ id: "deploy-env:api", level: "ok", fix: null }),
+  ]);
+});

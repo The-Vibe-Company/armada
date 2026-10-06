@@ -10,6 +10,7 @@ import { Alert } from "../page";
 import { useNow, useShell } from "../shell/context";
 
 const DEPLOY_COLOR: Record<DeployState, string> = {
+  skipped: "var(--text-3)",
   waiting: "var(--amber)",
   live: "var(--blue)",
   healthy: "var(--green)",

@@ -5,6 +5,7 @@ import {
   type Credentials,
   type DeployInput,
   type DeployRecord,
+  type DeployTarget,
   deployDetail,
   deployLine,
   fetchLiveDeploy,
@@ -12,8 +13,10 @@ import {
   type MergeHold,
   machinePaths,
   processAlive,
+  readDeployEnv,
   redactSecrets,
   releaseWatchLock,
+  resolveDeployEnv,
   shellWord,
   takeWatchLock,
   watchDeploy,
@@ -45,19 +48,53 @@ export async function deployStatus(io: Io, config: ArmadaConfig, credentials: Cr
   return { rows, holds: holds.filter((h) => h.kind === "deploy") };
 }
 
+/** Report a local configuration skip before any command or background watcher runs. */
+async function skipUnconfigured(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  target: DeployTarget,
+  sha: string | null,
+  missing: string[],
+) {
+  io.stderr(`armada: ${target.name}: deploy check skipped: ${missing.join(", ")} not set on this machine\n`);
+  const { fleet } = liveFleet(io, config, credentials);
+  if (sha && fleet) {
+    try {
+      await recordDeploy(io, fleet.recordDeploy, {
+        target: target.name,
+        sha,
+        state: "skipped",
+        detail: `skipped (not configured on this machine): ${missing.join(", ")}`,
+        pauseOnFailure: false,
+      });
+    } catch {
+      io.stderr("armada: could not record skipped deploy state\n");
+    }
+  }
+}
+
 export async function startDeploys(
   io: Io,
   config: ArmadaConfig,
-  _credentials: Credentials,
+  credentials: Credentials,
   configPath: string,
   sha: string | null,
   targets: string[],
   json: boolean,
 ) {
-  const results: { target: string; started: boolean; next: string | null }[] = [];
+  const results: { target: string; started: boolean; next: string | null; skipped?: boolean }[] = [];
+  const local = await readDeployEnv(machinePaths(io.env), config.project.slug);
+  if (local.warning) io.stderr(`armada: ${local.warning}\n`);
   for (const name of targets) {
     const target = config.deploy?.targets.find((t) => t.name === name);
     if (!target) continue;
+    const { missing } = resolveDeployEnv(target, local.env, io.env);
+    if (missing.length) {
+      await skipUnconfigured(io, config, credentials, target, sha, missing);
+      results.push({ target: name, started: false, next: null, skipped: true });
+      continue;
+    }
     const args = ["deploy", "watch", "--sha", sha ?? "<merge-sha>", "--target", name, "--config", configPath];
     const next = `armada ${args.map(shellWord).join(" ")}`;
     let started = false;
@@ -114,6 +151,14 @@ export async function deploy(
   if (!fleet || credentials.armadaSignIn?.kind === "worker")
     throw new UsageError(warning ?? "deploy watch needs an organization sign-in", "armada login");
   const paths = machinePaths(io.env);
+  const local = await readDeployEnv(paths, config.project.slug);
+  if (local.warning) io.stderr(`armada: ${local.warning}\n`);
+  const settings = resolveDeployEnv(target, local.env, io.env);
+  if (settings.missing.length) {
+    await skipUnconfigured(io, config, credentials, target, sha, settings.missing);
+    io.backgroundReady?.(true);
+    return 0;
+  }
   if (!paths) throw new UsageError("deploy watch needs HOME or XDG_CONFIG_HOME for its PID file");
   if (!io.exec) throw new UsageError("deploy watch needs to run shell commands");
   if (!credentials.githubToken && target.githubEnvironment)
@@ -131,6 +176,7 @@ export async function deploy(
     credentials.linearApiKey,
     credentials.githubToken,
     ...config.secrets.names.map((name) => io.env[name]),
+    ...Object.values(settings.env),
   ].filter((value): value is string => !!value);
   const clean = (text: string) => redactSecrets(text, secrets);
   const ancestry = new Map<string, boolean>();
@@ -178,7 +224,7 @@ export async function deploy(
       timeoutMs: Math.max(1, Math.min(remainingMs, 60_000)),
       maxOutputBytes: 64 * 1024,
       processGroup: true,
-      env: { ...io.env, ARMADA_DEPLOY_SHA: liveSha, ARMADA_DEPLOY_TARGET: target.name },
+      env: { ...io.env, ...settings.env, ARMADA_DEPLOY_SHA: liveSha, ARMADA_DEPLOY_TARGET: target.name },
     });
     return {
       ok: result?.code === 0 && !result.timedOut,
@@ -234,7 +280,7 @@ export async function deploy(
   };
   try {
     const prior = (await fleet.deployState({ target: target.name, sha }))[0];
-    if (prior && !["waiting", "live"].includes(prior.state)) {
+    if (prior && !["waiting", "live", "skipped"].includes(prior.state)) {
       io.backgroundReady?.(true);
       io.stdout(`${target.name}: ${prior.state}\n`);
       return prior.state === "healthy" ? 0 : 1;
@@ -250,7 +296,7 @@ export async function deploy(
     const result = await watchDeploy({
       target,
       sha,
-      ...(prior ? { startedAt: new Date(prior.startedAt) } : {}),
+      ...(prior && prior.state !== "skipped" ? { startedAt: new Date(prior.startedAt) } : {}),
       now,
       sleep: sleepOf(io),
       record: write,

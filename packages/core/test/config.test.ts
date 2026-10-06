@@ -139,6 +139,18 @@ describe("armada.toml", () => {
       "cmd/**",
       "internal/**",
     ]);
+    expect(
+      parseConfig(`${text}requires_env = ["DEPLOY_LINK_DIR", "DEPLOY_LINK_DIR"]`).deploy?.targets[0]?.requiresEnv,
+    ).toEqual(["DEPLOY_LINK_DIR"]);
+    for (const requires of [
+      '"DEPLOY_LINK_DIR"',
+      "[1]",
+      '["BAD-NAME"]',
+      '["__proto__"]',
+      '["ARMADA_DEPLOY_SHA"]',
+      '["ARMADA_DEPLOY_TARGET"]',
+    ])
+      expect(() => parseConfig(`${text}requires_env = ${requires}`)).toThrow("requires_env");
     const withJobs = parseConfig(
       `${text}\n[jobs.eval]\nstart = "dispatch"\nstop = "cancel"\n[[ci.known_failure]]\ncheck = "test"\npattern = "cold start"\nticket = "DEMO-10"`,
     );

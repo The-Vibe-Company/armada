@@ -956,6 +956,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE UNIQUE INDEX validations_open_secret ON validations (project, secret_name) WHERE kind = 'secret' AND decided_at IS NULL",
     ],
   },
+  {
+    // THE-1219: unconfigured machines skip deploy checks without a merge hold.
+    version: 41,
+    statements: [
+      "ALTER TABLE deploys DROP CONSTRAINT deploys_state_check",
+      "ALTER TABLE deploys ADD CONSTRAINT deploys_state_check CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout', 'skipped'))",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

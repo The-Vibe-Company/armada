@@ -30,11 +30,14 @@ import {
   parseConfig,
   projectOf,
   RETIRED_VARIABLES,
+  readDeployEnv,
   readLabels,
   readParentAutoClose,
   repositoryOfRemote,
+  resolveDeployEnv,
   type SigningSetup,
   STORED_KEYS,
+  shellWord,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { describeSource, loadCredentials, type Machine } from "./auth.ts";
@@ -641,6 +644,36 @@ export async function buildDoctor(
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
     ...keyFileChecks(machine, credentials),
+    ...(await (async (): Promise<Check[]> => {
+      if (!config?.deploy?.targets.length) return [];
+      const local = await readDeployEnv(machine.paths, config.project.slug);
+      const checks = config.deploy.targets.map((target): Check => {
+        const { missing } = resolveDeployEnv(target, local.env, io.env);
+        return {
+          id: `deploy-env:${target.name}`,
+          level: missing.length ? "warning" : "ok",
+          message: missing.length
+            ? `${target.name}: ${missing.join(", ")} not set on this machine; deploy check will be skipped`
+            : `${target.name}: required deploy settings are configured`,
+          fix: missing.length
+            ? missing
+                .map(
+                  (name) =>
+                    `armada config set deploy.env.${name} <value> --config ${shellWord(join(root, CONFIG_FILE))}`,
+                )
+                .join("\n")
+            : null,
+        };
+      });
+      if (local.warning)
+        checks.unshift({
+          id: "deploy-machine-settings",
+          level: "warning",
+          message: local.warning,
+          fix: checks.find((c) => c.fix)?.fix ?? "armada config set deploy.env.<VAR> <value>",
+        });
+      return checks;
+    })()),
     {
       id: "linear-key",
       level: credentials.sources.linearApiKey ? "ok" : "warning",
