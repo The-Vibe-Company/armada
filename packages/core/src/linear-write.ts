@@ -81,6 +81,11 @@ export interface TicketChange {
   removeLabelIds?: string[];
 }
 
+export interface CommentWriteOptions {
+  /** Recheck caller scope immediately before every physical post, including retries. */
+  beforeWrite?: () => Promise<void>;
+}
+
 export interface LinearWriter {
   /** The user the API key belongs to. */
   viewer(): Promise<{ id: string; name: string }>;
@@ -92,7 +97,7 @@ export interface LinearWriter {
   createIssue(input: IssueCreate): Promise<CreatedIssue>;
   /** One update: title, state, assignee and label changes are applied together. */
   updateTicket(uuid: string, change: TicketChange): Promise<void>;
-  comment(uuid: string, body: string): Promise<{ id: string }>;
+  comment(uuid: string, body: string, options?: CommentWriteOptions): Promise<{ id: string }>;
   deleteComment(id: string): Promise<void>;
   linkUrl(uuid: string, url: string, title: string): Promise<void>;
 }
@@ -215,7 +220,12 @@ function ensure(ok: boolean | undefined, what: string) {
 }
 
 /** Reconcile an ambiguous comment failure before another physical post. */
-async function postOnce(opts: LinearWriterOptions, uuid: string, body: string): Promise<{ id: string }> {
+async function postOnce(
+  opts: LinearWriterOptions,
+  uuid: string,
+  body: string,
+  options?: CommentWriteOptions,
+): Promise<{ id: string }> {
   const startedAt = (opts.now ?? (() => new Date()))().getTime();
   let posts = 0;
   const doFetch = opts.fetch ?? fetch;
@@ -240,6 +250,7 @@ async function postOnce(opts: LinearWriterOptions, uuid: string, body: string): 
       if (comments.pageInfo?.hasNextPage || warnings.length)
         throw new LinearError("Linear could not check every comment; try again after it answers");
     }
+    await options?.beforeWrite?.();
     init.signal?.throwIfAborted();
     return doFetch(url, init);
   };
@@ -321,8 +332,8 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
       });
       ensure(data.issueUpdate?.success, "update the ticket");
     },
-    async comment(uuid, body) {
-      return postOnce(opts, uuid, body);
+    async comment(uuid, body, options) {
+      return postOnce(opts, uuid, body, options);
     },
     async deleteComment(id) {
       const data = await gql<{ commentDelete: { success: boolean } }>(
