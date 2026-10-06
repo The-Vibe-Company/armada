@@ -45,6 +45,86 @@ const refusal = (p: Promise<unknown>) =>
 
 const inbox = (db: FleetStore) => readInbox(db, { project: P, silentAfterMinutes: 15, now: NOW });
 
+test("mine resolves ticket ownership before filtering entries, flight and ETags", async () => {
+  const store = memoryFleet();
+  for (const [ticket, coordinator] of [
+    ["DEMO-7", "front"],
+    ["DEMO-8", "default"],
+    ["DEMO-9", null],
+  ] as const) {
+    await store.saveRuntimeHandle({
+      project: P,
+      ticket,
+      coordinator,
+      runtime: "conductor",
+      handle: `ws/${ticket}`,
+      branch: null,
+      at: at(30),
+    });
+    await store.putHandBack({ project: P, ticket, coordinator: "other", author: null, body: "PR #7", at: NOW });
+  }
+  // The newest pending launch wins, regardless of returned order; an open
+  // session (even an unowned one) wins over a pending launch and item column.
+  for (const [ticket, coordinator, launchedAt] of [
+    ["DEMO-10", "front", at(1)],
+    ["DEMO-10", "default", at(2)],
+    ["DEMO-9", "default", at(1)],
+  ] as const)
+    store.launches.push({
+      project: P,
+      ticket,
+      coordinator,
+      launchedAt: launchedAt.toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+      endedAt: null,
+    });
+  await store.putPlan({ project: P, ticket: "DEMO-10", coordinator: "default", author: null, body: "Plan", at: NOW });
+  await store.addInboxItem({
+    project: P,
+    ticket: null,
+    coordinator: "default",
+    kind: "merge-request",
+    recipient: "coordinator",
+    author: null,
+    body: "Please merge",
+    at: NOW,
+  });
+  await store.addInboxItem({
+    project: P,
+    ticket: "DEMO-11",
+    coordinator: "default",
+    kind: "note",
+    recipient: "coordinator",
+    author: null,
+    body: "Owned by the item",
+    at: NOW,
+  });
+  const read = (scope: "mine" | "all", coordinatorName = "front", etag: string | null = null) =>
+    serveInbox(store, P, { scope, coordinatorName, coordinator: null, silentAfterMinutes: 15, etag }, NOW);
+  const mine = await read("mine");
+  const all = await read("all");
+  expect(mine?.items.filter((entry) => entry.id !== null).map((entry) => [entry.ticket, entry.owner])).toEqual([
+    ["DEMO-7", "front"],
+    ["DEMO-9", null],
+    ["DEMO-10", "front"],
+    [null, null],
+  ]);
+  expect(mine?.inFlight).toEqual(["DEMO-10", "DEMO-7"]);
+  expect(mine?.items.some((entry) => entry.kind === "silent" && entry.ticket === "DEMO-9")).toBe(true);
+  expect(all?.inFlight).toEqual(["DEMO-10", "DEMO-7", "DEMO-8", "DEMO-9"]);
+  expect(all?.ownedInFlight).toEqual(mine?.inFlight);
+  expect(mine?.etag).not.toBe(all?.etag);
+  expect((await read("mine", "default"))?.etag).not.toBe(mine?.etag);
+  await store.putHandBack({ project: P, ticket: "DEMO-8", author: null, body: "PR #8 updated", at: NOW });
+  expect(await read("mine", "front", mine?.etag)).toBeNull();
+  // Taking the unowned silent worker removes its alarm for other roles.
+  expect(await store.transferTickets({ project: P, tickets: ["DEMO-9"], to: "default", at: NOW })).toBe(true);
+  const taken = await read("mine", "front", mine?.etag);
+  expect(taken?.items.some((entry) => entry.ticket === "DEMO-9")).toBe(false);
+});
+
 describe("ask and answer", () => {
   test("a coordinator can resolve Linear follow-up work without reading or writing Linear", async () => {
     const live = tempFleet();

@@ -6,6 +6,7 @@ import type {
   AgentPhase,
   CiState,
   CoordinatorState,
+  JobState,
   MainHealth,
   RequestKind,
   RequestRefusalCode,
@@ -755,6 +756,22 @@ const en = {
     total: (ms: number) => (ms < DAY ? duration(ms, "d") : `${Math.round(ms / HOUR)} h`),
     none: "—",
     unreachable: "The live data could not be read: these numbers are empty, not zero.",
+  },
+  /** A ticket's long jobs (THE-1128), on its session's page and in the overview's preview. */
+  jobs: {
+    title: "Long jobs",
+    states: {
+      starting: "Starting",
+      running: "Running",
+      succeeded: "Succeeded",
+      failed: "Failed",
+      stopped: "Stopped",
+      lost: "Lost",
+    } satisfies Record<JobState, string>,
+    eta: (clock: string, left: string | null) => (left ? `ETA ${clock} · in ${left}` : `ETA ${clock}, passed`),
+    lastNews: (ago: string) => `last news ${ago}`,
+    overdue: (limit: string) => `Overdue: running past ${limit}`,
+    ticketDone: "Its ticket is Done; the job runs on until it ends or is stopped.",
   },
   /** A session's page (THE-1021, design/dashboard-v7). */
   agentPage: {
@@ -1707,6 +1724,21 @@ const fr: Strings = {
     total: (ms) => (ms < DAY ? duration(ms, "j") : `${Math.round(ms / HOUR)} h`),
     none: "—",
     unreachable: "Les données en direct n'ont pas pu être lues : ces chiffres sont vides, pas nuls.",
+  },
+  jobs: {
+    title: "Tâches longues",
+    states: {
+      starting: "Au démarrage",
+      running: "En cours",
+      succeeded: "Réussie",
+      failed: "Échouée",
+      stopped: "Arrêtée",
+      lost: "Perdue",
+    },
+    eta: (clock, left) => (left ? `Fin prévue ${clock} · dans ${left}` : `Fin prévue ${clock}, dépassée`),
+    lastNews: (ago) => `dernières nouvelles ${ago}`,
+    overdue: (limit) => `En retard : tourne depuis plus de ${limit}`,
+    ticketDone: "Son ticket est terminé ; la tâche continue jusqu'à sa fin ou son arrêt.",
   },
   agentPage: {
     tabs: "La session",
