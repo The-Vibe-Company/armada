@@ -3,9 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  checkPublished,
   machinePaths,
-  NPM_REGISTRY_URL,
   readWatchLock,
   readWatchLockInfo,
   readWatchState,
@@ -313,59 +311,51 @@ describe("armada watch", () => {
     }
   }
 
-  test("a release with a delayed tarball ends the watch only after verification, once, and no notice repeats it", async () => {
-    const server = { minimum: "0.0.1", latest: version };
-    const c = await coordinator({ cli: server });
-    const tarball = "https://registry.npmjs.org/armada-99.1.0.tgz";
-    let ready = false;
-    c.onSleep.push(
-      async () => {
-        expect(
-          await checkPublished("99.1.0", async (url) =>
-            url === NPM_REGISTRY_URL
-              ? Response.json({ versions: { "99.1.0": { dist: { tarball } } } })
-              : new Response(null, { status: ready ? 200 : 404 }),
-          ),
-        ).toEqual({ state: "missing", newest: null });
-        expect(c.out()).not.toContain("is out");
-      },
-      async () => {
-        ready = true;
-        const answer = await checkPublished("99.1.0", async (url) =>
-          url === NPM_REGISTRY_URL
-            ? Response.json({ versions: { "99.1.0": { dist: { tarball } } } })
-            : new Response(null, { status: ready ? 200 : 404 }),
-        );
-        if (answer.state === "published") server.latest = "99.1.0";
-      },
-    );
-    await c.hold("DEMO-2");
-    expect(await run(["watch"], c.io)).toBe(0);
-    expect(c.out()).toBe(
-      [
-        "Inbox of widgets (1), oldest first:",
-        `* version · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
-        `    Armada 99.1.0 is out (you run ${version}). Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0`,
-        "    Not urgent: finish what is in flight first, then, between rounds:",
-        "      1. npm install -g @the-vibe-company/armada@99.1.0",
-        "      2. armada init, then merge its pull request: armada merge <n> --no-ticket",
-        "    Workers in flight keep the version their brief pinned: tell them nothing unless the notes say otherwise.",
-        "New items are marked *.",
-        "1 worker in flight (DEMO-2) — act on the items above, then keep watching: armada watch",
-        "",
-      ].join("\n"),
-    );
-    expect(c.err()).toBe("");
-
-    // The next watch waits for what is new to the coordinator: the release is not.
-    c.reset();
-    c.onSleep.push(async () => {
-      await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #4", at: c.clock.now() });
+  for (const follow of [false, true]) {
+    test(`ordinary releases leave ${follow ? "follow" : "plain"} watch running until real work arrives`, async () => {
+      const server = { minimum: "0.0.1", latest: version };
+      const c = await coordinator({ cli: server });
+      await c.hold("DEMO-2");
+      c.onSleep.push(
+        async () => {
+          server.latest = "99.1.0";
+        },
+        async () => {
+          expect(c.out()).not.toContain("version");
+          await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #4", at: c.clock.now() });
+        },
+        async () => {},
+      );
+      expect(await run(follow ? ["watch", "--follow", "--for", "0.75", "--json"] : ["watch"], c.io)).toBe(0);
+      expect(c.out()).toContain("hand-back");
+      expect(c.out()).not.toContain("version");
+      expect(c.err()).not.toContain("is out");
     });
-    expect(await run(["watch"], c.io)).toBe(0);
-    expect(c.out()).toContain("* #1 hand-back · DEMO-2");
-    expect(c.out()).not.toContain("version");
-    expect(c.err()).toBe("");
+
+    test(`a server minimum interrupts ${follow ? "follow" : "plain"} watch with a version item`, async () => {
+      const server = { minimum: "0.0.1", latest: "99.1.0" };
+      const c = await coordinator({ cli: server });
+      await c.hold("DEMO-2");
+      c.onSleep.push(async () => {
+        server.minimum = "99.0.0";
+      });
+      expect(
+        await run(
+          follow ? ["watch", "--follow", "--tickets", "DEMO-2", "--kinds", "hand-back", "--json"] : ["watch", "--json"],
+          c.io,
+        ),
+      ).toBe(0);
+      expect(c.out()).toContain('"kind": "version"'.replaceAll(" ", follow ? "" : " "));
+      expect(c.out()).toContain("server requires Armada 99.0.0");
+      expect(c.out()).not.toContain("armada init");
+      expect(await readWatchLock(c.paths, P)).toBeNull();
+    });
+  }
+
+  test("a server already requiring a newer CLI returns a version item on the first read", async () => {
+    const c = await coordinator({ cli: { minimum: "99.0.0", latest: "99.1.0" } });
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out()).items).toMatchObject([{ kind: "version", version: "99.1.0" }]);
   });
 
   test("watches until a hand-back, prints it with the re-arm line, and leaves the state for the stop hook", async () => {
