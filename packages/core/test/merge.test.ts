@@ -204,6 +204,104 @@ const refusal = (p: Promise<unknown>) =>
     },
   );
 
+describe("closing a finished spec after a merge", () => {
+  for (const remaining of [null, "backlog", "unstarted", "started", "canceled"] as const) {
+    test(`fresh descendants: remaining child ${remaining ?? "absent"}`, async () => {
+      const { ctx, linear } = setup();
+      linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+      linear.get("DEMO-7").parentId = "DEMO-2";
+      if (remaining) linear.add("DEMO-8", { parentId: "DEMO-2", statusType: remaining });
+      const out = await mergePullRequest(ctx, { pr: 9 });
+      expect(out.merged).toBe(true);
+      const closed = remaining === null || remaining === "canceled";
+      expect(linear.get("DEMO-2").statusType).toBe(closed ? "completed" : "backlog");
+      expect(linear.bodies.some((body) => body.includes("Spec completion") && body.includes("DEMO-7"))).toBe(closed);
+    });
+  }
+
+  test("native parent auto-close owns closure and comments", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    linear.autoCloseParentIssues = true;
+    await mergePullRequest(ctx, { pr: 9 });
+    expect(linear.writes.some((line) => /^(update|comment) DEMO-2 /.test(line))).toBe(false);
+  });
+
+  test("nested open descendants keep the spec open, including under closed parents", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    linear.add("DEMO-8", { parentId: "DEMO-2", statusType: "completed" });
+    linear.add("DEMO-9", { parentId: "DEMO-8", statusType: "unstarted" });
+    await mergePullRequest(ctx, { pr: 9 });
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    linear.get("DEMO-9").statusType = "canceled";
+    await finishMerge(ctx, { pr: 9 });
+    expect(linear.get("DEMO-2").statusType).toBe("completed");
+    expect(linear.bodies.at(-1)).toContain("DEMO-9");
+    const writes = linear.writes.length;
+    await finishMerge(ctx, { pr: 9 });
+    expect(linear.writes.length).toBe(writes);
+  });
+
+  test("a failed descendant read only warns after GitHub and the ticket are closed", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    linear.readChildren = async () => {
+      throw new Error("Linear unavailable");
+    };
+    const out = await mergePullRequest(ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.linearPending).toBe(true);
+    expect(linear.get("DEMO-7").statusType).toBe("completed");
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    expect(out.warnings.join("\n")).toContain("Could not close spec");
+  });
+
+  test("finish retries a failed spec update without duplicating its shipped summary", async () => {
+    const live = tempFleet();
+    const { ctx, linear } = setup({ live });
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    const update = linear.updateTicket.bind(linear);
+    linear.updateTicket = async (uuid, change) => {
+      if (uuid === "uuid-DEMO-2") throw new Error("spec update failed");
+      await update(uuid, change);
+    };
+    const merged = await mergePullRequest(ctx, { pr: 9 });
+    expect(merged.merged).toBe(true);
+    expect(merged.linearPending).toBe(true);
+    expect(merged.lines).toContain("Next: armada merge --finish 9");
+    expect(live.store.items.some((item) => item.kind === "linear-pending" && !item.resolvedAt)).toBe(true);
+    expect(merged.warnings.join("\n")).toContain("spec update failed");
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    linear.updateTicket = update;
+    const finished = await finishMerge(ctx, { pr: 9 });
+    expect(finished.linearPending).toBe(false);
+    expect(live.store.items.some((item) => item.kind === "linear-pending" && !item.resolvedAt)).toBe(false);
+    expect(linear.get("DEMO-2").statusType).toBe("completed");
+    expect(linear.bodies.filter((body) => body.startsWith("Spec completion"))).toHaveLength(1);
+  });
+
+  test("incomplete comments cannot duplicate a spec summary or close the spec", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", {
+      title: "Spec 1 — Lists",
+      parentId: ctx.config.tracker.programRoot,
+      commentsTruncated: true,
+    });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    const out = await mergePullRequest(ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.linearPending).toBe(true);
+    expect(out.warnings.join("\n")).toContain("every spec comment");
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    expect(linear.writes.some((write) => /^(update|comment) DEMO-2 /.test(write))).toBe(false);
+  });
+});
+
 describe("the checklist refuses, naming the rule", () => {
   type S = ReturnType<typeof setup>;
   const cases: [string, (s: S) => void, string][] = [
@@ -1421,6 +1519,13 @@ describe("Linear outage merge recovery", () => {
         fail: (op) => (resolutionFails && op === "inbox/resolve" ? new Error("Armada unavailable") : null),
       });
       const s = setup({ live });
+      s.linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: s.ctx.config.tracker.programRoot });
+      s.linear.get("DEMO-7").parentId = "DEMO-2";
+      const readChildren = s.linear.readChildren.bind(s.linear);
+      if (keepOpen)
+        s.linear.readChildren = async () => {
+          throw new Error("partial repair must not run spec closure");
+        };
       await handBack(live);
       await live.store.saveRuntimeHandle({
         project: "widgets",
@@ -1458,11 +1563,13 @@ describe("Linear outage merge recovery", () => {
         );
         s.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
         await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #10", at: NOW });
+        s.linear.readChildren = readChildren;
         await mergePullRequest(s.ctx, { pr: 10 });
         s.forge.pr = first;
         const writes = [...s.linear.writes];
         expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
         expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+        expect(s.linear.get("DEMO-2").statusType).toBe("completed");
         expect(s.linear.writes).toEqual(writes);
         expect(await live.fleet.ticketItems("DEMO-7")).toEqual([]);
         return;
@@ -1470,6 +1577,7 @@ describe("Linear outage merge recovery", () => {
       resolutionFails = mode === "partial-resolve-failure";
       const repaired = await finishMerge(s.ctx, { pr: 9 });
       expect(repaired.linearPending).toBe(false);
+      expect(s.linear.get("DEMO-2").statusType).toBe(keepOpen ? "backlog" : "completed");
       expect(repaired.armadaPending).toBe(resolutionFails);
       resolutionFails = false;
       const writes = [...s.linear.writes];
@@ -1635,6 +1743,8 @@ describe("a ticket in several pull requests", () => {
     async (mode) => {
       const live = tempFleet();
       const s = setup({ live });
+      s.linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: s.ctx.config.tracker.programRoot });
+      s.linear.get("DEMO-7").parentId = "DEMO-2";
       if (mode === "hand-back" || mode === "close")
         s.linear.post(
           "DEMO-7",
@@ -1680,6 +1790,11 @@ describe("a ticket in several pull requests", () => {
         at: NOW,
       });
       const closed = mode === "close";
+      const readChildren = s.linear.readChildren.bind(s.linear);
+      if (!closed)
+        s.linear.readChildren = async () => {
+          throw new Error("partial merges must not run spec closure");
+        };
       // Linear's GitHub automation can complete the issue after the first repair.
       s.ctx.sleep = async (ms) => {
         s.sleeps.push(ms);
@@ -1693,6 +1808,8 @@ describe("a ticket in several pull requests", () => {
         return afterRead(ticket);
       };
       const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: mode === "keep-open", close: closed });
+      expect(out.linearPending).toBeFalsy();
+      expect(s.linear.get("DEMO-2").statusType).toBe(closed ? "completed" : "backlog");
       expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
       expect(s.linear.get("DEMO-7").statusType).toBe(closed ? "completed" : "started");
       expect(s.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(closed ? [] : ["Conductor", "implementing"]);
@@ -1723,9 +1840,11 @@ describe("a ticket in several pull requests", () => {
         );
         s.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
         await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #10", at: NOW });
+        s.linear.readChildren = readChildren;
         const final = await mergePullRequest(s.ctx, { pr: 10 });
         expect(final.keepOpen).toBeFalsy();
         expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+        expect(s.linear.get("DEMO-2").statusType).toBe("completed");
         expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
         expect(live.store.events.map((e) => e.kind)).toEqual(["report", "report", "merge"]);
       }

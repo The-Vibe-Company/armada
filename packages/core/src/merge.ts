@@ -27,6 +27,7 @@ export { MERGE_LEASE } from "./live.ts";
 import { shellWord } from "./brief.ts";
 import type { QueueInput } from "./merge-queue.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
+import { closeFinishedSpec } from "./spec-close.ts";
 import type { FrontierTicket } from "./status.ts";
 import type { MainHealth } from "./types.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
@@ -1654,6 +1655,11 @@ async function after(
           ? await keepTicketOpen(ctx, fresh, merged, c, more, unlocked, override)
           : await closeTicket(ctx, fresh, merged, c, unlocked, override)),
       );
+      if (!keepOpen) {
+        const spec = await closeFinishedSpec(ctx, fresh);
+        if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
+        lines.push(...spec.lines);
+      }
     } catch (err) {
       linearPending = true;
       c.warnings.push(
@@ -1866,6 +1872,11 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
           ? await keepTicketOpen(ctx, ticket, pull, { updatedFrom: null, decided: null }, more, false, audit)
           : await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit)),
       );
+    if (more === null) {
+      const spec = await closeFinishedSpec(ctx, ticket);
+      if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
+      lines.push(...spec.lines);
+    }
     linearPending = false;
     const resolved = await mergeLive(ctx, warnings, "resolve pending Linear work", async (fleet) => {
       const items = await fleet.ticketItems(ticket?.id ?? "");

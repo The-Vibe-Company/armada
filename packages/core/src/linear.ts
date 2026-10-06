@@ -362,6 +362,22 @@ export async function gql<T>(opts: LinearRequestOptions, query: string, variable
 const readGql = <T>(opts: LinearRequestOptions, query: string, variables: object) =>
   gql<T>({ ...opts, retry: true }, query, variables);
 
+export interface ParentAutoClose {
+  team: string;
+  enabled: boolean | null;
+}
+
+/** Read only: the workflow setting of the given issue's team. */
+export async function readParentAutoClose(opts: LinearRequestOptions, id: string): Promise<ParentAutoClose> {
+  const { issue } = await readGql<{ issue: { team: { name: string; autoCloseParentIssues: boolean | null } } | null }>(
+    opts,
+    `query ParentAutoClose($id: String!) { issue(id: $id) { team { name autoCloseParentIssues } } }`,
+    { id },
+  );
+  if (!issue) throw new LinearError(`Linear: issue ${id} not found`);
+  return { team: issue.team.name, enabled: issue.team.autoCloseParentIssues ?? null };
+}
+
 const chunks = <T>(xs: T[], n: number) =>
   Array.from({ length: Math.ceil(xs.length / n) }, (_, k) => xs.slice(k * n, k * n + n));
 const CLOSED = new Set(["completed", "canceled"]);
