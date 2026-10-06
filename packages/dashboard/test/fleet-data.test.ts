@@ -1080,3 +1080,38 @@ test("archived sessions remain ended after the dashboard's seven-day live window
   expect((await loadOverview(w.opts)).rows.map((r) => r.id)).not.toContain(claim.ticket);
   expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.inFlight.map((r) => r.id)).not.toContain(claim.ticket);
 });
+
+test("job beats reach the dashboard project report on its next Postgres read without external reads", async () => {
+  const db = await tempDb();
+  await upsertProject(db, WIDGETS, new Date(T0));
+  const w = world(db);
+  await w.warm();
+  const store = fleetStore(db);
+  const job = await store.startJob({
+    project: WIDGETS.slug,
+    ticket: "WID-2",
+    name: "eval",
+    startedBy: "runner",
+    at: new Date(T0),
+  });
+  await store.observeJob({
+    project: job.project,
+    ticket: job.ticket,
+    id: job.id,
+    state: "running",
+    progress: "1/120",
+    at: new Date(T0),
+  });
+  const reads = w.reads.snapshots;
+  expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.jobs?.[0]?.progress).toBe("1/120");
+  await store.observeJob({
+    project: job.project,
+    ticket: job.ticket,
+    id: job.id,
+    state: "running",
+    progress: "40/120",
+    at: new Date(T0 + 1000),
+  });
+  expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.jobs?.[0]?.progress).toBe("40/120");
+  expect(w.reads.snapshots).toBe(reads);
+});

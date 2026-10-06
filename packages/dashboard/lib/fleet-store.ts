@@ -11,6 +11,7 @@ import { queueAdd, queueFinish, queueList, queueNext, queueRemove } from "./merg
 import type {
   Attachment,
   CatchupRecords,
+  ChoreRecord,
   ClearHoldResult,
   CoordinatorPresence,
   CoordinatorRecord,
@@ -64,6 +65,7 @@ import {
   deployFailed,
   holdBody,
   isShippingStage,
+  jobEndedBody,
   OBSERVABLE_RUNTIMES,
   REQUEST_KINDS,
   TIMELINE_HOURS,
@@ -1025,6 +1027,21 @@ export async function putHandBack(
   );
 }
 
+/** Adds or refreshes the coordinator's unfinished Linear work after a confirmed merge. */
+export async function putChore(
+  db: Queryable,
+  item: ChoreRecord & { project: string; author: string | null; coordinator?: string | null; at: Date },
+): Promise<void> {
+  await db.query(
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, request_pr, created_at, coordinator)
+     VALUES ($1, $2, 'linear-pending', 'coordinator', $3, $4, $5, $6, $7)
+     ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind = 'linear-pending'
+     DO UPDATE SET body = excluded.body, author = excluded.author, request_pr = excluded.request_pr,
+                   created_at = excluded.created_at, coordinator = excluded.coordinator`,
+    [item.project, item.ticket, item.author, item.body, item.pr, item.at, item.coordinator ?? null],
+  );
+}
+
 /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
 export async function openInboxItems(
   db: Queryable,
@@ -1237,8 +1254,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator" FROM (
-       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "endedAt"
+    `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator" FROM (
+       SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -1254,6 +1271,7 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
     [project, since],
   );
   return rs.rows.map((r) => ({
+    id: String(r.id),
     ticket: String(r.ticket),
     launchedAt: isoAt(r.createdAt),
     coordinator: text(r.coordinator),
@@ -1318,6 +1336,7 @@ export async function expireUnusedLaunches(
 // ------------------------------------------------------------------ long jobs
 
 const jobOf = (r: Row): Job => ({
+  revision: Number(r.revision),
   id: Number(r.id),
   project: String(r.project),
   ticket: String(r.ticket),
@@ -1808,31 +1827,50 @@ export const fleetStore = (db: Database): FleetStore => ({
   },
   getJob: (project, id) => getJob(db, project, id),
   listJobs: (project, q) => listJobs(db, project, q),
-  async observeJob(input) {
-    const rs = await db.query(
-      `UPDATE jobs SET state = $4,
+  observeJob: (input) =>
+    transaction(db, async (tx) => {
+      const rs = await tx.query(
+        `UPDATE jobs SET state = $4, revision = revision + 1,
        ref = CASE WHEN ref IS NULL AND $5::boolean THEN $6 ELSE ref END,
-       progress = $7, eta = CASE WHEN $4 = 'running' THEN $8::timestamptz ELSE NULL END,
+       progress = CASE WHEN $10::boolean THEN $7 ELSE progress END,
+       eta = CASE WHEN $4 = 'running' THEN $8::timestamptz ELSE NULL END,
        observed_at = $9, finished_at = CASE WHEN $4 = 'running' THEN NULL ELSE $9 END
        WHERE project = $1 AND id = $2 AND ticket = $3 AND state IN ('starting','running') AND observed_at <= $9
        AND (NOT $5::boolean OR ref IS NULL OR ref = $6)
+       AND ($11::bigint IS NULL OR revision = $11::bigint)
        RETURNING *`,
-      [
-        input.project,
-        input.id,
-        input.ticket,
-        input.state,
-        input.ref !== undefined,
-        input.ref ?? null,
-        input.progress ?? null,
-        input.eta ?? null,
-        input.at,
-      ],
-    );
-    if (rs.rows[0]) return jobOf(rs.rows[0]);
-    const job = await getJob(db, input.project, input.id);
-    return job?.ticket === input.ticket ? job : null;
-  },
+        [
+          input.project,
+          input.id,
+          input.ticket,
+          input.state,
+          input.ref !== undefined,
+          input.ref ?? null,
+          input.progress ?? null,
+          input.eta ?? null,
+          input.at,
+          input.progress !== undefined,
+          input.expectedRevision ?? null,
+        ],
+      );
+      if (rs.rows[0]) {
+        const job = jobOf(rs.rows[0]);
+        if (job.finishedAt)
+          await addInboxItem(tx, {
+            project: job.project,
+            ticket: job.ticket,
+            kind: "job",
+            recipient: "coordinator",
+            author: null,
+            body: jobEndedBody(job),
+            at: input.at,
+          });
+        return job;
+      }
+      const job = await getJob(tx, input.project, input.id);
+      return job?.ticket === input.ticket ? job : null;
+    }),
+
   openHold: (input) => openHold(db, input),
   clearHold: (input) => clearHold(db, input),
   openHolds: (project) => openHolds(db, project),
@@ -1902,6 +1940,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   addRequest: (r) => addRequest(db, r),
   putPlan: (item) => putPlan(db, item),
   putHandBack: (item) => putHandBack(db, item),
+  putChore: (item) => putChore(db, item),
   openInboxItems: (q) => openInboxItems(db, q),
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   resolveInboxItem: (q) => resolveInboxItem(db, q),

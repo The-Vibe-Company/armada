@@ -46,6 +46,8 @@ export class LinearError extends Error {
   constructor(
     message: string,
     readonly transport = false,
+    /** Exhausted transient HTTP/network failures, eligible for merge hand-back fallback. */
+    readonly transient = false,
   ) {
     super(message);
   }
@@ -336,14 +338,17 @@ export async function gql<T>(opts: LinearRequestOptions, query: string, variable
         if (err instanceof SyntaxError) return {};
         throw err;
       })) as { data?: T; errors?: { message: string }[] };
+      if (!res.ok && retryStatus(res.status)) throw new LinearError(`Linear API HTTP ${res.status}`, true, true);
       if (json.errors?.length) throw new LinearError(`Linear API: ${json.errors.map((e) => e.message).join("; ")}`);
       if (!res.ok) throw new LinearError(`Linear API HTTP ${res.status}`, true);
       if (!json.data) throw new LinearError("Linear API: empty response");
       return json.data;
     },
   ).catch((err: unknown) => {
-    if (err instanceof HttpStatusError) throw new LinearError(`Linear API ${err.message}`, true);
-    if (err instanceof HttpRequestError) throw new LinearError(`Linear API unreachable: ${err.message}`, true);
+    if (err instanceof HttpStatusError)
+      throw new LinearError(`Linear API ${err.message}`, true, retryStatus(err.status));
+    if (err instanceof HttpRequestError)
+      throw new LinearError(`Linear API unreachable: ${err.message}`, true, err.transient);
     throw err;
   });
 }

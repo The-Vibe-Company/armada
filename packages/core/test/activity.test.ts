@@ -52,6 +52,12 @@ const input = (over: Partial<ActivityInput>): ActivityInput => ({
 });
 
 describe("agentActivity", () => {
+  test("a merged ticket's pending Linear work remains visible in its activity", () => {
+    const chore = item(1, "linear-pending", "10:10", { author: "Coordinator", body: "Finish Linear for #12" });
+    expect(agentActivity(input({ inbox: [chore] }))).toMatchObject([
+      { kind: "request", author: "Coordinator", text: "Finish Linear for #12", resolvedAt: null },
+    ]);
+  });
   test("a run from launch to hand-back, newest first, each report once", () => {
     const activity = agentActivity(
       input({

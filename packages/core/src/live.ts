@@ -116,7 +116,7 @@ export interface LatestEvent {
   at: string;
 }
 
-import { OBSERVABLE_RUNTIMES, type RuntimeState, runtimeNameOf } from "./runtime.ts";
+import { type RuntimeState, runtimeNameOf } from "./runtime.ts";
 
 export { RUNTIME_STATES, type RuntimeState } from "./runtime.ts";
 
@@ -243,11 +243,13 @@ export interface SessionRecord extends RuntimeHandle {
 export type InboxKind =
   | "deploy"
   | "hold"
+  | "job"
   | "queue-refused"
   | "question"
   | "plan"
   | "request"
   | "hand-back"
+  | "linear-pending"
   | "note"
   | "decision"
   | RequestKind;
@@ -348,6 +350,8 @@ export type LeaseResult = { acquired: true } | { acquired: false; held: Lease | 
  * claimed the ticket since: the newest launch of its ticket, not ended.
  */
 export interface PendingLaunch {
+  /** Worker session identity; optional for older servers. */
+  id?: string;
   coordinator?: string | null;
   ticket: string;
   launchedAt: string;
@@ -526,6 +530,8 @@ export interface FleetStore {
   putPlan(item: Item): Promise<void>;
   /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
   putHandBack(item: Item): Promise<void>;
+  /** Adds or refreshes the coordinator’s unfinished Linear work for a merged pull request. */
+  putChore(item: Item & ChoreRecord): Promise<void>;
   /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
   openInboxItems(q: { project: string; recipient: InboxRecipient; ticket?: string }): Promise<InboxItem[]>;
   getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
@@ -831,12 +837,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
   await store.resolveInboxItems({ project, ticket, kind: "answer-request", resolution: text, at });
   if (n === 0 && plans === 0 && a.ticket) {
     const held = await store.getRuntimeHandle(project, ticket);
-    if (
-      held &&
-      OBSERVABLE_RUNTIMES.includes(runtimeNameOf(held.runtime) as "herdr" | "conductor") &&
-      !held.releasedAt &&
-      held.runtimeState?.state === "blocked"
-    ) {
+    if (held && runtimeNameOf(held.runtime) === "herdr" && !held.releasedAt && held.runtimeState?.state === "blocked") {
       // Harness approvals have no worker-authored question. Keep the delivered
       // answer in the same indexed answer history so the inbox clears until the
       // next blocked transition, even if the terminal stays blocked briefly.
@@ -855,6 +856,13 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
     }
   }
   return `${n} open question${n === 1 ? "" : "s"}${plans ? ` and ${plans} plan${plans === 1 ? "" : "s"}` : ""} of ${ticket} resolved.`;
+}
+
+export interface ChoreRecord {
+  ticket: string;
+  kind: "linear-pending";
+  pr: number;
+  body: string;
 }
 
 export interface MergeRecord {
@@ -976,7 +984,15 @@ const MIN = 60_000;
  * claimed (both read from the fleet, they clear on their own); `version`: a
  * newer Armada is out (`armada watch` only, never stored).
  */
-export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "stopped" | "quiet" | "not-started" | "version";
+export type InboxEntryKind =
+  | InboxKind
+  | "job-silent"
+  | "runtime-blocked"
+  | "silent"
+  | "stopped"
+  | "quiet"
+  | "not-started"
+  | "version";
 
 export interface InboxEntry {
   owner?: string | null;
@@ -986,6 +1002,8 @@ export interface InboxEntry {
    */
   id: number | null;
   kind: InboxEntryKind;
+  /** Durable job id for a derived job-silent entry. */
+  jobId?: number;
   ticket: string | null;
   /** Runtime handle of the worker that asked, or of the silent or not started worker when known. */
   author: string | null;
@@ -1013,19 +1031,25 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
  * is new to the coordinator.
  */
 export const entryKey = (
-  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined; createdAt?: string },
+  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & {
+    version?: string | undefined;
+    createdAt?: string;
+    jobId?: number;
+  },
 ) =>
-  e.id !== null
-    ? REWRITTEN.includes(e.kind)
-      ? `#${e.id}@${digest(e.body)}`
-      : `#${e.id}`
-    : e.version
-      ? `version:${e.version}@${digest(e.body)}`
-      : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
-        ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-        : e.kind === "stopped"
-          ? `stopped:${e.ticket}@${e.createdAt}`
-          : `${e.kind}:${e.ticket}`;
+  e.kind === "job-silent"
+    ? `job-silent:${e.jobId}`
+    : e.id !== null
+      ? REWRITTEN.includes(e.kind)
+        ? `#${e.id}@${digest(e.body)}`
+        : `#${e.id}`
+      : e.version
+        ? `version:${e.version}@${digest(e.body)}`
+        : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+          ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+          : e.kind === "stopped"
+            ? `stopped:${e.ticket}@${e.createdAt}`
+            : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -1196,13 +1220,22 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
 async function readInboxAndFlight(
   store: FleetStore,
   o: InboxReadOptions,
-): Promise<{ items: InboxEntry[]; inFlight: string[]; ownedInFlight: string[] }> {
+): Promise<{
+  items: InboxEntry[];
+  inFlight: string[];
+  ownedInFlight: string[];
+  openJobs: number[];
+  ownedOpenJobs: number[];
+}> {
   const now = o.now.getTime();
-  const [stored, handles, launches] = await Promise.all([
-    store.openInboxItems({ project: o.project, recipient: "coordinator" }),
+  const [handles, launches, jobs] = await Promise.all([
     store.openRuntimeHandles(o.project),
     store.pendingLaunches(o.project, new Date(0)),
+    store.listJobs(o.project, { open: true }),
   ]);
+  // Read notices after jobs: a terminal transition atomically removes liveness and adds its notice.
+  // The reverse order could read an old inbox and a closed job, making watch exit without the notice.
+  const stored = await store.openInboxItems({ project: o.project, recipient: "coordinator" });
   const owners = ticketOwners(handles, launches);
   const name = o.coordinatorName ?? "default";
   // Absent scope retains the old named-client behavior. New CLIs always
@@ -1294,6 +1327,22 @@ async function readInboxAndFlight(
     new: false,
     ...(i.request ? { request: i.request } : {}),
   }));
+  for (const job of jobs) {
+    const silence = now - Date.parse(job.observedAt);
+    const limit = o.snapshot?.config?.jobs?.[job.name]?.silenceMinutes ?? 15;
+    if (!visible(ownerOf(job.ticket)) || job.state !== "running" || silence <= limit * MIN) continue;
+    entries.push({
+      id: null,
+      kind: "job-silent",
+      owner: ownerOf(job.ticket),
+      jobId: job.id,
+      ticket: job.ticket,
+      author: null,
+      body: `Job ${job.id} · ${job.name} · ${job.ticket}: no observation for ${Math.floor(silence / MIN)} min (limit ${limit} min). Last progress: ${job.progress ?? "no progress reported"}; check the runner with armada job status ${job.id}`,
+      createdAt: job.observedAt,
+      new: false,
+    });
+  }
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
   // A claim may arrive before its newly created ticket reaches the stored reading.
@@ -1324,7 +1373,9 @@ async function readInboxAndFlight(
     if (asking.has(h.ticket)) continue;
     const observation = h.runtimeState;
     const answer = answered[h.ticket];
-    const runtimeBlocked = freshRuntimeState(observation, o.now, o.silentAfterMinutes, h.claimedAt) === "blocked";
+    const runtimeBlocked =
+      runtimeNameOf(h.runtime) === "herdr" &&
+      freshRuntimeState(observation, o.now, o.silentAfterMinutes, h.claimedAt) === "blocked";
     if (runtimeBlocked && planning.has(h.ticket)) continue;
     if (runtimeBlocked && observation && (!answer || answer < (observation.since ?? observation.at))) {
       entries.push({
@@ -1416,6 +1467,10 @@ async function readInboxAndFlight(
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
     inFlight: [...new Set(inFlight)].filter((ticket) => o.scope !== "mine" || flightOwners.get(ticket) === name).sort(),
     ownedInFlight: [...new Set(inFlight)].filter((ticket) => flightOwners.get(ticket) === name).sort(),
+    openJobs: jobs
+      .filter((job) => visible(ownerOf(job.ticket)) && (o.scope !== "mine" || ownerOf(job.ticket) === name))
+      .map((job) => job.id),
+    ownedOpenJobs: jobs.filter((job) => ownerOf(job.ticket) === name).map((job) => job.id),
   };
 }
 
@@ -1439,6 +1494,8 @@ export interface InboxQuery {
 export interface InboxRead {
   /** Owned workers only, for a named coordinator's re-arm line even with all scope. */
   ownedInFlight?: string[];
+  /** Owned jobs only, for named re-arm guidance even with all scope. */
+  ownedOpenJobs?: number[];
   /** Oldest first. */
   items: InboxEntry[];
   /**
@@ -1448,6 +1505,8 @@ export interface InboxRead {
    * this field.
    */
   inFlight?: string[];
+  /** Open external jobs, separate from worker ownership. */
+  openJobs?: number[];
   /** Which entries and workers these are (`inboxTag`), for the next read's `etag`. */
   etag: string;
   /** Problems that did not stop the read, such as a presence that could not be recorded. */
@@ -1463,11 +1522,15 @@ export function inboxTag(
   items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner">[],
   inFlight: readonly string[] = [],
   ownedInFlight: readonly string[] = [],
+  openJobs: readonly number[] = [],
+  ownedOpenJobs: readonly number[] = [],
 ): string {
   const keys = [
     ...items.map((item) => `${entryKey(item)}:owner:${item.owner ?? "unowned"}`),
     ...inFlight.map((t) => `flight:${t}`),
     ...ownedInFlight.map((t) => `owned-flight:${t}`),
+    ...openJobs.map((id) => `job:${id}`),
+    ...ownedOpenJobs.map((id) => `owned-job:${id}`),
   ]
     .sort()
     .join("\n");
@@ -1505,7 +1568,7 @@ export async function serveInbox(
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
-  const { items, inFlight, ownedInFlight } = await readInboxAndFlight(store, {
+  const { items, inFlight, ownedInFlight, openJobs, ownedOpenJobs } = await readInboxAndFlight(store, {
     scope: q.scope,
     snapshot,
     project,
@@ -1531,7 +1594,13 @@ export async function serveInbox(
   }
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   const includesOwned = q.scope !== undefined && !!q.coordinatorName && q.coordinatorName !== "default";
-  const etag = inboxTag(items, inFlight, includesOwned ? ownedInFlight : []);
+  const etag = inboxTag(
+    items,
+    inFlight,
+    includesOwned ? ownedInFlight : [],
+    openJobs,
+    includesOwned ? ownedOpenJobs : [],
+  );
   return q.etag === etag
     ? null
     : {
@@ -1540,6 +1609,7 @@ export async function serveInbox(
         etag,
         warnings,
         ...(includesOwned ? { ownedInFlight } : {}),
+        ...(openJobs.length ? { openJobs, ...(includesOwned ? { ownedOpenJobs } : {}) } : {}),
       };
 }
 
@@ -1614,6 +1684,7 @@ export interface Fleet {
   /** Resolves one open item (a declined launch); false when it was already resolved. */
   resolve(r: { id: number; resolution: string }): Promise<boolean>;
   merge(m: MergeRecord): Promise<MergeRecorded>;
+  chore(c: ChoreRecord): Promise<void>;
   /** Asks the owner to validate (THE-885); `url` is the approval link on the dashboard. */
   validate(v: ValidationRecord): Promise<{ validation: Validation; url: string }>;
   /** A ticket's or a pull request's validations, newest first. */

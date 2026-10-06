@@ -17,6 +17,7 @@ import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type Job
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
+  type ChoreRecord,
   type ClaimRecord,
   type CoordinatorRecord,
   type EventsRead,
@@ -128,6 +129,7 @@ export const FLEET_OPS = [
   "inbox/resolve",
   "answer",
   "merge",
+  "chore",
   "validations",
   "done",
   "queue/add",
@@ -324,6 +326,7 @@ export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "hold/clear",
   "inbox/resolve",
   "merge",
+  "chore",
   "queue/add",
   "queue/finish",
   "job/observe",
@@ -457,13 +460,17 @@ export async function serveFleet(
             throw new Invalid("runner reference is already recorded and cannot change");
           const eta = optText(b, "eta", 40);
           if (eta !== null && !Number.isFinite(Date.parse(eta))) throw new Invalid("eta must be a timestamp");
+          const expectedRevision = b.expectedRevision === undefined ? undefined : countOrNull(b, "expectedRevision");
+          if (b.expectedRevision !== undefined && expectedRevision === null)
+            throw new Invalid("expectedRevision must be a nonnegative integer");
           return store.observeJob({
+            ...(expectedRevision == null ? {} : { expectedRevision }),
             project: slug,
             id,
             ticket,
             state: b.state as Exclude<JobState, "starting">,
             ...(ref === undefined ? {} : { ref }),
-            progress: optText(b, "progress", JOB_PROGRESS_MAX),
+            ...(b.progress === undefined ? {} : { progress: optText(b, "progress", JOB_PROGRESS_MAX) }),
             eta: eta === null ? null : new Date(eta).toISOString(),
             at,
           });
@@ -896,6 +903,19 @@ export async function serveFleet(
             at,
           );
         }
+        case "chore": {
+          if (b.kind !== "linear-pending") throw new Invalid("unknown chore kind");
+          return store.putChore({
+            project: slug,
+            ticket: ticketOf(b),
+            kind: "linear-pending",
+            pr: idOf(b, "pr"),
+            body: text(b, "body", BODY_MAX),
+            author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
+            coordinator: coordinatorName,
+            at,
+          });
+        }
         case "validate": {
           const input = validationOf(b, deps.validationSamples);
           if (caller.kind === "worker" && input.kind !== "validation")
@@ -1190,6 +1210,7 @@ export function fleetClient(o: {
     answer: (a: AnswerRecord) => call<string>("answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
     merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
+    chore: (c: ChoreRecord) => call<null>("chore", c).then(() => undefined),
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),
