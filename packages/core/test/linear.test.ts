@@ -4,6 +4,7 @@ import {
   fetchProgram,
   fetchProgramChanges,
   fetchProgramIssue,
+  fetchTicketDescriptions,
   LINEAR_ENDPOINT,
   parseClaim,
   parseStatusLine,
@@ -408,4 +409,44 @@ describe("fetchProgramIssue", () => {
       "service unavailable",
     );
   });
+});
+
+test("CLI description batches paginate flat reads and refuse missing tickets or a stalled cursor", async () => {
+  const calls: object[] = [];
+  const fetch: Fetch = async (_url, init) => {
+    const { query, variables } = JSON.parse(String(init.body));
+    expect(query).toContain("filter: { id: { in: $ids } }");
+    calls.push(variables);
+    return Response.json({
+      data: {
+        issues: {
+          pageInfo: { hasNextPage: !variables.after, endCursor: variables.after ? null : "cursor-1" },
+          nodes: [
+            {
+              id: variables.after ? "uuid-2" : "uuid-1",
+              identifier: variables.after ? "DEMO-3" : "DEMO-2",
+              title: "Search images",
+              description: null,
+            },
+          ],
+        },
+      },
+    });
+  };
+  expect(await fetchTicketDescriptions({ apiKey: "synthetic", fetch }, ["uuid-1", "uuid-2", "uuid-1"])).toHaveLength(2);
+  expect(calls).toEqual([
+    { ids: ["uuid-1", "uuid-2"], after: null },
+    { ids: ["uuid-1", "uuid-2"], after: "cursor-1" },
+  ]);
+  const stalled: Fetch = async () =>
+    Response.json({ data: { issues: { nodes: [], pageInfo: { hasNextPage: true, endCursor: null } } } });
+  await expect(fetchTicketDescriptions({ apiKey: "synthetic", fetch: stalled }, ["uuid-1"])).rejects.toThrow(
+    "did not advance",
+  );
+  const missing: Fetch = async () =>
+    Response.json({ data: { issues: { nodes: [], pageInfo: { hasNextPage: false } } } });
+  await expect(fetchTicketDescriptions({ apiKey: "synthetic", fetch: missing }, ["uuid-1"])).rejects.toThrow(
+    "could not be read",
+  );
+  expect(await fetchTicketDescriptions({ apiKey: "synthetic", fetch: stalled }, [])).toEqual([]);
 });
