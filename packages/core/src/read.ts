@@ -19,6 +19,7 @@ export * from "./model.ts";
 export * from "./npm.ts";
 export * from "./overlap.ts";
 export * from "./overview.ts";
+export * from "./owner-items.ts";
 export * from "./projects.ts";
 export * from "./request-kinds.ts";
 export * from "./requests.ts";
