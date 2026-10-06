@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildInsights, type OwnerValidation } from "@armada/core/read";
+import type { OwnerValidation } from "@armada/core/read";
 import { decisionMedian, type KeyPress, nextOpen, validationKey } from "../lib/validation-keys.ts";
 
 const press = (key: string, over: Partial<KeyPress> = {}): KeyPress => ({
@@ -70,36 +70,32 @@ describe("after a decision", () => {
 
 describe("about how long the waiting ones take", () => {
   const at = (minutes: number) => new Date(Date.UTC(2026, 0, 5, 9, minutes)).toISOString();
-  const decided = (id: number, sent: number, after: number, outcome = "approved") =>
+  let id = 0;
+  const decided = (sent: number, minute: number, by: string | null = "Ada", outcome = "approved") =>
     ({
-      id,
+      id: ++id,
       ticket: `WID-${id}`,
       kind: "validation",
       createdAt: at(sent),
-      decision: { outcome, by: "Ada", at: at(sent + after) },
+      decision: { outcome, by, at: at(minute) },
     }) as OwnerValidation;
 
-  test("is the owner's median time to decide, the rule of the Insights' owner wait", () => {
-    const list = [decided(1, 0, 2), decided(2, 5, 4), decided(3, 10, 9), decided(4, 20, 30, "superseded")];
-    const records = list.map((v) => ({
-      ticket: v.ticket,
-      kind: v.kind,
-      createdAt: v.createdAt,
-      decidedAt: v.decision?.at ?? null,
-      outcome: v.decision?.outcome ?? null,
-    }));
-    const insights = buildInsights({
-      records: [
-        { project: "widgets", silentAfterMinutes: 15, events: [], sessions: [], waits: [], validations: records },
-      ],
-      range: "7d",
-      now: new Date(Date.UTC(2026, 0, 5, 12)),
-    });
-    expect(decisionMedian(list)).toBe(4 * 60_000);
-    expect(decisionMedian(list)).toBe(insights.waits.owner.p50);
+  test("is the owner's median time per decision in a sitting: the gaps between one person's decisions", () => {
+    // Ada decides four in a row (gaps of 1, 2 and 4 min), Grace one after two minutes of Ada's: not hers.
+    const sitting = [decided(0, 10), decided(0, 11), decided(0, 13), decided(0, 17), decided(0, 12, "Grace")];
+    expect(decisionMedian(sitting)).toBe(2 * 60_000);
   });
 
-  test("is hidden below three decisions", () => {
-    expect(decisionMedian([decided(1, 0, 2), decided(2, 5, 4), decided(3, 10, 9, "superseded")])).toBeNull();
+  test("leaves out a gap past ten minutes, one sent after the decision before, and a replaced one", () => {
+    const list = [
+      decided(0, 10),
+      decided(0, 12),
+      decided(0, 14),
+      decided(0, 40), // the next sitting
+      decided(41, 43), // sent after the one before was decided: its gap is its wait
+      decided(0, 45, "Ada", "superseded"),
+    ];
+    expect(decisionMedian(list)).toBeNull();
+    expect(decisionMedian([...list, decided(0, 15)])).toBe(2 * 60_000);
   });
 });

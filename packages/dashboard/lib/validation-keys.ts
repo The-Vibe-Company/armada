@@ -78,17 +78,34 @@ export function nextOpen(
 
 /** Below this many decisions the median says nothing: no estimate. */
 export const ESTIMATE_SAMPLES = 3;
+/** Two decisions this close, by the same person, are one sitting: the second took the gap. */
+export const SITTING_MS = 10 * 60_000;
 
 /**
- * The owner's median time to decide, in ms: from sent to decided, replaced
- * ones left out (the rule of core's `buildInsights().waits.owner`), over the
- * decisions the overview carries (the last week's). Null below three.
+ * The owner's median time to decide one, in ms, over the decisions the
+ * overview carries (the last week's): the gap between two decisions by the
+ * same person at most ten minutes apart, the second one already waiting at
+ * the first (else the gap counts its wait). Replaced ones are left out.
+ * Null below three gaps. Not the Insights' owner wait, which counts from
+ * when it was sent: hours, while the owner was away (THE-1113).
  */
 export function decisionMedian(validations: readonly OwnerValidation[]): number | null {
-  const waits = validations.flatMap((v) =>
-    v.decision && v.decision.outcome !== "superseded" ? [Date.parse(v.decision.at) - Date.parse(v.createdAt)] : [],
-  );
-  return waits.length < ESTIMATE_SAMPLES ? null : quantile(waits, 0.5);
+  const byPerson = new Map<string, { at: number; sent: number }[]>();
+  for (const v of validations) {
+    if (!v.decision || v.decision.outcome === "superseded") continue;
+    const who = v.decision.by ?? "";
+    byPerson.set(who, [...(byPerson.get(who) ?? []), { at: Date.parse(v.decision.at), sent: Date.parse(v.createdAt) }]);
+  }
+  const gaps: number[] = [];
+  for (const list of byPerson.values()) {
+    list.sort((a, b) => a.at - b.at);
+    list.forEach((d, k) => {
+      const before = list[k - 1];
+      const gap = before ? d.at - before.at : 0;
+      if (before && gap > 0 && gap <= SITTING_MS && d.sent <= before.at) gaps.push(gap);
+    });
+  }
+  return gaps.length < ESTIMATE_SAMPLES ? null : quantile(gaps, 0.5);
 }
 
 /** A key event as `validationKey` reads it. */

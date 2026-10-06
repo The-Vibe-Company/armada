@@ -693,7 +693,7 @@ const en = {
       n === 0 ? "Nothing to decide" : n === 1 ? "1 decision waits for you" : `${n} decisions wait for you`,
     oldest: (d: string) => `The oldest has waited ${d}.`,
     caughtUp: "You're up to date.",
-    /** All those waiting, at the owner's median time to decide (THE-1113). */
+    /** All those waiting, at the owner's median time per decision in a sitting (THE-1113). */
     estimate: (d: string) => `About ${d} in all.`,
     sentOne: (ticket: string) => `${ticket}: sent to the coordinator.`,
     pendingTitle: "To decide",
