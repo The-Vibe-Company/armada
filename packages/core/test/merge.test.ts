@@ -2242,7 +2242,9 @@ test.each([
           expect(outcome.keepOpen).toBe(true);
           expect(outcome.archive).toBeNull();
           expect(s.linear.get("DEMO-7").statusType).toBe("started");
-          expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe("implementing");
+          expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe(
+            scenario === "partial-recovery" && cleanupFailed ? "ready-to-merge" : "implementing",
+          );
         }
         if (["cleanup-recovery", "partial-recovery"].includes(scenario) && !cleanupFailed) {
           cleanupFailed = true;
@@ -2275,8 +2277,34 @@ test.each([
   if (["cleanup-recovery", "partial-recovery"].includes(scenario)) {
     await expect(drain()).rejects.toThrow("session lost during cleanup");
     expect(await live.fleet.queueList()).toMatchObject([{ state: "merging", attempts: 0 }, { state: "queued" }]);
-    if (scenario === "partial-recovery")
+    if (scenario === "partial-recovery") {
+      const t = s.linear.get("DEMO-7");
+      await s.linear.updateTicket(t.uuid, {
+        addLabelIds: [label("phase-ready-to-merge").id],
+        removeLabelIds: [label("phase-implementing").id],
+      });
       s.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #18, head ${BASE}, CI green`, "2026-03-04T10:00:00Z");
+      live.clock.advance(1);
+      await live.store.recordEvent({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "report",
+        phase: "ready-to-merge",
+        message: "PR #18 ready",
+        prUrl: "https://github.com/acme/widgets/pull/18",
+        headSha: BASE,
+        at: live.clock.now(),
+      });
+      await live.store.addInboxItem({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "hand-back",
+        recipient: "coordinator",
+        author: "worker",
+        body: "PR #18 ready",
+        at: live.clock.now(),
+      });
+    }
   }
   await drain();
   expect(delivered).toEqual(["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? [15] : [12, 15]);
@@ -2305,6 +2333,10 @@ test.each([
         : 0,
   );
   expect(await live.store.getLease("widgets", "merge-queue")).toBeNull();
+  if (scenario === "partial-recovery") {
+    expect((await live.store.latestEvents("widgets", { since: NOW }))["DEMO-7"]?.phase).toBe("ready-to-merge");
+    expect(live.store.items.find((i) => i.body === "PR #18 ready")?.resolvedAt).toBeNull();
+  }
   if (scenario === "head-mismatch") expect(s.linear.get("DEMO-7").statusType).toBe("started");
   if (scenario === "recovered-ticket") {
     expect(s.linear.get("DEMO-7").statusType).toBe("completed");

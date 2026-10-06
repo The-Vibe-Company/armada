@@ -926,6 +926,8 @@ function refuse(ctx: MergeContext, run: Run, l: Look, problems: string[], hints:
 }
 
 interface Checked {
+  /** GitHub already merged this entry before a previous drain stopped. */
+  recovered?: boolean;
   pull: MergePull;
   ticket: MergeTicket | null;
   sha: string;
@@ -1366,6 +1368,12 @@ export const runtimeGuide = (runtime: string | null) =>
         .replace(/^-|-$/g, "")}`
     : null;
 
+function recordedPartial(ticket: Ticket, pr: number) {
+  return ticket.comments.find(
+    (c) => c.status?.phase === "implementing" && c.status.summary.startsWith(`PR #${pr} merged into `),
+  );
+}
+
 /** GitHub's Linear automation may complete the issue seconds after the merge. */
 async function keepTicketOpen(
   ctx: MergeContext,
@@ -1577,6 +1585,7 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
       }
       const ticket = await mergeTicketFor(ctx, pull, input);
       const c: Checked = {
+        recovered: true,
         pull,
         ticket,
         sha: pull.headSha,
@@ -1782,7 +1791,19 @@ async function after(
   const ticket = c.ticket;
   let chorePending = false;
   let live$: MergeRecorded | null = null;
-  if (ticket) {
+  const recorded =
+    c.recovered && keepOpen && ticket && !("armadaHandBack" in ticket) ? recordedPartial(ticket, merged.number) : null;
+  // A completed partial hand-back may now belong to the next PR. Recovery must not resolve it or undo its phase.
+  if (recorded && ticket) {
+    live$ = await mergeLive(ctx, c.warnings, "read retained worker claims", async (fleet) => {
+      const handles = await fleet.runtimeHandles();
+      return {
+        handle: handles.find((h) => h.ticket === ticket.id && !h.releasedAt) ?? null,
+        open: handles.filter((h) => !h.releasedAt),
+        resolved: 0,
+      };
+    });
+  } else if (ticket) {
     for (let attempt = 0; ; attempt++) {
       live$ = await mergeLive(ctx, c.warnings, "record the merge", (fleet) =>
         fleet.merge({
@@ -1818,12 +1839,14 @@ async function after(
       c.warnings.push(`Could not end worker sessions (${err instanceof Error ? err.message : String(err)})`);
     }
     try {
-      const fresh = await ctx.linear.readTicket(ticket.id);
+      const fresh = recorded && !("armadaHandBack" in ticket) ? ticket : await ctx.linear.readTicket(ticket.id);
       if (!fresh) throw new Error(`ticket ${ticket.id} not found in Linear`);
       lines.push(
-        ...(keepOpen
-          ? await keepTicketOpen(ctx, fresh, merged, c, more, unlocked, override)
-          : await closeTicket(ctx, fresh, merged, c, unlocked, override)),
+        ...(recorded
+          ? [`${ticket.id}: this partial merge is already recorded; retained its current phase.`]
+          : keepOpen
+            ? await keepTicketOpen(ctx, fresh, merged, c, more, unlocked, override)
+            : await closeTicket(ctx, fresh, merged, c, unlocked, override)),
       );
       if (!keepOpen) {
         const spec = await closeFinishedSpec(ctx, fresh);
@@ -1873,7 +1896,7 @@ async function after(
       .map((t) => ({
         ticket: t.id,
         title: t.title,
-        phase: keepOpen && t.id === ticket?.id ? "implementing" : t.phase,
+        phase: keepOpen && !recorded && t.id === ticket?.id ? "implementing" : t.phase,
         runtime: displayHandles.get(t.id)?.runtime ?? t.runtime ?? null,
         handle: displayHandles.get(t.id)?.handle ?? null,
         pr: t.pr ?? null,
@@ -1911,7 +1934,10 @@ async function after(
       ...outcome(c, true, merged, lines, workers, null),
       workersListed: listed,
       keepOpen: true,
-      continuation: { message, claim: live$?.handle ?? null },
+      continuation:
+        recorded && linearTicket?.comments.find((c) => c.status)?.id !== recorded.id
+          ? null
+          : { message, claim: live$?.handle ?? null },
       ...notifications,
       deploy,
       linearPending,
