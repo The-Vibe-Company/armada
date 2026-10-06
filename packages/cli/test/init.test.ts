@@ -521,7 +521,8 @@ describe("armada doctor and armada init", () => {
     const after = await f.armada("doctor");
     expect(after.out).toContain('  ok       signed in to armada.example.test as the API key "coordinator" of Acme\n');
     expect(after.out).toContain("  ok       .claude/settings.json has Armada's stop hook");
-    expect(after.out).toEndWith("Everything Armada needs is in place.\n");
+    expect(after.out).toContain("GitHub branch rules not checked: no GitHub token");
+    expect(after.out).toEndWith("0 errors, 1 warning.\n");
     expect(after.code).toBe(0);
 
     const third = await f.armada("init");

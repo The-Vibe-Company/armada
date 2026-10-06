@@ -699,6 +699,126 @@ export async function fetchBranchHead(opts: FetchForgeOptions & { branch: string
 }
 
 const GITHUB_REST = "https://api.github.com";
+
+/** Effective requirements, shared by doctor and merge/commit-signing callers. */
+export interface BranchRules {
+  defaultBranch: string;
+  allowSquashMerge: boolean;
+  deleteBranchOnMerge: boolean;
+  requiredChecks: string[];
+  requiredApprovals: number;
+  requiredCodeOwnerReview: boolean;
+  requiredLastPushApproval: boolean;
+  mergeQueue: boolean;
+  requiredSignatures: boolean;
+  requiredLinearHistory: boolean;
+  strictChecks: boolean;
+  /** 403/404 is an expected fallback to active rules, not proof of no classic protection. */
+  classicProtection: "read" | "unavailable";
+}
+
+interface BranchRule {
+  type: string;
+  parameters?: {
+    required_status_checks?: { context: string }[];
+    strict_required_status_checks_policy?: boolean;
+    required_approving_review_count?: number;
+    require_code_owner_review?: boolean;
+    require_last_push_approval?: boolean;
+    allowed_merge_methods?: string[];
+  };
+}
+
+interface ClassicProtection {
+  required_status_checks?: { contexts?: string[]; checks?: { context: string }[]; strict?: boolean } | null;
+  required_pull_request_reviews?: {
+    required_approving_review_count: number;
+    require_code_owner_reviews?: boolean;
+    require_last_push_approval?: boolean;
+  } | null;
+  required_signatures?: { enabled: boolean };
+  required_linear_history?: { enabled: boolean };
+}
+
+/** Read the default branch's active rules and, when permitted, classic protection. */
+export async function fetchBranchRules(opts: FetchForgeOptions): Promise<BranchRules> {
+  const root = `${GITHUB_REST}/repos/${opts.repository}`;
+  const get = <T>(path: string, classic = false): Promise<T | null> =>
+    httpRequest(
+      `${root}${path}`,
+      { method: "GET", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${opts.token}` } },
+      { ...opts, retry: true, retryStatus, service: "GitHub" },
+      async (res) => {
+        if (classic && [403, 404].includes(res.status)) return null;
+        if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading branch rules`);
+        return (await res.json()) as T;
+      },
+    );
+  const repo = await get<{ default_branch: string; allow_squash_merge: boolean; delete_branch_on_merge: boolean }>("");
+  if (
+    !repo?.default_branch ||
+    typeof repo.allow_squash_merge !== "boolean" ||
+    typeof repo.delete_branch_on_merge !== "boolean"
+  )
+    throw new GithubError("GitHub: incomplete repository merge settings");
+  const branch = encodeURIComponent(repo.default_branch);
+  const rules: BranchRule[] = [];
+  for (let page = 1; ; page++) {
+    const batch = await get<BranchRule[]>(`/rules/branches/${branch}?per_page=100&page=${page}`);
+    if (!Array.isArray(batch) || batch.some((r) => !r || typeof r.type !== "string"))
+      throw new GithubError("GitHub: invalid branch rules");
+    rules.push(...batch);
+    if (batch.length < 100) break;
+    if (page === 10) throw new GithubError("GitHub: branch rules exceeded 1000 entries; not fully checked");
+  }
+  const classic = await get<ClassicProtection>(`/branches/${branch}/protection`, true);
+  const checks = new Set([
+    ...(classic?.required_status_checks?.contexts ?? []),
+    ...(classic?.required_status_checks?.checks?.map((c) => c.context) ?? []),
+  ]);
+  let approvals = classic?.required_pull_request_reviews?.required_approving_review_count ?? 0;
+  let strict = classic?.required_status_checks?.strict === true;
+  let squash = repo.allow_squash_merge;
+  for (const rule of rules) {
+    if (rule.type === "required_status_checks") {
+      if (
+        !Array.isArray(rule.parameters?.required_status_checks) ||
+        rule.parameters.required_status_checks.some((c) => !c || typeof c.context !== "string")
+      )
+        throw new GithubError("GitHub: invalid required status checks rule");
+      for (const check of rule.parameters.required_status_checks) checks.add(check.context);
+      strict ||= rule.parameters.strict_required_status_checks_policy === true;
+    }
+    if (rule.type === "pull_request") {
+      const count = rule.parameters?.required_approving_review_count;
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 0)
+        throw new GithubError("GitHub: invalid required approvals rule");
+      approvals = Math.max(approvals, count);
+      if (rule.parameters?.allowed_merge_methods) squash &&= rule.parameters.allowed_merge_methods.includes("squash");
+    }
+  }
+  return {
+    defaultBranch: repo.default_branch,
+    allowSquashMerge: squash,
+    deleteBranchOnMerge: repo.delete_branch_on_merge,
+    requiredChecks: [...checks].sort(),
+    requiredApprovals: approvals,
+    requiredCodeOwnerReview:
+      classic?.required_pull_request_reviews?.require_code_owner_reviews === true ||
+      rules.some((r) => r.type === "pull_request" && r.parameters?.require_code_owner_review === true),
+    requiredLastPushApproval:
+      classic?.required_pull_request_reviews?.require_last_push_approval === true ||
+      rules.some((r) => r.type === "pull_request" && r.parameters?.require_last_push_approval === true),
+    mergeQueue: rules.some((r) => r.type === "merge_queue"),
+    requiredSignatures:
+      classic?.required_signatures?.enabled === true || rules.some((r) => r.type === "required_signatures"),
+    requiredLinearHistory:
+      classic?.required_linear_history?.enabled === true || rules.some((r) => r.type === "required_linear_history"),
+    strictChecks: strict,
+    classicProtection: classic ? "read" : "unavailable",
+  };
+}
+
 const LOG_BYTES = 5 * 1024 * 1024;
 
 /** Actions job log: bounded streaming read, redirects never carry a key off GitHub. */

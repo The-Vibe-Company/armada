@@ -19,8 +19,10 @@ import {
   checkLabels,
   checkRepository,
   compareVersions,
+  fetchBranchRules,
   installCommand,
   LINEAR_KEY,
+  mergeCompatibility,
   parseConfig,
   projectOf,
   RETIRED_VARIABLES,
@@ -168,6 +170,30 @@ async function labelChecks(io: Io, config: ArmadaConfig | null, credentials: Cre
         fix: "run doctor again once Linear answers",
       },
     ];
+  }
+}
+
+async function branchRuleChecks(io: Io, config: ArmadaConfig | null, credentials: Credentials): Promise<Check[]> {
+  if (!config) return [];
+  const warning = (reason: string): Check[] => [
+    {
+      id: "merge-rules",
+      level: "warning",
+      message: `GitHub branch rules not checked: ${reason}`,
+      fix: "use a GitHub token with repository Metadata read access, then run doctor again; classic protection also needs Administration read access",
+    },
+  ];
+  if (!credentials.githubToken) return warning("no GitHub token");
+  try {
+    const rules = await fetchBranchRules({
+      repository: config.github.repository,
+      token: credentials.githubToken,
+      ...httpOptions(io),
+    });
+    return mergeCompatibility(rules, config.gates);
+  } catch {
+    // Provider bodies and transport errors are deliberately omitted: they may contain credentials.
+    return warning("GitHub did not return readable, complete rules; check access or retry once GitHub answers");
   }
 }
 
@@ -418,6 +444,7 @@ export async function buildDoctor(
         ]
       : []),
     ...(await labelChecks(io, config, credentials)),
+    ...(await branchRuleChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
     ...(config?.conductor.projectId || config?.conductor.baseBranch
       ? [
@@ -457,7 +484,7 @@ export function renderDoctor(r: DoctorReport): string {
   if (!r.errors && !r.warnings) lines.push("Everything Armada needs is in place.");
   else
     lines.push(
-      `${plural(r.errors, "error")}, ${plural(r.warnings, "warning")}.${r.errors ? " Workers cannot be launched until the errors are fixed." : ""}`,
+      `${plural(r.errors, "error")}, ${plural(r.warnings, "warning")}.${r.errors ? " Fix errors before running the fleet." : ""}`,
     );
   const errors = r.checks.filter((c) => c.level === "error");
   if (errors.length)

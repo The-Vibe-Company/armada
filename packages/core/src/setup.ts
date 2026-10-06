@@ -4,7 +4,8 @@
 // the default branch, and tests need no git.
 import { parse, TomlError } from "smol-toml";
 import { compareVersions, installCommand } from "./armada-api.ts";
-import { CONFIG_FILE, ConfigError, parseConfig } from "./config.ts";
+import { type ArmadaConfig, CONFIG_FILE, ConfigError, parseConfig } from "./config.ts";
+import type { BranchRules } from "./github.ts";
 import { BUNDLED_SKILLS, type BundledSkill, deliveredSkillFiles, SKILLS_SOURCE, skillFolderHash } from "./skills.ts";
 
 export const AGENTS_SKILLS_DIR = ".agents/skills";
@@ -63,6 +64,69 @@ const bad = (id: string, level: Exclude<CheckLevel, "ok">, message: string, fix:
   message,
   fix,
 });
+
+/** Five merge compatibility facts. Empty configured gates means every reported check must pass. */
+export function mergeCompatibility(rules: BranchRules, gates: ArmadaConfig["gates"]): Check[] {
+  const configured = new Set(gates.requiredChecks);
+  const required = new Set(rules.requiredChecks);
+  const missing = configured.size ? [...required].filter((c) => !configured.has(c)).sort() : [];
+  const extra = [...configured].filter((c) => !required.has(c)).sort();
+  const branch = `GitHub default branch ${rules.defaultBranch}`;
+  const differences = [
+    ...(missing.length ? [`GitHub requires checks absent from [gates] required_checks: ${missing.join(", ")}`] : []),
+    ...(extra.length ? [`GitHub does not require configured checks: ${extra.join(", ")}`] : []),
+  ];
+  const reviews = [
+    ...(rules.requiredApprovals ? [`${rules.requiredApprovals} approving review(s)`] : []),
+    ...(rules.requiredCodeOwnerReview ? ["a code-owner review"] : []),
+    ...(rules.requiredLastPushApproval ? ["approval of the last push by another person"] : []),
+  ];
+  return [
+    differences.length
+      ? bad(
+          "merge-checks",
+          missing.length ? "error" : "warning",
+          `${branch}: ${differences.join("; ")}`,
+          "align [gates] required_checks and GitHub's required status checks; add missing checks to Armada and enforce the configured checks on GitHub",
+        )
+      : ok(
+          "merge-checks",
+          `${branch}: required checks match ${configured.size ? "[gates] required_checks" : "Armada's default of checking every reported check"}`,
+        ),
+    rules.allowSquashMerge
+      ? ok("merge-squash", `${branch}: squash merging is allowed`)
+      : bad(
+          "merge-squash",
+          "error",
+          `${branch}: squash merging is disabled; armada merge uses squash`,
+          "enable Allow squash merging in GitHub repository settings and allow squash in any pull request rules",
+        ),
+    reviews.length
+      ? bad(
+          "merge-approvals",
+          "error",
+          `${branch}: ${reviews.join(", ")} required; Armada cannot approve its own pull requests`,
+          "arrange an independent reviewer to approve before armada merge, or change GitHub's required approving review count",
+        )
+      : ok("merge-approvals", `${branch}: no approving reviews required`),
+    rules.mergeQueue
+      ? bad(
+          "merge-queue",
+          "error",
+          `${branch}: GitHub requires a merge queue; armada merge uses a direct squash merge`,
+          "remove the GitHub merge queue requirement, or merge through GitHub's queue instead of armada merge",
+        )
+      : ok("merge-queue", `${branch}: no GitHub merge queue required`),
+    rules.deleteBranchOnMerge
+      ? bad(
+          "merge-delete-branches",
+          "warning",
+          "GitHub automatically deletes head branches after merging; other agents' worktrees may still use them",
+          "turn off Automatically delete head branches in GitHub repository settings; Armada keeps branches",
+        )
+      : ok("merge-delete-branches", "GitHub keeps head branches after merging, as Armada requires"),
+  ];
+}
 
 const skillDir = (name: string) => `${AGENTS_SKILLS_DIR}/${name}`;
 const linkPath = (name: string) => `${CLAUDE_SKILLS_DIR}/${name}`;

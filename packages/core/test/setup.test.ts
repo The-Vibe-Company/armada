@@ -1,4 +1,65 @@
 import { describe, expect, test } from "bun:test";
+import type { BranchRules } from "../src/github.ts";
+import { mergeCompatibility } from "../src/setup.ts";
+
+const branchRules: BranchRules = {
+  defaultBranch: "trunk",
+  allowSquashMerge: true,
+  deleteBranchOnMerge: false,
+  requiredChecks: ["test"],
+  requiredApprovals: 0,
+  requiredCodeOwnerReview: false,
+  requiredLastPushApproval: false,
+  mergeQueue: false,
+  requiredSignatures: true,
+  requiredLinearHistory: true,
+  strictChecks: true,
+  classicProtection: "read",
+};
+
+describe("mergeCompatibility", () => {
+  const checks = (rules: Partial<BranchRules> = {}, requiredChecks = ["test"]) =>
+    mergeCompatibility({ ...branchRules, ...rules }, { requiredChecks, localCommands: [] });
+
+  test("matching gates, signatures, linear history and up-to-date rules allow squash merges", () => {
+    expect(checks()).toHaveLength(5);
+    expect(checks().every((c) => c.level === "ok" && c.fix === null)).toBe(true);
+    expect(checks({}, []).every((c) => c.level === "ok")).toBe(true);
+    expect(checks({ requiredChecks: ["test", "test"] }).every((c) => c.level === "ok")).toBe(true);
+  });
+
+  test("one check line names both differences and errors when GitHub can block a hand-back", () => {
+    const c = checks({ requiredChecks: ["test", "deploy"] }, ["test", "lint"])[0];
+    expect(c?.level).toBe("error");
+    expect(c?.message).toContain("deploy");
+    expect(c?.message).toContain("lint");
+    expect(c?.fix).toContain("required_checks");
+    const weaker = checks({ requiredChecks: [] })[0];
+    expect(weaker?.level).toBe("warning");
+    expect(weaker?.fix).toContain("GitHub");
+  });
+
+  test("squash, external approvals and GitHub queue block merges; branch deletion warns", () => {
+    const results = checks({
+      allowSquashMerge: false,
+      requiredApprovals: 2,
+      mergeQueue: true,
+      deleteBranchOnMerge: true,
+    });
+    expect(results.map((c) => c.level)).toEqual(["ok", "error", "error", "error", "warning"]);
+    expect(results.filter((c) => c.level !== "ok").every((c) => !!c.fix)).toBe(true);
+    expect(results[2]?.fix).toContain("reviewer");
+    expect(results[4]?.fix).toContain("Automatically delete head branches");
+  });
+
+  test("code-owner and last-push review rules block even with a zero approving count", () => {
+    for (const rule of [{ requiredCodeOwnerReview: true }, { requiredLastPushApproval: true }]) {
+      expect(checks(rule)[2]?.level).toBe("error");
+      expect(checks(rule)[2]?.fix).toContain("reviewer");
+    }
+  });
+});
+
 import {
   BUNDLED_SKILLS,
   type Check,
