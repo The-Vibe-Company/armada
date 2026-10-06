@@ -182,7 +182,7 @@ describe("armada watch", () => {
     expect(live.statuses).toEqual([200, 200, 304, 304, 304, 200]);
   });
 
-  test("a new release ends the watch, after the open items", async () => {
+  test("a required upgrade ends the watch, after the open items", async () => {
     const live = tempFleet();
     await holding(live, "DEMO-2");
     await handBack(live, "DEMO-2");
@@ -204,10 +204,11 @@ describe("armada watch", () => {
       ["version", null, true],
     ]);
     const version = got.items[1];
-    expect(version && entryKey(version)).toBe("version:0.2.4");
+    expect(version && entryKey(version)).toContain("version:0.2.4@");
     expect(version?.body).toContain("https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4");
     expect(version?.body).toContain("npm install -g @the-vibe-company/armada@0.2.4");
-    expect(version?.body).toContain("armada merge <n> --no-ticket");
+    expect(version?.body).toContain("armada upgrade");
+    expect(version?.body).not.toContain("armada init");
     // Woken on the first read after the release, not before.
     expect(live.clock.now().getTime() - NOW.getTime()).toBe(30_000);
   });
