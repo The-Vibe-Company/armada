@@ -1259,6 +1259,12 @@ async function keepTicketOpen(
   );
   if (!implementing) throw new Error(`the ${groups.phaseGroup} group has no implementing label`);
   const restore = async (fresh: Ticket) => {
+    if (
+      fresh.statusType !== "completed" &&
+      fresh.labels.some((l) => l.id === implementing.id) &&
+      !others(fresh, groups.phaseGroup, implementing.id).length
+    )
+      return;
     const started = fresh.statusType === "completed" ? firstState(fresh.states, "started") : null;
     await ctx.linear.updateTicket(fresh.uuid, {
       ...(started ? { stateId: started.id } : {}),
@@ -1273,10 +1279,17 @@ async function keepTicketOpen(
   const fresh = await ctx.linear.readTicket(ticket.id);
   if (!fresh) throw new Error(`${ticket.id} could not be read after the partial merge`);
   if (fresh.statusType === "completed" || fresh.agentPhase !== "implementing") await restore(fresh);
-  await ctx.linear.comment(
-    ticket.uuid,
-    `Agent status: implementing — PR #${merged.number} merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}; next: ${more}${unlocked ? "; merged without lock (--no-lock)" : ""}${c.decided ? `; ${c.decided}` : ""}${override ? `; ${override}` : ""}`,
-  );
+  const mergedPrefix = `PR #${merged.number} merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}; next: `;
+  if (
+    !fresh.comments.some(
+      (comment) => comment.status?.phase === "implementing" && comment.status.summary.startsWith(mergedPrefix),
+    )
+  ) {
+    await ctx.linear.comment(
+      ticket.uuid,
+      `Agent status: implementing — PR #${merged.number} merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}; next: ${more}${unlocked ? "; merged without lock (--no-lock)" : ""}${c.decided ? `; ${c.decided}` : ""}${override ? `; ${override}` : ""}`,
+    );
+  }
   return [`${ticket.id}: kept open, phase implementing; PR #${merged.number} merged; next: ${more}.`];
 }
 
@@ -1740,14 +1753,13 @@ function outcome(
 }
 
 const pendingLinearBody = (pr: number, audit = "", more: string | null = null) =>
-  `Finish Linear for #${pr}: ${more === null ? "Done, labels removed, PR linked, merged status" : "implementing, worker retained, PR linked, next part"}. Run: armada merge --finish ${pr}${more === null ? "" : `\nPartial merge next: ${JSON.stringify(more)}`}${audit ? `\nMerge audit: ${audit}` : ""}`;
+  `Finish Linear for #${pr}: ${more === null ? "Done, labels removed, PR linked, merged status" : "implementing, worker retained, PR linked, next part"}. Run: armada merge --finish ${pr}${more === null ? "" : `\nPartial merge next: ${more}`}${audit ? `\nMerge audit: ${audit}` : ""}`;
 
 function pendingPartial(body: string): string | null {
   const line = body.match(/\nPartial merge next: ([^\n]*)/)?.[1];
   if (line === undefined) return null;
-  const more: unknown = JSON.parse(line);
-  if (typeof more !== "string" || !more.trim()) throw new Error("invalid pending partial merge intent");
-  return more;
+  if (!line.trim()) throw new Error("invalid pending partial merge intent");
+  return line;
 }
 
 const linearChorePr = (body: string): number | null => {

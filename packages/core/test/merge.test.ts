@@ -1411,11 +1411,14 @@ describe("Linear outage merge recovery", () => {
     expect(s.forge.merges).toEqual([]);
   });
 
-  test.each(["final", "partial", "partial-with-final-pr"])(
+  test.each(["final", "partial", "partial-with-final-pr", "partial-resolve-failure"])(
     "post-merge Linear failure preserves intent; finish twice writes once (%s)",
     async (mode) => {
       const keepOpen = mode !== "final";
-      const live = tempFleet();
+      let resolutionFails = false;
+      const live = tempFleet({
+        fail: (op) => (resolutionFails && op === "inbox/resolve" ? new Error("Armada unavailable") : null),
+      });
       const s = setup({ live });
       await handBack(live);
       await live.store.saveRuntimeHandle({
@@ -1463,7 +1466,11 @@ describe("Linear outage merge recovery", () => {
         expect(await live.fleet.ticketItems("DEMO-7")).toEqual([]);
         return;
       }
-      expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
+      resolutionFails = mode === "partial-resolve-failure";
+      const repaired = await finishMerge(s.ctx, { pr: 9 });
+      expect(repaired.linearPending).toBe(false);
+      expect(repaired.armadaPending).toBe(resolutionFails);
+      resolutionFails = false;
       const writes = [...s.linear.writes];
       await finishMerge(s.ctx, { pr: 9 });
       expect(s.linear.writes).toEqual(writes);

@@ -928,17 +928,19 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
   },
 );
 
-test.each(["delivered", "manual", "failed", "replaced", "linear-pending"])(
+test.each(["delivered", "manual", "failed", "replaced", "linear-pending", "linear-pending-special-secret"])(
   "a partial merge retains its worker and continues safely (%s)",
   async (mode) => {
     const f = await fixture();
-    f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+    const pending = mode.startsWith("linear-pending");
+    const secret = mode === "linear-pending-special-secret" ? 'synthetic"project\\secret' : "synthetic-project-secret";
+    f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", secret]]));
     f.linear.post(
       "DEMO-18",
-      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part synthetic-project-secret`,
+      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part ${secret}`,
       "2026-03-04T09:50:00Z",
     );
-    if (mode === "linear-pending")
+    if (pending)
       f.linear.updateTicket = async () => {
         throw new Error("Linear unavailable");
       };
@@ -991,21 +993,19 @@ test.each(["delivered", "manual", "failed", "replaced", "linear-pending"])(
     expect(f.armada.calls.map((c) => c.path)).not.toContain("workers/end");
     expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
     expect(calls.some((args) => args[2] === "archive")).toBe(false);
-    expect(inputs.length).toBe(mode === "delivered" || mode === "failed" || mode === "linear-pending" ? 1 : 0);
+    expect(inputs.length).toBe(mode === "delivered" || mode === "failed" || pending ? 1 : 0);
     expect(out.lines.join("\n")).toContain(
-      mode === "delivered" || mode === "linear-pending" ? "continuation delivered" : "Deliver to DEMO-18",
+      mode === "delivered" || pending ? "continuation delivered" : "Deliver to DEMO-18",
     );
     expect(f.out() + f.err()).not.toContain("CANARY");
-    expect(inputs.join("\n") + f.out() + f.err() + f.linear.bodies.join("\n")).not.toContain(
-      "synthetic-project-secret",
-    );
+    expect(inputs.join("\n") + f.out() + f.err() + f.linear.bodies.join("\n")).not.toContain(secret);
     expect(JSON.stringify(out.continuation)).toContain("«secret CUSTOM_KEY»");
-    if (mode === "linear-pending") {
+    if (pending) {
       const chore = (await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
         (i) => i.kind === "linear-pending",
       );
       expect(chore?.body).toContain("«secret CUSTOM_KEY»");
-      expect(chore?.body).not.toContain("synthetic-project-secret");
+      expect(chore?.body).not.toContain(secret);
     }
   },
 );
