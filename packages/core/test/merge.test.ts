@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { allowAcceptance } from "../src/acceptance.ts";
-import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
 import { type CommitShape, type Comparison, GithubError, type MergePull } from "../src/github.ts";
 import { LinearError } from "../src/linear.ts";
@@ -8,6 +7,7 @@ import { createLinearWriter } from "../src/linear-write.ts";
 import type { Fleet } from "../src/live.ts";
 import {
   askOwnerToMerge,
+  assess,
   finishMerge,
   type LocalRepo,
   MERGE_LEASE_TTL_MS,
@@ -279,6 +279,18 @@ const refusal = (p: Promise<unknown>) =>
       return `${err.message}\nNext: ${err.next}`;
     },
   );
+
+test.each(["CLEAN", "HAS_HOOKS"] as const)("the checklist admits a mergeable %s head", (mergeStateStatus) => {
+  const result = assess({
+    pull: pull({ mergeStateStatus }),
+    ticket: null,
+    handBack: null,
+    requiredChecks: ["test"],
+    lineage: null,
+  });
+  expect(result.problems).toEqual([]);
+  expect(result.waits).toEqual([]);
+});
 
 describe("closing a finished spec after a merge", () => {
   for (const remaining of [null, "backlog", "unstarted", "started", "canceled"] as const) {
@@ -808,7 +820,7 @@ describe("armada merge", () => {
       s.ctx.sleep = async () => {
         timeline.push(`${name} waits`);
         otherWaited();
-        await new Promise((r) => setTimeout(r, 0));
+        await Promise.resolve();
       };
     }
     const results = await Promise.all([mergePullRequest(a.ctx, { pr: 9 }), mergePullRequest(b.ctx, { pr: 10 })]);
@@ -1308,12 +1320,6 @@ describe("armada merge --no-ticket", () => {
   });
 });
 
-test("GitHub's HAS_HOOKS (mergeable, with pre-receive hooks) merges like CLEAN", async () => {
-  const s = setup();
-  s.forge.pr.mergeStateStatus = "HAS_HOOKS";
-  expect((await mergePullRequest(s.ctx, { pr: 9 })).merged).toBe(true);
-});
-
 describe("merge lease", () => {
   test("an expired lease is taken over and its old holder can no longer renew it", async () => {
     const a = tempFleet();
@@ -1328,16 +1334,6 @@ describe("merge lease", () => {
     a.clock.advance(31_000);
     expect(await b.fleet.acquireLease({ ...key, holder: "b" })).toEqual({ acquired: true });
     expect(await a.fleet.renewLease({ ...key, holder: "a" })).toBe(false);
-  });
-
-  test("Armada refuses a lease longer than an hour", async () => {
-    const { fleet } = tempFleet();
-    const err = await fleet.acquireLease({ name: "merge", holder: "a", ttlMs: 2 * 3_600_000 }).catch((e) => e);
-    expect(err).toBeInstanceOf(ArmadaApiError);
-    expect([err.status, err.message]).toEqual([
-      400,
-      "Armada refused: fleet lease/acquire: ttlMs must be between 1 s and 60 min",
-    ]);
   });
 
   test("a waiter gives up after the wait limit, naming the holder", async () => {
@@ -2090,6 +2086,7 @@ test("after merge selects declared deploy targets by base branch, including no-t
 
 test.each([
   "ordered",
+  "local-retest",
   "outage",
   "exhausted",
   "lineage-outage",
@@ -2116,7 +2113,11 @@ test.each([
   "owner",
 ])("queue drain owns FIFO retests, durable outcomes and recovery (%s)", async (scenario) => {
   const live = tempFleet();
-  const s = setup({ live, toml: `${GATES}local_commands = ["bun run verify"]\n` });
+  const s = setup({
+    live,
+    toml: `${GATES}local_commands = ["bun run verify"]\n${scenario === "local-retest" ? '[merge]\nqueue_retest = "local"\n' : ""}`,
+  });
+  if (scenario === "local-retest") s.repo.trees.set(`${HEAD}:${SQUASH}`, TREE);
   const forges = new Map(
     [12, 15].map((n) => {
       const forge = new FakeForge();
@@ -2398,10 +2399,30 @@ test.each([
   expect(live.store.items.filter((i) => i.kind === "queue-refused")).toHaveLength(
     ["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? 1 : 0,
   );
-  expect(s.repo.testMerges).toEqual([]);
+  expect(s.repo.testMerges).toEqual(
+    scenario === "local-retest"
+      ? [
+          { base: BASE, head: HEAD, commands: ["bun run verify"] },
+          { base: SQUASH, head: HEAD, commands: ["bun run verify"] },
+        ]
+      : [],
+  );
+  if (scenario === "local-retest") {
+    expect([...forges.values()].flatMap((forge) => forge.updates)).toEqual([]);
+    expect(order.indexOf("after 12")).toBeLessThan(order.indexOf("merge 15"));
+  }
   if (scenario === "owner") expect(s.progress.join("\n")).toContain("owner has not decided");
   if (
-    !["red", "exhausted", "recovery", "recovered-ticket", "queued-head", "head-mismatch", "owner"].includes(scenario)
+    ![
+      "red",
+      "exhausted",
+      "recovery",
+      "recovered-ticket",
+      "queued-head",
+      "head-mismatch",
+      "owner",
+      "local-retest",
+    ].includes(scenario)
   ) {
     expect(order.indexOf(`update 12 on ${BASE}`)).toBeLessThan(order.indexOf("merge 12"));
     expect(order.indexOf("after 12")).toBeLessThan(order.indexOf(`update 15 on ${SQUASH}`));

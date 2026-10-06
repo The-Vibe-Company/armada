@@ -46,6 +46,12 @@ describe("choosing a worker's profile", () => {
     });
     expect(choose(["bug", "web"])).toMatchObject({ name: "opus", rule: { index: 1, label: "web" } });
     expect(choose(["Feature", "BUG"])).toMatchObject({ name: "debug", profile: { effort: "xhigh" } });
+    expect(choose(["docs"])).toMatchObject({
+      name: "opus",
+      source: "default",
+      rule: null,
+      why: "conductor.default_profile (no routing rule matched)",
+    });
     // Letters of any script count; other characters do not make two names equal.
     const scripts = parseConfig(
       `${DEMO_TOML}[conductor]\ndefault_profile = "a"\n[conductor.profiles.a]\nagent = "x"\nmodel = "y"\neffort = "z"\n[[conductor.routing]]\nlabels = ["前端", "Élevé"]\nprofile = "a"\n`,
@@ -58,15 +64,6 @@ describe("choosing a worker's profile", () => {
       "rule",
       "rule",
     ]);
-  });
-
-  test("a ticket no rule matches gets default_profile", () => {
-    expect(choose(["docs"])).toMatchObject({
-      name: "opus",
-      source: "default",
-      rule: null,
-      why: "conductor.default_profile (no routing rule matched)",
-    });
   });
 
   test("--profile wins over the route, and an override of the route needs a reason", () => {

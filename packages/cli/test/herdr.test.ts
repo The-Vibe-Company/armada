@@ -239,13 +239,26 @@ test("malformed topology and unsafe names stop before an agent is started", asyn
 
 test("failures never echo a prompt or arbitrary herdr diagnostics", async () => {
   const f = fake([new Error("armada_launch_CANARY\nprivate prompt")]);
-  await expect(
-    new Herdr(f.io).prompt({ workspace: "w8", pane: "w8:p3", agent: "demo-7", path: "/work" }, "armada_launch_CANARY"),
-  ).rejects.toThrow("herdr agent prompt failed");
+  const nativeFailure = await new Herdr(f.io)
+    .prompt({ workspace: "w8", pane: "w8:p3", agent: "demo-7", path: "/work" }, "armada_launch_CANARY")
+    .then(
+      () => null,
+      (error: Error) => error,
+    );
+  expect(nativeFailure).toBeInstanceOf(Error);
+  expect(nativeFailure?.message).toContain("herdr agent prompt failed");
+  expect(nativeFailure?.message).not.toContain("armada_launch_CANARY");
+  expect(nativeFailure?.message).not.toContain("private prompt");
   const g = fake([{ error: { code: "agent_blocked", message: "armada_launch_CANARY" } }]);
-  await expect(
-    new Herdr(g.io).prompt({ workspace: "w8", pane: "w8:p3", agent: "demo-7", path: "/work" }, "armada_launch_CANARY"),
-  ).rejects.toThrow("agent_blocked");
+  const structuredFailure = await new Herdr(g.io)
+    .prompt({ workspace: "w8", pane: "w8:p3", agent: "demo-7", path: "/work" }, "armada_launch_CANARY")
+    .then(
+      () => null,
+      (error: Error) => error,
+    );
+  expect(structuredFailure).toBeInstanceOf(Error);
+  expect(structuredFailure?.message).toContain("agent_blocked");
+  expect(structuredFailure?.message).not.toContain("armada_launch_CANARY");
 });
 
 test("harnesses receive explicit model and effort arguments", () => {
@@ -512,9 +525,13 @@ test("pane and metadata failures are sanitized, even when pane cleanup also fail
     new Error("CANARY_private_provider_key"),
     new Error("CANARY_private_provider_key"),
   ]);
-  await expect(new Herdr(f.io).start({ ...claim, path: "/work" }, opencodeProfile)).rejects.toThrow(
-    "could not close worker pane",
+  const metadataFailure = await new Herdr(f.io).start({ ...claim, path: "/work" }, opencodeProfile).then(
+    () => null,
+    (error: Error) => error,
   );
+  expect(metadataFailure).toBeInstanceOf(Error);
+  expect(metadataFailure?.message).toContain("could not close worker pane");
+  expect(metadataFailure?.message).not.toContain("CANARY_private_provider_key");
   const g = fake([
     agent("idle", "opencode"),
     metadata,
@@ -523,9 +540,13 @@ test("pane and metadata failures are sanitized, even when pane cleanup also fail
     new Error("CANARY_private_pane_text"),
     { result: { type: "ok" } },
   ]);
-  await expect(new Herdr(g.io).start({ ...claim, path: "/work" }, opencodeProfile)).rejects.toThrow(
-    "No worker brief was sent",
+  const paneFailure = await new Herdr(g.io).start({ ...claim, path: "/work" }, opencodeProfile).then(
+    () => null,
+    (error: Error) => error,
   );
+  expect(paneFailure).toBeInstanceOf(Error);
+  expect(paneFailure?.message).toContain("No worker brief was sent");
+  expect(paneFailure?.message).not.toContain("CANARY_private_pane_text");
 });
 
 test("sign off enables worktree config and disables signing only in the created worktree; inherit writes no Git config", async () => {

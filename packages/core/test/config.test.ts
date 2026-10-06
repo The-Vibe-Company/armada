@@ -101,11 +101,70 @@ describe("armada.toml", () => {
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
       herdr: { defaultProfile: null, profiles: {}, routing: [] },
     });
+    const quotas = parseConfig(
+      `${DEMO_TOML}\n[policy]\nattachments_per_ticket = 4\nattachments_project_mb = 8\nattachments_retention_days = 2\n`,
+    ).policy;
+    expect([quotas.attachmentsPerTicket, quotas.attachmentsProjectMb, quotas.attachmentsRetentionDays]).toEqual([
+      4, 8, 2,
+    ]);
+    expect(() => parseConfig(`${DEMO_TOML}\n[policy]\nattachments_per_ticket = 0`)).toThrow("positive integer");
+    expect(
+      parseConfig(DEMO_TOML.replace("[tracker]\n", '[tracker]\nparked_label = "on-hold"\n')).tracker.parkedLabel,
+    ).toBe("on-hold");
   });
 
-  test("the parked label is configurable", () => {
-    const toml = DEMO_TOML.replace("[tracker]\n", '[tracker]\nparked_label = "on-hold"\n');
-    expect(parseConfig(toml).tracker.parkedLabel).toBe("on-hold");
+  test("CI known-failure entries validate their regex, ticket and keys", () => {
+    for (const [row, message] of [
+      ['check = "test"\npattern = "["\nticket = "DEMO-42"', "valid regex"],
+      ['check = "test"\npattern = "cold start"', "ticket"],
+      ['check = "test"\npattern = "cold start"\nticket = "bad"', "issue identifier"],
+      ['check = "test"\npattern = "cold start"\nticket = "DEMO-42"\nextra = true', "unknown key"],
+    ] as const)
+      expect(() => parseConfig(`${DEMO_TOML}\n[[ci.known_failure]]\n${row}`)).toThrow(message);
+  });
+
+  test("deploy targets validate their source, names, timeout and keys", () => {
+    expect(parseConfig(DEMO_TOML).deploy).toBeUndefined();
+    const text = `${DEMO_TOML}\n[[deploy.target]]\nname = "api"\ngithub_environment = "production"\n`;
+    expect(parseConfig(text).deploy?.targets[0]).toEqual({
+      name: "api",
+      branch: null,
+      githubEnvironment: "production",
+      liveShaCommand: null,
+      smoke: null,
+      timeoutMinutes: 20,
+      pauseOnFailure: true,
+    });
+    const withJobs = parseConfig(
+      `${text}\n[jobs.eval]\nstart = "dispatch"\nstop = "cancel"\n[[ci.known_failure]]\ncheck = "test"\npattern = "cold start"\nticket = "DEMO-10"`,
+    );
+    expect(withJobs.deploy?.targets[0]?.name).toBe("api");
+    expect(withJobs.jobs.eval?.start).toBe("dispatch");
+    expect(withJobs.ci.knownFailures).toEqual([{ check: "test", pattern: "cold start", ticket: "DEMO-10" }]);
+    for (const extra of [
+      'live_sha_command = "version"',
+      "timeout_minutes = 0",
+      "timeout_minutes = 121",
+      'pause_on_failure = "false"',
+      "typo = true",
+      '[[deploy.target]]\nname = "api"\nlive_sha_command = "version"',
+    ])
+      expect(() => parseConfig(`${text}\n${extra}`)).toThrow();
+    expect(() => parseConfig(`${DEMO_TOML}\n[[deploy.target]]\nname = "api"`)).toThrow();
+  });
+
+  test("job definitions require commands and use positive thresholds", () => {
+    expect(parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "./start.sh"\nstop = "./stop.sh"`).jobs.eval).toEqual({
+      start: "./start.sh",
+      status: null,
+      stop: "./stop.sh",
+      silenceMinutes: 15,
+      maxHours: null,
+    });
+    expect(() => parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstop = "stop"`)).toThrow("jobs.eval.start");
+    expect(() => parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"`)).toThrow("jobs.eval.stop");
+    for (const field of ['start = ""', 'stop = ""', "silence_minutes = 0", "max_hours = -1", 'status = ""', "typo = 1"])
+      expect(() => parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstop = "stop"\n${field}`)).toThrow();
   });
 
   test("every missing key is named at once", () => {

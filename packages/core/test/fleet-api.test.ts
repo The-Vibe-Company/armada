@@ -256,8 +256,39 @@ describe("the fleet through Armada", () => {
   });
 
   test("a worker session claims, reports, asks, validates and releases its own ticket, and nothing else", async () => {
-    const { fleet, store } = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7" } });
+    const serverNow = new Date("2026-03-04T12:00:00.000Z");
+    const { fleet, store } = tempFleet({
+      caller: { kind: "worker", ticket: "DEMO-7" },
+      clock: fakeClock(serverNow),
+    });
     expect(await fleet.claim(claim("DEMO-7"))).toEqual([]);
+    expect(
+      await fleet.report({
+        ticket: "DEMO-7",
+        phase: "implementing",
+        previous: "planning",
+        summary: "working",
+        message: "working",
+        prUrl: null,
+        headSha: null,
+      }),
+    ).toMatchObject({ inbox: [] });
+    expect(await store.lastEventTimes("widgets")).toEqual({ "DEMO-7": serverNow.toISOString() });
+    const ownValidation = await fleet.validate({
+      ticket: "DEMO-7",
+      kind: "validation",
+      what: "Review the working layout",
+      reason: null,
+      choices: null,
+      pr: null,
+      attachments: [],
+    });
+    expect(ownValidation.validation).toMatchObject({
+      ticket: "DEMO-7",
+      kind: "validation",
+      what: "Review the working layout",
+      author: "ws-1/s-1",
+    });
     expect(await fleet.ask({ ticket: "DEMO-7", body: "Which store?" })).toBe(1);
 
     const scope = "a worker session only claims, reports, asks, validates and releases its own ticket (DEMO-7)";
@@ -266,6 +297,36 @@ describe("the fleet through Armada", () => {
       `Armada refused: ${scope}, not DEMO-8`,
       "the coordinator does it",
     ]);
+    const events = store.events.length;
+    const validations = await store.listValidations({ project: "widgets" });
+    expect(
+      await refused(
+        fleet.report({
+          ticket: "DEMO-8",
+          phase: "implementing",
+          previous: "planning",
+          summary: "foreign work",
+          message: "foreign work",
+          prUrl: null,
+          headSha: null,
+        }),
+      ),
+    ).toEqual([403, `Armada refused: ${scope}, not DEMO-8`, "the coordinator does it"]);
+    expect(
+      await refused(
+        fleet.validate({
+          ticket: "DEMO-8",
+          kind: "validation",
+          what: "foreign work",
+          reason: null,
+          choices: null,
+          pr: null,
+          attachments: [],
+        }),
+      ),
+    ).toEqual([403, `Armada refused: ${scope}, not DEMO-8`, "the coordinator does it"]);
+    expect(store.events.length).toBe(events);
+    expect(await store.listValidations({ project: "widgets" })).toEqual(validations);
     for (const call of [
       () => fleet.inbox({ coordinator: null, silentAfterMinutes: 15, etag: null }),
       () => fleet.inboxItem(1),
@@ -287,7 +348,7 @@ describe("the fleet through Armada", () => {
       expect((await refused(call()))[0]).toBe(403);
     expect((await store.getInboxItem("widgets", 1))?.resolvedAt).toBeNull();
     await fleet.release({ ticket: "DEMO-7", reason: "done" });
-    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(serverNow.toISOString());
   });
 
   test("shipping detail crosses the API without changing the legacy timestamp response", async () => {
@@ -375,13 +436,6 @@ describe("the fleet through Armada", () => {
     expect((await fleet.latestEvents())["DEMO-7"]?.shippingStage).toBeNull();
   });
 
-  test("times are the server's, whatever the terminal's clock says", async () => {
-    const clock = fakeClock(new Date("2026-03-04T12:00:00.000Z"));
-    const { fleet, store } = tempFleet({ clock });
-    await fleet.claim(claim("DEMO-7"));
-    expect(await store.lastEventTimes("widgets")).toEqual({ "DEMO-7": "2026-03-04T12:00:00.000Z" });
-  });
-
   test("a malformed request is refused, and nothing is written", async () => {
     const store = memoryFleet();
     const deps = { now: () => NOW, sleep: async () => {} };
@@ -392,6 +446,12 @@ describe("the fleet through Armada", () => {
       next: "update the CLI: npm install -g @the-vibe-company/armada",
     });
     expect((await run("report", { ticket: "DEMO-7", phase: "dreaming", summary: "x" })).status).toBe(400);
+    const invalidLease = await run("lease/acquire", { name: "merge", holder: "a", ttlMs: 2 * 3_600_000 });
+    expect(invalidLease.status).toBe(400);
+    expect(invalidLease.body).toEqual({
+      error: "fleet lease/acquire: ttlMs must be between 1 s and 60 min",
+      next: "update the CLI: npm install -g @the-vibe-company/armada",
+    });
     expect((await run("merge", { ticket: "DEMO-7", number: 9, url: "u", headSha: "not-a-sha" })).status).toBe(400);
     expect(
       (await run("merge", { ticket: "DEMO-7", number: 9, url: "u", headSha: "a".repeat(40), keepOpen: "yes" })).status,
