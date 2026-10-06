@@ -8,6 +8,8 @@ export class HttpRequestError extends Error {
     error: unknown,
     timeoutMs: number,
     readonly attempts: number,
+    /** Whether the underlying deadline/network failure was eligible for safe retry. */
+    readonly transient = false,
   ) {
     super(
       `${networkReason(error, timeoutMs)}${attempts > 1 ? `; failed after ${attempts} attempts (${attempts === 2 ? "one retry" : `${attempts - 1} retries`})` : ""}`,
@@ -19,15 +21,16 @@ export function networkReason(err: unknown, timeoutMs: number): string {
   if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"))
     return `no answer within ${timeoutMs >= 1000 ? `${Math.round(timeoutMs / 1000)} s` : `${timeoutMs} ms`}`;
   const code = codeOf(err);
+  // Only known diagnostic code shapes are echoed; all codes still participate in retry eligibility.
+  const visible = code && /^(?:E[A-Z_]+|UND_ERR_[A-Z_]+|ConnectionClosed|ConnectionRefused)$/.test(code) ? code : null;
   const message = err instanceof Error ? err.message : String(err);
-  return code && !message.includes(code) ? `${message} (${code})` : message;
+  return visible && !message.includes(visible) ? `${message} (${visible})` : message;
 }
 
 function codeOf(error: unknown): string | null {
   for (let depth = 0; depth < 4 && error && typeof error === "object"; depth++) {
     const e = error as { code?: unknown; cause?: unknown };
-    if (typeof e.code === "string" && /^(?:E[A-Z_]+|UND_ERR_[A-Z_]+|ConnectionClosed|ConnectionRefused)$/.test(e.code))
-      return e.code;
+    if (typeof e.code === "string") return e.code;
     error = e.cause;
   }
   return null;
@@ -185,7 +188,7 @@ export async function httpRequest<T>(
         transportRetries++;
         continue;
       }
-      throw new HttpRequestError(cause, limit, attempt);
+      throw new HttpRequestError(cause, limit, attempt, transient(cause));
     } finally {
       deadline.removeEventListener("abort", onDeadline);
       // Abort closes a failed request's socket; its retry gets a new signal.

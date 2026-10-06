@@ -2,9 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
 import type { CommitShape, Comparison, MergePull } from "../src/github.ts";
+import { LinearError } from "../src/linear.ts";
+import { createLinearWriter } from "../src/linear-write.ts";
 import type { Fleet } from "../src/live.ts";
 import {
   askOwnerToMerge,
+  finishMerge,
   type LocalRepo,
   type MergeAttempt,
   type MergeContext,
@@ -1178,4 +1181,200 @@ test("main red is an informative merge note and health read failures do not bloc
   };
   const unavailable = await mergePullRequest(s.ctx, { pr: 9, dryRun: true });
   expect(unavailable.lines).toContain("default-branch CI could not be read; check it on GitHub");
+});
+
+describe("Linear outage merge recovery", () => {
+  const down = () => new LinearError("Linear API HTTP 503", true, true);
+  const handBack = (live: ReturnType<typeof tempFleet>, body = `PR #9, head ${HEAD}, CI green`) =>
+    live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body, at: NOW });
+
+  test("checks an exact open Armada hand-back when Linear is down, then records the merge before any Linear write", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    await handBack(live);
+    await live.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "Conductor",
+      handle: "ws-1/s-1",
+      branch: null,
+      at: NOW,
+    });
+    let linearReads = 0;
+    s.linear.readTicket = createLinearWriter({
+      apiKey: "synthetic-key",
+      labels: s.ctx.config.tracker.labels,
+      fetch: async () => {
+        linearReads++;
+        return new Response("Service unavailable", { status: 503 });
+      },
+      sleep: async () => {},
+      random: () => 0.5,
+    }).readTicket;
+    const out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(linearReads).toBe(9);
+    expect(out.merged).toBe(true);
+    expect(out.linearPending).toBe(true);
+    expect(out.lines).toContain("Linear did not answer; the hand-back was checked on Armada");
+    expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+    const items = await live.fleet.ticketItems("DEMO-7");
+    expect((await live.store.getInboxItem("widgets", 1))?.resolvedAt).toBe(NOW.toISOString());
+    expect(items.find((i) => i.kind === "linear-pending")?.body).toContain("Finish Linear for #9");
+    expect(s.linear.writes).toEqual([]);
+  });
+
+  test.each([
+    `PR #8, head ${HEAD}`,
+    `PR #9, head ${BASE}`,
+    "PR #9, head 0123456",
+    "PR #9 has no SHA",
+    `PR #9, head ${HEAD}ffff`,
+  ])("refuses an unmatched fallback: %s", async (body) => {
+    const live = tempFleet();
+    const s = setup({ live });
+    await handBack(live, body);
+    s.linear.readTicket = async () => {
+      throw down();
+    };
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toContain("nothing was merged");
+    expect(s.forge.merges).toEqual([]);
+  });
+
+  test("an authentication failure never uses the fallback", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    await handBack(live);
+    s.linear.readTicket = async () => {
+      throw new LinearError("Linear rejected the API key (HTTP 401)", true);
+    };
+    await expect(mergePullRequest(s.ctx, { pr: 9 })).rejects.toThrow("HTTP 401");
+    expect(s.forge.merges).toEqual([]);
+  });
+
+  test("post-merge Linear failure leaves a released claim and a visible chore; finish twice writes once", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    await handBack(live);
+    await live.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-7",
+      runtime: "Conductor",
+      handle: "ws-1/s-1",
+      branch: null,
+      at: NOW,
+    });
+    let sessionEnded = false;
+    s.ctx.afterRecord = async () => {
+      sessionEnded = true;
+    };
+    const update = s.linear.updateTicket.bind(s.linear);
+    s.linear.updateTicket = async () => {
+      expect(sessionEnded).toBe(true);
+      expect(live.store.events.some((e) => e.kind === "merge")).toBe(true);
+      expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+      throw down();
+    };
+    const out = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.linearPending).toBe(true);
+    expect((await live.fleet.ticketItems("DEMO-7")).filter((i) => i.kind === "linear-pending")).toHaveLength(1);
+    s.linear.updateTicket = update;
+    expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
+    const writes = [...s.linear.writes];
+    await finishMerge(s.ctx, { pr: 9 });
+    expect(s.linear.writes).toEqual(writes);
+    expect(s.linear.bodies.filter((b) => b.startsWith("Agent status: merged — PR #9"))).toHaveLength(1);
+    expect(await live.fleet.ticketItems("DEMO-7")).toEqual([]);
+    expect(s.forge.merges).toHaveLength(1);
+  });
+
+  test("finish rejects an open PR without a lease, and finishes a manually merged PR", async () => {
+    const s = setup();
+    await expect(finishMerge(s.ctx, { pr: 9 })).rejects.toThrow("not merged");
+    expect(s.linear.writes).toEqual([]);
+    Object.assign(s.forge.pr, { state: "merged", mergeCommit: SQUASH });
+    const out = await finishMerge(s.ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+    expect(s.forge.merges).toEqual([]);
+  });
+});
+
+test("Linear fallback preserves CI and owner approval gates, and ignores resolved hand-backs", async () => {
+  for (const gate of ["ci", "owner", "resolved", "missing"] as const) {
+    const live = tempFleet();
+    const s = setup({ live });
+    if (gate !== "missing")
+      await live.store.putHandBack({
+        project: "widgets",
+        ticket: "DEMO-7",
+        author: null,
+        body: `PR #9, head ${HEAD}`,
+        at: NOW,
+      });
+    s.linear.readTicket = async () => {
+      throw new LinearError("Linear API HTTP 503", true, true);
+    };
+    if (gate === "ci") s.forge.pr.checks = [{ name: "test", state: "failure" }];
+    if (gate === "owner")
+      await live.fleet.validate({
+        ticket: "DEMO-7",
+        kind: "merge",
+        what: "Check this PR",
+        reason: "owner must check",
+        choices: null,
+        pr: {
+          number: 9,
+          url: s.forge.pr.url,
+          title: s.forge.pr.title,
+          headSha: HEAD,
+          files: null,
+          additions: 1,
+          deletions: 0,
+          ci: "success",
+          preview: null,
+        },
+        attachments: [],
+      });
+    if (gate === "resolved") await live.fleet.resolve({ id: 1, resolution: "obsolete" });
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9 }))).toContain(
+      gate === "ci" ? "test" : gate === "owner" ? "owner has not decided" : "nothing was merged",
+    );
+    expect(s.forge.merges).toEqual([]);
+    expect(live.store.events.filter((e) => e.kind === "merge")).toEqual([]);
+  }
+});
+
+test("a confirmed merge reports both pending systems when Armada and Linear are down", async () => {
+  const live = tempFleet({
+    fail: (op) => (op === "merge" || op === "chore" ? new Error("service unavailable") : null),
+  });
+  const s = setup({ live });
+  s.linear.updateTicket = async () => {
+    throw new LinearError("Linear API HTTP 503", true, true);
+  };
+  const out = await mergePullRequest(s.ctx, { pr: 9 });
+  expect(out).toMatchObject({ merged: true, linearPending: true, armadaPending: true });
+  expect(out.lines.some((line) => line.startsWith("Next: armada answer"))).toBe(true);
+  expect(out.lines).toContain("Next: armada merge --finish 9");
+});
+
+test("finish repairs partial Linear writes and leaves chores open until all steps complete", async () => {
+  const live = tempFleet();
+  const s = setup({ live });
+  const comment = s.linear.comment.bind(s.linear);
+  s.linear.comment = async () => {
+    throw new Error("Linear unavailable");
+  };
+  await mergePullRequest(s.ctx, { pr: 9 });
+  expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+  expect(s.linear.get("DEMO-7").prs).toHaveLength(1);
+  expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(true);
+  expect((await live.fleet.ticketItems("DEMO-7")).filter((i) => i.kind === "linear-pending")).toHaveLength(1);
+  s.linear.comment = comment;
+  expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
+  expect(s.linear.writes.filter((w) => w.startsWith("update"))).toHaveLength(1);
+  expect(s.linear.writes.filter((w) => w.startsWith("link"))).toHaveLength(1);
+  expect(s.linear.bodies).toHaveLength(1);
 });

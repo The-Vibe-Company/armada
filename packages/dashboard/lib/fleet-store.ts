@@ -10,6 +10,7 @@
 import type {
   Attachment,
   CatchupRecords,
+  ChoreRecord,
   CoordinatorPresence,
   CoordinatorSeen,
   EventInput,
@@ -791,6 +792,21 @@ export async function putHandBack(
   );
 }
 
+/** Adds or refreshes the coordinator's unfinished Linear work after a confirmed merge. */
+export async function putChore(
+  db: Queryable,
+  item: ChoreRecord & { project: string; author: string | null; at: Date },
+): Promise<void> {
+  await db.query(
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, request_pr, created_at)
+     VALUES ($1, $2, 'linear-pending', 'coordinator', $3, $4, $5, $6)
+     ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind = 'linear-pending'
+     DO UPDATE SET body = excluded.body, author = excluded.author, request_pr = excluded.request_pr,
+                   created_at = excluded.created_at`,
+    [item.project, item.ticket, item.author, item.body, item.pr, item.at],
+  );
+}
+
 /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
 export async function openInboxItems(
   db: Queryable,
@@ -1119,6 +1135,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   addRequest: (r) => addRequest(db, r),
   putPlan: (item) => putPlan(db, item),
   putHandBack: (item) => putHandBack(db, item),
+  putChore: (item) => putChore(db, item),
   openInboxItems: (q) => openInboxItems(db, q),
   getInboxItem: (project, id) => getInboxItem(db, project, id),
   resolveInboxItem: (q) => resolveInboxItem(db, q),

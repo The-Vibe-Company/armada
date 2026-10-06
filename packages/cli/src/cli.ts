@@ -28,7 +28,7 @@ import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
-import { merge } from "./merge.ts";
+import { MergeCommandError, merge, notMergedResult } from "./merge.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
@@ -165,6 +165,8 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
         [--reason <why>] [--ask-owner --reason <why>] [--no-archive]
+  merge --finish <pr> [--ticket <id>]
+                    Complete Linear bookkeeping for a confirmed merge; no merge lock.
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
@@ -362,6 +364,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "finish",
   "merged-pr",
   "claim-key",
   "at",
@@ -435,7 +438,18 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
-  merge: ["ticket", "no-ticket", "no-archive", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
+  merge: [
+    "finish",
+    "ticket",
+    "no-ticket",
+    "no-archive",
+    "dry-run",
+    "no-lock",
+    "wait",
+    "timeout",
+    "reason",
+    "ask-owner",
+  ],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
@@ -788,11 +802,20 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     throw new UsageError(`unknown command "${args.command}"`);
   } catch (err) {
     const command = commandOf(argv);
-    const next = nextStep(err, command && Object.hasOwn(COMMAND_HELP, command) ? command : null);
-    io.stderr(`armada: ${err instanceof Error ? err.message : String(err)}\n${next ? `Next: ${next}\n` : ""}`);
-    return err instanceof UsageError ||
-      err instanceof ConfigError ||
-      (err instanceof Refusal && err.cause instanceof UsageError)
+    if (command === "merge" && !(err instanceof MergeCommandError)) {
+      const result = notMergedResult(err);
+      io.stdout(
+        argv.includes("--json")
+          ? `${JSON.stringify({ merged: false, error: err instanceof Error ? err.message : String(err), result })}\n`
+          : `${result}\n`,
+      );
+    }
+    const error = err instanceof MergeCommandError ? err.cause : err;
+    const next = nextStep(error, command && Object.hasOwn(COMMAND_HELP, command) ? command : null);
+    io.stderr(`armada: ${error instanceof Error ? error.message : String(error)}\n${next ? `Next: ${next}\n` : ""}`);
+    return error instanceof UsageError ||
+      error instanceof ConfigError ||
+      (error instanceof Refusal && error.cause instanceof UsageError)
       ? 2
       : 1;
   }

@@ -164,6 +164,7 @@ const ANSWERABLE: InboxKind[] = [
   "release-request",
   "plan-changes",
   "decision",
+  "linear-pending",
 ];
 
 /**
@@ -247,7 +248,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
 
   if (item?.kind === "launch-request") return declineLaunch(ctx, item, text, warnings);
   // The owner's requests and decisions (THE-885) are carried out, then recorded; nothing is posted on the ticket.
-  if (item && ["merge-request", "release-request", "plan-changes", "decision"].includes(item.kind)) {
+  if (item && ["merge-request", "release-request", "plan-changes", "decision", "linear-pending"].includes(item.kind)) {
     const recorded = await live(ctx, warnings, "resolve the dashboard request", (fleet) =>
       fleet.answer({ text, note: false, ticket: item.ticket, item: item.id }),
     );

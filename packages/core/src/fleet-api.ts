@@ -10,6 +10,7 @@ import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
+  type ChoreRecord,
   type ClaimRecord,
   type Fleet,
   type FleetStore,
@@ -80,6 +81,7 @@ export const FLEET_OPS = [
   "inbox/resolve",
   "answer",
   "merge",
+  "chore",
   "validations",
   "done",
   "lease/acquire",
@@ -477,6 +479,18 @@ export async function serveFleet(
             at,
           );
         }
+        case "chore": {
+          if (b.kind !== "linear-pending") throw new Invalid("unknown chore kind");
+          return store.putChore({
+            project: slug,
+            ticket: ticketOf(b),
+            kind: "linear-pending",
+            pr: idOf(b, "pr"),
+            body: text(b, "body", BODY_MAX),
+            author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
+            at,
+          });
+        }
         case "validate": {
           const input = validationOf(b);
           if (caller.kind === "worker" && input.kind !== "validation")
@@ -662,6 +676,7 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     answer: (a: AnswerRecord) => call<string>("answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
     merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
+    chore: (c: ChoreRecord) => call<null>("chore", c).then(() => undefined),
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),

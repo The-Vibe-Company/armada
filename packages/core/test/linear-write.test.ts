@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Fetch } from "../src/linear.ts";
+import { type Fetch, LinearError } from "../src/linear.ts";
 import { createLinearWriter } from "../src/linear-write.ts";
 import { FakeLinear, NOW } from "./support.ts";
 
@@ -293,5 +293,51 @@ test("comment retries reconcile a lost response before posting again", async () 
     expect(posts).toBe(recorded ? 1 : 2);
     expect(checks).toBe(1);
     expect(linear.bodies).toEqual(["Progress"]);
+  }
+});
+
+test("only exhausted transient HTTP failures enable the merge fallback, including error JSON", async () => {
+  for (const status of [400, 401, 403, 408, 429, 500, 502, 503, 504]) {
+    let calls = 0;
+    const writer = createLinearWriter({
+      apiKey: "synthetic-key",
+      labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
+      fetch: async () => {
+        calls++;
+        return Response.json({ errors: [{ message: "service refused" }] }, { status });
+      },
+      sleep: async () => {},
+      random: () => 0.5,
+    });
+    const error = await writer.readTicket("DEMO-7").catch((err) => err);
+    expect(error).toBeInstanceOf(LinearError);
+    const temporary = [408, 429, 500, 502, 503, 504].includes(status);
+    expect(error.transient).toBe(temporary);
+    expect(calls).toBe(temporary ? 3 : 1);
+  }
+});
+
+test("permanent transport failures cannot authorize an Armada hand-back fallback", async () => {
+  for (const code of [
+    "ECONNRESET",
+    "CERT_HAS_EXPIRED",
+    "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+    "ENOTFOUND",
+    "UNKNOWN_TRANSPORT_CODE",
+  ]) {
+    let calls = 0;
+    const writer = createLinearWriter({
+      apiKey: "synthetic-key",
+      labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
+      fetch: async () => {
+        calls++;
+        throw new TypeError("fetch failed", { cause: { code } });
+      },
+      sleep: async () => {},
+    });
+    const error = await writer.readTicket("DEMO-7").catch((err) => err);
+    expect(error).toBeInstanceOf(LinearError);
+    expect(error.transient).toBe(code === "ECONNRESET");
+    expect(calls).toBe(code === "ECONNRESET" ? 2 : 1);
   }
 });

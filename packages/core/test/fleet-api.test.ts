@@ -26,6 +26,55 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
+  test("only a coordinator records validated Linear chores, scoped to its project and ticket", async () => {
+    const { fleet, store } = tempFleet();
+    const chore = { ticket: "DEMO-7", kind: "linear-pending" as const, pr: 11, body: "Finish Linear for #11" };
+    await fleet.chore(chore);
+    await fleet.chore({ ...chore, body: "Run: armada merge --finish 11" });
+    expect(await fleet.ticketItems("DEMO-7")).toMatchObject([
+      {
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "linear-pending",
+        recipient: "coordinator",
+        body: "Run: armada merge --finish 11",
+      },
+    ]);
+    expect(store.items).toHaveLength(1);
+    expect(
+      (
+        await serveFleet(
+          store,
+          { op: "chore", project: DEMO_PROJECT, caller: { kind: "worker", ticket: "DEMO-7" }, input: chore },
+          { now: () => NOW },
+        )
+      ).status,
+    ).toBe(403);
+    for (const invalid of [{ kind: "question" }, { ticket: "wrong" }, { pr: 0 }, { pr: 1.5 }, { body: " " }]) {
+      const answer = await serveFleet(
+        store,
+        { op: "chore", project: DEMO_PROJECT, caller: { kind: "organization" }, input: { ...chore, ...invalid } },
+        { now: () => NOW },
+      );
+      expect(answer.status).toBe(400);
+    }
+    expect(store.items).toHaveLength(1);
+    const other = await serveFleet(
+      store,
+      {
+        op: "chore",
+        project: { ...DEMO_PROJECT, slug: "other" },
+        caller: { kind: "organization", author: "Synthetic Coordinator" },
+        input: chore,
+      },
+      { now: () => NOW },
+    );
+    expect(other.status).toBe(200);
+    expect(store.items).toHaveLength(2);
+    expect(
+      (await store.openInboxItems({ project: "other", ticket: "DEMO-7", recipient: "coordinator" }))[0]?.author,
+    ).toBe("Synthetic Coordinator");
+  });
   test("release validates guards and always checks a worker caller's session identity", async () => {
     const { fleet, store } = tempFleet();
     await store.saveRuntimeHandle({

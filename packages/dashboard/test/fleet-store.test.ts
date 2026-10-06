@@ -19,6 +19,7 @@ import {
   listSessions,
   openInboxItems,
   openRuntimeHandles,
+  putChore,
   putHandBack,
   putPlan,
   recordCoordinatorSeen,
@@ -400,6 +401,64 @@ describe("the coordinator's inbox", () => {
     await addRequest(db, { ...answer(plan?.id ?? 0, "approved"), ticket: "WID-7" });
     expect(await resolvePlans(db, { project: P, ticket: "WID-7", resolution: "released", at: at(32) })).toBe(1);
     expect((await open()).map((i) => i.kind)).toEqual(["hand-back"]);
+  });
+});
+
+describe("Linear follow-up work", () => {
+  test("one open chore per project and ticket, even when recorded concurrently; resolved history is kept", async () => {
+    const projects = ["chore-a", "chore-b"];
+    for (const project of projects)
+      await upsertProject(
+        db,
+        { slug: project, name: "Chores", repository: "acme/chores", programRoot: "WID-1" },
+        at(0),
+      );
+    const chore = {
+      project: "chore-a",
+      ticket: "WID-77",
+      kind: "linear-pending" as const,
+      pr: 11,
+      author: "coordinator",
+      body: "Finish Linear for #11",
+      at: at(30),
+    };
+    await Promise.all([putChore(db, chore), putChore(db, chore)]);
+    const open = () => openInboxItems(db, { project: chore.project, recipient: "coordinator", ticket: chore.ticket });
+    expect(await open()).toHaveLength(1);
+    const original = (await open())[0];
+    if (!original) throw new Error("missing chore");
+    await putChore(db, { ...chore, body: "Run: armada merge --finish 11", author: "another coordinator", at: at(31) });
+    expect(await open()).toMatchObject([
+      {
+        id: original.id,
+        body: "Run: armada merge --finish 11",
+        author: "another coordinator",
+        createdAt: at(31).toISOString(),
+      },
+    ]);
+    await putChore(db, { ...chore, project: "chore-b" });
+    expect(await openInboxItems(db, { project: "chore-b", recipient: "coordinator" })).toHaveLength(1);
+    await expect(
+      addInboxItem(db, {
+        project: chore.project,
+        ticket: chore.ticket,
+        kind: chore.kind,
+        recipient: "coordinator",
+        author: null,
+        body: "duplicate",
+        at: at(31),
+      }),
+    ).rejects.toThrow("inbox_one_open_chore");
+    expect(
+      await resolveInboxItem(db, { project: chore.project, id: original.id, resolution: "finished", at: at(32) }),
+    ).toBe(true);
+    await putChore(db, { ...chore, at: at(33) });
+    expect(await open()).toHaveLength(1);
+    expect((await open())[0]?.id).not.toBe(original.id);
+    expect(
+      (await db.query("SELECT id FROM inbox_items WHERE project = $1 AND ticket = $2", [chore.project, chore.ticket]))
+        .rows,
+    ).toHaveLength(2);
   });
 });
 
