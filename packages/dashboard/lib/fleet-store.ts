@@ -1,4 +1,5 @@
 import { queueAdd, queueFinish, queueList, queueNext, queueRemove } from "./merge-queue";
+import { requestSecret } from "./secret-requests";
 // The fleet's live data in the app's database (THE-849): the project
 // registry, events, the runtime session holding each ticket and the profile
 // its claim named, the coordinators' inboxes with the dashboard's requests,
@@ -2058,6 +2059,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   pendingLaunches: (project, since, opts) => pendingLaunches(db, project, since, opts),
   expireUnusedLaunches: (project, now, name) => expireUnusedLaunches(db, project, now, name),
   addValidation: (v) => addValidation(db, v),
+  requestSecret: (v) => requestSecret(db, v),
   listValidations: (q) => listValidations(db, q),
   getValidation: (project, id) => getValidation(db, project, id),
   decideValidation: (d) => decideValidation(db, d),
@@ -2065,7 +2067,7 @@ export const fleetStore = (db: Database): FleetStore => ({
 
 // ------------------------------------------------------------------ validations (THE-885)
 
-const VALIDATION_COLUMNS = `id, project, ticket, kind, what, reason, choices, pr, attachments, author, created_at, checks, excerpts, details,
+const VALIDATION_COLUMNS = `id, project, ticket, kind, what, reason, choices, pr, attachments, author, created_at, checks, excerpts, details, secret_name,
   decided_at, outcome, answer, note, decided_by`;
 
 const json = <T>(v: unknown): T | null => (v == null ? null : typeof v === "string" ? (JSON.parse(v) as T) : (v as T));
@@ -2075,6 +2077,7 @@ export const validationRow = (r: Row): Validation => ({
   project: String(r.project),
   ticket: String(r.ticket),
   kind: String(r.kind) as ValidationKind,
+  secretName: text(r.secret_name),
   what: String(r.what),
   ...(r.checks == null ? {} : { checks: json<string[]>(r.checks) ?? [] }),
   ...(r.excerpts == null ? {} : { excerpts: json<NonNullable<Validation["excerpts"]>>(r.excerpts) ?? [] }),
@@ -2098,43 +2101,50 @@ export const validationRow = (r: Row): Validation => ({
 
 /** Adds a validation; the open one it repeats is superseded in the same transaction. */
 export async function addValidation(db: Database, v: Parameters<FleetStore["addValidation"]>[0]): Promise<Validation> {
-  return transaction(db, async (tx) => {
-    // One submission at a time per project: the supersede and the insert never race into the unique indexes.
-    await tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`validations:${v.project}`]);
-    if (v.kind === "merge" && v.pr)
-      await tx.query(
-        `UPDATE validations SET decided_at = $3, outcome = 'superseded'
+  return transaction(db, (tx) => addValidationInTransaction(tx, v));
+}
+
+/** Shares the caller's transaction with a vault request. */
+export async function addValidationInTransaction(
+  tx: Queryable,
+  v: Parameters<FleetStore["addValidation"]>[0],
+): Promise<Validation> {
+  // One submission at a time per project: the supersede and the insert never race into the unique indexes.
+  await tx.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`validations:${v.project}`]);
+  if (v.kind === "merge" && v.pr)
+    await tx.query(
+      `UPDATE validations SET decided_at = $3, outcome = 'superseded'
          WHERE project = $1 AND kind = 'merge' AND pr_number = $2 AND decided_at IS NULL`,
-        [v.project, v.pr.number, v.at],
-      );
-    else if (v.kind === "validation")
-      await tx.query(
-        `UPDATE validations SET decided_at = $3, outcome = 'superseded'
-         WHERE project = $1 AND kind = 'validation' AND ticket = $2 AND decided_at IS NULL`,
-        [v.project, v.ticket, v.at],
-      );
-    const rs = await tx.query(
-      `INSERT INTO validations (project, ticket, kind, what, reason, choices, pr, pr_number, attachments, author, created_at, checks, excerpts, details)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10, $11, $12::jsonb, $13::jsonb, $14) RETURNING ${VALIDATION_COLUMNS}`,
-      [
-        v.project,
-        v.ticket,
-        v.kind,
-        v.what,
-        v.reason,
-        v.choices ? JSON.stringify(v.choices) : null,
-        v.pr ? JSON.stringify(v.pr) : null,
-        v.pr?.number ?? null,
-        JSON.stringify(v.attachments),
-        v.author,
-        v.at,
-        v.checks ? JSON.stringify(v.checks) : null,
-        v.excerpts ? JSON.stringify(v.excerpts) : null,
-        v.details ?? null,
-      ],
+      [v.project, v.pr.number, v.at],
     );
-    return validationRow(rs.rows[0] ?? {});
-  });
+  else if (v.kind === "validation")
+    await tx.query(
+      `UPDATE validations SET decided_at = $3, outcome = 'superseded'
+         WHERE project = $1 AND kind = 'validation' AND ticket = $2 AND decided_at IS NULL`,
+      [v.project, v.ticket, v.at],
+    );
+  const rs = await tx.query(
+    `INSERT INTO validations (project, ticket, kind, what, reason, choices, pr, pr_number, attachments, author, created_at, checks, excerpts, details, secret_name)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10, $11, $12::jsonb, $13::jsonb, $14, $15) RETURNING ${VALIDATION_COLUMNS}`,
+    [
+      v.project,
+      v.ticket,
+      v.kind,
+      v.what,
+      v.reason,
+      v.choices ? JSON.stringify(v.choices) : null,
+      v.pr ? JSON.stringify(v.pr) : null,
+      v.pr?.number ?? null,
+      JSON.stringify(v.attachments),
+      v.author,
+      v.at,
+      v.checks ? JSON.stringify(v.checks) : null,
+      v.excerpts ? JSON.stringify(v.excerpts) : null,
+      v.details ?? null,
+      v.secretName ?? null,
+    ],
+  );
+  return validationRow(rs.rows[0] ?? {});
 }
 
 export async function listValidations(
@@ -2164,21 +2174,27 @@ export async function decideValidation(
   db: Database,
   d: { project: string; id: number; decision: Omit<ValidationDecision, "at">; body: string; at: Date },
 ): Promise<{ item: number } | null> {
-  return transaction(db, async (tx) => {
-    const rs = await tx.query<{ ticket: unknown }>(
-      `UPDATE validations SET decided_at = $3, outcome = $4, answer = $5, note = $6, decided_by = $7
+  return transaction(db, (tx) => decideValidationInTransaction(tx, d));
+}
+
+/** Shares the caller's transaction with the sealed value and its audit event. */
+export async function decideValidationInTransaction(
+  tx: Queryable,
+  d: Parameters<typeof decideValidation>[1],
+): Promise<{ item: number } | null> {
+  const rs = await tx.query<{ ticket: unknown }>(
+    `UPDATE validations SET decided_at = $3, outcome = $4, answer = $5, note = $6, decided_by = $7
        WHERE project = $1 AND id = $2 AND decided_at IS NULL RETURNING ticket`,
-      [d.project, d.id, d.at, d.decision.outcome, d.decision.answer, d.decision.note, d.decision.by],
-    );
-    const ticket = rs.rows[0]?.ticket;
-    if (ticket === undefined) return null;
-    const item = await tx.query<{ id: unknown }>(
-      `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_validation)
+    [d.project, d.id, d.at, d.decision.outcome, d.decision.answer, d.decision.note, d.decision.by],
+  );
+  const ticket = rs.rows[0]?.ticket;
+  if (ticket === undefined) return null;
+  const item = await tx.query<{ id: unknown }>(
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_validation)
        VALUES ($1, $2, 'decision', 'coordinator', $3, $4, $5, $6) RETURNING id`,
-      [d.project, String(ticket), d.decision.by, d.body, d.at, d.id],
-    );
-    return { item: Number(item.rows[0]?.id) };
-  });
+    [d.project, String(ticket), d.decision.by, d.body, d.at, d.id],
+  );
+  return { item: Number(item.rows[0]?.id) };
 }
 
 // ------------------------------------------------------------------ insights (THE-893)

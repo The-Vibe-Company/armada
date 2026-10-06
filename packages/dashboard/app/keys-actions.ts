@@ -8,10 +8,13 @@
 // Linear key, its secrets for workers); every member sets their own Linear
 // key, which only their terminals receive.
 import { redirect } from "next/navigation";
+import { requireFleetAccess } from "@/lib/access";
 import { requireAccounts, requireMember } from "@/lib/accounts-server";
 import { KEYS_PATH } from "@/lib/accounts-settings";
 import { projectsOf } from "@/lib/fleet-store";
 import type { KeysError, KeysNotice } from "@/lib/i18n";
+import type { RequestResult } from "@/lib/requests";
+import { answerSecretRequest } from "@/lib/secret-requests";
 import {
   checkWorkerSecret,
   deleteSecret,
@@ -96,4 +99,31 @@ export async function deleteKey(form: FormData): Promise<void> {
     result = { error: "failed" };
   }
   redirect(page(result, t.project ?? ""));
+}
+
+/** Values go straight to the vault, never into a redirect, decision text or error log. */
+export async function saveRequestedSecret(form: FormData): Promise<RequestResult> {
+  const access = await requireFleetAccess();
+  if (access.kind !== "account") return { ok: false, code: "no-choice", message: "an owner or admin sets this secret" };
+  const id = Number(text(form, "validation"));
+  if (!Number.isSafeInteger(id) || id < 1) return { ok: false, code: "no-validation", message: "no secret request" };
+  const vault = vaultModeOf(process.env);
+  if (vault.kind !== "on") return { ok: false, code: "failed", message: "the vault is unavailable" };
+  const { viewer } = access;
+  const { client } = await requireAccounts();
+  const value = form.get("value");
+  try {
+    return await answerSecretRequest(client, vault.key, {
+      organization: viewer.organization.id,
+      role: viewer.organization.role,
+      project: text(form, "project"),
+      id,
+      value: typeof value === "string" ? value : "",
+      actor: { kind: "person", id: viewer.user.id, label: viewer.signature },
+      now: new Date(),
+    });
+  } catch {
+    // Database/provider errors may contain input. This action returns only a fixed error.
+    return { ok: false, code: "failed", message: "the secret could not be saved" };
+  }
 }

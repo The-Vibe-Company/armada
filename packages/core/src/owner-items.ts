@@ -59,7 +59,7 @@ export function ownerItems(o: Notifiable): OwnerItem[] {
     project: v.project,
     ticket: v.ticket,
     kind: v.kind === "question" ? "question" : "validation",
-    title: v.title ? `${v.ticket} · ${v.title}` : v.ticket,
+    title: v.kind === "secret" ? `${v.secretName} · ${v.project}` : v.title ? `${v.ticket} · ${v.title}` : v.ticket,
     href: `/approve/${v.id}`,
     waiting: 0,
   }));
