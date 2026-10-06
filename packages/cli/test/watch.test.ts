@@ -36,7 +36,12 @@ async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
   dirs.push(home);
   const store = memoryFleet();
   const clock = fakeClock();
-  const armada = fakeArmada({ keys: { [KEY]: "fleet" }, store, clock, ...(o.cli ? { cli: o.cli } : {}) });
+  const armada = fakeArmada({
+    keys: { [KEY]: "fleet" },
+    store,
+    clock,
+    ...(o.cli ? { cli: o.cli } : {}),
+  });
   const out: string[] = [];
   const err: string[] = [];
   const alive = new Set<number>();
@@ -47,6 +52,7 @@ async function coordinator(o: { key?: string; cli?: ServerCli } = {}) {
       XDG_CONFIG_HOME: home,
       ARMADA_API_URL: ARMADA_URL,
       ARMADA_API_KEY: o.key ?? KEY,
+      LINEAR_API_KEY: "synthetic-watch-key",
       ARMADA_COORDINATOR_HANDLE: "ws-coordinator/session",
     },
     readFile: async (path) =>

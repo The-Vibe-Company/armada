@@ -3104,6 +3104,30 @@ a.pj-title:hover {
 .org-panel .ui-form {
   flex-wrap: wrap;
 }
+/* Channel settings stay in document flow, including on a phone. */
+.owner-channel-settings {
+  display: block;
+  width: 100%;
+}
+.owner-channel-panel {
+  position: static;
+  width: min(560px, 100%);
+  margin-top: 10px;
+  box-shadow: none;
+}
+.owner-channel-form {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.5fr) minmax(0, 1fr);
+  align-items: center;
+}
+.owner-channel-form label {
+  font-size: 12px;
+  color: var(--text-soft);
+}
+.owner-channel-form input,
+.owner-channel-form select {
+  min-width: 0;
+}
 /* An API key, shown once after it is created. */
 .ui-secret {
   display: flex;

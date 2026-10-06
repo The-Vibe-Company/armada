@@ -191,3 +191,36 @@ test("versions compare by number", () => {
   expect(compareVersions("0.10.0", "0.9.9")).toBe(1);
   expect(compareVersions("1.2.3-beta.1", "1.2.3")).toBe(0);
 });
+
+test("Armada retries temporary read statuses while broker 429, inbox polls and writes keep their own rules", async () => {
+  const signIn = { kind: "session" as const, token: "synthetic-token" };
+  for (const [op, status, expected] of [
+    ["events/latest", 502, 2],
+    ["inbox", 502, 1],
+    ["report", 503, 1],
+    ["credentials", 502, 2],
+    ["credentials", 429, 1],
+  ] as const) {
+    let calls = 0;
+    const waits: number[] = [];
+    const api = armadaApi({
+      url: ARMADA_URL,
+      random: () => 0.5,
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+      fetch: async () =>
+        ++calls === 1
+          ? Response.json({ error: `HTTP ${status}` }, { status })
+          : Response.json(
+              op === "credentials" ? { schemaVersion: 1, organization: { id: "org-1" }, linear: null } : { result: {} },
+            ),
+    });
+    const result = await (op === "credentials" ? api.credentials(signIn) : api.fleet(signIn, op, {})).catch(
+      (error) => error,
+    );
+    expect(calls).toBe(expected);
+    expect(waits).toEqual(expected === 2 ? [1000] : []);
+    expect(result instanceof ArmadaApiError).toBe(expected === 1);
+  }
+});
