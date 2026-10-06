@@ -89,6 +89,12 @@ test.each([
       "2026-03-04T09:50:00Z",
     );
   const reservedKeys: string[] = [];
+  const recordedKeys: { ticket: string; key: string }[] = [];
+  const recordNotice = f.store.recordMergeNotice;
+  f.store.recordMergeNotice = async (input) => {
+    recordedKeys.push({ ticket: input.ticket, key: input.key });
+    return recordNotice(input);
+  };
   const reserveNotice = f.store.prepareMergeNotice;
   f.store.prepareMergeNotice = async (project, key, at) => {
     reservedKeys.push(key);
@@ -293,7 +299,12 @@ test.each([
     expect(message).toContain("shareList");
     expect(message).toContain("git fetch origin && git merge origin/main, then run the checks again");
     // Merge retries use the durable receipt identity, even when the notice's text changes.
-    if (scenario !== "herdr") expect(messages()[0]?.args.at(-1)).toBe(reservedKeys[0]);
+    if (scenario !== "herdr") {
+      const note = recordedKeys.find((n) => n.ticket === "DEMO-11");
+      if (!note) throw new Error("the peer's generated note was not recorded");
+      expect(reservedKeys).toContain(note.key);
+      expect(messages()[0]?.args.at(-1)).toBe(note.key);
+    }
     const notes = f.store.items.filter((i) => i.kind === "note");
     expect(notes).toHaveLength(scenario === "shared" ? 2 : 1);
     expect(notes.every((n) => n.resolvedAt === NOW.toISOString())).toBe(true);
