@@ -43,7 +43,12 @@ test("launch --when-unblocked and --after store server-checked requests, print b
     },
   };
   const store = memoryFleet();
-  const api = fakeArmada({ keys: { armada_key_TEST: "test" }, facts, store });
+  const api = fakeArmada({
+    keys: { armada_key_TEST: "test" },
+    facts,
+    store,
+    vault: { linear: { apiKey: "lin_test", scope: "own" }, now: () => NOW },
+  });
   const lines: string[] = [];
   const io: Io = {
     cwd: "/work",

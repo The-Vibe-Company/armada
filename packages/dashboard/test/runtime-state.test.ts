@@ -91,7 +91,10 @@ test("Conductor observations and archive records cross the fleet API on Postgres
     expect((await call("runtime/observe", { ...input, state: "unrecognized" })).status).toBe(400);
     expect((await call("runtime/observe", { ...input, state: "idle", since: at(3).toISOString() })).status).toBe(400);
     await store.releaseRuntimeHandle(project.slug, claim.ticket, at(3));
+    expect((await call("runtime/observe", { ...input, state: "gone" }, at(3))).body).toEqual({ result: true });
+    expect((await store.getRuntimeHandle(project.slug, claim.ticket))?.runtimeState?.state).toBe("gone");
     await store.saveRuntimeHandle({ ...claim, at: at(4) });
+    expect((await call("runtime/observe", { ...input, state: "gone" }, at(5))).body).toEqual({ result: false });
     expect(await store.stopRuntime({ ...claim, claimedAt: input.claimedAt, at: at(5) })).toBe(false);
     expect((await store.getRuntimeHandle(project.slug, claim.ticket))?.releasedAt).toBeNull();
     const current = { ...input, claimedAt: at(4).toISOString() };
