@@ -1289,6 +1289,20 @@ async function mergePinned(
   const closeByHand = ticket ? `; if it merged, close ${ticket} by hand` : "";
   let readError = "";
   let knownMerged: MergePull | null = null;
+  const pause = async (ms: number) => {
+    try {
+      await ctx.sleep(ms);
+    } catch (error) {
+      // A lease loss after the native call cannot turn an unknown write into "not merged".
+      throw new MergeStateError(
+        `the merge of ${n} was attempted but confirmation could not finish (${error instanceof Error ? error.message : String(error)}); check GitHub before retrying or archiving`,
+        `gh pr view ${pull.number} --repo ${ctx.config.github.repository}`,
+        pull.number,
+        ticket,
+        knownMerged,
+      );
+    }
+  };
   // A failed read is not an answer: the merge may have landed, so it is said, never hidden.
   const read = () => {
     readError = "";
@@ -1332,7 +1346,7 @@ async function mergePinned(
         true,
       );
     say(ctx, `GitHub answered ${res.message}; ${n} is still open at ${short(sha)}, retrying in ${wait / 1000} s…`);
-    await ctx.sleep(wait);
+    await pause(wait);
   }
   // Success is what GitHub shows, not what the merge call said.
   let seen: MergePull | null = null;
@@ -1349,7 +1363,7 @@ async function mergePinned(
         pull.number,
         ticket,
       );
-    await ctx.sleep(wait);
+    await pause(wait);
   }
   if (seen.headSha !== sha)
     throw new MergeStateError(

@@ -14,6 +14,7 @@ import {
   type MergeAttempt,
   type MergeContext,
   type MergeForge,
+  MergeStateError,
   mergePullRequest,
   noticeFileCoverage,
   prepareQueueEntry,
@@ -2107,6 +2108,7 @@ test.each([
   "long-cleanup",
   "cleanup-takeover",
   "update-takeover",
+  "native-takeover-unconfirmed",
   "recovery-linear-outage",
   "unknown-outcome",
   "takeover",
@@ -2152,7 +2154,7 @@ test.each([
     }
     return renew(input);
   };
-  let unknownRead = scenario === "unknown-outcome";
+  let unknownRead = ["unknown-outcome", "native-takeover-unconfirmed"].includes(scenario);
   const order: string[] = [];
   let base = BASE;
   s.ctx.now = live.clock.now;
@@ -2219,6 +2221,10 @@ test.each([
       const f = forges.get(n)!;
       const result = await f.merge(n, sha);
       if (f.pr.state === "merged") base = SQUASH;
+      if (scenario === "native-takeover-unconfirmed" && n === 12) {
+        live.clock.advance(600_001);
+        await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
+      }
       if (scenario === "head-mismatch" && n === 12) f.pr.headSha = BASE;
       return result;
     },
@@ -2321,6 +2327,14 @@ test.each([
         order.push(`after ${outcome.pr.number}`);
       },
     });
+  if (scenario === "native-takeover-unconfirmed") {
+    await expect(drain()).rejects.toBeInstanceOf(MergeStateError);
+    expect(await live.fleet.queueList()).toMatchObject([{ state: "merging", attempts: 0 }, { state: "queued" }]);
+    expect(order.filter((line) => line.startsWith("merge "))).toEqual(["merge 12"]);
+    expect(delivered).toEqual([]);
+    expect(live.store.items.some((item) => item.kind === "queue-refused")).toBe(false);
+    return;
+  }
   if (["takeover", "cleanup-takeover", "update-takeover", "paused-timeout"].includes(scenario)) {
     await expect(drain()).rejects.toThrow(scenario !== "paused-timeout" ? "taken over" : "main red since #170");
     expect(await live.fleet.queueList()).toMatchObject([

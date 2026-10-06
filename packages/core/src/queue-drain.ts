@@ -147,12 +147,18 @@ export async function drainMergeQueue(
         const wait = transient ? BACKOFF_MS[entry.attempts] : undefined;
         if (err instanceof MergeStateError && transient && wait === undefined) throw err;
         const detail = err instanceof Error ? err.message : String(err);
-        await finish(
-          entry,
-          wait === undefined
-            ? { outcome: "refused", detail }
-            : { outcome: "retry", detail, notBefore: new Date(ctx.now().getTime() + wait).toISOString() },
-        );
+        try {
+          await finish(
+            entry,
+            wait === undefined
+              ? { outcome: "refused", detail }
+              : { outcome: "retry", detail, notBefore: new Date(ctx.now().getTime() + wait).toISOString() },
+          );
+        } catch (finishError) {
+          // A lost lease leaves the row recoverable; retain the native merge's known/unknown fact.
+          if (err instanceof MergeStateError) throw err;
+          throw finishError;
+        }
         if (wait === undefined) opts.onRefused?.(entry, err);
         else ctx.progress?.(`#${entry.pr} remains queued; retrying in ${wait / 60_000} min: ${detail}`);
         continue;

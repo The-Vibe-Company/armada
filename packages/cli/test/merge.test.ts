@@ -1067,7 +1067,7 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--no-notify"], f.io)).toBe(2);
 });
 
-test.each(["plain", "json", "completion-outage", "recovery-outage", "keep-open"])(
+test.each(["plain", "json", "completion-outage", "recovery-outage", "native-lease-loss", "keep-open"])(
   "drain uses ordinary cleanup and truthful output (%s)",
   async (scenario) => {
     const json = scenario !== "plain";
@@ -1076,6 +1076,26 @@ test.each(["plain", "json", "completion-outage", "recovery-outage", "keep-open"]
     const f = await fixture();
     expect(await run(["merge", "--when-green", "9", ...(keepOpen ? ["--keep-open"] : [])], f.io)).toBe(0);
     const out: string[] = [];
+    if (scenario === "native-lease-loss") {
+      f.net.confirmMerge = false;
+      const exec = f.io.exec!;
+      f.io.exec = async (command, args, options) => {
+        const result = await exec(command, args, options);
+        if (command === "gh" && args[0] === "pr" && args[1] === "merge") {
+          const lease = await f.store.getLease("widgets", "merge-queue");
+          if (!lease) throw new Error("missing drain lease");
+          await f.store.releaseLease({ project: "widgets", name: "merge-queue", holder: lease.holder });
+          await f.store.acquireLease({
+            project: "widgets",
+            name: "merge-queue",
+            holder: "peer",
+            ttlMs: 600_000,
+            at: NOW,
+          });
+        }
+        return result;
+      };
+    }
     const fetch = f.io.fetch!;
     const io: Io = {
       ...f.io,
@@ -1085,8 +1105,19 @@ test.each(["plain", "json", "completion-outage", "recovery-outage", "keep-open"]
           ? Response.json({ error: "Armada did not answer" }, { status: 503 })
           : fetch(url, init),
     };
-    expect(await run(["merge", "--drain", ...(json ? ["--json"] : [])], io), f.err()).toBe(completionOutage ? 1 : 0);
+    expect(await run(["merge", "--drain", ...(json ? ["--json"] : [])], io), f.err()).toBe(
+      completionOutage || scenario === "native-lease-loss" ? 1 : 0,
+    );
     expect(f.merged()).toBe(true);
+    if (scenario === "native-lease-loss") {
+      const result = JSON.parse(out.join("").trim());
+      expect(result.merged).toBe(false);
+      expect(result.result).toContain("merge unconfirmed");
+      expect(result.result).not.toContain("nothing was merged");
+      expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({ state: "merging", attempts: 0 });
+      expect(f.armada.calls.some((call) => call.path === "workers/end")).toBe(false);
+      return;
+    }
     expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
       state: completionOutage ? "merging" : "merged",
       ...(!completionOutage ? { mergeCommit: SQUASH } : {}),
