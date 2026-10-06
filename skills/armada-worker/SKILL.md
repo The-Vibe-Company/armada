@@ -31,6 +31,16 @@ You are a worker. You own exactly one ticket, named in your launch brief. You tu
 6. **Bring the default branch in** right before hand-back (rebase, or merge it into your branch; squash merges make both fine), and get CI green on that final head. Never force-push a branch someone else pushed to.
 7. **Hand back.** Fix or reply to every review thread (including cubic), then resolve every thread before handing back. `armada report ready-to-merge --pr <number> --sha <full 40-character head SHA> --shipped-with "ship-pr-dev"`. For the fallback, use `--shipped-with "fallback: <exact reason ship-pr-dev could not run>"`. The generated hand-back line names the shipping path in Linear and `armada inbox`. Armada refuses a short SHA, a SHA that is not the pull request head, a red check, or unresolved review threads. If the review-thread reading is unavailable, Armada warns; check and resolve them yourself before handing back. Then report to the coordinator: `shipped with ship-pr-dev` or `shipped with the fallback: <reason>`, pull request URL, full SHA, CI state, the decisions you made, and what the next tickets need to know.
 
+## A ticket in several pull requests
+
+Split a ticket when its parts can land and be checked independently. Hand back each finished part with the usual green CI and full head SHA, adding `--more-prs "<what remains>"` to every part except the last:
+
+```sh
+armada report ready-to-merge --pr <number> --sha <full head SHA> --shipped-with "ship-pr-dev" --more-prs "the dashboard part"
+```
+
+The coordinator's checked merge keeps your ticket at `implementing`, your sign-in and workspace alive, and tells you to continue. Start the next PR from the updated default branch using the branch named in that message (for example `git fetch origin && git switch -c feature/abc-12-title-2 origin/main`). Keep the same claim; report implementing as you go, then shipping. Do not claim again. Hand back the final PR without `--more-prs`: that merge closes the ticket and ends your worker. `--more-prs` needs one nonempty line and is only valid on ready-to-merge.
+
 If you stop without finishing, run `armada release --reason "<why>"` so the ticket is free again.
 
 ## When a command is missing

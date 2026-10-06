@@ -1360,3 +1360,117 @@ test("queuing preserves the merge judgement and pending owner decision without a
   });
   expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9, reason: "Reviewed" }))).toContain("owner requested changes");
 });
+
+describe("a ticket in several pull requests", () => {
+  test.each(["hand-back", "refreshed-hand-back", "keep-open", "close"])(
+    "%s retains the worker only for a partial merge",
+    async (mode) => {
+      const live = tempFleet();
+      const s = setup({ live });
+      if (mode === "hand-back" || mode === "close")
+        s.linear.post(
+          "DEMO-7",
+          `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipped with ship-pr-dev; more PRs: the dashboard part`,
+          "2026-03-04T09:30:00Z",
+        );
+      await live.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-7",
+        runtime: "Conductor",
+        handle: "ws-1/s-1",
+        branch: "feature/demo-7-do-the-thing",
+        at: NOW,
+      });
+      await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #9", at: NOW });
+      await live.store.addInboxItem({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "question",
+        recipient: "coordinator",
+        author: null,
+        body: "A remaining question",
+        at: NOW,
+      });
+      if (mode === "refreshed-hand-back")
+        s.forge.onCompare = async () => {
+          s.forge.onCompare = null;
+          s.linear.post(
+            "DEMO-7",
+            `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; more PRs: the dashboard part`,
+            "2026-03-04T09:45:00Z",
+          );
+        };
+      if (mode === "keep-open") s.forge.pr.headRef = "feature/demo-7";
+      await live.store.recordEvent({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "report",
+        phase: mode === "keep-open" ? "implementing" : "ready-to-merge",
+        message: "PR #9 ready",
+        prUrl: s.forge.pr.url,
+        headSha: HEAD,
+        at: NOW,
+      });
+      const closed = mode === "close";
+      // Linear's GitHub automation can complete the issue after the first repair.
+      s.ctx.sleep = async (ms) => {
+        s.sleeps.push(ms);
+        s.linear.get("DEMO-7").statusType = "completed";
+        s.linear.get("DEMO-7").stateId = "st-done";
+      };
+      const readFor: (string | null)[] = [];
+      const afterRead = s.ctx.afterRead;
+      s.ctx.afterRead = async (ticket) => {
+        readFor.push(ticket);
+        return afterRead(ticket);
+      };
+      const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: mode === "keep-open", close: closed });
+      expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+      expect(s.linear.get("DEMO-7").statusType).toBe(closed ? "completed" : "started");
+      expect(s.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(closed ? [] : ["Conductor", "implementing"]);
+      expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(
+        closed ? NOW.toISOString() : null,
+      );
+      const items = await live.store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+      expect(items.map((i) => i.kind)).toEqual(closed ? [] : ["question"]);
+      expect(live.store.events.map((e) => [e.kind, e.phase])).toEqual([
+        ["report", mode === "keep-open" ? "implementing" : "ready-to-merge"],
+        [closed ? "merge" : "report", closed ? "merged" : "implementing"],
+      ]);
+      expect(readFor).toEqual([closed ? "DEMO-7" : null]);
+      if (!closed) {
+        expect(out.archive).toBeNull();
+        expect(out.keepOpen).toBe(true);
+        expect(out.continuation?.message).toContain(
+          `git fetch origin && git switch -c ${mode === "keep-open" ? "feature/demo-7-2" : "feature/demo-7-do-the-thing-2"} origin/main`,
+        );
+        expect(out.continuation?.claim?.releasedAt).toBeNull();
+        expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toContain("next:");
+        // A fresh hand-back without more PRs completes the same ticket.
+        s.linear.get("DEMO-7").labels = [label("rt-conductor"), label("phase-ready-to-merge")];
+        s.linear.post(
+          "DEMO-7",
+          `Agent status: ready-to-merge — PR #10, head ${HEAD}, CI green`,
+          "2026-03-04T10:30:00Z",
+        );
+        s.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
+        await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #10", at: NOW });
+        const final = await mergePullRequest(s.ctx, { pr: 10 });
+        expect(final.keepOpen).toBeFalsy();
+        expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+        expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+        expect(live.store.events.map((e) => e.kind)).toEqual(["report", "report", "merge"]);
+      }
+    },
+  );
+  test.each([
+    { keepOpen: true, close: true },
+    { keepOpen: true, noTicket: true },
+    { close: true, noTicket: true },
+  ])("refuses conflicting intent %j before writing", async (intent) => {
+    const s = setup();
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, ...intent }))).toContain("cannot go together");
+    expect(s.forge.merges).toEqual([]);
+    expect(s.linear.writes).toEqual([]);
+  });
+});

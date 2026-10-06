@@ -644,18 +644,7 @@ test("when-green queues multiple no-ticket PRs in argument order and preserves f
   const f = await fixture();
   expect(
     await run(
-      [
-        "merge",
-        "--when-green",
-        "12",
-        "15",
-        "--no-ticket",
-        "--keep-open",
-        "--through-hold",
-        "Fix main",
-        "--reason",
-        "Release",
-      ],
+      ["merge", "--when-green", "12", "15", "--no-ticket", "--through-hold", "Fix main", "--reason", "Release"],
       f.io,
     ),
   ).toBe(0);
@@ -670,8 +659,8 @@ test("when-green queues multiple no-ticket PRs in argument order and preserves f
       e.reason,
     ]),
   ).toEqual([
-    [12, true, true, "Fix main", "Release"],
-    [15, true, true, "Fix main", "Release"],
+    [12, true, false, "Fix main", "Release"],
+    [15, true, false, "Fix main", "Release"],
   ]);
   expect(f.merged()).toBe(false);
   expect(f.ghCalls).toEqual([]);
@@ -883,3 +872,77 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
       expect(f.err()).toContain("run armada stop DEMO-18");
   },
 );
+
+test.each(["delivered", "manual", "failed", "replaced"])(
+  "a partial merge retains its worker and continues safely (%s)",
+  async (mode) => {
+    const f = await fixture();
+    f.linear.post(
+      "DEMO-18",
+      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part`,
+      "2026-03-04T09:50:00Z",
+    );
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-18",
+      runtime: mode === "manual" ? "Claude Code" : "Conductor",
+      handle: "ws-18/ses-18",
+      branch: BRANCH,
+      at: NOW,
+    });
+    const exec = f.io.exec as Exec;
+    const calls: string[][] = [];
+    const inputs: (string | undefined)[] = [];
+    f.io.exec = async (command, args, options) => {
+      if (command !== "conductor") return exec(command, args, options);
+      calls.push(args);
+      if (args[1] === "message" && args[2] === "create") {
+        inputs.push(options?.input);
+        expect(f.merged()).toBe(true);
+        expect(options?.input).toContain(`git fetch origin && git switch -c ${BRANCH}-2 origin/main`);
+        if (mode === "failed") return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
+        return { code: 0, stdout: JSON.stringify({ messageId: "message-1", state: "queued" }), stderr: "" };
+      }
+      if (mode === "replaced")
+        await f.store.saveRuntimeHandle({
+          project: "widgets",
+          ticket: "DEMO-18",
+          runtime: "Conductor",
+          handle: "ws-new/ses-new",
+          branch: BRANCH,
+          at: new Date(NOW.getTime() + 1000),
+        });
+      return {
+        code: 0,
+        stdout: JSON.stringify(
+          args[1] === "session"
+            ? { sessionId: "ses-18", workspaceId: "ws-18", status: "idle" }
+            : { workspaceId: "ws-18", status: "ready" },
+        ),
+        stderr: "",
+      };
+    };
+    expect(await run(["merge", "9", "--json"], f.io)).toBe(0);
+    const out = JSON.parse(f.out());
+    expect(out.keepOpen).toBe(true);
+    expect(out.archive).toBeNull();
+    expect(out.unblocked).toBeNull();
+    expect(f.linear.get("DEMO-18").statusType).toBe("started");
+    expect(f.armada.calls.map((c) => c.path)).not.toContain("workers/end");
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
+    expect(calls.some((args) => args[2] === "archive")).toBe(false);
+    expect(inputs.length).toBe(mode === "delivered" || mode === "failed" ? 1 : 0);
+    expect(out.lines.join("\n")).toContain(mode === "delivered" ? "continuation delivered" : "Deliver to DEMO-18");
+    expect(f.out() + f.err()).not.toContain("CANARY");
+  },
+);
+
+test("owner approval requests reject lifecycle overrides they cannot persist", async () => {
+  const f = await fixture();
+  for (const flag of ["--keep-open", "--close"])
+    expect(await run(["merge", "9", "--ask-owner", "--reason", "Owner should check", flag], f.io)).toBe(2);
+  expect(f.err()).toContain("--ask-owner only asks the owner");
+  expect(f.merged()).toBe(false);
+  expect(f.ghCalls).toEqual([]);
+  expect(f.linear.writes).toEqual([]);
+});

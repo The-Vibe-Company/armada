@@ -40,6 +40,8 @@ import {
 import { afterMerge } from "./after-merge.ts";
 import type { DeferredLaunchResult } from "./deferred-launch.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
+import { deliverToRuntime } from "./runtime.ts";
+import { redactRuntimeText } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
@@ -271,7 +273,11 @@ export async function merge(
     return 0;
   }
   const enqueue = !!a.options["when-green"];
-  if (!enqueue && a.options["keep-open"]) throw new UsageError("--keep-open applies to --when-green");
+  if (a.options["keep-open"] && a.options.close) throw new UsageError("--keep-open and --close cannot go together");
+  if (a.options["no-ticket"] && (a.options["keep-open"] || a.options.close))
+    throw new UsageError("--no-ticket and --keep-open/--close cannot go together");
+  if (enqueue && a.options.close)
+    throw new UsageError("--close cannot go together with --when-green; merge that PR directly");
   if (
     enqueue &&
     ["wait", "timeout", "dry-run", "no-lock", "ask-owner", "no-archive"].some((k) => a.options[k] !== undefined)
@@ -291,7 +297,16 @@ export async function merge(
     throw new UsageError("--through-hold needs a reason");
   const wait = !!a.options.wait;
   const askOwner = a.options["ask-owner"] === "true";
-  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"] || a.options["through-hold"]))
+  if (
+    askOwner &&
+    (wait ||
+      a.options["dry-run"] ||
+      noTicket ||
+      a.options["no-lock"] ||
+      a.options["through-hold"] ||
+      a.options["keep-open"] ||
+      a.options.close)
+  )
     throw new UsageError("--ask-owner only asks the owner: it goes with --reason (and --ticket), nothing else");
   if (askOwner && !a.options.reason?.trim())
     throw new UsageError(
@@ -450,18 +465,46 @@ export async function merge(
     pr: number,
     ticket: a.options.ticket ?? null,
     noTicket,
+    keepOpen: !!a.options["keep-open"],
+    close: !!a.options.close,
     wait: wait ? { timeoutMs } : null,
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
     reason: a.options.reason ?? null,
     throughHold: a.options["through-hold"],
   });
+  if (o.merged && o.keepOpen && o.continuation && o.ticket) {
+    const continuation = o.continuation;
+    let delivered = false;
+    try {
+      if (live.fleet && continuation.claim)
+        delivered = await deliverToRuntime(
+          { ...io, cwd: repoDir },
+          live.fleet,
+          o.ticket.id,
+          continuation.message,
+          continuation.claim,
+          config,
+          { kind: "note" },
+        );
+    } catch (error) {
+      // Native writes of unknown outcome are never retried.
+      o.warnings.push(
+        `could not confirm continuation delivery to ${o.ticket.id} (${redactRuntimeText(error instanceof Error ? error.message : String(error))}); inspect its session before manual delivery`,
+      );
+    }
+    o.lines.push(
+      delivered
+        ? `${o.ticket.id}: continuation delivered to the active worker.`
+        : `Deliver to ${o.ticket.id}: ${continuation.message}`,
+    );
+  }
   let deferredLaunches: DeferredLaunchResult[] = [];
   let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
   const archive = await afterMerge(io, config, credentials, o, {
     configPath,
     noArchive: !!a.options["no-archive"],
-    keepOpen: !!a.options["keep-open"],
+    keepOpen: !!o.keepOpen,
     onDeferredLaunch: async (results) => {
       deferredLaunches = results;
       // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
@@ -474,7 +517,7 @@ export async function merge(
             .map((w) => w.ticket)
             .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
         : o.merged && known
-          ? known.filter((t) => t !== o.ticket?.id)
+          ? known.filter((t) => o.keepOpen || t !== o.ticket?.id)
           : known;
       if (inFlight)
         for (const launch of deferredLaunches)
@@ -487,7 +530,7 @@ export async function merge(
         } catch {
           // Retain the previous watch set if pending requests cannot be refreshed.
           for (const ticket of known ?? [])
-            if (ticket !== o.ticket?.id && !inFlight.includes(ticket)) inFlight.push(ticket);
+            if ((o.keepOpen || ticket !== o.ticket?.id) && !inFlight.includes(ticket)) inFlight.push(ticket);
           o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
         }
       }
@@ -498,7 +541,8 @@ export async function merge(
           `${render(o)}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
         );
       for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
-      if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+      if (o.merged && o.ticket && !o.keepOpen)
+        await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
     },
   });
   if (a.json) io.stdout(`${JSON.stringify({ ...o, archive, deferredLaunches, watch: next }, null, 2)}\n`);

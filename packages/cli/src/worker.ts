@@ -305,6 +305,7 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
       pr: a.options.pr ?? null,
       sha: a.options.sha ?? null,
       shippedWith: a.options["shipped-with"] ?? null,
+      morePrs: a.options["more-prs"] ?? null,
     }),
   );
 }

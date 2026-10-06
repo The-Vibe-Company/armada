@@ -820,18 +820,20 @@ export interface MergeRecord {
   headSha: string;
   /** How the merge was decided (THE-885): "merged on its own (rule: …)" or "approved by <owner> at <time>". */
   decision?: string | null;
+  /** A partial merge retains the active worker and resolves only its hand-back. */
+  keepOpen?: boolean;
 }
 
 export interface MergeRecorded {
-  /** The exact ended generation that held the merged ticket, if any. */
+  /** The generation that held the merged ticket; still active for a partial merge. */
   handle: RuntimeHandle | null;
   /** How many hand-backs the merge resolved. */
   resolved: number;
-  /** Sessions still holding another ticket of the project. */
+  /** Sessions still holding tickets of the project, including a partially merged ticket. */
   open: RuntimeHandle[];
 }
 
-/** A merge: the event, the hand-back resolved, the merged worker's questions closed and its session gone. */
+/** A confirmed merge resolves its hand-back; a final merge also closes questions and ends the worker. */
 export async function recordMerge(
   store: FleetStore,
   project: string,
@@ -841,13 +843,19 @@ export async function recordMerge(
   const handle = await store.getRuntimeHandle(project, m.ticket);
   // A retry may follow a failed inbox write or a lost response after the event landed.
   const previous = (await store.latestEvents(project, { since: new Date(handle?.claimedAt ?? at) }))[m.ticket];
-  if (previous?.kind !== "merge" || previous.prUrl !== m.url)
+  const kind = m.keepOpen ? "report" : "merge";
+  const message = `PR #${m.number} merged as ${m.mergeCommit ?? "unknown"}${m.keepOpen ? "; more PRs to come" : ""}${m.decision ? `; ${m.decision}` : ""}`;
+  if (
+    previous?.kind !== kind ||
+    previous.prUrl !== m.url ||
+    (m.keepOpen && (previous.phase !== "implementing" || previous.message !== message))
+  )
     await store.recordEvent({
       project,
       ticket: m.ticket,
-      kind: "merge",
-      phase: "merged",
-      message: `PR #${m.number} merged as ${m.mergeCommit ?? "unknown"}${m.decision ? `; ${m.decision}` : ""}`,
+      kind,
+      phase: m.keepOpen ? "implementing" : "merged",
+      message,
       prUrl: m.url,
       headSha: m.headSha,
       at,
@@ -859,6 +867,12 @@ export async function recordMerge(
     resolution: `merged as ${m.mergeCommit ?? "unknown"}`,
     at,
   });
+  if (m.keepOpen)
+    return {
+      handle: handle && !handle.releasedAt ? handle : null,
+      resolved,
+      open: await store.openRuntimeHandles(project),
+    };
   // No worker is left to take an answer.
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });

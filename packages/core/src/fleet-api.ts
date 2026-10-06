@@ -758,6 +758,7 @@ export async function serveFleet(
               mergeCommit: shaOf(b, "mergeCommit"),
               headSha,
               decision: optText(b, "decision", BODY_MAX),
+              keepOpen: b.keepOpen === undefined ? false : bool(b, "keepOpen"),
             },
             at,
           );
@@ -1021,7 +1022,7 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     ticketItems: (ticket) => call<InboxItem[]>("inbox/ticket", { ticket }),
     answer: (a: AnswerRecord) => call<string>("answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
-    merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
+    merge: (m: MergeRecord) => call<MergeRecorded>("merge", { ...m, keepOpen: !!m.keepOpen }),
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),

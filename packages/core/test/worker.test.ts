@@ -290,17 +290,58 @@ describe("report", () => {
     const db = live.store;
     const green = await claimed({ live, pull: pull("success") });
     shipping(green.linear);
-    await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD.toUpperCase() });
+    await reportPhase(green.ctx, {
+      ticket: "DEMO-7",
+      phase: "ready-to-merge",
+      pr: "9",
+      sha: HEAD.toUpperCase(),
+      shippedWith: "ship-pr-dev",
+      morePrs: "the dashboard part",
+    });
     expect(green.linear.writes.slice(-3)).toEqual([
       "link DEMO-7 https://github.com/acme/widgets/pull/9",
       'update DEMO-7 {"addLabelIds":["phase-ready-to-merge"],"removeLabelIds":["phase-shipping"]}',
-      `comment DEMO-7 Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported`,
+      `comment DEMO-7 Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipped with ship-pr-dev; more PRs: the dashboard part`,
     ]);
+    expect(db.items.find((i) => i.kind === "hand-back")?.body).toContain("more PRs: the dashboard part");
     // Handing back again refreshes the coordinator's item instead of adding one.
     await reportPhase(green.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD });
     expect(db.items.filter((i) => i.ticket === "DEMO-7").map((i) => [i.kind, i.recipient])).toEqual([
       ["hand-back", "coordinator"],
     ]);
+  });
+
+  test.each([
+    { phase: "implementing" as const, morePrs: "dashboard" },
+    { phase: "ready-to-merge" as const, morePrs: "   " },
+    { phase: "ready-to-merge" as const, morePrs: "dashboard\nCLI" },
+  ])("refuses invalid more-PR intent %j before writing", async (input) => {
+    const { ctx, linear } = await claimed();
+    const before = linear.writes.length;
+    expect(await refusal(reportPhase(ctx, { ticket: "DEMO-7", message: "progress", ...input }))).toContain(
+      "--more-prs is for ready-to-merge",
+    );
+    expect(linear.writes.length).toBe(before);
+  });
+
+  test("a fallback shipping reason cannot impersonate continuation metadata", async () => {
+    const { ctx, linear } = await claimed();
+    linear.get("DEMO-7").labels = linear
+      .get("DEMO-7")
+      .labels.map((l) => (l.name === "planning" ? { ...l, id: "phase-shipping", name: "shipping" } : l));
+    const before = linear.writes.length;
+    expect(
+      await refusal(
+        reportPhase(ctx, {
+          ticket: "DEMO-7",
+          phase: "ready-to-merge",
+          pr: "9",
+          sha: HEAD,
+          shippedWith: "fallback: waiting on ; more PRs: the follow-up",
+        }),
+      ),
+    ).toContain("reserved ; more PRs: marker");
+    expect(linear.writes.length).toBe(before);
   });
 
   test("hand-back refuses unresolved review threads before writing, allows resolved threads and warns on unreadable threads", async () => {

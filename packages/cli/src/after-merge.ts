@@ -30,8 +30,9 @@ export async function afterMerge(
     onDeferredLaunch?: (results: DeferredLaunchResult[]) => Promise<void>;
   },
 ): Promise<ArchiveResult | null> {
+  const keepOpen = !!outcome.keepOpen || !!opts.keepOpen;
   const deferred =
-    outcome.merged && outcome.pr.mergeCommit && outcome.ticket && !opts.keepOpen
+    outcome.merged && outcome.pr.mergeCommit && outcome.ticket && !keepOpen
       ? await launchDeferredAfterMerge(outcome, config, liveFleet(io, config, credentials).fleet, async (request) => {
           const printed: string[] = [];
           const code = await launchWorker(
@@ -61,7 +62,7 @@ export async function afterMerge(
     archived,
     detail,
   });
-  if (opts.keepOpen || opts.noArchive) return result(false, opts.keepOpen ? "ticket kept open" : "--no-archive");
+  if (keepOpen || opts.noArchive) return result(false, keepOpen ? "ticket kept open" : "--no-archive");
   const runtime = runtimeNameOf(a.runtime);
   if (!runtime || runtime === "claude-code") {
     const who = `${outcome.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"})`;
