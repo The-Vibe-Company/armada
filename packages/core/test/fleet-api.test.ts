@@ -490,6 +490,67 @@ test("inbox ETag refreshes ownership when an unowned ticket is taken without cha
   expect((after.body.result as import("../src/live.ts").InboxRead).items[0]?.owner).toBe("front");
 });
 
+test("queue operations round trip through Armada and remain coordinator-only", async () => {
+  const { fleet, store } = tempFleet();
+  const entry = {
+    pr: 12,
+    ticket: "DEMO-7",
+    noTicket: false,
+    keepOpen: true,
+    throughHold: "Fix main",
+    reason: "Reviewed",
+    headSha: "a".repeat(40),
+    queuedBy: "coordinator",
+  };
+  expect(await fleet.queueAdd(entry)).toEqual({ id: 1, position: 1 });
+  expect(await fleet.queueAdd(entry)).toMatchObject({ existing: { id: 1, pr: 12 } });
+  expect(await fleet.queueList()).toMatchObject([{ ...entry, state: "queued", queuedAt: NOW.toISOString() }]);
+  expect(await fleet.queueNext({ holder: "a" })).toEqual({ refused: true, held: null });
+  await fleet.acquireLease({ name: "merge-queue", holder: "a", ttlMs: 60_000 });
+  expect(await fleet.queueNext({ holder: "a" })).toMatchObject({ entry: { id: 1, state: "merging" }, holds: [] });
+  expect(
+    await fleet.queueFinish({ id: 1, holder: "a", outcome: "retry", detail: "CI", notBefore: NOW.toISOString() }),
+  ).toBe(true);
+  expect(await fleet.queueNext({ holder: "a" })).toMatchObject({ entry: { attempts: 1 } });
+  expect(
+    await fleet.queueFinish({ id: 1, holder: "a", outcome: "merged", detail: null, mergeCommit: "b".repeat(40) }),
+  ).toBe(true);
+  expect(await fleet.queueList()).toMatchObject([{ state: "merged", mergeCommit: "b".repeat(40) }]);
+  expect(await fleet.queueList({ since: new Date(NOW.getTime() + 1).toISOString() })).toEqual([]);
+  await fleet.queueAdd(entry);
+  expect(await fleet.queueRemove({ pr: 12 })).toBe(true);
+  expect(await fleet.queueRemove({ pr: 12 })).toBe(false);
+  const worker = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7" } }).fleet;
+  for (const operation of [
+    () => worker.queueAdd(entry),
+    () => worker.queueList(),
+    () => worker.queueNext({ holder: "a" }),
+    () => worker.queueFinish({ id: 1, holder: "a", outcome: "refused", detail: "bad" }),
+    () => worker.queueRemove({ pr: 12 }),
+  ])
+    expect((await refused(operation()))[0]).toBe(403);
+  for (const [op, input] of [
+    ["queue/add", { ...entry, headSha: "abc1234" }],
+    ["queue/add", { ...entry, noTicket: true }],
+    ["queue/add", { ...entry, keepOpen: "yes" }],
+    ["queue/list", { since: "yesterday" }],
+    ["queue/next", { holder: "" }],
+    ["queue/finish", { id: 1, holder: "a", outcome: "bad" }],
+    ["queue/finish", { id: 1, holder: "a", outcome: "retry", notBefore: "later" }],
+    ["queue/remove", { pr: -1 }],
+    ["queue/remove", { pr: 2147483648 }],
+  ] as const)
+    expect(
+      (
+        await serveFleet(
+          store,
+          { op, project: DEMO_PROJECT, caller: { kind: "organization" }, input },
+          { now: () => NOW },
+        )
+      ).status,
+    ).toBe(400);
+});
+
 test("workers reserve, list project holders and unreserve only their own ticket; malformed allocations are refused", async () => {
   const { fleet, store } = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7" } });
   await store.reserve({ project: "widgets", ticket: "DEMO-8", key: "db-migration", next: true, floor: 22, at: NOW });
