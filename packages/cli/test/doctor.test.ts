@@ -55,7 +55,7 @@ async function terminal(
   const io: Io = {
     cwd: home,
     env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, ...env },
-    readFile: async () => null,
+    readFile: async (path) => (path === join(home, "armada.toml") ? (more.toml ?? DEMO_TOML) : null),
     stdout: (t) => out.push(t),
     stderr: (t) => errs.push(t),
     ghToken: () => null,
@@ -76,7 +76,11 @@ async function terminal(
   };
   /** What the last runs printed on stderr, emptied. */
   const stderr = () => errs.splice(0).join("");
-  return { doctor, stderr, home, credentials: join(home, "armada", "credentials") };
+  const inbox = async () => {
+    expect(await run(["inbox", "--json"], io)).toBe(0);
+    out.splice(0);
+  };
+  return { doctor, inbox, stderr, home, credentials: join(home, "armada", "credentials") };
 }
 
 describe("armada doctor: the sign-in to Armada", () => {
@@ -184,16 +188,18 @@ describe("armada doctor: this CLI's version", () => {
 });
 
 describe("a newer Armada release", () => {
-  const notice = `armada: Armada 99.1.0 is out (you run ${version}): npm install -g @the-vibe-company/armada@99.1.0 — then armada init to refresh this project's skills. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0\n`;
+  const notice = `armada: Armada 99.1.0 is out (you run ${version}): armada upgrade. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0\n`;
 
-  test("a coordinator command says it once per version on this machine", async () => {
+  test("only inbox/status carry the daily notice; doctor stays quiet", async () => {
     const t = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: { minimum: "0.0.1", latest: "99.1.0" } });
     await t.doctor();
+    expect(t.stderr()).toBe("");
+    await t.inbox();
     expect(t.stderr()).toBe(notice);
-    await t.doctor();
+    await t.inbox();
     expect(t.stderr()).toBe("");
     expect(JSON.parse(await readFile(join(t.home, "armada", "releases.json"), "utf8"))).toEqual({
-      noticed: ["99.1.0"],
+      noticed: [{ version: "99.1.0", at: NOW.toISOString() }],
     });
   });
 
@@ -221,13 +227,13 @@ describe("a newer Armada release", () => {
     };
     const terminalIo = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: server });
     await refresh();
-    await terminalIo.doctor();
+    await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe("");
     ready = true;
     await refresh();
-    await terminalIo.doctor();
+    await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe(notice);
-    await terminalIo.doctor();
+    await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe("");
   });
 
