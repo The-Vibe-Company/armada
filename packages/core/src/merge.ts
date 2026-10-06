@@ -115,6 +115,8 @@ export interface MergeUnblocked {
 }
 
 export interface MergeContext {
+  /** Renew the drain lease before polls and adapter effects, including cleanup. */
+  tick?: () => Promise<void>;
   /** Only workers unowned or owned by this coordinator receive automatic notices. */
   coordinatorName?: string;
   /** An already-read health result, when a caller has one. */
@@ -129,7 +131,9 @@ export interface MergeContext {
   /** True when this terminal is signed in to Armada: the merge lock is then required, and Armada being down refuses the merge. */
   lockRequired: boolean;
   /** End worker sign-in sessions after final-merge Armada bookkeeping, before Linear cleanup. */
-  afterRecord?: (ticket: string) => Promise<void>;
+  afterRecord?: (ticket: string, tick?: () => Promise<void>) => Promise<void>;
+  /** Preserve the confirmed GitHub fact when later cleanup fails or loses its lease. */
+  onMerged?: (pull: MergePull, ticket: string | null) => void;
   /** One post-close reading; null names no closed ticket. */
   afterRead: (ticket: string | null) => Promise<{
     inFlight: TicketInFlight[];
@@ -150,6 +154,10 @@ export interface MergeContext {
 }
 
 export interface MergeInput {
+  queue?: boolean;
+  retest?: "ci" | "local";
+  /** Durable queued head: only base merges may advance it. */
+  queuedHead?: string;
   throughHold?: string;
   pr: number;
   /** Defaults to the ticket named by the pull request's branch. */
@@ -605,6 +613,7 @@ async function timed<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
               new Refusal(
                 `Armada did not answer within ${ms / 1000} s to ${what}; nothing was merged`,
                 "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
+                true,
               ),
             ),
           ms,
@@ -645,10 +654,11 @@ export async function withLease<T>(
         throw err instanceof Refusal
           ? err
           : err instanceof ArmadaApiError && err.status === 409 && err.next
-            ? new Refusal(err.message, err.next)
+            ? new Refusal(err.message, err.next, false, o.name === MERGE_LEASE)
             : new Refusal(
                 `the ${o.name} lock could not be taken (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
                 "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
+                err instanceof ArmadaApiError && !err.signedOut && (err.status === null || err.status >= 500),
               );
       },
     );
@@ -781,6 +791,8 @@ async function lineageOf(ctx: MergeContext, pull: MergePull, from: string, run: 
     run.lineages.set(pull.headSha, lineage);
     return lineage;
   } catch (err) {
+    // An outage is not evidence of a moved head; preserve retry classification.
+    if (err instanceof Error && "transient" in err && err.transient === true) throw err;
     // Not remembered: the next read tries again.
     return fail(`what it changes could not be checked (${err instanceof Error ? err.message : String(err)})`);
   }
@@ -869,6 +881,10 @@ async function look(ctx: MergeContext, input: MergeInput, run: Run): Promise<Loo
     lineage,
     now: ctx.now(),
   });
+  if (input.queuedHead && input.queuedHead !== pull.headSha) {
+    const queued = await lineageOf(ctx, pull, input.queuedHead, run);
+    if (queued.why) a.problems.push(`the queued head of #${pull.number} moved: ${queued.why}`);
+  }
   if (fallback) a.notes.push("Linear did not answer; the hand-back was checked on Armada");
   try {
     const health = ctx.mainHealth ?? (await ctx.forge.mainHealth?.());
@@ -879,7 +895,7 @@ async function look(ctx: MergeContext, input: MergeInput, run: Run): Promise<Loo
   const behind = a.behind || (cmp?.behindBy ?? 0) > 0;
   const testable =
     MERGEABLE_STATES.has(pull.mergeStateStatus) && ctx.config.gates.localCommands.length > 0 && ctx.repo !== null;
-  return { ...a, behind, mustUpdate: behind && !testable, pull, ticket, cmp, lineage };
+  return { ...a, behind, mustUpdate: behind && (input.retest === "ci" || !testable), pull, ticket, cmp, lineage };
 }
 
 const label = (pull: MergePull, ticket: MergeTicket | null) => `#${pull.number}${ticket ? ` (${ticket.id})` : ""}`;
@@ -912,6 +928,8 @@ function refuse(ctx: MergeContext, run: Run, l: Look, problems: string[], hints:
 }
 
 interface Checked {
+  /** GitHub already merged this entry before a previous drain stopped. */
+  recovered?: boolean;
   pull: MergePull;
   ticket: MergeTicket | null;
   sha: string;
@@ -1048,7 +1066,7 @@ async function recheck(ctx: MergeContext, input: MergeInput, run: Run, c: Checke
   if (pull.headSha !== c.sha) moved.push(`the head of #${pull.number} moved to ${pull.headSha} while it was checked`);
   else if (l.cmp?.baseSha !== c.baseSha)
     moved.push(`${pull.baseRef} moved to ${l.cmp?.baseSha ?? "an unknown commit"} while #${pull.number} was checked`);
-  if (input.wait && !l.problems.length && (moved.length || l.waits.length))
+  if (input.wait && !l.problems.length && (moved.length || l.waits.length || l.mustUpdate))
     throw new NotYet(moved[0] ?? l.waits[0] ?? "not ready");
   const problems = [...l.problems, ...l.waits, ...moved];
   if (problems.length)
@@ -1123,9 +1141,10 @@ async function ownerDecision(
       `the owner's approvals of #${n} could not be read (${unreadable}); none is required without a merge rule`,
     );
   if (problem) {
+    if (input.queue && approval.state === "pending" && !dryRun) throw new NotYet(problem);
     if (enqueue && approval.state === "pending") return { lines: [...lines, problem], decided: null };
     if (dryRun) return { lines: [...lines, `Not mergeable yet: ${problem}`, `Next: ${next}`], decided: null };
-    throw new Refusal(`#${n}${c.ticket ? ` (${c.ticket.id})` : ""} cannot be merged: ${problem}`, next);
+    throw new Refusal(`#${n}${c.ticket ? ` (${c.ticket.id})` : ""} cannot be merged: ${problem}`, next, !!unreadable);
   }
   return { lines: decided ? [...lines, `Decided: ${decided}.`] : lines, decided };
 }
@@ -1252,8 +1271,9 @@ export class MergeStateError extends Refusal {
     readonly number: number,
     readonly ticket: string | null,
     readonly pull: MergePull | null = null,
+    transient = false,
   ) {
-    super(message, next);
+    super(message, next, transient);
   }
 }
 
@@ -1269,6 +1289,20 @@ async function mergePinned(
   const closeByHand = ticket ? `; if it merged, close ${ticket} by hand` : "";
   let readError = "";
   let knownMerged: MergePull | null = null;
+  const pause = async (ms: number) => {
+    try {
+      await ctx.sleep(ms);
+    } catch (error) {
+      // A lease loss after the native call cannot turn an unknown write into "not merged".
+      throw new MergeStateError(
+        `the merge of ${n} was attempted but confirmation could not finish (${error instanceof Error ? error.message : String(error)}); check GitHub before retrying or archiving`,
+        `gh pr view ${pull.number} --repo ${ctx.config.github.repository}`,
+        pull.number,
+        ticket,
+        knownMerged,
+      );
+    }
+  };
   // A failed read is not an answer: the merge may have landed, so it is said, never hidden.
   const read = () => {
     readError = "";
@@ -1309,9 +1343,10 @@ async function mergePinned(
       throw new Refusal(
         `GitHub kept failing (${res.message}) after ${attempt + 1} attempts; ${n} is still open and nothing was merged`,
         `armada merge ${pull.number} again once GitHub answers`,
+        true,
       );
     say(ctx, `GitHub answered ${res.message}; ${n} is still open at ${short(sha)}, retrying in ${wait / 1000} s…`);
-    await ctx.sleep(wait);
+    await pause(wait);
   }
   // Success is what GitHub shows, not what the merge call said.
   let seen: MergePull | null = null;
@@ -1328,7 +1363,7 @@ async function mergePinned(
         pull.number,
         ticket,
       );
-    await ctx.sleep(wait);
+    await pause(wait);
   }
   if (seen.headSha !== sha)
     throw new MergeStateError(
@@ -1349,6 +1384,12 @@ export const runtimeGuide = (runtime: string | null) =>
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-|-$/g, "")}`
     : null;
+
+function recordedPartial(ticket: Ticket, pr: number) {
+  return ticket.comments.find(
+    (c) => c.status?.phase === "implementing" && c.status.summary.startsWith(`PR #${pr} merged into `),
+  );
+}
 
 /** GitHub's Linear automation may complete the issue seconds after the merge. */
 async function keepTicketOpen(
@@ -1446,7 +1487,17 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
   const minutes = Math.round((input.wait?.timeoutMs ?? 0) / 60_000);
   let shown = "";
   for (;;) {
-    await checkHolds(ctx, input);
+    await ctx.tick?.();
+    try {
+      await checkHolds(ctx, input);
+    } catch (err) {
+      if (!(err instanceof Refusal) || !input.queue || !err.paused) throw err;
+      if (err.message !== shown) say(ctx, err.message);
+      shown = err.message;
+      if (ctx.now().getTime() >= deadline) throw err;
+      await ctx.sleep(MERGE_WAIT_POLL_MS);
+      continue;
+    }
     const l = await look(ctx, input, run);
     const { pull } = l;
     const n = `#${pull.number}`;
@@ -1486,9 +1537,30 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
       throw new Refusal(
         `${label(pull, l.ticket)} is still not ready after ${minutes} min: ${reason}; nothing was merged${updatedNote(run, pull)}`,
         `armada merge ${pull.number} --wait again${input.noTicket ? " --no-ticket" : ""}, or armada merge ${pull.number} --dry-run to see the checklist`,
+        true,
       );
     await ctx.sleep(MERGE_WAIT_POLL_MS);
   }
+}
+
+/** Recovery uses this PR's hand-back even if its retained worker has since handed back another part. */
+function mergeIntent(ticket: MergeTicket | null, input: MergeInput): { more: string; keepOpen: boolean } {
+  const handBack = ticket
+    ? "armadaHandBack" in ticket
+      ? ticket.armadaHandBack
+      : findHandBack({
+          ...ticket,
+          comments: ticket.comments.filter(
+            (c) =>
+              c.status?.phase !== "ready-to-merge" || Number(c.status.summary.match(/\bPR #(\d+)/i)?.[1]) === input.pr,
+          ),
+        })
+    : null;
+  const more = handBack?.more ?? null;
+  return {
+    more: more ?? "the remaining work on this ticket",
+    keepOpen: !!ticket && !input.close && (!!input.keepOpen || more !== null),
+  };
 }
 
 function checkMergeIntent(input: MergeInput) {
@@ -1513,6 +1585,65 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
       `armada merge ${input.pr} --through-hold "<why>"`,
     );
   const run: Run = { pin: null, updated: new Map(), lineages: new Map() };
+  if (input.queue) {
+    await ctx.tick?.();
+    const pull = await readSettled(ctx, input.pr);
+    if (pull.state === "merged") {
+      ctx.onMerged?.(
+        pull,
+        input.noTicket ? null : (input.ticket ?? ticketFromBranch(pull.headRef ?? "", ctx.config.tracker.programRoot)),
+      );
+      if (input.queuedHead && input.queuedHead !== pull.headSha) {
+        const lineage = await lineageOf(ctx, pull, input.queuedHead, run);
+        if (lineage.why)
+          throw new MergeStateError(
+            `#${pull.number} was merged at a different head from the queued hand-back: ${lineage.why}; check ${pull.baseRef} before finishing`,
+            `gh pr view ${pull.number}`,
+            pull.number,
+            input.ticket ?? null,
+            pull,
+          );
+      }
+      let ticket: Ticket | null;
+      try {
+        // Cleanup is already authorized by the durable entry and confirmed merge.
+        // An old hand-back may have been resolved or superseded since it landed.
+        ticket = await readTicketFor(ctx, pull, input);
+      } catch (error) {
+        throw new MergeStateError(
+          `#${pull.number} is merged, but its ticket could not be read for recovery (${error instanceof Error ? error.message : String(error)})`,
+          `armada merge --drain once Linear answers`,
+          pull.number,
+          input.ticket ?? ticketFromBranch(pull.headRef ?? "", ctx.config.tracker.programRoot),
+          pull,
+          error instanceof LinearError && error.transient,
+        );
+      }
+      const c: Checked = {
+        recovered: true,
+        pull,
+        ticket,
+        sha: pull.headSha,
+        updatedFrom: null,
+        baseSha: null,
+        lines: [],
+        hints: [],
+        warnings: [],
+        chain: [],
+      };
+      const { more, keepOpen } = mergeIntent(ticket, input);
+      return after(
+        ctx,
+        c,
+        pull,
+        [`Recovered confirmed merge #${pull.number} as ${pull.mergeCommit}.`],
+        null,
+        keepOpen,
+        more,
+        false,
+      );
+    }
+  }
   if (input.dryRun) {
     await checkHolds(ctx, input);
     const c = await checklist(ctx, input, run);
@@ -1531,7 +1662,18 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     try {
       return await locked(ctx, input, run);
     } catch (err) {
+      if (input.queue && err instanceof Refusal && err.paused) {
+        if (ctx.now().getTime() >= deadline) throw err;
+        continue;
+      }
       if (!(err instanceof NotYet)) throw err;
+      if (ctx.now().getTime() >= deadline)
+        throw new Refusal(
+          `still not ready after ${input.wait.timeoutMs / 60_000} min: ${err.message}`,
+          "armada merge --drain again",
+          true,
+        );
+      await ctx.sleep(MERGE_WAIT_POLL_MS);
       say(ctx, `Not ready under the merge lock (${err.message}); lock given back, waiting again…`);
     }
   }
@@ -1541,6 +1683,7 @@ const lockUnavailable = (ctx: MergeContext, input: MergeInput, warning: string |
   new Refusal(
     `the merge lock needs Armada, which is unavailable (${warning ?? "no answer"}); nothing was merged`,
     `armada merge ${input.pr} again once Armada answers, or armada merge ${input.pr} --no-lock if you are sure no other coordinator merges in ${ctx.config.project.slug} now`,
+    true,
   );
 
 /** Reading pauses fails closed whenever the project has a live fleet. */
@@ -1557,12 +1700,13 @@ async function checkHolds(ctx: MergeContext, input: MergeInput): Promise<import(
   );
   if (holds === null) throw lockUnavailable(ctx, input, warnings.join("; ") || "merge holds unavailable");
   if (holds.length && !input.throughHold?.trim())
-    throw new Refusal(holdsPaused(holds, ctx.now()), holdsNext(holds, input.pr));
+    throw new Refusal(holdsPaused(holds, ctx.now()), holdsNext(holds, input.pr), false, true);
   return holds;
 }
 
 /** The merge itself, under the project's merge lease. */
 async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<MergeOutcome> {
+  await ctx.tick?.();
   const { config } = ctx;
   const slug = config.project.slug;
   const early: string[] = [];
@@ -1584,6 +1728,7 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
     let override = "";
     let recordedAudit: string | null = null;
     const beforeMerge = async () => {
+      await ctx.tick?.();
       await ctx.forge.beforeMerge?.(c.pull.number, c.sha);
       // Checks, runtime guards and retry waits can take minutes; refresh pauses before each attempt.
       for (const hold of await checkHolds(ctx, input)) overridden.set(hold.id, hold);
@@ -1616,6 +1761,7 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
         throw new Refusal(
           "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged",
           `armada merge ${input.pr} again`,
+          true,
         );
       say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
     };
@@ -1625,21 +1771,8 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
       ...c.lines,
       `Merged #${merged.number} into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"} (head ${merged.headSha}).`,
     ];
-    const more = c.ticket
-      ? (("armadaHandBack" in c.ticket ? c.ticket.armadaHandBack : findHandBack(c.ticket))?.more ?? null)
-      : null;
-    const keepOpen = !!c.ticket && !input.close && (!!input.keepOpen || more !== null);
-    return after(
-      ctx,
-      c,
-      merged,
-      lines,
-      handBackId,
-      keepOpen,
-      more ?? "the remaining work on this ticket",
-      !!input.noLock,
-      override,
-    );
+    const { more, keepOpen } = mergeIntent(c.ticket, input);
+    return after(ctx, c, merged, lines, handBackId, keepOpen, more, !!input.noLock, override);
   };
   if (input.noLock) {
     early.push(
@@ -1686,6 +1819,8 @@ async function after(
   unlocked: boolean,
   override = "",
 ): Promise<MergeOutcome> {
+  ctx.onMerged?.(merged, c.ticket?.id ?? null);
+  await ctx.tick?.();
   const targets = (ctx.config.deploy?.targets ?? [])
     .filter((t) => t.branch === null || t.branch === merged.baseRef)
     .map((t) => t.name);
@@ -1693,7 +1828,19 @@ async function after(
   const ticket = c.ticket;
   let chorePending = false;
   let live$: MergeRecorded | null = null;
-  if (ticket) {
+  const recorded =
+    c.recovered && keepOpen && ticket && !("armadaHandBack" in ticket) ? recordedPartial(ticket, merged.number) : null;
+  // A completed partial hand-back may now belong to the next PR. Recovery must not resolve it or undo its phase.
+  if (recorded && ticket) {
+    live$ = await mergeLive(ctx, c.warnings, "read retained worker claims", async (fleet) => {
+      const handles = await fleet.runtimeHandles();
+      return {
+        handle: handles.find((h) => h.ticket === ticket.id && !h.releasedAt) ?? null,
+        open: handles.filter((h) => !h.releasedAt),
+        resolved: 0,
+      };
+    });
+  } else if (ticket) {
     for (let attempt = 0; ; attempt++) {
       live$ = await mergeLive(ctx, c.warnings, "record the merge", (fleet) =>
         fleet.merge({
@@ -1729,12 +1876,14 @@ async function after(
       c.warnings.push(`Could not end worker sessions (${err instanceof Error ? err.message : String(err)})`);
     }
     try {
-      const fresh = await ctx.linear.readTicket(ticket.id);
+      const fresh = recorded && !("armadaHandBack" in ticket) ? ticket : await ctx.linear.readTicket(ticket.id);
       if (!fresh) throw new Error(`ticket ${ticket.id} not found in Linear`);
       lines.push(
-        ...(keepOpen
-          ? await keepTicketOpen(ctx, fresh, merged, c, more, unlocked, override)
-          : await closeTicket(ctx, fresh, merged, c, unlocked, override)),
+        ...(recorded
+          ? [`${ticket.id}: this partial merge is already recorded; retained its current phase.`]
+          : keepOpen
+            ? await keepTicketOpen(ctx, fresh, merged, c, more, unlocked, override)
+            : await closeTicket(ctx, fresh, merged, c, unlocked, override)),
       );
       if (!keepOpen) {
         const spec = await closeFinishedSpec(ctx, fresh);
@@ -1784,7 +1933,7 @@ async function after(
       .map((t) => ({
         ticket: t.id,
         title: t.title,
-        phase: keepOpen && t.id === ticket?.id ? "implementing" : t.phase,
+        phase: keepOpen && !recorded && t.id === ticket?.id ? "implementing" : t.phase,
         runtime: displayHandles.get(t.id)?.runtime ?? t.runtime ?? null,
         handle: displayHandles.get(t.id)?.handle ?? null,
         pr: t.pr ?? null,
@@ -1822,7 +1971,10 @@ async function after(
       ...outcome(c, true, merged, lines, workers, null),
       workersListed: listed,
       keepOpen: true,
-      continuation: { message, claim: live$?.handle ?? null },
+      continuation:
+        recorded && linearTicket?.comments.find((c) => c.status)?.id !== recorded.id
+          ? null
+          : { message, claim: live$?.handle ?? null },
       ...notifications,
       deploy,
       linearPending,

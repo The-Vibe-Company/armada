@@ -1,9 +1,6 @@
 "use client";
 
-// A session's state as every screen draws it (THE-1020): its color, where
-// its row opens and its six-step bar. Apart from OverviewScreen so a
-// session's page and the overview's pane do not ship the whole overview on
-// first load (THE-1177).
+// Shared row primitives stay separate from the whole overview and its project cards.
 import type { OverviewItem, SessionGroup } from "@/lib/coordinator-view";
 import { paths } from "@/lib/fleet-view";
 import { useShell } from "../shell/context";

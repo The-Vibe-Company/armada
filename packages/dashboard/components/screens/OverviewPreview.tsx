@@ -21,7 +21,7 @@ import { useFleet, useNow, useShell } from "../shell/context";
 import { Decide } from "./Decide";
 import { DecisionActions } from "./DecisionCard";
 import { JobStrip } from "./JobStrip";
-import { itemColor, itemHref, StepBar } from "./session-state";
+import { itemColor, itemHref, StepBar } from "./OverviewRow";
 import { useActivity } from "./use-activity";
 
 /** How many reports the pane lists. */

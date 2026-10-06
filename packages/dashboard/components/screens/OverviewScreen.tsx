@@ -43,8 +43,10 @@ import { useFleet, useNow, useShell } from "../shell/context";
 import { useOverviewItems } from "../shell/use-items";
 import { RelativeTime, Steady } from "../ui";
 import { useLazy } from "../use-lazy";
+import { GROUP_COLOR, itemColor, itemHref, StepBar } from "./OverviewRow";
 import { deployColor, deployText, HoldAlerts } from "./ShipState";
-import { GROUP_COLOR, itemColor, itemHref, StepBar } from "./session-state";
+
+export { GROUP_COLOR, itemColor, itemHref, StepBar } from "./OverviewRow";
 
 // The preview pane is its own chunk (THE-892): the list does not wait for its code.
 const loadPreview = () => import("./OverviewPreview").then((m) => m.OverviewPreview);
