@@ -730,6 +730,30 @@ describe("job alarms", () => {
     ).toHaveLength(2);
   });
 
+  test("job alarms and liveness follow the ticket's named coordinator", async () => {
+    const live = tempFleet();
+    const { ctx, linear } = setup(live);
+    await working(ctx, linear, "DEMO-7");
+    expect(
+      await live.store.transferTickets({ project: P, tickets: ["DEMO-7"], from: "default", to: "back", at: NOW }),
+    ).toBe(true);
+    const job = await live.store.startJob({
+      project: P,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: at(30),
+    });
+    await live.store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", at: at(20) });
+    const query = { coordinator: null, silentAfterMinutes: 15, etag: null };
+    const front = await serveInbox(live.store, P, { ...query, coordinatorName: "front" }, NOW);
+    expect(front?.items.filter((item) => item.kind === "job-silent")).toEqual([]);
+    expect(front?.openJobs).toBeUndefined();
+    const back = await serveInbox(live.store, P, { ...query, coordinatorName: "back" }, NOW);
+    expect(back?.items.filter((item) => item.kind === "job-silent")).toMatchObject([{ jobId: job.id, owner: "back" }]);
+    expect(back?.openJobs).toEqual([job.id]);
+  });
+
   test("terminal jobs wake watch once and their notices can be acknowledged without Linear writes", async () => {
     const clock = fakeClock();
     const live = tempFleet({ clock });
