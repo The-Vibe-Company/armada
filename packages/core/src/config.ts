@@ -985,7 +985,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
 export function configTemplate(p: { name: string; slug: string; programRoot: string; repository: string }): string {
   const q = JSON.stringify;
   return `# Armada configuration: one project = one repository + one tracker program root.
-# No secrets here: keys come from the environment or \`armada auth login\`.
+# No secrets here: sign in with \`armada login\`; set worker secrets on Organization > Keys.
 
 [project]
 name = ${q(p.name)}
@@ -1006,20 +1006,29 @@ runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 [github]
 repository = ${q(p.repository)}
 
+# Optional features: uncomment the examples you need; \`armada doctor\` lists suggestions.
+# Owner alerts and digests are configured on Organization > Notifications, not in TOML.
+# Set an HTTPS webhook, language, time zone, quiet hours and digest times/days there; send a test.
+# Name coordinator roles with \`armada coordinator use backend\` or ARMADA_COORDINATOR=backend.
+
 # After merges, watch each declared target and pause merges if deploy or smoke fails.
 # [[deploy.target]]
 # name = "api"
 # branch = "main"  # omit to watch any merged base branch
 # github_environment = "production"
-# live_sha_command = "curl -fsS https://example.test/version"  # use exactly one live source
+## Alternative to github_environment (choose exactly one live source):
+## live_sha_command = "curl -fsS https://example.test/version"
 # smoke = "curl -fsS https://example.test/health"
 # timeout_minutes = 20  # 1–120; smoke shares this deadline
 # pause_on_failure = true
+
 [git]
 sign = "inherit"        # "off" disables commit signing only in new Herdr worktrees, when branch rules allow it
 
 # A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
 # with \`armada ci why <pr> --rerun\`; unknown failures are refused.
+# [ci]
+# failure_patterns = ["FAIL (.+)"]  # optional test-name regex; exactly one capture group
 # [[ci.known_failure]]
 # check = "test"  # exact check run name
 # pattern = "flaky_suite > times out on cold start"  # regex over failing test names or error block
@@ -1029,6 +1038,8 @@ sign = "inherit"        # "off" disables commit signing only in new Herdr worktr
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
 
 [merge]
+# Queue intent: \`armada merge --when-green <pr...>\`; retest serially with \`armada merge --drain\`.
+# queue_retest = "ci"  # requires the drain release; "local" uses gates.local_commands
 # Files that concern every working PR, in addition to overlapping files (default: CI workflows).
 # notify_paths = [".github/workflows/**", "package.json", "migrations/**"]
 
@@ -1040,6 +1051,7 @@ quiet_minutes = 45       # alive but without a report: a coordinator-only note
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
 # not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
 # plans = "approve"       # or "pre-approved": workers post their plan and go on without waiting
+# validation_samples = 4  # images per owner question; 1–8
 # attachments_per_ticket = 20
 # attachments_project_mb = 200
 # attachments_retention_days = 30
@@ -1083,9 +1095,12 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 [brief]
 # extra = "docs/worker-conventions.md"  # a file every worker brief carries under "Project conventions"
 
-# How \`armada brief\` launches workers on Conductor. Every value is passed explicitly;
+# Launch with \`armada launch <ticket> --runtime conductor\`; the brief carries the sign-in token.
+# How \`armada brief\` configures workers on Conductor. Every value is passed explicitly;
 # \`conductor model\` lists each agent's model ids and effort levels.
 [conductor]
+# project_id = "00000000-0000-4000-8000-000000000001"  # optional explicit Conductor project
+# base_branch = "main"  # optional; otherwise the repository default
 default_profile = "opus"  # used only when no profile has a when rule
 
 [conductor.profiles.opus]
