@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { parseConfig } from "../src/config.ts";
 import type { BranchRules } from "../src/github.ts";
-import { mergeCompatibility, signingSetup } from "../src/setup.ts";
+import { mergeCompatibility, optionalFeatures, signingSetup } from "../src/setup.ts";
 
 const branchRules: BranchRules = {
   defaultBranch: "trunk",
@@ -503,4 +504,37 @@ test("adapter-resolved OpenPGP alias takes precedence while X.509 ignores it", (
       openpgpProgram: "pinentry-mac",
     }),
   ).toMatchObject({ signer: "gpgsm", interactive: null });
+});
+
+// Owner: adoption hints stay informational, and disappear when the feature is configured.
+test("optional feature discovery guides old configs without making optional setup a failure", () => {
+  const baseline = parseConfig(DEMO_TOML);
+  const hints = optionalFeatures(baseline);
+  expect(hints.map((c) => c.id)).toEqual([
+    "optional:deploy",
+    "optional:flakes",
+    "optional:acceptance",
+    "optional:jobs",
+    "optional:policy",
+    "optional:merge",
+    "optional:notifications",
+    "optional:coordinators",
+  ]);
+  expect(hints.every((c) => c.level === "info" && c.fix === null && !c.message.includes("\n"))).toBe(true);
+  for (const [toml, gone] of [
+    ['[[deploy.target]]\nname = "api"\ngithub_environment = "production"', "optional:deploy"],
+    ['[[ci.known_failure]]\ncheck = "test"\npattern = "cold start"\nticket = "DEMO-12"', "optional:flakes"],
+    ['[[acceptance]]\nname = "build"\ncommand = "npm run build"', "optional:acceptance"],
+    ['[jobs.build]\nstart = "dispatch"\nstop = "cancel"', "optional:jobs"],
+    ['[policy]\nmerge_approval = "ask for owner approval"', "optional:policy"],
+    ['[[policy.validation]]\nwhen = "design"\nthen = "show a mockup"', "optional:policy"],
+    ['[merge]\nnotify_paths = ["package.json"]', "optional:merge"],
+    ["[merge]\nnotify_paths = []", "optional:merge"],
+  ]) {
+    const configured = optionalFeatures(parseConfig(`${DEMO_TOML}\n${toml}`));
+    expect(configured.map((c) => c.id)).toEqual(hints.filter((c) => c.id !== gone).map((c) => c.id));
+  }
+  // Server and machine settings cannot be inferred from TOML; pointers never say they are absent.
+  expect(hints.find((c) => c.id === "optional:notifications")?.message).toContain("Organization > Notifications");
+  expect(hints.find((c) => c.id === "optional:coordinators")?.message).toContain("armada coordinator use");
 });

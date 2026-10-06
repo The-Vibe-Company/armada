@@ -4,7 +4,16 @@ Armada runs a fleet of coding agents on one project and keeps every piece of wor
 
 It imposes one method: grill the decisions, write a spec, cut it into tickets, let one worker agent ship each ticket as a green pull request, and let a coordinator agent merge. The tracker is the source of truth for progress; Armada adds live telemetry, contention rules and a fleet dashboard on top.
 
-**Status:** early. `armada status`, `armada auth`, `armada doctor`, `armada init`, `armada brief`, `armada launch`, `armada claim`, `armada report`, `armada release`, `armada ask`, `armada inbox`, `armada answer`, `armada merge`, `armada validate`, `armada ask-owner` and `armada done` work; the other commands are being built.
+**Status:** early; the CLI and dashboard run the full ticket-to-pull-request workflow.
+
+## What Armada does for you
+
+- Launch one worker per ready ticket, preserve its session and progress, and let named coordinators resume the fleet.
+- Route questions and owner approvals to the dashboard; send owner alerts and scheduled digests through a configured chat webhook.
+- Keep merges under shared holds and a durable queue, notify affected workers, and require live acceptance checks when configured.
+- Explain CI failures, rerun declared flakes once, check deployments and smoke tests after merges, and track long jobs on your runner.
+
+`armada doctor` points out optional configuration. Enable what your project needs in `armada.toml` and Organization > Notifications; the [runbook](docs/runbook.md) covers each feature.
 
 ## Install
 
@@ -23,6 +32,7 @@ npm install -g @the-vibe-company/armada  # then: armada status
 2. **Enter the keys** once, on Organization > Keys: the Linear API key. It stays sealed in Armada: no laptop or runtime needs it, and no machine needs a database key either, since the CLI reaches the fleet's live data through Armada ([Keys](#keys)).
 3. **Sign in from the terminal**: `armada login`, then approve the code in the browser. A headless coordinator sets `ARMADA_API_KEY` to an organization API key instead ([Sign in from a terminal](#sign-in-from-a-terminal)).
 4. **Set up the repository**: `armada doctor` lists what it lacks, `armada init --program-root ABC-1` opens one pull request that adds it all ([Set up a repository](#set-up-a-repository)); merge it.
+5. **Choose optional features.** Use the commented template and doctor’s `info` lines to configure deployment targets/smoke checks, known flakes, acceptance checks, jobs and owner approval rules. Enable owner alerts/digests on Organization > Notifications, then select each coordinator’s name with `armada coordinator use <name>`. Launch cloud workers with `armada launch ABC-12 --runtime conductor`. For an existing checkout, follow [Upgrade an existing project](docs/runbook.md#upgrade-an-existing-project).
 
 ```sh
 armada login
