@@ -3,7 +3,7 @@
 // local PGlite one (`pglite:` URL) seeded with `bun run demo:seed`. No key is needed.
 import { configTemplate, parseConfig } from "@armada/core/read";
 import type { Sources } from "../fleet-data";
-import { DEMO_PROJECTS, demoSnapshot, scenarioOf } from "./world";
+import { DEMO_JOBS_TOML, DEMO_PROJECTS, demoSnapshot, scenarioOf } from "./world";
 
 export function demoSources(mode: string, real: Sources): Sources {
   const scenario = scenarioOf(mode);
@@ -19,7 +19,10 @@ export function demoSources(mode: string, real: Sources): Sources {
       const fromEnv = real.fallbackProjects();
       return fromEnv.length ? fromEnv : DEMO_PROJECTS.map((p) => ({ repository: p.repository }));
     },
-    readConfig: async (p) => ({ config: parseConfig(configTemplate(find(p.repository))), warning: null }),
+    readConfig: async (p) => ({
+      config: parseConfig(`${configTemplate(find(p.repository))}${DEMO_JOBS_TOML}`),
+      warning: null,
+    }),
     readSnapshot: async (config) => {
       const { program, forge } = demoSnapshot(find(config.github.repository), scenario, new Date());
       return { program, forge, forgeError: null };
