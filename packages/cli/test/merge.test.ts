@@ -1215,6 +1215,56 @@ test("when-green queues multiple no-ticket PRs in argument order and preserves f
   expect(f.ghCalls).toEqual([]);
 });
 
+test.each([false, true])(
+  "setup PR queue requires --no-ticket and drains without Linear writes (noTicket=%s)",
+  async (noTicket) => {
+    const f = await fixture();
+    const fetch = f.io.fetch!;
+    f.io.fetch = async (url, init) => {
+      const response = await fetch(url, init);
+      if (url !== GITHUB_GRAPHQL) return response;
+      const body = (await response.json()) as {
+        data?: { repository?: { pullRequest?: { headRefName: string } } };
+      };
+      const pull = body.data?.repository?.pullRequest;
+      if (pull) pull.headRefName = "armada/setup";
+      return Response.json(body);
+    };
+    expect(f.merged()).toBe(false);
+    expect(await f.store.queueList("widgets", { since: NOW })).toEqual([]);
+    expect(f.linear.writes).toEqual([]);
+    const options = noTicket ? ["--no-ticket", "--reason", "Repository setup"] : [];
+    expect(await run(["merge", "--when-green", "9", ...options], f.io), f.err()).toBe(noTicket ? 0 : 1);
+    if (!noTicket) {
+      expect(f.err()).toContain("names no ticket");
+      expect(f.err()).toContain("--no-ticket");
+      expect(await f.store.queueList("widgets", { since: NOW })).toEqual([]);
+      expect(f.ghCalls).toEqual([]);
+    } else {
+      expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
+        pr: 9,
+        state: "queued",
+        ticket: null,
+        noTicket: true,
+        reason: "Repository setup",
+        headSha: f.head,
+      });
+      expect(f.merged()).toBe(false);
+      expect(f.ghCalls).toEqual([]);
+      expect(await run(["merge", "--drain"], f.io), f.err()).toBe(0);
+      expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
+        state: "merged",
+        mergeCommit: SQUASH,
+      });
+      expect(f.out()).toContain("Result: merged #9");
+      expect(f.out()).toContain("No ticket: nothing was written to Linear.");
+      expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(false);
+    }
+    expect(f.merged()).toBe(noTicket);
+    expect(f.linear.writes).toEqual([]);
+  },
+);
+
 // The real adapter talks to a fake native runtime: no Conductor commands or wall-clock waits.
 test.each([
   "confirmed",
