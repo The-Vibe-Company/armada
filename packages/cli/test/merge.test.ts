@@ -934,3 +934,23 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
       expect(f.err()).toContain("run armada stop DEMO-18");
   },
 );
+
+test("confirmed merge ends worker sessions before starting matching deploy watchers", async () => {
+  const f = await fixture();
+  const read = f.io.readFile;
+  f.io.readFile = async (path) => {
+    const contents = await read(path);
+    return path.endsWith("armada.toml") && contents
+      ? `${contents}\n[[deploy.target]]\nname = "api"\nbranch = "main"\nlive_sha_command = "version"\n`
+      : contents;
+  };
+  let launched: string[] = [];
+  f.io.startBackground = async (args) => {
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(true);
+    launched = args;
+    return true;
+  };
+  expect(await run(["merge", "9"], f.io)).toBe(0);
+  expect(launched.slice(0, 6)).toEqual(["deploy", "watch", "--sha", SQUASH, "--target", "api"]);
+  expect(f.out()).toContain(`Watching the deploy of ${SQUASH} to api`);
+});

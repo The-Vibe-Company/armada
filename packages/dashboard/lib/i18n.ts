@@ -732,6 +732,9 @@ const en = {
       hint: "Arrow keys move between images · Esc closes",
       close: "Close image",
     },
+    checks: "Things to check",
+    details: "More context",
+    more: (n: number) => `+${n} more images on the ticket`,
     screenshot: "Screenshot",
   },
   insights: {
@@ -1707,6 +1710,9 @@ const fr: Strings = {
       hint: "Flèches pour changer d'image · Échap pour fermer",
       close: "Fermer l'image",
     },
+    checks: "Points à vérifier",
+    details: "Plus de contexte",
+    more: (n) => `+${n} images sur le ticket`,
     screenshot: "Capture",
   },
   insights: {
