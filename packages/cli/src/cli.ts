@@ -161,7 +161,19 @@ const COMMAND_HELP: Record<string, string> = {
   answer --note <ticket|plan item> "<message>"
                     Coordinator: record a delivered note; an open plan is resolved
 `,
-  merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
+  merge: `  merge --when-green <pr...> [--no-ticket] [--keep-open] [--through-hold <why>] [--reason <why>]
+                    Queue handed-back pull requests durably in order. Checks/behind-base,
+                    owner decisions and merge holds may wait; rule failures refuse now.
+                    --reason is required with [policy] merge_approval. --keep-open records
+                    intent for the drain to keep the ticket open; --through-hold records
+                    why a fix may pass the shared merge hold. Queuing does not drain.
+                    Next: armada merge --drain (in the background).
+  merge queue [--json]
+                    List open entries in order and entries finished in the last day.
+  merge queue remove <pr>
+                    Remove a queued entry; an entry currently merging cannot be removed.
+                    To pause merges, use armada hold add "<why>".
+  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
         [--reason <why>] [--ask-owner --reason <why>]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
@@ -390,6 +402,7 @@ const VALUE_OPTIONS = [
   "choices",
   "validation",
   "validation-reason",
+  "through-hold",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
@@ -399,6 +412,8 @@ const FLAG_OPTIONS = [
   "dry-run",
   "no-lock",
   "no-ticket",
+  "when-green",
+  "keep-open",
   "prompt",
   "profile-line",
   "wait",
@@ -423,7 +438,19 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   watch: ["stop"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
-  merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
+  merge: [
+    "ticket",
+    "no-ticket",
+    "dry-run",
+    "no-lock",
+    "wait",
+    "timeout",
+    "reason",
+    "ask-owner",
+    "when-green",
+    "keep-open",
+    "through-hold",
+  ],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],

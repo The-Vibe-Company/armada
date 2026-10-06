@@ -30,6 +30,8 @@ import {
   type MergePull,
   mergePullRequest,
   parsePullRequestUrl,
+  prepareQueueEntry,
+  queueOpen,
   readStatusSources,
   shellWord,
   type TestMergeResult,
@@ -166,12 +168,25 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
 export function prNumber(arg: string | undefined, repository: string): number {
   if (!arg) throw new UsageError("merge needs a pull request: armada merge <number or URL>");
   const trimmed = arg.trim().replace(/^#/, "");
-  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  if (
+    /^\d+$/.test(trimmed) &&
+    Number.isSafeInteger(Number(trimmed)) &&
+    Number(trimmed) > 0 &&
+    Number(trimmed) <= 2147483647
+  )
+    return Number(trimmed);
   const pr = parsePullRequestUrl(trimmed);
   if (!pr) throw new UsageError(`"${arg}" is not a pull request number or URL`);
   if (pr.repo.toLowerCase() !== repository.toLowerCase())
     throw new UsageError(`${pr.url} is not in the project repository ${repository}`);
+  if (!Number.isSafeInteger(pr.number) || pr.number < 1 || pr.number > 2147483647)
+    throw new UsageError("pull request number must be between 1 and 2147483647");
   return pr.number;
+}
+
+function ordinal(n: number): string {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] ?? "th");
+  return `${n}${suffix}`;
 }
 
 /** `--timeout` of `merge --wait`, in minutes. */
@@ -224,8 +239,56 @@ export async function merge(
     beforeMerge?: (number: number, sha: string) => Promise<void>;
   },
 ) {
+  const queueWatch = async () =>
+    rearmFor(io, config.project.slug, {
+      inFlight: (await watchOf(io, config.project.slug)).state?.inFlight ?? null,
+      open: null,
+    });
+  if (a.rest[0] === "queue") {
+    if (Object.keys(a.options).length) throw new UsageError("merge queue only takes --json");
+    const { fleet, warning } = await liveFleet(io, config, credentials);
+    if (!fleet) throw new UsageError(warning ?? "merge queue needs Armada sign-in", "armada login");
+    if (a.rest[1] === "remove" && a.rest.length === 3) {
+      const pr = prNumber(a.rest[2], config.github.repository);
+      const removed = await fleet.queueRemove({ pr });
+      const watch = await queueWatch();
+      io.stdout(
+        a.json
+          ? `${JSON.stringify({ pr, removed, watch })}\n`
+          : removed
+            ? `Removed #${pr} from the merge queue.\n`
+            : `#${pr} is not queued or is currently merging.\n`,
+      );
+      if (!a.json) io.stdout(`${watch.line}\n`);
+
+      return 0;
+    }
+    if (a.rest.length !== 1) throw new UsageError("use armada merge queue [--json] or armada merge queue remove <pr>");
+    const entries = await fleet.queueList();
+    const watch = await queueWatch();
+    let position = 0;
+    io.stdout(
+      a.json
+        ? `${JSON.stringify({ entries, holds: [], watch }, null, 2)}\n`
+        : entries.length
+          ? `${entries.map((e) => `${queueOpen(e) ? `${++position}.` : "  "} #${e.pr}  ${e.state}${e.ticket ? `  ${e.ticket}` : ""}${e.detail ? ` — ${e.detail}` : ""}`).join("\n")}\n`
+          : "The merge queue is empty.\n",
+    );
+    if (!a.json) io.stdout(`${watch.line}\n`);
+    return 0;
+  }
+  const enqueue = !!a.options["when-green"];
+  if (!enqueue && (a.options["keep-open"] || a.options["through-hold"]))
+    throw new UsageError("--keep-open and --through-hold apply to --when-green");
+  if (enqueue && ["wait", "timeout", "dry-run", "no-lock", "ask-owner"].some((k) => a.options[k] !== undefined))
+    throw new UsageError(
+      "--when-green queues intent: --wait, --timeout, --dry-run, --no-lock and --ask-owner cannot go with it",
+    );
+  if (enqueue && a.options.ticket && a.rest.length !== 1) throw new UsageError("--ticket applies to one pull request");
+  if (a.options["through-hold"] !== undefined && !a.options["through-hold"]?.trim())
+    throw new UsageError("--through-hold needs a reason");
   const [arg, ...extra] = a.rest;
-  if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
+  if (!enqueue && extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const number = prNumber(arg, config.github.repository);
   const noTicket = !!a.options["no-ticket"];
   if (noTicket && a.options.ticket) throw new UsageError("--no-ticket and --ticket cannot go together");
@@ -335,6 +398,44 @@ export async function merge(
       return false;
     },
   };
+  if (enqueue) {
+    const { fleet, warning } = await live;
+    if (!fleet) throw new UsageError(warning ?? "queuing needs Armada sign-in", "armada login");
+    const numbers = [...new Set(a.rest.map((pr) => prNumber(pr, config.github.repository)))];
+    const results = [];
+    const open = (await fleet.queueList()).filter(queueOpen);
+    // Emit each durable result immediately, so a later refusal does not hide earlier adds.
+    for (const pr of numbers) {
+      const existing = open.find((e) => e.pr === pr);
+      if (existing) {
+        results.push({ pr, existing });
+        if (!a.json) io.stdout(`#${pr} is already queued.\n`);
+        continue;
+      }
+      const entry = await prepareQueueEntry(ctx, {
+        pr,
+        ticket: a.options.ticket ?? null,
+        noTicket,
+        reason: a.options.reason ?? null,
+        keepOpen: !!a.options["keep-open"],
+        throughHold: a.options["through-hold"] ?? null,
+      });
+      const result = await fleet.queueAdd(entry);
+      results.push({ pr, ...result });
+
+      if (!a.json)
+        io.stdout(
+          "existing" in result ? `#${pr} is already queued.\n` : `queued #${pr} (${ordinal(result.position)})\n`,
+        );
+    }
+    const watch = await queueWatch();
+    io.stdout(
+      a.json
+        ? `${JSON.stringify({ results, watch, next: "armada merge --drain (in the background)" }, null, 2)}\n`
+        : `Next: armada merge --drain (in the background)\n${watch.line}\n`,
+    );
+    return 0;
+  }
   if (askOwner) {
     const asked = await askOwnerToMerge(ctx, {
       pr: number,

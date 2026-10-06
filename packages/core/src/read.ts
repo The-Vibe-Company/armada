@@ -15,6 +15,7 @@ export * from "./github.ts";
 export * from "./insights.ts";
 export * from "./linear.ts";
 export * from "./live.ts";
+export * from "./merge-queue.ts";
 export * from "./model.ts";
 export * from "./npm.ts";
 export * from "./overview.ts";

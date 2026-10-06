@@ -737,6 +737,25 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 24,
     statements: ['ALTER TABLE "armada_worker" ADD COLUMN IF NOT EXISTS "runtime" text'],
   },
+  {
+    // THE-1098: merge intent survives a coordinator session.
+    version: 25,
+    statements: [
+      `CREATE TABLE merge_queue (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL, pr integer NOT NULL, ticket text,
+        no_ticket boolean NOT NULL DEFAULT false, keep_open boolean NOT NULL DEFAULT false,
+        through_hold text, reason text, head_sha text,
+        state text NOT NULL CHECK (state IN ('queued','merging','merged','refused','removed')),
+        detail text, attempts integer NOT NULL DEFAULT 0, not_before timestamptz,
+        queued_by text NOT NULL, queued_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+        merge_commit text, finished_at timestamptz
+      )`,
+      "CREATE UNIQUE INDEX merge_queue_one_open ON merge_queue (project, pr) WHERE state IN ('queued','merging')",
+      "CREATE INDEX merge_queue_open ON merge_queue (project, state, queued_at, id)",
+      "CREATE INDEX merge_queue_finished ON merge_queue (project, finished_at) WHERE finished_at IS NOT NULL",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
