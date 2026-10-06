@@ -299,6 +299,7 @@ describe("live data", () => {
     await saveRuntimeHandle(db, { ...claim, at: at(4) });
     expect(await openRuntimeHandles(db, P)).toEqual([
       {
+        coordinator: null,
         project: P,
         ticket: "WID-2",
         runtime: "Conductor",
