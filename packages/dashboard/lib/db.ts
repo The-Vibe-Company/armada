@@ -764,6 +764,16 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX owner_pushes_unsent ON owner_pushes (channel, created_at) WHERE sent_at IS NULL`,
     ],
   },
+  {
+    version: 26,
+    statements: [
+      `CREATE TABLE ticket_paths (
+      project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+      ticket text NOT NULL, paths text[] NOT NULL, declared_at timestamptz NOT NULL,
+      PRIMARY KEY (project, ticket)
+    )`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
