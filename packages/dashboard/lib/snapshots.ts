@@ -12,9 +12,10 @@
 // newer reading. The webhooks' marks (`markIssues`, `markRepository`,
 // `markEveryProject`) stay until a reading that saw them is written: a refresh
 // that fails or is cut short loses none of them.
-import { type ArmadaConfig, CONFIG_DEFAULTS, type Issue, type StatusSources } from "@armada/core/read";
+import { type ArmadaConfig, CONFIG_DEFAULTS, type Issue, mainHealth, type StatusSources } from "@armada/core/read";
 import { pruneAttachments } from "./attachments";
 import { type Database, iso, type Queryable, transaction } from "./db";
+import { applyMainRedHold } from "./fleet-store";
 
 /** One reading of a project: its armada.toml and what Linear and GitHub said. */
 export interface Snapshot {
@@ -356,27 +357,41 @@ export function dbSnapshots(db: Database, memory: MemorySnapshots): SnapshotStor
     },
     async save(key, snapshot, claim, { full, now }) {
       const { startedAt, ...body } = snapshot;
-      const rs = await db.query(
-        `UPDATE fleet_snapshots SET body = $2::jsonb, version = version + 1, started_at = $3, read_at = $4,
+      const row = await transaction(db, async (q) => {
+        const rs = await q.query(
+          `UPDATE fleet_snapshots SET body = $2::jsonb, version = version + 1, started_at = $3, read_at = $4,
            full_at = CASE WHEN $5::boolean THEN $3 ELSE full_at END, error = NULL, refreshing_until = NULL,
            repository = $6, issue_ids = $7::text[],
            linear_dirty = linear_dirty AND marked <> $9, forge_dirty = forge_dirty AND marked <> $9,
            full_due = full_due AND marked <> $9, touched = CASE WHEN marked = $9 THEN '{}' ELSE touched END
          WHERE key = $1 AND refreshing_until = $8
          RETURNING ${HEAD}`,
-        [
-          key,
-          JSON.stringify(body),
-          startedAt,
-          now,
-          full,
-          snapshot.config.github.repository.toLowerCase(),
-          snapshot.sources.program.issues.map((i) => i.uuid),
-          claim.lease,
-          claim.marked,
-        ],
-      );
-      const row = rs.rows[0];
+          [
+            key,
+            JSON.stringify(body),
+            startedAt,
+            now,
+            full,
+            snapshot.config.github.repository.toLowerCase(),
+            snapshot.sources.program.issues.map((i) => i.uuid),
+            claim.lease,
+            claim.marked,
+          ],
+        );
+        const row = rs.rows[0];
+        if (!row) return null;
+        const forge = snapshot.sources.forge;
+        // A repository naming another project's slug must not change that project's live data.
+        // Repository-only fallback readings have no registered fleet whose merges they can pause.
+        if (forge?.main && key === snapshot.config.project.slug)
+          await applyMainRedHold(
+            q,
+            snapshot.config.project.slug,
+            mainHealth(forge.main, snapshot.config.gates.requiredChecks, forge.mainComplete),
+            now,
+          );
+        return row;
+      });
       if (!row) return { saved: false, dirty: false };
       await pruneAttachments(
         db,

@@ -3,7 +3,7 @@
 // over the model; tolerant of missing forge data and missing status lines.
 
 import { CONFIG_DEFAULTS } from "./config.ts";
-import type { RuntimeObservation } from "./live.ts";
+import type { MergeHold, OpenHold, RuntimeObservation } from "./live.ts";
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
 import { checkIssues } from "./phases.ts";
 import type { MainCommit, MainHealth, ShippingStage } from "./types.ts";
@@ -628,4 +628,32 @@ export function mainHealthLine(health: MainHealth): string {
     ? ` (${health.redSince.failing.join(", ")} failing on ${health.redSince.sha.slice(0, 7)})`
     : "";
   return `${health.branch} ${since}${fix}${health.redBeyondWindow ? "" : failing}`;
+}
+
+/** Shared merge pauses follow a red streak; pending or absent checks cannot prove recovery. */
+export function mainRedHoldChange(
+  health: MainHealth | null,
+  openHolds: readonly MergeHold[],
+): { open?: OpenHold; clear?: { id: number; reason: string }[] } {
+  if (!health || (health.state !== "red" && health.state !== "green")) return {};
+  const holds = openHolds.filter((h) => h.kind === "main-red" && !h.clearedAt);
+  if (health.state === "green")
+    return holds.length
+      ? { clear: holds.map((h) => ({ id: h.id, reason: `main green again at ${health.head.slice(0, 7)}` })) }
+      : {};
+  const since = health.redSince;
+  if (!since) return {};
+  const old = holds.filter((h) => h.ref !== since.sha);
+  const change: ReturnType<typeof mainRedHoldChange> = {};
+  if (old.length) change.clear = old.map((h) => ({ id: h.id, reason: "superseded by a new red streak" }));
+  if (!holds.some((h) => h.ref === since.sha)) {
+    const ref = since.pr === null ? since.sha.slice(0, 7) : `#${since.pr}`;
+    const failing = since.failing.length ? `${since.failing.join(", ")} failing` : "checks failing";
+    change.open = {
+      kind: "main-red",
+      ref: since.sha,
+      reason: `main red since ${ref}: ${failing} on ${since.sha.slice(0, 7)}`,
+    };
+  }
+  return change;
 }
