@@ -904,6 +904,33 @@ test("acceptance uses a worker's existing report credential scope and refuses it
   });
 });
 
+test("acceptance refuses to execute when secret masking changes its durable check name", async () => {
+  const home = await mkdtemp(join(tmpdir(), "armada-acceptance-receipt-"));
+  dirs.push(home);
+  const w = worker({ ...SIGNED_IN, XDG_CONFIG_HOME: home });
+  const config = `${DEMO_TOML}\n[[acceptance]]\nname = "production build"\ncommand = "real-build"\nmax_runs = 3`;
+  w.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? config : null);
+  w.linear.add("DEMO-7", {
+    labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
+    prs: [{ number: 9, repo: "acme/widgets", title: "build", url: "https://github.com/acme/widgets/pull/9" }],
+  });
+  w.armada.secrets.set("widgets", new Map([["BUILD_KEY", "production"]]));
+  w.net.rest = async () => Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [] }));
+  let executions = 0;
+  w.io.exec = async (command, args) => {
+    if (command !== "git") executions++;
+    return {
+      code: 0,
+      stdout: args.includes("--show-toplevel") ? "/work/widgets" : args.includes("--porcelain") ? "" : HEAD,
+      stderr: "",
+    };
+  };
+  for (let i = 0; i < 4; i++) expect(await run(["acceptance", "run"], w.io)).toBe(1);
+  expect(executions).toBe(0);
+  expect(w.err()).toContain("start receipt could not be verified");
+  expect(w.linear.bodies.join("\n")).not.toContain("production");
+});
+
 test("acceptance serializes overlapping local executions and masks vault-only values before Linear", async () => {
   const home = await mkdtemp(join(tmpdir(), "armada-acceptance-concurrent-"));
   dirs.push(home);

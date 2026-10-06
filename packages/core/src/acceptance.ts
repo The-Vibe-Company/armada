@@ -83,6 +83,20 @@ export async function runAcceptance(
       message: `${prefix} started on ${head} ${attempt}`,
     });
     outcomes.push(receipt);
+    // Masking or an incomplete read must not turn a durable attempt into an uncounted execution.
+    const stored = await readOpenTicket(ctx, ticket.id);
+    const start = stored.comments.find((comment) => comment.id === receipt.commentId);
+    const counted = start && acceptancePasses([start]).checks.find((check) => check.name === rule.name);
+    if (
+      stored.commentsTruncated ||
+      start?.status?.phase !== "shipping" ||
+      start.status.summary !== `${prefix} started on ${head} ${attempt}` ||
+      counted?.runs !== 1
+    )
+      throw new Refusal(
+        "the acceptance start receipt could not be verified in Linear; no command was run",
+        "ask the coordinator to check the acceptance record and project secret masking",
+      );
     const started = ctx.now().getTime();
     let result: { ok: boolean; output: string };
     try {
