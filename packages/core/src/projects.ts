@@ -3,6 +3,7 @@
 // cannot be read. Shared by `armada status --all` and the dashboard.
 import { type ArmadaConfig, CONFIG_FILE, configTemplate, parseConfig } from "./config.ts";
 import { fetchDefaultBranchFile } from "./github.ts";
+import type { HttpRetryOptions } from "./http.ts";
 import type { Fetch } from "./linear.ts";
 import type { ProjectInput } from "./live.ts";
 
@@ -16,7 +17,7 @@ const message = (err: unknown) => (err instanceof Error ? err.message : String(e
 
 export async function readProjectConfig(
   p: ProjectInput,
-  opts: { githubToken: string | null; fetch?: Fetch },
+  opts: { githubToken: string | null; fetch?: Fetch } & HttpRetryOptions,
 ): Promise<ProjectConfigReading> {
   const fallback = (why: string) => ({
     config: parseConfig(configTemplate(p), `registry record ${p.slug}`),
@@ -28,7 +29,7 @@ export async function readProjectConfig(
       token: opts.githubToken,
       repository: p.repository,
       path: CONFIG_FILE,
-      ...(opts.fetch ? { fetch: opts.fetch } : {}),
+      ...opts,
     });
     if (text === null) return fallback(`not on the default branch of ${p.repository}`);
     return { config: parseConfig(text, `${p.repository}:${CONFIG_FILE}`), warning: null };
