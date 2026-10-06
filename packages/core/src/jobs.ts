@@ -42,6 +42,8 @@ export interface JobQuery {
 export interface JobSummary extends Job {
   overdue: boolean;
   ticketDone: boolean;
+  /** `[jobs.<name>] max_hours` of armada.toml; null when unset or the job is no longer configured. */
+  maxHours: number | null;
 }
 
 /** The last nonblank stdout line is the runner contract; preceding lines may be tool chatter. */

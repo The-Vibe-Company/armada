@@ -32,6 +32,7 @@ import {
   resolvePlans,
   saveRuntimeHandle,
   saveWorkerProfile,
+  shownJobs,
   upsertProject,
 } from "../lib/fleet-store.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
@@ -515,6 +516,19 @@ test("long jobs persist across store instances, are project scoped and never rev
   ).toBe("stopped");
   expect(await next.listJobs(project.slug, { open: true })).toEqual([]);
   expect(await next.listJobs(project.slug, { ticket: job.ticket, id: job.id })).toEqual(stopped ? [stopped] : []);
+
+  // The dashboard shows every open job, and the ended jobs of the tickets it shows since a time (THE-1128).
+  const open = await store.startJob({
+    project: project.slug,
+    ticket: "DEMO-9",
+    name: "eval",
+    startedBy: null,
+    at: at(3),
+  });
+  expect(await shownJobs(db, project.slug, [job.ticket], at(2))).toEqual(stopped ? [open, stopped] : []);
+  expect(await shownJobs(db, project.slug, [job.ticket], at(3))).toEqual([open]);
+  expect(await shownJobs(db, project.slug, [], at(0))).toEqual([open]);
+  expect(await shownJobs(db, "other-project", [job.ticket], at(0))).toEqual([]);
 });
 
 test("a deferred request survives storage, shares launch uniqueness and is resolved by the worker claim", async () => {

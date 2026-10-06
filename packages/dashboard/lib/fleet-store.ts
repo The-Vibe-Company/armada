@@ -1190,6 +1190,31 @@ async function listJobs(db: Queryable, project: string, q: JobQuery): Promise<Jo
   return (await db.query(`SELECT * FROM jobs WHERE ${where.join(" AND ")} ORDER BY id DESC`, params)).rows.map(jobOf);
 }
 
+/** How many jobs a project's reading carries at most. */
+export const SHOWN_JOBS = 100;
+
+/**
+ * The jobs the dashboard shows (THE-1128): every open job of the project, and
+ * those of `tickets` that ended since `endedSince`, newest first. Each half
+ * reads its own index.
+ */
+export async function shownJobs(
+  db: Queryable,
+  project: string,
+  tickets: readonly string[],
+  endedSince: Date,
+): Promise<Job[]> {
+  return (
+    await db.query(
+      `SELECT * FROM jobs WHERE project = $1 AND state IN ('starting','running')
+       UNION
+       SELECT * FROM jobs WHERE project = $1 AND ticket = ANY($2::text[]) AND finished_at >= $3
+       ORDER BY id DESC LIMIT ${SHOWN_JOBS}`,
+      [project, [...tickets], endedSince],
+    )
+  ).rows.map(jobOf);
+}
+
 // ------------------------------------------------------------------ standing merge holds
 const holdRow = (r: Row): MergeHold => ({
   id: Number(r.id),
@@ -1626,6 +1651,8 @@ export interface LiveStore extends RequestStore {
   recentEvents(project: string, since: Date): Promise<HistoryEvent[]>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
+  /** The open long jobs, and those of some tickets ended since then (THE-1128). */
+  shownJobs(project: string, tickets: readonly string[], endedSince: Date): Promise<Job[]>;
   openInboxItems(q: { project: string; recipient: InboxRecipient }): Promise<InboxItem[]>;
   coordinatorPresence(project: string): Promise<{ seenAt: string; cliVersion: string | null } | null>;
   /** What an agent's page shows of its ticket's history. */
@@ -1669,6 +1696,7 @@ export const liveStore = (db: Database): LiveStore => ({
   recentEvents: (project, since) => recentEvents(db, project, since),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
+  shownJobs: (project, tickets, endedSince) => shownJobs(db, project, tickets, endedSince),
   openInboxItems: (q) => openInboxItems(db, q),
   coordinatorPresence: (project) => coordinatorPresence(db, project),
   ticketHistory: async (project, ticket) => {

@@ -6,6 +6,7 @@ import { newerRelease } from "./armada-api.ts";
 import type { Attachment } from "./attachments.ts";
 import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
 import { workerLivenessAt } from "./fleet.ts";
+import type { JobSummary } from "./jobs.ts";
 import type { CoordinatorPresence, InboxItem, InboxReadEvent, SessionRecord } from "./live.ts";
 import { REQUEST_KINDS } from "./request-kinds.ts";
 import type { FrontierTicket, InFlightTicket, MergedTicket, StatusReport } from "./status.ts";
@@ -169,6 +170,8 @@ export interface ProjectOverview {
   pullRequests: StatusReport["pullRequests"];
   /** Its last tickets merged, newest first (THE-988). */
   merged: MergedTicket[];
+  /** Its long jobs (THE-1128), newest first: the open ones and those of its tickets ended lately. */
+  jobs: JobSummary[];
   requests: InboxItem[];
   slug: string;
   name: string;
@@ -471,6 +474,7 @@ export function buildOverview(input: {
         : null,
       pullRequests: p.report?.pullRequests ?? null,
       merged: p.report?.merged ?? [],
+      jobs: p.report?.jobs ?? [],
       requests: inbox.filter((item) => REQUEST_KINDS.includes(item.kind as (typeof REQUEST_KINDS)[number])),
       slug: p.slug,
       name: p.name,
