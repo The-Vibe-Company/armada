@@ -597,6 +597,13 @@ export async function stopRuntime(
   input: { project: string; ticket: string; handle: string; claimedAt: string; at: Date },
 ): Promise<boolean> {
   return transaction(db, async (tx) => {
+    const previous = await tx.query(
+      `SELECT runtime, released_at FROM runtime_handles
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4
+         AND lower(runtime) = ANY($5::text[]) FOR UPDATE`,
+      [input.project, input.ticket, input.handle, input.claimedAt, OBSERVABLE_RUNTIMES],
+    );
+    if (!previous.rows.length) return false;
     const held = await tx.query(
       `UPDATE runtime_handles SET released_at = COALESCE(released_at, $5)
        WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND lower(runtime) = ANY($6::text[]) RETURNING ticket`,
@@ -609,6 +616,17 @@ export async function stopRuntime(
       [input.project, input.ticket, input.handle, input.claimedAt, input.at],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [input.project, input.ticket]);
+    if (previous.rows[0]?.released_at === null)
+      await recordEvent(tx, {
+        project: input.project,
+        ticket: input.ticket,
+        kind: "release",
+        phase: "released",
+        runtime: String(previous.rows[0].runtime),
+        handle: input.handle,
+        message: "Runtime workspace archived",
+        at: input.at,
+      });
     return true;
   });
 }
@@ -650,13 +668,24 @@ export async function openRuntimeHandles(db: Queryable, project: string): Promis
   const rs = await db.query(`${HANDLE_SELECT} WHERE h.project = $1 AND h.released_at IS NULL ORDER BY h.ticket`, [
     project,
   ]);
-  return rs.rows.map(handleOf);
+  return withHandleAnswers(db, project, rs.rows.map(handleOf));
 }
 
 export async function getRuntimeHandle(db: Queryable, project: string, ticket: string): Promise<RuntimeHandle | null> {
   const rs = await db.query(`${HANDLE_SELECT} WHERE h.project = $1 AND h.ticket = $2`, [project, ticket]);
   const r = rs.rows[0];
-  return r ? handleOf(r) : null;
+  return r ? ((await withHandleAnswers(db, project, [handleOf(r)]))[0] ?? null) : null;
+}
+
+/** One indexed answer read for all current handles, filtered again to each claim generation. */
+async function withHandleAnswers(db: Queryable, project: string, handles: RuntimeHandle[]): Promise<RuntimeHandle[]> {
+  if (!handles.length) return handles;
+  const since = new Date(handles.map((h) => h.claimedAt).sort()[0] ?? 0);
+  const answers = await lastAnsweredAt(db, project, { since, tickets: handles.map((h) => h.ticket) });
+  return handles.map((h) => {
+    const answer = answers[h.ticket];
+    return { ...h, ...(answer && answer >= h.claimedAt ? { lastAnsweredAt: answer } : {}) };
+  });
 }
 
 // ------------------------------------------------------------------ inbox
@@ -1306,7 +1335,10 @@ export interface LiveStore extends RequestStore {
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
   assignUnownedProjects(organization: string, now: Date): Promise<number>;
-  latestEvents(project: string, opts: { since: Date }): Promise<Record<string, LatestEvent>>;
+  latestEvents(
+    project: string,
+    opts: { since: Date; tickets?: readonly string[] },
+  ): Promise<Record<string, LatestEvent>>;
   recentEvents(project: string, since: Date): Promise<HistoryEvent[]>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
