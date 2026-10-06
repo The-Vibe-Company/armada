@@ -306,3 +306,39 @@ test("a worker's declared paths appear in the plan with overlaps from the stored
     ).toBe(400);
   }
 });
+
+test("merge cleanup keeps paths declared by a replacement claim when the generation guard refuses release", async () => {
+  const { recordMerge } = await import("../src/live.ts");
+  const store = memoryFleet();
+  await store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "conductor",
+    handle: "ws/old",
+    branch: null,
+    at: NOW,
+  });
+  await store.saveTicketPaths("widgets", "DEMO-7", ["old/**"], NOW);
+  const release = store.releaseRuntimeHandle.bind(store);
+  store.releaseRuntimeHandle = async (project, ticket, at, guard) => {
+    const later = new Date(at.getTime() + 1);
+    await store.saveRuntimeHandle({ project, ticket, runtime: "conductor", handle: "ws/new", branch: null, at: later });
+    await store.saveTicketPaths(project, ticket, ["new/**"], later);
+    return release(project, ticket, at, guard);
+  };
+  const result = await recordMerge(
+    store,
+    "widgets",
+    {
+      ticket: "DEMO-7",
+      number: 45,
+      url: "https://github.com/acme/widgets/pull/45",
+      headSha: "a".repeat(40),
+      mergeCommit: "b".repeat(40),
+    },
+    NOW,
+  );
+  expect(result.handle).toBeNull();
+  expect(await store.ticketPaths("widgets")).toEqual({ "DEMO-7": ["new/**"] });
+  expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+});
