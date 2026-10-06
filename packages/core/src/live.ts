@@ -891,7 +891,7 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
 
 /**
  * How an entry is told apart between two reads: `#12`, `silent:<ticket>`,
- * `not-started:<ticket>` or `version:<version>`. A hand-back or a plan
+ * `not-started:<ticket>` or `version:<version>@<digest>`. A hand-back or a plan
  * rewritten in place keeps its id, so its key carries a digest of its text
  * too (a hand-back's names its head SHA): handed back again on a new head, it
  * is new to the coordinator.
@@ -904,7 +904,7 @@ export const entryKey = (
       ? `#${e.id}@${digest(e.body)}`
       : `#${e.id}`
     : e.version
-      ? `version:${e.version}`
+      ? `version:${e.version}@${digest(e.body)}`
       : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
         ? `not-started:${e.ticket}:expired@${digest(e.body)}`
         : e.kind === "stopped"
