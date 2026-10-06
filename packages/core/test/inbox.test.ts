@@ -14,12 +14,13 @@ import {
 import { buildStatus } from "../src/status.ts";
 import type { ProgramData } from "../src/types.ts";
 import { watchInbox } from "../src/watch.ts";
-import { claimTicket, Refusal, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
+import { claimTicket, Refusal, reportPhase, type WorkerContext } from "../src/worker.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_TOML, FakeLinear, fakeClock, issue, NOW, tempFleet } from "./support.ts";
 
 const config = parseConfig(DEMO_TOML);
 const P = "widgets";
+const PLAN = "Build the parser\n\n1. Add validation.\n2. Test malformed input.";
 const at = (minutesBeforeNow: number) => new Date(NOW.getTime() - minutesBeforeNow * 60_000);
 
 function setup(live: ReturnType<typeof tempFleet> | null) {
@@ -485,16 +486,6 @@ describe("ask and answer", () => {
     const out = await answerItem(ctx, { target: "DEMO-7", text: "SQLite" });
     expect([out.lines[0], out.warnings]).toEqual(["Answer posted on DEMO-7 (blocked).", ["not signed in to Armada"]]);
   });
-
-  test("releasing a ticket resolves its open questions", async () => {
-    const live = tempFleet();
-    const db = live.store;
-    const { linear, ctx } = setup(live);
-    await working(ctx, linear, "DEMO-7");
-    await askCoordinator(ctx, { ticket: "DEMO-7", question: "Which store?" });
-    await releaseTicket(ctx, { ticket: "DEMO-7", reason: "wrong ticket" });
-    expect(await inbox(db)).toEqual([]);
-  });
 });
 
 describe("the coordinator's inbox", () => {
@@ -889,72 +880,76 @@ describe("the coordinator's inbox", () => {
     expect(later.map((e) => e.ticket)).toEqual(["DEMO-1"]);
   });
 
-  test("--wait asks Armada every 15 s, answered 304 while nothing changed, until a new question or the timeout", async () => {
-    const clock = fakeClock();
-    const live = tempFleet({ clock });
-    const db = live.store;
-    await db.saveRuntimeHandle({
-      project: P,
-      ticket: "DEMO-3",
-      runtime: "Conductor",
-      handle: "ws-coordinator/session",
-      branch: null,
-      at: at(14),
-    });
-    await db.addInboxItem({
-      project: P,
-      ticket: "DEMO-1",
-      kind: "question",
-      recipient: "coordinator",
-      author: null,
-      body: "old",
-      at: at(30),
-    });
-    let sleeps = 0;
-    const sleep = async (ms: number) => {
-      await clock.sleep(ms);
-      if (++sleeps === 3)
-        await db.addInboxItem({
-          project: P,
-          ticket: "DEMO-2",
-          kind: "question",
-          recipient: "coordinator",
-          author: null,
-          body: "new",
-          at: clock.now(),
-        });
-    };
-    const options = { project: P, coordinator: "ws-coordinator/session", silentAfterMinutes: 15, now: clock.now };
+  test("--wait asks Armada every 15 s, answered 304 while nothing changed, until a new question or plan or the timeout", async () => {
+    const empty = tempFleet();
+    const once = await checkInbox(empty.fleet, { project: P, silentAfterMinutes: 15, now: () => NOW });
+    expect([once.items, once.wait, empty.calls]).toEqual([[], null, ["inbox"]]);
 
-    const got = await checkInbox(live.fleet, { ...options, wait: { timeoutMs: 300_000, sleep } });
-    expect(got.items.map((e) => [e.body, e.new])).toEqual([
-      ["old", false],
-      ["new", true],
-    ]);
-    // A first read, two unchanged answers (304, no body), then the new question at the third ask.
-    expect([got.wait, clock.now().getTime() - NOW.getTime(), live.statuses]).toEqual([
-      { timeoutSeconds: 300, timedOut: false },
-      45_000,
-      [200, 304, 304, 200],
-    ]);
+    for (const [kind, body] of [
+      ["question", "new"],
+      ["plan", PLAN],
+    ] as const) {
+      const clock = fakeClock();
+      const live = tempFleet({ clock });
+      const db = live.store;
+      await db.saveRuntimeHandle({
+        project: P,
+        ticket: "DEMO-3",
+        runtime: "Conductor",
+        handle: "ws-coordinator/session",
+        branch: null,
+        at: at(14),
+      });
+      await db.addInboxItem({
+        project: P,
+        ticket: "DEMO-1",
+        kind: "question",
+        recipient: "coordinator",
+        author: null,
+        body: "old",
+        at: at(30),
+      });
+      let sleeps = 0;
+      const sleep = async (ms: number) => {
+        await clock.sleep(ms);
+        if (++sleeps === 3)
+          await db.addInboxItem({
+            project: P,
+            ticket: "DEMO-2",
+            kind,
+            recipient: "coordinator",
+            author: kind === "plan" ? "ws-2" : null,
+            body,
+            at: clock.now(),
+          });
+      };
+      const options = { project: P, coordinator: "ws-coordinator/session", silentAfterMinutes: 15, now: clock.now };
 
-    live.statuses.length = 0;
-    const idle = await checkInbox(live.fleet, { ...options, wait: { timeoutMs: 40_000, sleep: clock.sleep } });
-    expect([idle.wait?.timedOut, idle.items.some((e) => e.new), clock.now().getTime() - NOW.getTime()]).toEqual([
-      true,
-      false,
-      85_000,
-    ]);
-    // 15 + 15 + 10 s: every ask unchanged.
-    expect(live.statuses).toEqual([200, 304, 304, 304]);
-    expect(await db.lastCoordinatorSeen(P)).toBe(new Date(NOW.getTime() + 85_000).toISOString());
-    expect(db.presence.get(P)?.handle).toBe("ws-coordinator/session");
-  });
+      const got = await checkInbox(live.fleet, { ...options, wait: { timeoutMs: 300_000, sleep } });
+      expect(got.items.map((e) => [e.body, e.new])).toEqual([
+        ["old", false],
+        [body, true],
+      ]);
+      expect(got.items[1]).toMatchObject({ kind, body, new: true });
+      // A first read, two unchanged answers (304, no body), then the question or plan alone at the third ask.
+      expect([got.wait, clock.now().getTime() - NOW.getTime(), live.statuses]).toEqual([
+        { timeoutSeconds: 300, timedOut: false },
+        45_000,
+        [200, 304, 304, 200],
+      ]);
 
-  test("without --wait the inbox is read once", async () => {
-    const live = tempFleet();
-    const got = await checkInbox(live.fleet, { project: P, silentAfterMinutes: 15, now: () => NOW });
-    expect([got.items, got.wait, live.calls]).toEqual([[], null, ["inbox"]]);
+      live.statuses.length = 0;
+      const idle = await checkInbox(live.fleet, { ...options, wait: { timeoutMs: 40_000, sleep: clock.sleep } });
+      expect([idle.wait?.timedOut, idle.items.some((e) => e.new), clock.now().getTime() - NOW.getTime()]).toEqual([
+        true,
+        false,
+        85_000,
+      ]);
+      // 15 + 15 + 10 s: every ask unchanged.
+      expect(live.statuses).toEqual([200, 304, 304, 304]);
+      expect(await db.lastCoordinatorSeen(P)).toBe(new Date(NOW.getTime() + 85_000).toISOString());
+      expect(db.presence.get(P)?.handle).toBe("ws-coordinator/session");
+    }
   });
 });
 

@@ -66,7 +66,6 @@ import {
   checkRepository,
   planSetup,
   planSkills,
-  pointerText,
   type RepoView,
   repositoryOfRemote,
   SetupError,
@@ -117,18 +116,31 @@ describe("repository checks", () => {
     const skill = BUNDLED_SKILLS.find((s) => s.name === "armada-coordinator");
     if (!skill) throw new Error("missing coordinator skill");
     const path = ".agents/skills/armada-coordinator/SKILL.md";
-    expect(repo.files.get(path)).toBe(pointerText(skill, "v1.2.3"));
-    expect(repo.files.get(path)).toContain("description: Coordinating an Armada fleet");
-    expect(repo.files.get(path)).toContain("armada skill armada-coordinator <file>");
-    expect(repo.files.get(path)).toContain("/blob/v1.2.3/skills/armada-coordinator/SKILL.md");
+    const pointer = repo.files.get(path) ?? "";
+    expect(pointer).toMatch(/^---\nname: armada-coordinator\ndescription: [^\n]+\n---\n/);
+    expect(pointer).toContain("description: Coordinating an Armada fleet");
+    expect(pointer).toContain("Run `armada skill armada-coordinator` and follow its output");
+    expect(pointer).toContain("armada skill armada-coordinator <file>");
+    expect(pointer).toContain(
+      "https://github.com/The-Vibe-Company/armada/blob/v1.2.3/skills/armada-coordinator/SKILL.md",
+    );
     expect(repo.files.has(".agents/skills/armada-coordinator/MERGE.md")).toBe(false);
     for (const bundled of BUNDLED_SKILLS) {
       expect(bundled.delivery).toBe(bundled.name.startsWith("armada-") ? "pointer" : "vendored");
-      if (bundled.delivery === "pointer")
-        expect(repo.files.get(`.agents/skills/${bundled.name}/SKILL.md`)).toBe(pointerText(bundled, "v1.2.3"));
-      else
+      if (bundled.delivery === "pointer") {
+        const content = repo.files.get(`.agents/skills/${bundled.name}/SKILL.md`) ?? "";
+        expect(content).toContain(`name: ${bundled.name}`);
+        expect(content).toContain(`Run \`armada skill ${bundled.name}\``);
+        expect(content).toContain(
+          `https://github.com/The-Vibe-Company/armada/blob/v1.2.3/skills/${bundled.name}/SKILL.md`,
+        );
+      } else {
         for (const file of bundled.files)
           expect(repo.files.get(`.agents/skills/${bundled.name}/${file.path}`)).toBe(file.content);
+        const main = repo.files.get(`.agents/skills/${bundled.name}/SKILL.md`) ?? "";
+        expect(main).toMatch(/^---\nname: [^\n]+\ndescription: /);
+        expect(main).toContain(`name: ${bundled.name}`);
+      }
     }
     const main = skill.files.find((f) => f.path === "SKILL.md");
     if (!main) throw new Error("missing instructions");

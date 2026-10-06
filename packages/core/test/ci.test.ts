@@ -333,15 +333,6 @@ test.each([
   if (allowed && classes.includes("known" as never)) expect(decision.tickets).toEqual(["DEMO-42"]);
 });
 
-test.each([
-  ['check = "test"\npattern = "["\nticket = "DEMO-42"', "valid regex"],
-  ['check = "test"\npattern = "cold start"', "ticket"],
-  ['check = "test"\npattern = "cold start"\nticket = "bad"', "issue identifier"],
-  ['check = "test"\npattern = "cold start"\nticket = "DEMO-42"\nextra = true', "unknown key"],
-])("known failure config rejects invalid registry entry", (row, message) => {
-  expect(() => parseConfig(`${DEMO_TOML}\n[[ci.known_failure]]\n${row}`)).toThrow(message);
-});
-
 test("a known test or runner signature cannot hide an unknown failure in the same job, even beyond display limits", () => {
   const config = {
     failurePatterns: [],

@@ -481,22 +481,30 @@ describe("the end of a worker", () => {
 describe("safety", () => {
   test("exchanges are limited per address, and no token is ever logged or stored", async () => {
     now = at(4000);
+    const startTokens = tokens.length;
+    const startLog = logged.length;
+    const own = await launch("ABC-49");
+    const success = await exchange(own, "198.51.100.8");
+    expect(success.status).toBe(200);
     for (let k = 0; k < EXCHANGES_PER_MINUTE; k++)
       expect((await exchange(`armada_launch_guess-${k}`, "198.51.100.7")).status).toBe(401);
     const limited = await exchange(await launch("ABC-50"), "198.51.100.7");
     expect(limited.status).toBe(429);
-    // Another address, or the same one a minute later, goes through.
+    // Address B succeeds while address A is still exhausted, without advancing the clock.
+    expect((await exchange(await launch("ABC-51"), "198.51.100.8")).status).toBe(200);
     now = at(4001.5);
-    expect((await exchange(`armada_launch_guess-late`, "198.51.100.7")).status).toBe(401);
+    expect((await exchange(await launch("ABC-52"), "198.51.100.7")).status).toBe(200);
 
     const stored = JSON.stringify([
       (await client.query(`SELECT * FROM "armada_worker"`)).rows,
       (await client.query(`SELECT * FROM "armada_secret_event"`)).rows,
     ]);
-    const log = logged.join("\n");
-    expect(log).toContain("launch token for widgets ABC-12 used");
-    expect(tokens.length).toBeGreaterThan(10);
-    for (const token of tokens) {
+    const log = logged.slice(startLog).join("\n");
+    expect(log).toContain("launch token for widgets ABC-49 used");
+    expect(log).toContain("launch token for widgets ABC-51 used");
+    expect(log).toContain("launch token for widgets ABC-52 used");
+    expect(tokens.slice(startTokens)).toHaveLength(7);
+    for (const token of tokens.slice(startTokens)) {
       expect(stored).not.toContain(token);
       expect(log).not.toContain(token);
     }

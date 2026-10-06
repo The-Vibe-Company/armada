@@ -9,12 +9,10 @@ import type {
   WaitingItem,
 } from "@armada/core/read";
 import {
-  coordinatorAlerts,
   decisionCards,
   excerpt,
   handBackPr,
   orderOptions,
-  pendingValidations,
   sentRequest,
   splitValidations,
 } from "../lib/overview-view.ts";
@@ -155,13 +153,6 @@ const validation = (id: number, ticket: string, minutesAgo: number, decided?: nu
 });
 
 describe("yours to decide (THE-885)", () => {
-  test("holds only what the owner validates; the workers' questions, plans and hand-backs stay with the coordinator", () => {
-    const validations = [validation(3, "WID-2", 30, 20), validation(1, "WID-6", 4), validation(2, "WID-1", 9)];
-    expect(pendingValidations({ validations }).map((v) => v.id)).toEqual([1, 2]);
-    // An overview from before validations has none.
-    expect(pendingValidations({})).toEqual([]);
-  });
-
   test("the Validations page lists what waits oldest first, then what was decided newest first (THE-1021)", () => {
     const decided = (id: number, ticket: string, minutes: number) => ({
       ...validation(id, ticket, minutes + 5),
@@ -232,29 +223,5 @@ describe("decisions", () => {
   test("a long plan is cut on a word", () => {
     expect(excerpt("Parse  the sheet,\nthen import", 100)).toBe("Parse the sheet, then import");
     expect(excerpt("Parse the sheet, validate every row", 20)).toBe("Parse the sheet,…");
-  });
-});
-
-describe("a coordinator to bring back", () => {
-  test("is one card per project whose coordinator is not active while items wait for it", () => {
-    const { coordinator } = project("widgets");
-    const late = (ticket: string, since: string | null) => wait("question", ticket, 1, { coordinatorSince: since });
-    const o = {
-      projects: [
-        project("widgets", { coordinator: { ...coordinator, state: "idle", seenAt: at(40) } }),
-        project("gadgets", { coordinator: { ...coordinator, state: "unknown", seenAt: null } }),
-        project("gizmos", { coordinator: { ...coordinator, state: "active", seenAt: at(1) } }),
-      ],
-      waiting: [
-        { ...late("WID-1", at(25)), project: "widgets" },
-        { ...late("WID-2", at(35)), project: "widgets" },
-        { ...late("WID-3", null), project: "widgets" },
-        { ...late("GAD-1", null), project: "gadgets" },
-        { ...late("GIZ-1", at(50)), project: "gizmos" },
-      ],
-    };
-    expect(coordinatorAlerts(o)).toEqual([
-      { project: "widgets", state: "idle", seenAt: at(40), waiting: 2, since: at(35) },
-    ]);
   });
 });

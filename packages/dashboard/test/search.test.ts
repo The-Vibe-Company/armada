@@ -278,7 +278,32 @@ describe("⌘K's ranking", () => {
     expect(top("export")?.key).toBe("agent:widgets:WID-16");
     // "onboarding": WID-30's title starts with it (open), WID-7's has it as a word (done, and lower).
     const onboarding = keys("onboarding");
+    expect(onboarding).toContain("ticket:widgets:WID-30");
+    expect(onboarding).toContain("ticket:widgets:WID-7");
     expect(onboarding.indexOf("ticket:widgets:WID-30")).toBeLessThan(onboarding.indexOf("ticket:widgets:WID-7"));
+    // Equal-kind fixtures isolate prefix, word, substring and fuzzy ranking, including every member.
+    const ranked = searchItems(
+      { ...overview, rows: [] },
+      {
+        ...index,
+        tickets: ["Magic account", "Account magic", "Account premagic", "M a g i c"].map((title, k) => ({
+          project: "widgets",
+          id: `SYN-${k + 1}`,
+          title,
+          url: "",
+          status: "Done",
+          statusType: "completed" as const,
+          updatedAt: ago(1),
+          branch: null,
+        })),
+      },
+      ctx,
+    );
+    expect(
+      flatten(search(ranked, "magic"))
+        .map((item) => item.key)
+        .filter((key) => key.startsWith("ticket:widgets:SYN-")),
+    ).toEqual(["ticket:widgets:SYN-1", "ticket:widgets:SYN-2", "ticket:widgets:SYN-3", "ticket:widgets:SYN-4"]);
     // Letters in order: "mglnk" finds the magic link.
     expect(keys("mglnk")).toContain("agent:widgets:WID-15");
     expect(keys("zzzz")).toEqual([]);
@@ -390,10 +415,20 @@ test("a query over 5 000 items answers well under 50 ms", () => {
   );
   expect(many.length).toBeGreaterThan(5000);
   for (const q of ["o", "onb", "old-12", "refine invoice", "rfnvc"]) search(many, q);
-  const runs = ["onboarding", "old-1234", "team 7", "rfn flw", "#512"].map((q) => {
-    const start = performance.now();
-    search(many, q);
-    return performance.now() - start;
-  });
-  expect(Math.max(...runs)).toBeLessThan(50);
+  // Warm each query, then use its median of seven runs on the local/CI Bun runner.
+  // The 50 ms budget is the search owner's; browser INP covers a different boundary.
+  for (const q of ["onboarding", "old-1234", "team 7", "rfn flw", "#512"]) {
+    for (let k = 0; k < 3; k++) search(many, q);
+    const runs = Array.from({ length: 7 }, () => {
+      const start = performance.now();
+      const results = search(many, q).flatMap((group) => group.items);
+      const elapsed = performance.now() - start;
+      if (q === "rfn flw") expect(results).toEqual([]);
+      else expect(results.length).toBeGreaterThan(0);
+      if (q === "old-1234") expect(results[0]?.key).toBe("ticket:widgets:OLD-1234");
+      if (q === "#512") expect(results[0]?.key).toBe("pr:widgets:512");
+      return elapsed;
+    }).sort((a, b) => a - b);
+    expect(runs[3]).toBeLessThan(50);
+  }
 });

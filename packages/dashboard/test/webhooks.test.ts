@@ -33,6 +33,7 @@ async function project() {
   await upsertProject(db, WIDGETS);
   let clock = T0;
   const asks: SourcesRefresh[] = [];
+  const whole: string[] = [];
   let failing = false;
   const worker = issue("WID-2", { uuid: "lin-wid-2", statusType: "started", agentPhase: "implementing" });
   const full = (): StatusSources => ({
@@ -50,8 +51,19 @@ async function project() {
     live: async () => liveStore(db),
     database: async () => db,
     fallbackProjects: () => [],
-    readConfig: async () => ({ config: parseConfig(configTemplate(WIDGETS)), warning: null }),
-    readSnapshot: async () => full(),
+    readConfig: async (p) => ({ config: parseConfig(configTemplate({ ...WIDGETS, ...p })), warning: null }),
+    readSnapshot: async (config) => {
+      whole.push(config.project.slug);
+      const sources = full();
+      if (config.project.slug !== WIDGETS.slug)
+        sources.program = {
+          ...sources.program,
+          rootId: config.tracker.programRoot,
+          issues: [issue(config.tracker.programRoot)],
+        };
+      if (sources.forge) sources.forge.repo = config.github.repository;
+      return sources;
+    },
     readChanges: async (_config, previous, ask) => {
       asks.push(ask);
       if (failing) throw new Error("Linear: HTTP 503");
@@ -74,6 +86,7 @@ async function project() {
     store,
     deps,
     asks,
+    whole,
     refreshed,
     fail: (v: boolean) => {
       failing = v;
@@ -156,20 +169,41 @@ describe("Linear's webhook", () => {
 
   test("a label renamed asks every project for a whole read on its next view, without reading now", async () => {
     const w = await project();
+    const gadgets = { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GAD-1" };
+    await upsertProject(w.db, gadgets);
+    await refreshProject(gadgets, w.store, w.opts);
+    const before = await w.store.entries(["widgets", "gadgets"]);
+    w.whole.length = 0;
     const res = await handleLinearWebhook(
       w.linear({ type: "IssueLabel", action: "update", data: { id: "l1" } }),
       w.deps,
     );
     expect(await res.json()).toEqual({ marked: "every project" });
     expect(w.refreshed).toEqual([]);
-    // The next view more than 10 s after the last read: one whole read.
+    // The next view more than 10 s after the last read: one whole read per project.
     w.advance(10_000);
     const background: Promise<unknown>[] = [];
     await loadOverview({ ...w.opts, background: (work) => background.push(work) }, null);
-    expect(background).toHaveLength(1);
+    expect(background).toHaveLength(2);
     await Promise.all(background);
-    // Read whole: no incremental read was asked.
+    // Both marked projects execute full reads and persist a new generation.
+    expect(w.whole.sort()).toEqual(["gadgets", "widgets"]);
     expect(w.asks).toEqual([]);
+    const after = await w.store.entries(["widgets", "gadgets"]);
+    for (const p of [WIDGETS, gadgets]) {
+      const snapshot = after.get(p.slug)?.snapshot;
+      expect(snapshot?.config).toMatchObject({
+        project: { slug: p.slug },
+        tracker: { programRoot: p.programRoot },
+        github: { repository: p.repository },
+      });
+      expect(snapshot?.sources.program.rootId).toBe(p.programRoot);
+      expect(snapshot?.sources.program.issues.map((ticket) => ticket.id)).toContain(p.programRoot);
+      expect(snapshot?.sources.forge?.repo).toBe(p.repository);
+      expect(snapshot?.sources.program.fetchedAt).toBe(new Date(T0 + 10_000).toISOString());
+      expect(snapshot?.sources.program.fetchedAt).not.toBe(before.get(p.slug)?.snapshot?.sources.program.fetchedAt);
+      expect(after.get(p.slug)?.dirty).toBe(false);
+    }
   });
 
   test("a failed refresh keeps the marks, so the next one still reads what the webhook named", async () => {

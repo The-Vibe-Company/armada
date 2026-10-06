@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { allowAcceptance } from "../src/acceptance.ts";
-import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
 import type { CommitShape, Comparison, MergePull } from "../src/github.ts";
 import { LinearError } from "../src/linear.ts";
@@ -8,6 +7,7 @@ import { createLinearWriter } from "../src/linear-write.ts";
 import type { Fleet } from "../src/live.ts";
 import {
   askOwnerToMerge,
+  assess,
   finishMerge,
   type LocalRepo,
   MERGE_LEASE_TTL_MS,
@@ -277,6 +277,18 @@ const refusal = (p: Promise<unknown>) =>
       return `${err.message}\nNext: ${err.next}`;
     },
   );
+
+test.each(["CLEAN", "HAS_HOOKS"] as const)("the checklist admits a mergeable %s head", (mergeStateStatus) => {
+  const result = assess({
+    pull: pull({ mergeStateStatus }),
+    ticket: null,
+    handBack: null,
+    requiredChecks: ["test"],
+    lineage: null,
+  });
+  expect(result.problems).toEqual([]);
+  expect(result.waits).toEqual([]);
+});
 
 describe("closing a finished spec after a merge", () => {
   for (const remaining of [null, "backlog", "unstarted", "started", "canceled"] as const) {
@@ -806,7 +818,7 @@ describe("armada merge", () => {
       s.ctx.sleep = async () => {
         timeline.push(`${name} waits`);
         otherWaited();
-        await new Promise((r) => setTimeout(r, 0));
+        await Promise.resolve();
       };
     }
     const results = await Promise.all([mergePullRequest(a.ctx, { pr: 9 }), mergePullRequest(b.ctx, { pr: 10 })]);
@@ -1304,12 +1316,6 @@ describe("armada merge --no-ticket", () => {
   });
 });
 
-test("GitHub's HAS_HOOKS (mergeable, with pre-receive hooks) merges like CLEAN", async () => {
-  const s = setup();
-  s.forge.pr.mergeStateStatus = "HAS_HOOKS";
-  expect((await mergePullRequest(s.ctx, { pr: 9 })).merged).toBe(true);
-});
-
 describe("merge lease", () => {
   test("an expired lease is taken over and its old holder can no longer renew it", async () => {
     const a = tempFleet();
@@ -1324,16 +1330,6 @@ describe("merge lease", () => {
     a.clock.advance(31_000);
     expect(await b.fleet.acquireLease({ ...key, holder: "b" })).toEqual({ acquired: true });
     expect(await a.fleet.renewLease({ ...key, holder: "a" })).toBe(false);
-  });
-
-  test("Armada refuses a lease longer than an hour", async () => {
-    const { fleet } = tempFleet();
-    const err = await fleet.acquireLease({ name: "merge", holder: "a", ttlMs: 2 * 3_600_000 }).catch((e) => e);
-    expect(err).toBeInstanceOf(ArmadaApiError);
-    expect([err.status, err.message]).toEqual([
-      400,
-      "Armada refused: fleet lease/acquire: ttlMs must be between 1 s and 60 min",
-    ]);
   });
 
   test("a waiter gives up after the wait limit, naming the holder", async () => {

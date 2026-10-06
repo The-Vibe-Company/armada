@@ -14,7 +14,7 @@ import {
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, issue, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
-import { herdrPhase, parseHerdrHandle, reportHerdr } from "../src/herdr.ts";
+import { parseHerdrHandle, reportHerdr } from "../src/herdr.ts";
 import type { Io } from "../src/io.ts";
 import { observeRuntimes } from "../src/runtime.ts";
 import { archiveClaimKey, claimRef } from "../src/runtimes/adapter.ts";
@@ -673,15 +673,15 @@ test("phase self-reporting uses Armada source, maps every phase, and is nonfatal
   const f = await fixture();
   f.io.env.HERDR_ENV = "1";
   f.io.env.HERDR_PANE_ID = handle.pane;
-  for (const phase of [
-    "planning",
-    "implementing",
-    "shipping",
-    "blocked",
-    "awaiting-approval",
-    "awaiting-validation",
-    "ready-to-merge",
-  ]) {
+  for (const [phase, state] of [
+    ["planning", "working"],
+    ["implementing", "working"],
+    ["shipping", "working"],
+    ["blocked", "blocked"],
+    ["awaiting-approval", "blocked"],
+    ["awaiting-validation", "blocked"],
+    ["ready-to-merge", "idle"],
+  ] as const) {
     await reportHerdr(f.io, phase, "codex");
     expect(f.calls.at(-1)).toEqual([
       "herdr",
@@ -693,7 +693,7 @@ test("phase self-reporting uses Armada source, maps every phase, and is nonfatal
       "--agent",
       "codex",
       "--state",
-      herdrPhase(phase),
+      state,
     ]);
   }
   f.change({ failure: true });
