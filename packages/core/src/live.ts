@@ -13,7 +13,14 @@ import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts
 import { type DeferredLaunch, deferredLaunchState, deferredWakeBody } from "./deferred.ts";
 import type { DeployInput, DeployQuery, DeployRecord } from "./deploy.ts";
 import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
-import { buildLane, freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+import {
+  buildLane,
+  freshRuntimeState,
+  liveness,
+  NEEDS_HUMAN,
+  inFlight as statusInFlight,
+  unblockedBy,
+} from "./fleet.ts";
 
 export { freshRuntimeState } from "./fleet.ts";
 
@@ -106,6 +113,8 @@ export interface EventInput {
 }
 
 export interface LatestEvent {
+  /** Persisted ordering for events recorded at the same millisecond. */
+  id?: number;
   kind: EventKind;
   phase: string | null;
   shippingStage?: ShippingStage | null;
@@ -465,10 +474,10 @@ export interface FleetStore {
   heartbeatTimes(project: string): Promise<Record<string, string>>;
   /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
   lastEventTimes(project: string): Promise<Record<string, string>>;
-  /** Newest events, optionally bounded to given tickets and events since a time. */
+  /** Newest events per ticket, filtered by time, tickets and kinds before selecting the newest. */
   latestEvents(
     project: string,
-    opts?: { since?: Date; tickets?: readonly string[] },
+    opts?: { since?: Date; tickets?: readonly string[]; kinds?: readonly EventKind[] },
   ): Promise<Record<string, LatestEvent>>;
   /** Records that the coordinator of a project is at work (it read its inbox). */
   recordCoordinatorSeen(seen: CoordinatorSeen): Promise<void>;
@@ -578,7 +587,8 @@ export interface FleetStore {
    * none: a brief made to look at it again launches nobody, and a relaunch
    * releases the old claim first.
    */
-  pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
+  /** `history` also reads claimed and ended launches, for durable launch clearing. */
+  pendingLaunches(project: string, since: Date, opts?: { history?: boolean }): Promise<PendingLaunch[]>;
   expireUnusedLaunches(project: string, now: Date, coordinatorName?: string): Promise<PendingLaunch[]>;
 
   /**
@@ -881,6 +891,8 @@ export interface ChoreRecord {
 }
 
 export interface MergeRecord {
+  /** The named coordinator performing the merge, supplied by the server context. */
+  coordinator?: string;
   ticket: string;
   number: number;
   url: string;
@@ -923,6 +935,8 @@ export async function recordMerge(
       ticket: m.ticket,
       kind,
       phase: m.keepOpen ? "implementing" : "merged",
+      // Final merges identify the merging role; partial reports retain worker semantics.
+      ...(!m.keepOpen ? { runtime: "coordinator", handle: m.coordinator ?? "default" } : {}),
       message,
       prUrl: m.url,
       headSha: m.headSha,
@@ -1011,10 +1025,12 @@ const MIN = 60_000;
 /**
  * `silent`: a worker gone quiet; `not-started`: a worker launched that never
  * claimed (both read from the fleet, they clear on their own); `version`: a
- * newer Armada is out (`armada watch` only, never stored).
+ * newer Armada is out (`armada watch` only, never stored); `unblocked`: a
+ * recent merge made another coordinator's pending work available.
  */
 export type InboxEntryKind =
   | InboxKind
+  | "unblocked"
   | "job-silent"
   | "runtime-blocked"
   | "silent"
@@ -1024,6 +1040,8 @@ export type InboxEntryKind =
   | "version";
 
 export interface InboxEntry {
+  /** The merged blocker of a derived `unblocked` item, for stable watch keys. */
+  unblockedBy?: string;
   owner?: string | null;
   silenceLevel?: number;
   /**
@@ -1054,18 +1072,15 @@ const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan", "deploy"];
 const digest = (text: string) => createHash("sha256").update(text).digest("base64url").slice(0, 12);
 
 /**
- * How an entry is told apart between two reads: `#12`, `silent:<ticket>:<level>`, `job-silent:<job>`,
- * `not-started:<ticket>` or `version:<version>@<digest>`. A hand-back, plan or deploy notice
- * rewritten in place keeps its id, so its key carries a digest of its text
- * too (a hand-back's names its head SHA): handed back again on a new head, it
- * is new to the coordinator.
+ * Stable keys include `silent:<ticket>:<level>`, `job-silent:<job>`,
+ * `unblocked:<ticket>@<blocker>` and `version:<version>@<digest>`.
+ * A hand-back, plan or deploy notice rewritten in place carries a digest
+ * of its text too, so a new hand-back head wakes the coordinator again.
  */
 export const entryKey = (
-  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & {
+  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "unblockedBy" | "jobId" | "silenceLevel"> & {
     version?: string | undefined;
     createdAt?: string;
-    silenceLevel?: number;
-    jobId?: number;
   },
 ) =>
   e.kind === "job-silent"
@@ -1074,15 +1089,17 @@ export const entryKey = (
       ? REWRITTEN.includes(e.kind)
         ? `#${e.id}@${digest(e.body)}`
         : `#${e.id}`
-      : e.version
-        ? `version:${e.version}@${digest(e.body)}`
-        : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
-          ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-          : e.kind === "silent"
-            ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
-            : e.kind === "stopped"
-              ? `stopped:${e.ticket}@${e.createdAt}`
-              : `${e.kind}:${e.ticket}`;
+      : e.kind === "unblocked"
+        ? `unblocked:${e.ticket}@${e.unblockedBy}`
+        : e.version
+          ? `version:${e.version}@${digest(e.body)}`
+          : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+            ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+            : e.kind === "silent"
+              ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
+              : e.kind === "stopped"
+                ? `stopped:${e.ticket}@${e.createdAt}`
+                : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -1597,6 +1614,61 @@ async function readInboxAndFlight(
       createdAt: l.launchedAt,
       new: false,
     });
+  // No tracker or forge read: the stored relations retain closed blockers.
+  // Skip history entirely when this reading contains no open dependents.
+  if (model && o.snapshot?.config && model.program.some((i) => !isClosed(i) && i.blockedBy.length)) {
+    const recent = new Date(now - 24 * 60 * MIN);
+    const [merges, claims, launchHistory] = await Promise.all([
+      store.latestEvents(o.project, { since: recent, kinds: ["merge"] }),
+      store.latestEvents(o.project, { since: recent, kinds: ["claim"] }),
+      store.pendingLaunches(o.project, recent, { history: true }),
+    ]);
+    for (const [blocker, merge] of Object.entries(merges)) {
+      if (merge.phase !== "merged" || merge.at <= recent.toISOString() || Date.parse(merge.at) > now) continue;
+      const merger = merge.runtime === "coordinator" ? merge.handle : null;
+      for (const { issue } of unblockedBy(model, blocker, {
+        ready: o.snapshot.config.tracker.readyLabel,
+        parked: o.snapshot.config.tracker.parkedLabel,
+      }).ready) {
+        const request = stored.find((i) => i.ticket === issue.id && i.kind === "launch-request");
+        const owner = ownerOf(issue.id, request?.coordinator);
+        // Only the last merged blocker made this ticket ready. A launch
+        // clears the notification even if its snapshot has not caught up.
+        if (
+          !visible(owner) ||
+          (owner !== null && owner === merger) ||
+          own.has(issue.id) ||
+          issue.blockedBy.some((b) =>
+            handles.some((h) => h.ticket === b.id && trackerAfter && h.claimedAt > trackerAfter),
+          ) ||
+          handles.some((h) => h.ticket === issue.id) ||
+          launches.some((l) => l.ticket === issue.id) ||
+          launchHistory.some((l) => l.ticket === issue.id && l.launchedAt >= merge.at) ||
+          (claims[issue.id]?.at ?? "") >= merge.at ||
+          issue.blockedBy.some((b) => {
+            const other = merges[b.id];
+            if (other?.phase !== "merged") return false;
+            if (other.at !== merge.at) return other.at > merge.at;
+            if ((other.id ?? 0) !== (merge.id ?? 0)) return (other.id ?? 0) > (merge.id ?? 0);
+            // Legacy stores without IDs still choose one stable blocker.
+            return b.id > blocker;
+          })
+        )
+          continue;
+        entries.push({
+          id: null,
+          kind: "unblocked",
+          ticket: issue.id,
+          owner,
+          unblockedBy: blocker,
+          author: merger,
+          body: `${issue.id} unblocked by ${blocker} (merged by ${merger ?? "unknown"})`,
+          createdAt: merge.at,
+          new: false,
+        });
+      }
+    }
+  }
   return {
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
     inFlight: [...new Set(inFlight)].filter((ticket) => o.scope !== "mine" || flightOwners.get(ticket) === name).sort(),
@@ -1655,7 +1727,7 @@ export interface InboxRead {
  * and which tickets are in flight.
  */
 export function inboxTag(
-  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner" | "silenceLevel">[],
+  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner" | "unblockedBy" | "jobId" | "silenceLevel">[],
   inFlight: readonly string[] = [],
   ownedInFlight: readonly string[] = [],
   openJobs: readonly number[] = [],

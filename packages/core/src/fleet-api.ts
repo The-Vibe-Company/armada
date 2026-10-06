@@ -896,6 +896,7 @@ export async function serveFleet(
             store,
             slug,
             {
+              coordinator: coordinatorName ?? "default",
               ticket: ticketOf(b),
               number,
               url: text(b, "url", URL_MAX),

@@ -1822,6 +1822,9 @@ describe("a ticket in several pull requests", () => {
         ["report", mode === "keep-open" ? "implementing" : "ready-to-merge"],
         [closed ? "merge" : "report", closed ? "merged" : "implementing"],
       ]);
+      const merges = await live.store.latestEvents("widgets", { kinds: ["merge"] });
+      expect(Object.keys(merges)).toEqual(closed ? ["DEMO-7"] : []);
+      if (closed) expect(merges["DEMO-7"]).toMatchObject({ runtime: "coordinator", handle: "default" });
       expect(readFor).toEqual([closed ? "DEMO-7" : null]);
       if (!closed) {
         expect(out.archive).toBeNull();
