@@ -872,3 +872,32 @@ describe("job alarms", () => {
     expect(linear.writes).toEqual([]);
   });
 });
+
+test("watch sees a terminal notice when the job ends during the inbox read", async () => {
+  const clock = fakeClock();
+  const store = memoryFleet();
+  const job = await store.startJob({ project: P, ticket: "DEMO-7", name: "eval", startedBy: null, at: NOW });
+  await store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", progress: "40/120", at: NOW });
+  const list = store.listJobs.bind(store);
+  let ended = false;
+  store.listJobs = async (project, query) => {
+    if (!ended) {
+      ended = true;
+      await store.observeJob({ project, ticket: job.ticket, id: job.id, state: "succeeded", at: NOW });
+    }
+    return list(project, query);
+  };
+  const live = tempFleet({ store, clock });
+  const report = await watchInbox(live.fleet, {
+    project: P,
+    coordinator: null,
+    silentAfterMinutes: 15,
+    seen: [],
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  expect(report.outcome).toBe("items");
+  expect(report.items).toMatchObject([{ kind: "job", body: expect.stringContaining("succeeded") }]);
+  expect(report.inFlight).toEqual([]);
+  expect(report.openJobs).toBeUndefined();
+});

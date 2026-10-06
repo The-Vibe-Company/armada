@@ -1215,12 +1215,14 @@ async function readInboxAndFlight(
   ownedOpenJobs: number[];
 }> {
   const now = o.now.getTime();
-  const [stored, handles, launches, jobs] = await Promise.all([
-    store.openInboxItems({ project: o.project, recipient: "coordinator" }),
+  const [handles, launches, jobs] = await Promise.all([
     store.openRuntimeHandles(o.project),
     store.pendingLaunches(o.project, new Date(0)),
     store.listJobs(o.project, { open: true }),
   ]);
+  // Read notices after jobs: a terminal transition atomically removes liveness and adds its notice.
+  // The reverse order could read an old inbox and a closed job, making watch exit without the notice.
+  const stored = await store.openInboxItems({ project: o.project, recipient: "coordinator" });
   const owners = ticketOwners(handles, launches);
   const name = o.coordinatorName ?? "default";
   // Absent scope retains the old named-client behavior. New CLIs always
