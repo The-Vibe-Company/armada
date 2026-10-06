@@ -280,19 +280,21 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
 export async function latestEvents(
   db: Queryable,
   project: string,
-  opts: { since?: Date; tickets?: readonly string[] } = {},
+  opts: { since?: Date; tickets?: readonly string[]; kinds?: readonly LatestEvent["kind"][] } = {},
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
-    `SELECT DISTINCT ON (ticket) ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
+    `SELECT DISTINCT ON (ticket) id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
      FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover')
-     ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
+     AND ($3::text[] IS NULL OR ticket = ANY($3::text[]))
+     AND ($4::text[] IS NULL OR kind = ANY($4::text[]))
      ORDER BY ticket, created_at DESC, id DESC`,
-    opts.tickets ? [project, opts.since ?? new Date(0), opts.tickets] : [project, opts.since ?? new Date(0)],
+    [project, opts.since ?? new Date(0), opts.tickets ?? null, opts.kinds ?? null],
   );
   return Object.fromEntries(
     rs.rows.map((r) => [
       String(r.ticket),
       {
+        id: Number(r.id),
         kind: String(r.kind) as LatestEvent["kind"],
         phase: text(r.phase),
         shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
@@ -1299,25 +1301,31 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  * The project's launches since `since` (`armada_worker`, written by
  * `workers.ts`), newest per ticket, that have not ended and that no claim of
  * their ticket followed, on tickets no session holds: the workers launched
- * that have not started (THE-872).
+ * that have not started (THE-872). `history` keeps ended and claimed rows
+ * too, so a launch permanently clears a recent unblock notification.
  */
-export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
+export async function pendingLaunches(
+  db: Queryable,
+  project: string,
+  since: Date,
+  opts: { history?: boolean } = {},
+): Promise<PendingLaunch[]> {
   const rs = await db.query(
     `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator" FROM (
        SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
-     WHERE w."endedAt" IS NULL
+     WHERE ($3::boolean OR (w."endedAt" IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM events e
          WHERE e.project = $1 AND e.ticket = w."ticket" AND e.kind = 'claim' AND e.created_at >= w."createdAt"
        )
        AND NOT EXISTS (
          SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = w."ticket" AND h.released_at IS NULL
-       )
+       )))
      ORDER BY w."createdAt", w."ticket"`,
-    [project, since],
+    [project, since, opts.history ?? false],
   );
   return rs.rows.map((r) => ({
     id: String(r.id),
@@ -1863,6 +1871,47 @@ export async function openHolds(db: Queryable, project: string): Promise<MergeHo
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  prepareMergeNotice: async (project, key, at) => {
+    const inserted = await db.query(
+      `INSERT INTO merge_notices (project, delivery_key, attempted_at) VALUES ($1, $2, $3)
+       ON CONFLICT (project, delivery_key) DO NOTHING RETURNING delivery_key`,
+      [project, key, at],
+    );
+    if (inserted.rows.length) return "reserved";
+    const previous = await db.query("SELECT delivered_at FROM merge_notices WHERE project = $1 AND delivery_key = $2", [
+      project,
+      key,
+    ]);
+    return previous.rows[0]?.delivered_at ? "delivered" : "attempted";
+  },
+  recordMergeNotice: (q) =>
+    transaction(db, async (tx) => {
+      const receipt = (
+        await tx.query<{ recorded_tickets: string[] }>(
+          "SELECT recorded_tickets FROM merge_notices WHERE project = $1 AND delivery_key = $2 FOR UPDATE",
+          [q.project, q.key],
+        )
+      ).rows[0];
+      if (!receipt) throw new Error("merge notice was not reserved");
+      if (receipt.recorded_tickets.includes(q.ticket)) return "Generated note already recorded.";
+      const id = await addInboxItem(tx, {
+        project: q.project,
+        ticket: q.ticket,
+        kind: "note",
+        recipient: "worker",
+        author: "coordinator",
+        coordinator: q.coordinator,
+        body: q.text,
+        at: q.at,
+      });
+      await resolveInboxItem(tx, { project: q.project, id, resolution: "delivered through the runtime", at: q.at });
+      await tx.query(
+        `UPDATE merge_notices SET delivered_at = COALESCE(delivered_at, $4),
+        recorded_tickets = array_append(recorded_tickets, $3) WHERE project = $1 AND delivery_key = $2`,
+        [q.project, q.key, q.ticket, q.at],
+      );
+      return `Note #${id} recorded.`;
+    }),
   recordDeploy: (input) => recordDeploy(db, input),
   deployState: (project, query) => deployState(db, project, query),
 
@@ -2007,7 +2056,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   getLease: (project, name) => getLease(db, project, name),
   renewLease: (l) => renewLease(db, l),
   releaseLease: (l) => releaseLease(db, l),
-  pendingLaunches: (project, since) => pendingLaunches(db, project, since),
+  pendingLaunches: (project, since, opts) => pendingLaunches(db, project, since, opts),
   expireUnusedLaunches: (project, now, name) => expireUnusedLaunches(db, project, now, name),
   addValidation: (v) => addValidation(db, v),
   requestSecret: (v) => requestSecret(db, v),

@@ -8,15 +8,26 @@
 // coordinator and the owner's buttons, or the decision once taken. Each
 // button is a request: the decision lands in the coordinator's inbox, which
 // merges or relays it. `Decide` is shared with the overview's pane and a
-// session's page, without the note.
+// session's page, without the note. On the Validations page it takes the
+// keys too (THE-1113, lib/validation-keys.ts): A, C and 1–6.
 import type { Attachment, CiState, OwnerValidation } from "@armada/core/read";
 import Image from "next/image";
 import Link from "next/link";
-import { type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { decideValidation } from "@/app/actions";
 import { saveRequestedSecret } from "@/app/keys-actions";
 import { paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
+import { CHOICE_KEYS, type KeyAction, type KeyPress, pressOf, validationKey } from "@/lib/validation-keys";
 import { type ActionContext, ErrorLine, PendingNote, SignerField, signerOf, useRequest, useSent } from "../Actions";
 import { Button, Form, Input } from "../page";
 import { useShell } from "../shell/context";
@@ -40,7 +51,8 @@ const CI_COLOR: Record<CiState, string> = {
 export const validationTitle = (v: OwnerValidation) =>
   (v.kind === "merge" ? v.title : null) ?? v.what.split("\n").find((l) => l.trim()) ?? v.ticket;
 
-interface Sent {
+/** A decision as shown once sent, before the overview has it. */
+export interface Sent {
   body: string;
   author: string | null;
   at: string;
@@ -50,10 +62,19 @@ export function ValidationDetail({
   ctx,
   v,
   projectName,
+  keys,
+  onDone,
+  sentBefore,
 }: {
   ctx: ActionContext;
   v: OwnerValidation;
   projectName: string;
+  /** The page's keys reach the buttons through this (the Validations page). */
+  keys?: Ref<DecideKeys>;
+  /** Once the decision is recorded: the page opens the next one. */
+  onDone?: (sent: Sent) => void;
+  /** Sent from this tab on an earlier visit, not in the overview yet: shown as sent. */
+  sentBefore?: Sent | null;
 }) {
   const { t, now } = ctx;
   const s = t.validations;
@@ -132,7 +153,7 @@ export function ValidationDetail({
           {v.decision.note && <span className="vd-outcome-note">« {v.decision.note} »</span>}
         </div>
       ) : (
-        <Decide ctx={ctx} v={v} projectName={projectName} note />
+        <Decide ctx={ctx} v={v} projectName={projectName} note keys={keys} onDone={onDone} sentBefore={sentBefore} />
       )}
     </article>
   );
@@ -338,6 +359,11 @@ function Gallery({ t, items }: { t: Strings; items: Attachment[] }) {
   );
 }
 
+/** What the Validations page's keys reach of the open validation: true when a key decided something. */
+export interface DecideKeys {
+  press: (key: KeyPress) => boolean;
+}
+
 /**
  * The owner's buttons: Approve (the merge) and Request changes, or the
  * choices the validation was sent with. `note` (the Validations page) puts a
@@ -409,6 +435,9 @@ function DecideWork({
   projectName,
   changes = true,
   note = false,
+  keys,
+  onDone,
+  sentBefore = null,
   children,
 }: {
   ctx: ActionContext;
@@ -418,6 +447,12 @@ function DecideWork({
   changes?: boolean;
   /** A note box above the buttons (the Validations page). */
   note?: boolean;
+  /** The page's keys (the Validations page, with the note): A, C, 1–6, then ⌘↵ or Esc in the note. */
+  keys?: Ref<DecideKeys>;
+  /** Called once the decision is recorded, with what was sent. */
+  onDone?: (sent: Sent) => void;
+  /** Already sent from this tab: shown as sent, no buttons. */
+  sentBefore?: Sent | null;
   /** More buttons, after the decision's (the overview's pane: the validation's page). */
   children?: ReactNode;
 }) {
@@ -427,7 +462,9 @@ function DecideWork({
   const [draft, setDraft] = useState("");
   const [missing, setMissing] = useState(false);
   const box = useRef<HTMLTextAreaElement>(null);
-  const [sent, markSent, unmark] = useSent<Sent>(ctx.version);
+  const form = useRef<HTMLFormElement>(null);
+  const [justSent, markSent, unmark] = useSent<Sent>(ctx.version);
+  const sent = justSent ?? sentBefore;
   const shown = useRef<Sent | null>(null);
   const req = useRequest(decideValidation, {
     start: (form) => {
@@ -449,9 +486,41 @@ function DecideWork({
       if (shown.current) markSent(shown.current);
       setDraft("");
       ctx.refresh();
+      if (shown.current) onDone?.(shown.current);
     },
     undo: () => unmark(),
   });
+  // With the note box, `changing` is C's: the note has the focus, and ⌘↵ sends the changes.
+  const keyState = { open: !sent && ctx.live && !req.busy, choices: v.choices?.length ?? 0, changing };
+  const run = (action: KeyAction) => {
+    const element = form.current;
+    if (!element) return;
+    // The same submit as the button's click: its value is the decision.
+    const submit = (selector: string, index = 0) => {
+      const button = element.querySelectorAll<HTMLButtonElement>(selector)[index];
+      if (button) element.requestSubmit(button);
+    };
+    if (action.kind === "approve") submit('button[value="approve"]');
+    else if (action.kind === "send") submit('button[value="changes"]');
+    else if (action.kind === "choice") submit('button[name="choice"]', action.index);
+    else if (action.kind === "changes") {
+      req.clear();
+      setChanging(true);
+      box.current?.focus();
+    } else {
+      setChanging(false);
+      box.current?.blur();
+    }
+  };
+  useImperativeHandle(keys, () => ({
+    press: (key) => {
+      // Hidden (the list alone, on a phone): the keys decide nothing unseen.
+      if (!form.current?.getClientRects().length) return false;
+      const action = validationKey(key, keyState);
+      if (action) run(action);
+      return action !== null;
+    },
+  }));
   const hidden = (
     <>
       <input type="hidden" name="project" value={v.project} />
@@ -468,9 +537,15 @@ function DecideWork({
       />
     );
   if (!ctx.live) return <p className="calm">{t.needsLive}</p>;
-  const keys = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // The note box has no one button to send: its decision is the button the owner clicks.
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !note) {
+  const typed = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // The note box sends with ⌘↵ only after C: otherwise its decision is the button the owner clicks.
+    if (note) {
+      const action = validationKey(pressOf(e, "note"), keyState);
+      if (action) {
+        e.preventDefault();
+        run(action);
+      }
+    } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       e.currentTarget.form?.requestSubmit();
     } else if (e.key === "Escape") setChanging(false);
@@ -486,7 +561,7 @@ function DecideWork({
           placeholder={s.changesPlaceholder}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={keys}
+          onKeyDown={typed}
           rows={3}
           maxLength={4000}
           required
@@ -512,13 +587,19 @@ function DecideWork({
     if (note && submitter?.value === "changes" && !draft.trim()) {
       e.preventDefault();
       setMissing(true);
+      setChanging(true);
       box.current?.focus();
       return;
     }
     req.submit(e);
   };
   return (
-    <form className="question vd-decide" onSubmit={submit} aria-label={`${s.kinds[v.kind]} · ${projectName}`}>
+    <form
+      ref={form}
+      className="question vd-decide"
+      onSubmit={submit}
+      aria-label={`${s.kinds[v.kind]} · ${projectName}`}
+    >
       {hidden}
       {note && (
         <>
@@ -535,14 +616,16 @@ function DecideWork({
               setDraft(e.target.value);
               setMissing(false);
             }}
-            onKeyDown={keys}
+            onKeyDown={typed}
             rows={2}
             maxLength={4000}
           />
-          {missing && (
+          {missing ? (
             <p className="req-error" id={`validation-note-${v.id}`} role="alert">
               {s.changesNeedNote}
             </p>
+          ) : (
+            changing && <p className="vd-hint">{s.keys.send}</p>
           )}
         </>
       )}
@@ -560,20 +643,38 @@ function DecideWork({
                 value={c}
                 className={`btn ${k === 0 ? "is-primary" : "is-soft"}`}
                 disabled={req.busy}
+                aria-keyshortcuts={keys && k < CHOICE_KEYS ? String(k + 1) : undefined}
               >
                 {c}
+                {keys && k < CHOICE_KEYS && <Key>{k + 1}</Key>}
               </button>
             ))}
           </>
         ) : (
           <>
-            <button type="submit" name="action" value="approve" className="btn is-primary" disabled={req.busy}>
+            <button
+              type="submit"
+              name="action"
+              value="approve"
+              className="btn is-primary"
+              disabled={req.busy}
+              aria-keyshortcuts={keys ? "A" : undefined}
+            >
               {v.kind === "merge" ? s.approveMerge : s.approve}
+              {keys && <Key>A</Key>}
             </button>
             {changes &&
               (note ? (
-                <button type="submit" name="action" value="changes" className="btn is-soft" disabled={req.busy}>
+                <button
+                  type="submit"
+                  name="action"
+                  value="changes"
+                  className="btn is-soft"
+                  disabled={req.busy}
+                  aria-keyshortcuts={keys ? "C" : undefined}
+                >
                   {s.requestChanges}
+                  {keys && <Key>C</Key>}
                 </button>
               ) : (
                 <button
@@ -594,3 +695,10 @@ function DecideWork({
     </form>
   );
 }
+
+/** A button's key, beside its words; screen readers read `aria-keyshortcuts` instead. */
+const Key = ({ children }: { children: ReactNode }) => (
+  <kbd className="kbd" aria-hidden>
+    {children}
+  </kbd>
+);

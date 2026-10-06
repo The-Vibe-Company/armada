@@ -129,6 +129,8 @@ export const FLEET_OPS = [
   "inbox/ticket",
   "inbox/resolve",
   "answer",
+  "answer/generated",
+  "merge-notice/prepare",
   "merge",
   "chore",
   "validations",
@@ -321,6 +323,7 @@ export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "report",
   "ask",
   "answer",
+  "answer/generated",
   "release",
   "validate",
   "done",
@@ -872,10 +875,29 @@ export async function serveFleet(
             at,
           });
         }
+        case "merge-notice/prepare":
+          return store.prepareMergeNotice(slug, text(b, "key", LINE_MAX), at);
+        case "answer/generated":
+          if (!bool(b, "note") || b.item !== null) throw new Invalid("generated notes require note and no item");
+          return recordAnswer(
+            store,
+            slug,
+            {
+              text: text(b, "text", BODY_MAX),
+              note: true,
+              generated: true,
+              coordinator: coordinatorName,
+              deliveryKey: text(b, "deliveryKey", LINE_MAX),
+              ticket: ticketOf(b),
+              item: null,
+            },
+            at,
+          );
         case "answer": {
           const item = b.item === null || b.item === undefined ? null : idOf(b, "item");
           if (item !== null && (await store.getInboxItem(slug, item))?.kind === "hold")
             throw new Invalid('a merge hold is resolved with armada hold clear <id> --reason "<why>"');
+          if (b.generated) throw new Invalid("generated notes use answer/generated");
           return recordAnswer(
             store,
             slug,
@@ -899,6 +921,7 @@ export async function serveFleet(
             store,
             slug,
             {
+              coordinator: coordinatorName ?? "default",
               ticket: ticketOf(b),
               number,
               url: text(b, "url", URL_MAX),
@@ -1230,7 +1253,8 @@ export function fleetClient(o: {
     inbox: (q: InboxQuery) => call<InboxRead | null>("inbox", q),
     inboxItem: (id) => call<StoredInboxItem | null>("inbox/item", { id }),
     ticketItems: (ticket) => call<InboxItem[]>("inbox/ticket", { ticket }),
-    answer: (a: AnswerRecord) => call<string>("answer", a),
+    prepareMergeNotice: (key) => call<"reserved" | "attempted" | "delivered">("merge-notice/prepare", { key }),
+    answer: (a: AnswerRecord) => call<string>(a.generated ? "answer/generated" : "answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
     merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
     chore: (c: ChoreRecord) => call<null>("chore", c).then(() => undefined),

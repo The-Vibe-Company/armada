@@ -72,6 +72,43 @@ describe("the project registry", () => {
 });
 
 describe("live data", () => {
+  test("merge notice reservations and resolved notes survive retries and concurrent coordinators", async () => {
+    const project = "merge-notices";
+    await upsertProject(
+      db,
+      { slug: project, name: "Notices", repository: "acme/notices", programRoot: "WID-1" },
+      at(0),
+    );
+    const store = fleetStore(db);
+    const reservations = await Promise.all(
+      Array.from({ length: 3 }, () => store.prepareMergeNotice(project, "merge-a", at(1))),
+    );
+    expect(reservations.filter((r) => r === "reserved")).toHaveLength(1);
+    expect(reservations.filter((r) => r === "attempted")).toHaveLength(2);
+    const plan = await addInboxItem(db, {
+      project,
+      ticket: "WID-7",
+      kind: "plan",
+      recipient: "coordinator",
+      author: null,
+      body: "Pending plan",
+      at: at(0),
+    });
+    const note = { project, key: "merge-a", ticket: "WID-7", text: "main moved: PR #9", at: at(2) };
+    await Promise.all([store.recordMergeNotice(note), store.recordMergeNotice(note)]);
+    expect(await store.prepareMergeNotice(project, "merge-a", at(3))).toBe("delivered");
+    expect((await store.getInboxItem(project, plan))?.resolvedAt).toBeNull();
+    const rows = await db.query("SELECT body, resolved_at FROM inbox_items WHERE project = $1 AND kind = 'note'", [
+      project,
+    ]);
+    expect(rows.rows).toHaveLength(1);
+    expect(rows.rows[0]?.resolved_at).not.toBeNull();
+    // A second ticket in the same session records its own audit note without another native delivery.
+    await store.recordMergeNotice({ ...note, ticket: "WID-8" });
+    expect(
+      (await db.query("SELECT id FROM inbox_items WHERE project = $1 AND kind = 'note'", [project])).rows,
+    ).toHaveLength(2);
+  });
   test("a stale release leaves the replacement claim, profile, plans and questions untouched", async () => {
     const project = "guarded-release";
     await upsertProject(
@@ -304,6 +341,12 @@ describe("live data", () => {
     const latest = await latestEvents(db, P, { since: at(2) });
     expect(Object.keys(latest)).toEqual(["WID-2"]);
     expect(latest["WID-2"]).toMatchObject({ kind: "report", phase: "shipping", prUrl: "u", at: at(3).toISOString() });
+    const latestClaim = (await latestEvents(db, P, { kinds: ["claim"] }))["WID-2"];
+    expect(latestClaim?.kind).toBe("claim");
+    expect(latestClaim?.id).toBeGreaterThan(0);
+    expect(latest["WID-2"]?.id).toBeGreaterThan(latestClaim?.id ?? 0);
+    expect(await latestEvents(db, P, { kinds: ["claim"], since: at(2), tickets: ["WID-2"] })).toEqual({});
+    expect(await latestEvents(db, P, { kinds: [] })).toEqual({});
 
     await recordCoordinatorSeen(db, { project: P, handle: "ws/c", cliVersion: "0.2.3", at: at(9) });
     // A read that names no version keeps the one known.

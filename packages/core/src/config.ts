@@ -79,6 +79,10 @@ export interface ArmadaConfig {
   /** Signing policy for newly created Herdr worktrees; cloud environments keep their own policy. */
   git: { sign: "inherit" | "off" };
   ci: CiConfig;
+  merge: {
+    /** Repository path globs whose merges concern every working pull request. */
+    notifyPaths: string[];
+  };
   gates: {
     /**
      * CI checks that must be green on the head of a pull request before a
@@ -229,6 +233,7 @@ export interface HerdrProfile {
 }
 
 export const CONFIG_DEFAULTS = {
+  notifyPaths: [".github/workflows/**"],
   gitSign: "inherit",
   language: "en",
   readyLabel: "ready-for-agent",
@@ -371,6 +376,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const gates = raw.gates === undefined ? {} : raw.gates;
   if (!isTable(gates)) problems.push(`"gates" must be a table`);
   const gatesT = isTable(gates) ? gates : {};
+  const merge = raw.merge === undefined ? {} : raw.merge;
+  if (!isTable(merge)) problems.push(`"merge" must be a table`);
+  const mergeT = isTable(merge) ? merge : {};
   const brief = raw.brief === undefined ? {} : raw.brief;
   if (!isTable(brief)) problems.push(`"brief" must be a table`);
   const briefT = isTable(brief) ? brief : {};
@@ -401,6 +409,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["git", gitT, ["sign"]],
     ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
+    ["merge", mergeT, ["notify_paths"]],
     [
       "policy",
       policyT,
@@ -850,6 +859,14 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
   }
 
+  let notifyPaths: string[] = [...CONFIG_DEFAULTS.notifyPaths];
+  if (mergeT.notify_paths !== undefined) {
+    const v = mergeT.notify_paths;
+    if (Array.isArray(v) && v.every((p) => typeof p === "string" && p.trim() && !p.includes("\u0000")))
+      notifyPaths = [...new Set(v.map((p: string) => p.trim()))];
+    else problems.push(`"merge.notify_paths" must be a list of path globs`);
+  }
+
   const knownFailures: CiConfig["knownFailures"] = [];
   if (ciT.known_failure !== undefined) {
     if (!Array.isArray(ciT.known_failure)) problems.push('"ci.known_failure" must be an array of tables');
@@ -929,6 +946,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     git: { sign: sign === "off" ? "off" : "inherit" },
     ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
+    merge: { notifyPaths },
     policy: {
       silentAfterMinutes,
       launchGraceMinutes,
@@ -1009,6 +1027,10 @@ sign = "inherit"        # "off" disables commit signing only in new Herdr worktr
 
 [gates]
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
+
+[merge]
+# Files that concern every working PR, in addition to overlapping files (default: CI workflows).
+# notify_paths = [".github/workflows/**", "package.json", "migrations/**"]
 
 [policy]
 silence_minutes = 15     # silence since the newest report, heartbeat or answer
