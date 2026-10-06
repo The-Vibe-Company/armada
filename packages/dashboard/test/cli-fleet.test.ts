@@ -17,6 +17,7 @@ import { type CliAccounts, type CliApiDeps, handleCli } from "../lib/cli-api.ts"
 import type { Database } from "../lib/db.ts";
 import type { Scope } from "../lib/fleet-data.ts";
 import { fleetStore, liveStore } from "../lib/fleet-store.ts";
+import { saveOwnerChannel } from "../lib/owner-push.ts";
 import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
 import { listEvents, vaultModeOf } from "../lib/vault.ts";
 import { listWorkers } from "../lib/workers.ts";
@@ -846,4 +847,55 @@ describe("the fleet through the Armada API", () => {
     expect((await refusal(a.acquireLease({ ...lease, holder: "x", ttlMs: 2 * 3_600_000 })))[0]).toBe(400);
     expect(logged.join("\n")).not.toContain(apiKey);
   });
+});
+
+test("digest reads and sends use organization scope and keep the channel address server-side", async () => {
+  const signIn: ArmadaSignIn = { kind: "api-key", key: apiKey };
+  const fleet = fleetOf(signIn);
+  const printed = await fleet.digest({ since: null, language: "fr" });
+  expect(printed.text).toContain("flotte");
+  expect((await refusal(fleet.sendDigest({ since: null })))[1]).toContain("Notifications");
+  const scoped = await worker("WID-91");
+  expect((await refusal(fleetOf(scoped).digest({ since: null })))[0]).toBe(403);
+  expect((await refusal(fleetOf(scoped).sendDigest({ since: null })))[0]).toBe(403);
+  expect((await refusal(fleetOf({ kind: "api-key", key: otherKey }).digest({ since: null })))[0]).toBe(403);
+  const org = (await client.query(`SELECT organization_id FROM projects WHERE slug = $1`, [WIDGETS.slug])).rows[0]
+    ?.organization_id;
+  const mode = deps.vault?.();
+  if (mode?.kind !== "on") throw new Error("synthetic vault missing");
+  await saveOwnerChannel(client, {
+    organization: String(org),
+    project: WIDGETS.slug,
+    format: "slack",
+    alerts: false,
+    digest: { times: [], days: [1, 2, 3, 4, 5], skipQuiet: false },
+    timeZone: "UTC",
+    language: "fr",
+    quiet: null,
+    url: "https://hooks.example.test/private-digest-address",
+    signingSecret: "",
+    actor: { kind: "person", id: "synthetic", label: "Olive" },
+    now: now(),
+    vault: mode.key,
+  });
+  let payload = "";
+  const sendingApi = armadaApi({
+    url: BASE,
+    fetch: (url, init) =>
+      handleCli(new Request(url, init), new URL(url).pathname.replace(/^\/api\/cli\//, "").split("/"), {
+        accounts: async () => accounts,
+        ...deps,
+        ownerFetch: async (_url, options) => {
+          payload = String(options?.body);
+          return new Response(null, { status: 200 });
+        },
+      }),
+  });
+  const sent = await fleetClient({ api: sendingApi, signIn, project: WIDGETS }).sendDigest({
+    since: null,
+    language: "fr",
+  });
+  expect(sent.sent).toBe(true);
+  expect(JSON.parse(payload).text).toContain("flotte");
+  expect(JSON.stringify(sent)).not.toContain("private-digest-address");
 });
