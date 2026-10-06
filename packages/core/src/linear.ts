@@ -364,6 +364,7 @@ const readGql = <T>(opts: LinearRequestOptions, query: string, variables: object
 
 export interface ParentAutoClose {
   team: string;
+  /** Linear exposes a nullable Boolean: null means unavailable, not disabled. */
   enabled: boolean | null;
 }
 
