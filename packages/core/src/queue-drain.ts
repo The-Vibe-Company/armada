@@ -62,15 +62,16 @@ export async function drainMergeQueue(
   };
   // Fence adapter calls too: cleanup can outlive the lease while awaiting a remote read.
   // Rechecking after a call stops subsequent effects even when its caller catches errors.
-  const fenced = <T extends object>(target: T): T =>
+  const fenced = <T extends object>(target: T, mutations?: readonly (keyof T)[]): T =>
     new Proxy(target, {
       get(target, key, receiver) {
         const value = Reflect.get(target, key, receiver);
         if (typeof value !== "function") return value;
+        if (mutations && !mutations.includes(key as keyof T)) return value.bind(target);
         return async (...args: unknown[]) => {
           await tick();
           const result = await Reflect.apply(value, target, args);
-          await tick();
+          if (!mutations) await tick();
           return result;
         };
       },
@@ -80,6 +81,9 @@ export async function drainMergeQueue(
     tick,
     sleep,
     linear: fenced(ctx.linear),
+    // Keep read-only GitHub confirmation available after native writes; fence every mutation.
+    forge: fenced(ctx.forge, ["updateBranch", "comment", "beforeMerge", "merge"]),
+    repo: ctx.repo ? fenced(ctx.repo, ["testMerge", "mergeTree"]) : null,
     fleet: async () => {
       await tick();
       const live = await ctx.fleet();

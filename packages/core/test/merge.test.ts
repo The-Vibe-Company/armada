@@ -2106,6 +2106,7 @@ test.each([
   "cleanup-recovery",
   "long-cleanup",
   "cleanup-takeover",
+  "update-takeover",
   "recovery-linear-outage",
   "unknown-outcome",
   "takeover",
@@ -2187,6 +2188,10 @@ test.each([
       return active.readPull(n);
     },
     compare: async (ref, sha) => {
+      if (scenario === "update-takeover" && (await live.store.getLease("widgets", "merge-queue"))?.holder !== "peer") {
+        live.clock.advance(600_001);
+        await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
+      }
       const cmp = await active.compare(ref, sha);
       return cmp ? { ...cmp, baseSha: base } : null;
     },
@@ -2316,7 +2321,7 @@ test.each([
         order.push(`after ${outcome.pr.number}`);
       },
     });
-  if (["takeover", "cleanup-takeover", "paused-timeout"].includes(scenario)) {
+  if (["takeover", "cleanup-takeover", "update-takeover", "paused-timeout"].includes(scenario)) {
     await expect(drain()).rejects.toThrow(scenario !== "paused-timeout" ? "taken over" : "main red since #170");
     expect(await live.fleet.queueList()).toMatchObject([
       { state: scenario === "paused-timeout" ? "queued" : "merging", attempts: 0 },
@@ -2324,6 +2329,7 @@ test.each([
     ]);
     if (scenario === "paused-timeout") expect(await live.fleet.queueRemove({ pr: 12 })).toBe(true);
     expect(delivered).toEqual([]);
+    if (scenario === "update-takeover") expect(order).toEqual([]);
     if (scenario === "cleanup-takeover") {
       expect(s.linear.get("DEMO-7").statusType).toBe("started");
       expect(s.linear.bodies.some((body) => body.startsWith("Agent status: merged"))).toBe(false);
