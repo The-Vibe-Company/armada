@@ -125,6 +125,7 @@ export function renderStatus(r: StatusReport): string {
   for (const t of ready) {
     const meta = [
       t.spec,
+      "launchingBy" in t ? `launching by ${t.launchingBy ?? "unowned"}` : null,
       t.unlocks.length ? `unlocks ${t.unlocks.length}` : null,
       t.onCriticalPath ? "critical path" : null,
     ]
@@ -134,7 +135,10 @@ export function renderStatus(r: StatusReport): string {
   }
   if (untriaged.length) {
     out.push("", `Unblocked but not marked ready (${untriaged.length})`);
-    for (const t of untriaged) out.push(`  ${pad(t.id, idWidth)}  ${truncate(t.title, 80)}`);
+    for (const t of untriaged)
+      out.push(
+        `  ${pad(t.id, idWidth)}  ${truncate(t.title, 80)}${"launchingBy" in t ? ` (launching by ${t.launchingBy ?? "unowned"})` : ""}`,
+      );
   }
 
   out.push("", `Pull requests waiting (${r.pullRequests?.length ?? "?"})`);

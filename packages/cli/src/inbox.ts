@@ -12,6 +12,7 @@ import {
   type Rearm,
   Refusal,
 } from "@armada/core";
+import { coordinatorName } from "./coordinator.ts";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
@@ -91,6 +92,7 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     const head = [
       e.id === null ? e.kind : `#${e.id} ${e.kind}`,
       e.ticket,
+      e.owner ? `owner: ${e.owner}` : "unowned",
       e.author && `from ${e.author}`,
       e.request?.question && `${e.kind === "plan-changes" ? "amends" : "answers"} #${e.request.question}`,
       e.request?.profile && `profile ${e.request.profile}`,
@@ -131,6 +133,8 @@ export function renderInbox(r: InboxReport, next: Rearm): string {
 /** Reads the inbox through Armada only: no Linear key needed, cheap enough to run in a loop. */
 export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {
   if (a.rest.length) throw new UsageError(`unexpected argument ${a.rest[0]}`);
+  const name = await coordinatorName(io, config.project.slug);
+  const scope = a.options.mine ? "mine" : "all";
   const wait = a.options.wait === "true";
   if (!wait && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
   const timeoutMs = waitSeconds(a.options.timeout) * 1000;
@@ -140,6 +144,8 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
   const report = await checkInbox(observingFleet(io, fleet, config), {
     project: config.project.slug,
+    scope,
+    coordinatorName: name,
     coordinator: coordinatorHandle(io),
     facts: detectCoordinator(io),
     silentAfterMinutes: config.policy.silentAfterMinutes,
@@ -150,14 +156,16 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
       ? { wait: { timeoutMs, sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))) } }
       : {}),
   });
-  await remember(io, report.project, shown(io, report.items, report.inFlight));
+  const inFlight =
+    name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
+  await remember(io, report.project, shown(io, report.items, inFlight));
   const next = await rearmFor(io, report.project, {
-    inFlight: report.inFlight,
+    inFlight,
     open: report.items.length,
     act: report.items.length > 0,
   });
   const runtimes = (await fleet.runtimeHandles().catch(() => []))
-    .filter((h) => h.runtimeState)
+    .filter((h) => h.runtimeState && (scope === "all" || h.coordinator === name))
     .map((h) => ({
       ticket: h.ticket,
       runtime: h.runtime,
