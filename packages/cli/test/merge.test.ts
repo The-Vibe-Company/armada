@@ -527,9 +527,9 @@ test("CLI accepts --no-ticket --reason and posts its audit comment without endin
   expect(f.store.leases.size).toBe(0);
 });
 
-test.each([[], ["--no-archive"]])(
+test.each([{ options: [] }, { options: ["--no-archive"] }])(
   "a confirmed merge launches its owned deferred follow-up through the shared Conductor launcher in the same run (%s)",
-  async (options) => {
+  async ({ options }) => {
     const f = await fixture({ unblocks: true });
     const originalFetch = f.io.fetch;
     const originalExec = f.io.exec;

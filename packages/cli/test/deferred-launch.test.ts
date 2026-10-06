@@ -88,6 +88,12 @@ test("launch --when-unblocked and --after store server-checked requests, print b
   lines.length = 0;
   expect(await run(["launch", "demo-9", "--when-unblocked", "--notes", "notes.txt"], io)).toBe(2);
   expect(lines.join("")).toContain("--notes cannot be stored");
+  for (const empty of [["--after="], ["--after", ""]]) {
+    lines.length = 0;
+    expect(await run(["launch", "demo-9", ...empty], io)).not.toBe(0);
+    expect(lines.join("")).toContain("after must be a ticket id");
+  }
+  expect(api.calls.some((c) => c.path === "launch-tokens")).toBe(false);
 });
 
 test("post-merge launches only ready requests owned by this coordinator with stored facts, and preserves failed requests", async () => {

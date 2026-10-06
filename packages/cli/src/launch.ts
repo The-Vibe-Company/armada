@@ -58,7 +58,8 @@ export async function launch(
   version: string,
   configPath: string,
 ) {
-  if (args.options["when-unblocked"] || args.options.after) return deferLaunch(io, config, credentials, args);
+  if (args.options["when-unblocked"] || args.options.after !== undefined)
+    return deferLaunch(io, config, credentials, args);
   if (args.rest[0] !== "revoke") return launchWorker(io, config, credentials, args, version, configPath);
   if (Object.keys(args.options).length) throw new UsageError("launch revoke does not take runtime or profile options");
   const [operation, ticket, ...extra] = args.rest;
