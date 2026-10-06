@@ -70,7 +70,7 @@ async function ensurePhaseLabel(io: Io, config: ArmadaConfig, credentials: Crede
   const groups = state.groups
     .filter((g) => g.name === config.tracker.labels.phaseGroup && g.id && g.missing.includes("awaiting-validation"))
     .map((g) => ({ ...g, missing: ["awaiting-validation"] }));
-  if (groups.length) await createMissingLabels({ ...state, groups }, opts);
+  if (groups.length) await createMissingLabels({ ...state, groups, labels: [] }, opts);
 }
 
 /**
