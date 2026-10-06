@@ -130,6 +130,7 @@ test("an overdue job stays visible when its ticket is Done; status only reads st
     state: "running",
     overdue: true,
     ticketDone: true,
+    maxHours: 0.5,
     ref: "run-1",
     progress: "37/120 cases",
   });
