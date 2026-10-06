@@ -263,6 +263,7 @@ const COMMAND_HELP: Record<string, string> = {
                     A hand-back id can clear a merged/closed PR or a Done/Canceled ticket
   answer --note <ticket|plan item> "<message>"
                     Coordinator: deliver and record a note; a targeted open plan is resolved
+                    --message-file <path|-> reads the answer or note from a file or stdin
 `,
   merge: `  merge --when-green <pr...> [--no-ticket] [--keep-open] [--through-hold <why>] [--reason <why>]
                     Queue handed-back pull requests durably in order. Checks/behind-base,
@@ -323,7 +324,7 @@ const COMMAND_HELP: Record<string, string> = {
                     --runtime conductor|herdr, --pre-approve, --notes <file|->, --dry-run or --json.
 `,
   launch: `  launch <ticket> [--runtime conductor|herdr] [--profile <name> [--reason <why>]]
-        [--notes <file|->] [--validation <n|none>] [--dry-run] [--json]
+        [--notes <file|->] [--validation <n|none> [--validation-reason <why>]] [--pre-approve] [--dry-run] [--json]
                     Check the ticket, choose its profile and launch one worker with its
                     one-time sign-in brief. Runtime defaults to the chosen profile;
                     Claude Code profiles point to armada brief and the Agent tool.
