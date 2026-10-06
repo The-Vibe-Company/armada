@@ -94,6 +94,7 @@ const COMMAND_HELP: Record<string, string> = {
   job stop <id>
   job list [--ticket <id>]
   job recover <id> [--ref <reference>] [--state <state>]
+  job beat <id> [--progress <text>] [--state running|succeeded|failed|stopped|lost]
                     Track long jobs on the project's own runner through [jobs.<name>].
                     start reserves an id, dispatches within 2 minutes and saves the runner
                     reference. status polls open jobs; list reads stored progress only.
@@ -504,6 +505,7 @@ interface Args {
 
 const VALUE_OPTIONS = [
   "finish",
+  "progress",
   "ref",
   "state",
   "actions",
@@ -598,7 +600,7 @@ const FLAG_OPTIONS = [
 const COMMAND_OPTIONS: Record<string, string[]> = {
   doctor: ["deep"],
   lint: ["ready"],
-  job: ["ticket", "ref", "state"],
+  job: ["ticket", "ref", "state", "progress"],
   peek: ["actions"],
   deploy: ["sha", "target"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
@@ -905,7 +907,15 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         worker: {
           command: "job",
           project: config.project.slug,
-          ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
+          ticket: (stored) => {
+            try {
+              return currentTicket(io, config, args.options.ticket, stored);
+            } catch (error) {
+              if (args.rest[0] !== "start" && !args.options.ticket && !io.env.ARMADA_TICKET && !stored.length)
+                return null;
+              throw error;
+            }
+          },
         },
       });
       return await jobCommand(io, config, credentials, args, path);
