@@ -4,6 +4,7 @@ import { accountsModeOf } from "../lib/accounts-settings.ts";
 import type { Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliIdentity, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
+import { getRuntimeHandle } from "../lib/fleet-store.ts";
 import { listEvents, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
 import { EXCHANGES_PER_MINUTE, endWorker, listWorkers, workerState } from "../lib/workers.ts";
 import { tempDatabase } from "./support.ts";
@@ -231,6 +232,50 @@ describe("launch tokens: one ticket, once, within the hour", () => {
 });
 
 describe("a worker session acts on its own ticket only", () => {
+  test("worker ownership comes from the launch row, never its fleet request", async () => {
+    now = at(800);
+    const made = await cli("POST", "launch-tokens", {
+      token: ownerToken,
+      body: { project: "widgets", ticket: "ABC-24", coordinator: "front" },
+    });
+    expect(made.status).toBe(200);
+    expect(
+      (
+        await cli("POST", "launch-tokens", {
+          token: ownerToken,
+          body: { project: "widgets", ticket: "ABC-24", coordinator: "Bad_Name" },
+        })
+      ).status,
+    ).toBe(400);
+    const signed = await exchange(String(made.body.token));
+    expect(signed.body.worker).toMatchObject({ coordinator: "front" });
+    const session = String(signed.body.token);
+    const project = { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "ABC-1" };
+    expect(
+      (
+        await cli("POST", "fleet/claim", {
+          token: session,
+          body: {
+            project,
+            input: {
+              ticket: "ABC-24",
+              runtime: "Conductor",
+              handle: "workspace/named",
+              branch: null,
+              phase: "planning",
+              resuming: false,
+              profile: null,
+              coordinator: "spoof",
+              coordinatorName: "Invalid spoof",
+            },
+          },
+        })
+      ).status,
+    ).toBe(200);
+    expect((await getRuntimeHandle(client, "widgets", "ABC-24"))?.coordinator).toBe("front");
+    expect((await cli("GET", "session", { token: session })).body.worker).toMatchObject({ coordinator: "front" });
+  });
+
   test("a heartbeat is project/ticket/session scoped, server timed, vault-free, and refuses replaced sessions", async () => {
     now = at(900);
     const session = String((await exchange(await launch("ABC-25"))).body.token);

@@ -8,6 +8,7 @@ import {
   ARMADA_URL,
   DEMO_TOML,
   FakeLinear,
+  type FakeVault,
   fakeArmada,
   fakeClock,
   NOW,
@@ -35,10 +36,15 @@ const SIGNED_IN = { ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY };
  */
 function worker(
   env: Record<string, string> = {},
-  o: { store?: ReturnType<typeof memoryFleet>; clock?: ReturnType<typeof fakeClock> } = {},
+  o: { store?: ReturnType<typeof memoryFleet>; clock?: ReturnType<typeof fakeClock>; vault?: FakeVault } = {},
 ) {
   const store = o.store ?? memoryFleet();
-  const armada = fakeArmada({ keys: { [KEY]: "fleet" }, store, ...(o.clock ? { clock: o.clock } : {}) });
+  const armada = fakeArmada({
+    keys: { [KEY]: "fleet" },
+    store,
+    ...(o.clock ? { clock: o.clock } : {}),
+    ...(o.vault ? { vault: o.vault } : {}),
+  });
   const linear = new FakeLinear();
   const out: string[] = [];
   const err: string[] = [];
@@ -544,6 +550,42 @@ describe("armada ask, inbox and answer", () => {
     expect(await run(["answer", "3"], w.io)).toBe(2);
     expect(w.err()).toContain("answer needs the text");
   });
+});
+
+test("worker claim comments inherit the authenticated launch owner despite a different environment name", async () => {
+  const w = worker(
+    { ARMADA_COORDINATOR: "spoof", ARMADA_API_URL: ARMADA_URL },
+    { vault: { linear: { apiKey: "synthetic", scope: "organization" }, now: () => NOW } },
+  );
+  w.linear.add("DEMO-7");
+  const token = "armada_worker_CANARY_named";
+  w.armada.workers.set(token, {
+    project: "widgets",
+    ticket: "DEMO-7",
+    id: "wk-named",
+    createdAt: NOW.toISOString(),
+    ended: null,
+    coordinator: "front",
+  });
+  const home = await mkdtemp(join(tmpdir(), "armada-worker-owner-"));
+  dirs.push(home);
+  w.io.env.XDG_CONFIG_HOME = home;
+  await mkdir(join(home, "armada"), { recursive: true });
+  const session = formatWorkerSession({
+    api: ARMADA_URL,
+    token,
+    ticket: "DEMO-7",
+    project: "widgets",
+    organization: "org-1",
+    id: "wk-named",
+  });
+  await writeFile(join(home, "armada", "credentials"), `ARMADA_WORKER_SESSION_DEMO_7=${session}\n`);
+  expect({
+    code: await run(["claim", "DEMO-7", "--runtime", "Conductor", "--handle", "workspace/worker"], w.io),
+    error: w.err(),
+  }).toEqual({ code: 0, error: "" });
+  expect(w.linear.get("DEMO-7").comments.some((comment) => comment.excerpt.includes("coordinator: front"))).toBe(true);
+  expect((await w.store.getRuntimeHandle("widgets", "DEMO-7"))?.coordinator).toBe("front");
 });
 
 test("hold commands share the pause with status and clear it idempotently", async () => {

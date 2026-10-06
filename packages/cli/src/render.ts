@@ -65,7 +65,9 @@ export function renderStatus(r: StatusReport): string {
   if (!r.inFlight.length) out.push("  nobody is working");
   for (const t of r.inFlight) {
     const who =
-      [t.runtime, t.runtimeState && `live ${t.runtimeState}`, t.agent].filter(Boolean).join(" · ") || "unassigned";
+      [t.runtime, t.coordinator && `coordinator: ${t.coordinator}`, t.runtimeState && `live ${t.runtimeState}`, t.agent]
+        .filter(Boolean)
+        .join(" · ") || "unassigned";
     out.push(
       `  ${pad(t.id, idWidth)}  ${pad(phaseLabel(t), phaseWidth)}  ${who} · ${t.lastReport ? `reported ${relative(t.lastReport, now)}` : `updated ${relative(t.lastUpdate, now)}`}`,
     );
@@ -88,7 +90,7 @@ export function renderStatus(r: StatusReport): string {
     out.push("", `Pending launches (${pending.length})`);
     for (const l of pending) {
       out.push(
-        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.runtime ? ` · ${l.runtime}` : ""}${l.handle ? ` · ${l.handle}` : ""}`,
+        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.coordinator ? ` · coordinator: ${l.coordinator}` : ""}${l.runtime ? ` · ${l.runtime}` : ""}${l.handle ? ` · ${l.handle}` : ""}`,
       );
       const title = r.notStarted.find((launch) => launch.ticket === l.ticket)?.title;
       if (title) out.push(`${indent}${truncate(title, 90)}`);
