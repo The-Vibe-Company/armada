@@ -1,5 +1,5 @@
 // The tracker labels the fleet protocol needs: one single-select group for the
-// agent phase and one for the agent runtime, each with every value. `armada
+// agent phase and one for the agent runtime, plus plain policy plan labels. `armada
 // doctor` reads them and `armada init` creates what is missing.
 import type { ArmadaConfig } from "./config.ts";
 import type { HttpRetryOptions } from "./http.ts";
@@ -27,6 +27,8 @@ export interface LabelState {
   /** Team of the program root; new groups are created there. */
   team: { id: string; key: string };
   groups: LabelGroupState[];
+  /** Plain policy labels applicable to the program root's team. */
+  labels: { name: string; id: string | null }[];
 }
 
 /** The groups and values `config` asks for: phases are the protocol's, runtimes come from armada.toml. */
@@ -53,15 +55,16 @@ const LABELS_QUERY = /* GraphQL */ `
     }
   }`;
 
-/** Reads the label groups `config` needs, as seen from the program root's team. */
+/** Reads the groups and plain plan labels `config` needs, as seen from the program root's team. */
 export async function readLabels(config: ArmadaConfig, opts: LabelOptions): Promise<LabelState> {
   const wanted = requiredLabels(config);
+  const planLabels = [config.policy.preApprovedLabel, config.policy.approvalLabel].filter(Boolean);
   const data = await gql<{ issue: { team: { id: string; key: string } } | null; issueLabels: { nodes: RawGroup[] } }>(
     { ...opts, retry: true },
     LABELS_QUERY,
     {
       root: config.tracker.programRoot,
-      filter: { or: wanted.map((g) => ({ name: { eqIgnoreCase: g.name } })) },
+      filter: { or: [...wanted.map((g) => g.name), ...planLabels].map((name) => ({ name: { eqIgnoreCase: name } })) },
     },
   );
   if (!data.issue) throw new LinearError(`Linear: program root ${config.tracker.programRoot} not found`);
@@ -78,11 +81,16 @@ export async function readLabels(config: ArmadaConfig, opts: LabelOptions): Prom
       missing: w.values.filter((v) => !have.has(v.toLowerCase())),
     };
   });
-  return { team, groups };
+  const labels = planLabels.map((name) => {
+    const candidates = data.issueLabels.nodes.filter((n) => !n.isGroup && n.name.toLowerCase() === name.toLowerCase());
+    const label = candidates.find((n) => n.team?.id === team.id) ?? candidates.find((n) => n.team === null);
+    return { name, id: label?.id ?? null };
+  });
+  return { team, groups, labels };
 }
 
 export function checkLabels(state: LabelState): Check[] {
-  return state.groups.map((g): Check => {
+  const groups = state.groups.map((g): Check => {
     const id = `labels:${g.name}`;
     if (!g.id)
       return {
@@ -100,6 +108,19 @@ export function checkLabels(state: LabelState): Check[] {
       };
     return { id, level: "ok", message: `label group "${g.name}" has every value`, fix: null };
   });
+  return [
+    ...groups,
+    ...state.labels.map(
+      (label): Check => ({
+        id: `labels:${label.name}`,
+        level: label.id ? "ok" : "error",
+        message: label.id
+          ? `label "${label.name}" exists in Linear`
+          : `label "${label.name}" does not exist in Linear team ${state.team.key}`,
+        fix: label.id ? null : "run `armada init` to create it",
+      }),
+    ),
+  ];
 }
 
 const CREATE_LABEL = /* GraphQL */ `
@@ -120,7 +141,8 @@ async function createLabel(opts: LabelOptions, input: Record<string, unknown>): 
 
 /**
  * Creates every missing group (in the program root's team) and value (next to
- * its group). Returns one line per label created, e.g. `Agent phase / planning`.
+ * its group), and plain plan labels in the program root's team. Returns one
+ * line per label created, e.g. `Agent phase / planning`.
  */
 export async function createMissingLabels(state: LabelState, opts: LabelOptions): Promise<string[]> {
   const created: string[] = [];
@@ -141,6 +163,11 @@ export async function createMissingLabels(state: LabelState, opts: LabelOptions)
       await createLabel(opts, { name: value, parentId: groupId, ...(teamId ? { teamId } : {}) });
       created.push(`${g.name} / ${value}`);
     }
+  }
+  for (const label of state.labels) {
+    if (label.id) continue;
+    await createLabel(opts, { name: label.name, teamId: state.team.id });
+    created.push(label.name);
   }
   return created;
 }
