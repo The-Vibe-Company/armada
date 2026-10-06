@@ -19,6 +19,7 @@ import { decisionCards, handBackPr, sentRequest } from "@/lib/overview-view";
 import { type ActionContext, splitQuestion } from "../Actions";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { DecisionActions } from "./DecisionCard";
+import { JobStrip } from "./JobStrip";
 import { itemColor, itemHref, StepBar } from "./OverviewScreen";
 import { useActivity } from "./use-activity";
 import { Decide } from "./ValidationCard";
@@ -94,6 +95,7 @@ export function OverviewPreview({
         </span>
         <Action item={item} ctx={ctx} projectName={projectName} />
       </div>
+      <JobStrip project={item.project} ticket={item.id} heading="ov-pv-h" />
       <div className="ov-pv-block">
         <span className="ov-pv-h">{p.step}</span>
         <span className="ov-pv-steps">

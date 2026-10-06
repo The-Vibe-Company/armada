@@ -1008,3 +1008,51 @@ export function demoHistory(): HistoryTicket[] {
   }
   return out;
 }
+
+/** The demo's long jobs (THE-1128), as `[jobs.<name>]` of its armada.toml declares them. */
+export const DEMO_JOBS_TOML = `
+[jobs.eval]
+start = "./scripts/start-eval.sh"
+status = "./scripts/job-status.sh"
+stop = "./scripts/stop-eval.sh"
+max_hours = 12
+
+[jobs.replay]
+start = "./scripts/start-replay.sh"
+stop = "./scripts/stop-replay.sh"
+max_hours = 2
+`;
+
+/** Jobs on the demo's runners: minutes since their start and their last news, and the runner's last line. */
+export const DEMO_JOBS: {
+  project: string;
+  ticket: string;
+  name: string;
+  started: number;
+  observed: number;
+  progress: string | null;
+  /** Minutes until its estimated end. */
+  eta: number | null;
+  state?: "succeeded";
+}[] = [
+  { project: "widgets", ticket: "WID-12", name: "eval", started: 50, observed: 4, progress: "37/120 cases", eta: 112 },
+  {
+    project: "widgets",
+    ticket: "WID-12",
+    name: "eval",
+    started: 70,
+    observed: 55,
+    progress: "120/120 cases",
+    eta: null,
+    state: "succeeded",
+  },
+  {
+    project: "widgets",
+    ticket: "WID-17",
+    name: "replay",
+    started: 150,
+    observed: 21,
+    progress: "webhooks of March 3 · 8,412 sent",
+    eta: null,
+  },
+];

@@ -25,6 +25,7 @@ import { useFleet, useNow, useShell } from "../shell/context";
 import { useOverviewItems } from "../shell/use-items";
 import { EmptyState, RelativeTime, Tabs } from "../ui";
 import { RequestAction } from "./AgentActions";
+import { JobStrip } from "./JobStrip";
 import { Action, entryText } from "./OverviewPreview";
 import { itemColor } from "./OverviewScreen";
 import { useActivity } from "./use-activity";
@@ -137,6 +138,7 @@ function Agent({
         </p>
         <Action item={item} ctx={ctx} projectName={projectName} />
       </section>
+      <JobStrip project={item.project} ticket={item.id} heading="pg-h" />
 
       <ol className="ag-steps" aria-label={t.overview.stepLabel(steps[Math.min(item.step, steps.length - 1)] ?? "")}>
         {steps.map((s, k) => {

@@ -18,6 +18,7 @@ import { databaseUrlOf, openDatabase } from "../lib/db";
 import {
   DEMO_COORDINATOR_SEEN,
   DEMO_INBOX,
+  DEMO_JOBS,
   DEMO_NAMED_COORDINATORS,
   DEMO_PROFILES,
   DEMO_PROJECT_FACTS,
@@ -35,6 +36,7 @@ import {
   addInboxItem,
   addValidation,
   decideValidation,
+  fleetStore,
   putHandBack,
   recordCoordinatorSeen,
   recordEvent,
@@ -103,6 +105,7 @@ async function seed(scenario: string) {
     }
     await seedValidations(db);
     await seedHistory(db);
+    await seedJobs(db);
     // Every inbox read since the coordinator started, oldest first, with what its commands say of it.
     for (const project of Object.keys(DEMO_COORDINATOR_SEEN)) {
       const facts = demoCoordinatorFacts(project) ?? undefined;
@@ -115,6 +118,24 @@ async function seed(scenario: string) {
   }
   await db.end();
   console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DEMO_DATABASE_URL names" : url}`);
+}
+
+/** Long jobs on the demo's runners (THE-1128): one running, one ended, one past its max_hours. */
+async function seedJobs(db: Awaited<ReturnType<typeof openDatabase>>) {
+  const store = fleetStore(db);
+  for (const [k, j] of DEMO_JOBS.entries()) {
+    const job = await store.startJob({ ...j, startedBy: "worker", at: ago(j.started) });
+    await store.observeJob({
+      project: j.project,
+      ticket: j.ticket,
+      id: job.id,
+      state: j.state ?? "running",
+      ref: `run-${k + 1}`,
+      progress: j.progress,
+      eta: j.eta === null ? null : ago(-j.eta).toISOString(),
+      at: ago(j.observed),
+    });
+  }
 }
 
 // ------------------------------------------------------------------ validations (THE-885)

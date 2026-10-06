@@ -28,6 +28,7 @@ import {
   type InboxReadEvent,
   type InsightRange,
   isClosed,
+  type Job,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
   type OwnerValidation,
@@ -117,6 +118,8 @@ export const inScope = (p: ProjectRef, scope: Scope | null): boolean =>
 const LIVE_WINDOW_MS = 7 * 24 * 3_600_000;
 /** The events of the timeline's history (each row's step): its longest span, and an hour before it for the gap that crosses its start. */
 const HISTORY_MS = (TIMELINE_HOURS + 1) * 3_600_000;
+/** How long an ended job stays beside its ticket (THE-1128). */
+export const ENDED_JOBS_SHOWN_MS = 24 * 3_600_000;
 
 export interface LoadOptions {
   /** Read snapshots only, without scheduling a refresh (owner delivery ticks). */
@@ -290,6 +293,8 @@ interface LiveProject {
   history: HistoryEvent[];
   handles: RuntimeHandle[];
   launches: PendingLaunch[];
+  /** The open long jobs, and those of the tickets in flight ended lately. */
+  jobs: Job[];
   inbox: InboxItem[];
   coordinatorSeenAt: string | null;
   /** The CLI version the coordinator ran at its last inbox read; null when unknown. */
@@ -329,7 +334,7 @@ async function readLive(
   now: Date,
   tickets: readonly string[] = [],
 ): Promise<LiveProject> {
-  const [events, history, handles, launches, inbox, coordinators, inboxReads, sessions, validations] =
+  const [events, history, handles, launches, jobs, inbox, coordinators, inboxReads, sessions, validations] =
     await Promise.all([
       Promise.all([
         store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
@@ -338,6 +343,7 @@ async function readLive(
       store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
       store.openRuntimeHandles(project),
       store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
+      store.shownJobs(project, tickets, new Date(now.getTime() - ENDED_JOBS_SHOWN_MS)),
       store.openInboxItems({ project, recipient: "coordinator" }),
       store.coordinatorRoles(project),
       store.inboxReads(project, now),
@@ -355,6 +361,7 @@ async function readLive(
     history,
     handles,
     launches,
+    jobs,
     inbox,
     coordinatorSeenAt: coordinator?.seenAt ?? null,
     coordinatorCliVersion: coordinator?.cliVersion ?? null,
@@ -435,6 +442,7 @@ function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusRepor
             handles: Object.fromEntries(l.handles.map((h) => [h.ticket, h])),
           },
           launches: l.launches,
+          jobs: l.jobs,
         }
       : {}),
     now,
