@@ -5,7 +5,7 @@
 import { parse, TomlError } from "smol-toml";
 import { compareVersions, installCommand } from "./armada-api.ts";
 import { CONFIG_FILE, ConfigError, parseConfig } from "./config.ts";
-import { BUNDLED_SKILLS, type BundledSkill, SKILLS_SOURCE, skillFolderHash } from "./skills.ts";
+import { BUNDLED_SKILLS, type BundledSkill, deliveredSkillFiles, SKILLS_SOURCE, skillFolderHash } from "./skills.ts";
 
 export const AGENTS_SKILLS_DIR = ".agents/skills";
 export const CLAUDE_SKILLS_DIR = ".claude/skills";
@@ -68,7 +68,10 @@ const skillDir = (name: string) => `${AGENTS_SKILLS_DIR}/${name}`;
 const linkPath = (name: string) => `${CLAUDE_SKILLS_DIR}/${name}`;
 /** The link `npx skills` creates: relative, so it survives a clone anywhere. */
 export const skillLinkTarget = (name: string) => `../../${AGENTS_SKILLS_DIR}/${name}`;
-const bundledHash = (s: BundledSkill) => skillFolderHash(s.files);
+const deliveredHash = (s: BundledSkill, ref?: string) => skillFolderHash(deliveredSkillFiles(s, ref));
+// Only a release tag can enter the pointer URL; malformed lock refs are repaired by init.
+const skillRef = (entry: LockEntry | undefined) =>
+  typeof entry?.ref === "string" && /^v\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(entry.ref) ? entry.ref : undefined;
 /** `.claude/skills` may itself link to `.agents/skills`; every skill is then visible through it. */
 const WHOLE_DIR_LINKS = new Set(["../.agents/skills", "../.agents/skills/"]);
 const linksWholeDir = async (view: RepoView) => WHOLE_DIR_LINKS.has((await view.readLink(CLAUDE_SKILLS_DIR)) ?? "");
@@ -190,7 +193,8 @@ export async function skillsBehind(view: RepoView): Promise<SkillsBehind | null>
   const differing: string[] = [];
   for (const skill of BUNDLED_SKILLS) {
     const installed = await installedHash(view, skill.name);
-    if (installed !== null && installed !== bundledHash(skill)) differing.push(skill.name);
+    if (installed !== null && installed !== deliveredHash(skill, skillRef(lock?.skills[skill.name])))
+      differing.push(skill.name);
   }
   return behindOf(lock, differing);
 }
@@ -252,7 +256,7 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
       continue;
     }
     present++;
-    if (installed !== bundledHash(skill)) {
+    if (installed !== deliveredHash(skill, skillRef(lock?.skills[skill.name]))) {
       differing.push(skill.name);
       checks.push(
         bad(
@@ -286,6 +290,10 @@ export async function checkRepository(view: RepoView, armadaVersion: string): Pr
     const lockId = `skill-lock:${skill.name}`;
     if (!entry)
       checks.push(bad(lockId, "error", `${SKILLS_LOCK_FILE} does not record ${skill.name}`, "run `armada init`"));
+    else if (entry.sourceType !== (skill.delivery === "pointer" ? "armada-cli" : "github"))
+      checks.push(
+        bad(lockId, "warning", `${SKILLS_LOCK_FILE} records the wrong delivery for ${skill.name}`, "run `armada init`"),
+      );
     else if (installed !== null && entry.computedHash !== installed)
       checks.push(
         bad(
@@ -484,15 +492,28 @@ function withSetup(text: string, setup: string | null): string {
 /** skills-lock.json text with Armada's entries set, keys sorted like `npx skills` writes them. */
 export function lockText(lock: SkillsLock | null, armadaVersion: string): string {
   const skills: Record<string, LockEntry> = { ...(lock?.skills ?? {}) };
-  for (const s of BUNDLED_SKILLS)
+  for (const s of BUNDLED_SKILLS) {
+    const previous = skills[s.name];
+    const sourceType = s.delivery === "pointer" ? "armada-cli" : "github";
+    // Keep a matching skill's release, including the pointer URL: a release
+    // that changes only instruction bodies must leave the project untouched.
+    if (
+      previous?.source === SKILLS_SOURCE &&
+      previous.sourceType === sourceType &&
+      previous.computedHash === deliveredHash(s, skillRef(previous)) &&
+      previous.skillPath === `skills/${s.name}/SKILL.md` &&
+      previous.ref === skillRef(previous)
+    )
+      continue;
+    const ref = armadaVersion === "0.0.0" ? undefined : `v${armadaVersion}`;
     skills[s.name] = {
       source: SKILLS_SOURCE,
-      sourceType: "github",
+      sourceType,
       skillPath: `skills/${s.name}/SKILL.md`,
-      // A development build has no release tag to restore from.
-      ...(armadaVersion === "0.0.0" ? {} : { ref: `v${armadaVersion}` }),
-      computedHash: bundledHash(s),
+      ...(ref ? { ref } : {}),
+      computedHash: deliveredHash(s, ref),
     };
+  }
   const sorted = Object.fromEntries(
     Object.keys(skills)
       .sort()
@@ -505,21 +526,25 @@ export function lockText(lock: SkillsLock | null, armadaVersion: string): string
 export async function planSkills(view: RepoView, armadaVersion: string): Promise<SetupPlan> {
   const plan: SetupPlan = { writes: [], removes: [], links: [], installed: [], updated: [], stopHook: false };
   const wholeDir = await linksWholeDir(view);
+  const lockBefore = await view.readFile(SKILLS_LOCK_FILE);
+  const lockAfter = lockText(parseSkillsLock(lockBefore), armadaVersion);
+  const lock = parseSkillsLock(lockAfter);
   for (const skill of BUNDLED_SKILLS) {
+    const files = deliveredSkillFiles(skill, skillRef(lock?.skills[skill.name]));
     const folder = await view.readFolder(skillDir(skill.name));
-    const current = folder?.length ? skillFolderHash(folder) === bundledHash(skill) : false;
+    const current = folder?.length
+      ? skillFolderHash(folder) === deliveredHash(skill, skillRef(lock?.skills[skill.name]))
+      : false;
     if (!current) {
       (folder?.length ? plan.updated : plan.installed).push(skill.name);
-      for (const f of skill.files) plan.writes.push({ path: `${skillDir(skill.name)}/${f.path}`, content: f.content });
-      const keep = new Set(skill.files.map((f) => f.path));
+      for (const f of files) plan.writes.push({ path: `${skillDir(skill.name)}/${f.path}`, content: f.content });
+      const keep = new Set(files.map((f) => f.path));
       for (const f of folder ?? []) if (!keep.has(f.path)) plan.removes.push(`${skillDir(skill.name)}/${f.path}`);
     }
     if (!wholeDir && (await view.readLink(linkPath(skill.name))) !== skillLinkTarget(skill.name))
       plan.links.push({ path: linkPath(skill.name), target: skillLinkTarget(skill.name) });
   }
 
-  const lockBefore = await view.readFile(SKILLS_LOCK_FILE);
-  const lockAfter = lockText(parseSkillsLock(lockBefore), armadaVersion);
   if (lockAfter !== lockBefore) plan.writes.push({ path: SKILLS_LOCK_FILE, content: lockAfter });
 
   const gitignore = await view.readFile(GITIGNORE);

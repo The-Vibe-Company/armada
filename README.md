@@ -46,13 +46,15 @@ GitHub is read with `GITHUB_TOKEN`, `GH_TOKEN` or the GitHub CLI login (`gh auth
 ```sh
 armada doctor                          # what this repository lacks, with the fix for each
 armada init --program-root ABC-1       # one pull request that adds it all
-armada skills update                  # update bundled skills locally on your current branch
+armada skill armada-worker            # read instructions from the installed CLI
+armada skill armada-coordinator MERGE.md # read a linked file
+armada skills update                  # update pointers and vendored skills on your branch
 ```
 
 `armada doctor` checks, in the repository you are in:
 
 - `armada.toml` exists and is valid;
-- the Armada skills (`armada-coordinator`, `armada-worker`, `armada-runtime-conductor`, `armada-runtime-claude-code`, `armada-runtime-herdr`, `ship-pr-dev`, `review-code-dev`, `capture-learning-tools`) are in `.agents/skills`, linked from `.claude/skills`, recorded in `skills-lock.json` (the [`npx skills`](https://github.com/vercel-labs/skills) format), and match this version of Armada;
+- the five `armada-*` skills are discovery pointers in `.agents/skills`, linked from `.claude/skills`; their descriptions trigger Claude Code and Codex to run `armada skill <name> [<file>]` and follow the installed CLI version. `skills-lock.json` records their pointer hashes with `sourceType: "armada-cli"` and a tagged GitHub source link. The scripted `ship-pr-dev`, `review-code-dev` and `capture-learning-tools` packages stay fully vendored and checked by their folder hashes;
 - `.conductor/settings.toml` has a `[scripts] setup` command;
 - `.gitignore` ignores `plans/ship-pr-dev/`;
 - this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
@@ -62,6 +64,8 @@ armada skills update                  # update bundled skills locally on your cu
 - with Conductor profiles in `armada.toml`, the `conductor` command is found: on PATH, or inside the macOS app at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, with the fix that puts it on PATH.
 
 Each problem is an error or a warning, with its fix. A missing skill, or a CLI older than Armada expects, is an error: workers cannot run without it. A skill that differs from this Armada version, a missing ignore line, a missing sign-in or a leftover key is a warning. Doctor exits 1 when there is an error. `--json` prints the same report as JSON.
+
+After the one-time pointer conversion, instruction-only Armada releases need no setup PR or project CI run. Doctor and status compare pointers, so only a discovery description change (or a missing or edited pointer) needs a setup update. The source link keeps its recorded tag until the pointer changes. Workers install the brief's pinned version before reading their skill; if `armada skill` is missing, install that version first. The command works offline, without sign-in or a checkout.
 
 The shipping skills include every helper, reference, eval, companion manifest and license.
 `armada doctor` also checks Python 3.9+, Git 2.41+ and the checksum-pinned OCR 1.12.1
@@ -80,7 +84,7 @@ vendored `review-code-dev` setup notes for supported platforms and exact fixes.
 `armada init --merge` waits for the same checks as `armada merge <n> --no-ticket --wait` and merges the setup pull request itself. It refuses changes outside `.agents/skills/**`, `.claude/skills/**`, `skills-lock.json`, `.conductor/settings.toml`, `.claude/settings.json` and `.gitignore`; `armada.toml` is allowed only when the default branch has none.
 
 To update the bundled skills on an existing ticket branch, run `armada skills update`.
-It uses init's vendoring rules for skills, links, `skills-lock.json` and the shipping
+It uses init's pointer and vendoring rules for skills, links, `skills-lock.json` and the shipping
 artifact ignore, in the current checkout. It requires Git, but no sign-in, Linear
 key or network. Review and commit its changes yourself; it does not open a setup PR
 or edit `armada.toml`, Conductor scripts or Claude hooks. It replaces locally edited
@@ -390,7 +394,7 @@ armada logout    # revokes this terminal's session and removes it from the machi
 
 - A coordinator without a browser (a cloud workspace, CI) uses an organization API key instead: an owner creates it on the Organization page (it is shown once), and the coordinator sets `ARMADA_API_KEY`, or stores it with `armada login --api-key` (hidden prompt, or standard input: `printf %s "$KEY" | armada login --api-key`; never on the command line). `ARMADA_API_KEY` in the environment wins over what `armada login` stored. Revoking the key signs the coordinator out.
 - The session token or key is kept in the credentials file below (mode 0600) and never printed; `armada auth status` says how the terminal is signed in, without it. A session lasts 30 days and is renewed while in use.
-- A worker signs in with the launch token of its launch message, as its first command: `armada login --launch-token <token>` (plus `--api-url <url>` for a self-hosted Armada, which the brief adds). The worker session it gets is kept per ticket in the credentials file and signs in that ticket's `claim`, `report`, `ask` and `release` only; each of them asks Armada for its keys, and stops with Armada's reason once the session is revoked (Organization > Workers) or ended (`armada release`, or the coordinator's `armada merge`). It lasts while the worker keeps reporting, up to three days idle.
+- A worker signs in with the launch token of its launch message, as its first authenticated command: `armada login --launch-token <token>` (plus `--api-url <url>` for a self-hosted Armada, which the brief adds). The worker session it gets is kept per ticket in the credentials file and signs in that ticket's `claim`, `report`, `ask` and `release` only; each of them asks Armada for its keys, and stops with Armada's reason once the session is revoked (Organization > Workers) or ended (`armada release`, or the coordinator's `armada merge`). It lasts while the worker keeps reporting, up to three days idle.
 - Commands that need a sign-in say so and name `armada login` as the next step; so does an expired session or a revoked key.
 - The CLI talks to `https://armada.thevibecompany.co`. A self-hosted Armada is named by `ARMADA_API_URL`, or `[api] url` in `config.toml` (https; plain http only for `localhost`). A stored sign-in is sent only to the Armada that issued it: pointing the CLI at another one asks for `armada login` there.
 - Until an Armada has accounts (it runs on the shared dashboard password), it refuses terminal sign-ins and says so; the keys below keep working as they do today.
@@ -543,7 +547,7 @@ bun run verify          # lint, typecheck, tests
 
 When changing a package under `skills/`, run `bun run skills:bundle` to regenerate
 the text payload included in the published Node bundle, then `bun run armada skills
-update` to refresh this repository's vendored copies. The bundle test compares all
+update` to refresh this repository's pointers and vendored packages. The bundle test compares all
 source skill files byte for byte, including nested helpers and license notices.
 
 See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) for the layout and the rules.
@@ -551,7 +555,7 @@ See [AGENTS.md](https://github.com/The-Vibe-Company/armada/blob/main/AGENTS.md) 
 ## What it is made of
 
 - **`armada` CLI** (TypeScript). The coordinator and the workers call it to claim tickets, report progress, ask and answer questions, launch workers and merge.
-- **Skills** vendored into the managed repository by `armada init`: the coordinator loop, the worker protocol, one runtime guide per runtime, and the shipping/review/learning workflow. They live in [`skills/`](skills).
+- **Skills** delivered by `armada init`: pointers to the CLI's coordinator, worker and runtime instructions, plus vendored shipping/review/learning packages. Their complete sources live in [`skills/`](skills).
 - **Linear** holds the plan: specs, tickets, dependencies and agent phases.
 - **The app's database** (Postgres, e.g. Neon) holds the accounts, the organizations' sealed keys and the fleet's live data: events, heartbeats, pending questions and locks. The CLI reaches it only through the Armada API, with its sign-in. Losing it loses live detail, never progress.
 - **Conductor Cloud** runs the workers in the first version. Other runtimes come later without changing the worker contract.
