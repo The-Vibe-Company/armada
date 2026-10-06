@@ -193,6 +193,9 @@ const COMMAND_HELP: Record<string, string> = {
                     stdout prints its workspace, session and link, never the token.
                     Herdr creates a persistent local worktree; --harness must match its profile.
                     --dry-run prints settings and preflight and creates nothing.
+  launch <ticket> --when-unblocked [--profile <name>] [--after <blocker>]
+                    Remember a launch until all Linear blockers close. --after asserts an
+                    existing blocker; it never adds a dependency. Status shows the request.
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
@@ -392,9 +395,11 @@ const VALUE_OPTIONS = [
   "validation",
   "validation-reason",
   "notes",
+  "after",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "when-unblocked",
   "apply",
   "stop",
   "background",
@@ -427,7 +432,18 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
+  launch: [
+    "runtime",
+    "harness",
+    "profile",
+    "reason",
+    "validation",
+    "validation-reason",
+    "dry-run",
+    "notes",
+    "when-unblocked",
+    "after",
+  ],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],

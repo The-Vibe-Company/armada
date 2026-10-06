@@ -737,6 +737,7 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 24,
     statements: ['ALTER TABLE "armada_worker" ADD COLUMN IF NOT EXISTS "runtime" text'],
   },
+  { version: 25, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

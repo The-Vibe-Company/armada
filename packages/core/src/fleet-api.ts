@@ -7,6 +7,9 @@
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import type { ArmadaConfig } from "./config.ts";
+import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { attachPullRequests } from "./github.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
@@ -41,8 +44,9 @@ import {
   type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
+import { buildModel } from "./model.ts";
 import { isLabelPhase } from "./phases.ts";
-import { RequestRefusal, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
+import { RequestRefusal, requestDeferredLaunch, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
 import type { CiState, LabelPhase } from "./types.ts";
 import { isShippingStage } from "./types.ts";
 import {
@@ -71,6 +75,7 @@ export const FLEET_OPS = [
   "runtime/observe",
   "runtime/stop",
   "launches",
+  "launch-requests",
   "inbox",
   "inbox/item",
   "inbox/ticket",
@@ -90,7 +95,7 @@ export const LEASE_TTL_MAX_MS = 60 * 60_000;
 
 /** Who calls: a terminal of the project's organization, or a worker session bound to one ticket. */
 export type FleetCaller =
-  | { kind: "organization"; author?: string | null }
+  | { kind: "organization"; author?: string | null; launchAuthor?: string | null }
   | { kind: "worker"; ticket: string; sessionId?: string };
 
 export interface FleetAnswer {
@@ -220,6 +225,7 @@ const NOT_MODIFIED = Symbol("not modified");
 export interface ServeFleetDeps {
   /** Stored project facts, supplied by the host, never by the caller. */
   snapshot?: HandBackSnapshot;
+  config?: ArmadaConfig;
   now: () => Date;
   /** The dashboard's address, for the approval links (THE-885); a relative link without it. */
   appUrl?: string | null;
@@ -325,6 +331,22 @@ export async function serveFleet(
             author: caller.kind === "organization" ? (caller.author ?? "coordinator") : "",
             now: at,
           };
+          if (b.kind === "launch-when-unblocked") {
+            if (!deps.config || !deps.snapshot?.flight)
+              throw new RequestRefusal(
+                "not-ready",
+                "no stored reading of the project yet; open its dashboard and retry",
+              );
+            return requestDeferredLaunch(store, {
+              config: deps.config,
+              snapshot: deps.snapshot,
+              ticket: ticketOf(b),
+              profile: optText(b, "profile", LINE_MAX),
+              after: b.after == null ? null : ticketOf(b, "after"),
+              author: caller.kind === "organization" ? (caller.launchAuthor ?? caller.author ?? "") : "",
+              now: at,
+            });
+          }
           if (b.kind === "merge-request")
             return requestMerge(store, { ...common, pr: idOf(b, "pr"), openPrs: deps.openPrs ?? [] });
           if (b.kind === "release-request") return requestRelease(store, { ...common, ticket: ticketOf(b) });
@@ -391,6 +413,29 @@ export async function serveFleet(
             shippingStage: events[ticketOf(b)]?.shippingStage ?? null,
             agent: profile?.agent ?? null,
           };
+        }
+        case "launch-requests": {
+          const [items, handles, events] = await Promise.all([
+            store.openInboxItems({ project: slug, recipient: "coordinator" }),
+            store.openRuntimeHandles(slug),
+            store.latestEvents(slug),
+          ]);
+          const flight = deps.snapshot?.flight;
+          const model = flight
+            ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId)
+            : null;
+          const held = model && flight ? deferredHeld(model, flight, at, handles, events) : null;
+          return items
+            .filter((i) => i.kind === "launch-request" && i.request?.deferred)
+            .map((i) =>
+              deferredLaunchState(
+                i,
+                model,
+                deps.config?.tracker.parkedLabel,
+                !!i.ticket && !!held?.has(i.ticket),
+                caller.kind === "organization" ? (caller.launchAuthor ?? caller.author) : null,
+              ),
+            );
         }
         case "launches":
           return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
@@ -623,6 +668,8 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
   return {
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
+    deferLaunch: (input) => call<DeferredLaunch>("request", { ...input, kind: "launch-when-unblocked" }),
+    deferredLaunches: () => call<DeferredLaunch[]>("launch-requests", {}),
     register: () => call<null>("register", {}).then(() => undefined),
     latestEvents: () => call<Record<string, LatestEvent>>("events/state", {}),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),

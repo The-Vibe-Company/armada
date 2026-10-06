@@ -228,3 +228,13 @@ Without a coordination ticket, skip step 1: the next coordinator resumes from `a
 - A fact the coordinator could not find in the repository, the tracker or Armada: add it to the skill or to this runbook in a pull request, so the next coordinator finds it.
 
 Local worker controls follow the [`armada-runtime-herdr`](../skills/armada-runtime-herdr/SKILL.md) guide. `armada status`, `inbox` and each `watch` poll read herdr state and store it on Armada; the dashboard shows it beside the last report without contacting the local machine. `armada answer` delivers herdr answers before recording them, including a harness approval answered by ticket. After merge or release, `armada stop <ticket>` verifies the saved worktree, refreshes its remote upstream, refuses dirty or unpushed work, and removes only the clean checkout while retaining the branch. Worker reports, questions and heartbeats also self-report their phase to herdr, with nonfatal warnings on failure.
+
+### Launch when blockers close
+
+A coordinator can schedule a blocked ticket with `armada launch ABC-9 --when-unblocked --profile backend`. Armada stores a signed launch request and prints the open blockers. `armada status` lists it under **Launch when unblocked**, including its current blockers or a reason such as parked. `--after ABC-7` asserts that ABC-7 is already a blocker in Linear; it does not create a relation. Every blocker must close, including blockers canceled rather than completed. An unblocked ticket is refused with the ordinary launch command.
+
+After `armada merge` closes a blocker, ready deferred tickets launch through the shared launcher in the same command. Automatic launches require a stored project reading and the same authenticated author that requested them (the person or organization API key). Requests from another author remain for their coordinator. Guided Claude Code profiles and tickets without the ready label print the launch command for the coordinator to handle. A parked ticket stays pending; remove its parked label before launching it.
+
+When blockers close outside Armada, Linear's webhook refreshes the stored reading and `armada watch` wakes with the request's launch command. Keep the watch armed while a deferred request waits. No inbox poll calls Linear. Missing readings withhold requests until a stored reading is available. The worker's claim resolves the request; a failed launch keeps it pending for inspection. To decline one, run `armada answer <request-id> "<reason>"`.
+
+Deploy the dashboard's additive deferred-request migration before using the new CLI options. Older clients continue reading the ordinary inbox kind; the new request and status operations require the updated dashboard.

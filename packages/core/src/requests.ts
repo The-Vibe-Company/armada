@@ -7,14 +7,18 @@
 // over `RequestStore`: the fleet's live data in the app's database.
 import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
-import type { FleetStore } from "./live.ts";
+import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { attachPullRequests } from "./github.ts";
+import type { FleetStore, HandBackSnapshot } from "./live.ts";
+import { buildModel } from "./model.ts";
+import { routeProfile } from "./routing.ts";
 import type { StatusReport } from "./status.ts";
 import { decisionBody, VALIDATION_LIMITS, type ValidationDecision } from "./validations.ts";
 
 /** The reads and the writes a request needs. */
 export type RequestStore = Pick<
   FleetStore,
-  "getInboxItem" | "getRuntimeHandle" | "addRequest" | "getValidation" | "decideValidation"
+  "getInboxItem" | "getRuntimeHandle" | "latestEvents" | "addRequest" | "getValidation" | "decideValidation"
 >;
 
 export const REQUEST_LIMITS = { answer: 4000, author: 80 } as const;
@@ -293,4 +297,73 @@ export async function requestDecision(db: RequestStore, input: DecisionInput): P
   });
   if (!done) throw new RequestRefusal("validation-closed", `validation #${v.id} was already decided`);
   return done.item;
+}
+
+export async function requestDeferredLaunch(
+  db: RequestStore,
+  input: {
+    config: ArmadaConfig;
+    snapshot?: HandBackSnapshot;
+    ticket: string;
+    profile: string | null;
+    after?: string | null;
+    author: string;
+    now: Date;
+  },
+): Promise<DeferredLaunch> {
+  const { config, snapshot } = input;
+  const author = requestAuthor(input.author);
+  if (!snapshot?.flight)
+    throw new RequestRefusal("not-ready", "no stored reading of the project yet; open its dashboard and retry");
+  const model = buildModel(
+    attachPullRequests(snapshot.flight.program, snapshot.flight.forge),
+    snapshot.flight.program.rootId,
+  );
+  const ticket = input.ticket.trim().toUpperCase();
+  const issue = model.program.find((i) => i.id === ticket);
+  const profile = input.profile?.trim() || (issue ? routeProfile(config, issue.labels)?.name : null) || null;
+  if (profile && !Object.hasOwn(config.conductor.profiles, profile))
+    throw new RequestRefusal("unknown-profile", `no Conductor profile "${profile}" in ${config.project.slug}`);
+  const after = input.after?.trim().toUpperCase();
+  if (after && !issue?.blockedBy.some((b) => b.id === after))
+    throw new RequestRefusal(
+      "not-ready",
+      `${after} is not a blocker of ${ticket}; add the blocked-by relation in Linear first`,
+    );
+  const held = await db.getRuntimeHandle(config.project.slug, ticket);
+  const item = {
+    id: 0,
+    project: config.project.slug,
+    ticket,
+    kind: "launch-request" as const,
+    recipient: "coordinator" as const,
+    author,
+    body: "",
+    createdAt: input.now.toISOString(),
+    request: { question: null, profile, deferred: true },
+  };
+  const events = await db.latestEvents(config.project.slug, { tickets: [ticket] });
+  const heldTickets = deferredHeld(model, snapshot.flight, input.now, held ? [held] : [], events);
+  const state = deferredLaunchState(item, model, config.tracker.parkedLabel, heldTickets.has(ticket), author);
+  if (!state.blockers?.length && issue && state.reason === null)
+    throw new RequestRefusal("not-ready", `${ticket} is not blocked; run ${state.command}`);
+  if (!state.blockers?.length || state.reason !== `waits on ${state.blockers.join(", ")}`)
+    throw new RequestRefusal(
+      "not-ready",
+      `${ticket} cannot wait for launch: ${state.reason ?? "it has no open blockers"}`,
+    );
+  const id = await db.addRequest({
+    project: config.project.slug,
+    ticket,
+    kind: "launch-request",
+    author,
+    body: `${ticket} will launch once ${state.blockers.join(", ")} ${state.blockers.length === 1 ? "is" : "are"} done`,
+    question: null,
+    profile,
+    deferred: true,
+    at: input.now,
+  });
+  if (id === null)
+    throw new RequestRefusal("launch-waiting", `a launch of ${ticket} already waits for the coordinator`);
+  return { ...state, id };
 }

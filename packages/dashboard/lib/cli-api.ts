@@ -686,7 +686,21 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   const project = parseProject(body.project);
   if (!project)
     return refuse(400, "a fleet request names its project: slug, name, repository and program root", UPDATE_CLI);
-  let caller: FleetCaller = { kind: "organization", author: identity.user?.name ?? null };
+  // Stable authenticated identity prevents two people (or keys) with the same name
+  // from executing each other's deferred launches. Keep it in the existing author field.
+  const authorKey = identity.user
+    ? `user:${identity.user.id}`
+    : identity.apiKey
+      ? `api-key:${identity.apiKey.id}`
+      : null;
+  const authorSuffix = authorKey ? ` [${authorKey}]` : "";
+  const launchAuthor = authorKey
+    ? `${(identity.user?.name ?? identity.apiKey?.name ?? "Coordinator")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, Math.max(0, 80 - authorSuffix.length))}${authorSuffix}`
+    : null;
+  let caller: FleetCaller = { kind: "organization", author: identity.user?.name ?? null, launchAuthor };
   if (identity.via === "worker") {
     const w = identity.launch;
     if (!w) return workerRefusal(null);
@@ -707,7 +721,8 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
     );
   let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
-  if ((op === "request" || op === "inbox") && caller.kind === "organization") {
+  let storedConfig: ArmadaConfig | undefined;
+  if ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") {
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
@@ -716,9 +731,11 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       snapshot.config.github.repository === project.repository &&
       snapshot.config.tracker.programRoot === project.programRoot
     ) {
+      storedConfig = snapshot.config;
       openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
       handBackSnapshot = {
         repository: project.repository,
+        parkedLabel: snapshot.config.tracker.parkedLabel,
         issues: snapshot.sources.program.issues,
         prs: snapshot.sources.forge?.prs ?? [],
         flight: { ...snapshot.sources, after: snapshot.startedAt.toISOString() },
@@ -732,6 +749,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       now,
       openPrs,
       snapshot: handBackSnapshot,
+      config: storedConfig,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
     },

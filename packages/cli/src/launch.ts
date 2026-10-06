@@ -58,6 +58,7 @@ export async function launch(
   version: string,
   configPath: string,
 ) {
+  if (args.options["when-unblocked"] || args.options.after) return deferLaunch(io, config, credentials, args);
   if (args.rest[0] !== "revoke") return launchWorker(io, config, credentials, args, version, configPath);
   if (Object.keys(args.options).length) throw new UsageError("launch revoke does not take runtime or profile options");
   const [operation, ticket, ...extra] = args.rest;
@@ -150,6 +151,8 @@ export async function launchWorker(
     }).some((lane) => lane.issue.id === ticketId)
   )
     throw new UsageError(`${ticketId} is already in flight; inspect its worker before launching again`);
+  if (ticket.labels.includes(config.tracker.parkedLabel))
+    throw new UsageError(`${ticketId} is parked; remove the parked label before launching`);
   const branch = ticket.branchName;
   if (!branch) throw new UsageError(`${ticketId} has no suggested branch in Linear`);
   let choice: ProfileChoice | HerdrProfileChoice | null;
@@ -572,4 +575,38 @@ async function launchPlan(
   for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
   for (const gap of gaps) io.stderr(`armada: ${gap}\n`);
   return ready ? 0 : 1;
+}
+
+async function deferLaunch(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  args: { rest: string[]; json: boolean; options: Record<string, string> },
+) {
+  const [input, ...extra] = args.rest;
+  if (!input || extra.length || !/^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(input))
+    throw new UsageError("deferred launch needs a ticket: armada launch <ticket> --when-unblocked");
+  for (const key of Object.keys(args.options))
+    if (!["when-unblocked", "after", "profile"].includes(key))
+      throw new UsageError(
+        `--${key} cannot be stored with --when-unblocked; use it when launching the unblocked ticket`,
+      );
+  requireSignIn(credentials);
+  const { fleet, warning } = liveFleet(io, config, credentials);
+  if (!fleet) throw new UsageError(warning ?? "deferred launches need Armada");
+  const request = await fleet.deferLaunch({
+    ticket: input.toUpperCase(),
+    profile: args.options.profile ?? null,
+    after: args.options.after ?? null,
+  });
+  const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];
+  const inFlight = [...new Set([...known, request.ticket])];
+  await remember(io, config.project.slug, { inFlight });
+  const watch = await rearmFor(io, config.project.slug, { inFlight, open: null });
+  io.stdout(
+    args.json
+      ? `${JSON.stringify({ ...request, watch }, null, 2)}\n`
+      : `${request.ticket} will launch once ${request.blockers?.join(", ")} ${request.blockers?.length === 1 ? "is" : "are"} done (request #${request.id}).\n${watch.line}\n`,
+  );
+  return 0;
 }

@@ -5,6 +5,7 @@ export * from "./brief.ts";
 export * from "./catchup.ts";
 export * from "./config.ts";
 export * from "./credentials.ts";
+export * from "./deferred.ts";
 export * from "./dotenv.ts";
 export * from "./fleet.ts";
 export * from "./fleet-api.ts";
