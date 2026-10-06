@@ -60,7 +60,7 @@ type Params = Promise<{
 const pick = <T extends string>(list: readonly T[], v: string | string[] | undefined): T | null =>
   typeof v === "string" && (list as readonly string[]).includes(v) ? (v as T) : null;
 
-const SLOTS: SecretName[] = ["linear-api-key", "github-token"];
+const SLOTS: Exclude<SecretName, "owner-webhook">[] = ["linear-api-key", "github-token"];
 
 export default async function Keys({ searchParams }: { searchParams: Params }) {
   if (accountsModeOf(process.env).kind !== "accounts") notFound();
@@ -201,7 +201,7 @@ export default async function Keys({ searchParams }: { searchParams: Params }) {
     );
   };
 
-  const slot = (name: SecretName, own: boolean) => {
+  const slot = (name: Exclude<SecretName, "owner-webhook">, own: boolean) => {
     const label: KeyLabel = own ? "own-linear-api-key" : project ? "project-linear-api-key" : name;
     const scope = own ? "own" : project ? "project" : "organization";
     const info = find(name, own);

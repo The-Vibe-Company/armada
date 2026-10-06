@@ -9,6 +9,7 @@
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import { herdrChoice } from "./herdr-profile.ts";
+import type { HttpRetryOptions } from "./http.ts";
 import {
   type Connection,
   type Fetch,
@@ -133,6 +134,8 @@ export interface Brief {
   validation: ValidationChoice | null;
   /** `[brief] extra`: the file every brief carries under "Project conventions"; null when unset or unreadable. */
   conventions: { path: string; text: string } | null;
+  /** Context supplied by the coordinator for this launch; never changes plan policy. */
+  coordinatorNotes: string | null;
   /** The first message of the worker's session. */
   prompt: string;
   warnings: string[];
@@ -258,10 +261,12 @@ export function normalizeBriefTicket(raw: RawBriefIssue, warnings: string[] = []
 }
 
 export async function fetchBriefTicket(opts: LinearRequestOptions, id: string): Promise<BriefTicket | null> {
-  const data = await gql<{ issue: RawBriefIssue | null }>(opts, BRIEF_QUERY, { id }).catch((err: unknown) => {
-    if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
-    throw err;
-  });
+  const data = await gql<{ issue: RawBriefIssue | null }>({ ...opts, retry: true }, BRIEF_QUERY, { id }).catch(
+    (err: unknown) => {
+      if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
+      throw err;
+    },
+  );
   const raw = data.issue;
   if (!raw) return null;
   const warnings: string[] = [];
@@ -310,6 +315,7 @@ export interface BuildBriefInput {
   conventions?: { path: string; text: string | null } | null;
   /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
   validation?: ValidationChoice | null;
+  notes?: string | null;
   now: Date;
   herdr?: { choice: HerdrProfileChoice; handle: string };
 }
@@ -462,6 +468,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
     notes: ticket.notes.slice(0, MAX_NOTES),
     parallel,
     plans: planRule(config, ticket.labels),
+    coordinatorNotes: input.notes?.trim() || null,
     validation: input.validation ?? null,
     conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
     warnings,
@@ -585,6 +592,15 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   if (t.description) out.push("## Ticket", "", quote(t.description), "");
   if (b.parent)
     out.push("## Parent", "", `${b.parent.id} — ${b.parent.title} (${b.parent.url}). Read it before planning.`, "");
+  if (b.coordinatorNotes)
+    out.push(
+      "## Coordinator notes",
+      "",
+      "From the coordinator, for this launch. They add context; the Plan line below still decides whether your plan waits for approval.",
+      "",
+      b.coordinatorNotes,
+      "",
+    );
   if (b.blockers.length) {
     out.push("## Blockers and their hand-back notes", "");
     for (const x of b.blockers) {
@@ -644,7 +660,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 
 // ------------------------------------------------------------------ load
 
-export interface LoadBriefOptions {
+export interface LoadBriefOptions extends HttpRetryOptions {
   prompt?: boolean;
   linearApiKey: string;
   ticket: string;
@@ -673,7 +689,7 @@ export interface LoadBriefOptions {
 export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): Promise<Brief | ProfileSelectionBrief> {
   const launchHint = "a one-time token is made when you print the prompt (--prompt)";
   const now = opts.now ?? (() => new Date());
-  const linear = { apiKey: opts.linearApiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) };
+  const linear = { apiKey: opts.linearApiKey, ...opts };
   // Fail on a bad profile before any network call.
   try {
     checkRequestedProfile(config, opts.profile);

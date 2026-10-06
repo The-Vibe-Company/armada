@@ -206,6 +206,38 @@ function ensure(ok: boolean | undefined, what: string) {
   if (!ok) throw new LinearError(`Linear refused to ${what}`);
 }
 
+/** Reconcile an ambiguous comment failure before another physical post. */
+async function postOnce(opts: LinearWriterOptions, uuid: string, body: string): Promise<{ id: string }> {
+  let posts = 0;
+  const doFetch = opts.fetch ?? fetch;
+  const guardedFetch: NonNullable<LinearRequestOptions["fetch"]> = async (url, init) => {
+    if (posts++ > 0) {
+      const data = await gql<{ issue: { comments: Connection<RawComment> } | null }>(
+        { ...opts, retry: true },
+        `query RecentComments($id: String!) { issue(id: $id) { comments(first: 100) { ${PAGE} nodes { ${COMMENT} } } } }`,
+        { id: uuid },
+      );
+      if (!data.issue) throw new LinearError("Linear could not check whether the comment was posted");
+      const comments = data.issue.comments;
+      const warnings: string[] = [];
+      await readRest(opts, uuid, MORE_COMMENTS, comments, warnings);
+      const existing = comments.nodes.find((comment) => comment.body === body);
+      if (existing) return Response.json({ data: { commentCreate: { success: true, comment: { id: existing.id } } } });
+      if (comments.pageInfo?.hasNextPage || warnings.length)
+        throw new LinearError("Linear could not check every comment; try again after it answers");
+    }
+    init.signal?.throwIfAborted();
+    return doFetch(url, init);
+  };
+  const data = await gql<{ commentCreate: { success: boolean; comment: { id: string } | null } }>(
+    { ...opts, fetch: guardedFetch, retry: true },
+    COMMENT_MUTATION,
+    { input: { issueId: uuid, body } },
+  );
+  ensure(data.commentCreate?.success && !!data.commentCreate.comment, "post the comment");
+  return { id: data.commentCreate.comment?.id ?? "" };
+}
+
 export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
   return {
     async viewer() {
@@ -257,20 +289,14 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
       if (change.addLabelIds?.length) input.addedLabelIds = change.addLabelIds;
       if (change.removeLabelIds?.length) input.removedLabelIds = change.removeLabelIds;
       if (!Object.keys(input).length) return;
-      const data = await gql<{ issueUpdate: { success: boolean } }>({ ...opts, retry: false }, UPDATE_MUTATION, {
+      const data = await gql<{ issueUpdate: { success: boolean } }>({ ...opts, retry: true }, UPDATE_MUTATION, {
         id: uuid,
         input,
       });
       ensure(data.issueUpdate?.success, "update the ticket");
     },
     async comment(uuid, body) {
-      const data = await gql<{ commentCreate: { success: boolean; comment: { id: string } | null } }>(
-        { ...opts, retry: false },
-        COMMENT_MUTATION,
-        { input: { issueId: uuid, body } },
-      );
-      ensure(data.commentCreate?.success && !!data.commentCreate.comment, "post the comment");
-      return { id: data.commentCreate.comment?.id ?? "" };
+      return postOnce(opts, uuid, body);
     },
     async deleteComment(id) {
       const data = await gql<{ commentDelete: { success: boolean } }>(
@@ -281,7 +307,7 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
       ensure(data.commentDelete?.success, "delete the comment");
     },
     async linkUrl(uuid, url, title) {
-      const data = await gql<{ attachmentLinkURL: { success: boolean } }>({ ...opts, retry: false }, LINK_MUTATION, {
+      const data = await gql<{ attachmentLinkURL: { success: boolean } }>({ ...opts, retry: true }, LINK_MUTATION, {
         issueId: uuid,
         url,
         title,

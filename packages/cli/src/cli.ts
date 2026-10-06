@@ -24,7 +24,7 @@ import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
@@ -194,16 +194,17 @@ const COMMAND_HELP: Record<string, string> = {
                     A pull request the owner was asked about merges only once they approved
                     that exact head (or it with only the base merged in).
 `,
-  launch: `  launch <ticket> --runtime herdr [--harness claude|codex|opencode|deepseek]
-    deepseek (OpenCode + DeepSeek model) runs a persistent session
-                    [--profile <name> [--reason <why>]] [--validation <n|none>]
-                    Create the ticket's worktree and start a persistent local worker
-                    with its launch-token brief. Profiles follow [[herdr.routing]]
-  launch <ticket> --runtime herdr --dry-run [--json]
-                    Print the launch plan (profile and why, harness and exact model,
-                    branch and worktree path, preflight) and create nothing: no
-                    worktree, token, pane or install. Exits 0 when the preflight
-                    passes, else non-zero, listing every gap
+  launch: `  launch <ticket> [--runtime conductor|herdr] [--profile <name> [--reason <why>]]
+        [--notes <file|->] [--validation <n|none>] [--dry-run] [--json]
+                    Check the ticket, choose its profile and launch one worker with its
+                    one-time sign-in brief. Runtime defaults to the chosen profile;
+                    Claude Code profiles point to armada brief and the Agent tool.
+                    --notes adds coordinator context from a file or stdin (at most 16 KB).
+                    Pending launches and active workers are refused before a token exists.
+                    Conductor uses explicit profile settings and receives the brief through stdin;
+                    stdout prints its workspace, session and link, never the token.
+                    Herdr creates a persistent local worktree; --harness must match its profile.
+                    --dry-run prints settings and preflight and creates nothing.
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
@@ -403,6 +404,7 @@ const VALUE_OPTIONS = [
   "validation",
   "validation-reason",
   "through-hold",
+  "notes",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
@@ -452,7 +454,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "through-hold",
   ],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
+  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
@@ -562,7 +564,7 @@ async function status(io: Io, args: Args): Promise<number> {
     linearApiKey,
     githubToken,
     ...(live ?? {}),
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
     ...(io.now ? { now: io.now } : {}),
   });
   const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);

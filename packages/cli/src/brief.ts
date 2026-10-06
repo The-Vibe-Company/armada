@@ -26,7 +26,7 @@ import {
   shellWord,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
 export interface BriefArgs {
@@ -209,7 +209,7 @@ export async function brief(
         reason: a.options["validation-reason"] ?? null,
         command: briefCommand(ticket.toUpperCase(), a),
       },
-      ...(io.fetch ? { fetch: io.fetch } : {}),
+      ...httpOptions(io),
       ...(io.now ? { now: io.now } : {}),
     });
   } catch (err) {
