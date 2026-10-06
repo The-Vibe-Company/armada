@@ -693,6 +693,7 @@ Declare optional `[[deploy.target]]` entries in `armada.toml`:
 [[deploy.target]]
 name = "api"
 branch = "main"                    # omit for the merged PR's base branch
+paths = ["cmd/**", "internal/**"]  # optional repository-relative globs
 # Exactly one source of the live commit:
 github_environment = "production"
 # live_sha_command = "curl -fsS https://example.test/version"
@@ -702,5 +703,7 @@ pause_on_failure = true
 ```
 
 `armada merge` starts a background deploy watcher and prints `Watching the deploy of <sha> to <target>`. Deployment failures, smoke failures and timeouts create one inbox item and a shared deploy hold for that target. A later healthy deploy clears the failures it covers. Use `--through-hold "<why>"` to merge the repair. `pause_on_failure = false` keeps the inbox warning without pausing merges.
+
+With `paths`, a merge that touches none of the globs prints one skip line and starts no watcher or deploy hold. Globs match repository-relative paths, including dot files. Missing or incomplete changed-file coverage (including renames whose original path is unknown) keeps the watcher. Omit `paths` to watch every merge on the target's branch. For an affected target, the live commit must equal the merged commit or be a verified descendant; smoke then runs as usual.
 
 `armada deploy status` shows each target's latest state and any open deploy hold; `armada status` includes deploy states. Commands run at the repository root with `ARMADA_DEPLOY_SHA` and `ARMADA_DEPLOY_TARGET`, bounded to one minute and the deploy deadline. Declare `armada run -- <command>` when a command needs project secrets. Watchers share smoke results for the same live SHA. If background startup fails, the merge prints a command to run in a persistent terminal. See the [deployment runbook](docs/runbook.md#check-deployments-after-merges) for recovery and logs.

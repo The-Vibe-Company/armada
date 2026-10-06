@@ -15,6 +15,8 @@ export interface JobConfig {
 }
 
 export interface DeployTarget {
+  /** Repository-relative globs that trigger this target; omitted means every merge. */
+  paths?: string[];
   name: string;
   branch: string | null;
   githubEnvironment: string | null;
@@ -657,7 +659,16 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     known.push([
       path,
       row,
-      ["name", "branch", "github_environment", "live_sha_command", "smoke", "timeout_minutes", "pause_on_failure"],
+      [
+        "name",
+        "branch",
+        "paths",
+        "github_environment",
+        "live_sha_command",
+        "smoke",
+        "timeout_minutes",
+        "pause_on_failure",
+      ],
     ]);
     const name = str(row, path, "name");
     if (name.length > 200) problems.push(`"${path}.name" has at most 200 characters`);
@@ -677,7 +688,13 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       problems.push(`"${path}.timeout_minutes" must be from 1 to 120`);
     if (row.pause_on_failure !== undefined && typeof row.pause_on_failure !== "boolean")
       problems.push(`"${path}.pause_on_failure" must be true or false`);
+    if (row.paths !== undefined) {
+      const problem = pathsProblem(row.paths);
+      if (problem || (Array.isArray(row.paths) && !row.paths.length))
+        problems.push(`"${path}.paths": ${problem ?? "must not be empty"}`);
+    }
     deployTargets.push({
+      ...(Array.isArray(row.paths) ? { paths: row.paths } : {}),
       name,
       branch: optional("branch"),
       githubEnvironment,
@@ -1019,6 +1036,7 @@ repository = ${q(p.repository)}
 # [[deploy.target]]
 # name = "api"
 # branch = "main"  # omit to watch any merged base branch
+# paths = ["cmd/**", "internal/**"]  # optional: only watch merges touching these globs
 # github_environment = "production"
 ## Alternative to github_environment (choose exactly one live source):
 ## live_sha_command = "curl -fsS https://example.test/version"
