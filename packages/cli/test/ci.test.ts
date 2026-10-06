@@ -209,3 +209,163 @@ test("CI project selection uses the watched repository outside its checkout with
     await rm(machineDir, { recursive: true, force: true });
   }
 });
+
+function rerunFixture({
+  attempt = 1,
+  status = "completed",
+  known = true,
+  mixed = false,
+  external = false,
+  incomplete = false,
+  writeFails = false,
+  empty = false,
+  race = false,
+  attemptUnavailable = false,
+  greenRun = false,
+  newFailure = false,
+} = {}) {
+  const f = fixture({ empty });
+  const writes: unknown[] = [];
+  let attemptReads = 0;
+  let failureReads = 0;
+  const fetch = f.io.fetch;
+  if (!fetch) throw new Error("fixture needs fetch");
+  f.io.readFile = async (p) =>
+    p === "/project/armada.toml"
+      ? DEMO_TOML +
+        (known
+          ? '\n[[ci.known_failure]]\ncheck = "Tests (linux)"\npattern = "widgets > saves a draft"\nticket = "DEMO-42"\n'
+          : "")
+      : null;
+  f.io.fetch = async (url, init) => {
+    if (url.endsWith("/runs/8")) return Response.json({ run_attempt: 1, status: "completed" });
+    if (url.endsWith("/runs/7") && attemptUnavailable) return Response.json({ status: "completed" });
+    if (url.endsWith("/runs/7"))
+      return Response.json({ run_attempt: race && ++attemptReads > 1 ? 2 : attempt, status });
+    if (url.endsWith("/jobs/12/logs")) return new Response("(fail) widgets > unknown failure");
+    const response = await fetch(url, init);
+    if (url !== GITHUB_GRAPHQL || !String(init.body).includes("FailedChecks")) return response;
+    const body = (await response.json()) as {
+      data: {
+        repository: {
+          object: {
+            status: unknown;
+            checkSuites: {
+              pageInfo?: { hasNextPage: boolean };
+              nodes: {
+                app: { slug: string };
+                commit: { oid: string };
+                workflowRun: { databaseId: number };
+                checkRuns: { nodes: { databaseId: number; name: string }[] };
+              }[];
+            };
+          };
+        };
+      };
+    };
+    const commit = body.data.repository.object;
+    if (empty)
+      commit.checkSuites.nodes = [
+        {
+          app: { slug: "github-actions" },
+          commit: { oid: sha },
+          workflowRun: { databaseId: 7 },
+          checkRuns: { nodes: [] },
+        },
+      ];
+    if (greenRun)
+      commit.checkSuites.nodes.push({
+        app: { slug: "github-actions" },
+        commit: { oid: sha },
+        workflowRun: { databaseId: 8 },
+        checkRuns: { nodes: [] },
+      });
+    if (incomplete) commit.checkSuites.pageInfo = { hasNextPage: true };
+    if (mixed || (newFailure && ++failureReads > 1)) {
+      const suite = commit.checkSuites.nodes[0];
+      const first = suite?.checkRuns.nodes[0];
+      if (!suite || !first) throw new Error("mixed fixture needs one failed check");
+      suite.checkRuns.nodes.push({ ...first, databaseId: 12, name: "Tests (mac)" });
+    }
+    if (external)
+      commit.status = {
+        contexts: [
+          {
+            context: "quality",
+            state: "ERROR",
+            description: "Policy failed",
+            targetUrl: "https://quality.example.test/9",
+          },
+        ],
+      };
+    return Response.json(body);
+  };
+  f.io.exec = async (...args) => {
+    writes.push(args);
+    return { code: writeFails ? 1 : 0, stdout: "", stderr: writeFails ? "synthetic secret must not be exposed" : "" };
+  };
+  return { ...f, writes };
+}
+
+test("ci why --rerun names the root-cause ticket and writes once, scoped to the configured repository", async () => {
+  const f = rerunFixture();
+  expect(await run(["ci", "why", "9", "--rerun"], f.io)).toBe(0);
+  expect(f.out()).toContain("DEMO-42");
+  expect(f.out()).toContain("Rerun requested");
+  expect(f.writes).toEqual([["gh", ["run", "rerun", "7", "--failed", "--repo", "acme/widgets"], { cwd: "/project" }]]);
+});
+
+test.each([
+  [{ newFailure: true }, "failing checks changed"],
+  [{ attemptUnavailable: true }, "attempt unavailable"],
+  [{ external: true, empty: true }, "external"],
+  [{ attempt: 2 }, "already rerun once, attempt 2"],
+  [{ mixed: true }, "unknown"],
+  [{ known: false }, "unknown"],
+  [{ status: "in_progress" }, "in_progress"],
+  [{ incomplete: true }, "incomplete"],
+  [{ race: true }, "already rerun once, attempt 2"],
+  [{ empty: true, attempt: 2, status: "queued" }, "already rerun once, attempt 2"],
+] as const)("ci rerun refusal never writes", async (options, reason) => {
+  const f = rerunFixture(options);
+  expect(await run(["ci", "why", "9", "--rerun"], f.io)).toBe(1);
+  expect(f.writes).toEqual([]);
+  expect(f.out()).toContain(reason);
+  if ("mixed" in options && options.mixed)
+    expect(f.out().indexOf("Tests (mac):")).toBeLessThan(f.out().indexOf("Tests (linux):"));
+});
+
+test("JSON rerun output remains one document and uncertain writes are never retried or printed", async () => {
+  const f = rerunFixture({ writeFails: true });
+  expect(await run(["ci", "why", "9", "--rerun", "--json"], f.io)).toBe(1);
+  const result = JSON.parse(f.out());
+  expect(result.reruns[0]).toMatchObject({ runId: 7, status: "uncertain" });
+  expect(f.writes).toHaveLength(1);
+  expect(f.out() + f.err()).not.toContain("synthetic secret");
+});
+
+test("successful first-attempt workflows do not turn a permitted rerun into a refusal", async () => {
+  const f = rerunFixture({ greenRun: true });
+  expect(await run(["ci", "why", "9", "--rerun", "--json"], f.io)).toBe(0);
+  expect(f.writes).toHaveLength(1);
+  expect(JSON.parse(f.out()).reruns).toHaveLength(1);
+});
+
+test("two requests on the same GitHub run rerun only its first attempt", async () => {
+  const f = rerunFixture();
+  let reran = false;
+  const fetch = f.io.fetch;
+  const exec = f.io.exec;
+  if (!fetch || !exec) throw new Error("fixture needs fetch and exec");
+  f.io.fetch = async (url, init) =>
+    url.endsWith("/runs/7") ? Response.json({ run_attempt: reran ? 2 : 1, status: "completed" }) : fetch(url, init);
+  f.io.exec = async (...args) => {
+    const result = await exec(...args);
+    reran = true;
+    return result;
+  };
+  expect(await run(["ci", "why", "9", "--rerun"], f.io)).toBe(0);
+  expect(await run(["ci", "why", "9", "--rerun"], f.io)).toBe(1);
+  expect(f.out()).toContain("already rerun once, attempt 2");
+  expect(f.writes).toHaveLength(1);
+});
