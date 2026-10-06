@@ -37,6 +37,7 @@ import {
   type TestMergeResult,
   unblockedBy,
 } from "@armada/core";
+import { afterMerge } from "./after-merge.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
@@ -216,15 +217,6 @@ function render(o: MergeOutcome): string {
         `  ${w.ticket}  ${w.phase}  ${[w.runtime, w.handle].filter(Boolean).join(" · ") || "runtime unknown"}  ${w.title}`,
       );
   }
-  const a = o.archive;
-  if (a && o.ticket) {
-    const who = `${o.ticket.id} (${[a.runtime, a.handle].filter(Boolean).join(" · ") || "session unknown"})`;
-    out.push(
-      a.guide
-        ? `Archive the worker's workspace of ${who} with the "Stop and archive" section of the ${a.guide} skill.`
-        : `No runtime guide is installed for ${a.runtime ?? "the worker's runtime"}, so Armada has nothing to archive for ${who}: a local session or subagent ends with its task; stop it yourself if it still runs.`,
-    );
-  }
   return `${out.join("\n")}\n`;
 }
 
@@ -280,9 +272,12 @@ export async function merge(
   const enqueue = !!a.options["when-green"];
   if (!enqueue && (a.options["keep-open"] || a.options["through-hold"]))
     throw new UsageError("--keep-open and --through-hold apply to --when-green");
-  if (enqueue && ["wait", "timeout", "dry-run", "no-lock", "ask-owner"].some((k) => a.options[k] !== undefined))
+  if (
+    enqueue &&
+    ["wait", "timeout", "dry-run", "no-lock", "ask-owner", "no-archive"].some((k) => a.options[k] !== undefined)
+  )
     throw new UsageError(
-      "--when-green queues intent: --wait, --timeout, --dry-run, --no-lock and --ask-owner cannot go with it",
+      "--when-green queues intent: --wait, --timeout, --dry-run, --no-lock, --ask-owner and --no-archive cannot go with it",
     );
   if (enqueue && a.options.ticket && a.rest.length !== 1) throw new UsageError("--ticket applies to one pull request");
   if (a.options["through-hold"] !== undefined && !a.options["through-hold"]?.trim())
@@ -474,8 +469,16 @@ export async function merge(
       : known;
   if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
   const next = await rearmFor(io, project, { inFlight, open: null });
-  io.stdout(a.json ? `${JSON.stringify({ ...o, watch: next }, null, 2)}\n` : `${render(o)}${next.line}\n`);
+  if (!a.json) io.stdout(`${render(o)}${next.line}\n`);
   for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
   if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+  const archive = await afterMerge(io, config, credentials, o, {
+    configPath,
+    noArchive: !!a.options["no-archive"],
+    keepOpen: !!a.options["keep-open"],
+  });
+  if (a.json) io.stdout(`${JSON.stringify({ ...o, archive, watch: next }, null, 2)}\n`);
+  else if (archive)
+    io.stdout(`${archive.detail.endsWith(".") ? archive.detail : `${o.ticket?.id}: ${archive.detail}.`}\n`);
   return 0;
 }
