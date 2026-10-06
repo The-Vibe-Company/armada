@@ -87,6 +87,8 @@ export interface LinearWriter {
   readTicket(id: string): Promise<Ticket | null>;
   /** Labels of a group that a ticket of `teamId` may carry (team labels first, then workspace labels). */
   groupLabels(group: string, teamId: string): Promise<TicketLabel[]>;
+  /** A label the ticket's team may carry; its team label wins over a workspace label. */
+  labelByName(name: string, teamId: string): Promise<TicketLabel | null>;
   createIssue(input: IssueCreate): Promise<CreatedIssue>;
   /** One update: title, state, assignee and label changes are applied together. */
   updateTicket(uuid: string, change: TicketChange): Promise<void>;
@@ -131,6 +133,12 @@ const GROUP_LABELS_QUERY = /* GraphQL */ `
   }`;
 
 const VIEWER_QUERY = "query Viewer { viewer { id name } }";
+const LABEL_BY_NAME_QUERY = /* GraphQL */ `
+  query LabelByName($filter: IssueLabelFilter!) {
+    issueLabels(first: 100, filter: $filter) {
+      nodes { ${LABEL} team { id } }
+    }
+  }`;
 const UPDATE_MUTATION = /* GraphQL */ `
   mutation Update($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`;
 const CREATE_MUTATION = /* GraphQL */ `
@@ -277,6 +285,18 @@ export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
       for (const l of [...usable].sort((a, b) => Number(!!b.team) - Number(!!a.team)))
         if (!byName.has(l.name)) byName.set(l.name, { id: l.id, name: l.name, group });
       return [...byName.values()];
+    },
+    async labelByName(name, teamId) {
+      const data = await gql<{
+        issueLabels: {
+          nodes: { id: string; name: string; parent: { name: string } | null; team: { id: string } | null }[];
+        };
+      }>({ ...opts, retry: true }, LABEL_BY_NAME_QUERY, {
+        filter: { name: { eqIgnoreCase: name }, or: [{ team: { id: { eq: teamId } } }, { team: { null: true } }] },
+      });
+      const usable = data.issueLabels.nodes.filter((l) => !l.team || l.team.id === teamId);
+      const label = usable.find((l) => l.team?.id === teamId) ?? usable[0];
+      return label ? { id: label.id, name: label.name, group: label.parent?.name ?? null } : null;
     },
     async createIssue(input) {
       const data = await gql<{

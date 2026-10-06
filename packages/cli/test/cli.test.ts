@@ -2,7 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GITHUB_GRAPHQL, LINEAR_ENDPOINT, machinePaths, updateWatchState } from "../../core/src/index.ts";
+import {
+  BUNDLED_SKILLS,
+  GITHUB_GRAPHQL,
+  LINEAR_ENDPOINT,
+  machinePaths,
+  updateWatchState,
+} from "../../core/src/index.ts";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
@@ -490,6 +496,44 @@ describe("armada status --all", () => {
     expect(err()).toBe(
       "armada: not signed in to Armada (armada.thevibecompany.co). A person signs in with `armada login`; a headless coordinator sets ARMADA_API_KEY to an organization API key\nNext: armada login\n",
     );
+  });
+});
+
+describe("armada skill", () => {
+  test("prints the installed bundle and linked files without config, credentials, filesystem or network", async () => {
+    for (const [name, file] of [
+      ["armada-worker", "SKILL.md"],
+      ["armada-coordinator", "MERGE.md"],
+      ["review-code-dev", "scripts/ocr.py"],
+    ]) {
+      const { io, out, err } = fakeIo({}, { ARMADA_WORKER_SESSION_DEMO_1: "synthetic-session" });
+      io.readFile = async () => {
+        throw new Error("must not read filesystem");
+      };
+      io.fetch = async () => {
+        throw new Error("must not call network");
+      };
+      expect(await run(["skill", name ?? "", ...(file === "SKILL.md" ? [] : [file ?? ""])], io)).toBe(0);
+      expect(out()).toBe(
+        BUNDLED_SKILLS.find((s) => s.name === name)?.files.find((f) => f.path === file)?.content ?? "",
+      );
+      expect(err()).toBe("");
+    }
+  });
+  test("rejects missing, unknown and extra arguments and paths outside the bundled skill", async () => {
+    for (const args of [
+      [],
+      ["unknown"],
+      ["armada-worker", "../armada-coordinator/SKILL.md"],
+      ["armada-worker", "/SKILL.md"],
+      ["armada-worker", "missing.md"],
+      ["armada-worker", "SKILL.md", "extra"],
+    ]) {
+      const { io, out, err } = fakeIo({}, {});
+      expect(await run(["skill", ...args], io)).toBe(2);
+      expect(out()).toBe("");
+      expect(err()).toBeTruthy();
+    }
   });
 });
 

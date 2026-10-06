@@ -18,6 +18,9 @@ test("Armada retries only safe reads, including fleet reads; token consumption a
     { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/list", {}) },
     { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/start", {}) },
     { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/observe", {}) },
+    { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "reservations", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "reserve", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "unreserve", {}) },
     { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "inbox", {}) },
     {
       retry: false,

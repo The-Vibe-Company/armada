@@ -24,10 +24,14 @@ export const SETUP: { command: string; note: string }[] = [
 
 /** Every command of `armada --help`, in its order, with what it is for in a few words. */
 export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" | "you"; what: string }[] = [
+  { name: "reserve", role: "worker", what: "Reserve a shared name or number for your ticket." },
+  { name: "unreserve", role: "worker", what: "Free your ticket's open shared resources." },
+  { name: "ci", role: "both", what: "Explain failing tests, first errors and runner problems" },
   { name: "attach", role: "worker", what: "Attach screenshots and links for the owner to check" },
   { name: "job", role: "both", what: "Track a ticket's long jobs on the project's runner" },
   { name: "heartbeat", role: "worker", what: "Keep a worker's session alive in the background" },
   { name: "spec", role: "coordinator", what: "Add a spec or preview and apply title repairs" },
+  { name: "digest", role: "coordinator", what: "Print or send the owner’s fleet summary in English or French" },
   { name: "status", role: "both", what: "Tickets in flight, ready to start, pull requests waiting" },
   {
     name: "setup",
@@ -36,6 +40,7 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   },
   { name: "doctor", role: "you", what: "What the repository lacks, with the fix for each" },
   { name: "init", role: "you", what: "One pull request that sets the repository up" },
+  { name: "skill", role: "both", what: "Read instructions from the installed Armada version" },
   { name: "skills", role: "you", what: "Update the bundled skills on the current branch" },
   { name: "claim", role: "worker", what: "Take a ticket: In Progress, phase planning" },
   { name: "report", role: "worker", what: "Report a phase; the same phase again is a heartbeat" },

@@ -8,13 +8,17 @@
 // No error quotes a token.
 
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
   type ClaimRecord,
+  type EventsRead,
+  eventCursor,
   type Fleet,
   type FleetStore,
+  FOLLOW_EVENT_KINDS,
   followedLaunches,
   type HandBackSnapshot,
   type InboxItem,
@@ -27,8 +31,10 @@ import {
   type MergeRecorded,
   type PendingLaunch,
   type ProjectInput,
+  parseEventCursor,
   type ReportRecord,
   type ReportResult,
+  type Reservation,
   RUNTIME_STATES,
   type RuntimeState,
   readOverlap,
@@ -71,16 +77,22 @@ export const WORKER_FLEET_OPS = [
   "job/start",
   "job/observe",
   "job/list",
+  "reserve",
+  "reservations",
+  "unreserve",
 ] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "digest",
+  "digest/send",
   "register",
   "coordinator",
   "request",
   "events/latest",
   "events/state",
+  "events/since",
   "heartbeats/latest",
   "runtime/handles",
   "runtime/handle",
@@ -241,6 +253,7 @@ const refuse = (status: number, error: string, next: string): FleetAnswer => ({ 
 const NOT_MODIFIED = Symbol("not modified");
 
 export interface ServeFleetDeps {
+  sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
   /** Stored project facts, supplied by the host, never by the caller. */
   snapshot?: HandBackSnapshot;
   now: () => Date;
@@ -278,7 +291,9 @@ export async function serveFleet(
       if (ticket !== caller.ticket)
         return refuse(
           403,
-          `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
+          ["reserve", "reservations", "unreserve"].includes(op)
+            ? `a worker session only reserves resources for its own ticket (${caller.ticket}), not ${ticket}`
+            : `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
           "the coordinator does it",
         );
     }
@@ -328,6 +343,53 @@ export async function serveFleet(
             at,
           });
         }
+        case "digest":
+        case "digest/send": {
+          const since = optText(b, "since", 40);
+          if (since !== null && (!Number.isFinite(Date.parse(since)) || Date.parse(since) > at.getTime()))
+            throw new Invalid("since must be a timestamp no later than now");
+          if (b.language !== undefined && b.language !== "en" && b.language !== "fr")
+            throw new Invalid("language must be en or fr");
+          if (op === "digest/send" && !deps.sendDigest)
+            throw new Invalid("No notification channel available; configure Organization > Notifications");
+          const records = await store.digestRecords(slug, since, at);
+          const digest = buildDigest(records.input);
+          const language = (b.language ?? records.language) as "en" | "fr";
+          const text = renderDigest(digest, { language, format: "plain", appUrl: deps.appUrl ?? "http://localhost" });
+          const sent = op === "digest/send" ? ((await deps.sendDigest?.(slug, digest, language, at)) ?? false) : false;
+          if (op === "digest/send" && !sent)
+            throw new Invalid("Digest not delivered; check Organization > Notifications");
+          return { digest, text, sent };
+        }
+        case "reservations":
+          return store.reservations(slug);
+        case "reserve": {
+          const next = b.next === undefined ? false : bool(b, "next");
+          if (b.value !== undefined && (typeof b.value !== "string" || b.value.length > LINE_MAX))
+            throw new Invalid("value must be text of at most 500 characters");
+          if (next && b.value !== undefined) throw new Invalid("use next or value, not both");
+          if (
+            b.floor !== undefined &&
+            (!next ||
+              typeof b.floor !== "number" ||
+              !Number.isSafeInteger(b.floor) ||
+              b.floor < 0 ||
+              b.floor >= Number.MAX_SAFE_INTEGER)
+          )
+            throw new Invalid("floor requires next and must be a nonnegative safe integer below the maximum");
+          return store.reserve({
+            project: slug,
+            ticket: ticketOf(b),
+            key: text(b, "key", LINE_MAX),
+            ...(b.value === undefined ? {} : { value: b.value as string }),
+            next,
+            ...(b.floor === undefined ? {} : { floor: b.floor as number }),
+            note: optText(b, "note", BODY_MAX),
+            at,
+          });
+        }
+        case "unreserve":
+          return store.unreserve({ project: slug, ticket: ticketOf(b), key: text(b, "key", LINE_MAX), at });
         case "claim":
           return recordClaim(
             store,
@@ -406,6 +468,65 @@ export async function serveFleet(
               text: text(b, "text", BODY_MAX),
             });
           throw new Invalid("unknown request kind");
+        }
+        case "events/since": {
+          let cursor: ReturnType<typeof parseEventCursor>;
+          try {
+            cursor = parseEventCursor(eventCursor(Number(b.afterId), String(b.afterAt)));
+          } catch {
+            throw new Invalid("invalid events cursor");
+          }
+          if (typeof b.afterId !== "number") throw new Invalid("afterId must be a number");
+          if (!Array.isArray(b.kinds) || !b.kinds.length || b.kinds.some((k) => !FOLLOW_EVENT_KINDS.includes(k)))
+            throw new Invalid("kinds must name claim, report, release or merge");
+          if (b.handoverOnly !== undefined && typeof b.handoverOnly !== "boolean")
+            throw new Invalid("handoverOnly must be true or false");
+          const tickets = b.tickets;
+          if (
+            tickets !== undefined &&
+            (!Array.isArray(tickets) ||
+              tickets.length > 200 ||
+              tickets.some((t) => typeof t !== "string" || !TICKET.test(t)))
+          )
+            throw new Invalid("tickets must be a list of ticket identifiers");
+          const limit = b.limit ?? 200;
+          if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 200)
+            throw new Invalid("limit must be between 1 and 200");
+          const seenIds = b.seenIds;
+          if (
+            seenIds !== undefined &&
+            (!Array.isArray(seenIds) ||
+              seenIds.length > 500 ||
+              seenIds.some((id) => !Number.isSafeInteger(id) || id <= 0))
+          )
+            throw new Invalid("seenIds must contain at most 500 event IDs");
+          let pageAfter: { id: number; at: string } | undefined;
+          if (b.pageAfter !== undefined) {
+            const page = objectOf(b.pageAfter);
+            try {
+              const p = parseEventCursor(eventCursor(Number(page.id), String(page.at)));
+              pageAfter = { id: p.afterId, at: p.afterAt };
+            } catch {
+              throw new Invalid("invalid page cursor");
+            }
+          }
+          const events = await store.eventsSince(slug, {
+            ...cursor,
+            kinds: b.kinds,
+            handoverOnly: b.handoverOnly,
+            tickets,
+            limit,
+            seenIds,
+            pageAfter,
+          });
+          if (!events.length) return NOT_MODIFIED;
+          const last = events[events.length - 1];
+          const advanced =
+            last && (last.at > cursor.afterAt || (last.at === cursor.afterAt && last.id > cursor.afterId));
+          return {
+            events,
+            cursor: advanced ? eventCursor(last.id, last.at) : eventCursor(cursor.afterId, cursor.afterAt),
+          };
         }
         case "events/state":
           return store.latestEvents(slug);
@@ -696,9 +817,15 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     startJob: (input) => call<Job>("job/start", input),
     listJobs: (query) => call<Job[]>("job/list", query),
     observeJob: (input) => call<Job | null>("job/observe", input),
+    digest: (input) => call("digest", input),
+    sendDigest: (input) => call("digest/send", input),
+    reserve: (input) => call("reserve", input),
+    reservations: (ticket) => call<Reservation[]>("reservations", ticket ? { ticket } : {}),
+    unreserve: (input) => call("unreserve", input),
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),
+    eventsSince: (q) => call<EventsRead | null>("events/since", q),
     latestEvents: () => call<Record<string, LatestEvent>>("events/state", {}),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
     heartbeatTimes: () => call<Record<string, string>>("heartbeats/latest", {}),
