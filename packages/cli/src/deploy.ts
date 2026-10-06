@@ -12,6 +12,7 @@ import {
   type MergeHold,
   machinePaths,
   processAlive,
+  redactSecrets,
   releaseWatchLock,
   shellWord,
   takeWatchLock,
@@ -125,6 +126,13 @@ export async function deploy(
     return 0;
   }
   const now = io.now ?? (() => new Date());
+  const secrets = [
+    credentials.armadaSignIn?.kind === "api-key" ? credentials.armadaSignIn.key : credentials.armadaSignIn?.token,
+    credentials.linearApiKey,
+    credentials.githubToken,
+    ...config.secrets.names.map((name) => io.env[name]),
+  ].filter((value): value is string => !!value);
+  const clean = (text: string) => redactSecrets(text, secrets);
   const ancestry = new Map<string, boolean>();
   const includes = async (base: string, head: string): Promise<boolean> => {
     if (base === head) return true;
@@ -158,7 +166,7 @@ export async function deploy(
             if (await includes(row.sha, candidate.liveSha as string)) candidate.coveredShas?.push(row.sha);
           }
         }
-        return fleet.recordDeploy(candidate);
+        return fleet.recordDeploy({ ...candidate, detail: clean(candidate.detail) });
       },
       input,
     );
@@ -175,7 +183,9 @@ export async function deploy(
     return {
       ok: result?.code === 0 && !result.timedOut,
       detail: deployDetail(
-        `${result?.stdout ?? ""}\n${result?.stderr ?? ""}\n${result?.timedOut ? "command timed out" : `exit ${result?.code ?? 1}`}`,
+        clean(
+          `${result?.stdout ?? ""}\n${result?.stderr ?? ""}\n${result?.timedOut ? "command timed out" : `exit ${result?.code ?? 1}`}`,
+        ),
       ),
       stdout: result?.stdout ?? "",
     };
@@ -271,7 +281,7 @@ export async function deploy(
     return result === "healthy" ? 0 : 1;
   } catch (err) {
     io.backgroundReady?.(false);
-    io.stderr(`armada: deploy watcher failed: ${err instanceof Error ? err.message : "unexpected failure"}\n`);
+    io.stderr(`armada: deploy watcher failed: ${clean(err instanceof Error ? err.message : "unexpected failure")}\n`);
     return 1;
   } finally {
     await releaseWatchLock(paths, lockName, pid);

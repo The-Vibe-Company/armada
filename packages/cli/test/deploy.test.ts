@@ -130,3 +130,25 @@ test("lease cleanup failure preserves the recorded smoke result and healthy merg
   expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe("healthy");
   expect(t.err.join("")).toContain("could not release deploy smoke lease");
 });
+
+test("failed smoke diagnostics mask credentials and declared project secrets before persistence", async () => {
+  const t = await terminal();
+  t.io.env.SERVICE_PASSWORD = "synthetic-private-password";
+  t.io.readFile = async (path) =>
+    path === "/work/widgets/armada.toml" ? `${configText}\n[secrets]\nnames = ["SERVICE_PASSWORD"]` : null;
+  t.io.exec = async (_command, args) =>
+    args[1] === "version"
+      ? { code: 0, stdout: sha, stderr: "" }
+      : { code: 1, stdout: "health failed", stderr: `${t.io.env.ARMADA_API_KEY}\n${t.io.env.SERVICE_PASSWORD}` };
+  expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(1);
+  const stored = JSON.stringify({
+    rows: await t.store.deployState("widgets", {}),
+    inbox: await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" }),
+    holds: await t.store.openHolds("widgets"),
+    output: t.out.join("") + t.err.join(""),
+  });
+  expect(stored.includes(t.io.env.ARMADA_API_KEY ?? "")).toBe(false);
+  expect(stored.includes(t.io.env.SERVICE_PASSWORD)).toBe(false);
+  expect(stored).toContain("[redacted]");
+  expect(stored).toContain("health failed");
+});
