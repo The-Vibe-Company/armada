@@ -516,6 +516,33 @@ export function demoValidationPr(v: DemoValidation): ValidationPr | null {
   };
 }
 
+/**
+ * The coordinators a project names besides `default` (THE-1109, THE-1112),
+ * when it last read its inbox (minutes ago) and the sessions it owns:
+ * `demo:seed` records them, and the project's other sessions as
+ * `default`'s. The landing reads no claim, so it shows none of them.
+ */
+export const DEMO_NAMED_COORDINATORS: Record<
+  string,
+  { name: string; seen: number; facts: CoordinatorFacts; tickets: string[] }[]
+> = {
+  widgets: [
+    {
+      name: "front",
+      seen: 38,
+      facts: { harness: "claude-code", handle: "lea-mbp/ttys002", model: "opus-5-5-1m", cliVersion: null },
+      tickets: ["WID-15", "WID-14"],
+    },
+  ],
+};
+
+/** Who owns a demo session: its named coordinator, `default` beside one, else nobody (as before THE-1109). */
+export function demoOwner(project: string, ticket: string): string | null {
+  const named = DEMO_NAMED_COORDINATORS[project];
+  if (!named) return null;
+  return named.find((c) => c.tickets.includes(ticket))?.name ?? "default";
+}
+
 /** Minutes ago the coordinator of each project last read its inbox; absent = never. */
 export const DEMO_COORDINATOR_SEEN: Record<string, number> = Object.fromEntries(
   Object.entries(DEMO_PROJECT_FACTS).map(([slug, p]) => [slug, p.coordinator.seen]),
@@ -842,6 +869,7 @@ export function demoEvents(scenario: Scenario) {
     phase: t.phase,
     summary: t.summary,
     lastReport: t.lastReport,
+    coordinator: demoOwner(t.project, t.id),
   }));
 }
 

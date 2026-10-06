@@ -14,6 +14,7 @@ import type {
   FleetRow,
   MergedTicket,
   OwnerValidation,
+  ProjectCoordinator,
   ProjectOverview,
 } from "@armada/core/read";
 import { dayIn } from "./activity-view";
@@ -82,6 +83,8 @@ export interface OverviewItem {
   pr: { number: number; url: string } | null;
   /** What the owner has to validate on it, oldest first. */
   checks: OwnerValidation[];
+  /** The coordinator that owns the session (THE-1112); null when unowned or merged earlier today. */
+  owner: string | null;
 }
 
 /** The six steps of the bar, from plan to merge. */
@@ -180,6 +183,7 @@ export function overviewItems(
       row,
       pr: row.pr ? { number: row.pr.number, url: row.pr.url } : null,
       checks: own,
+      owner: row.session?.coordinator ?? row.coordinator ?? null,
     };
   });
   const shown = new Set(items.map((i) => key(i.project, i.id)));
@@ -198,6 +202,7 @@ export function overviewItems(
         row: null,
         pr: m.pr,
         checks: [],
+        owner: null,
       });
     }
   const isMerged = (i: OverviewItem) => (i.group === "merged" ? 1 : 0);
@@ -242,6 +247,59 @@ export function groupItems(
   return groups.filter((g) => g.items.length > 0);
 }
 
+/**
+ * Whether a project names its coordinators (THE-1112): a role other than
+ * `default`, or a session such a role owns. A project with only `default`
+ * shows no owner, as before coordinators had names.
+ */
+export function showsOwners(
+  project: Pick<ProjectOverview, "slug"> & { coordinators?: Pick<ProjectCoordinator, "name">[] },
+  items: readonly Pick<OverviewItem, "project" | "owner">[],
+): boolean {
+  const named = (name: string | null) => name !== null && name !== "default";
+  return (
+    (project.coordinators ?? []).some((c) => named(c.name)) ||
+    items.some((i) => i.project === project.slug && named(i.owner))
+  );
+}
+
+/** Most urgent first: a coordinator not seen lately, one never seen, one at work. */
+const URGENCY: readonly CoordinatorState[] = ["idle", "unknown", "active"];
+
+/**
+ * The coordinator a project's diamond stands for: the most urgent of those
+ * that own a session in flight, else the one seen last.
+ */
+export function urgentCoordinator(
+  p: Pick<ProjectOverview, "coordinator" | "coordinators">,
+): Pick<ProjectCoordinator, "state" | "seenAt"> & { name: string | null } {
+  const owning = (p.coordinators ?? []).filter((c) => c.tickets.length > 0);
+  for (const state of URGENCY) {
+    const c = owning.find((o) => o.state === state);
+    if (c) return c;
+  }
+  return { name: p.coordinator.name ?? null, state: p.coordinator.state, seenAt: p.coordinator.seenAt };
+}
+
+/** The project's coordinator state, as its diamond shows it. */
+export const coordinatorState = (p: Pick<ProjectOverview, "coordinator" | "coordinators">): CoordinatorState =>
+  urgentCoordinator(p).state;
+
+/** The overview's lines of one project and one owner; null keeps all. */
+export function filterItems<T extends Pick<OverviewItem, "project" | "owner">>(
+  items: readonly T[],
+  { project, owner }: { project: string | null; owner: string | null },
+): T[] {
+  return items.filter((i) => (!project || i.project === project) && (!owner || i.owner === owner));
+}
+
+/** The owners the overview can filter on, by name, with how many lines each holds. */
+export function ownerCounts(items: readonly Pick<OverviewItem, "owner">[]): { name: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const i of items) if (i.owner) counts.set(i.owner, (counts.get(i.owner) ?? 0) + 1);
+  return [...counts].map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** One project's card: its progress, and its sessions blocked, waiting for the owner and running. */
 export interface ProjectSummary {
   project: ProjectOverview;
@@ -251,6 +309,8 @@ export interface ProjectSummary {
   /** Its sessions in flight. */
   live: number;
   coordinator: CoordinatorState;
+  /** Each of its coordinators, when it names them (`showsOwners`); empty otherwise. */
+  coordinators: ProjectCoordinator[];
 }
 
 export function projectSummaries(
@@ -266,7 +326,8 @@ export function projectSummaries(
       you: n.you,
       running: n.running,
       live: own.length - n.merged,
-      coordinator: p.coordinator.state,
+      coordinator: coordinatorState(p),
+      coordinators: showsOwners(p, own) ? (p.coordinators ?? []) : [],
     };
   });
 }
@@ -278,13 +339,16 @@ export function overviewHeadline(items: readonly OverviewItem[], projects: numbe
 }
 
 /**
- * The overview's view, in its address (`/?coordinator=widgets&group=project&view=preview&ticket=WID-15`):
- * the project shown, the grouping, the list alone or with the preview pane,
- * and the session the pane shows. Anything else in it is ignored (older
- * links: `?harness=`, `?state=`, `?sort=`…).
+ * The overview's view, in its address (`/?coordinator=widgets&owner=front&group=project&view=preview&ticket=WID-15`):
+ * the project shown (`?coordinator=` names a project, as links did before
+ * coordinators had names), the coordinator whose sessions are shown
+ * (THE-1112), the grouping, the list alone or with the preview pane, and the
+ * session the pane shows. Anything else in it is ignored (older links:
+ * `?harness=`, `?state=`, `?sort=`…).
  */
 export interface OverviewView {
   project: string | null;
+  owner: string | null;
   group: "state" | "project";
   view: "list" | "preview";
   ticket: string | null;
@@ -300,6 +364,7 @@ export function parseOverviewView(params: { get(name: string): string | null }):
   return {
     // `?project=` still reads: the links and views from before THE-916.
     project: token("coordinator") ?? token("project"),
+    owner: token("owner"),
     group: params.get("group") === "project" ? "project" : "state",
     view: params.get("view") === "preview" ? "preview" : "list",
     ticket: token("ticket"),
@@ -310,6 +375,7 @@ export function parseOverviewView(params: { get(name: string): string | null }):
 export function overviewHref(v: OverviewView): string {
   const q = new URLSearchParams();
   if (v.project) q.set("coordinator", v.project);
+  if (v.owner) q.set("owner", v.owner);
   if (v.group === "project") q.set("group", "project");
   if (v.view === "preview") q.set("view", "preview");
   if (v.view === "preview" && v.ticket) q.set("ticket", v.ticket);

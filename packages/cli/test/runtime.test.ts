@@ -225,35 +225,43 @@ test("Conductor plan answers and notes deliver in one command with distinct stab
   expect(sends()[2]?.at(-1)).toBe(sends()[1]?.at(-1));
 });
 
-test("Conductor retry after Armada recording failure reuses the message id", async () => {
-  const f = await fixture("codex", "conductor");
-  const id = await f.store.addInboxItem({
-    project: "widgets",
-    ticket: "DEMO-7",
-    recipient: "coordinator",
-    kind: "plan",
-    body: "Proceed?",
-    author: "cw8/cs9",
-    at: NOW,
-  });
-  const fetch = f.io.fetch;
-  let fail = true;
-  f.io.fetch = async (url, options) => {
-    if (String(url).endsWith("/fleet/answer") && fail) {
-      fail = false;
-      return new Response("unavailable", { status: 503 });
-    }
-    if (!fetch) throw new Error("test fetch missing");
-    return fetch(url, options);
-  };
-  expect(await run(["answer", String(id), "approved"], f.io)).toBe(0);
-  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
-  expect(await run(["answer", String(id), "approved"], f.io)).toBe(0);
-  const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
-  expect(sends).toHaveLength(2);
-  expect(sends[1]?.at(-1)).toBe(sends[0]?.at(-1));
-  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).not.toBeNull();
-});
+test.each([false, true])(
+  "Conductor retry reuses the message id when secret lookup fails on retry: %s",
+  async (secretUnavailable) => {
+    const f = await fixture("codex", "conductor");
+    f.api.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+    const text = "approved synthetic-project-secret";
+    const id = await f.store.addInboxItem({
+      project: "widgets",
+      ticket: "DEMO-7",
+      recipient: "coordinator",
+      kind: "plan",
+      body: "Proceed?",
+      author: "cw8/cs9",
+      at: NOW,
+    });
+    const fetch = f.io.fetch;
+    let fail = true;
+    f.io.fetch = async (url, options) => {
+      if (String(url).endsWith("/secrets/release") && !fail && secretUnavailable)
+        return new Response("unavailable", { status: 503 });
+      if (String(url).endsWith("/fleet/answer") && fail) {
+        fail = false;
+        return new Response("unavailable", { status: 503 });
+      }
+      if (!fetch) throw new Error("test fetch missing");
+      return fetch(url, options);
+    };
+    expect(await run(["answer", String(id), text], f.io)).toBe(0);
+    expect(f.inputs).toEqual(["approved «secret CUSTOM_KEY»"]);
+    expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+    expect(await run(["answer", String(id), text], f.io)).toBe(0);
+    const sends = f.calls.filter((c) => c[0] === "conductor" && c[2] === "message");
+    expect(sends).toHaveLength(2);
+    expect(sends[1]?.at(-1)).toBe(sends[0]?.at(-1));
+    expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).not.toBeNull();
+  },
+);
 
 test.each([
   { name: "auth", code: 3, archived: false, missing: false, message: "Conductor is not signed in" },

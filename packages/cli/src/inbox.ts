@@ -40,7 +40,9 @@ export async function ask(io: Io, config: ArmadaConfig, credentials: Credentials
     .map((o) => o.trim())
     .filter(Boolean);
   const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
-  return withContext(io, config, credentials, a.json, (ctx) => askCoordinator(ctx, { ticket, question, options }));
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    askCoordinator(ctx, redact({ ticket, question, options })),
+  );
 }
 
 export async function answer(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {
@@ -54,7 +56,7 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
     throw new UsageError("give the text once: as an argument, --message or --message-file");
   const text = positional ?? fromOption;
   if (!text?.trim()) throw new UsageError(`answer needs the text: ${usage}`);
-  return withContext(io, config, credentials, a.json, (ctx) =>
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
     answerItem(
       {
         ...ctx,
@@ -75,13 +77,22 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
             throw error;
           }
         },
-        deliverAnswer: async ({ ticket, text, claim, launch, item, kind }) => {
+        deliverAnswer: async ({ ticket, text: maskedText, claim, launch, item, kind }) => {
           const { fleet } = liveFleet(io, config, credentials);
           if (!fleet) throw new Refusal("cannot read the runtime claim before delivery", "armada whoami");
-          return deliverToRuntime(io, fleet, ticket, text, claim, config, { kind, item }, launch);
+          return deliverToRuntime(
+            io,
+            fleet,
+            ticket,
+            maskedText,
+            claim,
+            config,
+            { kind, item, identityText: text.trim() },
+            launch,
+          );
         },
       },
-      { target, text, note },
+      redact({ target, text, note }),
     ),
   );
 }

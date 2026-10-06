@@ -133,7 +133,7 @@ export async function deliverToRuntime(
   text: string,
   expected?: RuntimeHandle | null,
   config?: ArmadaConfig,
-  message: { item?: number | null; kind?: "answer" | "note" | "login" } = {},
+  message: { item?: number | null; kind?: "answer" | "note" | "login"; identityText?: string } = {},
   launch?: PendingLaunch | null,
 ): Promise<Delivery | null> {
   const target = expected && !expected.releasedAt ? claimRef(expected) : launch ? launchRef(launch) : null;
@@ -153,7 +153,9 @@ export async function deliverToRuntime(
         launchId: target.launchId,
         item: message.item ?? null,
         kind: message.kind ?? "answer",
-        text,
+        // Masking availability can change between retries. The original text
+        // is only hashed here; delivery and records keep the masked payload.
+        text: message.identityText ?? text,
       }),
     }),
   );
