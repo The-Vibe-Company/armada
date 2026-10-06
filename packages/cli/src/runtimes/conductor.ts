@@ -115,14 +115,25 @@ export class ConductorAdapter implements RuntimeAdapter {
       code === "auth" || code === "not-found" ? "conductor auth whoami" : "use the armada-runtime-conductor guide",
     );
   }
+  private invalidResponse(operation: string, mutation: boolean, json = false): RuntimeError {
+    return new RuntimeError(
+      `Conductor ${operation} returned ${json ? "invalid or truncated JSON" : "an invalid response"}${mutation ? "; inspect the session before retrying" : ""}`,
+      mutation ? "unknown-outcome" : "invalid",
+      "use the armada-runtime-conductor guide",
+    );
+  }
   private async exec(args: string[], input?: string, mutation = false, timeoutMs = 10_000): Promise<ExecResult> {
-    if (!this.io.exec) throw this.error("unavailable");
+    if (!this.io.exec)
+      throw new RuntimeError("Conductor CLI execution is unavailable on this machine", "unavailable", "armada doctor");
+    const operation = args.slice(0, 2).join(" ");
     let r: ExecResult;
     try {
       r = await this.io.exec(this.binary, ["--json", ...args], {
         cwd: this.io.cwd,
         timeoutMs: mutation ? (args[0] === "workspace" && args[1] === "create" ? 120_000 : 60_000) : timeoutMs,
         maxOutputBytes: 2_000_000,
+        // Conductor 0.90.1 can exit before flushing large JSON to a pipe.
+        captureStdout: "file",
         input,
       });
     } catch (e) {
@@ -136,9 +147,31 @@ export class ConductorAdapter implements RuntimeAdapter {
       }
       if ((e as NodeJS.ErrnoException).code === "ENOENT")
         throw new RuntimeError("Conductor CLI is missing", "unavailable", CONDUCTOR_INSTALL_FIX);
-      throw this.error(mutation ? "unknown-outcome" : "unavailable");
+      if (mutation) throw this.error("unknown-outcome");
+      throw new RuntimeError(
+        (e as NodeJS.ErrnoException).code === "EACCES"
+          ? "Conductor CLI cannot be executed: permission denied"
+          : `Conductor CLI could not execute ${operation}`,
+        "unavailable",
+        "armada doctor",
+      );
     }
-    if (r.timedOut) throw this.error(mutation ? "unknown-outcome" : "unavailable");
+    if (r.timedOut)
+      throw mutation
+        ? this.error("unknown-outcome")
+        : new RuntimeError(
+            `Conductor ${operation} timed out after ${timeoutMs} ms`,
+            "unavailable",
+            "retry once Conductor answers",
+          );
+    if (r.outputExceeded)
+      throw mutation
+        ? this.error("unknown-outcome")
+        : new RuntimeError(
+            `Conductor ${operation} exceeded the 2000000-byte output limit`,
+            "unavailable",
+            "use the armada-runtime-conductor guide",
+          );
     if (r.code !== 0) {
       const code =
         r.code === 3
@@ -158,6 +191,12 @@ export class ConductorAdapter implements RuntimeAdapter {
           code,
           "conductor model",
         );
+      if (code === "unavailable")
+        throw new RuntimeError(
+          `Conductor ${r.code === 4 ? "server error" : "CLI failed"} during ${operation} (exit ${r.code})`,
+          code,
+          "use the armada-runtime-conductor guide",
+        );
       throw this.error(code);
     }
     return r;
@@ -169,13 +208,15 @@ export class ConductorAdapter implements RuntimeAdapter {
     timeoutMs = 10_000,
   ): Promise<Record<string, unknown>> {
     const r = await this.exec(args, input, mutation, timeoutMs);
+    let decoded: unknown;
     try {
-      const value = object(JSON.parse(r.stdout));
-      if (!value) throw invalid();
-      return value;
+      decoded = JSON.parse(r.stdout);
     } catch {
-      throw mutation ? this.error("unknown-outcome") : invalid();
+      throw this.invalidResponse(args.slice(0, 2).join(" "), mutation, true);
     }
+    const value = object(decoded);
+    if (!value) throw this.invalidResponse(args.slice(0, 2).join(" "), mutation);
+    return value;
   }
   async preflight(input: PreflightInput): Promise<PreflightCheck[]> {
     const checks: PreflightCheck[] = [];
@@ -184,6 +225,8 @@ export class ConductorAdapter implements RuntimeAdapter {
       const version = rawVersion.match(/^(\d+\.\d+\.\d+)(?:[-+][\w.-]+)?$/)?.[1];
       if (!version) throw invalid();
       checks.push({ level: "ok", message: `Conductor ${version} is available`, fix: null });
+      // Conductor 0.90.1 prints a human table even with --json (and may emit
+      // invalid UTF-8 outside a workspace). Only its exit code proves sign-in.
       await this.exec(["auth", "whoami"]);
       checks.push({ level: "ok", message: "Conductor is signed in", fix: null });
       const catalog = await this.call(["model"]);
@@ -391,7 +434,9 @@ export class ConductorAdapter implements RuntimeAdapter {
   }
   private async workspace(workspace: string, timeoutMs = 10_000) {
     const result = await this.call(["workspace", "status", workspace], undefined, false, timeoutMs);
-    if (result.workspaceId !== workspace || typeof result.status !== "string") throw invalid();
+    if (!id(result.workspaceId) || typeof result.status !== "string") throw invalid();
+    if (result.workspaceId !== workspace)
+      throw new RuntimeError("Conductor workspace does not match the requested worker", "mismatch", "armada status");
     return result;
   }
   async deliver(target: ClaimRef, message: OutgoingMessage): Promise<Delivery> {
@@ -416,12 +461,13 @@ export class ConductorAdapter implements RuntimeAdapter {
           true,
         ),
     );
-    if (!id(result.messageId) || !["sent", "queued"].includes(String(result.state))) throw invalid();
+    if (!id(result.messageId) || !["sent", "queued"].includes(String(result.state)))
+      throw this.invalidResponse("message create", true);
     return { via: "conductor", messageId: result.messageId, queued: result.state === "queued" };
   }
   async observe(target: ClaimRef): Promise<RuntimeReading> {
     const h = this.parse(target.handle);
-    await this.exec(["auth", "whoami"], undefined, false, 5000);
+    // Status reads authenticate themselves. An unrelated identity probe must not hide a readable worker.
     // The workspace remains readable even when its archived session is no longer available.
     const ws = await this.workspace(h.workspace, 5000);
     if (ws.status === "archived") return { state: "gone", detail: "archived", since: timestamp(ws.updatedAt) };
@@ -627,7 +673,11 @@ export class ConductorAdapter implements RuntimeAdapter {
           true,
         ),
     );
-    if (result.status !== "archived") throw invalid();
+    if (result.status !== "archived")
+      throw this.invalidResponse(
+        options.reason === "relaunched" && !options.workspace ? "session archive" : "workspace archive",
+        true,
+      );
     return { archived: true, alreadyGone: false, path: null };
   }
 }
