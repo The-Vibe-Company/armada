@@ -2072,14 +2072,50 @@ test("a hold override survives Linear failure and unreadable audit until finish 
   expect(await live.fleet.holds()).toHaveLength(1);
 });
 
-test("after merge selects declared deploy targets by base branch, including no-ticket merges", async () => {
-  const text = `${GATES}\n[[deploy.target]]\nname = "api"\ngithub_environment = "production"\n[[deploy.target]]\nname = "docs"\nbranch = "docs"\nlive_sha_command = "version"\n`;
+test("after merge selects deploys by branch and changed paths, conservatively retaining incomplete coverage", async () => {
+  const text = `${GATES}\n[[deploy.target]]\nname = "all"\ngithub_environment = "production"\n[[deploy.target]]\nname = "api"\npaths = ["cmd/**", "internal/**", ".config/**"]\nlive_sha_command = "version"\n[[deploy.target]]\nname = "docs"\nbranch = "docs"\nlive_sha_command = "version"\n`;
   for (const input of [{}, { noTicket: true, reason: "deploy test" }, { keepOpen: true }]) {
-    const s = setup({ toml: text });
-    const outcome = await mergePullRequest(s.ctx, { pr: 9, ...input });
-    expect(outcome.deploy).toEqual({ targets: ["api"] });
-    expect(outcome.pr.mergeCommit).toBe(SQUASH);
+    for (const [path, affected] of [
+      ["README.md", false],
+      ["cmd/server.ts", true],
+      ["internal/nested/job.ts", true],
+      [".config/service.json", true],
+    ] as const) {
+      const s = setup({ toml: text });
+      Object.assign(s.forge.pr, {
+        files: [
+          { path, additions: 1, deletions: 0, changeType: "MODIFIED" },
+          { path: "docs/guide.md", additions: 1, deletions: 0, changeType: "MODIFIED" },
+        ],
+        filesComplete: true,
+      });
+      const outcome = await mergePullRequest(s.ctx, { pr: 9, ...input });
+      expect(outcome.merged).toBe(true);
+      expect(outcome.pr.mergeCommit).toBe(SQUASH);
+      expect(outcome.deploy).toEqual({ targets: affected ? ["all", "api"] : ["all"] });
+      expect(outcome.lines.filter((line) => line.includes("Skipped deploy to api"))).toHaveLength(affected ? 0 : 1);
+    }
   }
+  for (const coverage of [
+    { files: null, filesComplete: false },
+    { files: [{ path: "README.md", additions: 1, deletions: 0, changeType: "MODIFIED" }], filesComplete: false },
+    { files: [{ path: "README.md", additions: 1, deletions: 0, changeType: "RENAMED" }], filesComplete: true },
+  ]) {
+    const s = setup({ toml: text });
+    Object.assign(s.forge.pr, coverage);
+    const outcome = await mergePullRequest(s.ctx, { pr: 9 });
+    expect(outcome.merged).toBe(true);
+    expect(outcome.deploy).toEqual({ targets: ["all", "api"] });
+    expect(outcome.lines.some((line) => line.includes("Skipped deploy"))).toBe(false);
+  }
+  const scoped = setup({
+    toml: `${GATES}\n[[deploy.target]]\nname = "api"\npaths = ["cmd/**"]\nlive_sha_command = "version"`,
+  });
+  Object.assign(scoped.forge.pr, { files: [{ path: "README.md", additions: 1, deletions: 0 }], filesComplete: true });
+  const skipped = await mergePullRequest(scoped.ctx, { pr: 9 });
+  expect(skipped.merged).toBe(true);
+  expect(skipped.deploy).toBeNull();
+  expect(skipped.lines.filter((line) => line.includes("Skipped deploy to api"))).toHaveLength(1);
   expect((await mergePullRequest(setup().ctx, { pr: 9 })).deploy).toBeNull();
   expect((await mergePullRequest(setup({ toml: text }).ctx, { pr: 9, dryRun: true })).deploy).toBeUndefined();
 });
