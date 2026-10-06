@@ -140,6 +140,7 @@ beforeEach(async () => {
   await db.query(`DELETE FROM "armada_secret"`);
   await db.query(`DELETE FROM "armada_secret_event"`);
   await db.query(`DELETE FROM coordinator_presence`);
+  await db.query(`DELETE FROM coordinators`);
   await db.query(`TRUNCATE events, runtime_handles, fleet_sessions, worker_profiles RESTART IDENTITY CASCADE`);
 });
 
@@ -333,15 +334,15 @@ describe("owner chat delivery", () => {
       body: "free text",
       at: ago,
     });
-    await db.query(`INSERT INTO coordinator_presence (project,seen_at,started_at,inbox_seen_at) VALUES ($1,$2,$2,$2)`, [
-      project.slug,
-      ago,
-    ]);
+    await db.query(
+      `INSERT INTO coordinators (project,name,created_at,seen_at,started_at,inbox_seen_at) VALUES ($1,'default',$2,$2,$2,$2)`,
+      [project.slug, ago],
+    );
     await ownerTick(db, opts());
     await ownerTick(db, opts());
     expect(posts).toHaveLength(1);
     expect(posts[0]?.body).toContain("coordinator stopped");
-    await db.query(`UPDATE coordinator_presence SET seen_at = $2, inbox_seen_at = $2 WHERE project = $1`, [
+    await db.query(`UPDATE coordinators SET seen_at = $2, inbox_seen_at = $2 WHERE project = $1 AND name = 'default'`, [
       project.slug,
       now,
     ]);

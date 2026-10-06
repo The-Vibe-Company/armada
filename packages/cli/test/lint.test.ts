@@ -1,10 +1,20 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEMO_TOML, NOW, recordedFetch } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
+
+const homes: string[] = [];
+afterEach(async () => {
+  for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true });
+});
 
 // Owner flow: strict lint fails before launch; brief warns but still gives the prompt.
 test("ready lint batches descriptions, gives fixes and an error exit; default lint and brief warn without blocking", async () => {
   for (const strict of [true, false]) {
+    const home = await mkdtemp(join(tmpdir(), "armada-lint-"));
+    homes.push(home);
     let recorded = recordedFetch();
     const batch: { ids: string[]; after: string | null }[] = [];
     const out: string[] = [];
@@ -13,7 +23,7 @@ test("ready lint batches descriptions, gives fixes and an error exit; default li
     const config = `${DEMO_TOML}${strict ? "\n[tracker.lint]\ntitle_max = 60\n" : ""}`;
     const io: Io = {
       cwd: "/work/widgets",
-      env: { LINEAR_API_KEY: "synthetic-key", XDG_CONFIG_HOME: "/synthetic/lint-config" },
+      env: { LINEAR_API_KEY: "synthetic-key", XDG_CONFIG_HOME: home },
       readFile: async (path) => (path === "/work/widgets/armada.toml" ? config : null),
       stdout: (s) => {
         out.push(s);
