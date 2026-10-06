@@ -58,7 +58,7 @@ test("every armada command, subcommand and flag the armada-* skills name is in a
   for (const skill of BUNDLED_SKILLS.filter((s) => s.name.startsWith("armada-")))
     for (const file of skill.files.filter((f) => f.path.endsWith(".md")))
       for (const span of codeSpans(file.content))
-        for (const command of span.split(/ \| |&&|;|\$\(/))
+        for (const command of span.replace(/"[^"]*"/g, '"…"').split(/ \| |&&|;|\$\(/))
           for (const [, rest] of command.matchAll(/(?:^|[\s(])armada ([a-z].*?)(?=\s+armada |$)/g)) {
             const where = `${skill.name}/${file.path}: \`${command.trim()}\``;
             const words = (rest ?? "").split(" -- ")[0]?.split(/\s+/) ?? [];
@@ -92,7 +92,7 @@ function codeSpans(markdown: string): string[] {
   const spans: string[] = [];
   const parts = markdown.split(/^```.*$/m);
   parts.forEach((part, i) => {
-    if (i % 2 === 1) spans.push(...part.split("\n"));
+    if (i % 2 === 1) spans.push(...part.replace(/\\\n\s*/g, " ").split("\n"));
     else for (const [, span] of part.matchAll(/`([^`\n]+)`/g)) spans.push(span ?? "");
   });
   return spans;

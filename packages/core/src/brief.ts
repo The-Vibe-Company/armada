@@ -686,7 +686,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     out.push(
       "## Live acceptance",
       "",
-      "Bring main in before the final run. Run applicable checks with `armada acceptance run` (or `--name <name>` for one check). Your checkout must be clean and HEAD must equal the PR head. Every error the check prints is part of this ticket: fix them all before handing back.",
+      "Bring main in first only if your pull request conflicts (GitHub says DIRTY). Run applicable checks with `armada acceptance run` (or `--name <name>` for one check). Your checkout must be clean and HEAD must equal the PR head. Every error the check prints is part of this ticket: fix them all before handing back.",
       "",
     );
     for (const rule of b.acceptance)

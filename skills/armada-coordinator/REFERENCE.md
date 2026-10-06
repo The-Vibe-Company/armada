@@ -7,7 +7,7 @@ Detail the loop in [SKILL.md](SKILL.md) points to. Read the section you need.
 A project can share its work between coordinators, each with a name: `ARMADA_COORDINATOR=<name>` in the environment wins, then `armada coordinator use <name>` for this checkout, else `default`.
 
 - Every launch records the coordinator that made it, and the worker inherits that owner from its launch token; a worker cannot choose it.
-- `armada status --mine`, `armada inbox --mine` and a named coordinator's `armada watch` show its own workers and unowned items. `--all` shows the whole fleet; `default` sees the whole fleet unless it passes `--mine`. Status always keeps the whole frontier and marks another coordinator's pending launch `launching by <name>`.
+- `armada status --mine`, `armada inbox --mine` and a named coordinator's `armada watch` show its own workers and unowned items. `armada inbox --all` and `armada watch --all` show the whole fleet (`armada status --all` lists every registered project instead); `default` sees the whole fleet unless it passes `--mine`. Status always keeps the whole frontier and marks another coordinator's pending launch `launching by <name>`.
 - Inbox entries name their owner or say `unowned`. Ownership follows the open worker session, then the newest pending launch, then the item. Unowned alarms reach everyone until someone takes them.
 - `armada coordinator list` shows each name, its sessions and its tickets. `armada coordinator take ABC-12 --from <name>` moves a ticket's worker (or pending launch) to you atomically; the worker keeps its phase.
 - Each name has its own watch lock on a machine: `armada watch --stop` stops yours, `armada watch --stop --name <name>` another's.

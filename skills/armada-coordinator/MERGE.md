@@ -31,7 +31,7 @@ One check stays yours: search the default branch for callers of anything the pul
 `armada merge` does these by itself, in order. Do none of them by hand.
 
 1. **Records** the merge on Armada first, then closes the ticket in Linear: Done, agent labels removed, pull request linked, a merged comment saying how the merge was decided.
-2. **Tells affected workers.** Only workers whose open pull request shares files with what landed get a short "main moved" note through their runtime; changes to `[merge] notify_paths` (CI workflows by default) concern every working pull request. Workers without a pull request, already handed back, or owned by another coordinator stay quiet, and the output says why. A note that could not be delivered is printed: deliver it in the worker's session with the runtime guide's manual commands, after checking the claim is still that worker's and an unknown outcome did not already arrive. Never send it with `armada answer --note`, which posts it on the ticket. `--no-notify` sends nothing and prints the list instead.
+2. **Tells affected workers.** Only workers whose open pull request shares files with what landed get a short "main moved" note through their runtime; changes to `[merge] notify_paths` (CI workflows by default) concern every working pull request. Workers without a pull request, already handed back, or owned by another coordinator stay quiet, and the output says why. A note that could not be delivered is printed: deliver it in the worker's session with the runtime guide's manual commands, after checking the claim is still that worker's and an unknown outcome did not already arrive. Never send it with `armada answer --note`, which posts it on the ticket and resolves an open plan. `--no-notify` sends nothing and prints the list instead.
 3. **Archives the merged worker's workspace** once GitHub confirmed the merge. `--no-archive` keeps it. A cleanup failure leaves the merge successful and prints the exact `armada stop <ticket> …` command to finish it; copy it whole.
 4. **Closes the spec** when this was its last open ticket, with a summary, unless the team's parent auto-close does it. A failure there is a warning only.
 5. **Lists unblocked tickets** under `Unblocked by <ticket>`: those ready to launch with their routed `armada brief <id> --prompt` command, those without a ready label, parked ones, and those that still wait on other blockers. Tickets you deferred with `armada launch --when-unblocked` are launched in the same run.
@@ -40,7 +40,7 @@ One check stays yours: search the default branch for callers of anything the pul
 
 ## Main kept moving: `--wait`
 
-With several workers in flight, main often moves between a green hand-back and its merge. Do not ask the worker to bring main in. Run `armada merge <pr> --wait [--timeout <min>]` (30 minutes by default) in the background:
+Workers hand back without chasing main, and main moves between a green hand-back and its merge. Do not ask the worker to bring main in. Without `--wait`, a behind head is refused unless `[gates] local_commands` is set, in which case Armada test-merges it locally and runs those commands. Run `armada merge <pr> --wait [--timeout <min>]` (30 minutes by default) in the background:
 
 - A behind head that merges cleanly is updated with GitHub's "update branch" (a merge commit, no force-push), its required checks are waited for, then it merges pinned to the new head. The updated head still counts as the hand-back.
 - It holds the merge lock only while merging, so two waits never block each other.
