@@ -30,6 +30,8 @@ export interface Explanation {
   error: string[];
   class: "known" | "runner" | "failure" | "external";
   known?: { ticket: string; pattern: string };
+  /** All matching root-cause declarations when a job contains several known failures. */
+  knownMatches?: { ticket: string; pattern: string }[];
   /** Informational: a cancelled old head is not a failure. */
   superseded?: boolean;
 }
@@ -92,7 +94,7 @@ export function explainChecks(
     for (const line of [...annotations, ...log]) {
       if (/^\s*\d+ failing\s*$/.test(line)) mocha = true;
       const name = nameAt(line) ?? (mocha ? line.match(/^\s*\d+\)\s+(.+?):?\s*$/)?.[1]?.replace(/:$/, "") : undefined);
-      if (name && tests.size < 20) tests.add(name);
+      if (name) tests.add(name);
     }
     const evidence = [...annotations, ...summary, ...log].join("\n");
     const runner = RUNNER.test(evidence) || (/exit code 137/i.test(evidence) && /\bKilled\b/.test(evidence));
@@ -111,15 +113,61 @@ export function explainChecks(
               /\d+ failing|\bKilled\b|error[: ]|AssertionError|^\s*Expected:/i.test(l),
           );
     const start = Math.max(0, first - 8);
+    const error = check.superseded ? ["superseded by a newer head"] : lines.slice(start, start + 40);
+    const declarations =
+      check.app === "github-actions" && !check.superseded
+        ? (config?.knownFailures ?? [])
+            .filter((k) => k.check === check.name)
+            .map((k) => ({ ...k, regex: new RegExp(k.pattern) }))
+        : [];
+    const names = [...tests];
+    const matches = (name: string) => declarations.filter((k) => k.regex.test(name));
+    // An error-block signature can identify one otherwise unrecognized failing test.
+    // With several failures, each name must be covered independently.
+    const blockMatches = names.length <= 1 ? declarations.filter((k) => k.regex.test(error.join("\n"))) : [];
+    const unknownNames = names.filter((name) => !matches(name).length && !blockMatches.length);
+    const matched = [...new Set([...names.flatMap(matches), ...blockMatches])];
+    const known = !unknownNames.length ? matched[0] : undefined;
+    const knownMatches = matched.map(({ ticket, pattern }) => ({ ticket, pattern }));
+    const runnerOnly = runner && !unknownNames.length;
     return {
       check: check.name,
       conclusion: check.conclusion,
       url: check.url,
       attempt: check.attempt ?? null,
-      tests: [...tests],
-      error: check.superseded ? ["superseded by a newer head"] : lines.slice(start, start + 40),
-      class: check.app !== "github-actions" ? "external" : runner ? "runner" : "failure",
+      tests: [...unknownNames, ...names.filter((name) => !unknownNames.includes(name))].slice(0, 20),
+      error,
+      class: check.app !== "github-actions" ? "external" : known ? "known" : runnerOnly ? "runner" : "failure",
+      ...(known
+        ? {
+            known: { ticket: known.ticket, pattern: known.pattern },
+            ...(knownMatches.length > 1 ? { knownMatches } : {}),
+          }
+        : {}),
       ...(check.superseded ? { superseded: true } : {}),
     };
   });
+}
+
+export interface RerunDecision {
+  allowed: boolean;
+  reason: string;
+  tickets: string[];
+}
+
+/** Evaluate one workflow run; GitHub's attempt is the only rerun record. */
+export function rerunDecision(explanations: readonly Explanation[], attempt: number | null): RerunDecision {
+  const refuse = (reason: string): RerunDecision => ({ allowed: false, reason, tickets: [] });
+  if (attempt !== null && attempt > 1) return refuse(`already rerun once, attempt ${attempt}`);
+  if (attempt !== 1) return refuse("attempt unavailable; cannot establish that this is the first attempt");
+  const failures = explanations.filter((e) => !e.superseded);
+  if (!failures.length) return refuse("No failing checks to rerun");
+  const unknown = failures.filter((e) => e.class !== "known" && e.class !== "runner");
+  if (unknown.length) return refuse(`unknown or external failures: ${unknown.map((e) => e.check).join("; ")}`);
+  if (failures.some((e) => e.class === "known" && !e.known)) return refuse("known failure has no root-cause ticket");
+  return {
+    allowed: true,
+    reason: "all failures are known flaky failures or runner problems",
+    tickets: [...new Set(failures.flatMap((e) => (e.knownMatches ?? (e.known ? [e.known] : [])).map((k) => k.ticket)))],
+  };
 }
