@@ -574,3 +574,26 @@ MIT. The bundled Alibaba review workflow retains Apache-2.0; each shipping skill
 includes its license and attribution notices.
 
 Persistent local workers: `armada status`, `inbox` and `watch` publish herdr state for the dashboard. `armada stop <ticket>` archives only a clean worktree whose commits are on its verified remote upstream, retaining its branch. See [`armada-runtime-herdr`](skills/armada-runtime-herdr/SKILL.md) for all four runtime operations.
+
+Workers can reserve a shared number, name or exclusive resource for their ticket through Armada:
+
+```sh
+armada reserve db-migration --next --floor 22  # prints the next number, e.g. 23
+armada reserve fixture --value sample --note "integration fixture"
+armada reserve release                      # exclusively holds this key
+armada reserve --list
+armada unreserve fixture
+```
+
+The ticket defaults to `ARMADA_TICKET`, the current branch, or the one stored worker session; `--ticket <id>` overrides it. A release or `unreserve` frees a value. A merge ends the reservation and keeps its value used permanently. Number allocation starts above the highest held or merged number and `--floor` (the last number already used in the repository). Released values can be explicitly reserved again; `--next` reuses them when they are above the remaining highest number. Allocation is atomic even when workers ask together.
+
+Declare keys in `armada.toml` to include them and their current holders in each launch brief:
+
+```toml
+[[reservations]]
+key = "db-migration"
+what = "the next DB_MIGRATIONS version"
+numbered = true
+```
+
+Declarations are optional documentation; undeclared keys can also be reserved. Reservations require Armada: if it is unavailable, ask the coordinator before choosing a value. After a lost response, check `armada reserve --list` before retrying, since the reservation may already have succeeded.
