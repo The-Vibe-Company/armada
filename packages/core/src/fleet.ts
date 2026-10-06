@@ -55,6 +55,7 @@ export type LaneFlag =
   | "no-phase-label";
 
 export interface Lane {
+  coordinator?: string | null;
   issue: Issue;
   spec: string | null;
   phase: AgentPhase;
@@ -190,6 +191,7 @@ export interface LaneOptions {
       string,
       {
         runtime: string;
+        coordinator?: string | null;
         handle: string;
         profile?: string | null;
         lastHeartbeatAt?: string | null;
@@ -331,6 +333,9 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
     phaseSource,
     shippingStage,
     runtime: issue.agentRuntime ?? claimRuntime ?? fresh?.runtime ?? opts.live?.handles?.[issue.id]?.runtime ?? null,
+    coordinator: opts.live?.handles?.[issue.id]
+      ? (opts.live.handles[issue.id]?.coordinator ?? null)
+      : (claims[0]?.coordinator ?? null),
     handle: opts.live?.handles?.[issue.id]?.handle ?? claims[0]?.session ?? fresh?.handle ?? null,
     claim: claims[0] ?? null,
     agent,

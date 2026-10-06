@@ -20,6 +20,8 @@ import {
   checkRepository,
   compareVersions,
   fetchBranchRules,
+  fetchRepository,
+  GithubError,
   installCommand,
   LINEAR_KEY,
   mergeCompatibility,
@@ -27,6 +29,7 @@ import {
   projectOf,
   RETIRED_VARIABLES,
   readLabels,
+  repositoryOfRemote,
   STORED_KEYS,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
@@ -444,6 +447,7 @@ export async function buildDoctor(
         ]
       : []),
     ...(await labelChecks(io, config, credentials)),
+    ...(await remoteChecks({ ...io, cwd: root }, config, credentials)),
     ...(await branchRuleChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
     ...(config?.conductor.projectId || config?.conductor.baseBranch
@@ -504,4 +508,87 @@ export async function doctor(io: Io, json: boolean, armadaVersion: string): Prom
   const report = await buildDoctor(io, armadaVersion, { readOnly: json });
   io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : renderDoctor(report));
   return report.errors ? 1 : 0;
+}
+
+/** Compare this checkout with the configured repository, then ask GitHub for its current name. */
+async function remoteChecks(io: Io, config: ArmadaConfig | null, credentials: Credentials): Promise<Check[]> {
+  if (!config) return [];
+  const repository = config.github.repository;
+  const remoteFix = `check origin with \`git remote get-url origin\`; set [github] repository in armada.toml to the checkout's repository, or set origin to https://github.com/${repository}.git`;
+  const checks: Check[] = [];
+  if (!io.exec) {
+    checks.push({
+      id: "git-origin",
+      level: "warning",
+      message: "origin repository not checked: git execution is unavailable",
+      fix: "run doctor in a terminal with git",
+    });
+  } else {
+    const result = await io
+      .exec("git", ["remote", "get-url", "origin"], { cwd: io.cwd, timeoutMs: 10_000 })
+      .catch(() => null);
+    if (result?.code !== 0) {
+      checks.push({
+        id: "git-origin",
+        level: "error",
+        message: "origin repository not checked: git could not read origin",
+        fix: remoteFix,
+      });
+    } else {
+      const origin = repositoryOfRemote(result.stdout);
+      checks.push(
+        !origin
+          ? {
+              id: "git-origin",
+              level: "error",
+              message: "origin is not a recognized GitHub repository remote",
+              fix: remoteFix,
+            }
+          : origin !== repository.toLowerCase()
+            ? {
+                id: "git-origin",
+                level: "error",
+                message: `origin names ${origin}, but armada.toml names ${repository}`,
+                fix: `set [github] repository = "${origin}" in armada.toml, or run \`git remote set-url origin https://github.com/${repository}.git\` if the configured repository is correct`,
+              }
+            : { id: "git-origin", level: "ok", message: `origin matches ${repository} in armada.toml`, fix: null },
+      );
+    }
+  }
+  if (!credentials.githubToken) {
+    checks.push({
+      id: "github-repository",
+      level: "warning",
+      message: "GitHub repository not checked: no GitHub token",
+      fix: "set GITHUB_TOKEN or run `gh auth login`, then run doctor again",
+    });
+    return checks;
+  }
+  try {
+    const current = await fetchRepository({
+      repository,
+      token: credentials.githubToken,
+      ...httpOptions(io),
+      timeoutMs: 10_000,
+    });
+    checks.push(
+      current.fullName.toLowerCase() !== repository.toLowerCase()
+        ? {
+            id: "github-repository",
+            level: "warning",
+            message: `GitHub reports ${repository} as ${current.fullName}: the repository was renamed or moved`,
+            fix: `set [github] repository = "${current.fullName}" in armada.toml`,
+          }
+        : { id: "github-repository", level: "ok", message: `GitHub confirms ${repository}`, fix: null },
+    );
+  } catch (err) {
+    // Unexpected transport errors can contain credential-bearing URLs; only safe adapter errors are shown.
+    checks.push({
+      id: "github-repository",
+      level: "warning",
+      message: `GitHub repository not checked: ${err instanceof GithubError && /^GitHub API (HTTP \d+|returned no valid repository full_name)$/.test(err.message) ? err.message : "GitHub did not return a repository"}`,
+      fix: `check access to ${repository} and run doctor again once GitHub answers`,
+    });
+  }
+  return checks;
 }

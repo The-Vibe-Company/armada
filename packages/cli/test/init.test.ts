@@ -127,6 +127,7 @@ async function fixture() {
   git(work, "commit", "--quiet", "--message", "chore: start");
   git(work, "push", "--quiet", "--set-upstream", "origin", "main");
 
+  const github = recordedFetch();
   const gh = fakeGh();
   const linear = fakeLinearLabels();
   // The project registry is the fleet's, on Armada.
@@ -134,6 +135,9 @@ async function fixture() {
   const api = fakeArmada({ keys: { armada_coordinator_key: "coordinator" }, store: registry });
   const exec: Exec = async (command, args, { cwd }) => {
     if (command === "gh") return gh.run(args);
+    // Keep git transport on the local bare repository while presenting its GitHub identity to doctor.
+    if (command === "git" && args.join(" ") === "remote get-url origin")
+      return { code: 0, stdout: "git@github.com:acme/widgets.git\n", stderr: "" };
     if (command === "python3")
       return {
         code: 0,
@@ -150,6 +154,7 @@ async function fixture() {
     env: {
       XDG_CONFIG_HOME: join(home, "config"),
       LINEAR_API_KEY: "lin_test",
+      GITHUB_TOKEN: "gh_test",
       ARMADA_API_URL: ARMADA_URL,
       ARMADA_API_KEY: "armada_coordinator_key",
     },
@@ -157,7 +162,25 @@ async function fixture() {
     stdout: (t) => out.push(t),
     stderr: (t) => err.push(t),
     ghToken: () => null,
-    fetch: (url, init) => (url.startsWith(ARMADA_URL) ? api.fetch(url, init) : linear.fetch(url, init)),
+    fetch: (url, init) =>
+      url.startsWith(ARMADA_URL)
+        ? api.fetch(url, init)
+        : url === "https://api.github.com/repos/acme/widgets"
+          ? Promise.resolve(
+              Response.json({
+                full_name: "acme/widgets",
+                default_branch: "main",
+                allow_squash_merge: true,
+                delete_branch_on_merge: false,
+              }),
+            )
+          : url.includes("/rules/branches/")
+            ? Promise.resolve(Response.json([]))
+            : url.endsWith("/protection")
+              ? Promise.resolve(new Response(null, { status: 404 }))
+              : url.startsWith("https://api.github.com/")
+                ? github.fetch(url, init)
+                : linear.fetch(url, init),
     exec,
   };
   /** Runs one command and returns its exit code with everything it printed. */
@@ -521,8 +544,8 @@ describe("armada doctor and armada init", () => {
     const after = await f.armada("doctor");
     expect(after.out).toContain('  ok       signed in to armada.example.test as the API key "coordinator" of Acme\n');
     expect(after.out).toContain("  ok       .claude/settings.json has Armada's stop hook");
-    expect(after.out).toContain("GitHub branch rules not checked: no GitHub token");
-    expect(after.out).toEndWith("0 errors, 1 warning.\n");
+    expect(after.out).toContain("  ok       GitHub default branch main: squash merging is allowed");
+    expect(after.out).toEndWith("Everything Armada needs is in place.\n");
     expect(after.code).toBe(0);
 
     const third = await f.armada("init");
