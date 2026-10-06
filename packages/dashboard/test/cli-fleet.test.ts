@@ -536,6 +536,7 @@ describe("the fleet through the Armada API", () => {
     ]);
     expect(await coordinator.pendingLaunches()).toContainEqual(
       expect.objectContaining({
+        id: made.worker.id,
         ticket: "WID-95",
         runtime: "conductor",
         handle: binding.handle,

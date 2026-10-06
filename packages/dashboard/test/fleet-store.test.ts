@@ -20,6 +20,7 @@ import {
   listSessions,
   openInboxItems,
   openRuntimeHandles,
+  putChore,
   putHandBack,
   putPlan,
   recordCoordinatorSeen,
@@ -437,6 +438,72 @@ describe("the coordinator's inbox", () => {
     await addRequest(db, { ...answer(plan?.id ?? 0, "approved"), ticket: "WID-7" });
     expect(await resolvePlans(db, { project: P, ticket: "WID-7", resolution: "released", at: at(32) })).toBe(1);
     expect((await open()).map((i) => i.kind)).toEqual(["hand-back"]);
+  });
+});
+
+describe("Linear follow-up work", () => {
+  test("one open chore per project and ticket, even when recorded concurrently; resolved history is kept", async () => {
+    const projects = ["chore-a", "chore-b"];
+    for (const project of projects)
+      await upsertProject(
+        db,
+        { slug: project, name: "Chores", repository: "acme/chores", programRoot: "WID-1" },
+        at(0),
+      );
+    const chore = {
+      project: "chore-a",
+      ticket: "WID-77",
+      kind: "linear-pending" as const,
+      pr: 11,
+      author: "coordinator",
+      body: "Finish Linear for #11",
+      coordinator: "night",
+      at: at(30),
+    };
+    await Promise.all([putChore(db, chore), putChore(db, chore)]);
+    const open = () => openInboxItems(db, { project: chore.project, recipient: "coordinator", ticket: chore.ticket });
+    expect(await open()).toHaveLength(1);
+    const original = (await open())[0];
+    if (!original) throw new Error("missing chore");
+    await putChore(db, {
+      ...chore,
+      body: "Run: armada merge --finish 11",
+      author: "another coordinator",
+      coordinator: "day",
+      at: at(31),
+    });
+    expect(await open()).toMatchObject([
+      {
+        id: original.id,
+        body: "Run: armada merge --finish 11",
+        author: "another coordinator",
+        coordinator: "day",
+        createdAt: at(31).toISOString(),
+      },
+    ]);
+    await putChore(db, { ...chore, project: "chore-b" });
+    expect(await openInboxItems(db, { project: "chore-b", recipient: "coordinator" })).toHaveLength(1);
+    await expect(
+      addInboxItem(db, {
+        project: chore.project,
+        ticket: chore.ticket,
+        kind: chore.kind,
+        recipient: "coordinator",
+        author: null,
+        body: "duplicate",
+        at: at(31),
+      }),
+    ).rejects.toThrow("inbox_one_open_chore");
+    expect(
+      await resolveInboxItem(db, { project: chore.project, id: original.id, resolution: "finished", at: at(32) }),
+    ).toBe(true);
+    await putChore(db, { ...chore, at: at(33) });
+    expect(await open()).toHaveLength(1);
+    expect((await open())[0]?.id).not.toBe(original.id);
+    expect(
+      (await db.query("SELECT id FROM inbox_items WHERE project = $1 AND ticket = $2", [chore.project, chore.ticket]))
+        .rows,
+    ).toHaveLength(2);
   });
 });
 
@@ -898,4 +965,62 @@ test("a higher reserved version does not hide a later merge-hold migration", asy
   } finally {
     await database.end();
   }
+});
+
+test("concurrent terminal job observations atomically store one coordinator notice with last progress", async () => {
+  const project = { slug: "job-notices", name: "Jobs", repository: "acme/jobs", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  for (const state of ["succeeded", "failed", "stopped", "lost"] as const) {
+    const job = await store.startJob({
+      project: project.slug,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: at(0),
+    });
+    await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      progress: "40/120",
+      at: at(0),
+    });
+    await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      progress: "40/120",
+      at: at(0),
+    });
+    const stale = await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "failed",
+      progress: "old result",
+      expectedRevision: 1,
+      at: at(2),
+    });
+    expect(stale?.state).toBe("running");
+    expect(stale?.progress).toBe("40/120");
+    const input = { project: project.slug, ticket: job.ticket, id: job.id, state, at: at(2) };
+    const outcomes = await Promise.all([store.observeJob(input), fleetStore(db).observeJob(input)]);
+    expect(outcomes[0]).toEqual(outcomes[1]);
+    expect(outcomes[0]?.progress).toBe("40/120");
+    await store.observeJob({ ...input, state: "running", at: at(3) });
+  }
+  const items = await store.openInboxItems({ project: project.slug, recipient: "coordinator" });
+  expect(items).toHaveLength(4);
+  expect(items.map((i) => i.kind)).toEqual(["job", "job", "job", "job"]);
+  for (const item of items) {
+    expect(item.ticket).toBe("DEMO-7");
+    expect(item.body).toContain("eval");
+    expect(item.body).toContain("40/120");
+    expect(item.createdAt).toBe(at(2).toISOString());
+  }
+  expect(items.map((i) => i.body).join("\n")).toContain("succeeded");
+  expect(items.map((i) => i.body).join("\n")).toContain("lost");
 });

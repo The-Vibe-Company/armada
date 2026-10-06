@@ -55,6 +55,7 @@ describe("armada.toml", () => {
           runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
         },
       },
+      git: { sign: "inherit" },
       github: { repository: "acme/widgets" },
       ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
@@ -497,4 +498,16 @@ test("silence allowances inherit the configured silence and validate explicit CI
   ).toMatchObject({ launchGraceMinutes: 0, ciWaitMinutes: 70 });
   for (const setting of ["launch_grace_minutes = -1", "ci_wait_minutes = 0", 'ci_wait_minutes = "later"'])
     expect(() => parseConfig(source.replace("[policy]", `[policy]\n${setting}`))).toThrow();
+});
+
+test("git signing defaults to inherit, accepts off, rejects invalid values and typos", () => {
+  expect(parseConfig(DEMO_TOML).git.sign).toBe("inherit");
+  for (const sign of ["inherit", "off"] as const)
+    expect(parseConfig(`${DEMO_TOML}\n[git]\nsign = "${sign}"\n`).git.sign).toBe(sign);
+  for (const value of ['"on"', "false", "1", '""'])
+    expect(problemsOf(`${DEMO_TOML}\n[git]\nsign = ${value}\n`).join(" ")).toContain("git.sign");
+  expect(problemsOf(`${DEMO_TOML}\n[git]\nsignn = "off"\n`)).toContain('unknown key "git.signn"');
+  expect(
+    configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+  ).toContain('sign = "inherit"');
 });
