@@ -248,6 +248,8 @@ export interface OwnerValidation extends Validation {
   title: string | null;
   url: string | null;
   gallery: Attachment[];
+  /** Additional ticket images omitted from the automatic sample. */
+  galleryMore?: number;
 }
 
 /** One project as the dashboard read it. */
