@@ -894,7 +894,7 @@ async function withHandleAnswers(db: Queryable, project: string, handles: Runtim
 // ------------------------------------------------------------------ inbox
 
 const INBOX_COLUMNS = `id, project, coordinator, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
-  request_question, request_profile, request_pr, request_validation`;
+  request_question, request_profile, request_pr, request_validation, request_deferred`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
   id: Number(r.id),
@@ -911,6 +911,7 @@ const inboxRow = (r: Row): StoredInboxItem => ({
         request: {
           question: r.request_question === null ? null : Number(r.request_question),
           profile: text(r.request_profile),
+          ...(r.request_deferred ? { deferred: true } : {}),
           ...(r.request_pr == null ? {} : { pr: Number(r.request_pr) }),
         },
       }
@@ -958,10 +959,22 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
                      AND q.recipient = 'coordinator' AND q.resolved_at IS NULL AND ($3 <> 'plan-changes' OR q.kind = 'plan'))`
       : "";
   const rs = await db.query<{ id: unknown }>(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr, coordinator)
-     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint, $10 WHERE true ${questionOpen}
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr, coordinator, request_deferred)
+     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint, $10, $11::boolean WHERE true ${questionOpen}
      ON CONFLICT DO NOTHING RETURNING id`,
-    [r.project, r.ticket, r.kind, r.author, r.body, r.at, r.question, r.profile, r.pr ?? null, r.coordinator ?? null],
+    [
+      r.project,
+      r.ticket,
+      r.kind,
+      r.author,
+      r.body,
+      r.at,
+      r.question,
+      r.profile,
+      r.pr ?? null,
+      r.coordinator ?? null,
+      r.deferred ?? false,
+    ],
   );
   const id = rs.rows[0]?.id;
   return id === undefined ? null : Number(id);

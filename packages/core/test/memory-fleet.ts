@@ -33,6 +33,7 @@ interface HandleRow extends Omit<RuntimeHandle, "profile"> {}
 
 interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestPr?: number | null;
+  requestDeferred?: boolean;
   requestQuestion: number | null;
   requestProfile: string | null;
   requestValidation?: number | null;
@@ -82,7 +83,7 @@ export function memoryFleet(): FleetStore & {
   };
 
   const stored = (r: ItemRow): StoredInboxItem => {
-    const { requestQuestion, requestProfile, requestPr, requestValidation, ...rest } = r;
+    const { requestQuestion, requestProfile, requestPr, requestValidation, requestDeferred, ...rest } = r;
     return {
       ...rest,
       ...(r.kind === "decision"
@@ -93,6 +94,7 @@ export function memoryFleet(): FleetStore & {
             request: {
               question: requestQuestion,
               profile: requestProfile,
+              ...(requestDeferred ? { deferred: true } : {}),
               ...(requestPr == null ? {} : { pr: requestPr }),
             },
           }
@@ -804,6 +806,7 @@ export function memoryFleet(): FleetStore & {
         body: r.body,
         createdAt: r.at.toISOString(),
         requestQuestion: r.question,
+        requestDeferred: r.deferred,
         requestProfile: r.profile,
         requestPr: r.pr,
       });

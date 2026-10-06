@@ -1,6 +1,7 @@
 // `armada status`: one JSON-serializable reading of the fleet, shared by the
 // CLI and, later, the dashboard.
 import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
+import type { DeferredLaunch } from "./deferred.ts";
 import {
   freshEvent,
   frontier,
@@ -142,6 +143,7 @@ export interface StatusReport {
   /** Workers launched that have not claimed their ticket; empty when Armada's live data was not read. */
   notStarted: NotStartedLaunch[];
   pendingLaunches?: PendingLaunch[];
+  launchWhenUnblocked?: DeferredLaunch[];
   /**
    * Ready to start: the frontier, ranked, without the tickets parked on purpose.
    * `readyForAgent` marks tickets that carry the ready label.
@@ -169,6 +171,7 @@ export interface BuildStatusInput {
   holds?: MergeHold[];
   /** Launches no claim followed, from Armada's live data. */
   launches?: PendingLaunch[];
+  launchWhenUnblocked?: DeferredLaunch[];
   /** Problems met on optional sources (the live data), added to the report warnings. */
   extraWarnings?: string[];
   now: Date;
@@ -189,6 +192,7 @@ export function buildStatus({
   heartbeats,
   live,
   launches = [],
+  launchWhenUnblocked,
   extraWarnings = [],
   now,
 }: BuildStatusInput): StatusReport {
@@ -231,6 +235,7 @@ export function buildStatus({
 
   return {
     schemaVersion: STATUS_SCHEMA_VERSION,
+    ...(launchWhenUnblocked ? { launchWhenUnblocked } : {}),
     ...(holds ? { holds } : {}),
     main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
     progress: {
@@ -383,6 +388,7 @@ export interface LoadStatusOptions extends HttpRetryOptions {
   runtimeHandles?: () => Promise<RuntimeHandle[]>;
   /** Launches no claim followed, read by the caller through Armada when signed in. */
   launches?: () => Promise<PendingLaunch[]>;
+  deferredLaunches?: () => Promise<DeferredLaunch[]>;
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -495,7 +501,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents, holds] =
+  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents, holds, deferred] =
     await Promise.all([
       readStatusSources(config, opts),
       eventsP,
@@ -504,6 +510,12 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
       opts.runtimeHandles?.().catch(() => undefined),
       opts.latestEvents?.().catch(() => undefined),
       holdsP,
+      opts.deferredLaunches?.().then(
+        (items) => ({ items }),
+        (err: unknown) => ({
+          warning: `Armada’s deferred launches could not be read (${err instanceof Error ? err.message : String(err)})`,
+        }),
+      ),
     ]);
   return buildStatus({
     config,
@@ -523,7 +535,13 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
       : {}),
     ...(launches.launches ? { launches: launches.launches } : {}),
     ...(holds.holds ? { holds: holds.holds } : {}),
-    extraWarnings: [events.warning, launches.warning, holds.warning].filter((w): w is string => !!w),
+    ...(deferred && "items" in deferred ? { launchWhenUnblocked: deferred.items } : {}),
+    extraWarnings: [
+      events.warning,
+      launches.warning,
+      holds.warning,
+      deferred && "warning" in deferred ? deferred.warning : undefined,
+    ].filter((w): w is string => !!w),
     now: now(),
   });
 }

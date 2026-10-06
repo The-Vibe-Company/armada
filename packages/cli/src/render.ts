@@ -99,6 +99,15 @@ export function renderStatus(r: StatusReport): string {
     }
   }
 
+  if (r.launchWhenUnblocked?.length) {
+    out.push("", `Launch when unblocked (${r.launchWhenUnblocked.length})`);
+    for (const request of r.launchWhenUnblocked) {
+      out.push(
+        `  ${request.ticket}  ${request.reason ?? "unblocked: launch it now"}${request.profile ? ` · profile ${request.profile}` : ""} · asked by ${request.author ?? "unknown"} (#${request.id})`,
+      );
+      out.push(`    ${request.command}`);
+    }
+  }
   const ready = r.frontier.filter((t) => t.readyForAgent);
   const untriaged = r.frontier.filter((t) => !t.readyForAgent);
   out.push("", `Ready to start (${ready.length})`);
