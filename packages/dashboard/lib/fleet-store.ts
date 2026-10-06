@@ -768,6 +768,8 @@ export async function releaseClaim(db: Database, project: string, release: Relea
     await resolvePlans(tx, { project, ticket: release.ticket, resolution, at });
     for (const kind of ["question", "answer-request"] as const)
       await resolveInboxItems(tx, { project, ticket: release.ticket, kind, resolution, at });
+    if (release.reason.startsWith("relaunch:"))
+      await resolveInboxItems(tx, { project, ticket: release.ticket, kind: "hand-back", resolution, at });
     await recordEvent(tx, { project, ticket: release.ticket, kind: "release", message: release.reason, at });
     return true;
   });
@@ -943,6 +945,49 @@ async function withHandleAnswers(db: Queryable, project: string, handles: Runtim
     const answer = answers[h.ticket];
     return { ...h, ...(answer && answer >= h.claimedAt ? { lastAnsweredAt: answer } : {}) };
   });
+}
+
+/** One exact generation, including the launch which never claimed. Existing indexed rows suffice. */
+export async function getRuntimeReference(
+  db: Queryable,
+  project: string,
+  ref: import("@armada/core").ClaimRef,
+): Promise<import("@armada/core").ClaimRef | null> {
+  if (ref.claimedAt !== null) {
+    const current = await getRuntimeHandle(db, project, ref.ticket);
+    if (current && current.handle === ref.handle && current.claimedAt === ref.claimedAt) {
+      if (current.runtime.toLowerCase() !== ref.runtime || (current.workerSessionId ?? null) !== ref.launchId)
+        return null;
+      return {
+        ticket: current.ticket,
+        coordinator: current.coordinator ?? null,
+        runtime: ref.runtime,
+        handle: current.handle,
+        claimedAt: current.claimedAt,
+        launchId: current.workerSessionId ?? null,
+        releasedAt: current.releasedAt,
+        branch: current.branch,
+      };
+    }
+    const rows = await db.query(
+      `SELECT s.runtime, s.branch, s.released_at, s.coordinator FROM fleet_sessions s
+       WHERE s.project = $1 AND s.ticket = $2 AND s.handle = $3 AND s.claimed_at = $4
+         AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM armada_worker w WHERE w.id = $5
+           AND w.project = s.project AND w.ticket = s.ticket AND w."runtimeHandle" = s.handle))`,
+      [project, ref.ticket, ref.handle, ref.claimedAt, ref.launchId],
+    );
+    const row = rows.rows[0];
+    if (!row || String(row.runtime).toLowerCase() !== ref.runtime) return null;
+    return { ...ref, releasedAt: iso(row.released_at), branch: text(row.branch), coordinator: text(row.coordinator) };
+  }
+  if (!ref.launchId) return null;
+  const rows = await db.query(
+    `SELECT "endedAt", runtime, coordinator FROM armada_worker WHERE project = $1 AND ticket = $2 AND id = $3 AND "runtimeHandle" = $4`,
+    [project, ref.ticket, ref.launchId, ref.handle],
+  );
+  const row = rows.rows[0];
+  if (!row || row.runtime !== ref.runtime) return null;
+  return { ...ref, releasedAt: iso(row.endedAt), coordinator: text(row.coordinator) };
 }
 
 // ------------------------------------------------------------------ inbox
@@ -2035,6 +2080,7 @@ export const fleetStore = (db: Database): FleetStore => ({
     releaseRuntimeHandle(db, project, ticket, at, guard, merged),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
+  getRuntimeReference: (project, ref) => getRuntimeReference(db, project, ref),
   addInboxItem: (item) => addInboxItem(db, item),
   addRequest: (r) => addRequest(db, r),
   putPlan: (item) => putPlan(db, item),

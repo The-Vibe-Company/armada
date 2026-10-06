@@ -22,8 +22,8 @@ export interface ClaimRef {
   releasedAt: string | null;
   /** Herdr provenance: the branch recorded by the claim. */
   branch?: string | null;
-  /** Optional delivery scope: refuse a notice after transfer to another coordinator. */
-  coordinator?: string;
+  /** Authenticated ownership metadata; delivery refuses a notice after transfer to another coordinator. */
+  coordinator?: string | null;
   /** Merge notices must not wake a session after any of its tickets hands back. */
   skipHandedBack?: boolean;
 }

@@ -6,6 +6,7 @@ import {
   type ArmadaSignIn,
   armadaAddress,
   BriefError,
+  type BuildBriefInput,
   buildBrief,
   buildModel,
   CONFIG_FILE,
@@ -47,6 +48,7 @@ import {
   type Launched,
   type LaunchSpec,
   type RuntimeAdapter,
+  recheckMutation,
   redactRuntimeText,
   runtimeFor,
 } from "./runtimes/adapter.ts";
@@ -97,14 +99,14 @@ export interface LaunchBinding {
 /** Test seam; production binding uses the shared Armada API client. */
 export type BindLaunch = (signIn: ArmadaSignIn, target: LaunchBinding) => Promise<unknown>;
 
-export async function launchWorker(
+export async function prepareLaunch(
   io: Io,
   config: ArmadaConfig,
   credentials: Credentials,
   args: { rest: string[]; json: boolean; options: Record<string, string> },
   version: string,
   configPath: string,
-  bindLaunch?: BindLaunch,
+  replacement?: { branch: string; coordinator?: string | null; preApprovalReason?: string; command?: string },
 ) {
   const [input, ...extra] = args.rest;
   const o = args.options;
@@ -114,7 +116,7 @@ export async function launchWorker(
     throw new UsageError("--runtime must be conductor or herdr");
   const requested = o.profile?.trim() || null;
   const reason = o.reason?.trim() || null;
-  const approvalReason = preApprovalReason(o);
+  const approvalReason = replacement?.preApprovalReason ?? preApprovalReason(o);
   if (reason && !requested && !approvalReason) throw new UsageError("--reason goes with --profile");
   if (o.harness && !HERDR_HARNESSES.includes(o.harness as HerdrHarness))
     throw new UsageError("--harness must be claude, codex, opencode or deepseek (OpenCode + DeepSeek model)");
@@ -152,6 +154,7 @@ export async function launchWorker(
   if (ticket.blockers.some((b) => b.statusType !== "completed" && b.statusType !== "canceled"))
     throw new UsageError(`${ticketId} has open blockers; resolve them before launching`);
   if (
+    !replacement &&
     inFlight(buildModel(program.issues, program.rootId), program.comments, {
       now: now().getTime(),
       silentAfterMinutes: config.policy.silentAfterMinutes,
@@ -160,7 +163,7 @@ export async function launchWorker(
     throw new UsageError(`${ticketId} is already in flight; inspect its worker before launching again`);
   if (ticket.labels.includes(config.tracker.parkedLabel))
     throw new UsageError(`${ticketId} is parked; remove the parked label before launching`);
-  const branch = ticket.branchName;
+  const branch = replacement?.branch || ticket.branchName;
   if (!branch) throw new UsageError(`${ticketId} has no suggested branch in Linear`);
   let choice: ProfileChoice | HerdrProfileChoice | null;
   let validation: ValidationChoice | null;
@@ -170,14 +173,16 @@ export async function launchWorker(
       ticket: ticketId,
       requested: o.validation ?? null,
       reason: o["validation-reason"] ?? null,
-      command: [
-        `armada launch ${ticketId}${o.runtime ? ` --runtime ${o.runtime}` : ""}`,
-        ...["harness", "profile", "reason", "notes"].flatMap((key) =>
-          o[key] ? [`--${key} ${shellWord(o[key])}`] : [],
-        ),
-        ...["pre-approve", "dry-run"].filter((key) => o[key] === "true").map((key) => `--${key}`),
-        ...(args.json ? ["--json"] : []),
-      ].join(" "),
+      command:
+        replacement?.command ??
+        [
+          `armada launch ${ticketId}${o.runtime ? ` --runtime ${o.runtime}` : ""}`,
+          ...["harness", "profile", "reason", "notes"].flatMap((key) =>
+            o[key] ? [`--${key} ${shellWord(o[key])}`] : [],
+          ),
+          ...["pre-approve", "dry-run"].filter((key) => o[key] === "true").map((key) => `--${key}`),
+          ...(args.json ? ["--json"] : []),
+        ].join(" "),
     });
   } catch (error) {
     if (error instanceof ProfileError) throw new UsageError(error.message);
@@ -211,8 +216,8 @@ export async function launchWorker(
       );
     }
   };
-  await available();
-  if (local && o["dry-run"] === "true")
+  if (!replacement) await available();
+  if (local && !replacement && o["dry-run"] === "true")
     return await launchPlan(io, args.json, {
       ticketId,
       choice: local,
@@ -220,7 +225,9 @@ export async function launchWorker(
       version,
       preApproval: approval?.preview ?? null,
     });
-  if (local) {
+  const branchCheck = await io.exec("git", ["check-ref-format", "--branch", branch], { cwd: io.cwd, timeoutMs: 5000 });
+  if (branchCheck.code !== 0) throw new UsageError("the ticket branch is invalid; nothing was launched");
+  if (local && o["dry-run"] !== "true") {
     const execute = io.exec;
     const preflight: Io = {
       ...io,
@@ -243,7 +250,8 @@ export async function launchWorker(
         herdr: local.profile,
       }
     : { name: choice.name, ...(remoteChoice as ProfileChoice).profile };
-  const checks = local ? [] : await runtime.preflight({ profile, repository: config.github.repository });
+  const checks =
+    local && o["dry-run"] !== "true" ? [] : await runtime.preflight({ profile, repository: config.github.repository });
   const gaps = checks.filter((c) => c.level === "error").map((c) => `${c.message}${c.fix ? `: ${c.fix}` : ""}`);
   const warnings = checks.filter((c) => c.level === "warning").map((c) => c.message);
   const dry = o["dry-run"] === "true";
@@ -293,7 +301,7 @@ export async function launchWorker(
   } catch {
     warnings.push("Comparison incomplete: in-flight PR files could not be read from Armada.");
   }
-  const briefInput = {
+  const briefInput: BuildBriefInput = {
     ...sharedResources,
     overlap,
     config,
@@ -311,7 +319,13 @@ export async function launchWorker(
   };
   // Build once before a token exists so brief errors cannot strand a token.
   const preview = buildBrief({ ...briefInput, ...(local ? { herdr: { choice: local, handle: "preview" } } : {}) });
-  warnings.push(...preview.warnings.filter((warning) => warning.startsWith("Comparison incomplete")));
+  warnings.push(
+    ...preview.warnings.filter(
+      (warning) =>
+        (warning.startsWith("Comparison incomplete") || warning.startsWith(`${ticketId}: `)) &&
+        !warnings.includes(warning),
+    ),
+  );
   if (!dry) for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
   const spec: LaunchSpec = {
     ticket: ticketId,
@@ -326,189 +340,304 @@ export async function launchWorker(
     env: { ARMADA_TICKET: ticketId },
     blankSecrets: config.secrets.names,
   };
-  if (dry) {
-    const argv = ["conductor", "--json", ...conductorLaunchArguments(spec)];
-    const ready = gaps.length === 0;
-    const plan = {
-      ticket: ticketId,
-      runtime: runtimeName,
-      dryRun: true,
-      preApproval: approval?.preview ?? null,
-      profile: choice.name,
-      why: choice.why,
-      profileWhy: choice.why,
-      agent: profile.agent,
-      model: profile.model,
-      effort: profile.effort,
-      fastMode: profile.fastMode,
-      branch,
-      base,
-      argv,
-      input: `<brief, ${Buffer.byteLength(preview.prompt)} bytes, via stdin>`,
-      preflight: { ready, checks, gaps, warnings, inFlight: false, pendingLaunch: false },
-    };
-    io.stdout(
-      args.json
-        ? `${JSON.stringify(plan, null, 2)}\n`
-        : `Launch plan for ${ticketId} (dry run: nothing is created)\nProfile    ${choice.name} — ${choice.why}\nConductor  ${profile.agent}, model ${profile.model}, effort ${profile.effort}, fast mode ${profile.fastMode}\nCommand    ${JSON.stringify(argv)} ${plan.input}\nPreflight  ${ready ? "ready" : "blocked"}\n`,
-    );
-    if (!args.json && approval) io.stdout(`${approval.preview}\n`);
-    for (const gap of gaps) io.stderr(`armada: ${gap}\n`);
-    return ready ? 0 : 1;
-  }
+  return {
+    io,
+    config,
+    credentials,
+    args,
+    ticketId,
+    ticket,
+    program,
+    now,
+    signIn,
+    choice,
+    local,
+    runtimeName,
+    runtime,
+    spec,
+    briefInput,
+    preview,
+    checks,
+    gaps,
+    warnings,
+    configSnapshot,
+    available,
+    approval,
+    repo,
+    coordinator: replacement?.coordinator,
+  };
+}
+
+export type PreparedLaunch = Exclude<Awaited<ReturnType<typeof prepareLaunch>>, number>;
+
+export async function launchWorker(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  args: { rest: string[]; json: boolean; options: Record<string, string> },
+  version: string,
+  configPath: string,
+  bindLaunch?: BindLaunch,
+) {
+  const prepared = await prepareLaunch(io, config, credentials, args, version, configPath);
+  if (typeof prepared === "number") return prepared;
+  if (args.options["dry-run"] === "true") return printLaunchPlan(prepared);
+  const { fleet } = liveFleet(io, config, credentials);
+  if (!fleet) throw new UsageError("launch needs Armada's live fleet");
+  return withLaunchLease(io, fleet, prepared.ticketId, async () => {
+    const result = await executeLaunch(prepared, bindLaunch);
+    printLaunch(prepared, result);
+    return 0;
+  });
+}
+
+export function printLaunchPlan(p: PreparedLaunch) {
+  const { io, args, ticketId, choice, spec, preview, checks, gaps, warnings, runtimeName } = p;
+  const { branch, base, profile } = spec;
+  const argv = ["conductor", "--json", ...conductorLaunchArguments(spec)];
+  const ready = gaps.length === 0;
+  const plan = {
+    ticket: ticketId,
+    runtime: runtimeName,
+    dryRun: true,
+    preApproval: p.approval?.preview ?? null,
+    profile: choice.name,
+    why: choice.why,
+    profileWhy: choice.why,
+    agent: profile.agent,
+    model: profile.model,
+    effort: profile.effort,
+    fastMode: profile.fastMode,
+    branch,
+    base,
+    argv,
+    input: `<brief, ${Buffer.byteLength(preview.prompt)} bytes, via stdin>`,
+    preflight: { ready, checks, gaps, warnings, inFlight: false, pendingLaunch: false },
+  };
+  io.stdout(
+    args.json
+      ? `${JSON.stringify(plan, null, 2)}\n`
+      : `Launch plan for ${ticketId} (dry run: nothing is created)\nProfile    ${choice.name} — ${choice.why}\nConductor  ${profile.agent}, model ${profile.model}, effort ${profile.effort}, fast mode ${profile.fastMode}\nCommand    ${JSON.stringify(argv)} ${plan.input}\nPreflight  ${ready ? "ready" : "blocked"}\n`,
+  );
+  if (!args.json && p.approval) io.stdout(`${p.approval.preview}\n`);
+  for (const gap of gaps) io.stderr(`armada: ${gap}\n`);
+  if (!args.json) for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
+  return ready ? 0 : 1;
+}
+
+export async function executeLaunch(p: PreparedLaunch, bindLaunch?: BindLaunch) {
+  const {
+    io,
+    config,
+    credentials,
+    ticketId,
+    now,
+    signIn,
+    choice,
+    local,
+    runtimeName,
+    runtime,
+    spec,
+    briefInput,
+    configSnapshot,
+    available,
+  } = p;
+  const { branch, profile } = spec;
   const api = apiOf(io, credentials.armadaApi.url);
+  await available();
+  await recheckMutation();
+  if (local && spec.from.kind === "branch") {
+    // The advertised commit may not be in this machine's object store yet.
+    const fetched = await io.exec?.(
+      "git",
+      ["fetch", "--no-tags", "--no-write-fetch-head", "origin", `refs/heads/${spec.branch}`],
+      { cwd: p.repo, timeoutMs: 30000 },
+    );
+    const exists = await io.exec?.("git", ["cat-file", "-e", `${spec.from.head}^{commit}`], {
+      cwd: p.repo,
+      timeoutMs: 5000,
+    });
+    if (fetched?.code !== 0 || exists?.code !== 0)
+      throw new UsageError("could not fetch the pushed branch head; no launch token was created");
+  }
+  await recheckMutation();
+  briefInput.preApprovedReason = await p.approval?.apply();
+  await recheckMutation();
+  const started = now().toISOString();
+  const launch = await api.launchToken(signIn, {
+    project: config.project.slug,
+    ticket: ticketId,
+    // Explicit null preserves an unowned generation; only a normal launch
+    // chooses the coordinator selected in this terminal.
+    coordinator: p.coordinator === undefined ? await coordinatorName(io, config.project.slug) : p.coordinator,
+  });
+  let worker: Launched | null = null;
+  let handle: HerdrHandle | undefined;
+  const build = (herdr?: { choice: HerdrProfileChoice; handle: string }) =>
+    buildBrief({
+      ...briefInput,
+      launch: {
+        token: launch.token,
+        expiresAt: launch.expiresAt,
+        apiUrl:
+          armadaAddress(credentials.armadaApi.url) === armadaAddress(DEFAULT_ARMADA_API_URL)
+            ? null
+            : armadaAddress(credentials.armadaApi.url),
+      },
+      ...(herdr ? { herdr } : {}),
+    }).prompt;
+  const revoke = async () => {
+    try {
+      await api.revokePendingLaunch(signIn, { project: config.project.slug, ticket: ticketId, id: launch.worker.id });
+      io.stderr(`armada: revoked the pending launch of ${ticketId}.\n`);
+      return true;
+    } catch {
+      io.stderr(
+        `armada: could not revoke the pending launch; run armada launch revoke ${ticketId} before retrying (a claimed worker must release).\n`,
+      );
+      return false;
+    }
+  };
+  try {
+    if (local && runtime instanceof HerdrAdapter) {
+      worker = await runtime.launchPrepared(spec, async (created) => {
+        if (!created.path) throw new UsageError("herdr did not return a worktree");
+        handle = { ...parseHerdrHandle(created.handle), path: created.path };
+        if (configSnapshot !== null && io.writeFile) await io.writeFile(join(handle.path, CONFIG_FILE), configSnapshot);
+        return build({ choice: local, handle: herdrClaimHandle(handle) });
+      });
+    } else {
+      spec.prompt = build();
+      worker = await runtime.launch(spec);
+    }
+  } catch (error) {
+    const recover = (runtime as RuntimeAdapter).recoverLaunch?.bind(runtime);
+    if (
+      (spec.from.kind === "in-place" || !recover) &&
+      error instanceof RuntimeError &&
+      error.code === "unknown-outcome"
+    )
+      throw new UsageError(
+        `Launch has an unknown outcome; the pending launch is retained. Inspect the runtime before retrying${handle ? `: ${herdrClaimHandle(handle)}` : ""}`,
+        runtimeName === "herdr" ? "herdr agent list" : `armada peek ${ticketId}`,
+      );
+    if (error instanceof RuntimeError && error.code === "unknown-outcome" && recover) {
+      try {
+        const recovery = await recover(spec, started);
+        const recovered = recovery.workers[0];
+        if (recovery.complete && recovery.candidates.length === 1 && recovered) {
+          worker = recovered;
+          io.stderr(
+            `armada: recovered the Conductor workspace after an uncertain launch; inspect ${recovered.handle} to confirm the worker received its brief.\n`,
+          );
+        } else if (!recovery.complete || recovery.candidates.length > 1) {
+          // An uncertain search is not a refusal: preserve the token and block a second launch.
+          throw new UsageError(
+            `Conductor recovery ${recovery.complete ? "returned several possible workers" : "is incomplete"}: ${recovery.candidates.join(", ") || "no visible candidate ids"}; the pending launch is retained. Inspect conductor workspace list --mine --repo ${config.github.repository} --since ${started}; pick the worker or revoke the launch, then archive unwanted workspaces with conductor workspace archive <workspace>`,
+            `armada launch revoke ${ticketId}`,
+          );
+        }
+      } catch (recoveryError) {
+        if (recoveryError instanceof UsageError) throw recoveryError;
+        throw new UsageError(
+          `Conductor recovery could not be completed; the pending launch is retained. Inspect conductor workspace list --mine --repo ${config.github.repository} --since ${started} before revoking or archiving possible workspaces`,
+          `armada launch revoke ${ticketId}`,
+        );
+      }
+    }
+    if (!worker) {
+      if (handle) io.stderr(`armada: local workspace retained: ${herdrClaimHandle(handle)}\n`);
+      const revoked = await revoke();
+      const message =
+        error instanceof UsageError || error instanceof BriefError || error instanceof RuntimeError
+          ? error instanceof RuntimeError && error.cause instanceof UsageError
+            ? error.cause.message
+            : error.message
+          : `${runtimeName} worker launch failed`;
+      throw new UsageError(
+        redactRuntimeText(message.split(launch.token).join("[redacted]")),
+        !revoked
+          ? `armada launch revoke ${ticketId}`
+          : handle
+            ? `herdr agent attach ${handle.agent}`
+            : runtimeName === "herdr"
+              ? "herdr agent list"
+              : error instanceof RuntimeError && ["invalid", "unknown-outcome"].includes(error.code)
+                ? `check conductor model and fix [conductor.profiles.${choice.name}]`
+                : `armada peek ${ticketId}`,
+      );
+    }
+  }
+  if (!worker) throw new UsageError("runtime did not return a worker handle");
+  try {
+    await recheckMutation();
+    await (bindLaunch ?? api.bindLaunch)(signIn, {
+      project: config.project.slug,
+      ticket: ticketId,
+      id: launch.worker.id,
+      runtime: runtimeName,
+      handle: worker.handle,
+    });
+  } catch (error) {
+    io.stderr(
+      error instanceof ArmadaApiError && error.status === 404
+        ? "armada: warning: launch binding is not deployed yet; the worker's sign-in will record its handle.\n"
+        : "armada: warning: could not bind the launched worker; its sign-in will record the handle.\n",
+    );
+  }
+  const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];
+  const inFlightTickets = [...new Set([...known, ticketId])].sort();
+  await remember(io, config.project.slug, { inFlight: inFlightTickets, readAt: now().toISOString() });
+  const watch = await rearmFor(io, config.project.slug, { inFlight: inFlightTickets, open: null });
+  const result = {
+    ticket: ticketId,
+    runtime: runtimeName,
+    profile: choice.name,
+    why: choice.why,
+    agent: profile.agent,
+    model: profile.model,
+    effort: profile.effort,
+    fastMode: profile.fastMode,
+    branch,
+    ...worker,
+    ...(local
+      ? {
+          harness: local.profile.harness,
+          actualHarness: herdrHarnessKind(local.profile.harness),
+          harnessDescription: herdrHarnessLabel(local.profile.harness),
+        }
+      : {}),
+    watch,
+  };
+  return result;
+}
+
+export function printLaunch(p: PreparedLaunch, result: Awaited<ReturnType<typeof executeLaunch>>) {
+  const { io, args, ticketId, choice, local } = p;
+  const worker = result;
+  const watch = result.watch;
+  io.stdout(
+    args.json
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : local
+        ? `Launched ${ticketId} with ${herdrHarnessLabel(local.profile.harness)} on profile ${choice.name}.\nWorktree: ${worker.path}\nHandle: ${worker.handle}\nThe worker signs in and claims its ticket from the brief.\n${watch.line}\n`
+        : `Launched ${ticketId} on profile ${choice.name} — ${choice.why}.\nWorkspace: ${worker.handle.split("/")[0]}\nSession: ${worker.handle.split("/")[1]}\n${worker.link ?? "Conductor did not return a session link"}\n${watch.line}\n`,
+  );
+}
+
+export async function withLaunchLease<T>(
+  io: Io,
+  fleet: import("@armada/core").Fleet,
+  ticketId: string,
+  act: (lease: { name: string; holder: string; ttlMs: number }) => Promise<T>,
+) {
   // Different terminals, including two commands in one coordinator session, need different holders.
   const holder = `${coordinatorHandle(io) ?? `terminal:${io.pid ?? process.pid}`}:${randomUUID()}`;
   const name = `launch:${ticketId}`;
   const lease = await fleet.acquireLease({ name, holder, ttlMs: 5 * 60_000 });
   if (!lease.acquired) throw new UsageError(`${ticketId} has another launch in progress; inspect it before retrying`);
   try {
-    await available();
-    const preApprovedReason = await approval?.apply();
-    const started = now().toISOString();
-    const launch = await api.launchToken(signIn, {
-      project: config.project.slug,
-      ticket: ticketId,
-      coordinator: await coordinatorName(io, config.project.slug),
-    });
-    let worker: Launched | null = null;
-    let handle: HerdrHandle | undefined;
-    const build = (herdr?: { choice: HerdrProfileChoice; handle: string }) =>
-      buildBrief({
-        ...briefInput,
-        preApprovedReason,
-        launch: {
-          token: launch.token,
-          expiresAt: launch.expiresAt,
-          apiUrl:
-            armadaAddress(credentials.armadaApi.url) === armadaAddress(DEFAULT_ARMADA_API_URL)
-              ? null
-              : armadaAddress(credentials.armadaApi.url),
-        },
-        ...(herdr ? { herdr } : {}),
-      }).prompt;
-    const revoke = async () => {
-      try {
-        await api.revokePendingLaunch(signIn, { project: config.project.slug, ticket: ticketId, id: launch.worker.id });
-        io.stderr(`armada: revoked the pending launch of ${ticketId}.\n`);
-        return true;
-      } catch {
-        io.stderr(
-          `armada: could not revoke the pending launch; run armada launch revoke ${ticketId} before retrying (a claimed worker must release).\n`,
-        );
-        return false;
-      }
-    };
-    try {
-      if (local && runtime instanceof HerdrAdapter) {
-        worker = await runtime.launchPrepared(spec, async (created) => {
-          if (!created.path) throw new UsageError("herdr did not return a worktree");
-          handle = { ...parseHerdrHandle(created.handle), path: created.path };
-          if (configSnapshot !== null && io.writeFile)
-            await io.writeFile(join(handle.path, CONFIG_FILE), configSnapshot);
-          return build({ choice: local, handle: herdrClaimHandle(handle) });
-        });
-      } else {
-        spec.prompt = build();
-        worker = await runtime.launch(spec);
-      }
-    } catch (error) {
-      const recover = (runtime as RuntimeAdapter).recoverLaunch?.bind(runtime);
-      if (error instanceof RuntimeError && error.code === "unknown-outcome" && recover) {
-        try {
-          const recovery = await recover(spec, started);
-          const recovered = recovery.workers[0];
-          if (recovery.complete && recovery.candidates.length === 1 && recovered) {
-            worker = recovered;
-            io.stderr(
-              `armada: recovered the Conductor workspace after an uncertain launch; inspect ${recovered.handle} to confirm the worker received its brief.\n`,
-            );
-          } else if (!recovery.complete || recovery.candidates.length > 1) {
-            // An uncertain search is not a refusal: preserve the token and block a second launch.
-            throw new UsageError(
-              `Conductor recovery ${recovery.complete ? "returned several possible workers" : "is incomplete"}: ${recovery.candidates.join(", ") || "no visible candidate ids"}; the pending launch is retained. Inspect conductor workspace list --mine --repo ${config.github.repository} --since ${started}; pick the worker or revoke the launch, then archive unwanted workspaces with conductor workspace archive <workspace>`,
-              `armada launch revoke ${ticketId}`,
-            );
-          }
-        } catch (recoveryError) {
-          if (recoveryError instanceof UsageError) throw recoveryError;
-          throw new UsageError(
-            `Conductor recovery could not be completed; the pending launch is retained. Inspect conductor workspace list --mine --repo ${config.github.repository} --since ${started} before revoking or archiving possible workspaces`,
-            `armada launch revoke ${ticketId}`,
-          );
-        }
-      }
-      if (!worker) {
-        if (handle) io.stderr(`armada: local workspace retained: ${herdrClaimHandle(handle)}\n`);
-        const revoked = await revoke();
-        const message =
-          error instanceof UsageError || error instanceof BriefError || error instanceof RuntimeError
-            ? error instanceof RuntimeError && error.cause instanceof UsageError
-              ? error.cause.message
-              : error.message
-            : `${runtimeName} worker launch failed`;
-        throw new UsageError(
-          redactRuntimeText(message.split(launch.token).join("[redacted]")),
-          !revoked
-            ? `armada launch revoke ${ticketId}`
-            : handle
-              ? `herdr agent attach ${handle.agent}`
-              : runtimeName === "herdr"
-                ? "herdr agent list"
-                : error instanceof RuntimeError && ["invalid", "unknown-outcome"].includes(error.code)
-                  ? `check conductor model and fix [conductor.profiles.${choice.name}]`
-                  : `armada peek ${ticketId}`,
-        );
-      }
-    }
-    if (!worker) throw new UsageError("runtime did not return a worker handle");
-    try {
-      await (bindLaunch ?? api.bindLaunch)(signIn, {
-        project: config.project.slug,
-        ticket: ticketId,
-        id: launch.worker.id,
-        runtime: runtimeName,
-        handle: worker.handle,
-      });
-    } catch (error) {
-      io.stderr(
-        error instanceof ArmadaApiError && error.status === 404
-          ? "armada: warning: launch binding is not deployed yet; the worker's sign-in will record its handle.\n"
-          : "armada: warning: could not bind the launched worker; its sign-in will record the handle.\n",
-      );
-    }
-    const known = (await watchOf(io, config.project.slug)).state?.inFlight ?? [];
-    const inFlightTickets = [...new Set([...known, ticketId])].sort();
-    await remember(io, config.project.slug, { inFlight: inFlightTickets, readAt: now().toISOString() });
-    const watch = await rearmFor(io, config.project.slug, { inFlight: inFlightTickets, open: null });
-    const result = {
-      ticket: ticketId,
-      runtime: runtimeName,
-      profile: choice.name,
-      why: choice.why,
-      agent: profile.agent,
-      model: profile.model,
-      effort: profile.effort,
-      fastMode: profile.fastMode,
-      branch,
-      ...worker,
-      ...(local
-        ? {
-            harness: local.profile.harness,
-            actualHarness: herdrHarnessKind(local.profile.harness),
-            harnessDescription: herdrHarnessLabel(local.profile.harness),
-          }
-        : {}),
-      watch,
-    };
-    io.stdout(
-      args.json
-        ? `${JSON.stringify(result, null, 2)}\n`
-        : local
-          ? `Launched ${ticketId} with ${herdrHarnessLabel(local.profile.harness)} on profile ${choice.name}.\nWorktree: ${worker.path}\nHandle: ${worker.handle}\nThe worker signs in and claims its ticket from the brief.\n${watch.line}\n`
-          : `Launched ${ticketId} on profile ${choice.name} — ${choice.why}.\nWorkspace: ${worker.handle.split("/")[0]}\nSession: ${worker.handle.split("/")[1]}\n${worker.link ?? "Conductor did not return a session link"}\n${watch.line}\n`,
-    );
-    return 0;
+    return await act({ name, holder, ttlMs: 5 * 60_000 });
   } finally {
     try {
       await fleet.releaseLease({ name, holder });
