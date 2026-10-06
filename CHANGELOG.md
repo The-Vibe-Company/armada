@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.60](https://github.com/The-Vibe-Company/armada/compare/v0.2.59...v0.2.60) (2026-10-06)
+
+
+### Features
+
+* **cli:** configure deploy checks per machine ([#274](https://github.com/The-Vibe-Company/armada/issues/274)) ([500446e](https://github.com/The-Vibe-Company/armada/commit/500446ee46ac0476a55ff7bf16b07789a74f84fb))
+
 ## [0.2.59](https://github.com/The-Vibe-Company/armada/compare/v0.2.58...v0.2.59) (2026-10-06)
 
 
