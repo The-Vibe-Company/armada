@@ -394,7 +394,7 @@ describe("the coordinator's inbox", () => {
     const open = () => openInboxItems(db, { project: P, recipient: "coordinator", ticket: "WID-7" });
     const plan = (await open()).find((i) => i.kind === "plan");
     expect((await open()).map((i) => [i.kind, i.body])).toEqual([
-      ["plan", "Plan A"],
+      ["plan", "Plan B"],
       ["hand-back", "PR 1, CI green"],
     ]);
     await addRequest(db, { ...answer(plan?.id ?? 0, "approved"), ticket: "WID-7" });
@@ -537,4 +537,40 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
   expect(await store.queueRemove({ project, pr: 12, at: at(3) })).toBe(true);
   expect(await store.queueList(project, { since: at(4) })).toEqual([]);
   expect(await store.queueAdd({ ...input, at: at(4) })).toMatchObject({ position: 1 });
+});
+
+test("declared paths replace the old plan, stay scoped to a project and are cleared on release and merge", async () => {
+  const { recordMerge } = await import("@armada/core/read");
+  const store = fleetStore(db);
+  for (const slug of ["paths-a", "paths-b"]) {
+    await store.ensureProject({ slug, name: slug, repository: "acme/widgets", programRoot: "WID-1" }, at(0));
+    await store.saveRuntimeHandle({
+      project: slug,
+      ticket: "WID-7",
+      runtime: "conductor",
+      handle: `ws/${slug}`,
+      branch: null,
+      at: at(0),
+    });
+    await store.saveTicketPaths(slug, "WID-7", ["src/**"], at(1));
+  }
+  await store.saveTicketPaths("paths-a", "WID-7", ["docs/readme.md"], at(2));
+  expect(await store.ticketPaths("paths-a")).toEqual({ "WID-7": ["docs/readme.md"] });
+  await recordRelease(store, "paths-a", { ticket: "WID-7", reason: "done" }, at(3));
+  expect(await store.ticketPaths("paths-a")).toEqual({});
+  expect(await store.ticketPaths("paths-b")).toEqual({ "WID-7": ["src/**"] });
+  await recordMerge(
+    store,
+    "paths-b",
+    {
+      ticket: "WID-7",
+      number: 1,
+      url: "https://github.com/acme/widgets/pull/1",
+      headSha: "a".repeat(40),
+      mergeCommit: "b".repeat(40),
+      decision: null,
+    },
+    at(4),
+  );
+  expect(await store.ticketPaths("paths-b")).toEqual({});
 });

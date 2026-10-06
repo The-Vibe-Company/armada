@@ -273,3 +273,133 @@ test("queue operations round trip through Armada and remain coordinator-only", a
       ).status,
     ).toBe(400);
 });
+
+test("a worker's declared paths appear in the plan with overlaps from the stored reading", async () => {
+  const { issue } = await import("./support.ts");
+  const store = memoryFleet();
+  const repository = DEMO_PROJECT.repository;
+  const pr = {
+    number: 45,
+    repo: repository,
+    state: "open" as const,
+    url: `https://github.com/${repository}/pull/45`,
+    title: "Change the merge flow",
+    files: [{ path: "packages/core/src/merge.ts", additions: 1, deletions: 0 }],
+    filesComplete: false,
+  };
+  const issues = [
+    issue("DEMO-1"),
+    issue("DEMO-8", { parentId: "DEMO-1", statusType: "started", agentPhase: "implementing", prs: [pr] }),
+  ];
+  const snapshot = {
+    repository,
+    issues,
+    prs: [pr],
+    flight: {
+      program: { rootId: "DEMO-1", fetchedAt: NOW.toISOString(), issues, comments: [], warnings: [] },
+      forge: { repo: repository, prs: [pr], warnings: [], fetchedAt: NOW.toISOString() },
+      after: NOW.toISOString(),
+    },
+  };
+  await store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-8",
+    runtime: "conductor",
+    handle: "ws/other",
+    branch: null,
+    at: NOW,
+  });
+  await store.saveTicketPaths("widgets", "DEMO-8", ["skills/**"], NOW);
+  const req = {
+    op: "report",
+    project: DEMO_PROJECT,
+    caller: { kind: "worker" as const, ticket: "DEMO-7" },
+    input: {
+      ticket: "DEMO-7",
+      phase: "awaiting-approval",
+      previous: "planning",
+      summary: "Plan",
+      message: "Change the merge flow",
+      paths: ["packages/core/src/merge.ts", "skills/worker.md"],
+    },
+  };
+  const answer = await serveFleet(store, req, { now: () => NOW, snapshot });
+  expect(answer.status).toBe(200);
+  expect(answer.body.result).toMatchObject({
+    overlaps: [
+      { ticket: "DEMO-8", pr: 45, paths: ["packages/core/src/merge.ts", "skills/worker.md"], incomplete: true },
+    ],
+  });
+  const plans = await store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+  expect(plans[0]?.body).toContain("Overlaps DEMO-8 (PR #45): packages/core/src/merge.ts, skills/worker.md");
+  expect(plans[0]?.body).toContain("Comparison incomplete for DEMO-8 (PR #45)");
+  expect(await store.ticketPaths("widgets")).toMatchObject({ "DEMO-7": req.input.paths });
+  expect(
+    (
+      await serveFleet(
+        store,
+        { ...req, op: "overlap", input: { ticket: "DEMO-7", paths: [] } },
+        { now: () => NOW, snapshot },
+      )
+    ).body.result,
+  ).toMatchObject({ workers: [{ ticket: "DEMO-8", plan: ["skills/**"] }] });
+  expect(
+    (
+      await serveFleet(
+        store,
+        { ...req, op: "overlap", input: { ticket: "DEMO-8", paths: [] } },
+        { now: () => NOW, snapshot },
+      )
+    ).status,
+  ).toBe(403);
+  for (const paths of [
+    ["../secret"],
+    ["/absolute"],
+    ["C:/windows"],
+    ["a\\b"],
+    ["a\nline"],
+    ["a".repeat(201)],
+    Array(51).fill("a"),
+    "a",
+  ]) {
+    expect(
+      (await serveFleet(store, { ...req, input: { ...req.input, paths } }, { now: () => NOW, snapshot })).status,
+    ).toBe(400);
+  }
+});
+
+test("merge cleanup keeps paths declared by a replacement claim when the generation guard refuses release", async () => {
+  const { recordMerge } = await import("../src/live.ts");
+  const store = memoryFleet();
+  await store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-7",
+    runtime: "conductor",
+    handle: "ws/old",
+    branch: null,
+    at: NOW,
+  });
+  await store.saveTicketPaths("widgets", "DEMO-7", ["old/**"], NOW);
+  const release = store.releaseRuntimeHandle.bind(store);
+  store.releaseRuntimeHandle = async (project, ticket, at, guard) => {
+    const later = new Date(at.getTime() + 1);
+    await store.saveRuntimeHandle({ project, ticket, runtime: "conductor", handle: "ws/new", branch: null, at: later });
+    await store.saveTicketPaths(project, ticket, ["new/**"], later);
+    return release(project, ticket, at, guard);
+  };
+  const result = await recordMerge(
+    store,
+    "widgets",
+    {
+      ticket: "DEMO-7",
+      number: 45,
+      url: "https://github.com/acme/widgets/pull/45",
+      headSha: "a".repeat(40),
+      mergeCommit: "b".repeat(40),
+    },
+    NOW,
+  );
+  expect(result.handle).toBeNull();
+  expect(await store.ticketPaths("widgets")).toEqual({ "DEMO-7": ["new/**"] });
+  expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
+});
