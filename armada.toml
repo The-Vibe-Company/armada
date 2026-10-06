@@ -34,12 +34,6 @@ required_checks = ["Lint, typecheck and test"]
 # Run by `armada merge` on a test merge when a head lacks commits of main.
 local_commands = ["bun install --frozen-lockfile", "bun run verify"]
 
-# THE-1185: Chrome startup timeouts in the phone geometry and dialog keyboard tests.
-[[ci.known_failure]]
-check = "Lint, typecheck and test"
-pattern = '''^(?:globals\.css > phone geometry > \(unnamed\)|the shell's keys \(j, k, Enter, Esc\) > never reach the page behind an open dialog \(⌘K, a screenshot\))$'''
-ticket = "THE-1185"
-
 # How `armada brief` launches workers on Conductor; `conductor model` lists the ids.
 [conductor]
 default_profile = "codex"  # legacy fallback only when no profile has a when rule
