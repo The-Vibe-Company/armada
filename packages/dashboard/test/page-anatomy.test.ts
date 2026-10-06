@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
-import { chromium } from "playwright-core";
+import { type Browser, chromium, type Page } from "playwright-core";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as pageClient from "../components/page-client";
@@ -206,11 +206,19 @@ describe("globals.css", () => {
   // bar sized by its content then grows as its buttons arrive, and the phone's
   // tab bar, pinned to the bottom, jumped up by up to 47 px (CLS 0.001 to 0.004
   // on the overview). On a phone each bar's height is its own.
-  test("gives the phone's bars a height of their own", async () => {
-    const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
-    const browser = await chromium.launch({ channel: "chrome" });
-    try {
-      const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+  describe("phone geometry", () => {
+    let browser: Browser | undefined;
+    let page: Page;
+    beforeAll(async () => {
+      browser = await chromium.launch({ channel: "chrome" });
+      page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+    }, 10_000);
+    afterAll(async () => {
+      await browser?.close();
+    }, 10_000);
+
+    test("gives the phone's bars a height of their own", async () => {
+      const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
       await page.setContent(
         `<style>${css}</style><div class="sh-side"><div class="sh-brand">Brand</div></div><nav class="sh-tabbar">Tabs</nav>`,
       );
@@ -233,8 +241,6 @@ describe("globals.css", () => {
         }
       });
       expect(await heights()).toEqual(before);
-    } finally {
-      await browser.close();
-    }
+    });
   });
 });
