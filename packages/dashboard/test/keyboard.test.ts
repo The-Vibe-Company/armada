@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { chromium } from "playwright-core";
+import { type Browser, chromium, type Page } from "playwright-core";
 import * as ts from "typescript";
 import { ownsKeys, tabStep } from "../lib/keyboard.ts";
 
@@ -17,10 +17,22 @@ describe("the shell's keys (j, k, Enter, Esc)", () => {
     expect(ownsKeys(el("DIV", { editable: true }))).toBe(true);
   });
 
-  test("never reach the page behind an open dialog (⌘K, a screenshot)", async () => {
-    const browser = await chromium.launch({ channel: "chrome" });
-    try {
-      const page = await browser.newPage();
+  describe("an open dialog", () => {
+    let browser: Browser | undefined;
+    let page: Page;
+    // The headless shell is installed before the suite; setup is not a behavior deadline.
+    beforeAll(async () => {
+      browser = await chromium.launch({ timeout: 15_000 });
+    }, 20_000);
+    beforeAll(async () => {
+      if (!browser) throw new Error("browser setup did not complete");
+      page = await browser.newPage();
+    }, 10_000);
+    afterAll(async () => {
+      await browser?.close();
+    }, 10_000);
+
+    test("never reach the page behind an open dialog (⌘K, a screenshot)", async () => {
       const module = Buffer.from(
         ts.transpileModule(readFileSync(new URL("../lib/keyboard.ts", import.meta.url), "utf8"), {
           compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
@@ -37,9 +49,7 @@ describe("the shell's keys (j, k, Enter, Esc)", () => {
         return ["closed", "open", "aria", "editable", "outside"].map((id) => owns(document.getElementById(id)));
       }, module);
       expect(result).toEqual([false, true, true, true, false]);
-    } finally {
-      await browser.close();
-    }
+    });
   });
 
   test("belong to the page anywhere else", () => {

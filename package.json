@@ -14,7 +14,8 @@
     "format": "biome check --write .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p packages/dashboard",
     "test": "bun test",
-    "verify": "bun run lint && bun run typecheck && bun test"
+    "verify": "bun run lint && bun run typecheck && bun test",
+    "test:browser:install": "bun run --cwd packages/dashboard test:browser:install"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
