@@ -822,6 +822,8 @@ test("events/since uses the project, kinds and tickets, pages ties and reads lat
   expect(await eventsSince(db, project, { ...boundary, seenIds: [...boundary.seenIds, lateEvent.id] })).toEqual([]);
   expect(await eventsSince(db, project, { ...q, tickets: ["WID-3"] })).toEqual([]);
   expect(await eventsSince(db, "unknown-project", q)).toEqual([]);
+  expect(await eventsSince(db, project, { ...q, excludedTickets: ["WID-2"] })).toEqual([]);
+  expect(await eventsSince(db, project, { ...boundary, excludedTickets: ["WID-2"] })).toEqual([]);
 });
 
 test("events/since selects handover reports before pagination", async () => {

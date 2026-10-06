@@ -82,6 +82,7 @@ export function transientFailure(err: unknown): boolean {
 }
 
 export interface WatchOptions {
+  scope?: import("./live.ts").CoordinatorScope;
   coordinatorName?: string;
   signal?: AbortSignal;
   until?: Date;
@@ -100,7 +101,7 @@ export interface WatchOptions {
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
   /** After every read that answered: the entries and tickets in flight, to keep in the watch state. */
-  onRead?: (read: { items: InboxEntry[]; inFlight: string[] | null }) => Promise<void>;
+  onRead?: (read: { items: InboxEntry[]; inFlight: string[] | null; ownedInFlight?: string[] }) => Promise<void>;
   /** A failure the watch waits out. */
   onRetry?: (message: string) => void;
   /**
@@ -112,6 +113,7 @@ export interface WatchOptions {
 }
 
 export interface WatchReport {
+  ownedInFlight?: string[];
   project: string;
   generatedAt: string;
   /** `items`: something the coordinator has not seen (marked `new`); `nothing`: no worker in flight, nothing open. */
@@ -152,6 +154,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   const query = {
     coordinator: o.coordinator,
     coordinatorName: o.coordinatorName,
+    scope: o.scope,
     silentAfterMinutes: o.silentAfterMinutes,
     launchGraceMinutes: o.launchGraceMinutes,
     ciWaitMinutes: o.ciWaitMinutes,
@@ -165,6 +168,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   let etag: string | null = null;
   let items: InboxEntry[] = [];
   let inFlight: string[] | null = null;
+  let ownedInFlight: string[] | undefined;
   let failures = 0;
   const warnings = new Set<string>();
   const report = (outcome: WatchReport["outcome"]): WatchReport => ({
@@ -173,6 +177,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     outcome,
     items,
     inFlight,
+    ...(ownedInFlight ? { ownedInFlight } : {}),
     warnings: [...warnings],
   });
   for (;;) {
@@ -199,10 +204,11 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     if (read) {
       items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
       inFlight = read.inFlight ?? null;
+      ownedInFlight = read.ownedInFlight;
       etag = read.etag;
       known = new Set(items.map(entryKey));
       for (const w of read.warnings) warnings.add(w);
-      await untilAborted(o.signal, () => o.onRead?.({ items, inFlight }));
+      await untilAborted(o.signal, () => o.onRead?.({ items, inFlight, ...(ownedInFlight ? { ownedInFlight } : {}) }));
     }
     // Not urgent: a release comes after the questions, plans and hand-backs already open.
     const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
@@ -289,6 +295,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
   const query = {
     coordinator: o.coordinator,
     coordinatorName: o.coordinatorName,
+    scope: o.scope,
     silentAfterMinutes: o.silentAfterMinutes,
     launchGraceMinutes: o.launchGraceMinutes,
     ciWaitMinutes: o.ciWaitMinutes,
@@ -321,7 +328,13 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
             removed = true;
           }
         if (removed) await save();
-        await untilAborted(o.signal, () => o.onRead?.({ items: read.items, inFlight }));
+        await untilAborted(o.signal, () =>
+          o.onRead?.({
+            items: read.items,
+            inFlight,
+            ...(read.ownedInFlight ? { ownedInFlight: read.ownedInFlight } : {}),
+          }),
+        );
         for (const warning of read.warnings) o.onRetry?.(warning);
         for (const item of read.items) {
           const key = entryKey(item);
@@ -363,6 +376,8 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
           const page = await untilAborted(o.signal, () =>
             fleet.eventsSince({
               ...boundary,
+              scope: o.scope,
+              coordinatorName: o.coordinatorName,
               kinds: eventKinds,
               handoverOnly: kinds.includes("handover") && !kinds.includes("report"),
               tickets: o.tickets,

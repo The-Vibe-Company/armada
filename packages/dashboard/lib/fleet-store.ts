@@ -226,12 +226,14 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
   const rs = await db.query(
     `SELECT id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, head_sha, created_at
     FROM events WHERE project = $1 AND created_at >= $2 AND kind = ANY($3::text[])
+    AND ($12::text[] IS NULL OR NOT (ticket = ANY($12::text[])))
     AND kind NOT IN ('heartbeat', 'inbox') AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge') AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
     AND ((created_at, id) > ($5::timestamptz, $6::bigint)
       OR ($7::bigint[] IS NOT NULL AND NOT (id = ANY($7::bigint[])) AND id IN (
         SELECT id FROM events WHERE project = $1 AND created_at >= $2
           AND (created_at, id) <= ($5::timestamptz, $6::bigint) AND kind = ANY($3::text[])
           AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge')
+          AND ($12::text[] IS NULL OR NOT (ticket = ANY($12::text[])))
           AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
         ORDER BY id DESC LIMIT 500)))
     AND ($8::timestamptz IS NULL OR (created_at, id) > ($8::timestamptz, $9::bigint))
@@ -248,6 +250,7 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
       q.pageAfter?.id ?? null,
       q.limit ?? 200,
       q.handoverOnly ?? false,
+      q.excludedTickets ?? null,
     ],
   );
   return rs.rows.map((r) => ({

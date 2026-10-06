@@ -55,6 +55,7 @@ export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promi
 // ------------------------------------------------------------------ inbox
 
 export interface InboxReport {
+  ownedInFlight?: string[];
   project: string;
   generatedAt: string;
   /** Oldest first. */
@@ -68,6 +69,8 @@ export interface InboxReport {
 }
 
 export interface InboxOptions {
+  scope?: import("./live.ts").CoordinatorScope;
+  coordinatorName?: string;
   facts?: import("./live.ts").CoordinatorFacts;
   project: string;
   coordinator?: string | null;
@@ -100,6 +103,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   const started = o.now();
   const query = {
     coordinator: o.coordinator ?? null,
+    coordinatorName: o.coordinatorName,
+    scope: o.scope,
     silentAfterMinutes: o.silentAfterMinutes,
     launchGraceMinutes: o.launchGraceMinutes,
     ciWaitMinutes: o.ciWaitMinutes,
@@ -112,12 +117,14 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   const warnings = [...first.warnings];
   let items = first.items;
   let inFlight = first.inFlight ?? null;
+  let ownedInFlight = first.ownedInFlight;
   let etag = first.etag;
   const report = (timedOut: boolean | null): InboxReport => ({
     project: o.project,
     generatedAt: o.now().toISOString(),
     items,
     inFlight,
+    ...(ownedInFlight ? { ownedInFlight } : {}),
     wait: o.wait && timedOut !== null ? { timeoutSeconds: Math.round(o.wait.timeoutMs / 1000), timedOut } : null,
     warnings: [...new Set(warnings)],
   });
@@ -132,6 +139,7 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     const known = new Set(items.map(entryKey));
     items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
     inFlight = read.inFlight ?? null;
+    ownedInFlight = read.ownedInFlight;
     etag = read.etag;
     warnings.push(...read.warnings);
     if (items.some((e) => e.new)) return report(false);
