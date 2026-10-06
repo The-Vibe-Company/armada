@@ -395,7 +395,7 @@ async function launch(a: CliAccounts, request: Request, deps: CliApiDeps, now: D
       "armada brief <ticket>, in the project's repository",
     );
   const coordinator = body.coordinator === undefined ? "default" : body.coordinator;
-  if (typeof coordinator !== "string" || !COORDINATOR.test(coordinator))
+  if (coordinator !== null && (typeof coordinator !== "string" || !COORDINATOR.test(coordinator)))
     return refuse(400, "invalid coordinator name", "use 1 to 32 lowercase letters, digits or hyphens");
   const { worker, token } = await createLaunch(a.client, {
     organization: holder.organization.id,

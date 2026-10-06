@@ -21,6 +21,7 @@ import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 import { observeRuntimes } from "../src/runtime.ts";
 import { claimRef, guarded, type LaunchSpec, runtimeFor } from "../src/runtimes/adapter.ts";
+import { HerdrAdapter } from "../src/runtimes/herdr.ts";
 
 const config = parseConfig(DEMO_TOML);
 const canary = "armada_launch_CANARY_secret";
@@ -163,6 +164,7 @@ async function fixture(runtime: RuntimeName = "conductor") {
   const fleet = {
     runtimeHandle: (ticket: string) => store.getRuntimeHandle(config.project.slug, ticket),
     runtimeHandles: () => store.openRuntimeHandles(config.project.slug),
+    pendingLaunches: () => store.pendingLaunches(config.project.slug, new Date(0)),
     observeRuntime: (input: Parameters<Fleet["observeRuntime"]>[0]) =>
       store.observeRuntime({ ...input, project: config.project.slug, at: clock.now() }),
     stopRuntime: (input: Parameters<Fleet["stopRuntime"]>[0]) =>
@@ -208,6 +210,60 @@ const codeOf = async (p: Promise<unknown>) => {
     return e.code;
   }
 };
+
+test("fresh herdr cleanup keeps claim identity after retaining the checkout branch and refuses later branch changes", async () => {
+  for (const outcome of ["released", "replacement", "changed-checkout"] as const) {
+    const f = await fixture("herdr");
+    await f.store.releaseRuntimeHandle(config.project.slug, f.target.ticket, f.clock.now());
+    const current = await f.store.getRuntimeHandle(config.project.slug, f.target.ticket);
+    if (!current || !(f.adapter instanceof HerdrAdapter)) throw new Error("missing herdr claim");
+    const ended = claimRef(current);
+    f.fleet.runtimeReference = (ref) => f.store.getRuntimeReference(config.project.slug, ref);
+    let checkoutBranch = ended.branch;
+    const exec = f.io.exec as NonNullable<Io["exec"]>;
+    f.io.exec = async (command, args, options) => {
+      const result = await exec(command, args, options);
+      if (command === "git" && args[0] === "branch") {
+        if (args[1] === "-m") checkoutBranch = args[2];
+        if (args[1] === "--show-current") return { ...result, stdout: checkoutBranch ?? "" };
+      }
+      return result;
+    };
+    f.set({ state: "idle" });
+    const adapter = f.adapter;
+    const retained = await guarded(f.fleet, ended, "ended", () =>
+      adapter.retainBranch(ended, "armada-retained/demo-7-synthetic"),
+    );
+    if (outcome === "replacement")
+      await recordClaim(
+        f.store,
+        config.project.slug,
+        {
+          ticket: ended.ticket,
+          runtime: "herdr",
+          handle: JSON.stringify({ workspace: "new-workspace", pane: "new-workspace:p1", agent: "replacement" }),
+          branch: ended.branch ?? "",
+          phase: "planning",
+          resuming: false,
+          profile: null,
+        },
+        new Date(NOW.getTime() + 1000),
+      );
+    if (outcome === "changed-checkout") checkoutBranch = "feature/somebody-else";
+    const archive = guarded(
+      f.fleet,
+      retained,
+      "ended",
+      () => adapter.archive(retained, { reason: "relaunched", whenWorking: "cancel", waitMs: 60_000 }),
+      { allowHistorical: true },
+    );
+    if (outcome === "changed-checkout") expect(await codeOf(archive)).toBe("mismatch");
+    else expect(await archive).toMatchObject({ archived: true });
+    const closes = f.calls.filter((c) => c.command === "herdr" && c.args[0] === "pane" && c.args[1] === "close");
+    expect(closes.map((c) => c.args[2])).toEqual(outcome === "changed-checkout" ? [] : ["w8:p9"]);
+    expect(retained.branch).toBe(ended.branch);
+  }
+});
 
 test.each(["conductor", "herdr"] as const)(
   "%s adapter reads without mutation, validates handles, and guards message delivery",
