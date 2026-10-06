@@ -27,6 +27,37 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
+  test("generated merge notes are resolved records and leave pending plans and questions open", async () => {
+    const { fleet, store } = tempFleet();
+    const plan = await store.addInboxItem({
+      project: "widgets",
+      ticket: "DEMO-7",
+      kind: "plan",
+      recipient: "coordinator",
+      author: null,
+      body: "Review this plan",
+      at: NOW,
+    });
+    await fleet.ask({ ticket: "DEMO-7", body: "Which design?" });
+    expect(await fleet.prepareMergeNotice("merge-9")).toBe("reserved");
+    expect(await fleet.prepareMergeNotice("merge-9")).toBe("attempted");
+    const note = {
+      ticket: "DEMO-7",
+      note: true,
+      item: null,
+      text: "main moved: PR #9",
+      generated: true,
+      deliveryKey: "merge-9",
+    };
+    await fleet.answer(note);
+    await fleet.answer(note);
+    expect(await fleet.prepareMergeNotice("merge-9")).toBe("delivered");
+    expect((await store.getInboxItem("widgets", plan))?.resolvedAt).toBeNull();
+    expect((await fleet.ticketItems("DEMO-7")).map((i) => i.kind)).toEqual(["plan", "question"]);
+    expect(store.items.find((i) => i.kind === "note")?.resolvedAt).toBe(NOW.toISOString());
+    expect(store.items.find((i) => i.kind === "note")?.coordinator).toBe("default");
+    expect(store.items.filter((i) => i.kind === "note")).toHaveLength(1);
+  });
   test("only a coordinator records validated Linear chores, scoped to its project and ticket", async () => {
     const { fleet, store } = tempFleet();
     const chore = { ticket: "DEMO-7", kind: "linear-pending" as const, pr: 11, body: "Finish Linear for #11" };
@@ -98,7 +129,7 @@ describe("the fleet through Armada", () => {
       serveFleet(
         store,
         { op, project: DEMO_PROJECT, caller: { kind: "organization" }, input },
-        { now: () => NOW, redact: mask.text },
+        { now: () => NOW, redact: FLEET_TEXT_OPERATIONS.has(op) ? mask.text : undefined },
       );
     expect((await send("claim", claim("DEMO-7"))).status).toBe(200);
     expect(
@@ -124,6 +155,19 @@ describe("the fleet through Armada", () => {
       ).status,
     ).toBe(200);
     expect((await send("answer", { ticket: "DEMO-7", text: "synthetic-project-secret", note: true })).status).toBe(200);
+    await send("merge-notice/prepare", { key: "mask-merge-9" });
+    expect(
+      (
+        await send("answer/generated", {
+          ticket: "DEMO-7",
+          text: "synthetic-project-secret sk-synthetic-unknown",
+          item: null,
+          note: true,
+          generated: true,
+          deliveryKey: "mask-merge-9",
+        })
+      ).status,
+    ).toBe(200);
     expect(
       (
         await send("validate", {
@@ -136,6 +180,7 @@ describe("the fleet through Armada", () => {
     ).toBe(200);
     const persisted = JSON.stringify({
       events: store.events,
+      generatedNotes: store.items.filter((i) => i.kind === "note"),
       inbox: await store.openInboxItems({ project: "widgets", recipient: "coordinator" }),
       validations: await store.listValidations({ project: "widgets" }),
     });
@@ -226,6 +271,16 @@ describe("the fleet through Armada", () => {
       () => fleet.inboxItem(1),
       () => fleet.pendingLaunches(),
       () => fleet.answer({ text: "yes", note: false, ticket: "DEMO-7", item: 1 }),
+      () => fleet.prepareMergeNotice("merge-9"),
+      () =>
+        fleet.answer({
+          text: "main moved",
+          note: true,
+          generated: true,
+          deliveryKey: "merge-9",
+          ticket: "DEMO-7",
+          item: null,
+        }),
       () => fleet.acquireLease({ name: "merge", holder: "w", ttlMs: 60_000 }),
       () => fleet.register(),
     ])

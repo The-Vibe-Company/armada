@@ -165,6 +165,8 @@ export interface ForgeData {
   fetchedAt: string;
   /** Open pull requests and recently closed ones. */
   prs: PullRequest[];
+  /** False when the open pull request listing was truncated. */
+  openPrsComplete?: boolean;
   /** Absent in snapshots written before default-branch health was read. */
   main?: MainCommit[];
   /** True when the history reached the repository's first commit. */
