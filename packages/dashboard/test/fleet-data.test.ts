@@ -889,7 +889,7 @@ describe("what the owner validates (THE-885)", () => {
     const shot = await saveAttachment(db, {
       project: "widgets",
       ticket: "WID-2",
-      input: { kind: "link", url: "https://preview.example.test/wid-2" },
+      input: { kind: "image", contentType: "image/png", bytes: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]) },
       caption: "The new card",
       reference: null,
       author: "ws/2",
@@ -962,8 +962,19 @@ describe("what the owner validates (THE-885)", () => {
 
     // Asked again on a new head: the open one is superseded, never two open for one pull request.
     const store = fleetStore(db);
-    const asked = { ...merge, at: new Date(T0 + 1_000) };
+    const asked = {
+      ...merge,
+      checks: ["Title is legible"],
+      excerpts: [{ label: "output.txt:10-40", text: "A short sample" }],
+      details: "Longer context",
+      at: new Date(T0 + 1_000),
+    };
     const first = await store.addValidation(asked);
+    expect(await store.getValidation("widgets", first.id)).toMatchObject({
+      checks: asked.checks,
+      excerpts: asked.excerpts,
+      details: asked.details,
+    });
     await store.addValidation({ ...asked, at: new Date(T0 + 2_000) });
     expect((await store.getValidation("widgets", first.id))?.decision?.outcome).toBe("superseded");
   });

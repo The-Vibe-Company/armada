@@ -7,7 +7,14 @@
 // dashboard's Validations page, opened from one link; Linear keeps the record.
 
 import { transitionProblem } from "./phases.ts";
-import { decidedLine, lastValidation, VALIDATION_LIMITS, type Validation } from "./validations.ts";
+import {
+  decidedLine,
+  lastValidation,
+  VALIDATION_LIMITS,
+  type Validation,
+  type ValidationSamples,
+  validationSampleProblem,
+} from "./validations.ts";
 import {
   firstState,
   type Outcome,
@@ -18,7 +25,7 @@ import {
   type WorkerContext,
 } from "./worker.ts";
 
-export interface SubmitInput {
+export interface SubmitInput extends ValidationSamples {
   ticket: string;
   /** `validation`: what to check (`armada validate`); `question`: the coordinator's question to the owner (`armada ask-owner`). */
   kind: "validation" | "question";
@@ -28,6 +35,8 @@ export interface SubmitInput {
   attachments: string[];
   /** Uploads more attachments once every check passed, so a refused submission uploads nothing; their ids. */
   upload?: () => Promise<string[]>;
+  /** Number of pending uploads, checked before upload() can have side effects. */
+  uploadCount?: number;
   /** The worker of the ticket submits its own work: its phase becomes awaiting-validation. */
   worker: boolean;
 }
@@ -50,8 +59,20 @@ export async function submitValidation(ctx: WorkerContext, input: SubmitInput): 
       ? `armada ask-owner ${input.ticket} "<question>" --choices "<a> | <b>"`
       : `armada validate "<what to check>" --attach <file|url>`;
   if (!what) throw new Refusal("say what the owner checks", usage);
-  if (what.length > VALIDATION_LIMITS.what)
-    throw new Refusal(`what to check has at most ${VALIDATION_LIMITS.what} characters`, usage);
+  const samples = { checks: input.checks ?? [], excerpts: input.excerpts ?? [], details: input.details ?? null };
+  const imageLimit = ctx.config.policy.validationSamples ?? VALIDATION_LIMITS.images;
+  const problem = validationSampleProblem(
+    { what, ...samples },
+    input.attachments.length + (input.uploadCount ?? 0),
+    imageLimit,
+  );
+  if (problem)
+    throw new Refusal(
+      problem,
+      input.kind === "question"
+        ? `${usage} --check "<short check>"`
+        : `${usage} --check "<short check>" --excerpt <file>:1-40 --details-file <context.txt>`,
+    );
   if (input.kind === "question" && !input.choices?.length)
     throw new Refusal("a question for the owner needs its choices", usage);
   const ticket = await readOpenTicket(ctx, input.ticket);
@@ -70,6 +91,7 @@ export async function submitValidation(ctx: WorkerContext, input: SubmitInput): 
     ticket: ticket.id,
     kind: input.kind,
     what,
+    ...samples,
     reason: null,
     choices: input.choices,
     pr: null,
@@ -157,6 +179,9 @@ export async function closeValidated(
     [
       `Agent status: merged — ${summary}`,
       `What the owner validated:\n${v.what}`,
+      v.checks?.length ? `Checks:\n${v.checks.map((check) => `- ${check}`).join("\n")}` : "",
+      v.excerpts?.length ? `Excerpts:\n${v.excerpts.map((e) => `${e.label}\n${e.text}`).join("\n\n")}` : "",
+      v.details ? `Context:\n${v.details}` : "",
       v.decision.note ? `The owner's note:\n${v.decision.note}` : "",
       attachments.length ? `Attachments:\n${attachments.join("\n")}` : "",
     ]

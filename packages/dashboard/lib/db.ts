@@ -798,6 +798,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    version: 29,
+    statements: ["ALTER TABLE validations ADD COLUMN checks jsonb, ADD COLUMN excerpts jsonb, ADD COLUMN details text"],
+  },
+  {
     // THE-1098: merge intent survives a coordinator session.
     version: 30,
     statements: [

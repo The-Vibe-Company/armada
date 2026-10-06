@@ -193,15 +193,18 @@ const COMMAND_HELP: Record<string, string> = {
                     goes on the ticket and in the coordinator's inbox. Then stop and wait
                     for the answer in your session, and report the phase you resume
 `,
-  validate: `  validate [<ticket>] "<what to check>" [--attach <file|url>]... [--caption <text>]
+  validate: `  validate [<ticket>] "<headline>" [--check "<check>"]... [--attach <file|url>]...
+        [--excerpt <file>[:from-to]]... [--details-file <file>] [--caption <text>]
         [--choices "<a> | <b>"]
+                    One question, about a minute to judge: headline up to 200 characters,
+                    up to 3 checks, 4 images and excerpts up to 40 lines. Longer context is folded.
                     Ask the owner to validate on Armada's Validations page, with the
                     attachments (images up to 2 MB, HTTPS links). Prints the approval link.
                     Worker: its own ticket; the phase becomes awaiting-validation: stop until
                     the coordinator relays the owner's decision. Coordinator: any ticket.
                     The owner's buttons are Approve and Request changes, or the --choices
 `,
-  "ask-owner": `  ask-owner <ticket> "<question>" --choices "<a> | <b>"
+  "ask-owner": `  ask-owner <ticket> "<question>" --choices "<a> | <b>" [--check "<check>"]...
                     Coordinator: escalate a question or a plan to the owner, with its
                     choices. Prints the approval link; the owner's pick arrives in the inbox
 `,
@@ -550,6 +553,9 @@ const VALUE_OPTIONS = [
   "caption",
   "for",
   "attach",
+  "check",
+  "excerpt",
+  "details-file",
   "choices",
   "validation",
   "validation-reason",
@@ -646,8 +652,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "when-unblocked",
     "after",
   ],
-  validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
-  "ask-owner": ["choices"],
+  validate: ["ticket", "attach", "caption", "choices", "message", "message-file", "check", "excerpt", "details-file"],
+  "ask-owner": ["choices", "check"],
   login: ["api-key", "launch-token", "api-url"],
   secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
   run: ["ticket", "only", "redact"],
@@ -703,7 +709,7 @@ export function parseArgs(argv: string[]): Args {
         args.project = v;
       }
       // `--attach` repeats: one value per line.
-      else if ((name === "attach" || name === "paths") && args.options[name] !== undefined)
+      else if (["attach", "check", "excerpt", "paths"].includes(name) && args.options[name] !== undefined)
         args.options[name] += `\n${v}`;
       else args.options[name] = v;
     } else if (a?.startsWith("-"))

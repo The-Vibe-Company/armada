@@ -60,6 +60,7 @@ describe("armada.toml", () => {
       ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
       policy: {
+        validationSamples: 4,
         attachmentsPerTicket: 20,
         attachmentsProjectMb: 200,
         attachmentsRetentionDays: 30,
@@ -445,6 +446,14 @@ profile = "missing"
   test("broken TOML reports where it broke", () => {
     expect(problemsOf("[project\nname = 1")[0]).toMatch(/^not valid TOML \(line 1, column \d+\)$/);
   });
+});
+
+test("owner validation sample policy defaults to four and accepts at most eight", () => {
+  const base = `[project]\nname = "Widgets"\nslug = "widgets"\n[tracker]\nprogram_root = "WID-1"\n[github]\nrepository = "acme/widgets"\n`;
+  expect(parseConfig(base).policy.validationSamples).toBe(4);
+  expect(parseConfig(`${base}[policy]\nvalidation_samples = 8`).policy.validationSamples).toBe(8);
+  for (const value of [0, 9, 4.5])
+    expect(() => parseConfig(`${base}[policy]\nvalidation_samples = ${value}`)).toThrow("policy.validation_samples");
 });
 
 test("declared reservation keys are optional, descriptive and unique", () => {

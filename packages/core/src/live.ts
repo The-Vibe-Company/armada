@@ -920,7 +920,7 @@ export async function recordMerge(
   };
 }
 
-export interface ValidationRecord {
+export interface ValidationRecord extends Pick<NewValidation, "checks" | "excerpts" | "details"> {
   ticket: string;
   kind: NewValidation["kind"];
   what: string;

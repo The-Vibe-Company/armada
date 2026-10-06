@@ -619,6 +619,92 @@ describe("armada ask, inbox and answer", () => {
   });
 });
 
+test("validate reads inclusive excerpts, repeated checks and folded details without uploading refused samples", async () => {
+  const w = worker({
+    ...SIGNED_IN,
+    LINEAR_API_KEY: "synthetic-linear-credential",
+    GITHUB_TOKEN: "synthetic-github-credential",
+  });
+  w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+  w.linear.add("DEMO-7");
+  const original = w.io.readFile;
+  w.io.readFile = async (path) =>
+    path === "/work/widgets/out.txt"
+      ? Array.from(
+          { length: 50 },
+          (_, n) =>
+            `Line ${n + 1}${n === 19 ? ` ${KEY}` : n === 20 ? " lin_api_example" : n === 21 ? " synthetic-project-secret" : ""}`,
+        ).join("\n")
+      : path === "/work/widgets/context.txt"
+        ? "Longer context synthetic-linear-credential synthetic-project-secret"
+        : original(path);
+  w.io.readBinaryFile = async () => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const fetch = w.io.fetch;
+  if (!fetch) throw new Error("expected test fetch");
+  w.io.fetch = async (url, init) =>
+    url === `${ARMADA_URL}/api/cli/attachments`
+      ? Response.json({ attachment: { id: "image-1" }, url: `${ARMADA_URL}/agents/DEMO-7?attachment=image-1` })
+      : fetch(url, init);
+  expect(
+    await run(
+      [
+        "validate",
+        "DEMO-7",
+        "Does the card read clearly?",
+        "--check",
+        "Title is legible",
+        "--check",
+        "Action fits",
+        "--attach",
+        "x.png",
+        "--excerpt",
+        "out.txt:10-40",
+        "--details-file",
+        "context.txt",
+      ],
+      w.io,
+    ),
+    w.err(),
+  ).toBe(0);
+  expect(w.store.validations[0]).toMatchObject({
+    checks: ["Title is legible", "Action fits"],
+    excerpts: [
+      {
+        label: "out.txt:10-40",
+        text: Array.from(
+          { length: 31 },
+          (_, n) =>
+            `Line ${n + 10}${n === 10 ? " «secret ARMADA_API_KEY»" : n === 11 ? " «redacted»" : n === 12 ? " «secret CUSTOM_KEY»" : ""}`,
+        ).join("\n"),
+      },
+    ],
+    details: "Longer context «secret LINEAR_API_KEY» «secret CUSTOM_KEY»",
+  });
+  const before = w.armada.calls.filter((c) => c.path === "attachments").length;
+  expect(await run(["validate", "DEMO-7", "Short", "--attach", "x.png", "--excerpt", "out.txt"], w.io)).toBe(1);
+  expect(w.err()).toContain("--excerpt <file>:1-40");
+  expect(w.armada.calls.filter((c) => c.path === "attachments")).toHaveLength(before);
+  expect(await run(["validate", "DEMO-7", "Short", "--excerpt", "out.txt:0-4"], w.io)).toBe(2);
+  expect(await run(["validate", "DEMO-7", "Short", "--excerpt", "missing.txt"], w.io)).toBe(2);
+  expect(
+    await run(
+      [
+        "ask-owner",
+        "DEMO-7",
+        "Keep the current layout?",
+        "--choices",
+        "Keep | Change",
+        "--check",
+        "Fits a phone",
+        "--check",
+        "Title reads clearly",
+      ],
+      w.io,
+    ),
+  ).toBe(0);
+  expect(w.store.validations.at(-1)?.checks).toEqual(["Fits a phone", "Title reads clearly"]);
+});
+
 test("worker claim comments inherit the authenticated launch owner despite a different environment name", async () => {
   const w = worker(
     { ARMADA_COORDINATOR: "spoof", ARMADA_API_URL: ARMADA_URL },
