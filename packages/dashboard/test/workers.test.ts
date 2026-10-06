@@ -237,13 +237,8 @@ describe("launch tokens: one ticket, once, within the hour", () => {
 });
 
 describe("a worker session acts on its own ticket only", () => {
-  test("worker ownership comes from the launch row, never its fleet request", async () => {
+  test("worker ownership comes from the launch row, including explicit null, never its fleet request", async () => {
     now = at(800);
-    const made = await cli("POST", "launch-tokens", {
-      token: ownerToken,
-      body: { project: "widgets", ticket: "ABC-24", coordinator: "front" },
-    });
-    expect(made.status).toBe(200);
     expect(
       (
         await cli("POST", "launch-tokens", {
@@ -252,33 +247,43 @@ describe("a worker session acts on its own ticket only", () => {
         })
       ).status,
     ).toBe(400);
-    const signed = await exchange(String(made.body.token));
-    expect(signed.body.worker).toMatchObject({ coordinator: "front" });
-    const session = String(signed.body.token);
     const project = { slug: "widgets", name: "Widgets", repository: "acme/widgets", programRoot: "ABC-1" };
-    expect(
-      (
-        await cli("POST", "fleet/claim", {
-          token: session,
-          body: {
-            project,
-            input: {
-              ticket: "ABC-24",
-              runtime: "Conductor",
-              handle: "workspace/named",
-              branch: null,
-              phase: "planning",
-              resuming: false,
-              profile: null,
-              coordinator: "spoof",
-              coordinatorName: "Invalid spoof",
+    for (const [ticket, coordinator] of [
+      ["ABC-24", "front"],
+      ["ABC-124", null],
+    ] as const) {
+      const made = await cli("POST", "launch-tokens", {
+        token: ownerToken,
+        body: { project: "widgets", ticket, coordinator },
+      });
+      expect(made.status).toBe(200);
+      const signed = await exchange(String(made.body.token));
+      expect(signed.body.worker).toMatchObject({ coordinator });
+      const session = String(signed.body.token);
+      expect(
+        (
+          await cli("POST", "fleet/claim", {
+            token: session,
+            body: {
+              project,
+              input: {
+                ticket,
+                runtime: "Conductor",
+                handle: `workspace/${ticket.toLowerCase()}`,
+                branch: null,
+                phase: "planning",
+                resuming: false,
+                profile: null,
+                coordinator: "spoof",
+                coordinatorName: "Invalid spoof",
+              },
             },
-          },
-        })
-      ).status,
-    ).toBe(200);
-    expect((await getRuntimeHandle(client, "widgets", "ABC-24"))?.coordinator).toBe("front");
-    expect((await cli("GET", "session", { token: session })).body.worker).toMatchObject({ coordinator: "front" });
+          })
+        ).status,
+      ).toBe(200);
+      expect((await getRuntimeHandle(client, "widgets", ticket))?.coordinator).toBe(coordinator);
+      expect((await cli("GET", "session", { token: session })).body.worker).toMatchObject({ coordinator });
+    }
   });
 
   test("a heartbeat is project/ticket/session scoped, server timed, vault-free, and refuses replaced sessions", async () => {
