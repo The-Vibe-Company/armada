@@ -263,6 +263,81 @@ describe("live Fleet reading", () => {
     expect(w.reads.snapshots).toBe(1);
   });
 
+  test("open merge pauses and each deploy target's last state show on the next poll, from Postgres only (THE-1105)", async () => {
+    const db = await tempDb();
+    await upsertProject(db, WIDGETS);
+    const toml = `${configTemplate(WIDGETS)}
+[[deploy.target]]
+name = "production"
+github_environment = "production"
+
+[[deploy.target]]
+name = "staging"
+live_sha_command = "echo synthetic"
+`;
+    const w = world(db, { readConfig: async () => ({ config: parseConfig(toml), warning: null }) });
+    await w.warm();
+    const quiet = await loadOverview(w.opts);
+    expect(quiet.projects[0]).toMatchObject({
+      holds: [],
+      deploys: [
+        { target: "production", last: null },
+        { target: "staging", last: null },
+      ],
+    });
+    const forbid = async (): Promise<never> => {
+      throw new Error("poll read an external source");
+    };
+    w.opts.sources.readConfig = forbid;
+    w.opts.sources.readSnapshot = forbid;
+    w.opts.sources.readChanges = forbid;
+    const store = fleetStore(db);
+    const manual = await store.openHold({
+      project: "widgets",
+      kind: "manual",
+      reason: "release freeze",
+      author: "Synthetic Owner",
+      at: w.at(1_000),
+    });
+    await store.recordDeploy({
+      project: "widgets",
+      target: "production",
+      sha: "a".repeat(40),
+      state: "smoke-failed",
+      detail: "GET /health 500\nsynthetic output",
+      pauseOnFailure: true,
+      at: w.at(2_000),
+    });
+    w.advance(3_000);
+    const paused = (await loadOverview(w.opts)).projects[0];
+    expect(paused?.holds?.map((h) => [h.kind, h.reason])).toEqual([
+      ["manual", "release freeze"],
+      // The deploy's output stays out of the poll: only the reason's first line.
+      ["deploy", `deployment smoke-failed for production (${"a".repeat(40)})`],
+    ]);
+    expect(paused?.deploys).toEqual([
+      {
+        target: "production",
+        last: {
+          sha: "a".repeat(40),
+          state: "smoke-failed",
+          startedAt: w.at(2_000).toISOString(),
+          updatedAt: w.at(2_000).toISOString(),
+        },
+      },
+      { target: "staging", last: null },
+    ]);
+    await store.clearHold({
+      project: "widgets",
+      id: manual.id,
+      reason: "freeze over",
+      author: "Synthetic Owner",
+      at: w.at(4_000),
+    });
+    expect((await loadOverview(w.opts)).projects[0]?.holds?.map((h) => h.kind)).toEqual(["deploy"]);
+    expect(w.reads.snapshots).toBe(1);
+  });
+
   test("a report recorded after the Linear read shows on the next poll without reading Linear again", async () => {
     const db = await tempDb();
     await upsertProject(db, WIDGETS);
@@ -275,6 +350,8 @@ describe("live Fleet reading", () => {
     await w.settle();
     const first = await loadOverview(w.opts);
     expect(first.rows.map((r) => [r.id, r.phase, r.phaseSource])).toEqual([["WID-2", "implementing", "label"]]);
+    // No `[deploy]` in its armada.toml: no deploy targets to show (THE-1105).
+    expect(first.projects[0]?.deploys).toBeUndefined();
 
     await recordEvent(db, {
       project: "widgets",

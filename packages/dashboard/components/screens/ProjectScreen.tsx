@@ -12,6 +12,7 @@ import { useParams } from "next/navigation";
 import { useMemo } from "react";
 import { groupCounts, groupItems, showsOwners } from "@/lib/coordinator-view";
 import { HARNESS_NAME } from "@/lib/fleet-view";
+import { deployLines } from "@/lib/holds-view";
 import { coordinatorHarness, coordinatorLink, type PrState, progressPercent, prState } from "@/lib/project-view";
 import { Alert, LONG_LIST, Notice } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
@@ -19,6 +20,7 @@ import { useOverviewItems } from "../shell/use-items";
 import { EmptyState } from "../ui";
 import { LaunchControl, useLaunch } from "./Launch";
 import { List } from "./OverviewScreen";
+import { deployColor, deployText, HoldAlerts } from "./ShipState";
 
 const PR_COLOR: Record<PrState, string> = {
   green: "var(--green)",
@@ -33,6 +35,7 @@ const COORDINATOR_COLOR = { active: "var(--green)", idle: "var(--amber)", unknow
 export function ProjectScreen() {
   const { t } = useShell();
   const { overview } = useFleet();
+  const now = useNow();
   const slug = decodeURIComponent(String(useParams<{ slug: string }>().slug ?? ""));
   const project = overview.projects.find((p) => p.slug === slug);
   const all = useOverviewItems();
@@ -51,6 +54,7 @@ export function ProjectScreen() {
   const n = groupCounts(items);
   const progress = project.progress;
   const percent = progressPercent(progress) ?? 0;
+  const deploys = deployLines(project, now);
   return (
     <div className="pg is-wide pj">
       {project.error ? (
@@ -58,6 +62,7 @@ export function ProjectScreen() {
       ) : project.reading ? (
         <Notice>{t.readingProject(project.name)}</Notice>
       ) : null}
+      <HoldAlerts projects={[project]} />
       <div className="pj-top">
         <div className="pg-head">
           <p className="pg-meta">
@@ -102,6 +107,25 @@ export function ProjectScreen() {
             <List groups={groups} names={names} named={named} boxed long={items.length > LONG_LIST} />
           ) : (
             <p className="pj-empty">{t.shell.noAgents}</p>
+          )}
+          {deploys && (
+            <section className="pj-block" aria-labelledby="pj-deploys">
+              <h2 className="pj-block-h" id="pj-deploys">
+                {t.overview.deploys.title}
+                <span className="pj-n">{deploys.length}</span>
+              </h2>
+              <ul className="pj-rows">
+                {deploys.map((d) => (
+                  <li key={d.target} className="pj-deploy">
+                    <span className="pj-title">{d.target}</span>
+                    <span className="pj-id">{d.sha?.slice(0, 7) ?? "—"}</span>
+                    <span className="pj-state" style={{ color: deployColor(d) }}>
+                      {deployText(t, d)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
           <section className="pj-block" aria-labelledby="pj-ready">
             <h2 className="pj-block-h" id="pj-ready">

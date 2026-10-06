@@ -37,12 +37,14 @@ import {
   urgentCoordinator,
 } from "@/lib/coordinator-view";
 import { paths } from "@/lib/fleet-view";
+import { deployLines } from "@/lib/holds-view";
 import { LONGEST_TIMES, type Strings } from "@/lib/i18n";
 import { Alert, HeaderActions, LONG_LIST, Notice } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { useOverviewItems } from "../shell/use-items";
 import { RelativeTime, Steady } from "../ui";
 import { useLazy } from "../use-lazy";
+import { deployColor, deployText, HoldAlerts } from "./ShipState";
 
 // The preview pane is its own chunk (THE-892): the list does not wait for its code.
 const loadPreview = () => import("./OverviewPreview").then((m) => m.OverviewPreview);
@@ -203,6 +205,7 @@ export function Overview({
           <Notice key={p.slug}>{t.readingProject(p.name)}</Notice>
         ),
       )}
+      <HoldAlerts projects={projects} named />
       <div className="ov-head">
         <p className="ov-headline">{t.overview.headline(head.blocked, head.you)}</p>
         {projects.map(
@@ -352,6 +355,7 @@ function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummari
   const c = t.overview.card;
   const progress = p.progress;
   const pct = progress?.total ? Math.round((progress.done / progress.total) * 100) : 0;
+  const deploys = deployLines(p, now);
   const idle = p.coordinator.seenAt ? t.duration(Math.max(0, now - Date.parse(p.coordinator.seenAt))) : "";
   const coordinator =
     s.coordinator === "active"
@@ -397,6 +401,16 @@ function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummari
           </span>
         )}
       </span>
+      {deploys && (
+        <span className="ov-project-facts">
+          <span className="sr-only">{t.overview.deploys.title}: </span>
+          {deploys.map((d) => (
+            <span key={d.target} style={{ color: deployColor(d) }}>
+              {d.target} · {deployText(t, d)}
+            </span>
+          ))}
+        </span>
+      )}
       {s.coordinators.length > 0 && (
         <span className="ov-project-facts ov-project-roles">
           <span className="sr-only">{t.overview.ownerLabel}: </span>
