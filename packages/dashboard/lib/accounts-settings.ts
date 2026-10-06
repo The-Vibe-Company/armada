@@ -35,6 +35,8 @@ export const ORGANIZATION_PATH = "/organization";
 export const KEYS_PATH = "/organization/keys";
 /** The workers launched with a launch token (THE-841): who launched them, their sessions, Revoke. */
 export const WORKERS_PATH = "/organization/workers";
+/** The organization's owner notification channel (THE-1097). */
+export const NOTIFICATIONS_PATH = "/organization/notifications";
 /** The Armada GitHub App (THE-851): the installations this organization reads GitHub through. */
 export const GITHUB_PATH = "/organization/github";
 /** Where the Install on GitHub button leads (THE-852): it signs the state, then sends the person to GitHub. */

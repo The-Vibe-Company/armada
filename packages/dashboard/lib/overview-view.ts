@@ -3,47 +3,13 @@
 // and each project's card. Pure: they read the overview the shell polls, and
 // never recompute what core decides (health, progress, what waits, since when
 // an item waits for the coordinator).
-import type { CoordinatorState, FleetOverview, InboxItem, OwnerValidation, WaitingItem } from "@armada/core/read";
+import type { FleetOverview, InboxItem, OwnerValidation, WaitingItem } from "@armada/core/read";
 import { type DecisionKind, decisionsOf } from "./fleet-view";
 
 /** A question, a plan or a hand-back: what the owner decides. */
 export type Decision = WaitingItem & { kind: DecisionKind };
 
-/**
- * A coordinator that stopped answering while items wait for it: only the
- * owner can bring it back. One per project, from core's `coordinatorSince`
- * (an item open in its inbox longer than `policy.coordinator_minutes`).
- */
-export interface CoordinatorAlert {
-  project: string;
-  state: Exclude<CoordinatorState, "active">;
-  /** Its last command; null when it never ran one. */
-  seenAt: string | null;
-  /** The items waiting for it. */
-  waiting: number;
-  /** Since when the oldest of them waits for it. */
-  since: string;
-}
-
-export function coordinatorAlerts(o: Pick<FleetOverview, "projects" | "waiting">): CoordinatorAlert[] {
-  const alerts: CoordinatorAlert[] = [];
-  for (const p of o.projects) {
-    const { state, seenAt } = p.coordinator;
-    if (state === "active") continue;
-    const late = o.waiting.flatMap((w) => (w.project === p.slug && w.coordinatorSince ? [w.coordinatorSince] : []));
-    if (late.length === 0) continue;
-    alerts.push({ project: p.slug, state, seenAt, waiting: late.length, since: late.sort()[0] as string });
-  }
-  return alerts.sort((a, b) => a.since.localeCompare(b.since));
-}
-
-/**
- * What waits for the owner's check (THE-885): merges to approve, work to
- * validate, questions the coordinator escalated, oldest first. An overview
- * from before validations existed has none.
- */
-export const pendingValidations = (o: Partial<Pick<FleetOverview, "validations">>): OwnerValidation[] =>
-  (o.validations ?? []).filter((v) => !v.decision);
+export { type CoordinatorAlert, coordinatorAlerts, pendingValidations } from "@armada/core/read";
 
 /**
  * The Validations page's two lists (THE-1021): what waits for the owner,

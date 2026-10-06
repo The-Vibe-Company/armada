@@ -33,7 +33,7 @@ import {
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { reportHerdr } from "./herdr.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { sessionHandle } from "./login.ts";
 import { observeRuntimes } from "./runtime.ts";
 
@@ -120,7 +120,7 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
   const linearOpts = {
     apiKey: credentials.linearApiKey,
     labels: config.tracker.labels,
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
   };
   const linear = io.linearWriter ? io.linearWriter(linearOpts) : createLinearWriter(linearOpts);
   const live = liveFleet(io, config, credentials);
@@ -142,7 +142,7 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
             token,
             repository: config.github.repository,
             number,
-            ...(io.fetch ? { fetch: io.fetch } : {}),
+            ...httpOptions(io),
           })
       : null,
     readReviewThreads: token
@@ -152,7 +152,7 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
               token,
               repository: config.github.repository,
               number,
-              ...(io.fetch ? { fetch: io.fetch } : {}),
+              ...httpOptions(io),
             })
           )?.reviewThreads ?? null
       : null,

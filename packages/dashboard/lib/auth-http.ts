@@ -47,6 +47,7 @@ function wantsData(request: NextRequest): boolean {
  * login page, answer 401, or fail closed with 503 when no password is configured.
  */
 export function guard(request: NextRequest, { env, now }: GateDeps): NextResponse {
+  if (request.method === "GET" && request.nextUrl.pathname === "/api/cron/owner") return NextResponse.next();
   const gate = gateOf(env);
   const { pathname, search } = request.nextUrl;
   if (gate.kind === "unconfigured") return unconfigured(gate, wantsData(request), languageOf(request, env));

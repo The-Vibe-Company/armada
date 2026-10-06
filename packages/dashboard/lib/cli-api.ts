@@ -80,7 +80,10 @@ export interface CliAccounts {
   settings: AuthSettings;
 }
 
+import { ownerPulse, safeWebhookFetch } from "./owner-push";
+
 export interface CliApiDeps {
+  ownerFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   /** The deployment's accounts; null while it runs on the shared password. Throws when they cannot be opened. */
   accounts: () => Promise<CliAccounts | null>;
   /** The vault's master key; off, `POST credentials` answers 503 and the CLI keeps its local keys. */
@@ -754,6 +757,25 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       appUrl: a.settings.baseUrl,
     },
   );
+  // Include 304 inbox polls: time passing can reveal a stopped coordinator.
+  if (answer.status === 200 || answer.status === 304) {
+    const vault = deps.vault?.();
+    if (vault?.kind === "on")
+      deps.after?.(async () => {
+        try {
+          await ownerPulse(a.client, {
+            organization: organization.id,
+            project: project.slug,
+            now,
+            vault: vault.key,
+            fetch: deps.ownerFetch ?? safeWebhookFetch,
+            baseUrl: a.settings.baseUrl,
+          });
+        } catch {
+          console.error("armada dashboard: owner alert tick failed");
+        }
+      });
+  }
   // An unchanged inbox: nothing to send.
   if (answer.status === 304) return new Response(null, { status: 304, headers: NO_STORE });
   if (answer.status !== 200)

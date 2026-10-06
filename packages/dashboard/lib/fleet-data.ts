@@ -118,6 +118,8 @@ const LIVE_WINDOW_MS = 7 * 24 * 3_600_000;
 const HISTORY_MS = (TIMELINE_HOURS + 1) * 3_600_000;
 
 export interface LoadOptions {
+  /** Read snapshots only, without scheduling a refresh (owner delivery ticks). */
+  refresh?: boolean;
   sources: Sources;
   cache: FleetCache;
   now: () => Date;
@@ -263,6 +265,7 @@ export async function refreshProject(
  * ends, so a Linear outage does not turn every poll into a read.
  */
 function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: SnapshotStore, opts: LoadOptions): boolean {
+  if (opts.refresh === false) return false;
   const now = opts.now().getTime();
   if (entry?.refreshingUntil && entry.refreshingUntil.getTime() > now) return true;
   const since = entry?.attemptedAt ? now - entry.attemptedAt.getTime() : Number.POSITIVE_INFINITY;
