@@ -292,6 +292,9 @@ export async function readWatchState(
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
     inFlight: strings(r.inFlight),
+    ...(Array.isArray(r.openJobs)
+      ? { openJobs: r.openJobs.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0) }
+      : {}),
     readAt: stringOr(r.readAt),
     stopped: stringOr(r.stopped),
     ...(typeof r.cursor === "string" ? { cursor: r.cursor } : {}),
@@ -299,6 +302,13 @@ export async function readWatchState(
     ...(typeof r.freshStart === "boolean" ? { freshStart: r.freshStart } : {}),
     ...(Array.isArray(r.eventIds)
       ? { eventIds: r.eventIds.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).slice(-500) }
+      : {}),
+    ...(typeof r.jobObserved === "object" && r.jobObserved !== null && !Array.isArray(r.jobObserved)
+      ? {
+          jobObserved: Object.fromEntries(
+            Object.entries(r.jobObserved).filter(([_, v]) => typeof v === "string" && Number.isFinite(Date.parse(v))),
+          ) as Record<string, string>,
+        }
       : {}),
     ...(typeof r.runtimeObserved === "object" && r.runtimeObserved !== null && !Array.isArray(r.runtimeObserved)
       ? {

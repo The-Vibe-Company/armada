@@ -56,6 +56,7 @@ describe("armada.toml", () => {
           runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
         },
       },
+      git: { sign: "inherit" },
       github: { repository: "acme/widgets" },
       ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
@@ -506,4 +507,16 @@ test("tracker lint is opt-in with configurable defaults and rejects invalid rule
   ])
     expect(problemsOf(`${DEMO_TOML}\n[tracker.lint]\n${field}`).join(" ")).toContain("tracker.lint");
   expect(problemsOf(DEMO_TOML.replace("[tracker]", "[tracker]\nlint = false")).join(" ")).toContain("tracker.lint");
+});
+
+test("git signing defaults to inherit, accepts off, rejects invalid values and typos", () => {
+  expect(parseConfig(DEMO_TOML).git.sign).toBe("inherit");
+  for (const sign of ["inherit", "off"] as const)
+    expect(parseConfig(`${DEMO_TOML}\n[git]\nsign = "${sign}"\n`).git.sign).toBe(sign);
+  for (const value of ['"on"', "false", "1", '""'])
+    expect(problemsOf(`${DEMO_TOML}\n[git]\nsign = ${value}\n`).join(" ")).toContain("git.sign");
+  expect(problemsOf(`${DEMO_TOML}\n[git]\nsignn = "off"\n`)).toContain('unknown key "git.signn"');
+  expect(
+    configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+  ).toContain('sign = "inherit"');
 });

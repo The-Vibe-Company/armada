@@ -76,6 +76,8 @@ export interface ArmadaConfig {
     repository: string;
   };
   deploy?: { targets: DeployTarget[] };
+  /** Signing policy for newly created Herdr worktrees; cloud environments keep their own policy. */
+  git: { sign: "inherit" | "off" };
   ci: CiConfig;
   gates: {
     /**
@@ -225,6 +227,7 @@ export interface HerdrProfile {
 }
 
 export const CONFIG_DEFAULTS = {
+  gitSign: "inherit",
   language: "en",
   readyLabel: "ready-for-agent",
   parkedLabel: "parked",
@@ -353,6 +356,11 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const lint: LintRules = { inShort, inShortParts, titleMax, severity: lintRaw === undefined ? "warning" : "error" };
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
+  const git = raw.git ?? {};
+  if (!isTable(git)) problems.push('"git" must be a table');
+  const gitT = isTable(git) ? git : {};
+  const sign = gitT.sign ?? CONFIG_DEFAULTS.gitSign;
+  if (sign !== "inherit" && sign !== "off") problems.push('"git.sign" must be "inherit" or "off"');
   const ci = raw.ci ?? {};
   if (!isTable(ci)) problems.push(`"ci" must be a table`);
   const ciT = isTable(ci) ? ci : {};
@@ -386,6 +394,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker.lint", lintT, ["in_short", "in_short_parts", "title_max"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
+    ["git", gitT, ["sign"]],
     ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     [
@@ -902,6 +911,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
     ...(raw.deploy === undefined ? {} : { deploy: { targets: deployTargets } }),
+    git: { sign: sign === "off" ? "off" : "inherit" },
     ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
     policy: {
@@ -970,6 +980,8 @@ repository = ${q(p.repository)}
 # smoke = "curl -fsS https://example.test/health"
 # timeout_minutes = 20  # 1–120; smoke shares this deadline
 # pause_on_failure = true
+[git]
+sign = "inherit"        # "off" disables commit signing only in new Herdr worktrees, when branch rules allow it
 
 # A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
 # with \`armada ci why <pr> --rerun\`; unknown failures are refused.
@@ -1017,8 +1029,10 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # start = "./scripts/start-eval.sh"   # returns within 2 min; last stdout line is the runner reference
 # status = "./scripts/job-status.sh" # last line: running|succeeded|failed [progress, e.g. 37/120 cases]
 # stop = "./scripts/stop-eval.sh"     # exit 0 means stopped
-# silence_minutes = 15
+# silence_minutes = 15              # inbox alarm without news; watch polls at half this interval
 # max_hours = 12                     # overdue, never auto-stopped
+# Remote runner: set ARMADA_API_KEY as its secret (organization API key), armada login --api-key.
+# Push news: armada job beat "$ARMADA_JOB_ID" --progress "40/120" [--state succeeded|failed].
 # Declare the shared resources workers reserve through Armada (optional).
 # [[reservations]]
 # key = "db-migration"
