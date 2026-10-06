@@ -15,6 +15,7 @@ export { freshRuntimeState } from "./fleet.ts";
 
 import { attachPullRequests } from "./github.ts";
 import { buildModel, isClosed } from "./model.ts";
+import { type OverlapReading, type OverlapWorker, overlapLines, overlaps } from "./overlap.ts";
 import type { RequestKind } from "./request-kinds.ts";
 import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
@@ -272,6 +273,10 @@ export interface FleetStore {
   upsertProject(p: ProjectInput, at: Date): Promise<void>;
   listProjects(): Promise<ProjectRecord[]>;
 
+  saveTicketPaths(project: string, ticket: string, paths: string[], at: Date): Promise<void>;
+  ticketPaths(project: string): Promise<Record<string, string[]>>;
+  deleteTicketPaths(project: string, ticket: string): Promise<void>;
+
   recordEvent(e: EventInput): Promise<void>;
   recordHeartbeat(
     input: HeartbeatRecord & { project: string; workerSessionId?: string | null; at: Date },
@@ -330,7 +335,7 @@ export interface FleetStore {
   addInboxItem(item: Omit<InboxItem, "id" | "createdAt" | "request"> & { at: Date }): Promise<number>;
   /** Adds a dashboard request unless the same one is open, or the question it answers is closed: null then. */
   addRequest(r: NewRequest): Promise<number | null>;
-  /** Adds the ticket's plan for the coordinator, unless one is already open. */
+  /** Adds or refreshes the ticket's open plan for the coordinator. */
   putPlan(item: Item): Promise<void>;
   /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
   putHandBack(item: Item): Promise<void>;
@@ -459,7 +464,12 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
   return asked;
 }
 
+export interface ReportResult extends Pick<OverlapReading, "overlaps" | "incomplete"> {
+  inbox: InboxItem[];
+}
+
 export interface ReportRecord {
+  paths?: string[];
   ticket: string;
   phase: LabelPhase;
   shippingStage?: ShippingStage | null;
@@ -479,7 +489,11 @@ export async function recordReport(
   project: string,
   r: ReportRecord,
   at: Date,
-): Promise<InboxItem[]> {
+  snapshot?: HandBackSnapshot,
+): Promise<InboxItem[] | ReportResult> {
+  if (r.paths !== undefined) await store.saveTicketPaths(project, r.ticket, r.paths, at);
+  const reading = r.paths !== undefined ? await readOverlap(store, project, r.ticket, r.paths, at, snapshot) : null;
+  const notes = reading ? overlapLines(reading) : [];
   const handle =
     r.phase === "shipping" && r.previous === "shipping" && !r.shippingStage
       ? await store.getRuntimeHandle(project, r.ticket)
@@ -500,13 +514,13 @@ export async function recordReport(
     headSha: r.headSha,
     at,
   });
-  if (r.phase === "awaiting-approval" && r.previous !== r.phase) {
+  if (r.phase === "awaiting-approval" && (r.previous !== r.phase || r.paths !== undefined)) {
     const handle = await store.getRuntimeHandle(project, r.ticket);
     await store.putPlan({
       project,
       ticket: r.ticket,
       author: handle && !handle.releasedAt ? handle.handle : null,
-      body: r.message,
+      body: [r.message, ...notes].join("\n\n"),
       at,
     });
   } else if (r.phase !== "awaiting-approval")
@@ -519,7 +533,8 @@ export async function recordReport(
       body: `Agent status: ${r.phase} — ${r.summary}`,
       at,
     });
-  return store.openInboxItems({ project, recipient: "worker", ticket: r.ticket });
+  const inbox = await store.openInboxItems({ project, recipient: "worker", ticket: r.ticket });
+  return reading ? { inbox, overlaps: reading.overlaps, incomplete: reading.incomplete } : inbox;
 }
 
 /** A worker's question for the coordinator, signed with its session; returns the item id. */
@@ -550,6 +565,7 @@ export async function recordRelease(
 ): Promise<{ released: boolean }> {
   const resolution = `ticket released: ${r.reason}`;
   if (!(await store.releaseRuntimeHandle(project, r.ticket, at, r))) return { released: false };
+  await store.deleteTicketPaths(project, r.ticket);
   await store.resolvePlans({ project, ticket: r.ticket, resolution, at });
   // No worker is left to take an answer.
   await store.resolveInboxItems({ project, ticket: r.ticket, kind: "question", resolution, at });
@@ -696,6 +712,7 @@ export async function recordMerge(
         workerSessionId: handle.workerSessionId,
       })
     : false;
+  if (released || !handle) await store.deleteTicketPaths(project, m.ticket);
   return {
     handle: released && handle ? { ...handle, releasedAt: handle.releasedAt ?? at.toISOString() } : null,
     resolved,
@@ -816,6 +833,60 @@ export interface HandBackSnapshot {
   prs: readonly Pick<PullRequest, "repo" | "number" | "state">[];
   /** Full stored reading for the same in-flight derivation as status. */
   flight?: { program: ProgramData; forge: ForgeData | null; after: string };
+}
+
+/** Compares declarations with in-flight tickets using only stored data. */
+export async function readOverlap(
+  store: FleetStore,
+  project: string,
+  ticket: string,
+  paths: string[],
+  at: Date,
+  snapshot?: HandBackSnapshot,
+): Promise<OverlapReading> {
+  const [handles, plans, events] = await Promise.all([
+    store.openRuntimeHandles(project),
+    store.ticketPaths(project),
+    store.latestEvents(project),
+  ]);
+  const flight = snapshot?.flight;
+  const model = flight ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId) : null;
+  const lanes =
+    model && flight
+      ? statusInFlight(model, flight.program.comments, {
+          now: at.getTime(),
+          silentAfterMinutes: CONFIG_DEFAULTS.silentAfterMinutes,
+          live: { after: flight.after, events, handles: Object.fromEntries(handles.map((h) => [h.ticket, h])) },
+        })
+      : [];
+  const workers = new Map<string, OverlapWorker>();
+  for (const lane of lanes) {
+    const pr = lane.pr;
+    workers.set(lane.issue.id, {
+      ticket: lane.issue.id,
+      pr: pr?.number ?? null,
+      files: pr ? (pr.files?.map((f) => f.path) ?? null) : [],
+      filesComplete: !pr || pr.filesComplete === true,
+      plan: plans[lane.issue.id] ?? [],
+    });
+  }
+  const closed = new Set(snapshot?.issues.filter(isClosed).map((i) => i.id));
+  for (const handle of handles) {
+    if (closed.has(handle.ticket) || workers.has(handle.ticket)) continue;
+    // A live release or merge wins over an old snapshot, including stale handles.
+    const event = events[handle.ticket];
+    if (event && event.at >= handle.claimedAt && ["release", "merge"].includes(event.kind)) continue;
+    workers.set(handle.ticket, {
+      ticket: handle.ticket,
+      pr: null,
+      files: [],
+      filesComplete: true,
+      plan: plans[handle.ticket] ?? [],
+    });
+  }
+  workers.delete(ticket);
+  const others = [...workers.values()].sort((a, b) => a.ticket.localeCompare(b.ticket));
+  return { workers: others, overlaps: overlaps(paths, others), incomplete: !flight?.forge };
 }
 
 /** The PR named by the worker's generated hand-back status line. */
@@ -1194,7 +1265,8 @@ export interface Fleet {
   /** Launches no claim followed yet, within the last day (`armada status`). */
   pendingLaunches(): Promise<PendingLaunch[]>;
   claim(c: ClaimRecord): Promise<InboxItem[]>;
-  report(r: ReportRecord): Promise<InboxItem[]>;
+  report(r: ReportRecord): Promise<ReportResult>;
+  overlap(input: { ticket: string; paths: string[] }): Promise<OverlapReading>;
   ask(q: { ticket: string; body: string }): Promise<number>;
   release(r: Omit<ReleaseRecord, "workerSessionId">): Promise<{ released: boolean }>;
   /** The coordinator's inbox; null when its entries are still those of `q.etag` (not modified). */

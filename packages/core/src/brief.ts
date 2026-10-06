@@ -23,6 +23,7 @@ import {
 } from "./linear.ts";
 import { buildModel } from "./model.ts";
 import { ARMADA_PACKAGE, type NpmCheck } from "./npm.ts";
+import type { OverlapReading } from "./overlap.ts";
 import { planRule } from "./phases.ts";
 import {
   checkRequestedProfile,
@@ -70,6 +71,9 @@ export interface BriefBlocker {
 }
 
 export interface BriefWorker {
+  files: string[];
+  filesIncomplete: boolean;
+  planPaths: string[];
   id: string;
   title: string;
   url: string;
@@ -291,6 +295,7 @@ const VARIABLES: { name: string; required: boolean; purpose: string }[] = [
 ];
 
 export interface BuildBriefInput {
+  overlap?: OverlapReading;
   config: ArmadaConfig;
   ticket: BriefTicket;
   /** The program as `armada status` reads it, for the workers in flight. */
@@ -336,6 +341,10 @@ export function buildBrief(input: BuildBriefInput): Brief {
   const { config, ticket, program } = input;
   // Both reads may warn about the same failed page; say it once.
   const warnings = [...new Set([...ticket.warnings, ...program.warnings])];
+  if (!input.overlap || input.overlap.incomplete)
+    warnings.push(
+      "Comparison incomplete: in-flight PR files could not be read from Armada; sign in and refresh the project's stored reading.",
+    );
 
   let choice: ProfileChoice | null;
   try {
@@ -379,7 +388,28 @@ export function buildBrief(input: BuildBriefInput): Brief {
       phase: l.phase,
       branch: l.claim?.branch ?? null,
       pr: l.pr?.url ?? null,
+      files: input.overlap?.workers.find((w) => w.ticket === l.issue.id)?.files ?? [],
+      filesIncomplete:
+        input.overlap?.incomplete !== false ||
+        input.overlap.workers.find((w) => w.ticket === l.issue.id)?.filesComplete !== true,
+      planPaths: input.overlap?.workers.find((w) => w.ticket === l.issue.id)?.plan ?? [],
     }));
+
+  for (const worker of input.overlap?.workers ?? []) {
+    if (worker.ticket === ticket.id || parallel.some((w) => w.id === worker.ticket)) continue;
+    const issue = program.issues.find((i) => i.id === worker.ticket);
+    parallel.push({
+      id: worker.ticket,
+      title: issue?.title ?? "Live worker",
+      url: issue?.url ?? "",
+      phase: issue?.agentPhase ?? "planning",
+      branch: null,
+      pr: worker.pr === null ? null : `https://github.com/${config.github.repository}/pull/${worker.pr}`,
+      files: worker.files ?? [],
+      filesIncomplete: input.overlap?.incomplete !== false || !worker.filesComplete,
+      planPaths: worker.plan,
+    });
+  }
 
   // Not `npx <package>`: inside the Armada repository itself, npx resolves the
   // workspace package of the same name, which has no built command.
@@ -638,11 +668,22 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     );
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
-    out.push("Stay out of their areas. If you must change the same files, say so in a report before you do.", "");
-    for (const w of b.parallel)
+    out.push("Before you change one of these files, say so in a report and ask the coordinator.", "");
+    for (const w of b.parallel) {
       out.push(
         `- ${w.id} — ${w.title} (${w.phase})${w.branch ? `, branch \`${w.branch}\`` : ""}${w.pr ? `, ${w.pr}` : ""}`,
       );
+      if (w.files.length)
+        out.push(
+          `  PR files: ${w.files
+            .slice(0, 15)
+            .map((f) => `\`${f}\``)
+            .join(", ")}${w.files.length > 15 ? `, +${w.files.length - 15} more` : ""}`,
+        );
+      if (w.planPaths.length) out.push(`  Plan paths: ${w.planPaths.map((f) => `\`${f}\``).join(", ")}`);
+      if (!w.files.length && !w.planPaths.length && !w.filesIncomplete) out.push("  no files yet");
+      if (w.filesIncomplete) out.push("  Comparison incomplete: PR files are unavailable or not all files were read.");
+    }
   } else out.push("None.");
   out.push(
     "",
@@ -662,6 +703,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 // ------------------------------------------------------------------ load
 
 export interface LoadBriefOptions extends HttpRetryOptions {
+  overlap?: (input: { ticket: string; paths: string[] }) => Promise<OverlapReading>;
   prompt?: boolean;
   linearApiKey: string;
   ticket: string;
@@ -752,6 +794,12 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     if (err instanceof ValidationChoiceError) throw new BriefError(`${err.message}`, err.next);
     throw err;
   }
+  let overlap: OverlapReading | undefined;
+  try {
+    overlap = await opts.overlap?.({ ticket: ticket.id, paths: [] });
+  } catch {
+    /* Live detail stays optional; Linear still supplies the brief. */
+  }
   const launch = await launchForBrief(ticket, opts.prompt === true ? opts.launch : undefined);
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
@@ -760,6 +808,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     config,
     ticket,
     program,
+    overlap,
     profile: opts.profile,
     reason: opts.reason ?? null,
     version: opts.version,

@@ -203,7 +203,7 @@ describe("armada brief", () => {
     expect(prompt).toContain("git branch -m feature/demo-13-show-a-sign-in-page");
     expect(prompt).toContain("After installing Armada, read your skill with `armada skill armada-worker`");
     expect(prompt).toContain("## Ticket\n\n> ## In short\n>\n> A page with an email field.\n");
-    expect(text).not.toContain("Warnings:");
+    expect(text).toContain("Comparison incomplete");
     // The hand-back is the ready-to-merge comment, not the newer "Merged, thanks."
     expect(prompt).not.toContain("Merged, thanks.");
     expect(prompt).toContain(
@@ -229,7 +229,7 @@ describe("armada brief", () => {
       'Plans are pre-approved for DEMO-13 (armada.toml [policy] plans = "pre-approved"): post your plan with `armada report implementing --plan-file -` and go on.\n',
     );
     expect(c.out()).toEndWith(`\n## Project conventions\n\n${conventions}`);
-    expect(c.err()).toBe("");
+    expect(c.err()).toContain("Comparison incomplete");
 
     // A missing file is a warning, and the brief goes out without the section.
     const m = briefIo(SECRETS, BRIEF_RESPONSE, {}, { "/work/widgets/armada.toml": toml });
@@ -381,12 +381,12 @@ describe("armada brief", () => {
     blocker.state = { name: "Canceled", type: "canceled" };
     const canceled = briefIo(SECRETS, response);
     expect(await run(["brief", "DEMO-13"], canceled.io)).toBe(0);
-    expect(canceled.out()).not.toContain("Warnings:");
+    expect(canceled.out()).not.toContain("is blocked by");
 
     blocker.state = { name: "In Progress", type: "started" };
     const open = briefIo(SECRETS, response);
     expect(await run(["brief", "DEMO-13"], open.io)).toBe(0);
-    expect(open.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-10 (In Progress)\n");
+    expect(open.out()).toContain("DEMO-13 is blocked by DEMO-10 (In Progress)");
   });
 
   test("relations and comments longer than one page are read to the end", async () => {
@@ -422,7 +422,7 @@ describe("armada brief", () => {
       ["MoreBriefComments", { id: "DEMO-12", after: "k1" }],
     ]);
     expect(b.out()).toContain("The last email lives in `recent.ts`.");
-    expect(b.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-12 (In Progress)\n");
+    expect(b.out()).toContain("DEMO-13 is blocked by DEMO-12 (In Progress)");
   });
 
   test("a key only in the credentials file is marked to load into the shell, and never shown", async () => {
@@ -600,6 +600,40 @@ describe("armada brief with a launch token", () => {
     expect(plain.out()).toContain("Launch:      a one-time token is made when you print the prompt (--prompt)\n");
     expect(plain.out()).not.toContain("--launch-token");
   });
+});
+
+test("a brief uses Armada's stored file inventory and declared paths, truncating PR files at 15", async () => {
+  const { loadBrief, parseConfig } = await import("@armada/core");
+  const b = briefIo();
+  const files = Array.from({ length: 18 }, (_, i) => `src/file-${i}.ts`);
+  const brief = await loadBrief(parseConfig(TOML), {
+    ticket: "DEMO-13",
+    linearApiKey: "synthetic",
+    profile: "opus",
+    version,
+    env: {},
+    fetch: b.io.fetch,
+    now: () => NOW,
+    overlap: async (input) => {
+      expect(input).toEqual({ ticket: "DEMO-13", paths: [] });
+      return {
+        incomplete: false,
+        overlaps: [],
+        workers: [
+          { ticket: "DEMO-18", pr: 9, files, filesComplete: false, plan: ["skills/**"] },
+          { ticket: "DEMO-16", pr: null, files: [], filesComplete: true, plan: [] },
+          { ticket: "DEMO-11", pr: 7, files: ["src/account.ts"], filesComplete: true, plan: ["src/**"] },
+        ],
+      };
+    },
+  });
+  if (!("prompt" in brief)) throw new Error("no brief");
+  expect(brief.prompt).toContain("`src/file-14.ts`, +3 more");
+  expect(brief.prompt).not.toContain("`src/file-15.ts`");
+  expect(brief.prompt).toContain("Plan paths: `skills/**`");
+  expect(brief.prompt).toContain("Comparison incomplete");
+  expect(brief.prompt).toContain("no files yet");
+  expect(brief.prompt).toContain("Before you change one of these files, say so in a report and ask the coordinator.");
 });
 
 test("the initial brief ticket read retries temporary failures and preserves nonempty output", async () => {
