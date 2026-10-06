@@ -12,6 +12,7 @@ import {
   excerptLines,
   parseChoices,
   readLabels,
+  redactSecrets,
   submitValidation,
 } from "@armada/core";
 import { attachItems } from "./attach.ts";
@@ -38,12 +39,14 @@ export async function readExcerpt(io: Io, raw: string) {
   };
 }
 
-async function validationFiles(io: Io, options: Record<string, string>) {
-  const excerpts = await Promise.all(attachList(options.excerpt).map((raw) => readExcerpt(io, raw)));
+async function validationFiles(io: Io, options: Record<string, string>, secrets: string[]) {
+  const excerpts = (await Promise.all(attachList(options.excerpt).map((raw) => readExcerpt(io, raw)))).map(
+    ({ label, text }) => ({ label: redactSecrets(label, secrets), text: redactSecrets(text, secrets) }),
+  );
   const file = options["details-file"];
   const details = file ? await io.readFile(resolve(io.cwd, file)) : null;
   if (file && details === null) throw new UsageError(`cannot read details file: ${file}`);
-  return { excerpts, details };
+  return { excerpts, details: details === null ? null : redactSecrets(details, secrets) };
 }
 
 const TICKET = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
@@ -97,7 +100,13 @@ export async function validate(io: Io, config: ArmadaConfig, credentials: Creden
   const ticket = named ?? currentTicket(io, config, a.options.ticket, credentials.workerTickets);
   const worker = !named && credentials.armadaSignIn?.kind === "worker";
   const items = attachList(a.options.attach);
-  const samples = await validationFiles(io, a.options);
+  const secrets = [
+    credentials.armadaSignIn?.kind === "api-key" ? credentials.armadaSignIn.key : credentials.armadaSignIn?.token,
+    credentials.linearApiKey,
+    credentials.githubToken,
+    ...config.secrets.names.map((name) => io.env[name]),
+  ].filter((value): value is string => !!value);
+  const samples = await validationFiles(io, a.options, secrets);
   if (worker) await ensurePhaseLabel(io, config, credentials);
   return withContext(io, config, credentials, a.json, (ctx) =>
     submitValidation(ctx, {

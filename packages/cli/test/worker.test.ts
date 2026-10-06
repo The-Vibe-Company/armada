@@ -546,14 +546,21 @@ describe("armada ask, inbox and answer", () => {
 });
 
 test("validate reads inclusive excerpts, repeated checks and folded details without uploading refused samples", async () => {
-  const w = worker(SIGNED_IN);
+  const w = worker({
+    ...SIGNED_IN,
+    LINEAR_API_KEY: "synthetic-linear-credential",
+    GITHUB_TOKEN: "synthetic-github-credential",
+  });
   w.linear.add("DEMO-7");
   const original = w.io.readFile;
   w.io.readFile = async (path) =>
     path === "/work/widgets/out.txt"
-      ? Array.from({ length: 50 }, (_, n) => `Line ${n + 1}`).join("\n")
+      ? Array.from(
+          { length: 50 },
+          (_, n) => `Line ${n + 1}${n === 19 ? ` ${KEY}` : n === 20 ? " lin_api_example" : ""}`,
+        ).join("\n")
       : path === "/work/widgets/context.txt"
-        ? "Longer context"
+        ? "Longer context synthetic-linear-credential"
         : original(path);
   w.io.readBinaryFile = async () => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const fetch = w.io.fetch;
@@ -585,8 +592,15 @@ test("validate reads inclusive excerpts, repeated checks and folded details with
   ).toBe(0);
   expect(w.store.validations[0]).toMatchObject({
     checks: ["Title is legible", "Action fits"],
-    excerpts: [{ label: "out.txt:10-40", text: Array.from({ length: 31 }, (_, n) => `Line ${n + 10}`).join("\n") }],
-    details: "Longer context",
+    excerpts: [
+      {
+        label: "out.txt:10-40",
+        text: Array.from({ length: 31 }, (_, n) => `Line ${n + 10}${n === 10 || n === 11 ? " [redacted]" : ""}`).join(
+          "\n",
+        ),
+      },
+    ],
+    details: "Longer context [redacted]",
   });
   const before = w.armada.calls.filter((c) => c.path === "attachments").length;
   expect(await run(["validate", "DEMO-7", "Short", "--attach", "x.png", "--excerpt", "out.txt"], w.io)).toBe(1);
