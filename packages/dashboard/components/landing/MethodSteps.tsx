@@ -7,27 +7,10 @@
 // arrow key takes over and stops the auto-play. With reduced motion nothing
 // plays: each scene shows its last frame and the steps change on demand.
 import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import { tabStep } from "../../lib/keyboard";
 import { prefersReducedMotion, whileVisible } from "./frames";
 
 type Step = { short: string; title: string; body: string };
-
-/** The step a key moves to from `current`, or null when the key is not one of the tablist's. */
-export function stepForKey(key: string, current: number, count: number): number | null {
-  switch (key) {
-    case "ArrowRight":
-    case "ArrowDown":
-      return (current + 1) % count;
-    case "ArrowLeft":
-    case "ArrowUp":
-      return (current - 1 + count) % count;
-    case "Home":
-      return 0;
-    case "End":
-      return count - 1;
-    default:
-      return null;
-  }
-}
 
 export function MethodSteps({ steps, children }: { steps: readonly Step[]; children: ReactNode }) {
   const ref = useRef<HTMLElement>(null);
@@ -54,7 +37,7 @@ export function MethodSteps({ steps, children }: { steps: readonly Step[]; child
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     // The browser's own shortcuts (Alt+← for Back, Ctrl+Home…) stay the browser's.
     if (e.altKey || e.ctrlKey || e.metaKey) return;
-    const next = stepForKey(e.key, step, steps.length);
+    const next = tabStep(e.key, step, steps.length);
     if (next === null) return;
     e.preventDefault();
     choose(next);

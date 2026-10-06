@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { ownerItems } from "../src/owner-items.ts";
+import { coordinatorAlerts, ownerItems, pendingValidations } from "../src/owner-items.ts";
 import type { FleetOverview, OwnerValidation, ProjectOverview, WaitingItem } from "../src/read.ts";
 
 // A synthetic fleet, for these tests only.
-const project = (slug: string, state: "active" | "idle", seenAt: string | null = null) =>
+const project = (slug: string, state: "active" | "idle" | "unknown", seenAt: string | null = null) =>
   ({ slug, name: slug.toUpperCase(), coordinator: { state, seenAt } }) as ProjectOverview;
 
 const workerItem = (kind: WaitingItem["kind"], ticket: string, coordinatorSince: string | null = null): WaitingItem =>
@@ -39,6 +39,29 @@ const overview = (o: Partial<FleetOverview>) =>
 
 describe("owner items", () => {
   test("fire for a validation to decide, a question escalated to the owner and a stopped coordinator with items waiting", () => {
+    expect(pendingValidations({})).toEqual([]);
+    expect(
+      pendingValidations({
+        validations: [validation(3, "merge", true), validation(1, "merge"), validation(2, "question")],
+      }).map((v) => v.id),
+    ).toEqual([1, 2]);
+    const at = (minutes: number) => new Date(Date.parse("2026-03-04T10:00:00Z") + minutes * 60_000).toISOString();
+    expect(
+      coordinatorAlerts({
+        projects: [
+          project("widgets", "idle", at(40)),
+          project("gadgets", "unknown"),
+          project("gizmos", "active", at(1)),
+        ],
+        waiting: [
+          workerItem("question", "WID-1", at(25)),
+          workerItem("question", "WID-2", at(35)),
+          workerItem("question", "WID-3"),
+          { ...workerItem("question", "GAD-1"), project: "gadgets" },
+          { ...workerItem("question", "GIZ-1", at(50)), project: "gizmos" },
+        ],
+      }),
+    ).toEqual([{ project: "widgets", state: "idle", seenAt: at(40), waiting: 2, since: at(25) }]);
     const items = ownerItems(
       overview({
         validations: [validation(7, "merge"), validation(8, "question"), validation(9, "validation", true)],

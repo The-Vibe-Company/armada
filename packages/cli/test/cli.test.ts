@@ -368,6 +368,18 @@ Pull requests waiting (4)
     const partial = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML.replace('slug = "widgets"', "") });
     expect(await run(["status"], partial.io)).toBe(2);
     expect(partial.err()).toContain('missing required key "project.slug"');
+    const home = await mkdtemp(join(tmpdir(), "armada-missing-key-"));
+    try {
+      // Both no machine home and an actual empty machine store reach the same CLI recovery contract.
+      for (const env of [{}, { XDG_CONFIG_HOME: home }] as Record<string, string>[]) {
+        const key = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML }, env);
+        expect(await run(["status"], key.io)).toBe(2);
+        expect(key.err()).toContain("LINEAR_API_KEY is not set. Set it in the environment, run `armada auth login`");
+        expect(key.err()).toEndWith("\nNext: armada auth login\n");
+      }
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   test("a rejected Linear key fails with exit code 1 and a clear message", async () => {
@@ -377,13 +389,6 @@ Pull requests waiting (4)
     expect(err()).toBe(
       "armada: Linear rejected the API key (HTTP 401); check LINEAR_API_KEY\nNext: armada auth status\n",
     );
-  });
-
-  test("LINEAR_API_KEY is required", async () => {
-    const { io, err } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML }, {});
-    expect(await run(["status"], io)).toBe(2);
-    expect(err()).toContain("LINEAR_API_KEY is not set");
-    expect(err()).toEndWith("\nNext: armada auth login\n");
   });
 });
 

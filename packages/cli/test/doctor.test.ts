@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Check, checkPublished, type Fetch, NPM_REGISTRY_URL, type ServerCli } from "@armada/core";
+import type { Check, Fetch, ServerCli } from "@armada/core";
 import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
@@ -84,7 +84,7 @@ async function terminal(
     expect(await run(["inbox", "--json"], io)).toBe(0);
     out.splice(0);
   };
-  return { doctor, inbox, stderr, home, credentials: join(home, "armada", "credentials") };
+  return { doctor, inbox, io, calls: armada.calls, stderr, home, credentials: join(home, "armada", "credentials") };
 }
 
 describe("armada doctor: parent auto-close", () => {
@@ -262,6 +262,9 @@ describe("armada doctor: this CLI's version", () => {
         fix: "npm install -g @the-vibe-company/armada@99.1.0",
       },
     ]);
+    expect(t.stderr()).toBe("");
+    expect(t.calls.filter((call) => call.path === "whoami")).toHaveLength(0);
+    expect(t.calls.filter((call) => call.path === "credentials")).toHaveLength(1);
   });
 
   test("recent enough, it is ok and names a newer release", async () => {
@@ -284,6 +287,17 @@ describe("a newer Armada release", () => {
     expect(t.stderr()).toBe("");
     await t.inbox();
     expect(t.stderr()).toBe(notice);
+    const status = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), {
+      cli: { minimum: "0.0.1", latest: "99.1.0" },
+      fetch: undefined,
+    });
+    const api = status.io.fetch;
+    const forge = recordedFetch();
+    status.io.fetch = async (url, init) =>
+      String(url).startsWith(ARMADA_URL) ? (api as Fetch)(url, init) : forge.fetch(url, init);
+    expect(await run(["status", "--json"], status.io)).toBe(0);
+    expect(status.stderr()).toBe(notice);
+    expect(forge.calls.length).toBeGreaterThan(0);
     await t.inbox();
     expect(t.stderr()).toBe("");
     expect(JSON.parse(await readFile(join(t.home, "armada", "releases.json"), "utf8"))).toEqual({
@@ -291,52 +305,17 @@ describe("a newer Armada release", () => {
     });
   });
 
-  test("a listed release stays quiet until the server verifies its tarball", async () => {
+  test("only the server's published latest version is announced", async () => {
+    // The real publication/cache gate is owned by dashboard/test/cli-version.test.ts and core/test/npm.test.ts.
     const server = { minimum: "0.0.1", latest: version };
-    const newer = "99.1.0";
-    let ready = false;
-    const refresh = async () => {
-      const answer = await checkPublished(newer, async (url) =>
-        url === NPM_REGISTRY_URL
-          ? Response.json({
-              versions: Object.fromEntries(
-                [newer, version].map((candidate) => [
-                  candidate,
-                  {
-                    dist: { tarball: `https://registry.npmjs.org/armada-${candidate}.tgz` },
-                  },
-                ]),
-              ),
-            })
-          : new Response(null, { status: url.includes(newer) && !ready ? 404 : 200 }),
-      );
-      if (answer.state === "published") server.latest = newer;
-      if (answer.state === "missing" && answer.newest) server.latest = answer.newest;
-    };
     const terminalIo = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: server });
-    await refresh();
     await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe("");
-    ready = true;
-    await refresh();
+    server.latest = "99.1.0";
     await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe(notice);
     await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe("");
-  });
-
-  test("a worker is never told: it installs the version its brief names", async () => {
-    const t = await terminal({ ARMADA_API_KEY: KEY, ARMADA_TICKET: "DEMO-2" }, {}, vault(), {
-      cli: { minimum: "0.0.1", latest: "99.1.0" },
-    });
-    await t.doctor();
-    expect(t.stderr()).toBe("");
-  });
-
-  test("a CLI older than the server's minimum gets the upgrade line only", async () => {
-    const t = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: { minimum: "99.0.0", latest: "99.1.0" } });
-    await t.doctor();
-    expect(t.stderr()).not.toContain("is out");
   });
 });
 

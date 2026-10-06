@@ -7,10 +7,8 @@ import {
   crumbsOf,
   escapeTarget,
   harnessOf,
-  PROJECT_PALETTE,
   paths,
   placeOf,
-  projectColor,
   sectionOf,
   sessionLink,
 } from "../lib/fleet-view.ts";
@@ -64,12 +62,6 @@ test("harnessOf reads every runtime label Armada writes", () => {
     "other",
     "other",
   ]);
-});
-
-test("a project keeps its color whatever other projects exist", () => {
-  const color = projectColor("quivr-v2");
-  expect(PROJECT_PALETTE).toContain(color as (typeof PROJECT_PALETTE)[number]);
-  expect(projectColor("quivr-v2")).toBe(color);
 });
 
 describe("places", () => {

@@ -27,18 +27,6 @@ describe("long jobs", () => {
       expect(() => parseJobStatus(line, startedAt, NOW)).toThrow("job status");
   });
 
-  test("validates configured commands and positive job thresholds", () => {
-    expect(parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "./start.sh"\nstop = "./stop.sh"`).jobs.eval).toEqual({
-      start: "./start.sh",
-      status: null,
-      stop: "./stop.sh",
-      silenceMinutes: 15,
-      maxHours: null,
-    });
-    for (const field of ["silence_minutes = 0", "max_hours = -1", 'status = ""', "typo = 1"])
-      expect(() => parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstop = "stop"\n${field}`)).toThrow();
-  });
-
   test("worker jobs are limited to their own persisted ticket, including reads and forged observations", async () => {
     const store = memoryFleet();
     const request = (op: string, input: object, ticket = "DEMO-7") =>

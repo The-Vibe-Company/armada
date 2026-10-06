@@ -1,6 +1,14 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+
+import { type Browser, chromium, type Page } from "playwright-core";
+import * as React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import * as pageClient from "../components/page-client";
+import * as fleetView from "../lib/fleet-view";
+import { STRINGS } from "../lib/i18n";
+import { renderModule } from "./render-module";
 
 // Every page of the shell is built from the page kit (components/page.tsx,
 // THE-876): the shell's header bar is the page's only title, and its h1, read
@@ -73,8 +81,33 @@ describe("the pages of the shell", () => {
 
   test("have one h1, the header bar's, that the shell names", () => {
     expect([...modules].map(rel)).toContain(HEADER);
-    expect(readFileSync(join(ROOT, HEADER), "utf8").match(/<h1[\s>]/g)).toHaveLength(1);
-    expect(readFileSync(join(ROOT, "components/shell/Shell.tsx"), "utf8")).toMatch(/<PageHeader\s+heading=/);
+    const shell = renderModule(join(ROOT, "components/shell/Shell.tsx"), {
+      react: React,
+      "next/link": { default: ({ children }: { children: React.ReactNode }) => children },
+      "next/navigation": { usePathname: () => "/agents/WID-42", useRouter: () => ({}) },
+      "@/app/auth-actions": {},
+      "@/lib/fleet-view": fleetView,
+      "@/lib/i18n": { LANGUAGES: ["en", "fr"] },
+      "@/lib/keyboard": {},
+      "../page": {},
+      "../page-client": pageClient,
+      "../use-lazy": { useLazy: () => null },
+      "./Announcer": { Announcer: () => null },
+      "./Notifier": { Notifier: () => null },
+      "./NotifyMenu": {},
+      "./icons": {},
+      "./context": {
+        FleetProvider: ({ children }: { children: React.ReactNode }) => children,
+        useShell: () => ({ t: STRINGS.en, account: null }),
+        useFleet: () => ({ overview: { rows: [], projects: [] }, failed: false }),
+        useNow: () => 0,
+      },
+      "./Sidebar": { Sidebar: () => null, useNav: () => [] },
+      "./visit": { VisitProvider: ({ children }: { children: React.ReactNode }) => children },
+    }).Shell as React.ComponentType<{ children?: React.ReactNode }>;
+    const html = renderToStaticMarkup(React.createElement(shell, null, "Session content"));
+    expect(html.match(/<h1\b/g)).toHaveLength(1);
+    expect(html).toMatch(/<h1[^>]*>WID-42<\/h1>/);
   });
 });
 
@@ -173,23 +206,46 @@ describe("globals.css", () => {
   // bar sized by its content then grows as its buttons arrive, and the phone's
   // tab bar, pinned to the bottom, jumped up by up to 47 px (CLS 0.001 to 0.004
   // on the overview). On a phone each bar's height is its own.
-  test("gives the phone's bars a height of their own", () => {
-    const css = readFileSync(join(ROOT, "app/globals.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-    const phone = [...css.matchAll(/@media \(max-width: 719px\) \{/g)].map((m) => {
-      let depth = 0;
-      for (let i = (m.index ?? 0) + m[0].length - 1; i < css.length; i++) {
-        if (css[i] === "{") depth++;
-        else if (css[i] === "}" && --depth === 0) return css.slice(m.index, i);
-      }
-      return "";
+  describe("phone geometry", () => {
+    let browser: Browser | undefined;
+    let page: Page;
+    // The first Chrome launch on a fresh runner includes cold process startup.
+    // Keep Playwright's diagnostic deadline inside Bun's hook deadline.
+    beforeAll(async () => {
+      browser = await chromium.launch({ channel: "chrome", timeout: 15_000 });
+    }, 20_000);
+    beforeAll(async () => {
+      if (!browser) throw new Error("browser setup did not complete");
+      page = await browser.newPage({ viewport: { width: 375, height: 812 } });
+    }, 10_000);
+    afterAll(async () => {
+      await browser?.close();
+    }, 10_000);
+
+    test("gives the phone's bars a height of their own", async () => {
+      const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
+      await page.setContent(
+        `<style>${css}</style><div class="sh-side"><div class="sh-brand">Brand</div></div><nav class="sh-tabbar">Tabs</nav>`,
+      );
+      const heights = () =>
+        page.evaluate(() =>
+          [".sh-side", ".sh-brand", ".sh-tabbar"].map((selector) => {
+            const element = document.querySelector(selector);
+            if (!element) throw new Error("missing bar fixture");
+            return element.getBoundingClientRect().height;
+          }),
+        );
+      const before = await heights();
+      expect(before).toEqual([52, 32, 60]);
+      await page.evaluate(() => {
+        for (const selector of [".sh-brand", ".sh-tabbar"]) {
+          const child = document.createElement("span");
+          child.style.height = "150px";
+          child.style.display = "block";
+          document.querySelector(selector)?.appendChild(child);
+        }
+      });
+      expect(await heights()).toEqual(before);
     });
-    const height = (selector: string) =>
-      phone
-        .flatMap((block) => [...block.matchAll(/(?:^|[}\n])\s*([^{}]+?)\s*\{([^{}]*)\}/g)])
-        .filter((rule) => rule[1]?.trim() === selector)
-        .map((rule) => /(?:^|;)\s*height:\s*([^;]+)/.exec(rule[2] ?? "")?.[1]?.trim())
-        .find(Boolean);
-    for (const bar of [".sh-side", ".sh-brand", ".sh-tabbar"])
-      expect(height(bar) ?? `${bar}: none`).not.toMatch(/none|auto/);
   });
 });

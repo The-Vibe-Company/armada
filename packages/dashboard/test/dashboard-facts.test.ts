@@ -41,6 +41,17 @@ test("coordinator activity and inbox reads have separate clocks, reset after sil
     await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: false, at: at(51) });
     expect(await getCoordinatorPresence(db, "widgets")).toMatchObject({ startedAt: at(51).toISOString() });
     expect(await inboxReads(db, "widgets", at(25 * 60 + 3))).toEqual([]);
+    await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: true, at: at(52) });
+    const persisted = async () =>
+      (
+        await db.query("SELECT created_at FROM events WHERE project = $1 AND kind = 'inbox' ORDER BY created_at", [
+          "widgets",
+        ])
+      ).rows.map((row) => new Date(String(row.created_at)).toISOString());
+    expect(await persisted()).toEqual([at(1), at(2), at(52)].map((date) => date.toISOString()));
+    await store.recordCoordinatorSeen({ project: "widgets", facts, inboxRead: true, at: at(7 * 24 * 60 + 2) });
+    // Strictly older than seven days is deleted; the boundary and newer rows survive.
+    expect(await persisted()).toEqual([at(2), at(52), at(7 * 24 * 60 + 2)].map((date) => date.toISOString()));
     expect(await getCoordinatorPresence(db, "gadgets")).toBeNull();
   } finally {
     await db.end();
