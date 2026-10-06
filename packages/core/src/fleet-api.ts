@@ -76,6 +76,7 @@ import {
   requestPlanChanges,
   requestRelease,
 } from "./requests.ts";
+import { runtimeNameOf } from "./runtime.ts";
 import type { CiState, LabelPhase } from "./types.ts";
 import { isShippingStage } from "./types.ts";
 import {
@@ -128,6 +129,7 @@ export const FLEET_OPS = [
   "heartbeats/latest",
   "runtime/handles",
   "runtime/handle",
+  "runtime/reference",
   "runtime/observe",
   "runtime/stop",
   "launches",
@@ -405,7 +407,10 @@ export async function serveFleet(
         ? (caller.coordinator ?? null)
         : coordinatorNameOf(
             b,
-            b.coordinatorName === undefined && op !== "inbox" && b.coordinator !== undefined
+            b.coordinatorName === undefined &&
+              op !== "inbox" &&
+              op !== "runtime/reference" &&
+              b.coordinator !== undefined
               ? "coordinator"
               : op === "coordinator" && b.coordinatorName === undefined && b.name !== undefined
                 ? "name"
@@ -766,6 +771,20 @@ export async function serveFleet(
           return store.openRuntimeHandles(slug);
         case "runtime/handle":
           return store.getRuntimeHandle(slug, ticketOf(b));
+        case "runtime/reference": {
+          const claimedAt = optText(b, "claimedAt", 40);
+          if (claimedAt && !Number.isFinite(Date.parse(claimedAt))) throw new Invalid("claimedAt must be a timestamp");
+          const runtime = runtimeNameOf(text(b, "runtime", 32));
+          if (!runtime) throw new Invalid("unknown runtime");
+          return store.getRuntimeReference(slug, {
+            ticket: ticketOf(b),
+            runtime,
+            handle: text(b, "handle", LINE_MAX),
+            claimedAt,
+            launchId: optText(b, "launchId", LINE_MAX),
+            releasedAt: null,
+          });
+        }
         case "runtime/observe":
         case "runtime/stop": {
           const claimedAt = text(b, "claimedAt", 40);
@@ -1256,6 +1275,7 @@ export function fleetClient(o: {
     heartbeat: (input) => call("heartbeat", input),
     runtimeHandles: () => call("runtime/handles", {}),
     runtimeHandle: (ticket) => call("runtime/handle", { ticket }),
+    runtimeReference: (ref) => call("runtime/reference", ref),
     observeRuntime: (input) => call("runtime/observe", input),
     stopRuntime: (input) => call("runtime/stop", input),
     pendingLaunches: () => call<PendingLaunch[]>("launches", {}),

@@ -134,7 +134,7 @@ export function currentTicket(
   return id.toUpperCase();
 }
 
-function context(io: Io, config: ArmadaConfig, credentials: Credentials): WorkerContext {
+export function workerContext(io: Io, config: ArmadaConfig, credentials: Credentials): WorkerContext {
   if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   const linearOpts = {
     apiKey: credentials.linearApiKey,
@@ -249,7 +249,7 @@ export async function withContext(
 ): Promise<number> {
   const mask = await outgoingRedactor(io, config, credentials);
   const redact = <T>(input: T): T => redactFreeText(input, mask.text);
-  const ctx = context(io, config, credentials);
+  const ctx = workerContext(io, config, credentials);
   ctx.linear = redactLinearWriter(ctx.linear, mask.text);
   const outcome = await act(ctx, redact);
   if (outcome.state?.phase) {
