@@ -1056,6 +1056,7 @@ const en = {
       none: "No CI yet",
     } satisfies Record<PrState, string>,
     coordinator: "Coordinator",
+    updateAvailable: "Update available · armada upgrade",
     coordinatorState: {
       active: (ago: string) => `Active · seen ${ago}`,
       idle: (d: string) => `Idle for ${d}`,
@@ -1994,6 +1995,7 @@ const fr: Strings = {
       none: "Pas encore de CI",
     },
     coordinator: "Coordinateur",
+    updateAvailable: "Mise à jour · armada upgrade",
     coordinatorState: {
       active: (ago: string) => `Actif · vu ${ago}`,
       idle: (d: string) => `Inactif depuis ${d}`,
