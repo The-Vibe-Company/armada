@@ -3,7 +3,7 @@
 // runtime guide skill does, with what this returns. No secret value is ever
 // part of a brief: environment variables are named, never read into it. The
 // one exception is a one-time launch token (THE-841), made by Armada for a
-// signed-in coordinator: the worker's first command exchanges it for a
+// signed-in coordinator: the worker's first authenticated command exchanges it for a
 // session limited to its ticket, so its runtime needs no key at all. It works
 // once, within the hour, which makes a copy left in a transcript useless.
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
@@ -119,7 +119,7 @@ export interface Brief {
   claimCommand: string;
   /** Actual local runtime handle, supplied after herdr creates the worktree. */
   handle?: string;
-  /** `armada login --launch-token <token>`, the worker's first command, and when the token expires; null without one. */
+  /** `armada login --launch-token <token>`, the worker's first authenticated command, and when the token expires; null without one. */
   launch: { command: string; expiresAt: string } | null;
   /** Why there is no launch token, when there is none. */
   noLaunch: string | null;
