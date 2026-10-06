@@ -1,3 +1,4 @@
+import { sinceSummary } from "../src/catchup.ts";
 // The fleet's live data in memory, for tests: the same results as the app's
 // Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
 // with its unique rules (one open plan, hand-back and launch request per
@@ -130,6 +131,37 @@ export function memoryFleet(): FleetStore & {
   };
 
   return {
+    async digestRecords(project, since, now) {
+      const start = since ?? new Date(now.getTime() - 4 * 60 * 60_000).toISOString();
+      const rows = events.filter((e) => e.project === project && e.at >= start && e.at <= now.toISOString());
+      return {
+        language: "en",
+        input: {
+          since: start,
+          until: now.toISOString(),
+          now,
+          inFlight: [],
+          phaseMedians: {},
+          summary: sinceSummary({
+            since: start,
+            now,
+            records: [
+              {
+                project,
+                silentAfterMinutes: 15,
+                merged: rows.filter((e) => e.kind === "merge").map((e) => ({ ticket: e.ticket ?? "", at: e.at })),
+                claimed: [],
+                blocked: [],
+                gaps: [],
+                waiting: validations
+                  .filter((v) => v.project === project && !v.decision)
+                  .map((v) => ({ id: v.id, ticket: v.ticket, kind: v.kind })),
+              },
+            ],
+          }),
+        },
+      };
+    },
     events,
     items,
     leases,

@@ -9,6 +9,7 @@
 // record.
 import { createHash } from "node:crypto";
 import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
+import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
 
 export { freshRuntimeState } from "./fleet.ts";
@@ -339,6 +340,11 @@ export interface ReserveRecord {
 export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
 
 export interface FleetStore {
+  digestRecords(
+    project: string,
+    since: string | null,
+    now: Date,
+  ): Promise<{ input: DigestInput; language: "en" | "fr" }>;
   reserve(input: ReserveRecord & { project: string; at: Date }): Promise<ReserveResult>;
   reservations(project: string): Promise<Reservation[]>;
   unreserve(input: { project: string; ticket: string; key: string; at: Date }): Promise<number>;
@@ -1340,6 +1346,8 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  digest(request: DigestRequest): Promise<DigestResult>;
+  sendDigest(request: DigestRequest): Promise<DigestResult>;
   reserve(input: ReserveRecord): Promise<ReserveResult>;
   reservations(ticket?: string): Promise<Reservation[]>;
   unreserve(input: { ticket: string; key: string }): Promise<number>;

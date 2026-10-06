@@ -788,6 +788,16 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    version: 28,
+    statements: [
+      `ALTER TABLE owner_channels ADD COLUMN digest_checked_at timestamptz`,
+      `UPDATE owner_channels SET digest = '{"times":["09:00","13:00","18:00"],"days":[1,2,3,4,5],"skipQuiet":false}'::jsonb,
+        digest_checked_at = created_at`,
+      `CREATE INDEX owner_pushes_digests ON owner_pushes (channel, created_at DESC)
+        WHERE key LIKE 'digest:%' OR key LIKE 'digest-manual:%'`,
+    ],
+  },
+  {
     // THE-1098: merge intent survives a coordinator session.
     version: 30,
     statements: [
