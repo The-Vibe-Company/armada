@@ -4,11 +4,23 @@
 // Order: take the per-project merge lease, check everything, merge pinned to
 // the handed-back SHA, read MERGED back, then close the ticket. With --wait the
 // pull request is first brought up to date and waited for, without the lease.
+import { ArmadaApiError } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { mainHealthLine, type UnblockedTickets } from "./fleet.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import type { LinearWriter, Ticket } from "./linear-write.ts";
-import type { Fleet, Lease, MergeRecorded, RuntimeHandle } from "./live.ts";
+import {
+  type Fleet,
+  holdsNext,
+  holdsPaused,
+  type Lease,
+  MERGE_LEASE,
+  type MergeRecorded,
+  type RuntimeHandle,
+} from "./live.ts";
+
+export { MERGE_LEASE } from "./live.ts";
+
 import type { QueueInput } from "./merge-queue.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
 import type { FrontierTicket } from "./status.ts";
@@ -37,6 +49,8 @@ export interface MergeForge {
   diff(number: number): Promise<string>;
   /** Squash-merges only if the head is still `sha`. Never deletes the branch. */
   merge(number: number, sha: string): Promise<MergeAttempt>;
+  /** Runtime guards, awaited before the final hold and lease checks on each merge attempt. */
+  beforeMerge?(number: number, sha: string): Promise<void>;
   /** Posts an audit comment on the pull request; rejects if it could not be recorded. */
   comment(number: number, body: string): Promise<void>;
   /** A commit's parents and tree; null when GitHub does not know it. */
@@ -118,6 +132,7 @@ export interface MergeContext {
 }
 
 export interface MergeInput {
+  throughHold?: string;
   pr: number;
   /** Defaults to the ticket named by the pull request's branch. */
   ticket?: string | null;
@@ -176,7 +191,6 @@ export interface MergeOutcome {
 
 // ------------------------------------------------------------------ constants
 
-export const MERGE_LEASE = "merge";
 /** Long enough for a test merge; a crashed coordinator frees the lock after this. */
 export const MERGE_LEASE_TTL_MS = 20 * 60_000;
 const LEASE_POLL_MS = 5_000;
@@ -452,6 +466,7 @@ export function semanticHints(symbols: DiffSymbols, uses: Map<string, string[]>,
 // ------------------------------------------------------------------ lease
 
 export interface LeaseOptions {
+  throughHold?: string;
   project: string;
   name: string;
   holder: string;
@@ -501,7 +516,12 @@ export async function withLease<T>(
   o: LeaseOptions,
   body: (renew: () => Promise<boolean>) => Promise<T>,
 ): Promise<T> {
-  const key = { name: o.name, holder: o.holder, ttlMs: o.ttlMs };
+  const key = {
+    name: o.name,
+    holder: o.holder,
+    ttlMs: o.ttlMs,
+    ...(o.throughHold ? { throughHold: o.throughHold } : {}),
+  };
   const poll = o.pollMs ?? LEASE_POLL_MS;
   const maxWait = o.maxWaitMs ?? o.ttlMs;
   const lockTimeout = o.timeoutMs ?? LOCK_CALL_TIMEOUT_MS;
@@ -514,10 +534,12 @@ export async function withLease<T>(
         await timed(fleet.releaseLease(key), lockTimeout, `release the ${o.name} lock`).catch(() => {});
         throw err instanceof Refusal
           ? err
-          : new Refusal(
-              `the ${o.name} lock could not be taken (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
-              "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
-            );
+          : err instanceof ArmadaApiError && err.status === 409 && err.next
+            ? new Refusal(err.message, err.next)
+            : new Refusal(
+                `the ${o.name} lock could not be taken (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
+                "the same armada merge again, or with --no-lock if you are sure no other coordinator merges now",
+              );
       },
     );
     if (got.acquired) break;
@@ -928,7 +950,7 @@ async function ownerDecision(
 /** The merge checklist for durable intent: hard failures refuse, readiness waits survive. */
 export async function prepareQueueEntry(
   ctx: MergeContext,
-  input: MergeInput & { keepOpen?: boolean; throughHold?: string | null },
+  input: MergeInput & { keepOpen?: boolean },
 ): Promise<QueueInput> {
   if (ctx.config.policy.mergeApproval && !mergeReason(input))
     throw new Refusal(
@@ -1037,7 +1059,13 @@ export async function askOwnerToMerge(
 }
 
 /** Merges pinned to `sha`, retrying GitHub 5xx after re-reading the state; then reads MERGED back. */
-async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, ticket: string | null): Promise<MergePull> {
+async function mergePinned(
+  ctx: MergeContext,
+  pull: MergePull,
+  sha: string,
+  ticket: string | null,
+  beforeMerge: () => Promise<void>,
+): Promise<MergePull> {
   const n = `#${pull.number}`;
   const closeByHand = ticket ? `; if it merged, close ${ticket} by hand` : "";
   let readError = "";
@@ -1050,6 +1078,7 @@ async function mergePinned(ctx: MergeContext, pull: MergePull, sha: string, tick
     });
   };
   for (let attempt = 0; ; attempt++) {
+    await beforeMerge();
     const res = await ctx.forge.merge(pull.number, sha);
     if (res.ok) break;
     // Whatever the error, GitHub may have merged anyway: read the state first.
@@ -1112,7 +1141,14 @@ export const runtimeGuide = (runtime: string | null) =>
     : null;
 
 /** Closes the ticket in Linear: Done, agent labels removed, PR linked, merged status posted. */
-async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull, c: Checked, unlocked: boolean) {
+async function closeTicket(
+  ctx: MergeContext,
+  ticket: Ticket,
+  merged: MergePull,
+  c: Checked,
+  unlocked: boolean,
+  override: string,
+) {
   const groups = ctx.config.tracker.labels;
   const done = ticket.statusType === "completed" ? null : firstState(ticket.states, "completed");
   await ctx.linear.updateTicket(ticket.uuid, {
@@ -1129,7 +1165,7 @@ async function closeTicket(ctx: MergeContext, ticket: Ticket, merged: MergePull,
     ticket.uuid,
     `Agent status: merged — PR #${merged.number} squash-merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}, head ${merged.headSha}${
       c.updatedFrom ? `, the handed-back ${c.updatedFrom} updated with ${merged.baseRef}` : ""
-    }${unlocked ? ", merged without lock (--no-lock)" : ""}${c.decided ? `; ${c.decided}` : ""}`,
+    }${unlocked ? ", merged without lock (--no-lock)" : ""}${c.decided ? `; ${c.decided}` : ""}${override ? `; ${override}` : ""}`,
   );
   return [
     `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent and ready labels removed, merged status posted.`,
@@ -1145,6 +1181,7 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
   const minutes = Math.round((input.wait?.timeoutMs ?? 0) / 60_000);
   let shown = "";
   for (;;) {
+    await checkHolds(ctx, input);
     const l = await look(ctx, input, run);
     const { pull } = l;
     const n = `#${pull.number}`;
@@ -1197,8 +1234,14 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
  * for, out of the lease, and the lease is given back whenever it needs time again.
  */
 export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Promise<MergeOutcome> {
+  if (input.throughHold !== undefined && !input.throughHold.trim())
+    throw new Refusal(
+      "--through-hold needs a reason; nothing was merged",
+      `armada merge ${input.pr} --through-hold "<why>"`,
+    );
   const run: Run = { pin: null, updated: new Map(), lineages: new Map() };
   if (input.dryRun) {
+    await checkHolds(ctx, input);
     const c = await checklist(ctx, input, run);
     const owner = await ownerDecision(ctx, input, c, true);
     return outcome(c, false, null, [...c.lines, ...owner.lines, "Dry run: nothing was merged."], [], null);
@@ -1227,12 +1270,31 @@ const lockUnavailable = (ctx: MergeContext, input: MergeInput, warning: string |
     `armada merge ${input.pr} again once Armada answers, or armada merge ${input.pr} --no-lock if you are sure no other coordinator merges in ${ctx.config.project.slug} now`,
   );
 
+/** Reading pauses fails closed whenever the project has a live fleet. */
+async function checkHolds(ctx: MergeContext, input: MergeInput): Promise<import("./live.ts").MergeHold[]> {
+  if (input.noLock) return [];
+  const warnings: string[] = [];
+  const { fleet, warning } = await ctx.fleet();
+  if (!fleet) {
+    if (ctx.lockRequired) throw lockUnavailable(ctx, input, warning);
+    return [];
+  }
+  const holds = await live({ fleet: async () => ({ fleet, warning: null }) }, warnings, "read merge holds", (f) =>
+    f.holds(),
+  );
+  if (holds === null) throw lockUnavailable(ctx, input, warnings.join("; ") || "merge holds unavailable");
+  if (holds.length && !input.throughHold?.trim())
+    throw new Refusal(holdsPaused(holds, ctx.now()), holdsNext(holds, input.pr));
+  return holds;
+}
+
 /** The merge itself, under the project's merge lease. */
 async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<MergeOutcome> {
   const { config } = ctx;
   const slug = config.project.slug;
   const early: string[] = [];
   const body = async (renew: () => Promise<boolean>) => {
+    const holds = await checkHolds(ctx, input);
     const c = await checklist(ctx, input, run);
     c.warnings.unshift(...early);
     const owner = await ownerDecision(ctx, input, c, false);
@@ -1245,34 +1307,54 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
       : null;
     const handBackId = handBacks?.find((item) => item.kind === "hand-back")?.id ?? null;
     await recheck(ctx, input, run, c);
-    const reason = input.noTicket ? mergeReason(input) : null;
-    if (reason) {
-      const named = programTicket(config, c.pull);
-      const body = `Armada merge --no-ticket at ${c.sha}: ${reason}.${named ? ` ${named} stays open; its ticket and worker are left unchanged.` : " No ticket is closed."}`;
-      try {
-        await ctx.forge.comment(c.pull.number, body);
-      } catch (err) {
-        throw new Refusal(
-          `could not record the --no-ticket reason on #${c.pull.number} (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
-          `armada merge ${input.pr} --no-ticket --reason "<why the ticket stays open>" again once GitHub answers`,
-        );
+    const overridden = new Map(holds.map((h) => [h.id, h]));
+    let override = "";
+    let recordedAudit: string | null = null;
+    const beforeMerge = async () => {
+      await ctx.forge.beforeMerge?.(c.pull.number, c.sha);
+      // Checks, runtime guards and retry waits can take minutes; refresh pauses before each attempt.
+      for (const hold of await checkHolds(ctx, input)) overridden.set(hold.id, hold);
+      override = overridden.size
+        ? `merged through ${overridden.size === 1 ? "hold" : "holds"} ${[...overridden.keys()].map((id) => `#${id}`).join(", ")}: ${input.throughHold?.trim() ?? ""}`
+        : "";
+      const reason = input.noTicket ? mergeReason(input) : null;
+      if (input.noTicket && (reason || override)) {
+        const named = programTicket(config, c.pull);
+        const audit = reason ? `${reason}.${override ? ` ${override}.` : ""}` : `${override}.`;
+        const body = `Armada merge --no-ticket at ${c.sha}: ${audit}${named ? ` ${named} stays open; its ticket and worker are left unchanged.` : " No ticket is closed."}`;
+        if (body !== recordedAudit) {
+          try {
+            await ctx.forge.comment(c.pull.number, body);
+          } catch (err) {
+            throw new Refusal(
+              `could not record the --no-ticket reason on #${c.pull.number} (${err instanceof Error ? err.message : String(err)}); nothing was merged`,
+              `armada merge ${input.pr} --no-ticket${reason ? ' --reason "<why the ticket stays open>"' : ""}${override ? ' --through-hold "<why this fixes the pause>"' : ""} again once GitHub answers`,
+            );
+          }
+          recordedAudit = body;
+          c.lines.push(
+            reason
+              ? `Recorded --no-ticket reason on #${c.pull.number}: ${reason}`
+              : `Recorded hold override on #${c.pull.number}.`,
+          );
+        }
       }
-      c.lines.push(`Recorded --no-ticket reason on #${c.pull.number}: ${reason}`);
-    }
-    if (!(await renew()))
-      throw new Refusal(
-        "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged",
-        `armada merge ${input.pr} again`,
-      );
-    say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
-    const merged = await mergePinned(ctx, c.pull, c.sha, c.ticket?.id ?? null);
+      if (!(await renew()))
+        throw new Refusal(
+          "the merge lock could not be renewed (it expired and another coordinator took it, or Armada did not answer); nothing was merged",
+          `armada merge ${input.pr} again`,
+        );
+      say(ctx, `Merging #${c.pull.number} at ${c.sha}…`);
+    };
+    const merged = await mergePinned(ctx, c.pull, c.sha, c.ticket?.id ?? null, beforeMerge);
+    if (override) c.lines.push(override);
     const lines = [
       ...c.lines,
       `Merged #${merged.number} into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"} (head ${merged.headSha}).`,
     ];
     if (c.ticket)
       try {
-        lines.push(...(await closeTicket(ctx, c.ticket, merged, c, !!input.noLock)));
+        lines.push(...(await closeTicket(ctx, c.ticket, merged, c, !!input.noLock, override)));
       } catch (err) {
         throw new Error(
           `#${merged.number} is merged, but Linear could not be updated (${err instanceof Error ? err.message : String(err)}); close ${c.ticket.id} by hand: Done, agent and ready labels removed, pull request linked`,
@@ -1282,7 +1364,9 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
     return after(ctx, c, merged, lines, handBackId);
   };
   if (input.noLock) {
-    early.push(`merged without the merge lock (--no-lock): make sure no other coordinator merges in ${slug} now`);
+    early.push(
+      `merged without the merge lock (--no-lock), merge holds were not checked: make sure no other coordinator merges in ${slug} now`,
+    );
     return body(async () => true);
   }
   const { fleet, warning } = await ctx.fleet();
@@ -1300,6 +1384,7 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
       name: MERGE_LEASE,
       holder: ctx.holder,
       ttlMs: MERGE_LEASE_TTL_MS,
+      throughHold: input.throughHold,
       sleep: ctx.sleep,
       onWait: (held) =>
         say(
