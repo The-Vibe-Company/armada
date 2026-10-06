@@ -19,6 +19,7 @@ import {
   readWatchState,
   releaseWatchLock,
   takeWatchLock,
+  ticketOwners,
   updateWatchState,
 } from "@armada/core";
 import { type ExecResult, type Io, UsageError } from "./io.ts";
@@ -277,7 +278,13 @@ export function refreshingJobsFleet(
     ...fleet,
     inbox: async (query) => {
       if (!io.exec) return fleet.inbox(query);
-      const jobs = await fleet.listJobs({ open: true });
+      const openJobs = await fleet.listJobs({ open: true });
+      let jobs = openJobs;
+      if (query.scope === "mine") {
+        const [handles, launches] = await Promise.all([fleet.runtimeHandles(), fleet.pendingLaunches()]);
+        const owners = ticketOwners(handles, launches);
+        jobs = jobs.filter((job) => owners.get(job.ticket) === (query.coordinatorName ?? "default"));
+      }
       let locked = false;
       try {
         if (paths) {
@@ -297,7 +304,7 @@ export function refreshingJobsFleet(
           return true;
         });
         // Prune old jobs; queued probes reserve again immediately before their own shell I/O.
-        const openIds = new Set(jobs.map((job) => String(job.id)));
+        const openIds = new Set(openJobs.map((job) => String(job.id)));
         for (const id of Object.keys(attempts))
           if (!openIds.has(id)) {
             delete attempts[id];

@@ -420,6 +420,7 @@ export function memoryFleet(): FleetStore & {
             q.kinds.includes(e.kind as never) &&
             (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
             (!q.tickets || q.tickets.includes(e.ticket)) &&
+            !q.excludedTickets?.includes(e.ticket) &&
             e.at >= floor &&
             !boundary(e, q.afterAt, q.afterId),
         )
@@ -434,6 +435,7 @@ export function memoryFleet(): FleetStore & {
             q.kinds.includes(e.kind as never) &&
             (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
             (!q.tickets || q.tickets.includes(e.ticket)) &&
+            !q.excludedTickets?.includes(e.ticket) &&
             e.at >= floor &&
             (boundary(e, q.afterAt, q.afterId) || (q.seenIds && recent.includes(e.id) && !q.seenIds.includes(e.id))) &&
             (!q.pageAfter || boundary(e, q.pageAfter.at, q.pageAfter.id)),

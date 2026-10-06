@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { explainChecks, type FailedCheck } from "../src/ci.ts";
+import { type Explanation, explainChecks, type FailedCheck, rerunDecision } from "../src/ci.ts";
 import { parseConfig } from "../src/config.ts";
 import { fetchFailedChecks, fetchJobLog, fetchRunAttempt } from "../src/github.ts";
 import { DEMO_TOML, recordedFetch } from "./support.ts";
@@ -285,4 +285,94 @@ test("a final exit-code annotation cannot hide an earlier causal test error", ()
   expect(result?.error).toContain("Expected: true");
   expect(result?.tests).toEqual(["widgets > saves a draft"]);
   expect(result?.error.length).toBeLessThanOrEqual(40);
+});
+
+test("known failures match exact check names and test names or error blocks, keeping external checks external", () => {
+  const config = parseConfig(`${DEMO_TOML}
+[[ci.known_failure]]
+check = "Tests (linux)"
+pattern = "cold start"
+ticket = "DEMO-42"
+`);
+  const logs = new Map([[11, { lines: ["(fail) widgets > cold start [1.00ms]"], warnings: [] }]]);
+  const results = explainChecks(
+    [check(), check({ name: "Tests (mac)" }), check({ app: "quality-app" })],
+    logs,
+    config.ci,
+  );
+  expect(results.map((e) => e.class)).toEqual(["known", "failure", "external"]);
+  expect(results[0]?.known).toEqual({ ticket: "DEMO-42", pattern: "cold start" });
+  expect(
+    explainChecks([check()], new Map([[11, { lines: ["error: cold start"], warnings: [] }]]), config.ci)[0]?.class,
+  ).toBe("known");
+});
+
+test.each([
+  [["known"], 1, true, ""],
+  [["runner"], 1, true, ""],
+  [["known", "runner"], 1, true, ""],
+  [["known", "failure"], 1, false, "unknown"],
+  [["external"], 1, false, "external"],
+  [["known"], 2, false, "already rerun once, attempt 2"],
+  [["known"], null, false, "attempt unavailable"],
+  [[], 1, false, "No failing checks"],
+] as const)("rerun decision %j at attempt %s", (classes, attempt, allowed, reason) => {
+  const explanations = classes.map((c) => ({
+    check: "Tests",
+    class: c,
+    conclusion: "FAILURE",
+    url: null,
+    attempt,
+    tests: [],
+    error: [],
+    ...(c === "known" ? { known: { ticket: "DEMO-42", pattern: "cold start" } } : {}),
+  })) as Explanation[];
+  const decision = rerunDecision(explanations, attempt);
+  expect(decision.allowed).toBe(allowed);
+  if (!allowed) expect(decision.reason).toContain(reason);
+  if (allowed && classes.includes("known" as never)) expect(decision.tickets).toEqual(["DEMO-42"]);
+});
+
+test.each([
+  ['check = "test"\npattern = "["\nticket = "DEMO-42"', "valid regex"],
+  ['check = "test"\npattern = "cold start"', "ticket"],
+  ['check = "test"\npattern = "cold start"\nticket = "bad"', "issue identifier"],
+  ['check = "test"\npattern = "cold start"\nticket = "DEMO-42"\nextra = true', "unknown key"],
+])("known failure config rejects invalid registry entry", (row, message) => {
+  expect(() => parseConfig(`${DEMO_TOML}\n[[ci.known_failure]]\n${row}`)).toThrow(message);
+});
+
+test("a known test or runner signature cannot hide an unknown failure in the same job, even beyond display limits", () => {
+  const config = {
+    failurePatterns: [],
+    knownFailures: [{ check: "Tests (linux)", pattern: "cold start", ticket: "DEMO-42" }],
+  };
+  for (const lines of [
+    ["(fail) widgets > cold start", "(fail) widgets > saves a draft"],
+    [...Array.from({ length: 20 }, (_, i) => `(fail) cold start ${i}`), "(fail) saves a draft"],
+    ["No space left on device", "(fail) saves a draft"],
+  ]) {
+    const result = explainChecks([check()], new Map([[11, { lines, warnings: [] }]]), config);
+    expect(result[0]?.class).toBe("failure");
+    expect(result[0]?.tests[0]).toContain("saves a draft");
+    expect(rerunDecision(result, 1).allowed).toBe(false);
+    expect(result[0]?.tests.length).toBeLessThanOrEqual(20);
+  }
+});
+
+test("every matched root-cause ticket is included when multiple known failures share a job", () => {
+  const config = {
+    failurePatterns: [],
+    knownFailures: [
+      { check: "Tests (linux)", pattern: "cold start", ticket: "DEMO-42" },
+      { check: "Tests (linux)", pattern: "transient disconnect", ticket: "DEMO-43" },
+    ],
+  };
+  const result = explainChecks(
+    [check()],
+    new Map([[11, { lines: ["(fail) cold start", "(fail) transient disconnect"], warnings: [] }]]),
+    config,
+  );
+  expect(result[0]?.class).toBe("known");
+  expect(rerunDecision(result, 1).tickets).toEqual(["DEMO-42", "DEMO-43"]);
 });

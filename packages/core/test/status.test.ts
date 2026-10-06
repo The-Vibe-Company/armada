@@ -5,6 +5,54 @@ import { buildStatus, loadStatus, readStatusSources, refreshStatusSources } from
 import { DEMO_TOML, demoConfig, issue, NOW, recordedFetch } from "./support.ts";
 
 describe("loadStatus", () => {
+  test("mine filters owned work after full derivation and retains the whole frontier with launch owners", async () => {
+    const launch = (ticket: string, coordinator: string) => ({
+      ticket,
+      coordinator,
+      launchedAt: new Date(NOW.getTime() - 30 * 60_000).toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+    });
+    const options = {
+      linearApiKey: "k",
+      githubToken: "t",
+      now: () => NOW,
+      runtimeHandles: async () => [
+        {
+          project: "widgets",
+          ticket: "DEMO-11",
+          coordinator: "front",
+          runtime: "conductor",
+          handle: "ws/front",
+          branch: null,
+          claimedAt: NOW.toISOString(),
+          releasedAt: null,
+          profile: null,
+        },
+        {
+          project: "widgets",
+          ticket: "DEMO-18",
+          coordinator: "default",
+          runtime: "conductor",
+          handle: "ws/default",
+          branch: null,
+          claimedAt: NOW.toISOString(),
+          releasedAt: null,
+          profile: null,
+        },
+      ],
+      launches: async () => [launch("DEMO-13", "default"), launch("DEMO-15", "front")],
+    };
+    const all = await loadStatus(demoConfig(), { ...options, fetch: recordedFetch().fetch });
+    const mine = await loadStatus(demoConfig(), { ...options, fetch: recordedFetch().fetch, coordinatorName: "front" });
+    expect(mine.inFlight.map((ticket) => ticket.id)).toEqual(["DEMO-11"]);
+    expect(mine.notStarted.map((ticket) => ticket.ticket)).toEqual(["DEMO-15"]);
+    expect(mine.pendingLaunches?.map((ticket) => ticket.ticket)).toEqual(["DEMO-15"]);
+    expect(mine.frontier.map((ticket) => ticket.id)).toEqual(all.frontier.map((ticket) => ticket.id));
+    expect(mine.frontier.find((ticket) => ticket.id === "DEMO-13")).toMatchObject({ launchingBy: "default" });
+  });
+
   test("a persisted stage survives a later tracker read in status JSON", async () => {
     const { fetch } = recordedFetch();
     const r = await loadStatus(demoConfig(), {

@@ -118,6 +118,8 @@ export const inScope = (p: ProjectRef, scope: Scope | null): boolean =>
 const LIVE_WINDOW_MS = 7 * 24 * 3_600_000;
 /** The events of the timeline's history (each row's step): its longest span, and an hour before it for the gap that crosses its start. */
 const HISTORY_MS = (TIMELINE_HOURS + 1) * 3_600_000;
+/** How long an ended job stays beside its ticket (THE-1128). */
+export const ENDED_JOBS_SHOWN_MS = 24 * 3_600_000;
 
 export interface LoadOptions {
   /** Read snapshots only, without scheduling a refresh (owner delivery ticks). */
@@ -280,7 +282,6 @@ function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: Snap
 }
 
 interface LiveProject {
-  jobs: Job[];
   coordinator: CoordinatorPresence | null;
   inboxReads: InboxReadEvent[];
   sessions: SessionRecord[];
@@ -289,6 +290,8 @@ interface LiveProject {
   history: HistoryEvent[];
   handles: RuntimeHandle[];
   launches: PendingLaunch[];
+  /** The open long jobs, and those of the tickets in flight ended lately. */
+  jobs: Job[];
   inbox: InboxItem[];
   coordinatorSeenAt: string | null;
   /** The CLI version the coordinator ran at its last inbox read; null when unknown. */
@@ -328,7 +331,7 @@ async function readLive(
   now: Date,
   tickets: readonly string[] = [],
 ): Promise<LiveProject> {
-  const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions, validations, jobs] =
+  const [events, history, handles, launches, jobs, inbox, coordinator, inboxReads, sessions, validations] =
     await Promise.all([
       Promise.all([
         store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
@@ -337,20 +340,20 @@ async function readLive(
       store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
       store.openRuntimeHandles(project),
       store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
+      store.shownJobs(project, tickets, new Date(now.getTime() - ENDED_JOBS_SHOWN_MS)),
       store.openInboxItems({ project, recipient: "coordinator" }),
       store.getCoordinatorPresence(project),
       store.inboxReads(project, now),
       store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
       readValidations(store, project, now),
-      store.listJobs(project, { open: true }),
     ]);
   return {
-    jobs,
     validations,
     events,
     history,
     handles,
     launches,
+    jobs,
     inbox,
     coordinatorSeenAt: coordinator?.seenAt ?? null,
     coordinatorCliVersion: coordinator?.cliVersion ?? null,

@@ -107,6 +107,65 @@ async function hook(c: Awaited<ReturnType<typeof coordinator>>, cwd: string, env
 }
 
 describe("armada watch", () => {
+  test("named watch defaults to mine, all opts out, and unnamed watch retains the full fleet", async () => {
+    const c = await coordinator();
+    await c.store.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-8",
+      coordinator: "default",
+      runtime: "conductor",
+      handle: "ws/other",
+      branch: null,
+      at: NOW,
+    });
+    await c.store.putHandBack({ project: P, ticket: "DEMO-8", author: null, body: "PR #8", at: NOW });
+    c.io.env.ARMADA_COORDINATOR = "front";
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "nothing", inFlight: [] });
+    c.reset();
+    expect(await run(["watch", "--all", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "items", inFlight: ["DEMO-8"], watch: { inFlight: [] } });
+    c.reset();
+    delete c.io.env.ARMADA_COORDINATOR;
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "items", inFlight: ["DEMO-8"] });
+    c.reset();
+    expect(await run(["inbox", "--mine", "--all"], c.io)).toBe(2);
+    expect(c.err()).toContain("choose --mine or --all");
+  });
+
+  test("named inbox defaults to all, mine labels owned/unowned entries and keeps an owned re-arm count", async () => {
+    const c = await coordinator();
+    c.io.env.ARMADA_COORDINATOR = "front";
+    for (const [ticket, owner] of [
+      ["DEMO-7", "front"],
+      ["DEMO-8", "default"],
+      ["DEMO-9", null],
+    ] as const) {
+      await c.store.saveRuntimeHandle({
+        project: P,
+        ticket,
+        coordinator: owner,
+        runtime: "conductor",
+        handle: `ws/${ticket}`,
+        branch: null,
+        at: NOW,
+      });
+      await c.store.putHandBack({ project: P, ticket, author: null, body: "PR #7", at: NOW });
+    }
+    expect(await run(["inbox", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({
+      inFlight: ["DEMO-7", "DEMO-8", "DEMO-9"],
+      watch: { inFlight: ["DEMO-7"] },
+    });
+    c.reset();
+    expect(await run(["inbox", "--mine"], c.io)).toBe(0);
+    expect(c.out()).toContain("DEMO-7 · owner: front");
+    expect(c.out()).toContain("DEMO-9 · unowned");
+    expect(c.out()).not.toContain("DEMO-8");
+    expect((await readWatchState(c.paths, P, "front"))?.inFlight).toEqual(["DEMO-7"]);
+  });
+
   const identity = (project = P): WatchIdentity => ({
     project,
     configPath: `${COORDINATOR_ROOT}/armada.toml`,
@@ -381,7 +440,7 @@ describe("armada watch", () => {
     expect(c.out()).toBe(
       [
         "Inbox of widgets (1), oldest first:",
-        `* #1 hand-back · DEMO-2 · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
+        `* #1 hand-back · DEMO-2 · unowned · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
         "    Agent status: ready-to-merge — PR #4",
         "    shipping path unreported",
         "New items are marked *.",
@@ -473,7 +532,7 @@ describe("armada watch", () => {
     );
     expect(await run(["watch"], c.io)).toBe(0);
     expect(c.err()).toBe("armada: warning: Armada refused: Armada is restarting; still watching, next try in 15 s\n");
-    expect(c.out()).toContain("* #1 question · DEMO-2 · from ws/DEMO-2");
+    expect(c.out()).toContain("* #1 question · DEMO-2 · unowned · from ws/DEMO-2");
 
     // Signed out: refused before any read, and recorded so the stop hook stops asking.
     c.reset();
@@ -628,12 +687,12 @@ test("plain watch accepts a bounded lifetime and follow refuses unsupported or m
     ["--follow", "--since", "bad"],
     ["--follow", "--tickets", "bad"],
     ["--for", "0"],
-    ["--mine"],
+    ["--mine", "--all"],
   ]) {
     c.reset();
     expect(await run(["watch", ...flags], c.io)).toBe(2);
   }
-  expect(c.err()).toContain("Show each coordinator only its own work");
+  expect(c.err()).toContain("choose --mine or --all");
 });
 
 test("long watch deadlines are chunked below Node's timer limit and cancellable", () => {
@@ -882,4 +941,68 @@ test("queued failed status probes throttle from their actual start across watch 
   c.clock.advance(15000);
   await read();
   expect(calls.filter((call) => call.id === 1).map((call) => call.at)).toEqual([60000, 90000]);
+});
+
+test("named inbox job liveness stays owned and mine probes preserve other coordinators' throttle", async () => {
+  const c = await coordinator();
+  c.io.env.ARMADA_COORDINATOR = "back";
+  const configText = `${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstatus = "probe"\nstop = "stop"\nsilence_minutes = 15`;
+  c.io.readFile = async (path) => (path === `${COORDINATOR_ROOT}/armada.toml` ? configText : null);
+  const config = parseConfig(configText);
+  const live = tempFleet({ store: c.store, clock: c.clock });
+  const ids: number[] = [];
+  for (const [ticket, coordinator] of [
+    ["DEMO-7", "front"],
+    ["DEMO-8", "back"],
+    ["DEMO-9", null],
+  ] as const) {
+    if (coordinator)
+      await c.store.saveRuntimeHandle({
+        project: P,
+        ticket,
+        coordinator,
+        runtime: "conductor",
+        handle: `ws/${ticket}`,
+        branch: null,
+        at: NOW,
+      });
+    const job = await c.store.startJob({
+      project: P,
+      ticket,
+      name: "eval",
+      startedBy: null,
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    await c.store.observeJob({
+      project: P,
+      ticket,
+      id: job.id,
+      state: "running",
+      ref: `run-${job.id}`,
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    ids.push(job.id);
+  }
+  expect(await run(["inbox", "--json"], c.io)).toBe(0);
+  const read = JSON.parse(c.out());
+  expect(read.openJobs).toEqual([...ids].reverse());
+  expect(read.ownedOpenJobs).toEqual([ids[1]]);
+  expect(read.watch.openJobs).toEqual([ids[1]]);
+  expect((await readWatchState(c.paths, P, "back"))?.openJobs).toEqual([ids[1] as number]);
+  await updateWatchState(c.paths, `${P}.job-observe`, { jobObserved: { [ids[0] as number]: NOW.toISOString() } });
+  const probed: number[] = [];
+  c.io.exec = async (_command, _args, options) => {
+    probed.push(Number(options.env?.ARMADA_JOB_ID));
+    return { code: 0, stdout: "running 40/120", stderr: "" };
+  };
+  const mine = await refreshingJobsFleet(
+    c.io,
+    live.fleet,
+    config,
+    COORDINATOR_ROOT,
+    new AbortController().signal,
+  ).inbox({ scope: "mine", coordinatorName: "back", coordinator: null, silentAfterMinutes: 15, etag: null });
+  expect(probed).toEqual([ids[1] as number]);
+  expect(mine?.openJobs).toEqual([ids[1] as number]);
+  expect((await readWatchState(c.paths, `${P}.job-observe`))?.jobObserved?.[ids[0] as number]).toBe(NOW.toISOString());
 });
