@@ -57,6 +57,7 @@ export function memoryFleet(): FleetStore & {
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
+  const paths = new Map<string, string[]>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
@@ -199,6 +200,17 @@ export function memoryFleet(): FleetStore & {
       return [...projects.values()].sort((a, b) => a.slug.localeCompare(b.slug));
     },
 
+    async saveTicketPaths(project, ticket, declared) {
+      paths.set(key(project, ticket), [...declared]);
+    },
+    async ticketPaths(project) {
+      return Object.fromEntries(
+        [...paths].filter(([k]) => k.startsWith(`${project}\n`)).map(([k, v]) => [k.slice(project.length + 1), [...v]]),
+      );
+    },
+    async deleteTicketPaths(project, ticket) {
+      paths.delete(key(project, ticket));
+    },
     async recordEvent(e) {
       events.push({ ...e, id: events.length + 1, at: e.at.toISOString() });
       if (e.kind === "report") {
@@ -540,8 +552,9 @@ export function memoryFleet(): FleetStore & {
       });
     },
     async putPlan(i) {
-      if (open(i.project, i.ticket, "plan")) return;
-      await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
+      const was = open(i.project, i.ticket, "plan");
+      if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
+      else await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
     },
     async putHandBack(i) {
       const was = open(i.project, i.ticket, "hand-back");
