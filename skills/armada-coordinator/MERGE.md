@@ -1,6 +1,25 @@
 # Merging a pull request
 
-Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub and closes the ticket. Its output lists the workers in flight to tell and the worker workspace it archived. Add `--no-archive` to leave the workspace open. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
+Run `armada merge <pr>` (add `--dry-run` to see the checklist only, `--wait` when main keeps moving, `--no-ticket` for a pull request no ticket owns). It checks everything below, takes the project's merge lock, merges pinned to the handed-back SHA, confirms the merge on GitHub, records it on Armada and then closes the ticket in Linear. Its output lists the workers in flight to tell and the worker workspace it archived. Add `--no-archive` to leave the workspace open. When a refusal names a rule, fix the cause (usually: ask the worker to bring the default branch in and report again) rather than merging by hand. When you must merge by hand, follow the same steps.
+
+## Linear is down
+
+After the shared retries, a temporary Linear outage does not stop a merge when Armada has an open hand-back naming the same PR and exact current full head SHA. The command says `Linear did not answer; the hand-back was checked on Armada`. It skips Linear's ticket-phase check and keeps the GitHub, CI, owner approval and merge-lock checks. Without that matching hand-back it refuses and says nothing was merged.
+
+After GitHub confirms the merge, Armada records it first: the hand-back closes and the runtime claim is released. Linear's remaining work becomes a visible `linear-pending` inbox item: `Finish Linear for #N`, with `armada merge --finish N`. Run that command once Linear answers; it checks GitHub already shows the PR merged, completes Done/labels/link/merged-comment bookkeeping without a merge lock, and resolves the item. It also works for a PR merged by hand. Repeating it adds no more writes. You can close the inbox item by hand with `armada answer <item> "<what was finished>"`.
+
+A merge through a hold keeps its override audit in the pending inbox item until `--finish` can post it to Linear. For a signed-in coordinator, finishing waits if Armada cannot supply that audit; it takes no merge lease and does not clear the hold.
+
+Read the last stdout line before acting:
+
+- `Result: merged #N`: the merge is confirmed and bookkeeping finished.
+- `Result: not merged (…)`: no merge was confirmed; keep the worker's workspace. If it says `merge unconfirmed`, GitHub may have accepted the attempt: inspect the PR before retrying. It does not claim nothing was merged.
+- `Result: merged #N, Linear pending (armada merge --finish N)`: the merge is confirmed; finish Linear later.
+- When Armada's record also failed, the result names `Armada and Linear pending`. Follow the printed `armada answer <hand-back id> "resolved: PR merged"` recovery line as well as `--finish`.
+
+If GitHub confirms a merge at a different head from the checked one, the result says merged with bookkeeping pending, prints the mismatch, and performs no automatic record or archive. Check it on GitHub before finishing or archiving.
+
+A confirmed merge exits successfully even with Linear pending. An unfinished `--finish` exits nonzero so it can be tried again. `--json` keeps one JSON object and includes the same text in its `result` field. Dry runs and owner-approval requests end with `Result: not merged`.
 
 ## The owner's merge rule: `--reason` and `--ask-owner`
 
@@ -22,7 +41,7 @@ With several workers in flight, main often moves between a green hand-back and i
 
 ## A ticket in several pull requests
 
-A hand-back with `--more-prs "<what remains>"` tells Armada this PR is one part of the ticket. Run the normal `armada merge <pr>`: all SHA, CI, review, merge-lock and owner-approval checks still apply to this PR. After the confirmed merge, the ticket returns to `implementing` and stays open, the hand-back is resolved, and its worker stays signed in with its workspace and questions intact. Only the final PR counts as a merged ticket in insights.
+A hand-back with `--more-prs "<what remains>"` tells Armada this PR is one part of the ticket. Run the normal `armada merge <pr>`: all SHA, CI, review, merge-lock and owner-approval checks still apply to this PR. After the confirmed merge, the ticket returns to `implementing` and stays open, the hand-back is resolved, and its worker stays signed in with its workspace and questions intact. Only the final PR counts as a merged ticket in insights. If Linear is unavailable, the confirmed partial merge still retains its worker and records the next part in the pending Linear chore; `armada merge --finish <pr>` repairs it as `implementing`, preserving the partial intent.
 
 Armada delivers the next-part message to the same active worker through its runtime adapter. If delivery is unavailable it prints the message; if the outcome is unknown, inspect the session before delivering it yourself. The worker starts the next branch from updated main, keeps its existing claim and hands back the final PR without `--more-prs`. That final merge closes and archives as usual. Partial merges list no newly unblocked tickets and launch no dependents.
 
@@ -65,7 +84,7 @@ With `[[deploy.target]]` declared, `armada merge` starts a detached deploy watch
 
 1. The ticket is Done, its `Agent phase` and `Agent runtime` labels removed, the pull request linked.
 2. Tell every in-flight worker what the merge changes for them: a shared file, a migration, a new check, code they must now reuse or delete.
-3. `armada merge` archives the merged worker's workspace after GitHub confirms the merge. Never archive before it prints "Merged". If cleanup fails, the merge still succeeds and prints the exact `armada stop <ticket>` command to finish it. `--no-archive` leaves the workspace open; shared workspaces and the coordinator's own workspace are retained.
+3. `armada merge` archives the merged worker's workspace after GitHub confirms the merge. Archive only after the final `Result: merged #N` line confirms it landed (including a result with bookkeeping pending). A `Result: not merged (…)` line means keep the workspace. If cleanup fails, the merge still succeeds and prints the exact `armada stop <ticket>` command to finish it. `--no-archive` leaves the workspace open; shared workspaces and the coordinator's own workspace are retained.
 4. Read `Unblocked by <ticket>` in the merge output (also `unblocked` in `--json`): it names tickets ready for an agent, those without a ready label and those parked. Use each ready ticket's printed `armada brief <id> --prompt` command, with its routed profile when configured, to launch it. `now waits only on` names dependents that still have open blockers. A no-ticket merge lists no unblocked tickets.
 
 ## The release pull request

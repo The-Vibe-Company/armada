@@ -36,7 +36,7 @@ const TURN = `interval '${AWAY_MINUTES} minutes'`;
 const READS_KEPT = "interval '7 days'";
 
 const WORKER_FEED_KINDS = "('claim', 'report', 'release', 'merge')";
-const REQUESTS = `(${[...REQUEST_KINDS, "request"].map((k) => `'${k}'`).join(", ")})`;
+const REQUESTS = `(${[...REQUEST_KINDS, "request", "linear-pending"].map((k) => `'${k}'`).join(", ")})`;
 
 /**
  * One source of the feed: the kinds it can give (a filter that rules them
@@ -62,7 +62,7 @@ const BRANCHES: Branch[] = [
     sql: `SELECT 'i:' || id AS key, project, ticket,
             CASE WHEN kind IN ('question', 'plan', 'hand-back') THEN kind WHEN kind = 'note' THEN 'answer' ELSE 'request' END AS kind,
             created_at AS at,
-            CASE WHEN kind IN ('question', 'plan', 'hand-back') THEN 'agent' WHEN kind = 'note' THEN 'coordinator' ELSE 'person' END
+            CASE WHEN kind IN ('question', 'plan', 'hand-back') THEN 'agent' WHEN kind IN ('note', 'linear-pending') THEN 'coordinator' ELSE 'person' END
               AS actor_kind,
             CASE WHEN kind IN ${REQUESTS} THEN author END AS actor,
             body, NULL::text AS phase, CASE WHEN kind IN ${REQUESTS} OR kind = 'note' THEN kind END AS detail,
