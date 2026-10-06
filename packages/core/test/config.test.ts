@@ -35,6 +35,7 @@ describe("armada.toml", () => {
   });
   test("a minimal file gets the protocol defaults", () => {
     expect(parseConfig(DEMO_TOML)).toEqual({
+      jobs: {},
       project: { name: "Widgets", slug: "widgets" },
       tracker: {
         programRoot: "DEMO-1",
