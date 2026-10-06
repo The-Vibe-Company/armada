@@ -85,7 +85,7 @@ test("the coordinator's main instructions stay within their size budget", () => 
 });
 
 /** Bytes of the coordinator's SKILL.md: detail goes to MERGE.md or REFERENCE.md instead. */
-const COORDINATOR_BUDGET = 24_000;
+const COORDINATOR_BUDGET = 20_000;
 
 /** Inline code spans and the lines of fenced blocks. */
 function codeSpans(markdown: string): string[] {

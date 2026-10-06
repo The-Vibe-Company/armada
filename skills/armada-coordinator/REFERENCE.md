@@ -29,7 +29,7 @@ Both modes share one lock per project and name on a machine. `armada inbox --wai
 ## Silence and liveness
 
 - **Silent**: no heartbeat, report or answer for `[policy] silence_minutes` (15 by default). A worker's first allowance adds `launch_grace_minutes` (defaults to `silence_minutes`). Shipping at stage `ci` gets `ci_wait_minutes` (45 by default). Waiting phases (`awaiting-approval`, `blocked`, `awaiting-validation`) are never silent while unanswered.
-- **Conductor and herdr are observed**: a session Armada sees working is only called silent past twice the allowance, and the alert says it is still working. A session idle in a working phase for five minutes without a report or answer is `stopped`: nothing will wake it.
+- **Conductor sessions are observed**: a session Armada sees working is only called silent past twice the allowance, and the alert says it is still working. A session idle in a working phase for five minutes without a report or answer is `stopped`: nothing will wake it.
 - A silence wakes the watch at its allowance, then at twice, four times and each doubling after.
 - **Quiet**: a live worker without a report for `quiet_minutes` (45 by default) is a note for you only.
 - **Not started**: no claim `not_started_minutes` (10 by default) after the launch. An unused token that expired produces one notice, then clears.
