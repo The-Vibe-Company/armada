@@ -62,7 +62,16 @@ export async function acceptance(
   if (!paths) throw new UsageError("acceptance needs HOME or an absolute XDG_CONFIG_HOME for its local execution lock");
   const lock = `acceptance-${config.github.repository.replace(/[^a-zA-Z0-9-]/g, "-")}-${ticket.replace(/[^a-zA-Z0-9-]/g, "-")}`;
   const pid = io.pid ?? process.pid;
-  const taken = await takeWatchLock(paths, lock, pid, io.processAlive ?? processAlive, undefined, undefined, false);
+  const taken = await takeWatchLock(
+    paths,
+    lock,
+    pid,
+    io.processAlive ?? processAlive,
+    undefined,
+    undefined,
+    "default",
+    false,
+  );
   if (!taken.taken)
     throw new UsageError(`acceptance is already running for ${ticket} on this machine; wait for it to finish`);
   let ok = true;

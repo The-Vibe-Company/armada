@@ -52,7 +52,12 @@ test("launch --when-unblocked and --after store server-checked requests, print b
   const lines: string[] = [];
   const io: Io = {
     cwd: "/work",
-    env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: "armada_key_TEST" },
+    env: {
+      XDG_CONFIG_HOME: home,
+      ARMADA_API_URL: ARMADA_URL,
+      ARMADA_API_KEY: "armada_key_TEST",
+      ARMADA_COORDINATOR: "front",
+    },
     readFile: async () =>
       `${DEMO_TOML}\n[conductor.profiles.backend]\nagent = "codex"\nmodel = "synthetic-model"\neffort = "high"\n`,
     fetch: api.fetch,
@@ -64,7 +69,7 @@ test("launch --when-unblocked and --after store server-checked requests, print b
   expect(await run(["launch", "demo-9", "--when-unblocked", "--profile", "backend", "--after", "demo-7"], io)).toBe(0);
   expect(lines.join("")).toContain("DEMO-9 will launch once DEMO-7 is done");
   expect(api.calls.some((c) => c.path === "launch-tokens")).toBe(false);
-  expect(store.items).toMatchObject([{ ticket: "DEMO-9", requestDeferred: true }]);
+  expect(store.items).toMatchObject([{ ticket: "DEMO-9", requestDeferred: true, coordinator: "front" }]);
   const item = store.items[0];
   if (!item) throw new Error("missing request");
   await api.store.resolveInboxItem({ project: "widgets", id: item.id, resolution: "declined", at: NOW });
