@@ -1190,7 +1190,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     }
     if (args.command === "doctor") {
       noExtra(args.rest);
-      return await doctor(io, args.json, version, args.options.deep === "true");
+      return await doctor(io, args.json, version, args.options.deep === "true", args.config ?? undefined);
     }
     if (args.command === "upgrade") {
       noExtra(args.rest);
