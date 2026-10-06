@@ -69,6 +69,15 @@ or session handle. `armada coordinator list` shows roles, sessions and tickets;
 `armada coordinator take ABC-12 --from <name>` records a guarded handover of that ticket.
 
 
+A named role’s watch defaults to `--mine`: your owned tickets and unowned inbox items only.
+`armada inbox --mine` and `armada status --mine` select the same role; those commands
+default to the whole fleet. `armada watch --all` sees the whole fleet too. Without a
+name (`default`), watch keeps its whole-fleet behavior. Inbox entries name their owner
+or say `unowned`; an open session wins over the newest pending launch, then the item’s
+coordinator. Unowned alarms reach everyone until `coordinator take` assigns them.
+Status keeps the entire frontier and marks a pending ticket `launching by <name>`.
+A named role’s re-arm line counts only its own workers, even after a whole-fleet inbox read.
+
 You only learn of something new when a command you run ends. So while a worker is in flight, always have exactly one `armada watch` running, in the background (in Claude Code, a Bash command with `run_in_background`; in another runtime, its own way of running a command in the background). It waits until something needs you (a question, a plan, a request, a hand-back, a merge hold, a silent worker or one that never started, you have not been shown yet), prints it and exits, and you are woken. Armada being down does not end it; a harness time limit may kill it, and it tells the dashboard you are at work.
 
 
@@ -76,14 +85,14 @@ Use `armada watch --follow` only where every output line reaches you: a terminal
 
 - Set `--for` below the harness's command limit: `armada watch --follow --for 50` ends cleanly after 50 minutes and prints `resume: armada watch --follow ...`. Plain `armada watch --for 50` is bounded too.
 - Restarted follow resumes this machine's stored cursor and seen entries for the selected coordinator name. `--since <cursor>` on another machine reads events after that cursor and shows every open inbox entry once, marked `open`. Follow keeps polling while idle (every 60 s; every 15 s with workers in flight); requests are short and unchanged reads answer 304.
-- `--tickets ABC-1,ABC-2` and `--kinds question,hand-back` filter lines. Informational events are opt-in: `--kinds claim,report,release,merge,handover` or `--kinds all`; `handover` is a report entering ready-to-merge. `--json` prints NDJSON with a cursor on every line. `--mine` is refused until "Show each coordinator only its own work" lands; `--all` retains project-wide informational events; inbox lines use the selected coordinator, including unowned entries.
+- `--tickets ABC-1,ABC-2` and `--kinds question,hand-back` filter lines. Informational events are opt-in: `--kinds claim,report,release,merge,handover` or `--kinds all`; `handover` is a report entering ready-to-merge. `--json` prints NDJSON with a cursor on every line. `--mine` applies the ownership filter to inbox lines and informational events; `--all` sees the whole project.
 - Follow and plain watch share one lock per project and coordinator name on this machine. `armada watch --stop` stops either; the stop hook accepts either as a running watch.
 
 - From any folder, set `ARMADA_CONFIG=/path/to/armada.toml` or pass `--project <slug>` to use this machine’s last watched checkout; `--config <path>` overrides both.
 - `armada inbox` and `armada status` run fine while a watch runs: never stop it to read the inbox or the fleet. To stop this project's watch, use `armada watch --stop`, never `pkill` or `killall` patterns: those can kill other projects' watches on the same machine.
 - Start it as soon as a worker is in flight, and start it again right after acting on what it returned. Never end your turn with a worker in flight and no watch running: that is how a hand-back sits unmerged.
 - The last line of `armada inbox`, `armada watch`, `armada merge` and `armada brief` says whether to: `2 workers in flight (ABC-1, ABC-2) — keep watching: armada watch`, `armada watch is already running (pid …)`, or `nothing to watch`. Follow it. A second `armada watch` of the same named role only says the first one is running; different roles have independent locks and wake for their owned or unowned work. `armada watch --stop` stops your role; `--stop --name <name>` targets another role.
-- `armada watch` exits with "nothing to watch" when no worker is in flight and nothing is open: the round is over.
+- `armada watch` exits with "nothing to watch" when no worker is in flight and nothing is open in its scope. A named role can finish its round while another role still has workers.
 - Ordinary releases leave the watch running. `armada status` and `armada inbox` print one quiet release notice per 24 hours on this machine, across versions; the dashboard's coordinator card shows that an update is available. A `version` item means the server requires a newer CLI or this project's installed pointer descriptions/vendored skills differ. Both watch modes stop on required upgrades, even when follow filters hide other kinds. Run `armada upgrade`: it waits at most five publication checks over about two minutes, installs the exact npm release, verifies `armada --version`, and uses the upgraded doctor to judge setup. Only outdated setup runs `armada init --merge`, through the normal setup-only merge checks. Tell workers in flight nothing: each keeps the version its brief pinned unless the release notes say otherwise.
 - Your own coordination ticket is not a worker: the watch and the re-arm line leave out the claim whose handle is yours, taken from `ARMADA_COORDINATOR_HANDLE`, else from Conductor's workspace and session. Outside Conductor, set `ARMADA_COORDINATOR_HANDLE` to the handle you claimed with.
 - In Claude Code, the stop hook `armada init` installs refuses to end your turn while workers are in flight and no watch runs, and tells you to start one. It holds only the checkout where `armada watch` ran, never a worker. If it misbehaves, `ARMADA_STOP_HOOK=off` in the environment turns it off; say so in your report. Other runtimes have no hook: follow the same rule yourself.

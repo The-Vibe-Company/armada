@@ -31,12 +31,15 @@ export async function acceptance(
     throw new UsageError("acceptance allow needs a ticket; --name is for run");
   const ticket = currentTicket(io, config, namedTicket ?? a.options.ticket, credentials.workerTickets);
   if (action === "allow")
-    return withContext(io, config, credentials, a.json, (ctx) =>
-      allowAcceptance(ctx, {
-        ticket,
-        runs: Number(a.options.runs),
-        reason: a.options.reason ?? "",
-      }),
+    return withContext(io, config, credentials, a.json, (ctx, redact) =>
+      allowAcceptance(
+        ctx,
+        redact({
+          ticket,
+          runs: Number(a.options.runs),
+          reason: a.options.reason ?? "",
+        }),
+      ),
     );
   if (!io.exec) throw new UsageError("acceptance needs git and a local command runner");
   const exec = io.exec;

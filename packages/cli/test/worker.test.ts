@@ -308,6 +308,72 @@ describe("armada claim, report and release", () => {
     }
   });
 
+  test("outgoing reports, plans, questions, validations and answers mask before API and Linear", async () => {
+    const w = worker({ ...SIGNED_IN, LINEAR_API_KEY: "synthetic-linear-key" });
+    w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+    w.linear.add("DEMO-7");
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], w.io)).toBe(0);
+    w.reset();
+    expect(
+      await run(
+        [
+          "report",
+          "implementing",
+          "--message",
+          "synthetic-project-secret sk-synthetic-unknown",
+          "--plan",
+          "synthetic-linear-key",
+        ],
+        w.io,
+      ),
+    ).toBe(0);
+    expect(
+      await run(["ask", "use synthetic-project-secret?", "--options", "synthetic-project-secret | continue"], w.io),
+    ).toBe(0);
+    expect(await run(["answer", "DEMO-7", "rotate synthetic-project-secret"], w.io)).toBe(0);
+    expect(await run(["validate", "DEMO-7", "check synthetic-project-secret"], w.io)).toBe(0);
+    expect(
+      await run(
+        ["ask-owner", "DEMO-7", "use synthetic-project-secret?", "--choices", "synthetic-project-secret | fine"],
+        w.io,
+      ),
+    ).toBe(0);
+    const written =
+      JSON.stringify(w.armada.calls.filter((c) => c.path.startsWith("fleet/"))) +
+      w.linear.bodies.join("\n") +
+      w.out() +
+      w.err();
+    expect(written).not.toContain("synthetic-project-secret");
+    expect(written).not.toContain("synthetic-linear-key");
+    expect(written).not.toContain("sk-synthetic-unknown");
+    expect(written).toContain("«secret CUSTOM_KEY»");
+    expect(written).toContain("«secret LINEAR_API_KEY»");
+    expect(w.err()).toContain("masked a value matching a key pattern");
+  });
+
+  test("a partial secret release still masks every readable value", async () => {
+    const w = worker(SIGNED_IN);
+    w.linear.add("DEMO-7");
+    const fetch = w.io.fetch;
+    w.io.fetch = async (url, init) => {
+      if (url.endsWith("/secrets/release"))
+        return Response.json({
+          schemaVersion: 1,
+          project: "widgets",
+          secrets: [{ name: "CUSTOM_KEY", value: "synthetic-readable-secret", scope: "project" }],
+          warnings: ["unreadable secret"],
+          missing: [],
+        });
+      if (!fetch) throw new Error("missing fetch");
+      return fetch(url, init);
+    };
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], w.io)).toBe(0);
+    expect(await run(["report", "implementing", "--message", "synthetic-readable-secret"], w.io)).toBe(0);
+    expect(w.linear.bodies.join("\n")).toContain("«secret CUSTOM_KEY»");
+    expect(w.linear.bodies.join("\n") + w.out() + w.err()).not.toContain("synthetic-readable-secret");
+    expect(w.err()).toContain("project secrets unavailable for masking");
+  });
+
   test("an unreachable Armada only warns; Linear is still written", async () => {
     const w = worker(SIGNED_IN);
     w.io.fetch = async (url, init) => {
@@ -318,7 +384,7 @@ describe("armada claim, report and release", () => {
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
     expect(w.err()).toMatch(
-      /^armada: warning: Armada: could not record the claim \(Armada \(armada\.example\.test\) unreachable: .+\); Linear is up to date\n$/,
+      /armada: warning: Armada: could not record the claim \(Armada \(armada\.example\.test\) unreachable: .+\); Linear is up to date\n$/,
     );
   });
 
@@ -327,7 +393,8 @@ describe("armada claim, report and release", () => {
     w.linear.add("DEMO-7");
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
-    expect(w.err()).toBe(
+    expect(w.err()).toContain("project secrets unavailable for masking");
+    expect(w.err()).toContain(
       "armada: warning: Armada: could not record the claim (not signed in to Armada); Linear is up to date\n",
     );
     expect(w.err()).not.toContain("CANARY");
@@ -470,7 +537,7 @@ describe("armada ask, inbox and answer", () => {
     expect(w.out()).toBe(
       [
         "Inbox of widgets (1), oldest first:",
-        `  #1 question · DEMO-7 · from ws-1/s-1 · ${NOW.toISOString()}`,
+        `  #1 question · DEMO-7 · owner: default · from ws-1/s-1 · ${NOW.toISOString()}`,
         "    Which store keeps the sessions?",
         "",
         "    Options:",
@@ -794,6 +861,11 @@ test("acceptance serializes overlapping local executions and masks vault-only va
   expect(await first).toBe(1);
   expect(w.linear.bodies.at(-1)).toContain("[redacted]");
   expect(w.linear.bodies.join("\n")).not.toContain(secret);
+  // Allowance prose must be masked before both Linear and fleet publication.
+  expect(await run(["acceptance", "allow", "DEMO-7", "--runs", "2", "--reason", `retry ${secret}`], w.io)).toBe(0);
+  expect(w.linear.bodies.at(-1)).toContain("«secret DATABASE_URL»");
+  expect(JSON.stringify(w.store.events)).not.toContain(secret);
+  expect(w.out()).not.toContain(secret);
   // With Armada's secret release unavailable, nonsecret execution still works,
   // but raw diagnostics cannot reach Linear without the masking values.
   const fetch = w.io.fetch;

@@ -225,12 +225,14 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
   const rs = await db.query(
     `SELECT id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, head_sha, created_at
     FROM events WHERE project = $1 AND created_at >= $2 AND kind = ANY($3::text[])
+    AND ($12::text[] IS NULL OR NOT (ticket = ANY($12::text[])))
     AND kind NOT IN ('heartbeat', 'inbox') AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge') AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
     AND ((created_at, id) > ($5::timestamptz, $6::bigint)
       OR ($7::bigint[] IS NOT NULL AND NOT (id = ANY($7::bigint[])) AND id IN (
         SELECT id FROM events WHERE project = $1 AND created_at >= $2
           AND (created_at, id) <= ($5::timestamptz, $6::bigint) AND kind = ANY($3::text[])
           AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge')
+          AND ($12::text[] IS NULL OR NOT (ticket = ANY($12::text[])))
           AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
         ORDER BY id DESC LIMIT 500)))
     AND ($8::timestamptz IS NULL OR (created_at, id) > ($8::timestamptz, $9::bigint))
@@ -247,6 +249,7 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
       q.pageAfter?.id ?? null,
       q.limit ?? 200,
       q.handoverOnly ?? false,
+      q.excludedTickets ?? null,
     ],
   );
   return rs.rows.map((r) => ({
@@ -413,6 +416,12 @@ export async function getCoordinatorPresence(db: Queryable, project: string): Pr
     project,
   ]);
   return result.rows[0] ? coordinatorOf(result.rows[0]) : null;
+}
+
+/** Every named coordinator of a project, by name: what the dashboard shows of each (THE-1112). */
+export async function coordinatorRoles(db: Queryable, project: string): Promise<CoordinatorPresence[]> {
+  const result = await db.query("SELECT * FROM coordinators WHERE project = $1 ORDER BY name", [project]);
+  return result.rows.map(coordinatorOf);
 }
 
 export async function listCoordinators(db: Queryable, project: string): Promise<CoordinatorRecord[]> {
@@ -1791,7 +1800,7 @@ export async function insightRecords(
 
 /** What the Fleet view reads on each poll, and what its requests write. */
 export interface LiveStore extends RequestStore {
-  getCoordinatorPresence(project: string): Promise<CoordinatorPresence | null>;
+  coordinatorRoles(project: string): Promise<CoordinatorPresence[]>;
   inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
@@ -1839,7 +1848,7 @@ export interface TicketHistory {
 }
 
 export const liveStore = (db: Database): LiveStore => ({
-  getCoordinatorPresence: (project) => getCoordinatorPresence(db, project),
+  coordinatorRoles: (project) => coordinatorRoles(db, project),
   inboxReads: (project, now) => inboxReads(db, project, now),
   listSessions: (project, opts) => listSessions(db, project, opts),
   listProjects: () => listProjects(db),
