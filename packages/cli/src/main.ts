@@ -90,14 +90,26 @@ function openUrl(url: string): boolean {
 }
 
 /** Runs git or gh without a shell; optional input is piped without a shell. */
-const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input }) =>
+const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input, env, killTree }) =>
   new Promise((done, fail) => {
-    const child = spawn(command, args, { cwd, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      detached: killTree,
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    const kill = () => {
+      if (killTree && child.pid && process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {}
+      } else child.kill("SIGKILL");
+    };
     let timedOut = false;
     const timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGKILL");
+          kill();
         }, timeoutMs)
       : null;
     if (input !== undefined) {
@@ -113,7 +125,7 @@ const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input }) =>
       if (maxOutputBytes !== undefined && bytes > maxOutputBytes) {
         oversized = true;
         stdout = stderr = "";
-        child.kill("SIGKILL");
+        kill();
       }
       return !oversized;
     };

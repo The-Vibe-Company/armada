@@ -369,8 +369,10 @@ describe("armada help", () => {
 
   test("an unknown command or option names the help to read", async () => {
     const unknown = fakeIo({});
-    expect(await run(["deploy"], unknown.io)).toBe(2);
-    expect(unknown.err()).toBe('armada: unknown command "deploy"\nNext: armada --help, which lists every command\n');
+    expect(await run(["frobnicate"], unknown.io)).toBe(2);
+    expect(unknown.err()).toBe(
+      'armada: unknown command "frobnicate"\nNext: armada --help, which lists every command\n',
+    );
     const option = fakeIo({});
     expect(await run(["report", "--force"], option.io)).toBe(2);
     expect(option.err()).toBe("armada: unknown option --force\nNext: armada report --help\n");

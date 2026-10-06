@@ -7,8 +7,10 @@
 // records there, run by the app (`serveFleet` in `fleet-api.ts`) with its own
 // clock. Losing this data loses live detail, never progress: Linear stays the
 // record.
+
 import { createHash } from "node:crypto";
 import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
+import type { DeployInput, DeployQuery, DeployRecord } from "./deploy.ts";
 import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
 
@@ -222,6 +224,7 @@ export interface SessionRecord extends RuntimeHandle {
  * (merges, or relays it to the worker) and then resolves.
  */
 export type InboxKind =
+  | "deploy"
   | "hold"
   | "queue-refused"
   | "question"
@@ -379,6 +382,8 @@ export interface ReserveRecord {
 export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
 
 export interface FleetStore {
+  recordDeploy(input: DeployInput & { project: string; at: Date }): Promise<DeployRecord>;
+  deployState(project: string, query: DeployQuery): Promise<DeployRecord[]>;
   openHold(input: OpenHold & { project: string; author: string | null; at: Date }): Promise<MergeHold>;
   clearHold(input: {
     project: string;
@@ -940,14 +945,14 @@ export interface InboxEntry {
   version?: string;
 }
 
-/** Items a worker's report rewrites in place: a hand-back on a new head, a plan. */
-const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan"];
+/** Items rewritten in place: reports and a target's coalesced deploy notice. */
+const REWRITTEN: readonly InboxEntryKind[] = ["hand-back", "plan", "deploy"];
 
 const digest = (text: string) => createHash("sha256").update(text).digest("base64url").slice(0, 12);
 
 /**
  * How an entry is told apart between two reads: `#12`, `silent:<ticket>`,
- * `not-started:<ticket>` or `version:<version>@<digest>`. A hand-back or a plan
+ * `not-started:<ticket>` or `version:<version>@<digest>`. A hand-back, plan or deploy notice
  * rewritten in place keeps its id, so its key carries a digest of its text
  * too (a hand-back's names its head SHA): handed back again on a new head, it
  * is new to the coordinator.
@@ -1395,6 +1400,8 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  recordDeploy(input: DeployInput): Promise<DeployRecord>;
+  deployState(query?: DeployQuery): Promise<DeployRecord[]>;
   holds(): Promise<MergeHold[]>;
   openHold(input: OpenHold): Promise<MergeHold>;
   clearHold(input: { id: number; reason: string }): Promise<ClearHoldResult | null>;

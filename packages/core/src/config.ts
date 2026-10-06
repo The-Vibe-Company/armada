@@ -3,6 +3,16 @@
 import { parse, TomlError } from "smol-toml";
 import { failurePattern } from "./ci.ts";
 
+export interface DeployTarget {
+  name: string;
+  branch: string | null;
+  githubEnvironment: string | null;
+  liveShaCommand: string | null;
+  smoke: string | null;
+  timeoutMinutes: number;
+  pauseOnFailure: boolean;
+}
+
 export interface CiConfig {
   failurePatterns: string[];
 }
@@ -41,6 +51,7 @@ export interface ArmadaConfig {
     /** owner/name */
     repository: string;
   };
+  deploy?: { targets: DeployTarget[] };
   ci: CiConfig;
   gates: {
     /**
@@ -518,6 +529,53 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(herdrProfiles).some((profile) => profile.when)
   )
     problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
+  const deployRaw = raw.deploy ?? {};
+  if (!isTable(deployRaw)) problems.push('"deploy" must be a table');
+  const deployT = isTable(deployRaw) ? deployRaw : {};
+  known.push(["deploy", deployT, ["target"]]);
+  const deployTargets: DeployTarget[] = [];
+  if (deployT.target !== undefined && !Array.isArray(deployT.target))
+    problems.push('"deploy.target" must be an array of tables');
+  for (const [i, row] of (Array.isArray(deployT.target) ? deployT.target : []).entries()) {
+    const path = `deploy.target.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    known.push([
+      path,
+      row,
+      ["name", "branch", "github_environment", "live_sha_command", "smoke", "timeout_minutes", "pause_on_failure"],
+    ]);
+    const name = str(row, path, "name");
+    if (name.length > 200) problems.push(`"${path}.name" has at most 200 characters`);
+    if (deployTargets.some((t) => t.name === name)) problems.push(`"${path}.name" repeats ${name}`);
+    const optional = (key: string) => (row[key] === undefined ? null : str(row, path, key));
+    const githubEnvironment = optional("github_environment");
+    const liveShaCommand = optional("live_sha_command");
+    if ((githubEnvironment === null) === (liveShaCommand === null))
+      problems.push(`"${path}" needs exactly one of github_environment or live_sha_command`);
+    const timeoutMinutes = row.timeout_minutes ?? 20;
+    if (
+      typeof timeoutMinutes !== "number" ||
+      !Number.isFinite(timeoutMinutes) ||
+      timeoutMinutes < 1 ||
+      timeoutMinutes > 120
+    )
+      problems.push(`"${path}.timeout_minutes" must be from 1 to 120`);
+    if (row.pause_on_failure !== undefined && typeof row.pause_on_failure !== "boolean")
+      problems.push(`"${path}.pause_on_failure" must be true or false`);
+    deployTargets.push({
+      name,
+      branch: optional("branch"),
+      githubEnvironment,
+      liveShaCommand,
+      smoke: optional("smoke"),
+      timeoutMinutes: typeof timeoutMinutes === "number" ? timeoutMinutes : 20,
+      pauseOnFailure: row.pause_on_failure !== false,
+    });
+  }
+
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
 
@@ -697,6 +755,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
+    ...(raw.deploy === undefined ? {} : { deploy: { targets: deployTargets } }),
     ci: { failurePatterns },
     gates: { requiredChecks, localCommands },
     policy: {
@@ -754,6 +813,16 @@ runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 
 [github]
 repository = ${q(p.repository)}
+
+# After merges, watch each declared target and pause merges if deploy or smoke fails.
+# [[deploy.target]]
+# name = "api"
+# branch = "main"  # omit to watch any merged base branch
+# github_environment = "production"
+# live_sha_command = "curl -fsS https://example.test/version"  # use exactly one live source
+# smoke = "curl -fsS https://example.test/health"
+# timeout_minutes = 20  # 1–120; smoke shares this deadline
+# pause_on_failure = true
 
 [gates]
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)

@@ -837,6 +837,38 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX merge_holds_open ON merge_holds(project, cleared_at)",
     ],
   },
+  {
+    // THE-1101: deployment observations and their target-scoped pause notices.
+    // The sequence is the first observation of a (project, target, sha), not
+    // an update timestamp: late watchers must be ordered by when their
+    // deployment was first seen.
+    version: 35,
+    statements: [
+      `CREATE TABLE deploys (
+        project text NOT NULL REFERENCES projects(slug),
+        target text NOT NULL,
+        sha text NOT NULL,
+        state text NOT NULL CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout')),
+        detail text NOT NULL,
+        pause_on_failure boolean NOT NULL,
+        live_sha text,
+        covered_shas text[] NOT NULL DEFAULT '{}',
+        started_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        sequence bigint GENERATED ALWAYS AS IDENTITY UNIQUE,
+        PRIMARY KEY (project, target, sha)
+      )`,
+      "CREATE INDEX deploys_target_sequence ON deploys (project, target, sequence DESC)",
+      "CREATE INDEX deploys_project_sequence ON deploys (project, sequence DESC)",
+      "CREATE INDEX deploys_project_sha ON deploys (project, sha, sequence DESC)",
+      "ALTER TABLE merge_holds ADD COLUMN deploy_sequence bigint",
+      "ALTER TABLE merge_holds ADD COLUMN deploy_sha text",
+      "ALTER TABLE inbox_items ADD COLUMN deploy_target text",
+      "ALTER TABLE inbox_items ADD COLUMN deploy_sha text",
+      `CREATE UNIQUE INDEX inbox_deploy_one_open ON inbox_items (project, deploy_target)
+        WHERE kind = 'deploy' AND resolved_at IS NULL AND deploy_target IS NOT NULL`,
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

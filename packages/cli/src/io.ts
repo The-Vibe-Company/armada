@@ -18,7 +18,14 @@ export interface ExecResult {
 export type Exec = (
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs?: number; maxOutputBytes?: number; input?: string },
+  options: {
+    cwd: string;
+    timeoutMs?: number;
+    maxOutputBytes?: number;
+    input?: string;
+    env?: Record<string, string | undefined>;
+    killTree?: boolean;
+  },
 ) => Promise<ExecResult>;
 
 /**
@@ -95,7 +102,7 @@ export interface Io {
   ) => Promise<boolean>;
   /** Runs `armada run` or an explicitly accepted official installer, attached to this terminal. */
   spawn?: Spawn;
-  startBackground?: (args: string[]) => Promise<boolean>;
+  startBackground?: (args: string[], options?: { logPath?: string }) => Promise<boolean>;
   backgroundReady?: (ready: boolean) => void;
   stopped?: () => boolean;
 }

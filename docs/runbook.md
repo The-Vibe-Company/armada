@@ -251,3 +251,25 @@ Without a coordination ticket, skip step 1: the next coordinator resumes from `a
 Local worker controls follow the [`armada-runtime-herdr`](../skills/armada-runtime-herdr/SKILL.md) guide. `armada status`, `inbox` and each `watch` poll read herdr state and store it on Armada; the dashboard shows it beside the last report without contacting the local machine. `armada answer` delivers herdr answers before recording them, including a harness approval answered by ticket. After merge or release, `armada stop <ticket>` verifies the saved worktree, refreshes its remote upstream, refuses dirty or unpushed work, and removes only the clean checkout while retaining the branch. Worker reports, questions and heartbeats also self-report their phase to herdr, with nonfatal warnings on failure.
 
 Workers declare planned paths with `armada report awaiting-approval --plan-file plan.md --paths "src/merge.ts,skills/**"` (or `implementing` for a pre-approved plan). The CLI and coordinator plan show overlaps with other in-flight PR files and declared paths. Briefs list the first 15 PR files and the remaining count. An incomplete or unavailable stored GitHub reading is explicitly marked; refresh the project reading before relying on it. Glob/glob matches use conservative static prefixes and may overlap. GitHub records only the new path of a rename; overlap checks can miss its old path. Declarations are replaced when supplied again and cleared on release or merge.
+
+## Check deployments after merges
+
+The owner declares each deployment target in `armada.toml`. Use a GitHub deployment environment when the host reports deployment statuses, or a shell command that prints the full 40-character SHA currently live:
+
+```toml
+[[deploy.target]]
+name = "api"
+branch = "main"                         # optional: default is the merged PR's base
+# Exactly one live source:
+github_environment = "production"
+# live_sha_command = "curl -fsS https://example.test/version"
+smoke = "curl -fsS https://example.test/health" # optional: exit 0 is healthy
+timeout_minutes = 20                    # 1 to 120
+pause_on_failure = true                 # false keeps the inbox warning without a hold
+```
+
+After a confirmed merge, the CLI starts a detached watcher per matching target and returns. Each watcher checks every 30 seconds until the merged commit or a descendant is live, then runs smoke. Live SHA and smoke commands run with `sh -c` in the repository root, with `ARMADA_DEPLOY_SHA` and `ARMADA_DEPLOY_TARGET` set. Commands are bounded to one minute and the remaining deploy deadline. For project secrets, declare the command as `armada run -- <command>`; the watcher never fetches secrets itself. GitHub ancestry reads need the terminal's GitHub token; command-only targets can also use commits already available in the local checkout.
+
+A failed deployment, smoke failure or timeout opens one coordinator inbox item and, by default, a target's deploy hold. Inspect `armada deploy status` or `armada status`. Merge the repair with `armada merge <pr> --through-hold "<what this repairs>"`; a later healthy deploy automatically clears covered failures and their target hold. Other targets and manual holds remain independent. Output detail keeps the last 30 lines, capped at 4 KiB. No deployment comments are added to Linear.
+
+If detaching is unavailable, the merge prints the explicit `armada deploy watch --sha <sha> --target <name> --config <path>` command. Run it in a persistent terminal. Waiting records retain their start time; status and the next merge flag watchers without recent news. Restart the same command to continue the original deadline. Detached watcher logs are under the machine's Armada `watch/` directory as `deploy-<id>.log`. Projects without deploy targets keep their existing merge behavior.

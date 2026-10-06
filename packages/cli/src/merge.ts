@@ -1,6 +1,7 @@
 // `armada merge <pr>`: the coordinator merges a handed-back pull request.
 // GitHub is read through the GraphQL API; the merge itself and the local
 // checks go through `gh` and `git`, run without a shell by `io.exec`.
+
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import {
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
+  deployLine,
   fetchCommit,
   fetchComparison,
   fetchMainHealth,
@@ -38,6 +40,7 @@ import {
   unblockedBy,
 } from "@armada/core";
 import { afterMerge } from "./after-merge.ts";
+import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
@@ -445,6 +448,16 @@ export async function merge(
     for (const w of asked.warnings) io.stderr(`armada: warning: ${w}\n`);
     return 0;
   }
+  if (config.deploy?.targets.length) {
+    try {
+      for (const row of (await deployStatus(io, config, credentials)).rows) {
+        if (["waiting", "live"].includes(row.state) && now().getTime() - Date.parse(row.updatedAt) >= 120_000)
+          io.stderr(`armada: ${deployLine(row, now())}\n`);
+      }
+    } catch {
+      io.stderr("armada: warning: could not read deploy state; armada deploy status\n");
+    }
+  }
   const o = await mergePullRequest(ctx, {
     pr: number,
     ticket: a.options.ticket ?? null,
@@ -472,12 +485,17 @@ export async function merge(
   if (!a.json) io.stdout(`${render(o)}${next.line}\n`);
   for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
   if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+  const deploys =
+    o.merged && o.deploy
+      ? await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json)
+      : [];
   const archive = await afterMerge(io, config, credentials, o, {
     configPath,
     noArchive: !!a.options["no-archive"],
     keepOpen: !!a.options["keep-open"],
   });
-  if (a.json) io.stdout(`${JSON.stringify({ ...o, archive, watch: next }, null, 2)}\n`);
+  if (a.json)
+    io.stdout(`${JSON.stringify({ ...o, archive, ...(deploys.length ? { deploys } : {}), watch: next }, null, 2)}\n`);
   else if (archive)
     io.stdout(`${archive.detail.endsWith(".") ? archive.detail : `${o.ticket?.id}: ${archive.detail}.`}\n`);
   return 0;

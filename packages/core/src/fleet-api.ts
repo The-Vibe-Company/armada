@@ -7,6 +7,7 @@
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
@@ -84,6 +85,8 @@ export const WORKER_FLEET_OPS = [
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "deploy/record",
+  "deploy/state",
   "holds",
   "hold/open",
   "hold/clear",
@@ -321,6 +324,36 @@ export async function serveFleet(
     }
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "deploy/record": {
+          const sha = shaOf(b, "sha");
+          if (!sha || !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full 40-character SHA");
+          if (!DEPLOY_STATES.includes(b.state as DeployState)) throw new Invalid("unknown deploy state");
+          const liveSha = shaOf(b, "liveSha");
+          if (liveSha && !/^[0-9a-f]{40}$/.test(liveSha)) throw new Invalid("liveSha must be a full SHA");
+          if (
+            b.coveredShas !== undefined &&
+            (!Array.isArray(b.coveredShas) ||
+              b.coveredShas.length > 100 ||
+              b.coveredShas.some((sha) => typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)))
+          )
+            throw new Invalid("coveredShas must contain at most 100 full SHAs");
+          return store.recordDeploy({
+            coveredShas: b.coveredShas as string[] | undefined,
+            project: slug,
+            at,
+            target: text(b, "target", 200).trim(),
+            sha,
+            state: b.state as DeployState,
+            detail: deployDetail(optText(b, "detail", BODY_MAX) ?? ""),
+            pauseOnFailure: bool(b, "pauseOnFailure"),
+            liveSha,
+          });
+        }
+        case "deploy/state": {
+          const target = optText(b, "target", 200);
+          const sha = shaOf(b, "sha");
+          return store.deployState(slug, { ...(target ? { target } : {}), ...(sha ? { sha } : {}) });
+        }
         case "digest":
         case "digest/send": {
           const since = optText(b, "since", 40);
@@ -883,6 +916,8 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
   const call = async <T>(op: FleetOp, input: object): Promise<T> =>
     (await o.api.fleet(o.signIn, op, { project: o.project, input }, CALL_TIMEOUT_MS)) as T;
   return {
+    recordDeploy: (input) => call("deploy/record", input),
+    deployState: (input = {}) => call("deploy/state", input),
     digest: (input) => call("digest", input),
     sendDigest: (input) => call("digest/send", input),
     reserve: (input) => call("reserve", input),

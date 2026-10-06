@@ -6,6 +6,7 @@ export * from "./catchup.ts";
 export * from "./ci.ts";
 export * from "./config.ts";
 export * from "./credentials.ts";
+export * from "./deploy.ts";
 export * from "./digest.ts";
 export * from "./dotenv.ts";
 export * from "./fleet.ts";

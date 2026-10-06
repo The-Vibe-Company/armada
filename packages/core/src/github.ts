@@ -795,3 +795,53 @@ export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number 
     },
   );
 }
+
+/** Commit ancestry by SHA; branch-based fetchComparison cannot compare two commits. */
+export async function fetchShaComparison(opts: FetchForgeOptions & { base: string; head: string }): Promise<boolean> {
+  return httpRequest(
+    `https://api.github.com/repos/${opts.repository}/compare/${encodeURIComponent(opts.base)}...${encodeURIComponent(opts.head)}`,
+    { method: "GET", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${opts.token}` } },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
+    async (res) => {
+      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} comparing deploy commits`);
+      const comparison = (await res.json()) as { status: string };
+      return comparison.status === "ahead" || comparison.status === "identical";
+    },
+  );
+}
+
+/** One read per poll, independent of the hosting provider or preview status contexts. */
+export async function fetchLiveDeploy(
+  opts: FetchForgeOptions & { environment: string },
+): Promise<import("./deploy.ts").LiveDeploy> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{
+    repository: {
+      deployments: {
+        nodes: {
+          commit: { oid: string } | null;
+          latestStatus: { state: string; description: string | null } | null;
+        }[];
+      };
+    } | null;
+  }>(
+    opts,
+    `query LiveDeploy($owner: String!, $name: String!, $environment: String!) {
+    repository(owner: $owner, name: $name) {
+      deployments(last: 1, environments: [$environment], orderBy: {field: CREATED_AT, direction: ASC}) {
+        nodes { commit { oid } latestStatus { state description } }
+      }
+    }
+  }`,
+    { owner, name, environment: opts.environment },
+  );
+  const deploy = json.data?.repository?.deployments.nodes[0];
+  const state = deploy?.latestStatus?.state?.toLowerCase();
+  return {
+    sha: deploy?.commit?.oid ?? null,
+    state: state === "success" || state === "failure" || state === "error" ? state : "pending",
+    detail: deploy
+      ? `${opts.environment}: ${state ?? "pending"}\n${deploy.latestStatus?.description ?? ""}`
+      : `no deployment for ${opts.environment}`,
+  };
+}
