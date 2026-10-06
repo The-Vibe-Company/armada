@@ -116,7 +116,7 @@ export interface LatestEvent {
   at: string;
 }
 
-import { OBSERVABLE_RUNTIMES, type RuntimeState, runtimeNameOf } from "./runtime.ts";
+import { type RuntimeState, runtimeNameOf } from "./runtime.ts";
 
 export { RUNTIME_STATES, type RuntimeState } from "./runtime.ts";
 
@@ -248,6 +248,7 @@ export type InboxKind =
   | "plan"
   | "request"
   | "hand-back"
+  | "linear-pending"
   | "note"
   | "decision"
   | RequestKind;
@@ -348,6 +349,8 @@ export type LeaseResult = { acquired: true } | { acquired: false; held: Lease | 
  * claimed the ticket since: the newest launch of its ticket, not ended.
  */
 export interface PendingLaunch {
+  /** Worker session identity; optional for older servers. */
+  id?: string;
   coordinator?: string | null;
   ticket: string;
   launchedAt: string;
@@ -526,6 +529,8 @@ export interface FleetStore {
   putPlan(item: Item): Promise<void>;
   /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
   putHandBack(item: Item): Promise<void>;
+  /** Adds or refreshes the coordinator’s unfinished Linear work for a merged pull request. */
+  putChore(item: Item & ChoreRecord): Promise<void>;
   /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
   openInboxItems(q: { project: string; recipient: InboxRecipient; ticket?: string }): Promise<InboxItem[]>;
   getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
@@ -831,12 +836,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
   await store.resolveInboxItems({ project, ticket, kind: "answer-request", resolution: text, at });
   if (n === 0 && plans === 0 && a.ticket) {
     const held = await store.getRuntimeHandle(project, ticket);
-    if (
-      held &&
-      OBSERVABLE_RUNTIMES.includes(runtimeNameOf(held.runtime) as "herdr" | "conductor") &&
-      !held.releasedAt &&
-      held.runtimeState?.state === "blocked"
-    ) {
+    if (held && runtimeNameOf(held.runtime) === "herdr" && !held.releasedAt && held.runtimeState?.state === "blocked") {
       // Harness approvals have no worker-authored question. Keep the delivered
       // answer in the same indexed answer history so the inbox clears until the
       // next blocked transition, even if the terminal stays blocked briefly.
@@ -855,6 +855,13 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
     }
   }
   return `${n} open question${n === 1 ? "" : "s"}${plans ? ` and ${plans} plan${plans === 1 ? "" : "s"}` : ""} of ${ticket} resolved.`;
+}
+
+export interface ChoreRecord {
+  ticket: string;
+  kind: "linear-pending";
+  pr: number;
+  body: string;
 }
 
 export interface MergeRecord {
@@ -1324,7 +1331,9 @@ async function readInboxAndFlight(
     if (asking.has(h.ticket)) continue;
     const observation = h.runtimeState;
     const answer = answered[h.ticket];
-    const runtimeBlocked = freshRuntimeState(observation, o.now, o.silentAfterMinutes, h.claimedAt) === "blocked";
+    const runtimeBlocked =
+      runtimeNameOf(h.runtime) === "herdr" &&
+      freshRuntimeState(observation, o.now, o.silentAfterMinutes, h.claimedAt) === "blocked";
     if (runtimeBlocked && planning.has(h.ticket)) continue;
     if (runtimeBlocked && observation && (!answer || answer < (observation.since ?? observation.at))) {
       entries.push({
@@ -1614,6 +1623,7 @@ export interface Fleet {
   /** Resolves one open item (a declined launch); false when it was already resolved. */
   resolve(r: { id: number; resolution: string }): Promise<boolean>;
   merge(m: MergeRecord): Promise<MergeRecorded>;
+  chore(c: ChoreRecord): Promise<void>;
   /** Asks the owner to validate (THE-885); `url` is the approval link on the dashboard. */
   validate(v: ValidationRecord): Promise<{ validation: Validation; url: string }>;
   /** A ticket's or a pull request's validations, newest first. */

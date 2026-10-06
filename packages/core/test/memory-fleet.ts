@@ -1124,6 +1124,22 @@ export function memoryFleet(): FleetStore & {
       if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
       else await this.addInboxItem({ ...i, kind: "hand-back", recipient: "coordinator" });
     },
+    async putChore(i) {
+      const was = open(i.project, i.ticket, i.kind);
+      if (was)
+        Object.assign(was, {
+          body: i.body,
+          author: i.author,
+          createdAt: i.at.toISOString(),
+          requestPr: i.pr,
+          coordinator: i.coordinator ?? null,
+        });
+      else {
+        const id = await this.addInboxItem({ ...i, recipient: "coordinator" });
+        const inserted = items.find((item) => item.id === id);
+        if (inserted) inserted.requestPr = i.pr;
+      }
+    },
     async openInboxItems(q) {
       return items
         .filter(
@@ -1344,7 +1360,8 @@ export function memoryFleet(): FleetStore & {
             ),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
-        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle, coordinator }) => ({
+        .map(({ id, ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle, coordinator }) => ({
+          ...(id ? { id } : {}),
           coordinator: coordinator ?? null,
           ticket,
           launchedAt,

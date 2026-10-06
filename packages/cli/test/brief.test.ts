@@ -377,6 +377,10 @@ describe("armada brief", () => {
       expect(await run(["brief", "DEMO-13", ...flags], b.io)).toBe(0);
       const all = b.out() + b.err();
       for (const secret of Object.values(SECRETS)) expect(all).not.toContain(secret);
+      if (!flags.includes("--json"))
+        expect(all).toContain(
+          "Never print environment variables, process lists with their arguments (ps -ef/aux, /proc/*/environ) or credential files: your tool output is your transcript.",
+        );
       // The key still reaches Linear, only in the request header.
       expect(b.calls.every((c) => c.authorization === SECRETS.LINEAR_API_KEY)).toBe(true);
     }
@@ -741,7 +745,9 @@ test("a brief uses Armada's stored file inventory and declared paths, truncating
   expect(brief.prompt).toContain("Plan paths: `skills/**`");
   expect(brief.prompt).toContain("Comparison incomplete");
   expect(brief.prompt).toContain("no files yet");
-  expect(brief.prompt).toContain("Before you change one of these files, say so in a report and ask the coordinator.");
+  expect(brief.prompt).toContain(
+    "Declare overlaps in your plan, proceed additively, and bring in main before hand-back. Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
+  );
 });
 
 test("the initial brief ticket read retries temporary failures and preserves nonempty output", async () => {

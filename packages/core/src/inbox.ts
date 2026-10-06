@@ -3,8 +3,16 @@
 // The coordinator reads the inbox (`armada inbox`), delivers the answer in the
 // worker's session through the runtime guide, then records it (`armada answer`).
 // Runtime delivery is injected by the CLI; other runtimes use their guide.
-import { entryKey, type Fleet, handBackPr, type InboxEntry, type InboxKind, type StoredInboxItem } from "./live.ts";
-import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "./runtime.ts";
+import {
+  entryKey,
+  type Fleet,
+  handBackPr,
+  type InboxEntry,
+  type InboxItem,
+  type InboxKind,
+  type StoredInboxItem,
+} from "./live.ts";
+import { runtimeNameOf } from "./runtime.ts";
 import type { AgentPhase } from "./types.ts";
 import { live, type Outcome, Refusal, reportPhase, type WorkerContext } from "./worker.ts";
 
@@ -172,6 +180,7 @@ const ANSWERABLE: InboxKind[] = [
   "release-request",
   "plan-changes",
   "decision",
+  "linear-pending",
 ];
 
 /**
@@ -202,6 +211,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   let item: StoredInboxItem | null = null;
   let itemId: number | null = null;
   let ticketId: string | null = null;
+  let openItems: InboxItem[] = [];
   if (idMatch) {
     itemId = Number(idMatch[1]);
     item = await live(ctx, warnings, `read inbox item #${itemId}`, (fleet) => fleet.inboxItem(itemId ?? 0));
@@ -237,6 +247,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       const open = await live(ctx, warnings, `read the open questions of ${ticketId}`, (fleet) =>
         fleet.ticketItems(ticketId ?? ""),
       );
+      openItems = open ?? [];
       const handle =
         open && !open.some((i) => i.kind === "question" || i.kind === "plan")
           ? await live(ctx, warnings, `read the runtime of ${ticketId}`, (fleet) => fleet.runtimeHandle(ticketId ?? ""))
@@ -245,7 +256,8 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
       const runtimeBlocked =
         ctx.deliverAnswer &&
         !!handle &&
-        OBSERVABLE_RUNTIMES.includes(runtimeNameOf(handle.runtime) as "herdr" | "conductor") &&
+        ctx.deliversTo?.(handle.runtime) &&
+        runtimeNameOf(handle.runtime) === "herdr" &&
         !handle.releasedAt &&
         observation?.state === "blocked" &&
         Date.parse(observation.at) <= ctx.now().getTime() &&
@@ -260,7 +272,7 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
 
   if (item?.kind === "launch-request") return declineLaunch(ctx, item, text, warnings);
   // The owner's requests and decisions (THE-885) are carried out, then recorded; nothing is posted on the ticket.
-  if (item && ["merge-request", "release-request", "plan-changes", "decision"].includes(item.kind)) {
+  if (item && ["merge-request", "release-request", "plan-changes", "decision", "linear-pending"].includes(item.kind)) {
     const recorded = await live(ctx, warnings, "resolve the dashboard request", (fleet) =>
       fleet.answer({ text, note: false, ticket: item.ticket, item: item.id }),
     );
@@ -279,25 +291,34 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
     ticketId && ctx.deliverAnswer
       ? await live(ctx, warnings, `read the claim of ${ticketId}`, (fleet) => fleet.runtimeHandle(ticketId))
       : null;
-  if (claim && OBSERVABLE_RUNTIMES.includes(runtimeNameOf(claim.runtime) as "herdr" | "conductor") && claim.releasedAt)
+  const launch =
+    ticketId && ctx.deliverAnswer && (!claim || claim.releasedAt)
+      ? await live(
+          ctx,
+          warnings,
+          `read the pending launch of ${ticketId}`,
+          async (fleet) => (await fleet.pendingLaunches()).find((l) => l.ticket === ticketId) ?? null,
+        )
+      : null;
+  const runtime = launch?.runtime ?? claim?.runtime;
+  const automatic = !!runtime && !!ctx.deliversTo?.(runtime);
+  if (automatic && claim?.releasedAt && !launch)
     throw new Refusal("the runtime worker has ended; no answer was delivered", "armada inbox");
-  if (
-    claim &&
-    OBSERVABLE_RUNTIMES.includes(runtimeNameOf(claim.runtime) as "herdr" | "conductor") &&
-    answered &&
-    answered.createdAt < claim.claimedAt
-  )
+  const generationAt = launch?.launchedAt ?? claim?.claimedAt;
+  const answeredItems = answered ? [answered] : openItems.filter((i) => i.kind === "question" || i.kind === "plan");
+  if (automatic && generationAt && answeredItems.some((i) => i.createdAt < generationAt))
     throw new Refusal("the question belongs to an earlier worker claim; no answer was delivered", "armada inbox");
+  let deliveredToRuntime = false;
   let url = "";
   if (ticketId) {
     const ticket = await linear.readTicket(ticketId);
     if (!ticket) throw new Refusal(`ticket ${ticketId} not found in Linear`, "armada inbox");
     url = ticket.url;
     warnings.push(...ticket.warnings);
-    const integratedClaim =
-      !!claim &&
-      OBSERVABLE_RUNTIMES.includes(runtimeNameOf(claim.runtime) as "herdr" | "conductor") &&
-      !claim.releasedAt;
+    const integratedClaim = automatic && (!!launch || (!!claim && !claim.releasedAt));
+    const ticketRuntime = runtime ?? ticket.agentRuntime;
+    if (ticketRuntime && ctx.deliversTo?.(ticketRuntime) && !integratedClaim)
+      throw new Refusal("the runtime claim or bound launch is missing; no answer was delivered", "armada status");
     if (!ticket.agentPhase && !integratedClaim) {
       if (input.note)
         throw new Refusal(
@@ -314,17 +335,37 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
             : `Answers ${answerKind} #${itemId}.`;
       // Delivery happens only after validation and before either record is written.
       // Throwing leaves the question/plan open, with no successful answer comment.
-      if (ctx.deliverAnswer && (await ctx.deliverAnswer(ticket.id, text, claim?.runtime ?? ticket.agentRuntime, claim)))
-        lines.push(
-          `Delivered to ${ticket.id}'s ${runtimeNameOf(claim?.runtime) === "herdr" ? "herdr pane" : "runtime session"}.`,
-        );
+      if (ctx.deliverAnswer && integratedClaim) {
+        const delivered = await ctx.deliverAnswer({
+          ticket: ticket.id,
+          text,
+          claim,
+          launch,
+          item: itemId,
+          kind: input.note ? "note" : "answer",
+        });
+        if (delivered) {
+          deliveredToRuntime = true;
+          await ctx.checkAnswerTarget?.({ claim, launch });
+          lines.push(
+            `Delivered to ${ticket.id}'s ${runtimeNameOf(runtime) === "conductor" ? "Conductor" : runtime} session (${delivered.via}${delivered.queued ? ", queued" : ""}).`,
+          );
+        }
+      } else if (runtimeNameOf(ticketRuntime) === "claude-code") {
+        lines.push("Deliver with the armada-runtime-claude-code guide first; this command records the answer.");
+      }
       if (ticket.agentPhase) {
-        await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));
+        await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref), {
+          beforeWrite: deliveredToRuntime
+            ? () => ctx.checkAnswerTarget?.({ claim, launch }) ?? Promise.resolve()
+            : undefined,
+        });
         lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
       } else warnings.push(`${ticket.id} has no tracker phase; the delivered answer is recorded in Armada`);
     }
   }
 
+  if (deliveredToRuntime) await ctx.checkAnswerTarget?.({ claim, launch });
   const recorded = await live(ctx, warnings, `record the ${input.note ? "note" : "answer"}`, (fleet) =>
     fleet.answer({ text, note: !!input.note, ticket: ticketId, item: itemId }),
   );
