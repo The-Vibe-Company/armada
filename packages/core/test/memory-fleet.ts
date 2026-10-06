@@ -1,3 +1,4 @@
+import { sinceSummary } from "../src/catchup.ts";
 // The fleet's live data in memory, for tests: the same results as the app's
 // Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
 // with its unique rules (one open plan, hand-back and launch request per
@@ -10,6 +11,7 @@ import type {
   Lease,
   PendingLaunch,
   ProjectRecord,
+  Reservation,
   RuntimeHandle,
   SessionRecord,
   StoredInboxItem,
@@ -63,7 +65,15 @@ export function memoryFleet(): FleetStore & {
   const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
   const validations: Validation[] = [];
+  const heldResources: Reservation[] = [];
   const copy = (v: Validation): Validation => structuredClone(v);
+  const endReservations = (project: string, ticket: string, at: Date, merged: boolean) => {
+    for (const r of heldResources)
+      if (r.project === project && r.ticket === ticket && !r.endedAt) {
+        r.endedAt = at.toISOString();
+        r.merged = merged;
+      }
+  };
 
   const stored = (r: ItemRow): StoredInboxItem => {
     const { requestQuestion, requestProfile, requestPr, requestValidation, ...rest } = r;
@@ -119,6 +129,37 @@ export function memoryFleet(): FleetStore & {
   };
 
   return {
+    async digestRecords(project, since, now) {
+      const start = since ?? new Date(now.getTime() - 4 * 60 * 60_000).toISOString();
+      const rows = events.filter((e) => e.project === project && e.at >= start && e.at <= now.toISOString());
+      return {
+        language: "en",
+        input: {
+          since: start,
+          until: now.toISOString(),
+          now,
+          inFlight: [],
+          phaseMedians: {},
+          summary: sinceSummary({
+            since: start,
+            now,
+            records: [
+              {
+                project,
+                silentAfterMinutes: 15,
+                merged: rows.filter((e) => e.kind === "merge").map((e) => ({ ticket: e.ticket ?? "", at: e.at })),
+                claimed: [],
+                blocked: [],
+                gaps: [],
+                waiting: validations
+                  .filter((v) => v.project === project && !v.decision)
+                  .map((v) => ({ id: v.id, ticket: v.ticket, kind: v.kind })),
+              },
+            ],
+          }),
+        },
+      };
+    },
     events,
     items,
     leases,
@@ -126,6 +167,45 @@ export function memoryFleet(): FleetStore & {
     launches,
     validations,
 
+    async reserve(input) {
+      const held = heldResources.filter(
+        (r) => r.project === input.project && r.key === input.key && (!r.endedAt || r.merged),
+      );
+      const value = input.next
+        ? (
+            held.reduce(
+              (max, r) => (/^[+-]?[0-9]+$/.test(r.value) && BigInt(r.value) > max ? BigInt(r.value) : max),
+              BigInt(input.floor ?? 0),
+            ) + 1n
+          ).toString()
+        : (input.value ?? "");
+      const holder = held.find((r) => r.value === value);
+      if (holder) return { reserved: false, holder: structuredClone(holder) };
+      const reservation: Reservation = {
+        id: heldResources.length + 1,
+        project: input.project,
+        key: input.key,
+        value,
+        ticket: input.ticket,
+        note: input.note ?? null,
+        reservedAt: input.at.toISOString(),
+        endedAt: null,
+        merged: false,
+      };
+      heldResources.push(reservation);
+      return { reserved: true, reservation: structuredClone(reservation) };
+    },
+    async reservations(project) {
+      return structuredClone(heldResources.filter((r) => r.project === project && (!r.endedAt || r.merged)));
+    },
+    async unreserve(input) {
+      const rows = heldResources.filter(
+        (r) =>
+          r.project === input.project && r.ticket === input.ticket && r.key === input.key && !r.endedAt && !r.merged,
+      );
+      for (const r of rows) r.endedAt = input.at.toISOString();
+      return rows.length;
+    },
     async ensureProject(p, at) {
       if (projects.has(p.slug)) return;
       const t = at.toISOString();
@@ -154,7 +234,18 @@ export function memoryFleet(): FleetStore & {
         [...paths].filter(([k]) => k.startsWith(`${project}\n`)).map(([k, v]) => [k.slice(project.length + 1), [...v]]),
       );
     },
-    async deleteTicketPaths(project, ticket) {
+    async deleteTicketPaths(project, ticket, guard) {
+      const h = handles.get(key(project, ticket));
+      if (guard?.absent && h) return;
+      if (
+        guard &&
+        !guard.absent &&
+        (!h ||
+          (guard.handle && h.handle !== guard.handle) ||
+          (guard.claimedAt && h.claimedAt !== new Date(guard.claimedAt).toISOString()) ||
+          (guard.workerSessionId && h.workerSessionId && h.workerSessionId !== guard.workerSessionId))
+      )
+        return;
       paths.delete(key(project, ticket));
     },
     async recordEvent(e) {
@@ -485,10 +576,19 @@ export function memoryFleet(): FleetStore & {
       });
       return { active: true, claimedAt: handle.claimedAt };
     },
-    async releaseRuntimeHandle(project, ticket, at, guard) {
+    async releaseRuntimeHandle(project, ticket, at, guard, merged = false) {
       const h = handles.get(key(project, ticket));
+      if (guard?.absent) {
+        if (h) return false;
+        endReservations(project, ticket, at, merged);
+        return true;
+      }
       const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
-      if (guarded && !h) return !guard?.claimedAt;
+      if (guarded && !h) {
+        if (guard?.claimedAt) return false;
+        endReservations(project, ticket, at, merged);
+        return true;
+      }
       if (
         guarded &&
         h &&
@@ -510,6 +610,7 @@ export function memoryFleet(): FleetStore & {
           session.releasedAt = at.toISOString();
       if (h && !h.releasedAt) h.releasedAt = at.toISOString();
       profiles.delete(key(project, ticket));
+      endReservations(project, ticket, at, merged);
       return true;
     },
     async openRuntimeHandles(project) {

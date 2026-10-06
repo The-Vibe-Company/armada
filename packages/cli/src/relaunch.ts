@@ -12,6 +12,7 @@ import {
   Refusal,
   RuntimeError,
   releaseTicket,
+  reservationsForBrief,
   runtimeNameOf,
   shellWord,
 } from "@armada/core";
@@ -162,7 +163,17 @@ export async function relaunch(
     if (head && (!/^[a-f0-9]{40,64}$/.test(head) || line.split(/\s+/)[1] !== `refs/heads/${prepared.spec.branch}`))
       throw new UsageError("invalid remote branch reading; nothing was released");
     const pr = await readPull(io, config, credentials, fleet, ticket, prepared.spec.branch);
-    prepared.briefInput.resume = { branch: prepared.spec.branch, head, pr, reason, previous: old.handle, mode };
+    prepared.briefInput.resume = {
+      branch: prepared.spec.branch,
+      head,
+      pr,
+      reason,
+      previous: old.handle,
+      mode,
+      releasedReservations: prepared.briefInput.reservations
+        ?.filter((reservation) => reservation.ticket === ticket && !reservation.merged)
+        .map(({ key, value }) => ({ key, value })),
+    };
     // Rebuild before the first write to validate all continuation context.
     prepared.preview = buildBrief({
       ...prepared.briefInput,
@@ -252,6 +263,10 @@ export async function relaunch(
         `armada relaunch ${ticket} --reason "<why>"`,
       );
     }
+    Object.assign(
+      prepared.briefInput,
+      await reservationsForBrief(() => fleet.reservations(), config.reservations.length > 0),
+    );
     // A fresh local worktree must not compete for the checked-out branch. Keep
     // the old commits and dirty files under a separate local branch, never reset.
     if (

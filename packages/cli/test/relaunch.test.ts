@@ -238,6 +238,14 @@ test("fresh relaunch cancels, releases and ends the old generation before launch
     at: NOW,
   });
   await f.store.putHandBack({ project: "widgets", ticket: "DEMO-13", author: oldHandle, body: "PR is open", at: NOW });
+  await f.store.reserve({ project: "widgets", ticket: "DEMO-13", key: "db-migration", value: "23", at: NOW });
+  const fetch = f.io.fetch as NonNullable<Io["fetch"]>;
+  f.io.fetch = async (url, init) => {
+    const response = await fetch(url, init);
+    if (url.endsWith("/workers/end"))
+      await f.store.reserve({ project: "widgets", ticket: "DEMO-14", key: "db-migration", value: "23", at: NOW });
+    return response;
+  };
   f.set({ claimImmediately: true });
   const old = await f.store.getRuntimeHandle("widgets", "DEMO-13");
   const result = await f.relaunch("--fresh");
@@ -269,6 +277,10 @@ test("fresh relaunch cancels, releases and ends the old generation before launch
   expect(create?.input).toContain("session died");
   expect(create?.input).toContain("Pull request #42 is open");
   expect(create?.input).toContain("never open a second one, never force-push");
+  expect(create?.input).toContain("armada reserve db-migration --value 23");
+  expect(create?.input).toContain("If a previous value is now held by another ticket, stop and ask the coordinator");
+  expect(create?.input).toContain("- db-migration = 23: DEMO-14");
+  expect(create?.input).not.toContain("- db-migration = 23: DEMO-13");
   expect(
     await f.store.releaseRuntimeHandle("widgets", "DEMO-13", NOW, { handle: oldHandle, claimedAt: old?.claimedAt }),
   ).toBe(false);

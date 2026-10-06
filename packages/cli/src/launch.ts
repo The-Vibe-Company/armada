@@ -32,6 +32,7 @@ import {
   parseConfig,
   RuntimeError,
   type RuntimeName,
+  reservationsForBrief,
   shellWord,
   type ValidationChoice,
   ValidationChoiceError,
@@ -282,6 +283,7 @@ export async function prepareLaunch(
   const conventions = config.brief.extra
     ? { path: config.brief.extra, text: await io.readFile(join(dirname(configPath), config.brief.extra)) }
     : null;
+  const sharedResources = await reservationsForBrief(() => fleet.reservations(), config.reservations.length > 0);
   const npm = await checkPublished(version, io.fetch ?? fetch);
   if (npm.state === "missing") {
     const message = `armada ${version} is not on npm yet; publish this version before launching ${local ? "local workers" : "workers"}`;
@@ -295,6 +297,7 @@ export async function prepareLaunch(
     warnings.push("Comparison incomplete: in-flight PR files could not be read from Armada.");
   }
   const briefInput: BuildBriefInput = {
+    ...sharedResources,
     overlap,
     config,
     ticket,

@@ -7,6 +7,7 @@
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
@@ -31,6 +32,7 @@ import {
   parseEventCursor,
   type ReportRecord,
   type ReportResult,
+  type Reservation,
   RUNTIME_STATES,
   type RuntimeState,
   readOverlap,
@@ -63,11 +65,24 @@ import {
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
-export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat", "validate", "overlap"] as const;
+export const WORKER_FLEET_OPS = [
+  "claim",
+  "report",
+  "ask",
+  "release",
+  "heartbeat",
+  "validate",
+  "reserve",
+  "reservations",
+  "unreserve",
+  "overlap",
+] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "digest",
+  "digest/send",
   "register",
   "coordinator",
   "request",
@@ -234,6 +249,7 @@ const refuse = (status: number, error: string, next: string): FleetAnswer => ({ 
 const NOT_MODIFIED = Symbol("not modified");
 
 export interface ServeFleetDeps {
+  sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
   /** Stored project facts, supplied by the host, never by the caller. */
   snapshot?: HandBackSnapshot;
   now: () => Date;
@@ -271,12 +287,61 @@ export async function serveFleet(
       if (ticket !== caller.ticket)
         return refuse(
           403,
-          `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
+          ["reserve", "reservations", "unreserve"].includes(op)
+            ? `a worker session only reserves resources for its own ticket (${caller.ticket}), not ${ticket}`
+            : `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
           "the coordinator does it",
         );
     }
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "digest":
+        case "digest/send": {
+          const since = optText(b, "since", 40);
+          if (since !== null && (!Number.isFinite(Date.parse(since)) || Date.parse(since) > at.getTime()))
+            throw new Invalid("since must be a timestamp no later than now");
+          if (b.language !== undefined && b.language !== "en" && b.language !== "fr")
+            throw new Invalid("language must be en or fr");
+          if (op === "digest/send" && !deps.sendDigest)
+            throw new Invalid("No notification channel available; configure Organization > Notifications");
+          const records = await store.digestRecords(slug, since, at);
+          const digest = buildDigest(records.input);
+          const language = (b.language ?? records.language) as "en" | "fr";
+          const text = renderDigest(digest, { language, format: "plain", appUrl: deps.appUrl ?? "http://localhost" });
+          const sent = op === "digest/send" ? ((await deps.sendDigest?.(slug, digest, language, at)) ?? false) : false;
+          if (op === "digest/send" && !sent)
+            throw new Invalid("Digest not delivered; check Organization > Notifications");
+          return { digest, text, sent };
+        }
+        case "reservations":
+          return store.reservations(slug);
+        case "reserve": {
+          const next = b.next === undefined ? false : bool(b, "next");
+          if (b.value !== undefined && (typeof b.value !== "string" || b.value.length > LINE_MAX))
+            throw new Invalid("value must be text of at most 500 characters");
+          if (next && b.value !== undefined) throw new Invalid("use next or value, not both");
+          if (
+            b.floor !== undefined &&
+            (!next ||
+              typeof b.floor !== "number" ||
+              !Number.isSafeInteger(b.floor) ||
+              b.floor < 0 ||
+              b.floor >= Number.MAX_SAFE_INTEGER)
+          )
+            throw new Invalid("floor requires next and must be a nonnegative safe integer below the maximum");
+          return store.reserve({
+            project: slug,
+            ticket: ticketOf(b),
+            key: text(b, "key", LINE_MAX),
+            ...(b.value === undefined ? {} : { value: b.value as string }),
+            next,
+            ...(b.floor === undefined ? {} : { floor: b.floor as number }),
+            note: optText(b, "note", BODY_MAX),
+            at,
+          });
+        }
+        case "unreserve":
+          return store.unreserve({ project: slug, ticket: ticketOf(b), key: text(b, "key", LINE_MAX), at });
         case "claim":
           return recordClaim(
             store,
@@ -714,6 +779,11 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
   const call = async <T>(op: FleetOp, input: object): Promise<T> =>
     (await o.api.fleet(o.signIn, op, { project: o.project, input }, CALL_TIMEOUT_MS)) as T;
   return {
+    digest: (input) => call("digest", input),
+    sendDigest: (input) => call("digest/send", input),
+    reserve: (input) => call("reserve", input),
+    reservations: (ticket) => call<Reservation[]>("reservations", ticket ? { ticket } : {}),
+    unreserve: (input) => call("unreserve", input),
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),

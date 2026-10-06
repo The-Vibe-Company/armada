@@ -15,6 +15,9 @@ test("Armada retries only safe reads, including fleet reads; token consumption a
   const actions = [
     { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.whoami(signIn) },
     { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "events/latest", {}) },
+    { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "reservations", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "reserve", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "unreserve", {}) },
     { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "inbox", {}) },
     {
       retry: false,
