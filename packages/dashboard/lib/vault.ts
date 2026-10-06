@@ -55,7 +55,7 @@ export function vaultModeOf(env: Env): VaultMode {
 
 // ------------------------------------------------------------ what is kept
 
-export const SECRET_NAMES = ["linear-api-key", "github-token"] as const;
+export const SECRET_NAMES = ["linear-api-key", "github-token", "owner-webhook"] as const;
 export type SecretName = (typeof SECRET_NAMES)[number];
 export const isSecretName = (v: unknown): v is SecretName => SECRET_NAMES.includes(v as SecretName);
 
@@ -74,6 +74,7 @@ const token = (v: string) => v.length <= 4096 && !/\s/.test(v);
 export const SECRET_KINDS: Record<SecretName, SecretKind> = {
   "linear-api-key": { secret: true, personal: true, project: true, check: token },
   "github-token": { secret: true, personal: false, project: false, check: token },
+  "owner-webhook": { secret: true, personal: false, project: false, check: (v) => v.length <= 32768 },
 };
 
 /**
@@ -231,7 +232,7 @@ export interface SecretEvent {
 }
 
 /** Whether a stored name is one the vault keeps: a key, or a worker secret. */
-const known = (name: string) => isSecretName(name) || isWorkerSecretName(name);
+const known = (name: string) => name !== "owner-webhook" && (isSecretName(name) || isWorkerSecretName(name));
 
 /**
  * Lists the keys and secrets of one scope, without any secret value: the
@@ -292,7 +293,7 @@ export async function readSecrets(
   const rs = await client.query(
     `SELECT "project", "userId", "name", "sealed" FROM "armada_secret"
      WHERE "organizationId" = $1 AND "project" IN ('', $3) AND "userId" IN ('', $2) AND "name" = ANY($4)`,
-    [organization, user ?? "", project ?? "", [...SECRET_NAMES]],
+    [organization, user ?? "", project ?? "", SECRET_NAMES.filter((name) => name !== "owner-webhook")],
   );
   // The organization's (0), the person's own over it (1), the project's over both (2).
   const rank = (r: { project: string; user: string }) => (r.project ? 2 : r.user ? 1 : 0);
@@ -305,7 +306,7 @@ export async function readSecrets(
   const problems: string[] = [];
   for (const row of rows) {
     const name = row.name;
-    if (!isSecretName(name)) continue;
+    if (!isSecretName(name) || name === "owner-webhook") continue;
     if (row.user && (!user || !SECRET_KINDS[name].personal)) continue;
     if (row.project && (row.user || !SECRET_KINDS[name].project)) continue;
     const slot = { organization, project: row.project, user: row.user, name };
@@ -338,6 +339,7 @@ export async function readProjectKey(
   vault: VaultKey,
   { organization, project, name }: { organization: string; project: string; name: SecretName },
 ): Promise<string | null> {
+  if (name === "owner-webhook") throw new Error("owner-webhook is server-only");
   const rs = await client.query(
     `SELECT "sealed" FROM "armada_secret" WHERE "organizationId" = $1 AND "project" = $2 AND "userId" = '' AND "name" = $3`,
     [organization, project, name],
@@ -575,4 +577,72 @@ export async function releasesSince(client: Queryable, actor: Actor, since: Date
     [actor.kind, actor.id, since],
   );
   return Number(rs.rows[0]?.n ?? 0);
+}
+
+/** Server-only, organization-scoped chat credentials. Never part of a broker release. */
+export interface OwnerWebhook {
+  url: string;
+  signingSecret: string;
+}
+
+export async function readOwnerWebhook(
+  client: Queryable,
+  vault: VaultKey,
+  organization: string,
+): Promise<OwnerWebhook | null> {
+  const rs = await client.query(
+    `SELECT "sealed" FROM "armada_secret"
+    WHERE "organizationId" = $1 AND "project" = '' AND "userId" = '' AND "name" = 'owner-webhook'`,
+    [organization],
+  );
+  const row = rs.rows[0];
+  if (!row) return null;
+  return JSON.parse(
+    openSecret(vault, { organization, user: "", name: "owner-webhook" }, String(row.sealed)),
+  ) as OwnerWebhook;
+}
+
+/** Called inside the channel settings transaction; the vault alone handles secret storage. */
+export async function writeOwnerWebhook(
+  client: Queryable,
+  vault: VaultKey,
+  organization: string,
+  value: OwnerWebhook,
+  actor: Actor,
+  now: Date,
+): Promise<void> {
+  const sealed = sealSecret(vault, { organization, user: "", name: "owner-webhook" }, JSON.stringify(value));
+  await client.query(
+    `INSERT INTO "armada_secret" ("organizationId", "project", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
+    VALUES ($1, '', '', 'owner-webhook', $2, $3, $4, $5, $5)
+    ON CONFLICT ("organizationId", "project", "userId", "name") DO UPDATE SET
+      "sealed" = excluded."sealed", "setById" = excluded."setById", "setByLabel" = excluded."setByLabel", "updatedAt" = excluded."updatedAt"`,
+    [organization, sealed, actor.id, actor.label, now],
+  );
+  await recordEvent(client, organization, {
+    at: now.toISOString(),
+    action: "set",
+    keys: ["owner-webhook"],
+    actor,
+    detail: "owner chat channel",
+  });
+}
+
+export async function eraseOwnerWebhook(
+  client: Queryable,
+  organization: string,
+  actor: Actor,
+  now: Date,
+): Promise<void> {
+  await client.query(
+    `DELETE FROM "armada_secret" WHERE "organizationId" = $1 AND "project" = '' AND "userId" = '' AND "name" = 'owner-webhook'`,
+    [organization],
+  );
+  await recordEvent(client, organization, {
+    at: now.toISOString(),
+    action: "delete",
+    keys: ["owner-webhook"],
+    actor,
+    detail: "owner chat channel",
+  });
 }
