@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { ArmadaApiError } from "../src/armada-api.ts";
+import { ArmadaApiError, armadaApi } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
+import { fleetClient } from "../src/fleet-api.ts";
 import { answerItem } from "../src/inbox.ts";
 import { serveInbox } from "../src/live.ts";
 import { requestDecision } from "../src/requests.ts";
+import type { SubmitInput } from "../src/validate.ts";
 import { closeValidated, submitValidation } from "../src/validate.ts";
 import { chooseValidations, mergeApproval, type Validation, ValidationChoiceError } from "../src/validations.ts";
 import { claimTicket, Refusal, reportPhase, type WorkerContext } from "../src/worker.ts";
-import { DEMO_TOML, FakeLinear, NOW, tempFleet } from "./support.ts";
+import { ARMADA_URL, DEMO_PROJECT, DEMO_TOML, FakeLinear, fakeArmada, NOW, tempFleet } from "./support.ts";
 
 // What the owner validates (THE-885): a worker's design, the coordinator's
 // escalated question, the owner's decision reaching the coordinator's inbox.
@@ -47,7 +49,8 @@ describe("armada validate", () => {
     const out = await submitValidation(ctx, {
       ticket: "DEMO-7",
       kind: "validation",
-      what: "Two directions for the product card\nA keeps the photo square.",
+      what: "Two directions for the product card",
+      details: "A keeps the photo square.",
       choices: null,
       attachments: ["att-1"],
       worker: true,
@@ -195,6 +198,9 @@ describe("armada done", () => {
       ticket: "DEMO-7",
       kind: "validation",
       what: "Direction B: full-bleed photo",
+      checks: ["The action fits on a phone"],
+      excerpts: [{ label: "output.txt:10-12", text: "Phone layout: pass" }],
+      details: "The full layout notes",
       choices: null,
       attachments: ["att-9"],
       worker: false,
@@ -218,6 +224,9 @@ describe("armada done", () => {
       summary: "done without a pull request: validation #1 approved by Ada at 2026-03-04 10:00 UTC",
     });
     expect(t.comments[0]?.excerpt).toContain("B, with a softer shadow");
+    expect(t.comments[0]?.excerpt).toContain("Checks: - The action fits on a phone");
+    expect(t.comments[0]?.excerpt).toContain("Excerpts: output.txt:10-12 Phone layout: pass");
+    expect(t.comments[0]?.excerpt).toContain("Context: The full layout notes");
     expect(out.lines.at(-1)).toBe("Building it is a separate ticket: cut it, blocked by this one.");
     expect(live.store.events.at(-1)).toMatchObject({ ticket: "DEMO-7", kind: "merge", phase: "merged" });
   });
@@ -307,4 +316,73 @@ describe("a merge approval", () => {
     expect(mergeApproval(approved, 8, { sha: "a".repeat(40), sameAs: [] }).state).toBe("none");
     expect(mergeApproval([asked({ decision: null })], 9, { sha: "a".repeat(40), sameAs: [] }).state).toBe("pending");
   });
+});
+
+test("short owner submissions validate samples before uploading and retain older CLI compatibility", async () => {
+  const api = fakeArmada({ keys: { "synthetic-key": "fleet" } });
+  const signIn = { kind: "api-key" as const, key: "synthetic-key" };
+  const fleet = fleetClient({ api: armadaApi({ url: ARMADA_URL, fetch: api.fetch }), signIn, project: DEMO_PROJECT });
+  const { ctx, linear } = setup(tempFleet());
+  ctx.fleet = async () => ({ fleet, warning: null });
+  linear.add("DEMO-7");
+  let uploads = 0;
+  const input: SubmitInput = {
+    ticket: "DEMO-7",
+    kind: "validation",
+    what: "Does the card read clearly?",
+    checks: ["Title is legible", "Action fits on a phone"],
+    excerpts: [{ label: "out.txt:10-40", text: Array.from({ length: 31 }, (_, n) => `Line ${n + 10}`).join("\n") }],
+    details: "Longer context stays folded.",
+    attachments: [],
+    uploadCount: 1,
+    upload: async () => {
+      uploads++;
+      return ["image-1"];
+    },
+    choices: null,
+    worker: false,
+  };
+  const bad: Partial<SubmitInput>[] = [
+    { what: "h".repeat(201) },
+    { what: "Two\nlines" },
+    { checks: ["a", "b", "c", "d"] },
+    { checks: ["x".repeat(201)] },
+    { uploadCount: 5 },
+    { excerpts: [{ label: "out.txt", text: "line\n".repeat(41) }] },
+    { excerpts: [{ label: "out.txt", text: "x".repeat(4001) }] },
+    { excerpts: Array(4).fill({ label: "out.txt", text: "a" }) },
+    { uploadCount: 4, excerpts: Array(2).fill({ label: "out.txt", text: "a" }) },
+    { details: "x".repeat(4001) },
+  ];
+  for (const change of bad) {
+    try {
+      await submitValidation(ctx, { ...input, ...change });
+      throw new Error("expected refusal");
+    } catch (err) {
+      expect(err).toBeInstanceOf(Refusal);
+      expect((err as Refusal).next).toContain("armada validate");
+    }
+  }
+  expect(uploads).toBe(0);
+  const out = await submitValidation(ctx, input);
+  expect(out.validation).toMatchObject({
+    what: input.what,
+    checks: input.checks,
+    excerpts: input.excerpts,
+    details: input.details,
+    attachments: ["image-1"],
+  });
+  expect(uploads).toBe(1);
+  const legacy = {
+    ticket: "DEMO-7",
+    kind: "validation" as const,
+    what: "l".repeat(4000),
+    reason: null,
+    choices: null,
+    pr: null,
+    attachments: [],
+  };
+  expect((await fleet.validate(legacy)).validation.what).toHaveLength(4000);
+  await expect(fleet.validate({ ...legacy, checks: [] })).rejects.toThrow("one-line headline");
+  await expect(fleet.validate({ ...legacy, what: "short", checks: ["a", "b", "c", "d"] })).rejects.toThrow("--check");
 });

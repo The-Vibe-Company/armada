@@ -87,8 +87,35 @@ export function ValidationDetail({
         {rest && <p className="vd-body">{rest}</p>}
         {v.reason && <p className="vd-why">{s.whyYou(v.reason)}</p>}
       </div>
+      {!!v.checks?.length && (
+        <ul className="vd-checks" aria-label={s.checks}>
+          {v.checks.map((check) => (
+            <li key={check}>{check}</li>
+          ))}
+        </ul>
+      )}
+      {!!v.excerpts?.length && (
+        <div className="vd-excerpts">
+          {v.excerpts.map((excerpt) => (
+            <figure key={`${excerpt.label}-${excerpt.text}`}>
+              <figcaption>{excerpt.label}</figcaption>
+              {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrollable excerpt takes the keyboard (axe: scrollable-region-focusable) */}
+              <section className="vd-excerpt-text" tabIndex={0} aria-label={excerpt.label}>
+                <pre>{excerpt.text}</pre>
+              </section>
+            </figure>
+          ))}
+        </div>
+      )}
+      {v.details && (
+        <details className="vd-context">
+          <summary>{s.details}</summary>
+          <p className="vd-body">{v.details}</p>
+        </details>
+      )}
       {v.pr && <PrFacts t={t} pr={v.pr} />}
       <Gallery t={t} items={v.gallery} />
+      {!!v.galleryMore && <p className="vd-more">{s.more(v.galleryMore)}</p>}
       {v.decision ? (
         <div className="vd-outcome">
           <span
