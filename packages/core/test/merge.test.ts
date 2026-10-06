@@ -380,7 +380,14 @@ describe("armada merge", () => {
     expect(out.workers).toEqual([
       { ticket: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code", handle: "ws-2" },
     ]);
-    expect(out.archive).toEqual({ runtime: "Conductor", handle: "ws-1/s-1", guide: "armada-runtime-conductor" });
+    expect(out.archive).toMatchObject({
+      runtime: "Conductor",
+      handle: "ws-1/s-1",
+      guide: "armada-runtime-conductor",
+      source: "armada",
+      claim: { ticket: "DEMO-7", handle: "ws-1/s-1", releasedAt: NOW.toISOString() },
+      open: [{ ticket: "DEMO-8", handle: "ws-2", releasedAt: null }],
+    });
     expect(out.warnings).toEqual([]);
     expect(await db.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([]);
     expect((await db.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());

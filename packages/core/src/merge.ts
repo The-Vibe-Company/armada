@@ -176,12 +176,15 @@ export interface MergeOutcome {
   workersListed: boolean;
   /** Dependents of the ticket just closed; null for a dry run, no-ticket merge or failed reading. */
   unblocked: MergeUnblocked | null;
-  /**
-   * The merged worker's session to archive with its runtime guide. `guide` is
-   * the installed guide skill, or null when the repository has none for that
-   * runtime (a local session or subagent then has nothing to archive).
-   */
-  archive: { runtime: string | null; handle: string | null; guide: string | null } | null;
+  /** Cleanup evidence captured by Armada after the confirmed merge. Claim comments are hints only. */
+  archive: {
+    runtime: string | null;
+    handle: string | null;
+    guide: string | null;
+    source: "armada" | "claim";
+    claim: RuntimeHandle | null;
+    open: RuntimeHandle[];
+  } | null;
   warnings: string[];
 }
 
@@ -1432,7 +1435,14 @@ async function after(
   } catch (err) {
     c.warnings.push(`could not look for the ${expected} skill (${err instanceof Error ? err.message : String(err)})`);
   }
-  const archive = { runtime, handle: live$?.handle?.handle ?? claim?.session ?? null, guide };
+  const archive: MergeOutcome["archive"] = {
+    runtime,
+    handle: live$?.handle?.handle ?? claim?.session ?? null,
+    guide,
+    source: live$?.handle ? "armada" : "claim",
+    claim: live$?.handle ?? null,
+    open: live$?.open ?? [],
+  };
   return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed, unblocked };
 }
 

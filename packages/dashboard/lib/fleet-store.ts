@@ -577,7 +577,8 @@ export async function observeRuntime(
        runtime_changed_at = COALESCE($8::timestamptz, CASE WHEN runtime_state IS DISTINCT FROM $5
          OR ($7::bigint IS NOT NULL AND runtime_state_sequence IS DISTINCT FROM $7) THEN $6 ELSE runtime_changed_at END),
        runtime_state_sequence = COALESCE($7::bigint, runtime_state_sequence)
-     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND released_at IS NULL
+     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4
+       AND (released_at IS NULL OR $5 = 'gone')
        AND lower(runtime) = ANY($9::text[]) AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
     [
       input.project,
