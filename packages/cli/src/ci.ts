@@ -9,8 +9,10 @@ import {
   fetchJobLog,
   fetchPullRequest,
   fetchRunAttempt,
+  fetchWorkflowRun,
   type JobLog,
   parsePullRequestUrl,
+  rerunDecision,
 } from "@armada/core";
 import { httpOptions, type Io, UsageError } from "./io.ts";
 
@@ -21,7 +23,7 @@ const LABELS: Record<Explanation["class"], string> = {
   external: "external check",
 };
 
-/** At most 47 lines per check, including the first error block and its link. */
+/** Bounded test names and first error block, plus links and matching root-cause tickets. */
 export function renderCiWhy(sha: string, explanations: readonly Explanation[]): string {
   const lines = [`CI on ${sha}`];
   if (!explanations.length) lines.push("No failing checks reported on this head.");
@@ -33,7 +35,7 @@ export function renderCiWhy(sha: string, explanations: readonly Explanation[]): 
     if (e.tests.length) lines.push(`  Tests: ${e.tests.join("; ")}`);
     lines.push(...e.error.map((l) => `  ${l}`));
     if (!e.error.length && !e.superseded) lines.push("  No error details available; open the check link.");
-    if (e.known) lines.push(`  Known: ${e.known.ticket} (${e.known.pattern})`);
+    for (const k of e.knownMatches ?? (e.known ? [e.known] : [])) lines.push(`  Known: ${k.ticket} (${k.pattern})`);
     if (e.url) lines.push(`  ${e.url}`);
   }
   return `${lines.join("\n")}\n`;
@@ -101,11 +103,127 @@ export async function ciWhy(
       check.attempt = attempts.get(check.runId);
     }
   }
-  const explanations = explainChecks(reading.checks, logs, config.ci);
-  if (args.json) io.stdout(`${JSON.stringify({ sha: reading.sha, explanations, warnings }, null, 2)}\n`);
+  const original = explainChecks(reading.checks, logs, config.ci);
+  const explanations = [...original];
+  const reruns: {
+    runId: number | null;
+    status: "requested" | "refused" | "uncertain";
+    reason: string;
+    tickets: string[];
+  }[] = [];
+  if (args.options.rerun) {
+    // Put actionable unknown failures before flakes when the request is refused.
+    explanations.sort(
+      (a, b) =>
+        Number(a.class === "known" || a.class === "runner") - Number(b.class === "known" || b.class === "runner"),
+    );
+    const groups = new Map<number, Explanation[]>();
+    for (const id of reading.runIds) groups.set(id, []);
+    for (const [i, check] of reading.checks.entries()) {
+      if (check.superseded) continue;
+      const explanation = original[i];
+      if (!explanation) continue;
+      if (check.app !== "github-actions" || check.runId === null) {
+        reruns.push({
+          runId: null,
+          status: "refused",
+          reason: `${check.name}: external check or no workflow run; cannot rerun`,
+          tickets: [],
+        });
+      } else {
+        const group = groups.get(check.runId) ?? [];
+        group.push(explanation);
+        groups.set(check.runId, group);
+      }
+    }
+    for (const [runId, failures] of groups) {
+      const refuse = (reason: string) => reruns.push({ runId, status: "refused", reason, tickets: [] });
+      let current: Awaited<ReturnType<typeof fetchWorkflowRun>>;
+      try {
+        current = await fetchWorkflowRun({ ...opts, runId });
+      } catch {
+        refuse("attempt unavailable; cannot establish that this is the first attempt");
+        continue;
+      }
+      // Green first-attempt workflows do not participate in the rerun request.
+      if (!failures.length && current.attempt === 1 && current.status === "completed") continue;
+      const decision = rerunDecision(failures, current.attempt);
+      if (!decision.allowed) {
+        refuse(decision.reason);
+        continue;
+      }
+      // Partial pagination, expired/truncated logs and annotations cannot prove every failure known.
+      if (warnings.length) {
+        refuse("CI evidence is incomplete or unavailable; cannot establish that every failure is known");
+        continue;
+      }
+      if (current.status !== "completed") {
+        refuse(
+          `workflow is ${current.status ?? "unavailable"}, attempt ${current.attempt}; only completed runs can be rerun`,
+        );
+        continue;
+      }
+      // A workflow may have finished another failing job while its first logs were read.
+      // Confirm the diagnosed failure set only after the run is known to be complete.
+      try {
+        const fresh = await fetchFailedChecks({ ...opts, sha: reading.sha });
+        const identity = (checks: typeof reading.checks) =>
+          JSON.stringify(
+            checks
+              .filter((c) => c.app === "github-actions" && c.runId === runId)
+              .map((c) => [c.id, c.name, c.conclusion, c.headSha, c.superseded ?? false])
+              .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+          );
+        if (fresh.warnings.length || identity(fresh.checks) !== identity(reading.checks)) {
+          refuse("failing checks changed or reading is incomplete; diagnose this run again");
+          continue;
+        }
+      } catch {
+        refuse("fresh failure reading unavailable; cannot establish that every failure is known");
+        continue;
+      }
+      if (!io.exec) {
+        refuse("gh execution is unavailable");
+        continue;
+      }
+      try {
+        const result = await io.exec(
+          "gh",
+          ["run", "rerun", String(runId), "--failed", "--repo", config.github.repository],
+          { cwd: io.cwd },
+        );
+        reruns.push({
+          runId,
+          status: result.code === 0 && !result.timedOut ? "requested" : "uncertain",
+          reason:
+            result.code === 0 && !result.timedOut
+              ? "Rerun requested for failed jobs"
+              : "rerun outcome uncertain; inspect GitHub before doing anything else; no automatic retry",
+          tickets: decision.tickets,
+        });
+      } catch {
+        reruns.push({
+          runId,
+          status: "uncertain",
+          reason: "rerun outcome uncertain; inspect GitHub before doing anything else; no automatic retry",
+          tickets: decision.tickets,
+        });
+      }
+    }
+    if (!reruns.length)
+      reruns.push({ runId: null, status: "refused", reason: "No failing checks to rerun", tickets: [] });
+  }
+  if (args.json)
+    io.stdout(
+      `${JSON.stringify({ sha: reading.sha, explanations, warnings, ...(args.options.rerun ? { reruns } : {}) }, null, 2)}\n`,
+    );
   else {
     io.stdout(renderCiWhy(reading.sha, explanations));
+    for (const r of reruns)
+      io.stdout(
+        `\n${r.runId === null ? "Rerun" : `Run ${r.runId}`}: ${r.status === "refused" ? "refused: " : ""}${r.reason}${r.tickets.length ? ` (known flakes: ${r.tickets.join(", ")})` : ""}\n`,
+      );
     for (const w of warnings) io.stderr(`armada: warning: ${w}\n`);
   }
-  return 0;
+  return reruns.some((r) => r.status !== "requested") ? 1 : 0;
 }
