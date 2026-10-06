@@ -209,6 +209,7 @@ const COMMAND_HELP: Record<string, string> = {
                     Check the ticket, choose its profile and launch one worker with its
                     one-time sign-in brief. Runtime defaults to the chosen profile;
                     Claude Code profiles point to armada brief and the Agent tool.
+                    --pre-approve --reason "<why>" adds the plan-approved label before launch
                     --notes adds coordinator context from a file or stdin (at most 16 KB).
                     Pending launches and active workers are refused before a token exists.
                     Conductor uses explicit profile settings and receives the brief through stdin;
@@ -219,8 +220,10 @@ const COMMAND_HELP: Record<string, string> = {
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
 `,
-  brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
+  brief: `  brief <ticket> [--pre-approve --reason <why>] [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
         [--validation none | --validation <n,...> --validation-reason <why>]
+                    --pre-approve requires --reason and adds the configured plan-approved label
+                    only with --prompt; previews say what would change. needs-approval labels refuse it
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
@@ -424,6 +427,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "pre-approve",
   "follow",
   "mine",
   "apply",
@@ -460,8 +464,18 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   merge: ["ticket", "no-ticket", "no-archive", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
-  brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
+  brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  launch: [
+    "pre-approve",
+    "runtime",
+    "harness",
+    "profile",
+    "reason",
+    "validation",
+    "validation-reason",
+    "dry-run",
+    "notes",
+  ],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],

@@ -8,7 +8,7 @@
 // clock. Losing this data loses live detail, never progress: Linear stays the
 // record.
 import { createHash } from "node:crypto";
-import { CONFIG_DEFAULTS } from "./config.ts";
+import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
 import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
 
 export { freshRuntimeState } from "./fleet.ts";
@@ -16,6 +16,7 @@ export { freshRuntimeState } from "./fleet.ts";
 import { attachPullRequests } from "./github.ts";
 import { buildModel, isClosed } from "./model.ts";
 import { type OverlapReading, type OverlapWorker, overlapLines, overlaps } from "./overlap.ts";
+import { planRule } from "./phases.ts";
 import type { RequestKind } from "./request-kinds.ts";
 import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
@@ -866,7 +867,9 @@ export const entryKey = (
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
   repository: string;
-  issues: readonly Pick<Issue, "id" | "statusType">[];
+  issues: readonly (Pick<Issue, "id" | "statusType"> & Partial<Pick<Issue, "labels">>)[];
+  /** Stored policy for annotating legacy workers' plan items, without a tracker read. */
+  config?: ArmadaConfig;
   prs: readonly Pick<PullRequest, "repo" | "number" | "state">[];
   /** Full stored reading for the same in-flight derivation as status. */
   flight?: { program: ProgramData; forge: ForgeData | null; after: string };
@@ -1045,12 +1048,28 @@ async function readInboxAndFlight(
       ? store.lastAnsweredAt(o.project, { since, tickets: answerTickets })
       : Promise.resolve({} as Record<string, string>),
   ]);
+  const planConfig = o.snapshot?.config;
+  const preApproved = new Set(
+    planConfig
+      ? (o.snapshot?.issues ?? [])
+          .filter(
+            (i) =>
+              i.labels?.some(
+                (label) => routingLabelKey(label) === routingLabelKey(planConfig.policy.preApprovedLabel),
+              ) && planRule(planConfig, i.labels).rule === "pre-approved",
+          )
+          .map((i) => i.id)
+      : [],
+  );
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
     kind: i.kind,
     ticket: i.ticket,
     author: i.author,
-    body: i.body,
+    body:
+      i.kind === "plan" && i.ticket && preApproved.has(i.ticket) && !/pre-approved at launch/i.test(i.body)
+        ? `Pre-approved at launch; answer approved to let this worker continue.\n\n${i.body}`
+        : i.body,
     createdAt: i.createdAt,
     new: false,
     ...(i.request ? { request: i.request } : {}),

@@ -3,7 +3,15 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { machinePaths, NPM_REGISTRY_URL, readWatchState, updateWatchState } from "@armada/core";
-import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
+import {
+  ARMADA_URL,
+  DEMO_TOML,
+  FakeLinear,
+  type FakeVault,
+  fakeArmada,
+  NOW,
+  recordedFetch,
+} from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 
@@ -493,6 +501,56 @@ describe("armada brief with a launch token", () => {
       url.startsWith(ARMADA_URL) ? armada.fetch(url, init) : (linear?.(url, init) ?? fetch(url));
     return { ...b, armada };
   }
+
+  test("pre-approval writes the configured label only for a prompt and names the reason", async () => {
+    for (const flags of [[], ["--json"], ["--prompt"]]) {
+      const b = await signedIn();
+      const linear = new FakeLinear();
+      linear.add("DEMO-13");
+      b.io.linearWriter = () => linear;
+      expect(await run(["brief", "DEMO-13", "--pre-approve", "--reason", "small follow-up", ...flags], b.io)).toBe(0);
+      if (flags.includes("--prompt")) {
+        expect(linear.get("DEMO-13").labels.map((l) => l.name)).toContain("plan-approved");
+        expect(b.out()).toContain(
+          "Plans are pre-approved for DEMO-13 (the ticket's label plan-approved (added at launch: small follow-up))",
+        );
+        expect(b.out()).toContain("armada report implementing --plan-file -");
+        expect(b.armada.launches.size).toBe(1);
+      } else {
+        expect(linear.writes).toEqual([]);
+        expect(b.armada.launches.size).toBe(0);
+        expect(b.out()).toContain("Would add plan-approved to DEMO-13 at launch: small follow-up");
+        if (!flags.length) expect(b.out()).toContain("--pre-approve --reason 'small follow-up' --prompt");
+      }
+    }
+  });
+
+  test("pre-approval refuses needs-approval, missing labels and missing reasons without writes or a token", async () => {
+    for (const failure of ["approval", "missing-label", "missing-reason", "blank-reason", "truncated"]) {
+      const b = await signedIn();
+      const linear = new FakeLinear();
+      linear.add("DEMO-13", {
+        labels: failure === "approval" ? [{ id: "needs", name: "needs-plan-approval", group: null }] : [],
+        labelsTruncated: failure === "truncated",
+      });
+      if (failure === "missing-label") linear.labelByName = async () => null;
+      b.io.linearWriter = () => linear;
+      const reason =
+        failure === "missing-reason" ? [] : ["--reason", failure === "blank-reason" ? " " : "small follow-up"];
+      expect(await run(["brief", "DEMO-13", "--prompt", "--pre-approve", ...reason], b.io)).not.toBe(0);
+      expect(linear.writes).toEqual([]);
+      expect(b.armada.launches.size).toBe(0);
+      expect(b.err()).toContain(
+        failure === "approval"
+          ? "remove needs-plan-approval first"
+          : failure === "missing-label"
+            ? "armada doctor"
+            : failure === "truncated"
+              ? "labels"
+              : "--reason",
+      );
+    }
+  });
 
   test("an undecided or invalid semantic brief never mints a token, even when signed in", async () => {
     const toml = TOML.replace("[conductor.profiles.codex]", '[conductor.profiles.codex]\nwhen = "back end: CLI"');
