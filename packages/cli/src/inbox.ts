@@ -11,6 +11,8 @@ import {
   type InboxReport,
   type Rearm,
   Refusal,
+  secretNameRefusal,
+  shellWord,
 } from "@armada/core";
 import { coordinatorName } from "./coordinator.ts";
 import { type Io, UsageError } from "./io.ts";
@@ -29,9 +31,14 @@ export async function ask(io: Io, config: ArmadaConfig, credentials: Credentials
   const fromOption = await readMessage(io, a.options);
   if (positional !== undefined && fromOption !== null)
     throw new UsageError("give the question once: as an argument, --message or --message-file");
-  const question = positional ?? fromOption;
+  let question = positional ?? fromOption;
   if (!question?.trim())
     throw new UsageError('ask needs a question: armada ask "<question, the options, your recommendation>"');
+  const secret = a.options.secret;
+  if (secret !== undefined) {
+    if (secretNameRefusal(secret)) throw new UsageError("--secret takes a worker secret name in upper snake case");
+    question = `Missing secret ${secret}: ${question}\nAsk the owner by link: armada secrets request ${secret} --ticket ${currentTicket(io, config, a.options.ticket, credentials.workerTickets)} --reason ${shellWord(question)}\nNever ask for the value in chat. When it is set, re-run with armada run -- <command>.`;
+  }
   const options = (a.options.options ?? "")
     .split("|")
     .map((o) => o.trim())

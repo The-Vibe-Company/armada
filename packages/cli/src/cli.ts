@@ -181,7 +181,7 @@ const COMMAND_HELP: Record<string, string> = {
   release: `  release --reason <text>
                     Give the ticket back: agent labels removed, ticket moved back
 `,
-  ask: `  ask "<question>" [--options "<a> | <b>"] [--ticket <id>]
+  ask: `  ask "<question>" [--secret <NAME>] [--options "<a> | <b>"] [--ticket <id>]
                     Worker: ask the coordinator. The phase becomes blocked, the question
                     goes on the ticket and in the coordinator's inbox. Then stop and wait
                     for the answer in your session, and report the phase you resume
@@ -325,6 +325,9 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   secrets: `  secrets           The project's secrets for workers: names, project or organization,
                     who set each and when; never a value. Needs a sign-in to Armada
+  secrets request <NAME> [--ticket <id>] --reason "<why>"
+                    Ask an owner/admin by approval link; values never go in chat.
+                    Without --ticket the request belongs to the project's program root.
   secrets set <NAME> [--org] [--value-stdin | --from-env <VAR>]
                     Coordinator (owner or admin): set one for this project, or with --org
                     for every project. The value comes from a hidden prompt, standard input
@@ -529,6 +532,7 @@ const VALUE_OPTIONS = [
   "stage",
   "through-hold",
   "reason",
+  "secret",
   "program-root",
   "name",
   "slug",
@@ -604,7 +608,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
   report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage", "paths"],
   release: ["ticket", "reason"],
-  ask: ["ticket", "options", "message", "message-file"],
+  ask: ["ticket", "options", "message", "message-file", "secret"],
   inbox: ["wait", "timeout", "mine"],
   status: ["mine"],
   watch: ["stop", "name", "follow", "since", "tickets", "kinds", "mine", "for"],
@@ -644,7 +648,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file", "check", "excerpt", "details-file"],
   "ask-owner": ["choices", "check"],
   login: ["api-key", "launch-token", "api-url"],
-  secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
+  secrets: ["ticket", "reason", "org", "value-stdin", "from-env", "file", "only"],
   run: ["ticket", "only", "redact"],
 };
 
@@ -865,7 +869,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const config = parseConfig(text, path);
       // Fetching: the worker session of this ticket when the machine holds one, else this terminal's
       // sign-in. Setting is the coordinator's, never a worker session's, even on a machine that holds one.
-      const sets = args.command === "secrets" && ["set", "unset"].includes(args.rest[0] ?? "");
+      const sets = args.command === "secrets" && ["set", "unset", "request"].includes(args.rest[0] ?? "");
       const { credentials } = await loadCredentials(io, {
         armada: false,
         ...(sets

@@ -390,7 +390,7 @@ describe("armada doctor: the secrets the project expects", () => {
       level: "warning",
       message:
         "the project expects the secrets OPENAI_API_KEY, SENTRY_DSN, TEST_DATABASE_URL; not set in Armada: TEST_DATABASE_URL",
-      fix: "an owner or admin runs `armada secrets set <NAME>` for each (or sets it on the Keys page of Armada)",
+      fix: 'request each missing secret by link: armada secrets request TEST_DATABASE_URL --reason "<why it is needed>" (an owner or admin sets it); never ask for a value in chat',
     });
     await writeFile(join(t.home, "armada.toml"), toml(`["OPENAI_API_KEY", "SENTRY_DSN"]`));
     expect((await t.doctor()).find((c) => c.id === "secrets")?.level).toBe("ok");

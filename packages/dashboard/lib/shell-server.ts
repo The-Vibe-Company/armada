@@ -20,6 +20,7 @@ export async function shellProps(access: Access) {
     const { auth } = await requireAccounts();
     const listed = await auth.api.listOrganizations({ headers: await headers() }).catch(() => []);
     account = {
+      canSetSecrets: viewer.organization.role === "owner" || viewer.organization.role === "admin",
       name: viewer.user.name || viewer.user.email,
       email: viewer.user.email,
       organization: { id: viewer.organization.id, name: viewer.organization.name },

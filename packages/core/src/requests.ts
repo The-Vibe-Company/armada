@@ -280,6 +280,8 @@ export async function requestDecision(db: RequestStore, input: DecisionInput): P
   const v = await db.getValidation(input.project, input.id);
   if (!v) throw new RequestRefusal("no-validation", `validation #${input.id} does not exist in ${input.project}`);
   if (v.decision) throw new RequestRefusal("validation-closed", `validation #${v.id} was already decided`);
+  if (v.kind === "secret")
+    throw new RequestRefusal("no-choice", "an owner or admin sets this secret through its password field");
   let decision: Omit<ValidationDecision, "at">;
   if (v.choices) {
     const choice = input.choice?.trim() ?? "";

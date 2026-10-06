@@ -334,6 +334,7 @@ async function readValidations(store: LiveStore, project: string, now: Date, lim
   });
   const attachments = await store.ticketsAttachments(project, [...new Set(validations.map((v) => v.ticket))]);
   return validations.map((v): OwnerValidation => {
+    if (v.kind === "secret") return { ...v, title: null, url: null, gallery: [], galleryMore: 0 };
     const { gallery, more } = galleryOf(v, attachments, limit);
     return { ...v, title: null, url: null, gallery, galleryMore: more };
   });

@@ -14,15 +14,19 @@ import Image from "next/image";
 import Link from "next/link";
 import { type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { decideValidation } from "@/app/actions";
+import { saveRequestedSecret } from "@/app/keys-actions";
 import { paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import { type ActionContext, ErrorLine, PendingNote, SignerField, signerOf, useRequest, useSent } from "../Actions";
+import { Button, Form, Input } from "../page";
+import { useShell } from "../shell/context";
 
 /** A kind's color: a question is blue, a merge or work to check amber. */
 export const VALIDATION_COLOR: Record<OwnerValidation["kind"], string> = {
   merge: "var(--amber)",
   validation: "var(--amber)",
   question: "var(--blue)",
+  secret: "var(--blue)",
 };
 
 const CI_COLOR: Record<CiState, string> = {
@@ -341,7 +345,65 @@ function Gallery({ t, items }: { t: Strings; items: Attachment[] }) {
  * to request changes; without it, Request changes opens its own box. Shown
  * as sent at once; back with the reason when refused.
  */
-export function Decide({
+export function Decide(props: Parameters<typeof DecideWork>[0]) {
+  return props.v.kind === "secret" ? (
+    <SecretRequest key={props.v.id} ctx={props.ctx} v={props.v} />
+  ) : (
+    <DecideWork {...props} />
+  );
+}
+
+/** The value stays in an uncontrolled password input and is cleared on submission. */
+function SecretRequest({ ctx, v }: { ctx: ActionContext; v: OwnerValidation }) {
+  const { account } = useShell();
+  const s = ctx.t.validations.secret;
+  const field = useRef<HTMLInputElement>(null);
+  const [saved, setSaved] = useState(false);
+  const req = useRequest(saveRequestedSecret, {
+    start: () => {
+      if (field.current) field.current.value = "";
+    },
+    done: () => {
+      setSaved(true);
+      ctx.refresh();
+    },
+    undo: () => {},
+  });
+  if (saved)
+    return (
+      <p className="calm" role="status">
+        {s.saved}
+      </p>
+    );
+  if (!account?.canSetSecrets) return <p className="calm">{s.manager}</p>;
+  if (!ctx.live) return <p className="calm">{ctx.t.needsLive}</p>;
+  return (
+    <Form onSubmit={req.submit} aria-label={s.form}>
+      <input type="hidden" name="project" value={v.project} />
+      <input type="hidden" name="validation" value={v.id} />
+      <label htmlFor={`secret-${v.id}`} className="mono">
+        {v.secretName}
+      </label>
+      <Input
+        ref={field}
+        id={`secret-${v.id}`}
+        name="value"
+        type="password"
+        required
+        maxLength={32768}
+        autoComplete="new-password"
+        disabled={req.busy}
+      />
+      <p className="calm">{s.hint}</p>
+      <ErrorLine t={ctx.t} code={req.error} />
+      <Button tone="primary" disabled={req.busy}>
+        {s.save}
+      </Button>
+    </Form>
+  );
+}
+
+function DecideWork({
   ctx,
   v,
   projectName,

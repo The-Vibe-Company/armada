@@ -685,10 +685,19 @@ const en = {
     sentBy: (author: string | null, ago: string) => `by ${author ?? "you"}, ${ago}`,
   },
   validations: {
-    kinds: { merge: "Merge to approve", validation: "To validate", question: "Question" } satisfies Record<
-      ValidationKind,
-      string
-    >,
+    secret: {
+      form: "Set the requested secret",
+      manager: "An owner or admin sets it.",
+      hint: "Stored securely for this project. Never paste a key into chat.",
+      save: "Save secret",
+      saved: "Secret saved. The coordinator has been notified.",
+    },
+    kinds: {
+      merge: "Merge to approve",
+      validation: "To validate",
+      question: "Question",
+      secret: "Secret needed",
+    } satisfies Record<ValidationKind, string>,
     headline: (n: number) =>
       n === 0 ? "Nothing to decide" : n === 1 ? "1 decision waits for you" : `${n} decisions wait for you`,
     oldest: (d: string) => `The oldest has waited ${d}.`,
@@ -1666,7 +1675,14 @@ const fr: Strings = {
     sentBy: (author, ago) => `par ${author ?? "toi"}, ${ago}`,
   },
   validations: {
-    kinds: { merge: "Merge à approuver", validation: "À valider", question: "Question" },
+    secret: {
+      form: "Fournir le secret demandé",
+      manager: "Un propriétaire ou administrateur le renseigne.",
+      hint: "Stocké en sécurité pour ce projet. Ne colle jamais une clé dans le chat.",
+      save: "Enregistrer le secret",
+      saved: "Secret enregistré. Le coordinateur a été prévenu.",
+    },
+    kinds: { merge: "Merge à approuver", validation: "À valider", question: "Question", secret: "Secret à fournir" },
     headline: (n) => (n === 0 ? "Rien à décider" : n === 1 ? "1 décision t'attend" : `${n} décisions t'attendent`),
     oldest: (d) => `La plus ancienne attend depuis ${d}.`,
     caughtUp: "Tu es à jour.",

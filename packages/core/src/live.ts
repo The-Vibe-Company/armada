@@ -578,6 +578,14 @@ export interface FleetStore {
    * pull request's merge, the same ticket's validation) is superseded by it, atomically.
    */
   addValidation(v: NewValidation): Promise<Validation>;
+  /** Reuses an open request; an existing project or organization secret needs no item. */
+  requestSecret(
+    v: import("./validations.ts").SecretRequestInput & {
+      project: string;
+      author: string | null;
+      at: Date;
+    },
+  ): Promise<import("./validations.ts").SecretRequestResult>;
   /** A project's validations, newest first: the open ones, and those decided since `decidedSince` (all without it). */
   listValidations(q: { project: string; ticket?: string; pr?: number; decidedSince?: Date }): Promise<Validation[]>;
   getValidation(project: string, id: number): Promise<Validation | null>;
@@ -1616,6 +1624,9 @@ export interface Fleet {
   merge(m: MergeRecord): Promise<MergeRecorded>;
   /** Asks the owner to validate (THE-885); `url` is the approval link on the dashboard. */
   validate(v: ValidationRecord): Promise<{ validation: Validation; url: string }>;
+  requestSecret(
+    v: import("./validations.ts").SecretRequestInput,
+  ): Promise<import("./validations.ts").SecretRequestAnswer>;
   /** A ticket's or a pull request's validations, newest first. */
   validations(q: { ticket?: string; pr?: number }): Promise<Validation[]>;
   /** Records a ticket done without a pull request after the owner's approval (`armada done`). */

@@ -9,6 +9,7 @@
 
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
+import { secretNameRefusal } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
 import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
@@ -129,6 +130,7 @@ export const FLEET_OPS = [
   "answer",
   "merge",
   "validations",
+  "secrets/request",
   "done",
   "queue/add",
   "queue/list",
@@ -312,6 +314,7 @@ const TRANSFER_REFUSED = Symbol("transfer refused");
 
 /** Writes carrying prose. Read-only polls never need the vault. */
 export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
+  "secrets/request",
   "claim",
   "report",
   "ask",
@@ -896,6 +899,22 @@ export async function serveFleet(
             at,
           );
         }
+        case "secrets/request": {
+          const name = text(b, "name", 128);
+          if (secretNameRefusal(name))
+            throw new Invalid("use a worker secret name in upper snake case, e.g. OPENAI_API_KEY");
+          const result = await store.requestSecret({
+            project: slug,
+            ticket: ticketOf(b),
+            name,
+            reason: text(b, "reason", VALIDATION_LIMITS.reason),
+            author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
+            at,
+          });
+          return result.state === "already-set"
+            ? result
+            : { ...result, url: approvalUrl(deps.appUrl ?? null, result.validation.id) };
+        }
         case "validate": {
           const input = validationOf(b, deps.validationSamples);
           if (caller.kind === "worker" && input.kind !== "validation")
@@ -1073,6 +1092,7 @@ function validationPrOf(v: unknown): ValidationPr | null {
 
 function validationOf(b: Body, images = VALIDATION_LIMITS.images): ValidationRecord {
   const kind = b.kind;
+  if (kind === "secret") throw new Invalid("secret requests use secrets/request");
   if (!VALIDATION_KINDS.includes(kind as ValidationKind))
     throw new Invalid("kind must be merge, validation or question");
   const L = VALIDATION_LIMITS;
@@ -1191,6 +1211,7 @@ export function fleetClient(o: {
     resolve: (r) => call<boolean>("inbox/resolve", r),
     merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
+    requestSecret: (v) => call("secrets/request", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),
     queueAdd: (e) => call<QueueAdded>("queue/add", e),

@@ -362,7 +362,7 @@ async function secretChecks(api: ArmadaApi, config: ArmadaConfig | null, credent
     return [{ id: "secrets", level: "ok", message: `the secrets the project expects are set: ${list}`, fix: null }];
   return warning(
     `the project expects the secrets ${list}; not set in Armada: ${missing.join(", ")}`,
-    "an owner or admin runs `armada secrets set <NAME>` for each (or sets it on the Keys page of Armada)",
+    `request each missing secret by link: armada secrets request ${missing[0]} --reason "<why it is needed>" (an owner or admin sets it); never ask for a value in chat`,
   );
 }
 

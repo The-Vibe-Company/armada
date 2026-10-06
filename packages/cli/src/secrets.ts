@@ -11,16 +11,18 @@ import { dirname, relative, resolve } from "node:path";
 import {
   type ArmadaConfig,
   type Credentials,
+  fleetClient,
   formatDotenvValue,
   type ListedSecret,
   projectOf,
   type SecretScope,
   secretNameRefusal,
+  VALIDATION_LIMITS,
   writePrivateFile,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type Io, UsageError } from "./io.ts";
-import { commandRedactor, credentialSecrets } from "./redact.ts";
+import { commandRedactor, credentialSecrets, outgoingRedactor } from "./redact.ts";
 
 export interface SecretsArgs {
   /** Positional arguments after the command: the subcommand, then its name. */
@@ -144,6 +146,7 @@ export async function secretsCommand(
   const project = projectOf(config);
   const p = config.project.slug;
   const allowed: Record<string, string[]> = {
+    request: ["reason"],
     list: [],
     set: ["org", "value-stdin", "from-env"],
     unset: ["org"],
@@ -151,13 +154,36 @@ export async function secretsCommand(
     export: ["file", "only"],
   };
   const options = allowed[sub];
-  if (!options) throw new UsageError(`unknown secrets command "${sub}": list, set, unset, get or export`);
+  if (!options) throw new UsageError(`unknown secrets command "${sub}": list, request, set, unset, get or export`);
   for (const name of Object.keys(args.options))
     if (name !== "ticket" && !options.includes(name))
       throw new UsageError(`--${name} does not apply to secrets ${sub}`);
   if (args.json && sub !== "list") throw new UsageError(`--json does not apply to secrets ${sub}`);
   const scope: SecretScope = args.options.org === "true" ? "organization" : "project";
   const where = scope === "project" ? `the project ${p}` : "every project of the organization";
+
+  if (sub === "request") {
+    const name = nameOf(rest, "request");
+    if (signIn.kind === "worker")
+      throw new UsageError("the coordinator requests a secret from the owner", `armada ask --secret ${name} "<why>"`);
+    const reason = args.options.reason?.trim();
+    if (!reason || reason.length > VALIDATION_LIMITS.reason)
+      throw new UsageError(`secrets request needs --reason of at most ${VALIDATION_LIMITS.reason} characters`);
+    const ticket = (args.options.ticket ?? config.tracker.programRoot).toUpperCase();
+    if (!/^[A-Z][A-Z0-9]*-\d+$/.test(ticket)) throw new UsageError("--ticket must be a ticket id, e.g. ABC-12");
+    const redact = await outgoingRedactor(io, config, credentials);
+    const result = await fleetClient({ api, signIn, project }).requestSecret({
+      name,
+      ticket,
+      reason: redact.text(reason),
+    });
+    io.stdout(
+      result.state === "already-set"
+        ? `${name} is already set for ${p}.\n`
+        : `Ask an owner or admin to set ${name} for ${p}:\n${result.url}\nWhen set, re-run with armada run -- <command>. Never paste a key into chat.\n`,
+    );
+    return 0;
+  }
 
   if (sub === "list") {
     if (rest.length) throw new UsageError(`unexpected argument ${rest[0]}`);

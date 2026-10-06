@@ -810,3 +810,15 @@ test("report accepts repeated --paths, records declarations in Linear and prints
   expect(w.linear.bodies.at(-1)).toContain("Paths: src/a.ts, docs/**, skills/**");
   expect(await run(["report", "implementing", "--message", "bad", "--paths", "../bad"], w.io)).toBe(1);
 });
+
+test("ask --secret escalates by name with a link command, never requesting a value in chat", async () => {
+  const w = worker(SIGNED_IN);
+  w.linear.add("DEMO-7");
+  expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-secret/session"], w.io)).toBe(0);
+  expect(await run(["ask", "Evals call the API", "--secret", "OPENAI_API_KEY"], w.io)).toBe(0);
+  const questions = await w.store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+  const question = questions.find((item) => item.kind === "question");
+  expect(question?.body).toContain("Missing secret OPENAI_API_KEY");
+  expect(question?.body).toContain("armada secrets request OPENAI_API_KEY --ticket DEMO-7 --reason");
+  expect(question?.body).toContain("Never ask for the value in chat");
+});

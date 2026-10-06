@@ -970,3 +970,63 @@ test("older callers' prose and captions are masked with scoped vault values befo
     await deleteSecret(client, target);
   }
 });
+
+test("secret requests use the authenticated fleet API, mask reasons and refuse workers and foreign organizations", async () => {
+  const signIn: ArmadaSignIn = { kind: "api-key", key: apiKey };
+  const projectOwner = (await client.query("SELECT organization_id FROM projects WHERE slug = $1", [WIDGETS.slug]))
+    .rows[0];
+  const vault = deps.vault?.();
+  if (vault?.kind !== "on") throw new Error("synthetic vault missing");
+  const canary = "synthetic-request-reason-secret";
+  await setSecret(client, vault.key, {
+    organization: String(projectOwner?.organization_id),
+    project: WIDGETS.slug,
+    user: null,
+    name: "REQUEST_CANARY",
+    value: canary,
+    actor: { kind: "person", id: "synthetic-owner", label: "Synthetic Owner" },
+    now: now(),
+  });
+  const request = await fleetOf(signIn).requestSecret({
+    name: "REQUEST_PROVIDER_KEY",
+    ticket: "WID-71",
+    reason: `Calls the API ${canary}`,
+  });
+  expect(request.state).toBe("requested");
+  if (request.state !== "requested") throw new Error("request missing");
+  expect(request.url).toBe(`${BASE}/approve/${request.validation.id}`);
+  expect(JSON.stringify(request)).not.toContain(canary);
+  expect(request.validation.reason).toContain("«secret REQUEST_CANARY»");
+  const repeated = await fleetOf(signIn).requestSecret({
+    name: "REQUEST_PROVIDER_KEY",
+    ticket: "WID-72",
+    reason: "Also calls the API",
+  });
+  expect(repeated).toEqual(request);
+  const already = await fleetOf(signIn).requestSecret({
+    name: "REQUEST_CANARY",
+    ticket: "WID-71",
+    reason: "Already stored",
+  });
+  expect(already).toEqual({ state: "already-set" });
+  expect(JSON.stringify(already)).not.toContain(canary);
+  const workerSignIn = await worker("WID-71");
+  expect(
+    (
+      await refusal(
+        fleetOf(workerSignIn).requestSecret({ name: "REQUEST_WORKER_KEY", ticket: "WID-71", reason: "Calls API" }),
+      )
+    )[0],
+  ).toBe(403);
+  expect(
+    (
+      await refusal(
+        fleetOf({ kind: "api-key", key: otherKey }).requestSecret({
+          name: "REQUEST_OTHER_KEY",
+          ticket: "WID-71",
+          reason: "Calls API",
+        }),
+      )
+    )[0],
+  ).toBe(403);
+});

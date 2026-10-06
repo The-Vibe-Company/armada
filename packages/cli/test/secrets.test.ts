@@ -335,3 +335,27 @@ describe("armada secrets export: a dotenv file only its owner reads, and git ign
     expect(await readFile(path, "utf8")).not.toContain("CANARY-----");
   });
 });
+
+test("secrets request prints a reusable owner link and masks the reason before submission", async () => {
+  const s = await setup({ as: "coordinator" });
+  const args = [
+    "secrets",
+    "request",
+    "PROVIDER_API_KEY",
+    "--ticket",
+    "DEMO-7",
+    "--reason",
+    `Evals call the API ${OPENAI}`,
+  ];
+  expect(await run(args, s.io)).toBe(0);
+  const first = s.printed();
+  expect(first.stdout).toContain("/approve/1");
+  expect(first.stdout).toContain("Never paste a key into chat");
+  const call = s.armada.calls.find((c) => c.path === "fleet/secrets/request");
+  expect(call?.body).toMatchObject({ input: { name: "PROVIDER_API_KEY", ticket: "DEMO-7" } });
+  expect(JSON.stringify(call?.body)).not.toContain(OPENAI);
+  expect(await run(args, s.io)).toBe(0);
+  expect(s.printed().stdout).toContain("/approve/1");
+  expect(await run(["secrets", "request", "PROVIDER_API_KEY"], s.io)).toBe(2);
+  expect(s.printed().stderr).toContain("--reason");
+});
