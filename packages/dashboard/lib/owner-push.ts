@@ -4,8 +4,10 @@ import { createHmac, randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
-import { type OwnerItem, ownerItems } from "@armada/core/read";
-import { type Database, iso, isoAt, type Row, transaction } from "./db";
+import { buildDigest, type Digest, type OwnerItem, ownerItems, renderDigest } from "@armada/core/read";
+import { type Database, iso, isoAt, type Queryable, type Row, transaction } from "./db";
+import { digestRecords } from "./digest";
+import { DEFAULT_DIGEST, type DigestSchedule, digestSchedule, digestSlots } from "./digest-slots";
 import { loadOverview, newCache, type Sources } from "./fleet-data";
 import { liveStore } from "./fleet-store";
 import { STRINGS } from "./i18n";
@@ -25,6 +27,7 @@ export interface OwnerChannel {
   project: string | null;
   format: "slack" | "json";
   alerts: boolean;
+  digest: DigestSchedule;
   timeZone: string;
   language: "en" | "fr";
   quiet: { from: string; to: string } | null;
@@ -41,6 +44,7 @@ const channelOf = (r: Row): OwnerChannel => ({
   project: r.project === null ? null : String(r.project),
   format: r.format as OwnerChannel["format"],
   alerts: Boolean(r.alerts),
+  digest: digestSchedule(r.digest) ?? DEFAULT_DIGEST,
   timeZone: String(r.time_zone),
   language: r.language as OwnerChannel["language"],
   quiet: r.quiet as OwnerChannel["quiet"],
@@ -167,6 +171,7 @@ export async function saveOwnerChannel(
     project: string | null;
     format: "slack" | "json";
     alerts: boolean;
+    digest?: DigestSchedule;
     timeZone: string;
     language: "en" | "fr";
     quiet: OwnerChannel["quiet"];
@@ -189,6 +194,8 @@ export async function saveOwnerChannel(
   } catch {
     throw new Error("invalid channel settings");
   }
+  const schedule = digestSchedule(input.digest ?? DEFAULT_DIGEST);
+  if (!schedule) throw new Error("invalid digest settings");
   await transaction(db, async (tx) => {
     // Lock the organization, including the first save: settings and credentials change together.
     const org = await tx.query(`SELECT "id" FROM "organization" WHERE "id" = $1 FOR UPDATE`, [input.organization]);
@@ -208,12 +215,12 @@ export async function saveOwnerChannel(
     webhookUrl(value.url);
     if (input.format === "json" && value.signingSecret.length < 16) throw new Error("invalid signing secret");
     await tx.query(
-      `INSERT INTO owner_channels (organization, project, format, alerts, time_zone, language, quiet, created_by, created_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (organization) DO UPDATE SET
+      `INSERT INTO owner_channels (organization, project, format, alerts, time_zone, language, quiet, created_by, created_at, digest, digest_checked_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$9) ON CONFLICT (organization) DO UPDATE SET
       project = excluded.project, format = excluded.format, alerts = excluded.alerts,
       time_zone = excluded.time_zone, language = excluded.language, quiet = excluded.quiet,
       created_by = excluded.created_by, created_at = excluded.created_at, failures = 0, paused_reason = NULL,
-      generation = owner_channels.generation + 1`,
+      generation = owner_channels.generation + 1, digest = excluded.digest, digest_checked_at = excluded.digest_checked_at`,
       [
         input.organization,
         input.project || null,
@@ -224,6 +231,7 @@ export async function saveOwnerChannel(
         input.quiet ? JSON.stringify(input.quiet) : null,
         input.actor.label,
         input.now,
+        JSON.stringify(schedule),
       ],
     );
     await writeOwnerWebhook(tx, input.vault, input.organization, value, input.actor, input.now);
@@ -247,6 +255,7 @@ export interface OwnerPayload {
   organization: string;
   items: { key: string; kind: OwnerItem["kind"]; project: string; ticket: string | null; title: string; url: string }[];
   text: string;
+  project?: string | null;
 }
 
 function payloadOf(channel: OwnerChannel, item: OwnerItem, baseUrl: string): OwnerPayload {
@@ -343,23 +352,38 @@ async function post(
   }
 }
 
-async function deliver(db: Database, channel: OwnerChannel, opts: TickOptions): Promise<void> {
+async function deliver(
+  db: Database,
+  channel: OwnerChannel,
+  opts: TickOptions,
+  manualKey: string | null = null,
+): Promise<void> {
   const credential = await readOwnerWebhook(db, opts.vault, opts.organization).catch(() => null);
   // Bound each callback. Further items remain in the durable queue for the next pulse.
   for (let n = 0; n < 20; n++) {
     const at = tickNow(opts);
-    if (quietAt(channel, at)) return;
+    if (!manualKey && quietAt(channel, at)) return;
     const claim = randomUUID();
     const rs = await db.query(
       `UPDATE owner_pushes SET claim = $2, claimed_until = $3, attempts = attempts + 1, updated_at = $4
       WHERE (channel, key) = (SELECT p.channel, p.key FROM owner_pushes p JOIN owner_channels c ON c.id = p.channel
         WHERE p.channel = $1 AND p.sent_at IS NULL AND p.attempts < 5
           AND (p.claimed_until IS NULL OR p.claimed_until <= $4)
-          AND c.organization = $5 AND c.generation = $6 AND c.paused_reason IS NULL AND c.alerts
-          AND (c.project IS NULL OR p.payload->'items'->0->>'project' = c.project OR p.key LIKE 'test:%')
+          AND c.organization = $5 AND c.generation = $6 AND c.paused_reason IS NULL
+          AND (c.alerts OR p.payload->>'kind' = 'digest')
+          AND ($7::text IS NULL OR p.key = $7)
+          AND (c.project IS NULL OR (p.payload->>'kind' = 'digest' AND p.payload->>'project' = c.project) OR p.payload->'items'->0->>'project' = c.project OR p.key LIKE 'test:%')
         ORDER BY p.created_at, p.key LIMIT 1 FOR UPDATE OF p SKIP LOCKED)
       RETURNING key, payload`,
-      [channel.id, claim, new Date(at.getTime() + 60_000), at, opts.organization, channelGeneration.get(channel)],
+      [
+        channel.id,
+        claim,
+        new Date(at.getTime() + 60_000),
+        at,
+        opts.organization,
+        channelGeneration.get(channel),
+        manualKey,
+      ],
     );
     const row = rs.rows[0];
     if (!row) return;
@@ -388,10 +412,169 @@ async function deliver(db: Database, channel: OwnerChannel, opts: TickOptions): 
 // Metadata objects keep the version privately; it never needs to enter a page/API answer.
 const channelGeneration = new WeakMap<OwnerChannel, number>();
 
+async function channelDigest(db: Queryable, channel: OwnerChannel, since: string, now: Date): Promise<Digest> {
+  const projects = await db.query(
+    `SELECT slug FROM projects WHERE organization_id = $1 AND ($2::text IS NULL OR slug = $2) ORDER BY slug`,
+    [channel.organization, channel.project],
+  );
+  const digests: Digest[] = [];
+  for (const p of projects.rows) digests.push(buildDigest((await digestRecords(db, String(p.slug), since, now)).input));
+  const empty = buildDigest({
+    since,
+    until: now.toISOString(),
+    now,
+    summary: { since, merged: [], started: [], stuck: [], waiting: [], quiet: true },
+    inFlight: [],
+    phaseMedians: {},
+  });
+  const all = empty;
+  all.titles = {};
+  all.ownerItems = [];
+  all.extras = { mainRed: [], deploys: [], jobs: [] };
+  for (const d of digests) {
+    all.quiet = all.quiet && d.quiet;
+    Object.assign(all.titles, d.titles);
+    all.inFlight.push(...d.inFlight);
+    all.ownerItems.push(...(d.ownerItems ?? []));
+    all.extras.mainRed?.push(...(d.extras?.mainRed ?? []));
+    all.extras.deploys?.push(...(d.extras?.deploys ?? []));
+    all.extras.jobs?.push(...(d.extras?.jobs ?? []));
+    all.summary.quiet = all.summary.quiet && d.summary.quiet;
+    all.summary.merged.push(...d.summary.merged);
+    all.summary.started.push(...d.summary.started);
+    all.summary.stuck.push(...d.summary.stuck);
+    all.summary.waiting.push(...d.summary.waiting);
+  }
+  return all;
+}
+
+/** Slot creation and window advancement share the channel lock; delivery happens after commit. */
+async function queueScheduledDigest(db: Database, channel: OwnerChannel, at: Date, baseUrl: string) {
+  await transaction(db, async (tx) => {
+    const rs = await tx.query(`SELECT * FROM owner_channels WHERE id = $1 FOR UPDATE`, [channel.id]);
+    const row = rs.rows[0];
+    if (!row || row.paused_reason || Number(row.generation) !== channelGeneration.get(channel)) return;
+    const current = channelOf(row);
+    const checked = new Date(isoAt(row.digest_checked_at ?? row.created_at));
+    if (checked > at) return;
+    const slots = digestSlots(current.digest, current.timeZone, checked, at);
+    const previous = await tx.query(
+      `SELECT created_at FROM owner_pushes WHERE channel = $1
+      AND (key LIKE 'digest:%' OR (key LIKE 'digest-manual:%' AND payload->>'project' = $2))
+      AND error IS DISTINCT FROM 'skipped'
+      ORDER BY created_at DESC LIMIT 1`,
+      [channel.id, current.project],
+    );
+    let since = isoAt(previous.rows[0]?.created_at ?? row.created_at);
+    // A suppressed quiet window advances activity, but only a visible scheduled digest consumes notices.
+    const noticed = await tx.query(
+      `SELECT created_at FROM owner_pushes WHERE channel = $1
+      AND key LIKE 'digest:%' AND error IS DISTINCT FROM 'skipped' AND error IS DISTINCT FROM 'quiet-digest'
+      ORDER BY created_at DESC LIMIT 1`,
+      [channel.id],
+    );
+    let noticedAt = noticed.rows[0]?.created_at ?? null;
+    for (const slot of slots) {
+      if (at.getTime() - slot.at.getTime() > 30 * 60_000) {
+        await tx.query(
+          `INSERT INTO owner_pushes (channel,key,created_at,sent_at,error,payload)
+          VALUES ($1,$2,$3,$3,'skipped',$4) ON CONFLICT DO NOTHING`,
+          [
+            channel.id,
+            slot.key,
+            at,
+            JSON.stringify({ schema: 1, kind: "digest", organization: channel.organization, items: [], text: "" }),
+          ],
+        );
+        continue;
+      }
+      const exists = await tx.query(`SELECT key FROM owner_pushes WHERE channel = $1 AND key = $2`, [
+        channel.id,
+        slot.key,
+      ]);
+      if (exists.rows.length) continue;
+      const digest = await channelDigest(tx, current, since, at);
+      const missed = await tx.query(
+        `SELECT key FROM owner_pushes WHERE channel = $1 AND error = 'skipped'
+          AND ($2::timestamptz IS NULL OR created_at > $2) ORDER BY key`,
+        [channel.id, noticedAt],
+      );
+      digest.skipped = missed.rows.map((r) => String(r.key).slice("digest:".length));
+      const payload: OwnerPayload = {
+        schema: 1,
+        kind: "digest",
+        organization: channel.organization,
+        project: current.project,
+        items: [],
+        text: renderDigest(digest, {
+          language: current.language,
+          format: current.format === "slack" ? "slack" : "plain",
+          appUrl: baseUrl,
+        }),
+      };
+      const skip = current.digest.skipQuiet && digest.quiet;
+      await tx.query(
+        `INSERT INTO owner_pushes (channel,key,created_at,sent_at,error,payload)
+        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+        [channel.id, slot.key, at, skip ? at : null, skip ? "quiet-digest" : null, JSON.stringify(payload)],
+      );
+      since = at.toISOString();
+      if (!skip) noticedAt = at;
+    }
+    await tx.query(`UPDATE owner_channels SET digest_checked_at = $2 WHERE id = $1`, [channel.id, at]);
+  });
+}
+
+/** On-demand sends use the same queue and renderer. Only safe status returns to the terminal. */
+export async function sendOwnerDigest(
+  db: Database,
+  opts: TickOptions,
+  project: string,
+  digest: Digest,
+  language: "en" | "fr",
+): Promise<boolean> {
+  const rows = await db.query(
+    `SELECT c.* FROM owner_channels c JOIN projects p ON p.organization_id = c.organization
+    WHERE c.organization = $1 AND p.slug = $2 AND (c.project IS NULL OR c.project = $2) AND c.paused_reason IS NULL`,
+    [opts.organization, project],
+  );
+  const row = rows.rows[0];
+  if (!row) return false;
+  const channel = channelOf(row);
+  channelGeneration.set(channel, Number(row.generation));
+  const key = `digest-manual:${randomUUID()}`;
+  const at = tickNow(opts);
+  const payload: OwnerPayload = {
+    schema: 1,
+    kind: "digest",
+    organization: opts.organization,
+    project,
+    items: [],
+    text: renderDigest(digest, {
+      language,
+      format: channel.format === "slack" ? "slack" : "plain",
+      appUrl: opts.baseUrl,
+    }),
+  };
+  await transaction(db, async (tx) => {
+    const locked = await tx.query(`SELECT generation FROM owner_channels WHERE id = $1 FOR UPDATE`, [channel.id]);
+    if (Number(locked.rows[0]?.generation) !== channelGeneration.get(channel)) return;
+    await tx.query(`INSERT INTO owner_pushes (channel,key,created_at,payload) VALUES ($1,$2,$3,$4)`, [
+      channel.id,
+      key,
+      at,
+      JSON.stringify(payload),
+    ]);
+  });
+  await deliver(db, channel, opts, key);
+  const sent = await db.query(`SELECT sent_at FROM owner_pushes WHERE channel = $1 AND key = $2`, [channel.id, key]);
+  return !!sent.rows[0]?.sent_at;
+}
+
 /** Safe to call concurrently. Initial keys and retry attempts are both claimed in Postgres. */
 export async function ownerTick(db: Database, opts: TickOptions): Promise<void> {
   const rs = await db.query(
-    `SELECT * FROM owner_channels WHERE organization = $1 AND alerts AND paused_reason IS NULL`,
+    `SELECT * FROM owner_channels WHERE organization = $1 AND (alerts OR jsonb_array_length(digest->'times') > 0) AND paused_reason IS NULL`,
     [opts.organization],
   );
   if (!rs.rows.length) return;
@@ -403,7 +586,8 @@ export async function ownerTick(db: Database, opts: TickOptions): Promise<void> 
     const channel = channelOf(row);
     channelGeneration.set(channel, Number(row.generation));
     const quiet = quietAt(channel, at);
-    for (const item of items) {
+    await queueScheduledDigest(db, channel, at, opts.baseUrl);
+    for (const item of channel.alerts ? items : []) {
       if (channel.project && item.project !== channel.project) continue;
       await db.query(
         `INSERT INTO owner_pushes (channel, key, created_at, sent_at, error, payload)

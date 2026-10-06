@@ -8,10 +8,16 @@
 // clock. Losing this data loses live detail, never progress: Linear stays the
 // record.
 import { createHash } from "node:crypto";
-import { CONFIG_DEFAULTS } from "./config.ts";
-import { NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
+import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
+import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+
+export { freshRuntimeState } from "./fleet.ts";
+
 import { attachPullRequests } from "./github.ts";
 import { buildModel, isClosed } from "./model.ts";
+import { type OverlapReading, type OverlapWorker, overlapLines, overlaps } from "./overlap.ts";
+import { planRule } from "./phases.ts";
 import type { RequestKind } from "./request-kinds.ts";
 import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
@@ -37,6 +43,42 @@ export interface ProjectRecord extends ProjectInput {
 
 /** `inbox`: the coordinator read its inbox; it carries no ticket. */
 export type EventKind = "claim" | "report" | "heartbeat" | "release" | "merge" | "inbox";
+
+/** Informational events a follow may request; heartbeats and inbox reads stay private to liveness. */
+export const FOLLOW_EVENT_KINDS = ["claim", "report", "release", "merge"] as const;
+export type FollowEventKind = (typeof FOLLOW_EVENT_KINDS)[number];
+export interface FleetEvent extends LatestEvent {
+  id: number;
+  ticket: string;
+  kind: FollowEventKind;
+  headSha: string | null;
+}
+export interface EventsSinceQuery {
+  afterId: number;
+  afterAt: string;
+  kinds: readonly FollowEventKind[];
+  tickets?: readonly string[];
+  /** Reports entering ready-to-merge only, while retaining other requested event kinds. */
+  handoverOnly?: boolean;
+  limit?: number;
+  /** IDs already received in the look-back; also permits 304 for unchanged reads. */
+  seenIds?: readonly number[];
+  /** Pagination within a fixed look-back, independent of the durable high-water cursor. */
+  pageAfter?: { id: number; at: string };
+}
+export interface EventsRead {
+  events: FleetEvent[];
+  cursor: string;
+}
+export const eventCursor = (id: number, at: string) => `v1.${id}.${at}`;
+export function parseEventCursor(cursor: string): { afterId: number; afterAt: string } {
+  const match = /^v1\.(\d+)\.(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/.exec(cursor);
+  const afterId = Number(match?.[1]);
+  const afterAt = match?.[2];
+  if (!match || !Number.isSafeInteger(afterId) || !afterAt || !Number.isFinite(Date.parse(afterAt)))
+    throw new Error("invalid fleet cursor; expected v1.<event id>.<ISO time>");
+  return { afterId, afterAt };
+}
 
 export interface EventInput {
   project: string;
@@ -89,11 +131,15 @@ export interface RuntimeHandle {
   profile: string | null;
   runtimeState?: RuntimeObservation | null;
   lastHeartbeatAt?: string | null;
+  /** Newest owner answer on this claim; status uses the same resume grace as inbox. */
+  lastAnsweredAt?: string | null;
   workerSessionId?: string | null;
 }
 
 /** Optional identity of the claim being released; workers also carry their server session id. */
 export interface ReleaseGuard {
+  /** An absent merge claim: end reservations only, and refuse if a runtime row now exists. */
+  absent?: true;
   handle?: string | null;
   claimedAt?: string | null;
   workerSessionId?: string | null;
@@ -298,6 +344,30 @@ type Item = { project: string; ticket: string; author: string | null; body: stri
  * rows carry its slug and leases are scoped per project. The app implements
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
+/** A shared name or number, held by one ticket or permanently used by its merge. */
+export interface Reservation {
+  id: number;
+  project: string;
+  key: string;
+  value: string;
+  ticket: string;
+  note: string | null;
+  reservedAt: string;
+  endedAt: string | null;
+  merged: boolean;
+}
+
+export interface ReserveRecord {
+  ticket: string;
+  key: string;
+  value?: string;
+  next?: boolean;
+  floor?: number;
+  note?: string | null;
+}
+
+export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
+
 export interface FleetStore {
   openHold(input: OpenHold & { project: string; author: string | null; at: Date }): Promise<MergeHold>;
   clearHold(input: {
@@ -308,13 +378,28 @@ export interface FleetStore {
     at: Date;
   }): Promise<ClearHoldResult | null>;
   openHolds(project: string): Promise<MergeHold[]>;
+
+  digestRecords(
+    project: string,
+    since: string | null,
+    now: Date,
+  ): Promise<{ input: DigestInput; language: "en" | "fr" }>;
+  reserve(input: ReserveRecord & { project: string; at: Date }): Promise<ReserveResult>;
+  reservations(project: string): Promise<Reservation[]>;
+  unreserve(input: { project: string; ticket: string; key: string; at: Date }): Promise<number>;
+
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
   upsertProject(p: ProjectInput, at: Date): Promise<void>;
   listProjects(): Promise<ProjectRecord[]>;
 
+  saveTicketPaths(project: string, ticket: string, paths: string[], at: Date): Promise<void>;
+  ticketPaths(project: string): Promise<Record<string, string[]>>;
+  deleteTicketPaths(project: string, ticket: string, guard?: ReleaseGuard): Promise<void>;
+
   recordEvent(e: EventInput): Promise<void>;
+  eventsSince(project: string, query: EventsSinceQuery): Promise<FleetEvent[]>;
   recordHeartbeat(
     input: HeartbeatRecord & { project: string; workerSessionId?: string | null; at: Date },
   ): Promise<HeartbeatResult>;
@@ -347,7 +432,13 @@ export interface FleetStore {
     at: Date;
   }): Promise<void>;
   /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
-  releaseRuntimeHandle(project: string, ticket: string, at: Date, guard?: ReleaseGuard): Promise<boolean>;
+  releaseRuntimeHandle(
+    project: string,
+    ticket: string,
+    at: Date,
+    guard?: ReleaseGuard,
+    merged?: boolean,
+  ): Promise<boolean>;
   /** Sessions still holding a ticket of the project, by ticket id. */
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
@@ -372,7 +463,7 @@ export interface FleetStore {
   addInboxItem(item: Omit<InboxItem, "id" | "createdAt" | "request"> & { at: Date }): Promise<number>;
   /** Adds a dashboard request unless the same one is open, or the question it answers is closed: null then. */
   addRequest(r: NewRequest): Promise<number | null>;
-  /** Adds the ticket's plan for the coordinator, unless one is already open. */
+  /** Adds or refreshes the ticket's open plan for the coordinator. */
   putPlan(item: Item): Promise<void>;
   /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
   putHandBack(item: Item): Promise<void>;
@@ -501,7 +592,12 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
   return asked;
 }
 
+export interface ReportResult extends Pick<OverlapReading, "overlaps" | "incomplete"> {
+  inbox: InboxItem[];
+}
+
 export interface ReportRecord {
+  paths?: string[];
   ticket: string;
   phase: LabelPhase;
   shippingStage?: ShippingStage | null;
@@ -521,7 +617,11 @@ export async function recordReport(
   project: string,
   r: ReportRecord,
   at: Date,
-): Promise<InboxItem[]> {
+  snapshot?: HandBackSnapshot,
+): Promise<InboxItem[] | ReportResult> {
+  if (r.paths !== undefined) await store.saveTicketPaths(project, r.ticket, r.paths, at);
+  const reading = r.paths !== undefined ? await readOverlap(store, project, r.ticket, r.paths, at, snapshot) : null;
+  const notes = reading ? overlapLines(reading) : [];
   const handle =
     r.phase === "shipping" && r.previous === "shipping" && !r.shippingStage
       ? await store.getRuntimeHandle(project, r.ticket)
@@ -542,13 +642,13 @@ export async function recordReport(
     headSha: r.headSha,
     at,
   });
-  if (r.phase === "awaiting-approval" && r.previous !== r.phase) {
+  if (r.phase === "awaiting-approval" && (r.previous !== r.phase || r.paths !== undefined)) {
     const handle = await store.getRuntimeHandle(project, r.ticket);
     await store.putPlan({
       project,
       ticket: r.ticket,
       author: handle && !handle.releasedAt ? handle.handle : null,
-      body: r.message,
+      body: [r.message, ...notes].join("\n\n"),
       at,
     });
   } else if (r.phase !== "awaiting-approval")
@@ -561,7 +661,8 @@ export async function recordReport(
       body: `Agent status: ${r.phase} — ${r.summary}`,
       at,
     });
-  return store.openInboxItems({ project, recipient: "worker", ticket: r.ticket });
+  const inbox = await store.openInboxItems({ project, recipient: "worker", ticket: r.ticket });
+  return reading ? { inbox, overlaps: reading.overlaps, incomplete: reading.incomplete } : inbox;
 }
 
 /** A worker's question for the coordinator, signed with its session; returns the item id. */
@@ -592,6 +693,7 @@ export async function recordRelease(
 ): Promise<{ released: boolean }> {
   const resolution = `ticket released: ${r.reason}`;
   if (!(await store.releaseRuntimeHandle(project, r.ticket, at, r))) return { released: false };
+  await store.deleteTicketPaths(project, r.ticket);
   await store.resolvePlans({ project, ticket: r.ticket, resolution, at });
   // No worker is left to take an answer.
   await store.resolveInboxItems({ project, ticket: r.ticket, kind: "question", resolution, at });
@@ -731,13 +833,11 @@ export async function recordMerge(
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "decision", resolution: "merged", at });
-  const released = handle
-    ? await store.releaseRuntimeHandle(project, m.ticket, at, {
-        handle: handle.handle,
-        claimedAt: handle.claimedAt,
-        workerSessionId: handle.workerSessionId,
-      })
-    : false;
+  const guard: ReleaseGuard = handle
+    ? { handle: handle.handle, claimedAt: handle.claimedAt, workerSessionId: handle.workerSessionId }
+    : { absent: true };
+  const released = await store.releaseRuntimeHandle(project, m.ticket, at, guard, true);
+  if (released) await store.deleteTicketPaths(project, m.ticket, guard);
   return {
     handle: released && handle ? { ...handle, releasedAt: handle.releasedAt ?? at.toISOString() } : null,
     resolved,
@@ -801,7 +901,7 @@ const MIN = 60_000;
  * claimed (both read from the fleet, they clear on their own); `version`: a
  * newer Armada is out (`armada watch` only, never stored).
  */
-export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "quiet" | "not-started" | "version";
+export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "stopped" | "quiet" | "not-started" | "version";
 
 export interface InboxEntry {
   /**
@@ -836,7 +936,9 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
  * too (a hand-back's names its head SHA): handed back again on a new head, it
  * is new to the coordinator.
  */
-export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined }) =>
+export const entryKey = (
+  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined; createdAt?: string },
+) =>
   e.id !== null
     ? REWRITTEN.includes(e.kind)
       ? `#${e.id}@${digest(e.body)}`
@@ -845,15 +947,73 @@ export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> 
       ? `version:${e.version}`
       : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
         ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-        : `${e.kind}:${e.ticket}`;
+        : e.kind === "stopped"
+          ? `stopped:${e.ticket}@${e.createdAt}`
+          : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
   repository: string;
-  issues: readonly Pick<Issue, "id" | "statusType">[];
+  issues: readonly (Pick<Issue, "id" | "statusType"> & Partial<Pick<Issue, "labels">>)[];
+  /** Stored policy for annotating legacy workers' plan items, without a tracker read. */
+  config?: ArmadaConfig;
   prs: readonly Pick<PullRequest, "repo" | "number" | "state">[];
   /** Full stored reading for the same in-flight derivation as status. */
   flight?: { program: ProgramData; forge: ForgeData | null; after: string };
+}
+
+/** Compares declarations with in-flight tickets using only stored data. */
+export async function readOverlap(
+  store: FleetStore,
+  project: string,
+  ticket: string,
+  paths: string[],
+  at: Date,
+  snapshot?: HandBackSnapshot,
+): Promise<OverlapReading> {
+  const [handles, plans, events] = await Promise.all([
+    store.openRuntimeHandles(project),
+    store.ticketPaths(project),
+    store.latestEvents(project),
+  ]);
+  const flight = snapshot?.flight;
+  const model = flight ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId) : null;
+  const lanes =
+    model && flight
+      ? statusInFlight(model, flight.program.comments, {
+          now: at.getTime(),
+          silentAfterMinutes: CONFIG_DEFAULTS.silentAfterMinutes,
+          live: { after: flight.after, events, handles: Object.fromEntries(handles.map((h) => [h.ticket, h])) },
+        })
+      : [];
+  const workers = new Map<string, OverlapWorker>();
+  for (const lane of lanes) {
+    const pr = lane.pr;
+    workers.set(lane.issue.id, {
+      ticket: lane.issue.id,
+      pr: pr?.number ?? null,
+      files: pr ? (pr.files?.map((f) => f.path) ?? null) : [],
+      filesComplete: !pr || pr.filesComplete === true,
+      plan: plans[lane.issue.id] ?? [],
+    });
+  }
+  const closed = new Set(snapshot?.issues.filter(isClosed).map((i) => i.id));
+  for (const handle of handles) {
+    if (closed.has(handle.ticket) || workers.has(handle.ticket)) continue;
+    // A live release or merge wins over an old snapshot, including stale handles.
+    const event = events[handle.ticket];
+    if (event && event.at >= handle.claimedAt && ["release", "merge"].includes(event.kind)) continue;
+    workers.set(handle.ticket, {
+      ticket: handle.ticket,
+      pr: null,
+      files: [],
+      filesComplete: true,
+      plan: plans[handle.ticket] ?? [],
+    });
+  }
+  workers.delete(ticket);
+  const others = [...workers.values()].sort((a, b) => a.ticket.localeCompare(b.ticket));
+  return { workers: others, overlaps: overlaps(paths, others), incomplete: !flight?.forge };
 }
 
 /** The PR named by the worker's generated hand-back status line. */
@@ -969,18 +1129,34 @@ async function readInboxAndFlight(
   const since = new Date(flight && (!oldest || flight.after < oldest) ? flight.after : (oldest ?? o.now.toISOString()));
   const [events, answered] = await Promise.all([
     eventTickets.length
-      ? store.latestEvents(o.project, { since, tickets: eventTickets })
+      ? store.latestEvents(o.project, { since: flight ? new Date(0) : since, tickets: eventTickets })
       : Promise.resolve({} as Record<string, LatestEvent>),
     answerTickets.length
       ? store.lastAnsweredAt(o.project, { since, tickets: answerTickets })
       : Promise.resolve({} as Record<string, string>),
   ]);
+  const planConfig = o.snapshot?.config;
+  const preApproved = new Set(
+    planConfig
+      ? (o.snapshot?.issues ?? [])
+          .filter(
+            (i) =>
+              i.labels?.some(
+                (label) => routingLabelKey(label) === routingLabelKey(planConfig.policy.preApprovedLabel),
+              ) && planRule(planConfig, i.labels).rule === "pre-approved",
+          )
+          .map((i) => i.id)
+      : [],
+  );
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
     kind: i.kind,
     ticket: i.ticket,
     author: i.author,
-    body: i.body,
+    body:
+      i.kind === "plan" && i.ticket && preApproved.has(i.ticket) && !/pre-approved at launch/i.test(i.body)
+        ? `Pre-approved at launch; answer approved to let this worker continue.\n\n${i.body}`
+        : i.body,
     createdAt: i.createdAt,
     new: false,
     ...(i.request ? { request: i.request } : {}),
@@ -1032,10 +1208,31 @@ async function readInboxAndFlight(
     // A waiting turn may lose its heartbeat process. An answer or resumed report
     // grants a full silence window before the next heartbeat has to arrive.
     const heartbeat = h.lastHeartbeatAt && h.lastHeartbeatAt > last ? h.lastHeartbeatAt : null;
-    const alive = heartbeat ?? last;
-    const silence = now - Date.parse(alive);
+    const life = liveness({
+      now: o.now,
+      silentAfterMinutes: o.silentAfterMinutes,
+      phase: e?.phase,
+      lastReport: last,
+      lastHeartbeat: heartbeat,
+      runtimeState: observation,
+      claimedAt: h.claimedAt,
+      owesReport,
+    });
+    const { alive, silence } = life;
+    if (life.kind === "stopped") {
+      entries.push({
+        id: null,
+        kind: "stopped",
+        ticket: h.ticket,
+        author: h.handle,
+        body: `stopped: its session is idle and it did not hand back (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); read its last reply with the runtime guide and resume or release it`,
+        createdAt: observation?.since ?? observation?.at ?? last,
+        new: false,
+      });
+      continue;
+    }
     const quiet = now - Date.parse(last);
-    const silent = silence > o.silentAfterMinutes * MIN;
+    const silent = life.kind === "silent";
     if (!silent && (!heartbeat || quiet <= (o.quietAfterMinutes ?? CONFIG_DEFAULTS.quietAfterMinutes) * MIN)) continue;
     entries.push({
       id: null,
@@ -1043,7 +1240,7 @@ async function readInboxAndFlight(
       ticket: h.ticket,
       author: h.handle,
       body: silent
-        ? `no ${heartbeat ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${owesReport && !heartbeat ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
+        ? `no ${heartbeat ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${life.state === "working" && observation ? `, but its session is still working (observed ${observation.at.slice(11, 16)})` : ""}${owesReport && !heartbeat ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
         : `${h.ticket} has been working ${Math.floor(quiet / MIN)} min without a report (heartbeats are arriving, phase ${e?.phase ?? "unknown"})`,
       createdAt: silent ? alive : last,
       new: false,
@@ -1175,22 +1372,6 @@ export async function serveInbox(
   return q.etag === etag ? null : { items, inFlight, etag, warnings };
 }
 
-/** A runtime reading expires with the project's liveness threshold. */
-export function freshRuntimeState(
-  observation: RuntimeObservation | null | undefined,
-  now: Date,
-  minutes: number,
-  claimedAt?: string,
-): RuntimeState | null {
-  // A session can start its turn before the worker claims. The observation is
-  // generation-checked by the store; its transition time may legitimately precede the claim.
-  if (!observation || (claimedAt && observation.at < claimedAt)) return null;
-  const age = now.getTime() - Date.parse(observation.at);
-  return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
-    ? observation.state
-    : null;
-}
-
 // ------------------------------------------------------------------ the CLI's side
 
 /**
@@ -1201,6 +1382,13 @@ export interface Fleet {
   holds(): Promise<MergeHold[]>;
   openHold(input: OpenHold): Promise<MergeHold>;
   clearHold(input: { id: number; reason: string }): Promise<ClearHoldResult | null>;
+
+  digest(request: DigestRequest): Promise<DigestResult>;
+  sendDigest(request: DigestRequest): Promise<DigestResult>;
+  reserve(input: ReserveRecord): Promise<ReserveResult>;
+  reservations(ticket?: string): Promise<Reservation[]>;
+  unreserve(input: { ticket: string; key: string }): Promise<number>;
+
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";
@@ -1214,6 +1402,7 @@ export interface Fleet {
   /** Time of the newest event of every ticket (`armada status`). */
   lastEventTimes(): Promise<Record<string, string>>;
   latestEvents(): Promise<Record<string, LatestEvent>>;
+  eventsSince(query: EventsSinceQuery): Promise<EventsRead | null>;
   heartbeatTimes(): Promise<Record<string, string>>;
   heartbeat(input: HeartbeatRecord): Promise<HeartbeatResult>;
   runtimeHandles(): Promise<RuntimeHandle[]>;
@@ -1230,7 +1419,8 @@ export interface Fleet {
   /** Launches no claim followed yet, within the last day (`armada status`). */
   pendingLaunches(): Promise<PendingLaunch[]>;
   claim(c: ClaimRecord): Promise<InboxItem[]>;
-  report(r: ReportRecord): Promise<InboxItem[]>;
+  report(r: ReportRecord): Promise<ReportResult>;
+  overlap(input: { ticket: string; paths: string[] }): Promise<OverlapReading>;
   ask(q: { ticket: string; body: string }): Promise<number>;
   release(r: Omit<ReleaseRecord, "workerSessionId">): Promise<{ released: boolean }>;
   /** The coordinator's inbox; null when its entries are still those of `q.etag` (not modified). */

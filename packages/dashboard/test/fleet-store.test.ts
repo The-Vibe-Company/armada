@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type NewRequest, recordRelease } from "@armada/core/read";
-import type { Database } from "../lib/db.ts";
+import { type Database, DB_MIGRATIONS, DB_SCHEMA_VERSION, migrateDatabase } from "../lib/db.ts";
 import {
   acquireLease,
   addInboxItem,
   addRequest,
   assignUnownedProjects,
   coordinatorPresence,
+  eventsSince,
   fleetStore,
   getLease,
   getRuntimeHandle,
@@ -394,7 +395,7 @@ describe("the coordinator's inbox", () => {
     const open = () => openInboxItems(db, { project: P, recipient: "coordinator", ticket: "WID-7" });
     const plan = (await open()).find((i) => i.kind === "plan");
     expect((await open()).map((i) => [i.kind, i.body])).toEqual([
-      ["plan", "Plan A"],
+      ["plan", "Plan B"],
       ["hand-back", "PR 1, CI green"],
     ]);
     await addRequest(db, { ...answer(plan?.id ?? 0, "approved"), ticket: "WID-7" });
@@ -486,6 +487,114 @@ test("merge holds deduplicate automatic pauses and atomically open and resolve t
       store.openHold({ ...input, kind: "main-red", ref: "abcdef", reason: "tests failed" }),
     ).rejects.toThrow();
     expect(await store.openHolds(input.project)).toHaveLength(count);
+  } finally {
+    await database.end();
+  }
+});
+
+test("events/since uses the project, kinds and tickets, pages ties and reads late commits once", async () => {
+  const project = "follow-stream";
+  await upsertProject(db, { slug: project, name: "Follow", repository: "acme/follow", programRoot: "WID-1" }, at(0));
+  for (const kind of ["report", "report", "heartbeat", "claim"] as const)
+    await recordEvent(db, { project, ticket: "WID-2", kind, message: kind, at: at(1) });
+  const q = { afterId: 0, afterAt: at(0).toISOString(), kinds: ["report"] as const, tickets: ["WID-2"], limit: 1 };
+  const first = await eventsSince(db, project, q);
+  expect(first).toHaveLength(1);
+  const firstEvent = first[0];
+  if (!firstEvent) throw new Error("missing first page");
+  const next = await eventsSince(db, project, { ...q, pageAfter: { id: firstEvent.id, at: firstEvent.at } });
+  expect(next).toHaveLength(1);
+  const one = first[0],
+    two = next[0];
+  if (!one || !two) throw new Error("missing event page");
+  expect(two.id).toBeGreaterThan(one.id);
+  const boundary = { ...q, afterId: two.id, afterAt: two.at, seenIds: [one.id, two.id] };
+  expect(await eventsSince(db, project, boundary)).toEqual([]);
+  await recordEvent(db, {
+    project,
+    ticket: "WID-2",
+    kind: "report",
+    message: "late",
+    at: new Date(at(1).getTime() - 10000),
+  });
+  const late = await eventsSince(db, project, boundary);
+  expect(late.map((e) => e.message)).toEqual(["late"]);
+  const lateEvent = late[0];
+  if (!lateEvent) throw new Error("missing late event");
+  expect(await eventsSince(db, project, { ...boundary, seenIds: [...boundary.seenIds, lateEvent.id] })).toEqual([]);
+  expect(await eventsSince(db, project, { ...q, tickets: ["WID-3"] })).toEqual([]);
+  expect(await eventsSince(db, "unknown-project", q)).toEqual([]);
+});
+
+test("events/since selects handover reports before pagination", async () => {
+  const project = "follow-handover";
+  await upsertProject(db, { slug: project, name: "Handover", repository: "acme/follow", programRoot: "WID-1" }, at(0));
+  await recordEvent(db, { project, ticket: "WID-2", kind: "report", phase: "implementing", at: at(1) });
+  await recordEvent(db, { project, ticket: "WID-2", kind: "report", phase: "ready-to-merge", at: at(2) });
+  const events = await eventsSince(db, project, {
+    afterId: 0,
+    afterAt: at(0).toISOString(),
+    kinds: ["report"],
+    handoverOnly: true,
+    limit: 1,
+  });
+  expect(events.map((e) => e.phase)).toEqual(["ready-to-merge"]);
+});
+
+test("declared paths replace the old plan, stay scoped to a project and are cleared on release and merge", async () => {
+  const { recordMerge } = await import("@armada/core/read");
+  const store = fleetStore(db);
+  for (const slug of ["paths-a", "paths-b"]) {
+    await store.ensureProject({ slug, name: slug, repository: "acme/widgets", programRoot: "WID-1" }, at(0));
+    await store.saveRuntimeHandle({
+      project: slug,
+      ticket: "WID-7",
+      runtime: "conductor",
+      handle: `ws/${slug}`,
+      branch: null,
+      at: at(0),
+    });
+    await store.saveTicketPaths(slug, "WID-7", ["src/**"], at(1));
+  }
+  await store.saveTicketPaths("paths-a", "WID-7", ["docs/readme.md"], at(2));
+  expect(await store.ticketPaths("paths-a")).toEqual({ "WID-7": ["docs/readme.md"] });
+  await recordRelease(store, "paths-a", { ticket: "WID-7", reason: "done" }, at(3));
+  expect(await store.ticketPaths("paths-a")).toEqual({});
+  expect(await store.ticketPaths("paths-b")).toEqual({ "WID-7": ["src/**"] });
+  await recordMerge(
+    store,
+    "paths-b",
+    {
+      ticket: "WID-7",
+      number: 1,
+      url: "https://github.com/acme/widgets/pull/1",
+      headSha: "a".repeat(40),
+      mergeCommit: "b".repeat(40),
+      decision: null,
+    },
+    at(4),
+  );
+  expect(await store.ticketPaths("paths-b")).toEqual({});
+});
+
+test("a higher reserved version does not hide a later merge-hold migration", async () => {
+  const database = await tempDatabase();
+  try {
+    const migration = DB_MIGRATIONS.find((m) => m.statements.some((s) => s.includes("CREATE TABLE merge_holds")));
+    if (!migration) throw new Error("missing hold migration");
+    await database.query("DROP TABLE merge_holds");
+    await database.query("DELETE FROM armada_migrations WHERE version = $1", [migration.version]);
+    // Another branch applied its higher reserved version first.
+    await database.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [
+      DB_SCHEMA_VERSION + 1,
+      at(0),
+    ]);
+    expect(await migrateDatabase(database, at(1))).toBe(DB_SCHEMA_VERSION);
+    expect((await database.query("SELECT to_regclass('merge_holds') AS name")).rows[0]?.name).not.toBeNull();
+    expect(
+      (await database.query("SELECT version FROM armada_migrations WHERE version = $1", [migration.version])).rows,
+    ).toEqual([{ version: migration.version }]);
+    expect(await migrateDatabase(database, at(2))).toBe(DB_SCHEMA_VERSION);
   } finally {
     await database.end();
   }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Fetch } from "../src/linear.ts";
 import { createLinearWriter } from "../src/linear-write.ts";
-import { FakeLinear } from "./support.ts";
+import { FakeLinear, NOW } from "./support.ts";
 
 /** Answers each GraphQL operation from `answers` and records what was sent. */
 function graphql(answers: Record<string, unknown>) {
@@ -23,6 +23,33 @@ function graphql(answers: Record<string, unknown>) {
 }
 
 describe("Linear write adapter", () => {
+  test("looks up an ungrouped label by name in the ticket's team, then the workspace", async () => {
+    const nodes = [
+      { id: "shared", name: "plan-approved", parent: null, team: null },
+      { id: "own", name: "plan-approved", parent: null, team: { id: "team-1" } },
+      { id: "other", name: "plan-approved", parent: null, team: { id: "team-2" } },
+    ];
+    const { writer, sent } = graphql({ LabelByName: { data: { issueLabels: { nodes } } } });
+    expect(await writer.labelByName("plan-approved", "team-1")).toEqual({
+      id: "own",
+      name: "plan-approved",
+      group: null,
+    });
+    expect(sent[0]?.variables).toEqual({
+      filter: {
+        name: { eqIgnoreCase: "plan-approved" },
+        or: [{ team: { id: { eq: "team-1" } } }, { team: { null: true } }],
+      },
+    });
+    expect(await writer.labelByName("plan-approved", "team-3")).toEqual({
+      id: "shared",
+      name: "plan-approved",
+      group: null,
+    });
+    nodes.splice(0, 1);
+    expect(await writer.labelByName("plan-approved", "team-3")).toBeNull();
+  });
+
   test("creates a child issue and updates its title through the only write adapter", async () => {
     const { writer, sent } = graphql({
       CreateIssue: {
@@ -240,9 +267,10 @@ describe("Linear write adapter", () => {
 });
 
 test("comment retries reconcile a lost response before posting again", async () => {
-  for (const recorded of [true, false]) {
+  for (const recorded of [true, false, "older"] as const) {
     const linear = new FakeLinear();
     linear.add("DEMO-7", { uuid: "uuid-7" });
+    if (recorded === "older") linear.post("DEMO-7", "Progress", "2026-03-03T10:00:00.000Z", "Owner");
     let posts = 0;
     let checks = 0;
     const writer = createLinearWriter({
@@ -250,12 +278,13 @@ test("comment retries reconcile a lost response before posting again", async () 
       labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
       sleep: async () => {},
       random: () => 0.5,
+      now: () => NOW,
       fetch: async (_url, init) => {
         const request = JSON.parse(String(init.body));
         if (request.query.includes("mutation Comment")) {
           posts++;
           if (posts === 1) {
-            if (recorded) await linear.comment("uuid-7", "Progress");
+            if (recorded === true) await linear.comment("uuid-7", "Progress");
             throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
           }
           return Response.json({
@@ -280,6 +309,13 @@ test("comment retries reconcile a lost response before posting again", async () 
         throw new Error("unexpected query");
       },
     });
+    if (recorded === "older") {
+      await expect(writer.comment("uuid-7", "Progress")).rejects.toThrow("could not confirm this new comment");
+      expect(posts).toBe(1);
+      expect(checks).toBe(1);
+      expect(linear.bodies).toEqual([]);
+      continue;
+    }
     expect(await writer.comment("uuid-7", "Progress")).toEqual({ id: "c-0001" });
     expect(posts).toBe(recorded ? 1 : 2);
     expect(checks).toBe(1);

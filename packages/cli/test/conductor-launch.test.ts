@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ArmadaApiError, parseConfig, resolveCredentials } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
@@ -28,6 +28,8 @@ const json = (value: unknown) => ({ code: 0, stdout: JSON.stringify(value), stde
 async function fixture(toml = TOML) {
   const home = await mkdtemp(join(tmpdir(), "armada-conductor-launch-"));
   homes.push(home);
+  const linear = new FakeLinear();
+  linear.add("DEMO-13");
   const store = memoryFleet();
   const armada = fakeArmada({
     store,
@@ -67,6 +69,7 @@ async function fixture(toml = TOML) {
   let bindingError: Error | null = null;
   const bindings: unknown[] = [];
   const io: Io = {
+    linearWriter: () => linear,
     cwd: "/work/widgets/nested",
     env: {
       XDG_CONFIG_HOME: home,
@@ -164,6 +167,7 @@ async function fixture(toml = TOML) {
   };
   return {
     io,
+    linear,
     armada,
     store,
     ticket,
@@ -213,6 +217,26 @@ async function fixture(toml = TOML) {
     stderr: () => stderr.join(""),
   };
 }
+
+test("Conductor launch briefs include shared keys and holders from the same brief input as herdr", async () => {
+  const f = await fixture(
+    `${TOML}\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n`,
+  );
+  await f.store.reserve({
+    project: "widgets",
+    key: "db-migration",
+    value: "27",
+    next: false,
+    floor: 0,
+    ticket: "DEMO-12",
+    note: null,
+    at: NOW,
+  });
+  expect(await f.launch()).toBe(0);
+  const prompt = f.calls.find((c) => c.args[2] === "create")?.input;
+  expect(prompt).toContain("db-migration: the next schema version");
+  expect(prompt).toContain("db-migration = 27: DEMO-12");
+});
 
 test("native launch routes the profile, sends the token and coordinator notes only on stdin, binds and prints ids", async () => {
   const f = await fixture();
@@ -490,4 +514,35 @@ test("an unavailable or malformed recovery search retains the pending launch for
     expect(f.calls.filter((c) => c.args[2] === "create")).toHaveLength(1);
     f.output();
   }
+});
+
+test("Conductor pre-approval is read-only in preview and reaches the launched brief", async () => {
+  for (const dry of [true, false]) {
+    const f = await fixture();
+    expect(
+      await f.launch({ "pre-approve": "true", reason: "small follow-up", ...(dry ? { "dry-run": "true" } : {}) }),
+    ).toBe(0);
+    if (dry) {
+      expect(JSON.parse(f.stdout()).preApproval).toContain("Would add plan-approved");
+      expect(f.linear.writes).toHaveLength(0);
+      expect(f.armada.launches.size).toBe(0);
+    } else {
+      expect(f.linear.writes).toHaveLength(1);
+      expect(f.linear.tickets.get("DEMO-13")?.labels.some((l) => l.name === "plan-approved")).toBe(true);
+      const prompt = f.calls.find((c) => c.command === "conductor" && c.args.includes("create"))?.input;
+      expect(prompt).toContain("added at launch: small follow-up");
+      expect(prompt).toContain("armada report implementing --plan-file -");
+    }
+  }
+});
+
+test("Conductor needs-approval labels refuse pre-approval before any token or native launch", async () => {
+  const f = await fixture();
+  f.linear.add("DEMO-13", { labels: [{ id: "needs", name: "needs-plan-approval", group: null }] });
+  await expect(f.launch({ "pre-approve": "true", reason: "small follow-up" })).rejects.toThrow(
+    "remove needs-plan-approval first",
+  );
+  expect(f.linear.writes).toHaveLength(0);
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls).toHaveLength(0);
 });

@@ -765,8 +765,41 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
-    // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
     version: 26,
+    statements: [
+      `CREATE TABLE ticket_paths (
+      project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+      ticket text NOT NULL, paths text[] NOT NULL, declared_at timestamptz NOT NULL,
+      PRIMARY KEY (project, ticket)
+    )`,
+    ],
+  },
+  {
+    version: 27,
+    statements: [
+      `CREATE TABLE reservations (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug), key text NOT NULL, value text NOT NULL,
+        ticket text NOT NULL, note text, reserved_at timestamptz NOT NULL,
+        ended_at timestamptz, merged boolean NOT NULL DEFAULT false
+      )`,
+      "CREATE UNIQUE INDEX reservations_held ON reservations (project, key, value) WHERE ended_at IS NULL OR merged",
+      "CREATE INDEX reservations_ticket ON reservations (project, ticket) WHERE ended_at IS NULL",
+    ],
+  },
+  {
+    version: 28,
+    statements: [
+      `ALTER TABLE owner_channels ADD COLUMN digest_checked_at timestamptz`,
+      `UPDATE owner_channels SET digest = '{"times":["09:00","13:00","18:00"],"days":[1,2,3,4,5],"skipQuiet":false}'::jsonb,
+        digest_checked_at = created_at`,
+      `CREATE INDEX owner_pushes_digests ON owner_pushes (channel, created_at DESC)
+        WHERE key LIKE 'digest:%' OR key LIKE 'digest-manual:%'`,
+    ],
+  },
+  {
+    // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
+    version: 32,
     statements: [
       `CREATE TABLE merge_holds (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -794,21 +827,24 @@ const MIGRATION_LOCK = 4_849_001;
 
 /** Applies pending migrations and returns the schema version. */
 export async function migrateDatabase(db: Database, now: Date = new Date()): Promise<number> {
-  const current = async (q: Queryable) =>
-    Number((await q.query<{ v: unknown }>("SELECT max(version) AS v FROM armada_migrations")).rows[0]?.v ?? 0);
-  // The usual case, without a lock: everything applied already.
-  const applied = await db
+  // Reserved numbers can land out of order: a higher version never proves
+  // that every lower migration was applied. Skip only recorded versions.
+  const table = await db
     .query<{ t: unknown }>("SELECT to_regclass('armada_migrations') AS t")
     .then((rs) => rs.rows[0]?.t !== null && rs.rows[0]?.t !== undefined);
-  if (applied && (await current(db)) >= DB_SCHEMA_VERSION) return DB_SCHEMA_VERSION;
-  for (const m of DB_MIGRATIONS)
+  const applied = new Set(
+    table
+      ? (await db.query<{ version: number }>("SELECT version FROM armada_migrations")).rows.map((r) => r.version)
+      : [],
+  );
+  for (const m of DB_MIGRATIONS.filter((m) => !applied.has(m.version)))
     await transaction(db, async (tx) => {
       // Whoever comes second waits here, then finds the version applied.
       await tx.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK]);
       await tx.query(
         "CREATE TABLE IF NOT EXISTS armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
       );
-      if ((await current(tx)) >= m.version) return;
+      if ((await tx.query("SELECT 1 FROM armada_migrations WHERE version = $1", [m.version])).rows.length) return;
       for (const statement of m.statements) await tx.query(statement);
       await tx.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [m.version, now]);
     });
