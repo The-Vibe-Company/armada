@@ -2,7 +2,7 @@
 // them (THE-1128): what each runner said last and how long ago, its estimate
 // and whether it ran past `max_hours`. Read from the polled overview (Postgres
 // only); recomputed against the ticking clock between polls.
-import { type JobState, type JobSummary, jobIsOpen, jobOverdue, type ProjectOverview } from "@armada/core/read";
+import { type JobState, jobIsOpen, jobOverdue, type ProjectOverview, type ShownJob } from "@armada/core/read";
 
 export interface JobLine {
   id: number;
@@ -22,7 +22,7 @@ export interface JobLine {
   ticketDone: boolean;
 }
 
-export function jobLine(job: JobSummary, now: number): JobLine {
+export function jobLine(job: ShownJob, now: number): JobLine {
   const open = jobIsOpen(job);
   const maxHours = job.maxHours ?? null;
   return {

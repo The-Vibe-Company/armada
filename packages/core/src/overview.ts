@@ -159,6 +159,9 @@ export interface FleetTimeline {
   coordinators: { project: string; inboxTrack: CoordinatorTrack }[];
 }
 
+/** A long job as the dashboard shows it: no runner reference or starter, which no screen draws. */
+export type ShownJob = Omit<JobSummary, "ref" | "startedBy">;
+
 export type CoordinatorState = "active" | "idle" | "unknown";
 
 export interface ProjectOverview {
@@ -170,8 +173,8 @@ export interface ProjectOverview {
   pullRequests: StatusReport["pullRequests"];
   /** Its last tickets merged, newest first (THE-988). */
   merged: MergedTicket[];
-  /** Its long jobs (THE-1128), newest first: the open ones and those of its tickets ended lately. */
-  jobs: JobSummary[];
+  /** Its long jobs (THE-1128): the open ones and those of its tickets ended lately, as the store gives them. */
+  jobs: ShownJob[];
   requests: InboxItem[];
   slug: string;
   name: string;
@@ -474,7 +477,7 @@ export function buildOverview(input: {
         : null,
       pullRequests: p.report?.pullRequests ?? null,
       merged: p.report?.merged ?? [],
-      jobs: p.report?.jobs ?? [],
+      jobs: (p.report?.jobs ?? []).map(({ ref: _ref, startedBy: _by, ...job }) => job),
       requests: inbox.filter((item) => REQUEST_KINDS.includes(item.kind as (typeof REQUEST_KINDS)[number])),
       slug: p.slug,
       name: p.name,

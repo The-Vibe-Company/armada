@@ -1,20 +1,18 @@
 import { expect, test } from "bun:test";
-import type { JobSummary, ProjectOverview } from "@armada/core/read";
+import type { ProjectOverview, ShownJob } from "@armada/core/read";
 import { ticketJobLines } from "../lib/jobs-view.ts";
 
 const NOW = Date.parse("2026-03-11T12:00:00Z");
 const MIN = 60_000;
 const at = (minutesAgo: number) => new Date(NOW - minutesAgo * MIN).toISOString();
-const job = (over: Partial<JobSummary>): JobSummary => ({
+const job = (over: Partial<ShownJob>): ShownJob => ({
   id: 1,
   project: "widgets",
   ticket: "W-1",
   name: "eval",
-  ref: "run-1",
   state: "running",
   progress: null,
   eta: null,
-  startedBy: "worker",
   startedAt: at(60),
   observedAt: at(60),
   finishedAt: null,

@@ -529,6 +529,24 @@ test("long jobs persist across store instances, are project scoped and never rev
   expect(await shownJobs(db, project.slug, [job.ticket], at(3))).toEqual([open]);
   expect(await shownJobs(db, project.slug, [], at(0))).toEqual([open]);
   expect(await shownJobs(db, "other-project", [job.ticket], at(0))).toEqual([]);
+  // An open job comes before newer ended ones, so the limit never cuts it.
+  const rerun = await store.startJob({
+    project: project.slug,
+    ticket: job.ticket,
+    name: "eval",
+    startedBy: null,
+    at: at(4),
+  });
+  const failed = await store.observeJob({
+    project: project.slug,
+    ticket: job.ticket,
+    id: rerun.id,
+    state: "failed",
+    at: at(5),
+  });
+  expect(await shownJobs(db, project.slug, [job.ticket], at(2))).toEqual(
+    failed && stopped ? [open, failed, stopped] : [],
+  );
 });
 
 test("a deferred request survives storage, shares launch uniqueness and is resolved by the worker claim", async () => {

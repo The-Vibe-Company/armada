@@ -83,6 +83,10 @@ export function parseJobStatus(
   return { state, progress, eta };
 }
 
-export function jobOverdue(job: Job, maxHours: number | null | undefined, now: Date): boolean {
+export function jobOverdue(
+  job: Pick<Job, "state" | "startedAt">,
+  maxHours: number | null | undefined,
+  now: Date,
+): boolean {
   return jobIsOpen(job) && maxHours != null && now.getTime() - Date.parse(job.startedAt) > maxHours * 3_600_000;
 }

@@ -1195,8 +1195,9 @@ export const SHOWN_JOBS = 100;
 
 /**
  * The jobs the dashboard shows (THE-1128): every open job of the project, and
- * those of `tickets` that ended since `endedSince`, newest first. Each half
- * reads its own index.
+ * those of `tickets` that ended since `endedSince`: the open ones first (an
+ * overdue job is never cut for newer ones), then the newest. Each half reads
+ * its own index.
  */
 export async function shownJobs(
   db: Queryable,
@@ -1206,10 +1207,11 @@ export async function shownJobs(
 ): Promise<Job[]> {
   return (
     await db.query(
-      `SELECT * FROM jobs WHERE project = $1 AND state IN ('starting','running')
-       UNION
-       SELECT * FROM jobs WHERE project = $1 AND ticket = ANY($2::text[]) AND finished_at >= $3
-       ORDER BY id DESC LIMIT ${SHOWN_JOBS}`,
+      `SELECT * FROM (
+         SELECT * FROM jobs WHERE project = $1 AND state IN ('starting','running')
+         UNION
+         SELECT * FROM jobs WHERE project = $1 AND ticket = ANY($2::text[]) AND finished_at >= $3
+       ) shown ORDER BY state IN ('starting','running') DESC, id DESC LIMIT ${SHOWN_JOBS}`,
       [project, [...tickets], endedSince],
     )
   ).rows.map(jobOf);
