@@ -65,6 +65,62 @@ const bad = (id: string, level: Exclude<CheckLevel, "ok">, message: string, fix:
   fix,
 });
 
+/** Effective Git values, read by the CLI; key contents never enter the classification. */
+export type SigningConfig = Partial<
+  Record<
+    | "commit.gpgsign"
+    | "gpg.format"
+    | "gpg.ssh.program"
+    | "gpg.program"
+    | "gpg.openpgp.program"
+    | "gpg.x509.program"
+    | "user.signingkey",
+    string
+  >
+> & {
+  pinentryProgram?: string;
+  /** Last OpenPGP alias value in Git config order, resolved by the read adapter. */
+  openpgpProgram?: string;
+};
+
+export interface SigningSetup {
+  enabled: boolean;
+  format: string;
+  signer: string;
+  interactive: string | null;
+  hasKey: boolean;
+}
+
+// Known interactive programs: 1Password SSH signers and graphical GnuPG
+// pinentries. This predicts a prompt; only the opt-in deep probe proves signing.
+const INTERACTIVE_SIGNERS = [
+  /(?:^|[\\/\s"'])(op-ssh-sign|1password-ssh-sign)(?:\.exe)?(?=$|[\s"'])/i,
+  /(?:^|[\\/\s"'])(pinentry-(?:mac|qt[56]?|gnome3|gtk(?:-2)?|fltk))(?:\.exe)?(?=$|[\s"'])/i,
+];
+
+export function signingSetup(config: SigningConfig): SigningSetup {
+  const value = config["commit.gpgsign"]?.trim().toLowerCase();
+  const enabled = value !== undefined && ["", "true", "yes", "on", "1"].includes(value);
+  const format = config["gpg.format"]?.trim() || "openpgp";
+  const signer =
+    (format === "ssh"
+      ? config["gpg.ssh.program"]
+      : format === "x509"
+        ? config["gpg.x509.program"]
+        : (config.openpgpProgram ?? config["gpg.openpgp.program"] ?? config["gpg.program"])
+    )?.trim() || (format === "ssh" ? "ssh-keygen" : format === "x509" ? "gpgsm" : "gpg");
+  const programs = [
+    signer,
+    ...((format === "openpgp" || format === "x509") && config.pinentryProgram ? [config.pinentryProgram] : []),
+  ];
+  const interactive = enabled
+    ? (programs
+        .flatMap((program) => INTERACTIVE_SIGNERS.map((pattern) => program.match(pattern)?.[1] ?? null))
+        .find(Boolean) ?? null)
+    : null;
+  return { enabled, format, signer, interactive, hasKey: !!config["user.signingkey"]?.trim() };
+}
+
 /** Five merge compatibility facts. Empty configured gates means every reported check must pass. */
 export function mergeCompatibility(rules: BranchRules, gates: ArmadaConfig["gates"]): Check[] {
   const configured = new Set(gates.requiredChecks);

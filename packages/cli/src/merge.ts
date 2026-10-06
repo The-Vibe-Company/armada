@@ -535,7 +535,7 @@ export async function merge(
       let delivered = false;
       try {
         if (live.fleet && continuation.claim)
-          delivered = await deliverToRuntime(
+          delivered = !!(await deliverToRuntime(
             { ...io, cwd: repoDir },
             live.fleet,
             o.ticket.id,
@@ -543,7 +543,7 @@ export async function merge(
             continuation.claim,
             config,
             { kind: "note" },
-          );
+          ));
       } catch (error) {
         // Native writes of unknown outcome are never retried.
         o.warnings.push(

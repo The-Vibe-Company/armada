@@ -778,3 +778,139 @@ describe("the coordinator's inbox", () => {
     expect([got.items, got.wait, live.calls]).toEqual([[], null, ["inbox"]]);
   });
 });
+
+describe("job alarms", () => {
+  test("derives silence per running job at read time, even on Done tickets, and clears on news", async () => {
+    const store = memoryFleet();
+    const jobConfig = parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstop = "stop"\nsilence_minutes = 15`);
+    const snapshot: HandBackSnapshot = {
+      repository: "acme/widgets",
+      issues: [{ id: "DEMO-7", statusType: "completed" }],
+      prs: [],
+      config: jobConfig,
+    };
+    const jobs = [];
+    for (let i = 0; i < 2; i++) {
+      const job = await store.startJob({ project: P, ticket: "DEMO-7", name: "eval", startedBy: "runner", at: at(30) });
+      await store.observeJob({
+        project: P,
+        ticket: job.ticket,
+        id: job.id,
+        state: "running",
+        progress: "40/120",
+        at: at(20),
+      });
+      jobs.push(job);
+    }
+    await store.startJob({ project: P, ticket: "DEMO-8", name: "eval", startedBy: null, at: at(30) });
+    const query = { coordinator: null, silentAfterMinutes: 1, etag: null };
+    const read = await serveInbox(store, P, query, NOW, null, snapshot);
+    expect(read?.items.map((e) => e.kind)).toEqual(["job-silent", "job-silent"]);
+    const { entryKey } = await import("../src/live.ts");
+    expect(read?.items.map(entryKey)).toEqual(jobs.map((j) => `job-silent:${j.id}`).reverse());
+    expect(read?.items[0]?.body).toContain("40/120");
+    expect(read?.inFlight).toEqual([]);
+    expect(read?.openJobs).toHaveLength(3);
+    expect(await serveInbox(store, P, { ...query, etag: read?.etag ?? null }, NOW, null, snapshot)).toBeNull();
+    for (const job of jobs)
+      await store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", at: NOW });
+    expect((await serveInbox(store, P, query, NOW, null, snapshot))?.items).toEqual([]);
+    expect((await serveInbox(store, P, query, new Date(NOW.getTime() + 15 * 60000), null, snapshot))?.items).toEqual(
+      [],
+    );
+    expect(
+      (await serveInbox(store, P, query, new Date(NOW.getTime() + 16 * 60000), null, snapshot))?.items,
+    ).toHaveLength(2);
+  });
+
+  test("job alarms and liveness follow the ticket's named coordinator", async () => {
+    const live = tempFleet();
+    const { ctx, linear } = setup(live);
+    await working(ctx, linear, "DEMO-7");
+    expect(
+      await live.store.transferTickets({ project: P, tickets: ["DEMO-7"], from: "default", to: "back", at: NOW }),
+    ).toBe(true);
+    const job = await live.store.startJob({
+      project: P,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: at(30),
+    });
+    await live.store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", at: at(20) });
+    const query = { coordinator: null, silentAfterMinutes: 15, etag: null };
+    const front = await serveInbox(live.store, P, { ...query, coordinatorName: "front" }, NOW);
+    expect(front?.items.filter((item) => item.kind === "job-silent")).toEqual([]);
+    expect(front?.openJobs).toBeUndefined();
+    const back = await serveInbox(live.store, P, { ...query, coordinatorName: "back" }, NOW);
+    expect(back?.items.filter((item) => item.kind === "job-silent")).toMatchObject([{ jobId: job.id, owner: "back" }]);
+    expect(back?.openJobs).toEqual([job.id]);
+  });
+
+  test("terminal jobs wake watch once and their notices can be acknowledged without Linear writes", async () => {
+    const clock = fakeClock();
+    const live = tempFleet({ clock });
+    const { ctx, linear } = setup(live);
+    for (const state of ["succeeded", "failed", "stopped", "lost"] as const) {
+      const job = await live.fleet.startJob({ ticket: "DEMO-7", name: "eval" });
+      await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state: "running", progress: "40/120" });
+      await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state });
+      await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state });
+    }
+    const report = await watchInbox(live.fleet, {
+      project: P,
+      coordinator: null,
+      silentAfterMinutes: 15,
+      seen: [],
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(report.outcome).toBe("items");
+    expect(report.items).toHaveLength(4);
+    expect(report.items.every((item) => item.kind === "job" && item.body.includes("40/120"))).toBe(true);
+    const { entryKey } = await import("../src/live.ts");
+    const again = await watchInbox(live.fleet, {
+      project: P,
+      coordinator: null,
+      silentAfterMinutes: 15,
+      seen: report.items.map(entryKey),
+      now: clock.now,
+      sleep: clock.sleep,
+      until: new Date(clock.now().getTime() + 60000),
+    });
+    expect(again.outcome).toBe("timeout");
+    expect(again.items.every((item) => !item.new)).toBe(true);
+    for (const item of report.items) await answerItem(ctx, { target: `#${item.id}`, text: "Runner outcome checked" });
+    expect(await inbox(live.store)).toEqual([]);
+    expect(linear.writes).toEqual([]);
+  });
+});
+
+test("watch sees a terminal notice when the job ends during the inbox read", async () => {
+  const clock = fakeClock();
+  const store = memoryFleet();
+  const job = await store.startJob({ project: P, ticket: "DEMO-7", name: "eval", startedBy: null, at: NOW });
+  await store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", progress: "40/120", at: NOW });
+  const list = store.listJobs.bind(store);
+  let ended = false;
+  store.listJobs = async (project, query) => {
+    if (!ended) {
+      ended = true;
+      await store.observeJob({ project, ticket: job.ticket, id: job.id, state: "succeeded", at: NOW });
+    }
+    return list(project, query);
+  };
+  const live = tempFleet({ store, clock });
+  const report = await watchInbox(live.fleet, {
+    project: P,
+    coordinator: null,
+    silentAfterMinutes: 15,
+    seen: [],
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  expect(report.outcome).toBe("items");
+  expect(report.items).toMatchObject([{ kind: "job", body: expect.stringContaining("succeeded") }]);
+  expect(report.inFlight).toEqual([]);
+  expect(report.openJobs).toBeUndefined();
+});

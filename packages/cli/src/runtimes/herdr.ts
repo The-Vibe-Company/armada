@@ -32,7 +32,7 @@ export class HerdrAdapter implements RuntimeAdapter {
   private readonly runtime: Herdr;
   constructor(
     private readonly io: Io,
-    _config?: ArmadaConfig,
+    private readonly config?: ArmadaConfig,
     private readonly secretValues: readonly string[] = [],
   ) {
     this.runtime = new Herdr(io, recheckMutation);
@@ -89,6 +89,7 @@ export class HerdrAdapter implements RuntimeAdapter {
             base: from.kind === "branch" ? from.head : spec.base,
             ticket: spec.ticket,
             secrets: spec.blankSecrets,
+            sign: this.config?.git.sign ?? "inherit",
           });
     const prompt = await prepare({ handle: herdrClaimHandle(h), path: h.path, link: null, state: "idle" });
     if (from.kind === "in-place") {

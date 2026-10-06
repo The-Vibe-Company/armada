@@ -1,5 +1,57 @@
 # Changelog
 
+## [0.2.56](https://github.com/The-Vibe-Company/armada/compare/v0.2.55...v0.2.56) (2026-10-06)
+
+
+### Features
+
+* **ci:** explain failed checks and runner problems ([#208](https://github.com/The-Vibe-Company/armada/issues/208)) ([0ab9035](https://github.com/The-Vibe-Company/armada/commit/0ab90352346e6267e7ebcfdac1cd0580c3165a7c))
+* **ci:** release Armada on a weekday train ([#199](https://github.com/The-Vibe-Company/armada/issues/199)) ([d9d4372](https://github.com/The-Vibe-Company/armada/commit/d9d43728d0fede34ca87491e2458d2263e46d8bc))
+* **ci:** rerun tracked flaky failures once per workflow ([#230](https://github.com/The-Vibe-Company/armada/issues/230)) ([daf007f](https://github.com/The-Vibe-Company/armada/commit/daf007fe63350fc6dba9d55d01379349efaaf2fc))
+* **cli:** add specs without renaming every other spec ([#206](https://github.com/The-Vibe-Company/armada/issues/206)) ([6f544bb](https://github.com/The-Vibe-Company/armada/commit/6f544bbaa3793f65729ccdbe27698de2e0ce6674))
+* **cli:** announce releases without stopping ordinary watches ([#231](https://github.com/The-Vibe-Company/armada/issues/231)) ([07b419b](https://github.com/The-Vibe-Company/armada/commit/07b419b9723b2addb682c88079c9707a6531e0ca))
+* **cli:** archive workers after confirmed merges ([#214](https://github.com/The-Vibe-Company/armada/issues/214)) ([69c173f](https://github.com/The-Vibe-Company/armada/commit/69c173f73121aea4bbe602fc774401a07bcda351))
+* **cli:** check repository identity in armada doctor ([#196](https://github.com/The-Vibe-Company/armada/issues/196)) ([9e77a9f](https://github.com/The-Vibe-Company/armada/commit/9e77a9f875c031739f85d270192dbc9dc0bd3d7e))
+* **cli:** check ticket readability before launch ([#238](https://github.com/The-Vibe-Company/armada/issues/238)) ([f5ff024](https://github.com/The-Vibe-Company/armada/commit/f5ff0247312ef651d27490351649a48ea240a91e))
+* **cli:** deliver Armada instructions from the installed version ([#220](https://github.com/The-Vibe-Company/armada/issues/220)) ([f331c62](https://github.com/The-Vibe-Company/armada/commit/f331c6232c77f0bd7db9411e1a653868de4ab0ac))
+* **cli:** follow fleet events as a resumable stream ([#221](https://github.com/The-Vibe-Company/armada/issues/221)) ([7c649cc](https://github.com/The-Vibe-Company/armada/commit/7c649ccf80d9142766067c980cba6b3549ed0d14))
+* **cli:** launch Conductor workers with one Armada command ([#215](https://github.com/The-Vibe-Company/armada/issues/215)) ([b461baa](https://github.com/The-Vibe-Company/armada/commit/b461baafcf8699c63f9e0c786ccdb4b9c4c71d86))
+* **cli:** launch tickets when all blockers close ([#226](https://github.com/The-Vibe-Company/armada/issues/226)) ([5a3a7f9](https://github.com/The-Vibe-Company/armada/commit/5a3a7f96a08f75549650237875086c19f6aca6f0))
+* **cli:** list tickets unblocked by a merge ([#198](https://github.com/The-Vibe-Company/armada/issues/198)) ([6fb8402](https://github.com/The-Vibe-Company/armada/commit/6fb8402fa7f9c580712024070fe27f7b1c5be157))
+* **cli:** pre-approve plans at launch ([#200](https://github.com/The-Vibe-Company/armada/issues/200)) ([5f634f2](https://github.com/The-Vibe-Company/armada/commit/5f634f2b823c3d51b58089b286f3ea60f34ec031))
+* **cli:** reserve shared names and numbers for a ticket ([#216](https://github.com/The-Vibe-Company/armada/issues/216)) ([e63072e](https://github.com/The-Vibe-Company/armada/commit/e63072e19432e4e7a5d9a9f1df5fea02c16320e3))
+* **cli:** reuse one Armada setup pull request per project ([#209](https://github.com/The-Vibe-Company/armada/issues/209)) ([2470725](https://github.com/The-Vibe-Company/armada/commit/24707254ff264945ae7a505d2c0ca5fb7d3f29d8))
+* **cli:** run coordinator commands from any folder ([#205](https://github.com/The-Vibe-Company/armada/issues/205)) ([17aff17](https://github.com/The-Vibe-Company/armada/commit/17aff17b5732a06d6ef45d348dada9b71836e3e5))
+* **cli:** scope named coordinators to their own work ([#243](https://github.com/The-Vibe-Company/armada/issues/243)) ([a5823d8](https://github.com/The-Vibe-Company/armada/commit/a5823d8d204053cacd7e3d1942a6b43eac6c77bf))
+* **cli:** see what workers are doing with armada peek ([#217](https://github.com/The-Vibe-Company/armada/issues/217)) ([8a8246d](https://github.com/The-Vibe-Company/armada/commit/8a8246ded1f933e854d4739a3941239428dc43aa))
+* **cli:** warn workers when planned paths overlap files in flight ([#223](https://github.com/The-Vibe-Company/armada/issues/223)) ([ccc3133](https://github.com/The-Vibe-Company/armada/commit/ccc313338338b86487a017a91c310d47aa09fa56))
+* **dashboard:** send owner alerts to a chat webhook ([#212](https://github.com/The-Vibe-Company/armada/issues/212)) ([47b62cf](https://github.com/The-Vibe-Company/armada/commit/47b62cfaa5c0e11675481554a319569566861da7))
+* **dashboard:** send scheduled owner fleet digests ([#225](https://github.com/The-Vibe-Company/armada/issues/225)) ([c42c298](https://github.com/The-Vibe-Company/armada/commit/c42c29830c8df814f2d67d891b911b7b37270ad1))
+* **dashboard:** show a ticket's long jobs on its session page and the overview ([#235](https://github.com/The-Vibe-Company/armada/issues/235)) ([141e2d7](https://github.com/The-Vibe-Company/armada/commit/141e2d73ca4a00f966face4e925659f2b511aeee))
+* **dashboard:** show which coordinator owns each session ([#241](https://github.com/The-Vibe-Company/armada/issues/241)) ([783cc8d](https://github.com/The-Vibe-Company/armada/commit/783cc8dd27f78489fb75a143edebfefd69cdfbb6))
+* **deploy:** check merged deploys and pause on failure ([#237](https://github.com/The-Vibe-Company/armada/issues/237)) ([4fb1977](https://github.com/The-Vibe-Company/armada/commit/4fb197721bc05993e07acd935c9697b40741daf4))
+* **doctor:** check GitHub branch rules for merge compatibility ([#236](https://github.com/The-Vibe-Company/armada/issues/236)) ([00e6f15](https://github.com/The-Vibe-Company/armada/commit/00e6f156f17c61412181ddfd528549978bc706d4))
+* **fleet:** check Conductor sessions before silence alarms ([#213](https://github.com/The-Vibe-Company/armada/issues/213)) ([df8f084](https://github.com/The-Vibe-Company/armada/commit/df8f08463e27281053be5d23bfb832d13f592d15))
+* **fleet:** name coordinators and preserve launch ownership ([#228](https://github.com/The-Vibe-Company/armada/issues/228)) ([0dfebf3](https://github.com/The-Vibe-Company/armada/commit/0dfebf34fb6dd73a76906cdbc1bed47cffb30cd8))
+* **fleet:** show when main is red and which merge broke it ([#204](https://github.com/The-Vibe-Company/armada/issues/204)) ([11ee2fa](https://github.com/The-Vibe-Company/armada/commit/11ee2fa3fdbf9c3591bfe5a61882bf05bc6c96bf))
+* **jobs:** track long jobs on project runners ([#219](https://github.com/The-Vibe-Company/armada/issues/219)) ([4322b3a](https://github.com/The-Vibe-Company/armada/commit/4322b3ae6e2a018004eba1dfbc7d6864d323241e))
+* **merge:** keep a durable merge queue across sessions ([#222](https://github.com/The-Vibe-Company/armada/issues/222)) ([e659746](https://github.com/The-Vibe-Company/armada/commit/e65974607c6f48e9a1d8f2c532a8c2819c12a4a0))
+* **merge:** pause project merges with reasoned holds ([#207](https://github.com/The-Vibe-Company/armada/issues/207)) ([acd71e7](https://github.com/The-Vibe-Company/armada/commit/acd71e79be78be71c7dc1fcf6df36f163976f748))
+* **runtime:** unify Conductor and herdr worker adapters ([#202](https://github.com/The-Vibe-Company/armada/issues/202)) ([db6dbb9](https://github.com/The-Vibe-Company/armada/commit/db6dbb935cf445f763ee134e97ba14ee94c897ff))
+* **secrets:** mask worker output and messages ([#239](https://github.com/The-Vibe-Company/armada/issues/239)) ([fceaf43](https://github.com/The-Vibe-Company/armada/commit/fceaf433c07348cf58635b5c3a7d6a7fd27eef94))
+* **validations:** ask short owner questions with sampled evidence ([#224](https://github.com/The-Vibe-Company/armada/issues/224)) ([843c866](https://github.com/The-Vibe-Company/armada/commit/843c866c9bb86201c2b80eba154d5a8296520637))
+* **workers:** persist launched worker runtime sessions ([#211](https://github.com/The-Vibe-Company/armada/issues/211)) ([2d68929](https://github.com/The-Vibe-Company/armada/commit/2d6892992346dc13994fdb6d880e21ae8dc845a1))
+
+
+### Bug Fixes
+
+* **cli:** quiet repeated Armada keys fallback warnings ([#203](https://github.com/The-Vibe-Company/armada/issues/203)) ([7ac768a](https://github.com/The-Vibe-Company/armada/commit/7ac768a891dd1e3d5f0c4965281df700e8af8446))
+* **cli:** refuse hand-backs with unresolved review threads ([#194](https://github.com/The-Vibe-Company/armada/issues/194)) ([f4a1a76](https://github.com/The-Vibe-Company/armada/commit/f4a1a76e02c5de35a6a811c535bb1744a7a2963d))
+* **core:** create configured plan labels during init ([#233](https://github.com/The-Vibe-Company/armada/issues/233)) ([374bf6a](https://github.com/The-Vibe-Company/armada/commit/374bf6a867149f0927d2154161aa88fcaa673670))
+* **core:** finish confirmed merges during Linear outages ([#232](https://github.com/The-Vibe-Company/armada/issues/232)) ([f2f08c8](https://github.com/The-Vibe-Company/armada/commit/f2f08c881286bc1e8cf02f36f85f60cb2d0d6f95))
+* **core:** retry temporary Linear, GitHub and Armada failures ([#210](https://github.com/The-Vibe-Company/armada/issues/210)) ([527a4ee](https://github.com/The-Vibe-Company/armada/commit/527a4ee317b38df10e504c5b8ee2e41ba8fd907e))
+* **worker:** preserve replacement claims and sessions on release ([#201](https://github.com/The-Vibe-Company/armada/issues/201)) ([81a8145](https://github.com/The-Vibe-Company/armada/commit/81a8145f762f79a50b8fa883a66c49e6558ce563))
+
 ## [0.2.55](https://github.com/The-Vibe-Company/armada/compare/v0.2.54...v0.2.55) (2026-10-05)
 
 
