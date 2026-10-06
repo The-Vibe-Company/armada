@@ -930,6 +930,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    version: 38,
+    statements: ["ALTER TABLE jobs ADD COLUMN revision bigint NOT NULL DEFAULT 0"],
+  },
+  {
     // THE-1115: one open request per project secret; values stay in the vault.
     version: 40,
     statements: [

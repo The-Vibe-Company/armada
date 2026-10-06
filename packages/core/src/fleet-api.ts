@@ -463,13 +463,17 @@ export async function serveFleet(
             throw new Invalid("runner reference is already recorded and cannot change");
           const eta = optText(b, "eta", 40);
           if (eta !== null && !Number.isFinite(Date.parse(eta))) throw new Invalid("eta must be a timestamp");
+          const expectedRevision = b.expectedRevision === undefined ? undefined : countOrNull(b, "expectedRevision");
+          if (b.expectedRevision !== undefined && expectedRevision === null)
+            throw new Invalid("expectedRevision must be a nonnegative integer");
           return store.observeJob({
+            ...(expectedRevision == null ? {} : { expectedRevision }),
             project: slug,
             id,
             ticket,
             state: b.state as Exclude<JobState, "starting">,
             ...(ref === undefined ? {} : { ref }),
-            progress: optText(b, "progress", JOB_PROGRESS_MAX),
+            ...(b.progress === undefined ? {} : { progress: optText(b, "progress", JOB_PROGRESS_MAX) }),
             eta: eta === null ? null : new Date(eta).toISOString(),
             at,
           });

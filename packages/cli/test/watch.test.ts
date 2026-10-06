@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   machinePaths,
+  parseConfig,
   readWatchLock,
   readWatchLockInfo,
   readWatchState,
@@ -14,10 +15,11 @@ import {
   watchFiles,
 } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
+import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW, tempFleet } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
-import { watchDeadline } from "../src/watch.ts";
+import { refreshingJobsFleet } from "../src/job.ts";
+import { rearmFor, watchDeadline } from "../src/watch.ts";
 
 const KEY = "armada_key_CANARY_watch";
 const P = "widgets";
@@ -448,6 +450,7 @@ describe("armada watch", () => {
     );
     expect(c.err()).toBe("");
     expect(await readWatchState(c.paths, P)).toEqual({
+      openJobs: [],
       root: COORDINATOR_ROOT,
       // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.
       seen: [expect.stringMatching(/^#1@/)],
@@ -726,6 +729,107 @@ test("long watch deadlines are chunked below Node's timer limit and cancellable"
   expect(next.cancelled).toBe(true);
 });
 
+test("plain and follow watch keep open jobs fresh, throttle across restarts, and let failed probes go silent", async () => {
+  for (const follow of [false, true]) {
+    const c = await coordinator();
+    const configText = `${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstatus = "probe"\nstop = "stop"\nsilence_minutes = 15`;
+    c.io.readFile = async (path) => (path === `${COORDINATOR_ROOT}/armada.toml` ? configText : null);
+    const job = await c.store.startJob({
+      project: P,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    await c.store.observeJob({
+      project: P,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      ref: "run-1",
+      progress: "1/120",
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    let probes = 0;
+    c.io.exec = async (command, args, opts) => {
+      expect(command).toBe("sh");
+      expect(args).toEqual(["-c", "probe"]);
+      expect(opts).toMatchObject({
+        cwd: COORDINATOR_ROOT,
+        env: { ARMADA_JOB_ID: String(job.id), ARMADA_JOB_REF: "run-1" },
+      });
+      probes++;
+      return { code: 0, stdout: "running 40/120", stderr: "private runner output" };
+    };
+    c.io.sleep = c.clock.sleep;
+    const flags = follow ? ["--follow"] : [];
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(1);
+    expect((await c.store.getJob(P, job.id))?.progress).toBe("40/120");
+    expect(c.out()).not.toContain("job-silent");
+    c.reset();
+    // A fresh invocation shares the machine throttle, including failed attempts.
+    c.clock.advance(7 * 60000);
+    c.io.exec = async () => {
+      probes++;
+      return { code: 1, stdout: "", stderr: "private runner output" };
+    };
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(2);
+    expect((await c.store.getJob(P, job.id))?.progress).toBe("40/120");
+    c.reset();
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(2);
+    c.reset();
+    c.clock.advance(8 * 60000);
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(3);
+    expect(c.out()).toContain("job-silent");
+    expect(c.out() + c.err()).not.toContain("private runner output");
+  }
+});
+
+test("watch cancellation aborts a pending job status probe without a late observation or worker count", async () => {
+  const c = await coordinator();
+  c.io.readFile = async (path) =>
+    path === `${COORDINATOR_ROOT}/armada.toml`
+      ? `${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstatus = "probe"\nstop = "stop"`
+      : null;
+  const job = await c.store.startJob({
+    project: P,
+    ticket: "DEMO-7",
+    name: "eval",
+    startedBy: "runner",
+    at: new Date(NOW.getTime() - 20 * 60000),
+  });
+  await c.store.observeJob({
+    project: P,
+    ticket: job.ticket,
+    id: job.id,
+    state: "running",
+    ref: "run-1",
+    at: new Date(NOW.getTime() - 20 * 60000),
+  });
+  let stop: (() => void) | undefined;
+  c.io.onSignal = (handler) => {
+    stop = () => handler("SIGINT");
+    return () => {};
+  };
+  let aborted = false;
+  c.io.exec = async (_command, _args, opts) => {
+    expect(opts.signal).toBeDefined();
+    opts.signal?.addEventListener("abort", () => {
+      aborted = true;
+    });
+    stop?.();
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  expect(await run(["watch", "--json"], c.io)).toBe(130);
+  expect(aborted).toBe(true);
+  expect((await c.store.getJob(P, job.id))?.state).toBe("running");
+  expect(await readWatchLock(c.paths, P)).toBeNull();
+});
+
 test("named follow watches retain independent cursors, seen items and resume roles", async () => {
   const c = await coordinator();
   for (const [ticket, name] of [
@@ -769,4 +873,136 @@ test("named follow watches retain independent cursors, seen items and resume rol
     (await readWatchState(c.paths, P, "back"))?.seen,
   );
   expect(await readWatchState(c.paths, P)).toBeNull();
+});
+
+test("rearm keeps the named coordinator's cached jobs until a fresh reading clears them", async () => {
+  const c = await coordinator();
+  c.io.env.ARMADA_COORDINATOR = "back";
+  await updateWatchState(c.paths, P, { inFlight: [], openJobs: [7], readAt: NOW.toISOString() }, "back");
+  await updateWatchState(c.paths, P, { openJobs: [99] });
+  const cached = await rearmFor(c.io, P, { inFlight: [], open: null });
+  expect(cached.openJobs).toEqual([7]);
+  expect(cached.line).toContain("1 open job (7)");
+  const cleared = await rearmFor(c.io, P, { inFlight: [], open: null, openJobs: [] });
+  expect(cleared.openJobs).toBeUndefined();
+  expect(cleared.line).toContain("nothing to watch");
+});
+
+test("queued failed status probes throttle from their actual start across watch invocations", async () => {
+  const c = await coordinator();
+  const config = parseConfig(
+    `${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstatus = "probe"\nstop = "stop"\nsilence_minutes = 1`,
+  );
+  const live = tempFleet({ store: c.store, clock: c.clock });
+  for (let i = 0; i < 5; i++) {
+    const job = await c.store.startJob({
+      project: P,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: null,
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    await c.store.observeJob({
+      project: P,
+      ticket: job.ticket,
+      id: job.id,
+      ref: `run-${job.id}`,
+      state: "running",
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+  }
+  const calls: { id: number; at: number }[] = [];
+  const pending: (() => void)[] = [];
+  c.io.exec = async (_command, _args, options) => {
+    calls.push({ id: Number(options.env?.ARMADA_JOB_ID), at: c.clock.now().getTime() - NOW.getTime() });
+    if (calls.length <= 4)
+      await new Promise<void>((resolve) => {
+        pending.push(resolve);
+        if (pending.length === 4) {
+          c.clock.advance(60000);
+          for (const finish of pending) finish();
+        }
+      });
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  const read = () =>
+    refreshingJobsFleet(c.io, live.fleet, config, COORDINATOR_ROOT, new AbortController().signal).inbox({
+      coordinator: null,
+      silentAfterMinutes: 15,
+      etag: null,
+    });
+  await read();
+  expect(calls.filter((call) => call.id === 1).map((call) => call.at)).toEqual([60000]);
+  expect((await readWatchState(c.paths, `${P}.job-observe`))?.jobObserved?.[1]).toBe(c.clock.now().toISOString());
+  c.clock.advance(15000);
+  await read();
+  expect(calls).toHaveLength(9);
+  expect(calls.filter((call) => call.id === 1).map((call) => call.at)).toEqual([60000]);
+  c.clock.advance(15000);
+  await read();
+  expect(calls.filter((call) => call.id === 1).map((call) => call.at)).toEqual([60000, 90000]);
+});
+
+test("named inbox job liveness stays owned and mine probes preserve other coordinators' throttle", async () => {
+  const c = await coordinator();
+  c.io.env.ARMADA_COORDINATOR = "back";
+  const configText = `${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstatus = "probe"\nstop = "stop"\nsilence_minutes = 15`;
+  c.io.readFile = async (path) => (path === `${COORDINATOR_ROOT}/armada.toml` ? configText : null);
+  const config = parseConfig(configText);
+  const live = tempFleet({ store: c.store, clock: c.clock });
+  const ids: number[] = [];
+  for (const [ticket, coordinator] of [
+    ["DEMO-7", "front"],
+    ["DEMO-8", "back"],
+    ["DEMO-9", null],
+  ] as const) {
+    if (coordinator)
+      await c.store.saveRuntimeHandle({
+        project: P,
+        ticket,
+        coordinator,
+        runtime: "conductor",
+        handle: `ws/${ticket}`,
+        branch: null,
+        at: NOW,
+      });
+    const job = await c.store.startJob({
+      project: P,
+      ticket,
+      name: "eval",
+      startedBy: null,
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    await c.store.observeJob({
+      project: P,
+      ticket,
+      id: job.id,
+      state: "running",
+      ref: `run-${job.id}`,
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    ids.push(job.id);
+  }
+  expect(await run(["inbox", "--json"], c.io)).toBe(0);
+  const read = JSON.parse(c.out());
+  expect(read.openJobs).toEqual([...ids].reverse());
+  expect(read.ownedOpenJobs).toEqual([ids[1]]);
+  expect(read.watch.openJobs).toEqual([ids[1]]);
+  expect((await readWatchState(c.paths, P, "back"))?.openJobs).toEqual([ids[1] as number]);
+  await updateWatchState(c.paths, `${P}.job-observe`, { jobObserved: { [ids[0] as number]: NOW.toISOString() } });
+  const probed: number[] = [];
+  c.io.exec = async (_command, _args, options) => {
+    probed.push(Number(options.env?.ARMADA_JOB_ID));
+    return { code: 0, stdout: "running 40/120", stderr: "" };
+  };
+  const mine = await refreshingJobsFleet(
+    c.io,
+    live.fleet,
+    config,
+    COORDINATOR_ROOT,
+    new AbortController().signal,
+  ).inbox({ scope: "mine", coordinatorName: "back", coordinator: null, silentAfterMinutes: 15, etag: null });
+  expect(probed).toEqual([ids[1] as number]);
+  expect(mine?.openJobs).toEqual([ids[1] as number]);
+  expect((await readWatchState(c.paths, `${P}.job-observe`))?.jobObserved?.[ids[0] as number]).toBe(NOW.toISOString());
 });
