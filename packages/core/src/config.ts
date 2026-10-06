@@ -3,6 +3,7 @@
 import { parse, TomlError } from "smol-toml";
 import { failurePattern } from "./ci.ts";
 import { JOB_NAME } from "./jobs.ts";
+import { LINT_DEFAULTS, type LintRules } from "./lint.ts";
 
 export interface JobConfig {
   start: string;
@@ -14,6 +15,7 @@ export interface JobConfig {
 
 export interface CiConfig {
   failurePatterns: string[];
+  knownFailures: { check: string; pattern: string; ticket: string }[];
 }
 
 export const CONFIG_FILE = "armada.toml";
@@ -32,6 +34,8 @@ export interface ArmadaConfig {
     programRoot: string;
     /** Style used when creating and renumbering specs; both forms are always readable. */
     specTitles: SpecTitleStyle;
+    /** Explicit tracker.lint opts into errors; missing table uses warning-only defaults. */
+    lint: LintRules;
     /** Language of owner-facing output (BCP 47 tag). Tracker comments stay in English. */
     language: string;
     /** Label that marks a ticket as specified enough for an agent to take. */
@@ -302,6 +306,30 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   if (!isTable(labels)) problems.push(`"tracker.labels" must be a table`);
   const policy = raw.policy === undefined ? {} : raw.policy;
   if (!isTable(policy)) problems.push(`"policy" must be a table`);
+  const lintRaw = tracker.lint;
+  if (lintRaw !== undefined && !isTable(lintRaw)) problems.push('"tracker.lint" must be a table');
+  const lintT = isTable(lintRaw) ? lintRaw : {};
+  const inShort = str(lintT, "tracker.lint", "in_short", { default: LINT_DEFAULTS.inShort });
+  if (!/^#{1,6} [^\r\n]+$/.test(inShort))
+    problems.push('"tracker.lint.in_short" must be a Markdown heading, e.g. "## In short"');
+  let inShortParts = [...LINT_DEFAULTS.inShortParts];
+  if (lintT.in_short_parts !== undefined) {
+    const parts = lintT.in_short_parts;
+    if (
+      Array.isArray(parts) &&
+      parts.length > 0 &&
+      parts.every((p) => typeof p === "string" && p.trim() && !/[\r\n]/.test(p))
+    )
+      inShortParts = [...new Set(parts.map((p: string) => p.trim()))];
+    else problems.push('"tracker.lint.in_short_parts" must be a non-empty list of part names on one line');
+  }
+  let titleMax = LINT_DEFAULTS.titleMax;
+  if (lintT.title_max !== undefined) {
+    const max = lintT.title_max;
+    if (typeof max === "number" && Number.isSafeInteger(max) && max > 0) titleMax = max;
+    else problems.push('"tracker.lint.title_max" must be a positive integer');
+  }
+  const lint: LintRules = { inShort, inShortParts, titleMax, severity: lintRaw === undefined ? "warning" : "error" };
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
   const ci = raw.ci ?? {};
@@ -333,10 +361,11 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   // left alone so newer sections do not break older readers.
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
-    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels"]],
+    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels", "lint"]],
+    ["tracker.lint", lintT, ["in_short", "in_short_parts", "title_max"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
-    ["ci", ciT, ["failure_patterns"]],
+    ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     [
       "policy",
@@ -695,6 +724,30 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
   }
 
+  const knownFailures: CiConfig["knownFailures"] = [];
+  if (ciT.known_failure !== undefined) {
+    if (!Array.isArray(ciT.known_failure)) problems.push('"ci.known_failure" must be an array of tables');
+    else
+      for (const [i, entry] of ciT.known_failure.entries()) {
+        const path = `ci.known_failure[${i + 1}]`;
+        if (!isTable(entry)) {
+          problems.push(`"${path}" must be a table`);
+          continue;
+        }
+        for (const key of Object.keys(entry))
+          if (!["check", "pattern", "ticket"].includes(key)) problems.push(`unknown key "${path}.${key}"`);
+        const check = str(entry, path, "check");
+        const pattern = str(entry, path, "pattern");
+        const ticket = str(entry, path, "ticket", { pattern: ISSUE_ID, hint: "an issue identifier such as ABC-1" });
+        try {
+          new RegExp(pattern);
+        } catch {
+          problems.push(`"${path}.pattern" must be a valid regex`);
+        }
+        knownFailures.push({ check, pattern, ticket });
+      }
+  }
+
   let specTitles: SpecTitleStyle = "N";
   if (tracker.spec_titles !== undefined) {
     if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
@@ -728,6 +781,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     },
     tracker: {
       specTitles,
+      lint,
       programRoot: str(tracker, "tracker", "program_root", {
         pattern: ISSUE_ID,
         hint: "an issue identifier such as ABC-1",
@@ -744,7 +798,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
-    ci: { failurePatterns },
+    ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,
@@ -802,6 +856,13 @@ runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 
 [github]
 repository = ${q(p.repository)}
+
+# A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
+# with \`armada ci why <pr> --rerun\`; unknown failures are refused.
+# [[ci.known_failure]]
+# check = "test"  # exact check run name
+# pattern = "flaky_suite > times out on cold start"  # regex over failing test names or error block
+# ticket = "ABC-123"
 
 [gates]
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
