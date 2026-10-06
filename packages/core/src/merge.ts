@@ -20,11 +20,13 @@ import {
   type MergeRecorded,
   type RuntimeHandle,
 } from "./live.ts";
+import { acceptancePasses, applicableAcceptance } from "./phases.ts";
 
 export { MERGE_LEASE } from "./live.ts";
 
 import type { QueueInput } from "./merge-queue.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
+import { closeFinishedSpec } from "./spec-close.ts";
 import type { FrontierTicket } from "./status.ts";
 import type { MainHealth } from "./types.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
@@ -236,7 +238,11 @@ export interface HandBack {
 
 /** The newest `Agent status: ready-to-merge — PR #<n>, head <sha>, …` comment of the ticket. */
 export function findHandBack(ticket: Ticket): HandBack | null {
-  const c = ticket.comments.find((x) => x.status?.phase === "ready-to-merge");
+  const c = ticket.comments.find(
+    (x) =>
+      x.status?.phase === "ready-to-merge" &&
+      !/^acceptance: \d+ more runs allowed by the coordinator:/.test(x.status.summary),
+  );
   if (!c?.status) return null;
   const pr = c.status.summary.match(/\bPR #(\d+)/i)?.[1];
   const sha = c.status.summary.match(/\bhead ([0-9a-f]+)\b/i)?.[1];
@@ -873,6 +879,26 @@ async function checklist(ctx: MergeContext, input: MergeInput, run: Run, enqueue
     `Checklist passed for ${label(pull, ticket)}: ${head}, ${pull.mergeStateStatus}, checks green, no open review thread.`,
     ...l.notes,
   );
+  if (ticket && config.acceptance.length) {
+    const evidence = "comments" in ticket ? acceptancePasses(ticket.comments) : null;
+    for (const rule of applicableAcceptance(config.acceptance, pull)) {
+      if (!evidence) {
+        lines.push(
+          `Acceptance ${JSON.stringify(rule.name)}: Linear evidence unavailable; hand-back checked on Armada.`,
+        );
+        continue;
+      }
+      const passed = evidence.checks.find((c) => c.name === rule.name)?.passed ?? [];
+      const provenHead = passed.includes(pull.headSha)
+        ? pull.headSha
+        : updatedFrom && passed.includes(updatedFrom)
+          ? updatedFrom
+          : null;
+      lines.push(
+        `Acceptance ${JSON.stringify(rule.name)}: ${provenHead ? `passed on ${provenHead}` : "no recorded pass on the head or handed-back head"}${"commentsTruncated" in ticket && ticket.commentsTruncated ? " (Linear reading incomplete)" : ""}.`,
+      );
+    }
+  }
   const chain = [pull.headSha, ...(l.lineage?.why === null ? (l.lineage.chain ?? [l.lineage.from]) : [])];
   return { pull, ticket, sha: pull.headSha, updatedFrom, baseSha: cmp?.baseSha ?? null, lines, hints, warnings, chain };
 }
@@ -1523,6 +1549,9 @@ async function after(
       const fresh = await ctx.linear.readTicket(ticket.id);
       if (!fresh) throw new Error(`ticket ${ticket.id} not found in Linear`);
       lines.push(...(await closeTicket(ctx, fresh, merged, c, unlocked, override)));
+      const spec = await closeFinishedSpec(ctx, fresh);
+      if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
+      lines.push(...spec.lines);
     } catch (err) {
       linearPending = true;
       c.warnings.push(
@@ -1675,6 +1704,9 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
     ticket = await readTicketFor(ctx, pull, input);
     if (!ticket) throw new Error(`#${input.pr} names no ticket`);
     lines.push(...(await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit)));
+    const spec = await closeFinishedSpec(ctx, ticket);
+    if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
+    lines.push(...spec.lines);
     linearPending = false;
     const resolved = await mergeLive(ctx, warnings, "resolve pending Linear work", async (fleet) => {
       const items = await fleet.ticketItems(ticket?.id ?? "");

@@ -35,6 +35,7 @@ describe("armada.toml", () => {
   });
   test("a minimal file gets the protocol defaults", () => {
     expect(parseConfig(DEMO_TOML)).toEqual({
+      acceptance: [],
       jobs: {},
       project: { name: "Widgets", slug: "widgets" },
       tracker: {
@@ -467,6 +468,30 @@ test("declared reservation keys are optional, descriptive and unique", () => {
   expect(problemsOf(DEMO_TOML + declaration.replace("numbered = true", 'numbered = "yes"')).join(" ")).toContain(
     'numbered" must be true or false',
   );
+});
+
+test("acceptance defaults, limits, names and paths are validated", () => {
+  const text = `${DEMO_TOML}\n[[acceptance]]\nname = "production build"\ncommand = "build"\n`;
+  expect(parseConfig(text).acceptance).toEqual([
+    { name: "production build", command: "build", paths: null, timeoutMinutes: 15, maxRuns: 3 },
+  ]);
+  expect(parseConfig(`${text}paths = ["deploy/**"]\ntimeout_minutes = 120\nmax_runs = 5`).acceptance[0]).toMatchObject({
+    paths: ["deploy/**"],
+    timeoutMinutes: 120,
+    maxRuns: 5,
+  });
+  for (const extra of [
+    "max_runs = 0",
+    "max_runs = 1.5",
+    "timeout_minutes = 121",
+    "timeout_minutes = -1",
+    'paths = ["../secret"]',
+    'paths = "deploy/**"',
+    "paths = []",
+    'unknown = "value"',
+    '[[acceptance]]\nname = "production build"\ncommand = "other"',
+  ])
+    expect(() => parseConfig(`${text}${extra}`)).toThrow();
 });
 
 test("tracker lint is opt-in with configurable defaults and rejects invalid rules", () => {

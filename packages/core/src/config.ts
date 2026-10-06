@@ -4,6 +4,7 @@ import { parse, TomlError } from "smol-toml";
 import { failurePattern } from "./ci.ts";
 import { JOB_NAME } from "./jobs.ts";
 import { LINT_DEFAULTS, type LintRules } from "./lint.ts";
+import { pathsProblem } from "./overlap.ts";
 
 export interface JobConfig {
   start: string;
@@ -32,7 +33,16 @@ export const CONFIG_FILE = "armada.toml";
 
 export type SpecTitleStyle = "N" | "N/M";
 
+export interface AcceptanceRule {
+  name: string;
+  command: string;
+  paths: string[] | null;
+  timeoutMinutes: number;
+  maxRuns: number;
+}
+
 export interface ArmadaConfig {
+  acceptance: AcceptanceRule[];
   jobs: Record<string, JobConfig>;
   project: {
     name: string;
@@ -587,6 +597,40 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(herdrProfiles).some((profile) => profile.when)
   )
     problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
+  const acceptance: AcceptanceRule[] = [];
+  if (raw.acceptance !== undefined && !Array.isArray(raw.acceptance))
+    problems.push('"acceptance" must be an array of tables');
+  for (const [i, row] of (Array.isArray(raw.acceptance) ? raw.acceptance : []).entries()) {
+    const path = `acceptance.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    known.push([path, row, ["name", "command", "paths", "timeout_minutes", "max_runs"]]);
+    const name = str(row, path, "name");
+    if ([...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) || name.length > 200)
+      problems.push(`"${path}.name" must be a single line of at most 200 characters`);
+    if (acceptance.some((r) => r.name === name)) problems.push(`"${path}.name" repeats ${name}`);
+    const limit = (key: string, fallback: number, max = Number.MAX_SAFE_INTEGER) => {
+      const v = row[key] ?? fallback;
+      if (typeof v === "number" && Number.isSafeInteger(v) && v > 0 && v <= max) return v;
+      problems.push(`"${path}.${key}" must be a positive integer at most ${max}`);
+      return fallback;
+    };
+    const paths = row.paths === undefined ? null : row.paths;
+    if (paths !== null) {
+      const problem = pathsProblem(paths);
+      if (problem || (Array.isArray(paths) && !paths.length))
+        problems.push(`"${path}.paths": ${problem ?? "must not be empty"}`);
+    }
+    acceptance.push({
+      name,
+      command: str(row, path, "command"),
+      paths: Array.isArray(paths) ? paths : null,
+      timeoutMinutes: limit("timeout_minutes", 15, 120),
+      maxRuns: limit("max_runs", 3),
+    });
+  }
   const deployRaw = raw.deploy ?? {};
   if (!isTable(deployRaw)) problems.push('"deploy" must be a table');
   const deployT = isTable(deployRaw) ? deployRaw : {};
@@ -856,6 +900,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     reservations.push({ key, what, numbered: row.numbered === true });
   }
   const config: ArmadaConfig = {
+    acceptance,
     jobs,
     project: {
       name: str(project, "project", "name"),
@@ -987,6 +1032,14 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # [[policy.validation]]
 # when = "a design ticket: a mockup, a visual direction or the look of a new screen"
 # then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
+
+# Live checks run in the worker checkout at the PR head before hand-back.
+# [[acceptance]]
+# name = "production build"
+# command = "docker build -f deploy/Dockerfile ." # secrets: use "armada run -- ..."
+# paths = ["deploy/**", "Dockerfile", "package.json"] # omit for every PR; *, ** and ?
+# timeout_minutes = 15                          # positive integer, maximum 120
+# max_runs = 3                                  # per check and ticket; coordinator grants more
 
 # Long runs go through \`armada job\` on a runner that survives the terminal.
 # Commands run with sh -c here, with ARMADA_JOB_ID, ARMADA_JOB_REF,

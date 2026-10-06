@@ -846,3 +846,184 @@ test("ask --secret escalates by name with a link command, never requesting a val
   expect(question?.body).toContain("armada secrets request OPENAI_API_KEY --ticket DEMO-7 --reason");
   expect(question?.body).toContain("Never ask for the value in chat");
 });
+
+test("acceptance runs a bounded command at the clean PR head, records timeouts, masks output and enforces caps", async () => {
+  const home = await mkdtemp(join(tmpdir(), "armada-acceptance-cap-"));
+  dirs.push(home);
+  const w = worker({
+    XDG_CONFIG_HOME: home,
+    DATABASE_URL: "postgres://canary-user:opaque-canary@db.invalid/widgets",
+    LINEAR_API_KEY: "lin_api_CANARY_linear",
+    GITHUB_TOKEN: "ghp_CANARY_github",
+  });
+  const config = `${DEMO_TOML}\n[[acceptance]]\nname = "production build"\ncommand = "build real"\ntimeout_minutes = 20\nmax_runs = 3`;
+  w.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? config : null);
+  w.linear.add("DEMO-7", {
+    labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
+    prs: [{ number: 9, repo: "acme/widgets", title: "build", url: "https://github.com/acme/widgets/pull/9" }],
+  });
+  let dirty = true;
+  let timedOut = true;
+  const calls: { command: string; args: string[]; options: unknown }[] = [];
+  w.io.exec = async (command, args, options) => {
+    calls.push({ command, args, options });
+    if (command === "git")
+      return {
+        code: 0,
+        stdout: args.includes("--show-toplevel")
+          ? "/work/widgets\n"
+          : args.includes("--porcelain")
+            ? dirty
+              ? " M source.ts\n"
+              : ""
+            : HEAD,
+        stderr: "",
+      };
+    return {
+      code: timedOut ? 1 : 0,
+      stdout: `lin_api_CANARY_acceptance ${w.io.env.DATABASE_URL}`,
+      stderr: "all errors",
+      timedOut,
+    };
+  };
+  w.net.rest = async () => Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [] }));
+  const firstCode = await run(["acceptance", "run"], w.io);
+  expect(w.err()).toContain("clean working tree");
+  expect(firstCode).toBe(2);
+  expect(w.linear.writes).toEqual([]);
+  dirty = false;
+  expect(await run(["acceptance", "run"], w.io)).toBe(1);
+  expect(calls.find((c) => c.command === "sh")).toEqual({
+    command: "sh",
+    args: ["-c", "build real"],
+    options: { cwd: "/work/widgets", timeoutMs: 1_200_000, processGroup: true, maxOutputBytes: 4 * 1024 * 1024 },
+  });
+  const failure = w.linear.bodies.at(-1) ?? "";
+  expect(failure).toContain(`failed on ${HEAD}`);
+  expect(failure).toContain("Timed out after 20 minutes");
+  expect(failure).toContain("[redacted]");
+  expect(failure).not.toContain("lin_api_CANARY_acceptance");
+  expect(failure).not.toContain(w.io.env.DATABASE_URL);
+  timedOut = false;
+  for (let i = 0; i < 2; i++) expect(await run(["acceptance", "run", "--name", "production build"], w.io)).toBe(0);
+  const count = calls.filter((c) => c.command === "sh").length;
+  expect(await run(["acceptance", "run"], w.io)).toBe(1);
+  expect(w.err()).toContain("ask the coordinator");
+  expect(calls.filter((c) => c.command === "sh")).toHaveLength(count);
+  expect(await run(["acceptance", "allow", "DEMO-7", "--runs", "2", "--reason", "head updated"], w.io)).toBe(0);
+  expect(await run(["acceptance", "run"], w.io)).toBe(0);
+});
+
+test("acceptance uses a worker's existing report credential scope and refuses its allowance", async () => {
+  const home = await mkdtemp(join(tmpdir(), "armada-acceptance-"));
+  dirs.push(home);
+  await mkdir(join(home, "armada"));
+  const token = "armada_worker_CANARY_acceptance";
+  await writeFile(
+    join(home, "armada", "credentials"),
+    `ARMADA_WORKER_SESSION_DEMO_7=${formatWorkerSession({ api: ARMADA_URL, token, ticket: "DEMO-7", project: "widgets", organization: "org-1", id: "wk-1" })}\n`,
+  );
+  const w = worker({ XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL });
+  w.armada.workers.set(token, {
+    project: "widgets",
+    ticket: "DEMO-7",
+    id: "wk-1",
+    createdAt: NOW.toISOString(),
+    ended: null,
+  });
+  w.linear.add("DEMO-7", { labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }] });
+  expect(await run(["acceptance", "allow", "DEMO-7", "--runs", "2", "--reason", "retry"], w.io)).toBe(1);
+  expect(w.err()).toContain("only the coordinator");
+  expect(w.linear.writes).toEqual([]);
+  expect(w.armada.calls.find((c) => c.path === "credentials")?.body).toMatchObject({
+    purpose: { command: "report", ticket: "DEMO-7", project: "widgets" },
+  });
+});
+
+test("acceptance refuses to execute when secret masking changes its durable check name", async () => {
+  const home = await mkdtemp(join(tmpdir(), "armada-acceptance-receipt-"));
+  dirs.push(home);
+  const w = worker({ ...SIGNED_IN, XDG_CONFIG_HOME: home });
+  const config = `${DEMO_TOML}\n[[acceptance]]\nname = "production build"\ncommand = "real-build"\nmax_runs = 3`;
+  w.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? config : null);
+  w.linear.add("DEMO-7", {
+    labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
+    prs: [{ number: 9, repo: "acme/widgets", title: "build", url: "https://github.com/acme/widgets/pull/9" }],
+  });
+  w.armada.secrets.set("widgets", new Map([["BUILD_KEY", "production"]]));
+  w.net.rest = async () => Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [] }));
+  let executions = 0;
+  w.io.exec = async (command, args) => {
+    if (command !== "git") executions++;
+    return {
+      code: 0,
+      stdout: args.includes("--show-toplevel") ? "/work/widgets" : args.includes("--porcelain") ? "" : HEAD,
+      stderr: "",
+    };
+  };
+  for (let i = 0; i < 4; i++) expect(await run(["acceptance", "run"], w.io)).toBe(1);
+  expect(executions).toBe(0);
+  expect(w.err()).toContain("start receipt could not be verified");
+  expect(w.linear.bodies.join("\n")).not.toContain("production");
+});
+
+test("acceptance serializes overlapping local executions and masks vault-only values before Linear", async () => {
+  const home = await mkdtemp(join(tmpdir(), "armada-acceptance-concurrent-"));
+  dirs.push(home);
+  const w = worker({ ...SIGNED_IN, XDG_CONFIG_HOME: home });
+  const config = `${DEMO_TOML}\n[[acceptance]]\nname = "build"\ncommand = "armada run -- real-build"`;
+  w.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? config : null);
+  w.linear.add("DEMO-7", {
+    labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
+    prs: [{ number: 9, repo: "acme/widgets", title: "build", url: "https://github.com/acme/widgets/pull/9" }],
+  });
+  const secret = "opaque-vault-canary-value";
+  w.armada.secrets.set("widgets", new Map([["DATABASE_URL", secret]]));
+  w.net.rest = async () => Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [] }));
+  let release: () => void = () => {};
+  const barrier = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let signal: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    signal = resolve;
+  });
+  let executions = 0;
+  w.io.exec = async (command, args) => {
+    if (command === "git")
+      return {
+        code: 0,
+        stdout: args.includes("--show-toplevel") ? "/work/widgets" : args.includes("--porcelain") ? "" : HEAD,
+        stderr: "",
+      };
+    executions++;
+    signal();
+    await barrier;
+    return { code: 1, stdout: `Build failed with ${secret}`, stderr: "" };
+  };
+  const first = run(["acceptance", "run"], w.io);
+  await started;
+  expect(await run(["acceptance", "run"], w.io)).toBe(2);
+  expect(w.err()).toContain("already running");
+  expect(executions).toBe(1);
+  release();
+  expect(await first).toBe(1);
+  expect(w.linear.bodies.at(-1)).toContain("[redacted]");
+  expect(w.linear.bodies.join("\n")).not.toContain(secret);
+  // Allowance prose must be masked before both Linear and fleet publication.
+  expect(await run(["acceptance", "allow", "DEMO-7", "--runs", "2", "--reason", `retry ${secret}`], w.io)).toBe(0);
+  expect(w.linear.bodies.at(-1)).toContain("«secret DATABASE_URL»");
+  expect(JSON.stringify(w.store.events)).not.toContain(secret);
+  expect(w.out()).not.toContain(secret);
+  // With Armada's secret release unavailable, nonsecret execution still works,
+  // but raw diagnostics cannot reach Linear without the masking values.
+  const fetch = w.io.fetch;
+  w.io.fetch = async (url, init) => {
+    if (url.endsWith("secrets/release")) throw new Error("unavailable");
+    if (!fetch) throw new Error("no fetch");
+    return fetch(url, init);
+  };
+  expect(await run(["acceptance", "run"], w.io)).toBe(1);
+  expect(w.linear.bodies.at(-1)).toContain("diagnostics withheld");
+  expect(w.linear.bodies.join("\n")).not.toContain(secret);
+});
