@@ -32,6 +32,7 @@ import {
   type MergePull,
   MergeStateError,
   mergePullRequest,
+  noticeFileCoverage,
   parsePullRequestUrl,
   prepareQueueEntry,
   queueOpen,
@@ -206,7 +207,7 @@ function waitMinutes(raw: string): number {
   return n;
 }
 
-function render(o: MergeOutcome): string {
+function render(o: MergeOutcome, noNotify = false): string {
   const out = [...o.lines, o.pr.url, ...(o.ticket?.url ? [o.ticket.url] : [])];
   if (o.hints.length) out.push("Hints for you to judge (not blocking):", ...o.hints.map((h) => `  - ${h}`));
   if (!o.merged) return `${out.join("\n")}\n`;
@@ -220,13 +221,16 @@ function render(o: MergeOutcome): string {
   }
   if (!o.workersListed) return `${out.join("\n")}\n`;
   if (!o.workers.length) out.push("No other worker is in flight.");
-  else {
+  else if (noNotify || !o.filesKnown || o.noticeFallback) {
     out.push(`Tell these workers in flight what landed on ${o.pr.base} (bring it in, shared files, new checks):`);
     for (const w of o.workers)
       out.push(
         `  ${w.ticket}  ${w.phase}  ${[w.runtime, w.handle].filter(Boolean).join(" · ") || "runtime unknown"}  ${w.title}`,
       );
+    if (!noNotify) out.push(`${o.noticeFallback ?? "files unknown"}; no automatic notifications were sent.`);
   }
+  if (!noNotify && o.filesKnown && !o.noticeFallback)
+    for (const w of o.notAffected ?? []) out.push(`  ${w.ticket}: ${w.why}.`);
   return `${out.join("\n")}\n`;
 }
 
@@ -288,10 +292,12 @@ export async function merge(
     const enqueue = !!a.options["when-green"];
     if (
       enqueue &&
-      ["wait", "timeout", "dry-run", "no-lock", "ask-owner", "no-archive"].some((k) => a.options[k] !== undefined)
+      ["wait", "timeout", "dry-run", "no-lock", "ask-owner", "no-archive", "no-notify"].some(
+        (k) => a.options[k] !== undefined,
+      )
     )
       throw new UsageError(
-        "--when-green queues intent: --wait, --timeout, --dry-run, --no-lock, --ask-owner and --no-archive cannot go with it",
+        "--when-green queues intent: --wait, --timeout, --dry-run, --no-lock, --ask-owner, --no-archive and --no-notify cannot go with it",
       );
     if (enqueue && a.options.close) throw new UsageError("--close applies to immediate merges, not --when-green");
     if (a.options.close && a.options["keep-open"]) throw new UsageError("--keep-open and --close cannot go together");
@@ -394,10 +400,28 @@ export async function merge(
           fleet: fleet ? { ...fleet, chore: (input) => fleet.chore({ ...input, body: mask.text(input.body) }) } : null,
         };
       },
+      coordinatorName: await coordinatorName(io, config.project.slug),
       afterRecord: (ticket) => endWorkerSessions(io, config, credentials, ticket, "merged", a.json),
       afterRead: async (ticket) => {
-        const sources = await readStatusSources(config, { linearApiKey, githubToken: null, ...fetchOpt, now });
-        const status = buildStatus({ config, ...sources, now: now() });
+        const sources = await readStatusSources(config, { linearApiKey, githubToken: token, ...fetchOpt, now });
+        const liveReading = live.fleet
+          ? await Promise.all([live.fleet.latestEvents(), live.fleet.runtimeHandles()]).catch(() => null)
+          : null;
+        const [events, handles] = liveReading ?? [{}, []];
+        const status = buildStatus({
+          config,
+          ...sources,
+          now: now(),
+          ...(liveReading
+            ? {
+                live: {
+                  after: sources.program.fetchedAt,
+                  events: events ?? {},
+                  handles: Object.fromEntries((handles ?? []).map((h) => [h.ticket, h])),
+                },
+              }
+            : {}),
+        });
         const unblocked = ticket
           ? unblockedBy(buildModel(sources.program.issues, sources.program.rootId), ticket, {
               ready: config.tracker.readyLabel,
@@ -405,7 +429,22 @@ export async function merge(
             })
           : null;
         return {
-          inFlight: status.inFlight,
+          filesKnown: sources.forge !== null && sources.forge.openPrsComplete === true,
+          ...(sources.forge?.openPrsComplete === true && live.fleet && !liveReading
+            ? { noticeFallback: "worker state unknown" }
+            : {}),
+          inFlight: status.inFlight.map((t) => {
+            const pr = sources.forge?.prs.find((p) => p.number === t.pr?.number && p.state === "open");
+            return {
+              ...t,
+              pr: pr
+                ? {
+                    number: pr.number,
+                    ...noticeFileCoverage(pr),
+                  }
+                : null,
+            };
+          }),
           unblocked: unblocked
             ? {
                 ready: unblocked.ready.map((c) => {
@@ -475,8 +514,8 @@ export async function merge(
       const result = "Result: not merged (queued for merge; nothing was merged)";
       io.stdout(
         a.json
-          ? `${JSON.stringify({ results, watch, result, next: "armada merge --drain (in the background)" }, null, 2)}\n`
-          : `Next: armada merge --drain (in the background)\n${watch.line}\n`,
+          ? `${JSON.stringify({ results, watch, result, next: "armada merge queue" }, null, 2)}\n`
+          : `Next: armada merge queue\n${watch.line}\n`,
       );
       if (!a.json) io.stdout(`${result}\n`);
       return 0;
@@ -611,27 +650,34 @@ export async function merge(
       next = await rearmFor(io, project, { inFlight, open: null });
       if (!a.json)
         io.stdout(
-          `${render(o)}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
+          `${render(o, !!a.options["no-notify"])}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
         );
       for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
       if (!finish && o.merged && o.deploy)
         deploys = await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json);
     };
     if (finish) await notify([]);
-    const archive = finish
-      ? null
+    const after = finish
+      ? { archive: null, notified: [], notAffected: o.notAffected ?? [] }
       : await afterMerge(io, config, credentials, o, {
           configPath,
           noArchive: !!a.options["no-archive"],
+          noNotify: !!a.options["no-notify"],
+          onNotified: (results) => {
+            if (a.json) return;
+            for (const w of results) io.stdout(`${w.ticket}: ${w.detail}.\n${w.delivered ? "" : `${w.text}\n`}`);
+          },
           keepOpen: !!o.keepOpen,
           onDeferredLaunch: notify,
         });
     if (a.json)
       io.stdout(
-        `${JSON.stringify({ ...o, archive, deferredLaunches, ...(deploys.length ? { deploys } : {}), watch: next, result: mergeResult(o) }, null, 2)}\n`,
+        `${JSON.stringify({ ...o, ...after, deferredLaunches, ...(deploys.length ? { deploys } : {}), watch: next, result: mergeResult(o) }, null, 2)}\n`,
       );
-    else if (archive)
-      io.stdout(`${archive.detail.endsWith(".") ? archive.detail : `${o.ticket?.id}: ${archive.detail}.`}\n`);
+    else if (after.archive)
+      io.stdout(
+        `${after.archive.detail.endsWith(".") ? after.archive.detail : `${o.ticket?.id}: ${after.archive.detail}.`}\n`,
+      );
     if (!a.json) io.stdout(`${mergeResult(o)}\n`);
     return finish && (o.linearPending || o.armadaPending) ? 1 : 0;
   } catch (err) {

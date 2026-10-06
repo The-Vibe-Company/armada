@@ -12,8 +12,10 @@ import {
   type MergeOutcome,
   parseConfig,
   type RawIssue,
+  type RawPull,
   resolveCredentials,
 } from "@armada/core";
+import githubPulls from "../../core/test/fixtures/github-pulls.json";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
   ARMADA_URL,
@@ -37,6 +39,336 @@ afterEach(async () => {
 const SQUASH = "5555555555555555555555555555555555555555";
 const BRANCH = "feature/demo-18-expire-idle-sessions";
 const KEY = "armada_key_CANARY_coordinator";
+
+test.each([false, true])(
+  "--no-notify preserves the manual list even with unavailable live state (%s)",
+  async (liveDown) => {
+    const f = await fixture();
+    f.net.liveDown = liveDown;
+    expect(await run(["merge", "9", "--no-notify"], f.io)).toBe(0);
+    expect(f.out()).toContain("Tell these workers in flight what landed on main");
+    expect(f.out()).toContain("DEMO-11  implementing  Claude Code · ws-11");
+    expect(f.out()).not.toContain("not affected");
+    expect(f.armada.calls.some((c) => c.path === "fleet/answer")).toBe(false);
+  },
+);
+
+test.each([
+  "overlap",
+  "partial",
+  "herdr",
+  "unknown-outcome",
+  "shared",
+  "unsupported",
+  "failed",
+  "replaced",
+  "fresh-owner-transfer",
+  "fresh-own-transfer",
+  "shared-other-owner",
+  "boundary-owner-transfer",
+  "late-owner-transfer",
+  "late-owner-transfer-state-outage",
+  "late-hand-back",
+  "late-shared-hand-back",
+  "no-notify",
+  "files-unknown",
+  "truncated-prs",
+  "old-server",
+  "live-hand-back",
+  "live-outage",
+  "both-outages",
+  "no-pr",
+  "handed-back",
+  "before-archive",
+])("merge notes select recipients and deliver before archive (%s)", async (scenario) => {
+  const f = await fixture();
+  if (scenario === "partial")
+    f.linear.post(
+      "DEMO-18",
+      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part`,
+      "2026-03-04T09:50:00Z",
+    );
+  const reservedKeys: string[] = [];
+  const reserveNotice = f.store.prepareMergeNotice;
+  f.store.prepareMergeNotice = async (project, key, at) => {
+    reservedKeys.push(key);
+    return reserveNotice(project, key, at);
+  };
+  const herdrTree = join(f.io.cwd, "..", "herdr-worker");
+  const herdrHandle = JSON.stringify({ workspace: "ws-worker", pane: "pane-worker", agent: "worker" });
+  if (scenario === "herdr") f.git("worktree", "add", "-b", "feature/demo-11-worker", herdrTree, "main");
+  const pulls = structuredClone(githubPulls.data.repository.open.nodes) as RawPull[];
+  for (const p of pulls) {
+    if (
+      p.number === 7 ||
+      (["shared", "shared-other-owner", "late-shared-hand-back"].includes(scenario) && p.number === 8)
+    ) {
+      p.files = { nodes: [{ path: "src/lists.ts", additions: 1, deletions: 1 }], pageInfo: { hasNextPage: false } };
+    }
+  }
+  f.net.workerPulls = scenario === "no-pr" ? pulls.filter((p) => p.number !== 7) : pulls;
+  if (scenario === "files-unknown") f.net.forgeDown = true;
+  if (scenario === "truncated-prs") f.net.truncatedPrs = true;
+  if (scenario === "old-server") f.net.oldServer = true;
+  if (scenario === "live-outage") f.net.liveDown = true;
+  if (scenario === "both-outages") {
+    f.net.liveDown = true;
+    f.net.forgeDown = true;
+  }
+  if (scenario === "live-hand-back")
+    await f.store.recordEvent({
+      project: "widgets",
+      ticket: "DEMO-11",
+      kind: "report",
+      phase: "ready-to-merge",
+      message: "handed back after the tracker read",
+      at: new Date(NOW.getTime() + 1000),
+    });
+  if (scenario === "handed-back") {
+    const original = f.io.fetch as Fetch;
+    f.io.fetch = async (url, init) => {
+      const response = await original(url, init);
+      if (!url.startsWith("https://api.linear.app/")) return response;
+      const body = (await response.json()) as { data: { issues?: { nodes: RawIssue[] } } };
+      for (const issue of body.data.issues?.nodes ?? [])
+        if (issue.identifier === "DEMO-11" && issue.labels) {
+          issue.labels.nodes = issue.labels.nodes.filter((l) => !["implementing", "shipping"].includes(l.name));
+          issue.labels.nodes.push({ name: "ready-to-merge", parent: { name: "Agent phase" } });
+        }
+      return Response.json(body);
+    };
+  }
+  for (const ticket of ["shared", "shared-other-owner", "late-shared-hand-back"].includes(scenario)
+    ? ["DEMO-11", "DEMO-16"]
+    : ["DEMO-11"]) {
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket,
+      runtime: scenario === "unsupported" ? "Claude Code" : scenario === "herdr" ? "herdr" : "Conductor",
+      handle: scenario === "herdr" ? herdrHandle : "ws-worker/ses-worker",
+      branch: scenario === "herdr" ? "feature/demo-11-worker" : null,
+      at: NOW,
+    });
+  }
+  let transferred = false;
+  const transfer = async () => {
+    expect(
+      await f.store.transferTickets({
+        project: "widgets",
+        tickets: ["DEMO-11"],
+        to: scenario === "fresh-own-transfer" ? "default" : "release",
+        ...(scenario === "fresh-own-transfer" ? { from: "release" } : {}),
+        at: NOW,
+      }),
+    ).toBe(true);
+    transferred = true;
+  };
+  if (scenario === "late-owner-transfer-state-outage") {
+    const original = f.io.fetch as Fetch;
+    f.io.fetch = (url, init) =>
+      transferred && url.endsWith("/fleet/events/state")
+        ? Promise.reject(new Error("synthetic phase read outage"))
+        : original(url, init);
+  }
+  if (scenario === "fresh-own-transfer" || scenario === "shared-other-owner")
+    expect(
+      await f.store.transferTickets({
+        project: "widgets",
+        tickets: [scenario === "fresh-own-transfer" ? "DEMO-11" : "DEMO-16"],
+        to: "release",
+        at: NOW,
+      }),
+    ).toBe(true);
+  if (["fresh-owner-transfer", "fresh-own-transfer", "boundary-owner-transfer"].includes(scenario)) {
+    const original = f.io.fetch as Fetch;
+    let reads = 0;
+    f.io.fetch = async (url, init) => {
+      if (f.merged() && url.endsWith("/fleet/runtime/handles")) {
+        reads++;
+        if (scenario === "boundary-owner-transfer" && reads === 3) await transfer();
+        const response = await original(url, init);
+        // Keep the status snapshot stale; the following claim read must win.
+        if (["fresh-owner-transfer", "fresh-own-transfer"].includes(scenario) && reads === 1) await transfer();
+        return response;
+      }
+      return original(url, init);
+    };
+  }
+  if (scenario === "before-archive")
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-18",
+      runtime: "Conductor",
+      handle: "ws-merged/ses-merged",
+      branch: BRANCH,
+      at: NOW,
+    });
+  const native: { args: string[]; input?: string }[] = [];
+  const exec = f.io.exec as Exec;
+  f.io.exec = async (command, args, options) => {
+    if (command === "herdr") {
+      native.push({ args, input: options.input });
+      const result =
+        args[0] === "workspace"
+          ? {
+              workspace: {
+                workspace_id: "ws-worker",
+                worktree: {
+                  is_linked_worktree: true,
+                  repo_root: f.io.cwd,
+                  checkout_path: herdrTree,
+                },
+              },
+            }
+          : { agent: { name: "worker", pane_id: "pane-worker", workspace_id: "ws-worker", agent_status: "idle" } };
+      return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+    }
+    if (command !== "conductor") return exec(command, args, options);
+    native.push({ args, input: options.input });
+    if (["late-owner-transfer", "late-owner-transfer-state-outage"].includes(scenario) && args[1] === "session")
+      await transfer();
+    if (["late-hand-back", "late-shared-hand-back"].includes(scenario) && args[1] === "session")
+      await f.store.recordEvent({
+        project: "widgets",
+        ticket: scenario === "late-shared-hand-back" ? "DEMO-16" : "DEMO-11",
+        kind: "report",
+        phase: "ready-to-merge",
+        message: "handed back during native provenance",
+        at: new Date(NOW.getTime() + 1000),
+      });
+    if (scenario === "failed") return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
+    if (scenario === "unknown-outcome" && args[1] === "message")
+      return { code: 4, stdout: "", stderr: "lost reply after native write" };
+    if (scenario === "replaced")
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-11",
+        runtime: "Conductor",
+        handle: "ws-new/ses-new",
+        branch: null,
+        at: new Date(NOW.getTime() + 1000),
+      });
+    const mergedWorker = args.at(-1) === "ses-merged" || args.at(-1) === "ws-merged";
+    const body =
+      args[1] === "session"
+        ? {
+            sessionId: mergedWorker ? "ses-merged" : "ses-worker",
+            workspaceId: mergedWorker ? "ws-merged" : "ws-worker",
+            status: "idle",
+          }
+        : args[1] === "workspace"
+          ? args[2] === "archive"
+            ? { status: "archived" }
+            : { workspaceId: mergedWorker ? "ws-merged" : "ws-worker", status: "ready" }
+          : { messageId: args.at(-1), state: "sent" };
+    if (args[1] === "message") expect(f.merged()).toBe(true);
+    return { code: 0, stdout: JSON.stringify(body), stderr: "" };
+  };
+  expect(await run(["merge", "9", "--json", ...(scenario === "no-notify" ? ["--no-notify"] : [])], f.io)).toBe(0);
+  const o = JSON.parse(f.out());
+  if (scenario === "partial") {
+    expect(o.keepOpen).toBe(true);
+    expect(o.archive).toBeNull();
+    expect(o.unblocked).toBeNull();
+    expect(o.notices.some((w: { ticket: string }) => w.ticket === "DEMO-18")).toBe(false);
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(false);
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
+    expect(o.lines.join("\n")).toContain("Continue with: the dashboard part");
+  }
+  const messages = () => native.filter((c) => c.args[1] === "message" || c.args[1] === "prompt");
+  const delivers = ["overlap", "partial", "herdr", "shared", "before-archive", "fresh-own-transfer"].includes(scenario);
+  expect(messages()).toHaveLength(delivers || scenario === "unknown-outcome" ? 1 : 0);
+  if (delivers) {
+    expect(o.notified.map((n: { ticket: string; delivered: boolean }) => [n.ticket, n.delivered])).toEqual(
+      scenario === "shared"
+        ? [
+            ["DEMO-11", true],
+            ["DEMO-16", true],
+          ]
+        : [["DEMO-11", true]],
+    );
+    const message = scenario === "herdr" ? messages()[0]?.args[3] : messages()[0]?.input;
+    expect(message).toContain('main moved: PR #9 "feat(lists): share a list by link" (DEMO-18) merged as 5555555.');
+    expect(message).toContain("your PR #7 (DEMO-11) also changes: src/lists.ts");
+    expect(message).toContain("shareList");
+    expect(message).toContain("git fetch origin && git merge origin/main, then run the checks again");
+    // Merge retries use the durable receipt identity, even when the notice's text changes.
+    if (scenario !== "herdr") expect(messages()[0]?.args.at(-1)).toBe(reservedKeys[0]);
+    const notes = f.store.items.filter((i) => i.kind === "note");
+    expect(notes).toHaveLength(scenario === "shared" ? 2 : 1);
+    expect(notes.every((n) => n.resolvedAt === NOW.toISOString())).toBe(true);
+    expect(f.linear.bodies).toHaveLength(1);
+    if (scenario === "before-archive") {
+      expect(o.archive.archived).toBe(true);
+      expect(native.findIndex((c) => c.args[1] === "message")).toBeLessThan(
+        native.findIndex((c) => c.args[2] === "archive"),
+      );
+    }
+    if (["overlap", "herdr"].includes(scenario)) {
+      // Armada's durable receipt prevents native calls and duplicate notes on retries, regardless of runtime.
+      const retry = await afterMerge(
+        f.io,
+        parseConfig(DEMO_TOML),
+        resolveCredentials({ env: f.io.env }),
+        { ...o, hints: ["A refreshed hint"] },
+        { noArchive: true },
+      );
+      expect(retry.notified[0]?.delivered).toBe(true);
+      expect(messages()).toHaveLength(1);
+      expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(1);
+    }
+  } else if (["unsupported", "failed", "replaced", "old-server", "unknown-outcome"].includes(scenario)) {
+    expect(o.notified[0]).toMatchObject({ ticket: "DEMO-11", delivered: false });
+    expect(o.notified[0].text).toContain("git merge origin/main");
+    expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(0);
+    if (scenario === "unknown-outcome") {
+      const retry = await afterMerge(f.io, parseConfig(DEMO_TOML), resolveCredentials({ env: f.io.env }), o, {
+        noArchive: true,
+      });
+      expect(retry.notified[0]?.detail).toContain("unknown outcome");
+      expect(messages()).toHaveLength(1);
+    }
+  } else expect(o.notified).toEqual([]);
+  if (
+    [
+      "fresh-owner-transfer",
+      "boundary-owner-transfer",
+      "late-owner-transfer",
+      "late-owner-transfer-state-outage",
+      "shared-other-owner",
+    ].includes(scenario)
+  ) {
+    expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "owned by coordinator release" });
+    if (!["late-owner-transfer", "late-owner-transfer-state-outage"].includes(scenario))
+      expect(f.armada.calls.some((c) => c.path === "fleet/merge-notice/prepare")).toBe(false);
+    expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(0);
+  }
+  if (["handed-back", "live-hand-back", "late-hand-back", "late-shared-hand-back"].includes(scenario))
+    expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "already handed back" });
+  if (scenario === "no-pr") expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "no pull request yet" });
+  if (["files-unknown", "truncated-prs", "both-outages"].includes(scenario))
+    expect(o.notAffected.every((w: { why: string }) => w.why === "files unknown")).toBe(true);
+  if (scenario === "live-outage") {
+    expect(o.workersListed).toBe(true);
+    expect(o.workers.map((w: { ticket: string }) => w.ticket)).toContain("DEMO-11");
+    expect(o.notAffected.every((w: { why: string }) => w.why === "worker state unknown")).toBe(true);
+    expect(o.noticeFallback).toBe("worker state unknown");
+  }
+  if (
+    ![
+      "shared",
+      "shared-other-owner",
+      "late-shared-hand-back",
+      "files-unknown",
+      "truncated-prs",
+      "live-outage",
+      "both-outages",
+    ].includes(scenario)
+  )
+    expect(o.notAffected).toContainEqual({ ticket: "DEMO-16", why: "not affected" });
+  expect(f.err() + f.out()).not.toContain("CANARY");
+  expect(f.err() + f.out()).not.toContain("private runtime output");
+});
 
 /** A coordinator's terminal, signed in to the fake Armada with an organization API key unless `signedIn` is false. */
 async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boolean; unblocks?: boolean } = {}) {
@@ -170,10 +502,22 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
     store,
     vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW },
   });
-  const net = { armadaDown: false, confirmMerge: true };
+  const net = {
+    armadaDown: false,
+    confirmMerge: true,
+    forgeDown: false,
+    truncatedPrs: false,
+    oldServer: false,
+    liveDown: false,
+    workerPulls: null as RawPull[] | null,
+  };
   const fetch: Fetch = async (url, init) => {
     if (url.startsWith(`${ARMADA_URL}/`)) {
       if (net.armadaDown) throw new TypeError("fetch failed");
+      if (net.liveDown && merged && /fleet\/(events\/state|runtime\/handles)$/.test(url))
+        throw new TypeError("live state unavailable");
+      if (net.oldServer && /fleet\/(merge-notice\/prepare|answer\/generated)$/.test(url))
+        return Response.json({ error: "no fleet operation", next: "update Armada" }, { status: 404 });
       return armada.fetch(url, init);
     }
     if (url === "https://api.github.com/repos/acme/widgets/pulls/9") return new Response(`${diff}\n`);
@@ -190,6 +534,15 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
       return Response.json(body);
     }
     const { query, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
+    if (/query Pulls/.test(query)) {
+      if (net.forgeDown) throw new TypeError("GitHub is unavailable");
+      const body = (await (await linearProgram.fetch(url, init)).json()) as {
+        data: { repository: { open: { nodes: RawPull[]; pageInfo: { hasNextPage: boolean } } } };
+      };
+      body.data.repository.open.pageInfo = { hasNextPage: net.truncatedPrs };
+      if (net.workerPulls) body.data.repository.open.nodes = net.workerPulls;
+      return Response.json(body);
+    }
     if (/query Compare/.test(query)) {
       const compare =
         variables.head === base
@@ -225,6 +578,10 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
             mergedAt: merged ? "2026-03-04T10:00:00Z" : null,
             mergeCommit: merged && net.confirmMerge ? { oid: SQUASH } : null,
             reviewThreads: { totalCount: 1, nodes: [{ isResolved: true }] },
+            files: {
+              nodes: ["src/lists.ts", "src/menu.ts"].map((path) => ({ path, additions: 1, deletions: 1 })),
+              pageInfo: { hasNextPage: false },
+            },
             commits: {
               nodes: [
                 {
@@ -436,9 +793,8 @@ https://github.com/acme/widgets/pull/9
 https://linear.app/acme/issue/DEMO-18
 Hints for you to judge (not blocking):
   - \`shareList\`, removed from src/lists.ts, still appears on main in src/share.ts
-Tell these workers in flight what landed on main (bring it in, shared files, new checks):
-  DEMO-16  shipping  runtime unknown  Reset a forgotten password
-  DEMO-11  implementing  Claude Code · ws-11  Send a sign-in link by email
+  DEMO-16: not affected.
+  DEMO-11: not affected.
 2 workers in flight (DEMO-11, DEMO-16) — keep watching: armada watch
 No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.
 Result: merged #9
@@ -459,6 +815,9 @@ Result: merged #9
     "fleet/lease/renew",
     "fleet/merge",
     "workers/end",
+    "fleet/events/state",
+    "fleet/runtime/handles",
+    "fleet/runtime/handles",
     "fleet/lease/release",
     "fleet/launch-requests",
   ]);
@@ -674,7 +1033,7 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--reason", "Reviewed"], f.io)).toBe(0);
   expect(f.out()).toContain("queued #9 (1st)");
   expect(f.out().trim().split("\n").at(-1)).toBe("Result: not merged (queued for merge; nothing was merged)");
-  expect(f.out()).toContain("Next: armada merge --drain (in the background)");
+  expect(f.out()).toContain("Next: armada merge queue");
   expect(f.merged()).toBe(false);
   expect(f.ghCalls).toEqual([]);
   expect(await run(["merge", "--when-green", "9"], f.io)).toBe(0);
@@ -693,6 +1052,7 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "queue", "remove", "https://github.com/acme/widgets/pull/2147483648"], f.io)).toBe(2);
   expect(f.err()).toContain("pull request number must be between");
   expect(await run(["merge", "--when-green", "9", "--no-archive"], f.io)).toBe(2);
+  expect(await run(["merge", "--when-green", "9", "--no-notify"], f.io)).toBe(2);
 });
 
 test("when-green queues multiple no-ticket PRs in argument order and preserves flags", async () => {
@@ -920,7 +1280,7 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
     const result = await afterMerge(f.io, parseConfig(DEMO_TOML), resolveCredentials({ env: f.io.env }), outcome, {
       keepOpen: scenario === "keep-open",
     });
-    expect(result?.archived ?? false).toBe(false);
+    expect(result.archive?.archived ?? false).toBe(false);
     expect(f.armada.calls).toEqual([]);
     expect(f.err()).not.toContain("must not reach");
     if (scenario === "claim-comment" || scenario === "wrong-ticket")

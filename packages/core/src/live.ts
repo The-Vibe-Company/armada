@@ -429,6 +429,17 @@ export interface ReserveRecord {
 export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
 
 export interface FleetStore {
+  /** Reserves a merge notice before runtime I/O; an unknown outcome is never retried automatically. */
+  prepareMergeNotice(project: string, key: string, at: Date): Promise<"reserved" | "attempted" | "delivered">;
+  /** Records one resolved generated note atomically with its delivery receipt, once per ticket. */
+  recordMergeNotice(input: {
+    project: string;
+    key: string;
+    ticket: string;
+    text: string;
+    coordinator?: string | null;
+    at: Date;
+  }): Promise<string>;
   recordDeploy(input: DeployInput & { project: string; at: Date }): Promise<DeployRecord>;
   deployState(project: string, query: DeployQuery): Promise<DeployRecord[]>;
 
@@ -806,6 +817,9 @@ export async function recordRelease(
 }
 
 export interface AnswerRecord {
+  /** Generated merge notices do not decide or resolve a worker's pending plan. */
+  generated?: boolean;
+  deliveryKey?: string;
   coordinator?: string | null;
   /** The answer, or the note. */
   text: string;
@@ -824,6 +838,18 @@ export interface AnswerRecord {
  */
 export async function recordAnswer(store: FleetStore, project: string, a: AnswerRecord, at: Date): Promise<string> {
   const { text } = a;
+  if (a.generated) {
+    if (!a.note || !a.ticket || a.item !== null || !a.deliveryKey)
+      throw new Error("a generated note needs a ticket and reserved delivery key");
+    return store.recordMergeNotice({
+      project,
+      key: a.deliveryKey,
+      ticket: a.ticket,
+      text,
+      coordinator: a.coordinator,
+      at,
+    });
+  }
   if (a.note) {
     if (a.ticket) await store.resolvePlans({ project, ticket: a.ticket, resolution: text, at });
     const id = await store.addInboxItem({
@@ -1830,6 +1856,7 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  prepareMergeNotice(key: string): Promise<"reserved" | "attempted" | "delivered">;
   recordDeploy(input: DeployInput): Promise<DeployRecord>;
   deployState(query?: DeployQuery): Promise<DeployRecord[]>;
 
