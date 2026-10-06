@@ -765,8 +765,18 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
-    // THE-1109: named coordinator roles, their sessions and launch ownership.
     version: 26,
+    statements: [
+      `CREATE TABLE ticket_paths (
+      project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+      ticket text NOT NULL, paths text[] NOT NULL, declared_at timestamptz NOT NULL,
+      PRIMARY KEY (project, ticket)
+    )`,
+    ],
+  },
+  {
+    // THE-1109: named coordinator roles, their sessions and launch ownership.
+    version: 27,
     statements: [
       `CREATE TABLE coordinators (
         project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,

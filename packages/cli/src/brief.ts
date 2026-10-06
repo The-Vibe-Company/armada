@@ -29,6 +29,7 @@ import { apiOf } from "./api.ts";
 import { coordinatorName } from "./coordinator.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
+import { liveFleet } from "./worker.ts";
 
 export interface BriefArgs {
   rest: string[];
@@ -203,6 +204,7 @@ export async function brief(
       stored: STORED_KEYS.filter((k) => credentials.sources[k.name]?.kind === "store").map((k) => k.variable),
       prompt: promptOnly,
       launch: launcher(io, config, credentials),
+      overlap: liveFleet(io, config, credentials).fleet?.overlap,
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
       conventions,

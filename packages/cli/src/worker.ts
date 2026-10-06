@@ -311,6 +311,7 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
       stage: a.options.stage ?? null,
       message,
       plan,
+      ...(a.options.paths !== undefined ? { paths: a.options.paths.split(/[,\n]/).map((p) => p.trim()) } : {}),
       pr: a.options.pr ?? null,
       sha: a.options.sha ?? null,
       shippedWith: a.options["shipped-with"] ?? null,
