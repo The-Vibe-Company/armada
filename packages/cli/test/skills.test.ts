@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { run } from "../src/cli.ts";
+import { BUNDLED_SKILLS } from "@armada/core";
+import { commandHelp, run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 
 test("skills update applies init's bundle locally without credentials or remote calls", async () => {
@@ -49,3 +50,50 @@ test("skills update applies init's bundle locally without credentials or remote 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// Every `armada …` command the bundled instructions name must exist in `armada --help`,
+// with its literal subcommand and each flag, so the skills cannot drift from the CLI.
+test("every armada command, subcommand and flag the armada-* skills name is in armada --help", () => {
+  const problems: string[] = [];
+  for (const skill of BUNDLED_SKILLS.filter((s) => s.name.startsWith("armada-")))
+    for (const file of skill.files.filter((f) => f.path.endsWith(".md")))
+      for (const span of codeSpans(file.content))
+        for (const command of span.replace(/"[^"]*"/g, '"…"').split(/ \| |&&|;|\$\(/))
+          for (const [, rest] of command.matchAll(/(?:^|[\s(])armada ([a-z].*?)(?=\s+armada |$)/g)) {
+            const where = `${skill.name}/${file.path}: \`${command.trim()}\``;
+            const words = (rest ?? "").split(" -- ")[0]?.split(/\s+/) ?? [];
+            const name = words[0] ?? "";
+            const help = commandHelp(name);
+            if (!help) {
+              problems.push(`${where}: no command "${name}"`);
+              continue;
+            }
+            const subcommands = [...help.matchAll(new RegExp(`^ {2}${name} ([a-z][a-z-]*)`, "gm"))].map((m) => m[1]);
+            const second = words[1] ?? "";
+            if (subcommands.length > 0 && /^[a-z][a-z-]*$/.test(second) && !subcommands.includes(second))
+              problems.push(`${where}: no subcommand "${name} ${second}"`);
+            for (const [flag] of (rest ?? "").split(" -- ")[0]?.matchAll(/(?<![\w-])--[a-z][a-z-]*/g) ?? [])
+              if (!new RegExp(`${flag}(?![a-z-])`).test(help)) problems.push(`${where}: no flag ${flag} on "${name}"`);
+          }
+  expect(problems).toEqual([]);
+});
+
+test("the coordinator's main instructions stay within their size budget", () => {
+  const coordinator = BUNDLED_SKILLS.find((s) => s.name === "armada-coordinator");
+  const main = coordinator?.files.find((f) => f.path === "SKILL.md")?.content ?? "";
+  expect(new TextEncoder().encode(main).length).toBeLessThanOrEqual(COORDINATOR_BUDGET);
+});
+
+/** Bytes of the coordinator's SKILL.md: detail goes to MERGE.md or REFERENCE.md instead. */
+const COORDINATOR_BUDGET = 20_000;
+
+/** Inline code spans and the lines of fenced blocks. */
+function codeSpans(markdown: string): string[] {
+  const spans: string[] = [];
+  const parts = markdown.split(/^```.*$/m);
+  parts.forEach((part, i) => {
+    if (i % 2 === 1) spans.push(...part.replace(/\\\n\s*/g, " ").split("\n"));
+    else for (const [, span] of part.matchAll(/`([^`\n]+)`/g)) spans.push(span ?? "");
+  });
+  return spans;
+}
