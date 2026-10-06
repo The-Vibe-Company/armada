@@ -30,6 +30,7 @@ import {
   isMaskedLaunchToken,
   MASKED_LAUNCH_TOKEN_REFUSAL,
   MINIMUM_CLI_VERSION,
+  type OpenPr,
   parseProject,
   RUNTIME_NAMES,
   redactor,
@@ -772,7 +773,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       `another slug in armada.toml ([project] slug), or sign in to the organization of ${project.slug}`,
     );
   let handBackSnapshot: HandBackSnapshot | undefined;
-  let openPrs: number[] | undefined;
+  let openPrs: OpenPr[] | undefined;
   let storedConfig: ArmadaConfig | undefined;
   if (
     op === "validate" ||
@@ -789,7 +790,9 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       snapshot.config.tracker.programRoot === project.programRoot
     ) {
       storedConfig = snapshot.config;
-      openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
+      openPrs = snapshot.sources.forge?.prs
+        .filter((pr) => pr.state === "open")
+        .map((pr) => ({ number: pr.number, headSha: pr.headSha ?? null }));
       handBackSnapshot = {
         repository: project.repository,
         parkedLabel: snapshot.config.tracker.parkedLabel,

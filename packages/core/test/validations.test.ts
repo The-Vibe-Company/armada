@@ -191,6 +191,7 @@ describe("armada done", () => {
     const { linear, ctx } = setup(live);
     linear.add("DEMO-2", { title: "Spec 1 — Design", parentId: config.tracker.programRoot });
     linear.add("DEMO-7", { statusType: "started", stateId: "st-progress", parentId: "DEMO-2" });
+    await claimTicket(ctx, { ticket: "DEMO-7", runtime: "conductor", handle: "design/session" });
     const close = () =>
       closeValidated(ctx, { ticket: "DEMO-7", attachmentUrl: (id) => `https://armada.example.test/a/${id}` });
     expect(await refusal(close())).toBe("DEMO-7 has no validation the owner approved");
@@ -236,6 +237,11 @@ describe("armada done", () => {
     expect(t.comments[0]?.excerpt).toContain("Checks: - The action fits on a phone");
     expect(t.comments[0]?.excerpt).toContain("Excerpts: output.txt:10-12 Phone layout: pass");
     expect(t.comments[0]?.excerpt).toContain("Context: The full layout notes");
+    expect(t.comments[0]?.excerpt).toContain("https://armada.example.test/a/att-9");
+    expect(await live.store.getRuntimeHandle("widgets", "DEMO-7")).toMatchObject({
+      handle: "design/session",
+      releasedAt: NOW.toISOString(),
+    });
     expect(out.lines.at(-1)).toBe("Building it is a separate ticket: cut it, blocked by this one.");
     expect(live.store.events.at(-1)).toMatchObject({ ticket: "DEMO-7", kind: "merge", phase: "merged" });
     const events = live.store.events.length;

@@ -282,7 +282,32 @@ describe("a project's Linear key", () => {
   });
 
   test("no value is ever logged or recorded in the audit list", async () => {
-    const events = JSON.stringify(await listEvents(client, orgId, 500));
+    const startLog = logged.length;
+    expect(
+      (
+        await secrets(
+          "set",
+          { token: ownerToken },
+          {
+            project: WIDGETS,
+            name: "AUDIT_KEY",
+            value: VALUES.openai,
+          },
+        )
+      ).status,
+    ).toBe(200);
+    const release = await secrets("release", { token: worker }, { project: WIDGETS, names: ["AUDIT_KEY"] });
+    expect(release.status).toBe(200);
+    expect((release.body as unknown as SecretsRelease).secrets).toEqual([
+      { name: "AUDIT_KEY", value: VALUES.openai, scope: "project" },
+    ]);
+    expect((await secrets("release", { token: worker }, { project: GADGETS })).status).toBe(403);
+    const ownEvents = await listEvents(client, orgId, 3);
+    expect(ownEvents.map((event) => event.action)).toEqual(["refuse", "release", "set"]);
+    expect(ownEvents[1]?.keys).toEqual(["AUDIT_KEY"]);
+    // Secrecy is checked only after this case actually exercised set, release and refusal.
+    expect(logged.slice(startLog).length).toBeGreaterThan(0);
+    const events = JSON.stringify(ownEvents);
     for (const value of Object.values(VALUES)) {
       expect(events).not.toContain(value);
       expect(logged.join("\n")).not.toContain(value);

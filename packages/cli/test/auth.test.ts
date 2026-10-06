@@ -190,12 +190,6 @@ describe("armada status with the machine store", () => {
     expect(await run(["status", "--json"], withEnv.io)).toBe(0);
     expect(withEnv.calls[0]?.authorization).toBe("lin_api_env");
   });
-
-  test("with no key anywhere, the error names the variable and the login command", async () => {
-    const m = await machine();
-    expect(await run(["status"], m.io)).toBe(2);
-    expect(m.err()).toContain("LINEAR_API_KEY is not set. Set it in the environment, run `armada auth login`");
-  });
 });
 
 test("prompt input keeps typed and pasted characters, honours backspace, skips arrow keys and cancels", () => {

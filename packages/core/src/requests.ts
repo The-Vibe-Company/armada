@@ -9,7 +9,7 @@ import { shellWord } from "./brief.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
 import { attachPullRequests } from "./github.ts";
-import type { FleetStore, HandBackSnapshot } from "./live.ts";
+import { type FleetStore, type HandBackSnapshot, handBackPr } from "./live.ts";
 import { buildModel } from "./model.ts";
 import { routeProfile } from "./routing.ts";
 import type { StatusReport } from "./status.ts";
@@ -18,7 +18,14 @@ import { decisionBody, VALIDATION_LIMITS, type ValidationDecision } from "./vali
 /** The reads and the writes a request needs. */
 export type RequestStore = Pick<
   FleetStore,
-  "getInboxItem" | "getRuntimeHandle" | "latestEvents" | "addRequest" | "getValidation" | "decideValidation"
+  | "getInboxItem"
+  | "getRuntimeHandle"
+  | "latestEvents"
+  | "addRequest"
+  | "getValidation"
+  | "decideValidation"
+  | "openInboxItems"
+  | "queueAdd"
 >;
 
 export const REQUEST_LIMITS = { answer: 4000, author: 80 } as const;
@@ -178,18 +185,67 @@ export async function requestLaunch(db: RequestStore, input: LaunchRequestInput)
 
 type SteeringInput = { project: string; author: string; coordinator?: string | null; now: Date };
 
+/** An open pull request as the project's stored reading of GitHub shows it. */
+export interface OpenPr {
+  number: number;
+  headSha?: string | null;
+}
+
+/** What a Merge press became: a queue entry (new or already open), or a request the coordinator decides. */
+export type MergeAsk =
+  | { kind: "queued"; id: number; position: number }
+  | { kind: "already-queued"; id: number }
+  | { kind: "request"; id: number };
+
+const TICKET_ID = /^[A-Z][A-Z0-9]{0,15}-\d{1,9}$/;
+const HAND_BACK_HEAD = /\bhead ([0-9a-f]{40})\b/i;
+
+/**
+ * The owner presses Merge on the dashboard (THE-1103). A pull request its
+ * ticket handed back at its current head (Armada's open hand-back, the head in
+ * the stored reading: no GitHub call) joins the merge queue, queued by the
+ * owner, whose press is the `[policy] merge_approval` reason; the drain re-runs
+ * every rule. Any other pull request stays a `merge-request` the coordinator decides.
+ */
 export async function requestMerge(
   db: RequestStore,
-  input: SteeringInput & { pr: number; openPrs: readonly number[]; ticket?: string | null },
-): Promise<number> {
-  if (!Number.isSafeInteger(input.pr) || input.pr <= 0 || !input.openPrs.includes(input.pr))
+  input: SteeringInput & { pr: number; openPrs: readonly OpenPr[]; ticket?: string | null },
+): Promise<MergeAsk> {
+  const author = requestAuthor(input.author);
+  const open = input.openPrs.find((p) => p.number === input.pr);
+  if (!Number.isSafeInteger(input.pr) || input.pr <= 0 || !open)
     throw new RequestRefusal("no-pr", `PR #${input.pr} is not open in ${input.project}`);
+  const head = open.headSha?.toLowerCase() ?? null;
+  const handBack = head
+    ? (await db.openInboxItems({ project: input.project, recipient: "coordinator" }))
+        .filter((i) => i.kind === "hand-back" && i.ticket && handBackPr(i.body) === input.pr)
+        .find((i) => i.body.match(HAND_BACK_HEAD)?.[1]?.toLowerCase() === head)
+    : undefined;
+  if (handBack?.ticket && head) {
+    const added = await db.queueAdd({
+      project: input.project,
+      pr: input.pr,
+      ticket: handBack.ticket,
+      noTicket: false,
+      keepOpen: false,
+      throughHold: null,
+      reason: `merge asked on the dashboard by ${author}`,
+      headSha: head,
+      queuedBy: author,
+      at: input.now,
+    });
+    return "existing" in added
+      ? { kind: "already-queued", id: added.existing.id }
+      : { kind: "queued", id: added.id, position: added.position };
+  }
+  // A ticket from a form only names the item's owner when it is one.
+  const ticket = input.ticket?.trim().toUpperCase() || null;
   const id = await db.addRequest({
     project: input.project,
-    ticket: input.ticket ?? null,
+    ticket: ticket && TICKET_ID.test(ticket) ? ticket : null,
     kind: "merge-request",
     coordinator: input.coordinator,
-    author: requestAuthor(input.author),
+    author,
     body: `Please merge PR #${input.pr}.`,
     question: null,
     profile: null,
@@ -198,7 +254,7 @@ export async function requestMerge(
   });
   if (id === null)
     throw new RequestRefusal("request-waiting", `a merge of PR #${input.pr} already waits for the coordinator`);
-  return id;
+  return { kind: "request", id };
 }
 
 export async function requestRelease(db: RequestStore, input: SteeringInput & { ticket: string }): Promise<number> {

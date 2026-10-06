@@ -875,6 +875,15 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
   expect(await store.queueRemove({ project, pr: 12, at: at(5) })).toBe(true);
   expect(await store.queueNext({ project, holder: "b", at: at(5) })).toMatchObject({ entry: { pr: 15 } });
   const second = (await store.queueList(project, { since: at(0) }))[1]!;
+  // The drain's step on the entry it merges (THE-1103): written by the lease's holder only.
+  const step = { project, id: second.id, detail: "Waiting: the checks on the updated head of #15", at: at(5) };
+  expect(await store.queueProgress({ ...step, holder: "a" })).toBe(false);
+  expect(await store.queueProgress({ ...step, holder: "b" })).toBe(true);
+  expect((await store.queueList(project, { since: at(0) }))[1]).toMatchObject({
+    state: "merging",
+    detail: step.detail,
+    updatedAt: at(5).toISOString(),
+  });
   expect(
     await store.queueFinish({
       project: "other",
@@ -911,6 +920,10 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
   expect(await store.queueRemove({ project, pr: 12, at: at(3) })).toBe(false);
   expect(await store.queueList(project, { since: at(6) })).toEqual([]);
   expect(await store.queueAdd({ ...input, at: at(4) })).toMatchObject({ position: 1 });
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toHaveLength(1);
+  // Queuing the refused pull request again settles its refusal.
+  await store.queueAdd({ ...input, pr: 15, at: at(4) });
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toEqual([]);
 });
 
 test("events/since uses the project, kinds and tickets, pages ties and reads late commits once", async () => {

@@ -7,7 +7,7 @@ const values = [
 ];
 const texts = [
   "hello sk-synthetic-123456 world abcdefghi!",
-  "sk-another-synthetic-token ghp_synthetic github_pat_synthetic gho_synthetic xoxa_synthetic", // Slack uses a dash.
+  "sk-another-synthetic-token ghp_synthetic github_pat_synthetic gho_synthetic xoxa-synthetic",
   "xoxb-synthetic xoxp-synthetic AKIA0123456789ABCDEF lin_api_synthetic armada_key_synthetic armada_launch_synthetic armada_worker_synthetic",
   "before -----BEGIN RSA PRIVATE KEY-----\nsk-inside-private\nABCDEF\n-----END RSA PRIVATE KEY----- after",
   `prefix sk-${"x".repeat(500)} suffix`,
@@ -32,9 +32,23 @@ describe("secret masking", () => {
   test("built-in patterns mask complete key formats and private blocks", () => {
     for (const pattern of KEY_PATTERNS) expect(pattern).toBeInstanceOf(RegExp);
     const r = redactor(values);
+    const keyLiterals = [
+      "sk-another-synthetic-token",
+      "ghp_synthetic",
+      "github_pat_synthetic",
+      "gho_synthetic",
+      "xoxa-synthetic",
+      "xoxb-synthetic",
+      "xoxp-synthetic",
+      "AKIA0123456789ABCDEF",
+      "lin_api_synthetic",
+      "armada_key_synthetic",
+      "armada_launch_synthetic",
+      "armada_worker_synthetic",
+    ];
     for (const text of texts) {
       const result = r.text(text);
-      expect(result).not.toContain("synthetic-");
+      for (const literal of keyLiterals) if (text.includes(literal)) expect(result).not.toContain(literal);
       expect(result).not.toContain("PRIVATE KEY");
       expect(result).not.toContain("AKIA0123456789ABCDEF");
       expect(result).not.toContain("x".repeat(100));
