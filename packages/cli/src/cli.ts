@@ -1,6 +1,6 @@
 // Command dispatch with every side effect injected, so commands can be tested
 // without a network, a real clock or the user's environment.
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   ArmadaApiError,
   type ArmadaConfig,
@@ -17,6 +17,7 @@ import {
   skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { apiOf } from "./api.ts";
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
@@ -36,12 +37,13 @@ import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
-import { CommandError, fsRepoView } from "./repo.ts";
+import { CommandError, fsRepoView, gitRoot, requireExec } from "./repo.ts";
 import { reserveCommand, unreserveCommand } from "./reserve.ts";
 import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
+import { upgrade } from "./upgrade.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, stopWatch, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
@@ -106,6 +108,12 @@ const COMMAND_HELP: Record<string, string> = {
                     check tools and harness sign-in; offers official installs with y/N.
                     No terminal, CI and --json only print fixes and never install.
                     For harness first-run questions, the owner runs armada setup local
+`,
+  upgrade: `  upgrade           Install the newest Armada npm serves, verify armada --version,
+                    then check setup with the upgraded doctor. Waits up to five publication
+                    checks over about two minutes. Runs armada init --merge only for
+                    outdated setup. Requires armada.toml at the selected Git root;
+                    workers keep their launch's pinned version
 `,
   init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook] [--merge]
                     Open one pull request that installs or updates it all, create the
@@ -204,7 +212,19 @@ const COMMAND_HELP: Record<string, string> = {
   answer --note <ticket|plan item> "<message>"
                     Coordinator: record a delivered note; an open plan is resolved
 `,
-  merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
+  merge: `  merge --when-green <pr...> [--no-ticket] [--keep-open] [--through-hold <why>] [--reason <why>]
+                    Queue handed-back pull requests durably in order. Checks/behind-base,
+                    owner decisions and merge holds may wait; rule failures refuse now.
+                    --reason is required with [policy] merge_approval. --keep-open records
+                    intent for the drain to keep the ticket open; --through-hold records
+                    why a fix may pass the shared merge hold. Queuing does not drain.
+                    Next: armada merge --drain (in the background).
+  merge queue [--json]
+                    List open entries in order and entries finished in the last day.
+  merge queue remove <pr>
+                    Remove a queued entry; an entry currently merging cannot be removed.
+                    To pause merges, use armada hold add "<why>".
+  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
         [--reason <why>] [--ask-owner --reason <why>] [--no-archive]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
@@ -341,10 +361,11 @@ const CONFIG_OPTION = new Set([
   "brief",
   "launch",
   "setup",
+  "upgrade",
 ]);
 const JSON_OPTION = new Set([
   "skills",
-  ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach"),
+  ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach" && c !== "upgrade"),
   "doctor",
   "auth",
   "whoami",
@@ -384,8 +405,8 @@ Files:
                        \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
     config.toml        personal defaults: language, [dashboard] url, [api] url
     watch/<project>.*  the project's watch: its lock, what you were shown, who is in flight
-    releases.json      the Armada releases you were told of: a coordinator command says once
-                       when a newer one is out (\`armada watch\` ends on it)
+    releases.json      daily release notices in status/inbox, with version and time.
+                       Only required CLI/setup upgrades interrupt armada watch
 `;
 
 /** The help of one command, or null for a command Armada does not know. */
@@ -470,6 +491,7 @@ const VALUE_OPTIONS = [
   "choices",
   "validation",
   "validation-reason",
+  "through-hold",
   "notes",
   "since",
   "lang",
@@ -488,6 +510,8 @@ const FLAG_OPTIONS = [
   "dry-run",
   "no-lock",
   "no-ticket",
+  "when-green",
+  "keep-open",
   "no-archive",
   "prompt",
   "profile-line",
@@ -519,7 +543,20 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
-  merge: ["ticket", "no-ticket", "no-archive", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
+  merge: [
+    "ticket",
+    "no-ticket",
+    "no-archive",
+    "dry-run",
+    "no-lock",
+    "wait",
+    "timeout",
+    "reason",
+    "ask-owner",
+    "when-green",
+    "keep-open",
+    "through-hold",
+  ],
   brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   launch: [
     "pre-approve",
@@ -699,7 +736,13 @@ function nextStep(err: unknown, command: string | null): string | null {
 export async function run(argv: string[], io: Io): Promise<number> {
   const code = await dispatch(argv, io);
   const command = commandOf(argv);
-  if (command && NOTICE_COMMANDS.has(command)) await noticeRelease(io, version).catch(() => {});
+  if (command && NOTICE_COMMANDS.has(command))
+    await (async () => {
+      const args = parseArgs(argv);
+      if (args.all) return await noticeRelease(io, version);
+      const { path } = await findConfig(io, args.config, command, args.project);
+      await noticeRelease(io, version, fsRepoView(dirname(path)));
+    })().catch(() => {});
   return code;
 }
 
@@ -844,7 +887,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         if (args.rest.length) throw new UsageError(`unexpected argument ${args.rest[0]}`);
         return await stopWatch(io, config.project.slug, args.json);
       }
-      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      const { credentials } = await loadCredentials(io, { armada: false, project: config.project.slug });
       await recordPresence(io, config, credentials);
       return await watch(io, config, credentials, args, path);
     }
@@ -899,6 +942,32 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.command === "doctor") {
       noExtra(args.rest);
       return await doctor(io, args.json, version);
+    }
+    if (args.command === "upgrade") {
+      noExtra(args.rest);
+      if (args.json) throw new UsageError("--json does not apply to upgrade");
+      const { path } = await findConfig(io, args.config, "upgrade", args.project);
+      const { credentials } = await loadCredentials(io, { armada: false });
+      if (
+        credentials.armadaSignIn?.kind === "worker" ||
+        (!credentials.armadaSignIn && credentials.workerTickets.length) ||
+        io.env.ARMADA_TICKET?.trim()
+      )
+        throw new UsageError("workers keep their launch's pinned version; the coordinator runs armada upgrade");
+      const root = await gitRoot(requireExec(io), dirname(path));
+      if (basename(path) !== CONFIG_FILE || root !== dirname(path))
+        throw new UsageError(
+          "armada upgrade needs armada.toml at the selected repository's Git root; use that checkout's armada.toml",
+        );
+      if (credentials.armadaSignIn)
+        try {
+          await apiOf(io, credentials.armadaApi.url).whoami(credentials.armadaSignIn);
+        } catch (err) {
+          if (!(err instanceof ArmadaApiError)) throw err;
+          if (err.signedOut) throw err;
+          // A minimum-version refusal supplies the required target in its headers.
+        }
+      return await upgrade(io, version, root);
     }
     if (args.command === "skill") return printSkill(io, args.rest);
     if (args.command === "skills") {
