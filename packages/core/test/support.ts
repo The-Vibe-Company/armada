@@ -57,7 +57,12 @@ export interface Call {
 
 /** Replays the recorded responses in order, per GraphQL operation name. */
 export function recordedFetch(
-  overrides: { github?: unknown; linear?: (recorded: typeof linearProgram) => void; npm?: unknown } = {},
+  overrides: {
+    github?: unknown;
+    linear?: (recorded: typeof linearProgram) => void;
+    npm?: unknown;
+    repository?: { full_name: string };
+  } = {},
 ): { fetch: Fetch; calls: Call[] } {
   const recorded = structuredClone(linearProgram);
   overrides.linear?.(recorded);
@@ -84,6 +89,15 @@ export function recordedFetch(
       init.method === "HEAD"
     )
       return new Response(null, { status: 200 });
+    if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(url)) {
+      calls.push({
+        url,
+        operation: "Repository",
+        variables: {},
+        authorization: new Headers(init.headers).get("Authorization"),
+      });
+      return Response.json(overrides.repository ?? { full_name: "acme/widgets" });
+    }
     const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
     const operation = body.query.match(/query\s+(\w+)/)?.[1] ?? "?";
     const authorization = new Headers(init.headers).get("Authorization");
