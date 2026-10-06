@@ -3,6 +3,7 @@
 import { parse, TomlError } from "smol-toml";
 import { failurePattern } from "./ci.ts";
 import { JOB_NAME } from "./jobs.ts";
+import { LINT_DEFAULTS, type LintRules } from "./lint.ts";
 
 export interface JobConfig {
   start: string;
@@ -33,6 +34,8 @@ export interface ArmadaConfig {
     programRoot: string;
     /** Style used when creating and renumbering specs; both forms are always readable. */
     specTitles: SpecTitleStyle;
+    /** Explicit tracker.lint opts into errors; missing table uses warning-only defaults. */
+    lint: LintRules;
     /** Language of owner-facing output (BCP 47 tag). Tracker comments stay in English. */
     language: string;
     /** Label that marks a ticket as specified enough for an agent to take. */
@@ -300,6 +303,30 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   if (!isTable(labels)) problems.push(`"tracker.labels" must be a table`);
   const policy = raw.policy === undefined ? {} : raw.policy;
   if (!isTable(policy)) problems.push(`"policy" must be a table`);
+  const lintRaw = tracker.lint;
+  if (lintRaw !== undefined && !isTable(lintRaw)) problems.push('"tracker.lint" must be a table');
+  const lintT = isTable(lintRaw) ? lintRaw : {};
+  const inShort = str(lintT, "tracker.lint", "in_short", { default: LINT_DEFAULTS.inShort });
+  if (!/^#{1,6} [^\r\n]+$/.test(inShort))
+    problems.push('"tracker.lint.in_short" must be a Markdown heading, e.g. "## In short"');
+  let inShortParts = [...LINT_DEFAULTS.inShortParts];
+  if (lintT.in_short_parts !== undefined) {
+    const parts = lintT.in_short_parts;
+    if (
+      Array.isArray(parts) &&
+      parts.length > 0 &&
+      parts.every((p) => typeof p === "string" && p.trim() && !/[\r\n]/.test(p))
+    )
+      inShortParts = [...new Set(parts.map((p: string) => p.trim()))];
+    else problems.push('"tracker.lint.in_short_parts" must be a non-empty list of part names on one line');
+  }
+  let titleMax = LINT_DEFAULTS.titleMax;
+  if (lintT.title_max !== undefined) {
+    const max = lintT.title_max;
+    if (typeof max === "number" && Number.isSafeInteger(max) && max > 0) titleMax = max;
+    else problems.push('"tracker.lint.title_max" must be a positive integer');
+  }
+  const lint: LintRules = { inShort, inShortParts, titleMax, severity: lintRaw === undefined ? "warning" : "error" };
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
   const ci = raw.ci ?? {};
@@ -331,7 +358,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   // left alone so newer sections do not break older readers.
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
-    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels"]],
+    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels", "lint"]],
+    ["tracker.lint", lintT, ["in_short", "in_short_parts", "title_max"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["ci", ciT, ["failure_patterns", "known_failure"]],
@@ -747,6 +775,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     },
     tracker: {
       specTitles,
+      lint,
       programRoot: str(tracker, "tracker", "program_root", {
         pattern: ISSUE_ID,
         hint: "an issue identifier such as ABC-1",

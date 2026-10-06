@@ -40,6 +40,12 @@ describe("armada.toml", () => {
       tracker: {
         programRoot: "DEMO-1",
         specTitles: "N",
+        lint: {
+          inShort: "## In short",
+          inShortParts: ["What changes", "Why", "Done when", "Depends on"],
+          titleMax: 60,
+          severity: "warning",
+        },
         language: "en",
         readyLabel: "ready-for-agent",
         parkedLabel: "parked",
@@ -449,4 +455,21 @@ test("declared reservation keys are optional, descriptive and unique", () => {
   expect(problemsOf(DEMO_TOML + declaration.replace("numbered = true", 'numbered = "yes"')).join(" ")).toContain(
     'numbered" must be true or false',
   );
+});
+
+test("tracker lint is opt-in with configurable defaults and rejects invalid rules", () => {
+  expect(parseConfig(`${DEMO_TOML}\n[tracker.lint]`).tracker.lint.severity).toBe("error");
+  expect(
+    parseConfig(`${DEMO_TOML}\n[tracker.lint]\nin_short = "## Résumé"\nin_short_parts = ["Pourquoi"]\ntitle_max = 80`)
+      .tracker.lint,
+  ).toEqual({ inShort: "## Résumé", inShortParts: ["Pourquoi"], titleMax: 80, severity: "error" });
+  for (const field of [
+    'in_short = "Summary"',
+    "in_short_parts = []",
+    "title_max = 0",
+    "title_max = 1.5",
+    "unknown = true",
+  ])
+    expect(problemsOf(`${DEMO_TOML}\n[tracker.lint]\n${field}`).join(" ")).toContain("tracker.lint");
+  expect(problemsOf(DEMO_TOML.replace("[tracker]", "[tracker]\nlint = false")).join(" ")).toContain("tracker.lint");
 });
