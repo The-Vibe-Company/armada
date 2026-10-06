@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.58](https://github.com/The-Vibe-Company/armada/compare/v0.2.57...v0.2.58) (2026-10-06)
+
+
+### Features
+
+* **deploy:** check only targets touched by a merge ([#269](https://github.com/The-Vibe-Company/armada/issues/269)) ([78e0816](https://github.com/The-Vibe-Company/armada/commit/78e0816e61706d3a4c9f4afc260e7515923a1ff0))
+
+
+### Bug Fixes
+
+* **test:** pin dashboard browser to Playwright (THE-1185) ([#266](https://github.com/The-Vibe-Company/armada/issues/266)) ([d14ffe2](https://github.com/The-Vibe-Company/armada/commit/d14ffe2152e6921c3768758050ec0b96db7988dd))
+
 ## [0.2.57](https://github.com/The-Vibe-Company/armada/compare/v0.2.56...v0.2.57) (2026-10-06)
 
 
