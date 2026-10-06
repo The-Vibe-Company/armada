@@ -15,7 +15,8 @@ Armada runs a fleet of coding agents on one project: Linear holds the plan and p
 ## Commands
 
 - `bun install`
-- `bun run verify`: lint (Biome), typecheck (`tsc`) and tests (Bun plus isolated Node browser cases, `bun run test`). CI runs the same on every pull request.
+- `bun run test:browser:install`: install the Chromium headless shell pinned by Playwright before testing (CI adds `--with-deps` for Ubuntu).
+- `bun run verify`: lint (Biome), typecheck (`tsc`) and tests (`bun test`). CI runs the same on every pull request.
 - `bun run format`: apply Biome formatting and safe fixes.
 - `cd packages/cli && npm pack`: build `dist/armada.js` (Bun bundles `core` for Node) and pack the npm tarball. CI installs that tarball and runs it on every pull request.
 - `cd packages/dashboard && ARMADA_DASHBOARD_PASSWORD=off bun run dev`: the dashboard on port 4822 (`off` works outside production only; without it or accounts every route answers 503); `bun run build` is the Vercel build and runs in CI. `bun run perf bundles|lighthouse|inp|report` checks the performance budgets against a production build (`docs/performance.md`). See the README for the demo mode and for running it with accounts (`ARMADA_DATABASE_URL=pglite:.demo/armada`, a local PGlite database). Dashboard tests run on PGlite; `ARMADA_TEST_DATABASE_URL` (a direct URL to a throwaway Neon branch, never production) runs the same tests on real Postgres, one schema per test file.
