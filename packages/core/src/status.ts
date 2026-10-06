@@ -241,11 +241,15 @@ export function buildStatus({
   return {
     ...(jobs
       ? {
-          jobs: jobs.map((job) => ({
-            ...job,
-            overdue: jobOverdue(job, config.jobs?.[job.name]?.maxHours, now),
-            ticketDone: issues.some((i) => i.id === job.ticket && i.statusType === "completed"),
-          })),
+          jobs: jobs.map((job) => {
+            const maxHours = config.jobs?.[job.name]?.maxHours ?? null;
+            return {
+              ...job,
+              overdue: jobOverdue(job, maxHours, now),
+              ticketDone: issues.some((i) => i.id === job.ticket && i.statusType === "completed"),
+              maxHours,
+            };
+          }),
         }
       : {}),
     schemaVersion: STATUS_SCHEMA_VERSION,
