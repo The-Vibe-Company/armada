@@ -203,3 +203,52 @@ test("skipped deploys persist without notices, can be retried, and never overwri
   const healthy = await store.recordDeploy({ ...skip, state: "healthy", detail: "healthy", at: at(32) });
   expect(await store.recordDeploy({ ...skip, at: at(33) })).toEqual(healthy);
 });
+
+test("not-runnable configuration observations notify atomically, retry with a fresh deadline and preserve real failures", async () => {
+  const store = fleetStore(db);
+  const local = {
+    project: PROJECT,
+    target: "local-command",
+    sha: "local-a",
+    state: "not-runnable" as const,
+    detail: "sh: link: set link",
+    pauseOnFailure: false,
+    at: at(40),
+  };
+  expect((await store.recordDeploy({ ...local, state: "waiting" })).state).toBe("waiting");
+  expect((await store.recordDeploy({ ...local, at: at(41) })).state).toBe("not-runnable");
+  await store.recordDeploy({ ...local, at: at(42) });
+  const notices = (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).filter((i) =>
+    i.body.includes(local.target),
+  );
+  expect(notices).toHaveLength(1);
+  expect(notices[0]?.kind).toBe("deploy");
+  expect(notices[0]?.body).toContain("not runnable on this machine (configuration)");
+  expect(notices[0]?.body).toContain(local.detail);
+  expect((await store.openHolds(PROJECT)).filter((h) => h.ref === local.target)).toHaveLength(0);
+  const retry = await store.recordDeploy({ ...local, state: "waiting", at: at(45) });
+  expect(retry.startedAt).toBe(at(45).toISOString());
+  const healthy = await store.recordDeploy({ ...local, state: "healthy", at: at(46) });
+  expect(
+    (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).filter((i) =>
+      i.body.includes(local.target),
+    ),
+  ).toHaveLength(0);
+  expect(await store.recordDeploy({ ...local, at: at(47) })).toEqual(healthy);
+  const failed = await store.recordDeploy({
+    ...local,
+    sha: "local-b",
+    state: "smoke-failed",
+    pauseOnFailure: true,
+    detail: "real smoke failure",
+    at: at(48),
+  });
+  expect((await store.openHolds(PROJECT)).filter((h) => h.ref === local.target)).toHaveLength(1);
+  expect(await store.recordDeploy({ ...local, sha: "local-b", at: at(49) })).toEqual(failed);
+  await store.recordDeploy({ ...local, sha: "local-c", at: at(50) });
+  const held = (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).filter((i) =>
+    i.body.includes(local.target),
+  );
+  expect(held).toHaveLength(1);
+  expect(held[0]?.body).toContain("real smoke failure");
+});

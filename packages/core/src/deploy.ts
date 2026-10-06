@@ -47,6 +47,7 @@ export const DEPLOY_STATES = [
   "smoke-failed",
   "timeout",
   "skipped",
+  "not-runnable",
 ] as const;
 export type DeployState = (typeof DEPLOY_STATES)[number];
 export interface DeployInput {
@@ -86,6 +87,7 @@ export interface LiveDeploy {
   sha: string | null;
   state: "pending" | "success" | "failure" | "error";
   detail: string;
+  notRunnable?: boolean;
 }
 
 export interface WatchDeployOptions {
@@ -99,7 +101,10 @@ export interface WatchDeployOptions {
   healthy?: () => Promise<{ sha: string; detail: string } | null>;
   includes: (base: string, head: string) => Promise<boolean>;
   /** Null means another watcher owns the smoke lease; read again next poll. */
-  smoke: (liveSha: string, remainingMs: number) => Promise<{ ok: boolean | null; detail: string }>;
+  smoke: (
+    liveSha: string,
+    remainingMs: number,
+  ) => Promise<{ ok: boolean | null; detail: string; notRunnable?: boolean }>;
   record: (input: DeployInput) => Promise<unknown>;
 }
 
@@ -114,7 +119,7 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
       sha: o.sha,
       state,
       detail: deployDetail(detail),
-      pauseOnFailure: o.target.pauseOnFailure,
+      pauseOnFailure: state !== "not-runnable" && o.target.pauseOnFailure,
       liveSha,
     });
   await record("waiting");
@@ -142,6 +147,10 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
     if (live) {
       detail = live.detail;
       liveSha = live.sha;
+      if (live.notRunnable) {
+        await record("not-runnable");
+        return "not-runnable";
+      }
       let includes = live.sha === o.sha;
       if (live.sha && !includes) {
         try {
@@ -156,13 +165,17 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
       }
       if (includes && live.sha && live.state === "success" && o.now().getTime() < deadline) {
         await record("live");
-        let result: { ok: boolean | null; detail: string };
+        let result: { ok: boolean | null; detail: string; notRunnable?: boolean };
         try {
           result = await o.smoke(live.sha, deadline - o.now().getTime());
         } catch {
           result = { ok: null, detail: "could not read or record shared smoke state; retrying" };
         }
         detail = result.detail;
+        if (result.notRunnable) {
+          await record("not-runnable");
+          return "not-runnable";
+        }
         if (result.ok !== null) {
           const state = result.ok ? "healthy" : "smoke-failed";
           await record(state);
@@ -180,5 +193,5 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
 
 export function deployLine(row: DeployRecord, now: Date): string {
   const age = Math.max(0, Math.floor((now.getTime() - Date.parse(row.updatedAt)) / 60_000));
-  return `${row.target}: ${row.state === "skipped" ? "skipped (not configured on this machine)" : row.state} ${row.sha}${row.state === "waiting" || row.state === "live" ? ` — watching since ${row.startedAt.slice(11, 16)}, no news for ${age} min${age >= 2 ? "; watcher may have stopped" : ""}` : ""}`;
+  return `${row.target}: ${row.state === "skipped" ? "skipped (not configured on this machine)" : row.state === "not-runnable" ? "not runnable (configuration)" : row.state} ${row.sha}${row.state === "waiting" || row.state === "live" ? ` — watching since ${row.startedAt.slice(11, 16)}, no news for ${age} min${age >= 2 ? "; watcher may have stopped" : ""}` : ""}`;
 }

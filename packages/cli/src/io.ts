@@ -119,7 +119,10 @@ export interface Io {
   ) => Promise<boolean>;
   /** Runs `armada run` or an explicitly accepted official installer, attached to this terminal. */
   spawn?: Spawn;
-  startBackground?: (args: string[], options?: { logPath?: string }) => Promise<boolean>;
+  startBackground?: (
+    args: string[],
+    options?: { logPath?: string; env?: Record<string, string | undefined> },
+  ) => Promise<boolean>;
   backgroundReady?: (ready: boolean) => void;
   stopped?: () => boolean;
 }

@@ -163,7 +163,7 @@ export function memoryFleet(): FleetStore & {
   ];
   const deployTerminal = (state: string) => state === "healthy" || deployFailed(state as never);
   const deployBody = (input: DeployInputWithCoverage) =>
-    `Deployment ${input.state} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
+    `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
   const staleFailure = (record: DeployRow) =>
     deploys.some(
       (row) =>
@@ -405,7 +405,8 @@ export function memoryFleet(): FleetStore & {
         sequence: deploys.reduce((max, candidate) => Math.max(max, candidate.sequence), 0) + 1,
       };
       if (known) {
-        if (row.state === "skipped" && input.state !== "skipped") row.startedAt = input.at.toISOString();
+        if (["skipped", "not-runnable"].includes(row.state) && !["skipped", "not-runnable"].includes(input.state))
+          row.startedAt = input.at.toISOString();
         Object.assign(row, {
           state: input.state,
           detail,
@@ -416,7 +417,15 @@ export function memoryFleet(): FleetStore & {
         });
       } else deploys.push(row);
       if (row.state === "healthy") clearDeployHealthy(input, row, input.at);
-      else if (deployFailed(row.state)) {
+      else if (row.state === "not-runnable") {
+        if (
+          !staleFailure(row) &&
+          !holds.some(
+            (h) => h.project === input.project && h.kind === "deploy" && h.ref === input.target && !h.clearedAt,
+          )
+        )
+          deployNotice(input, input.at);
+      } else if (deployFailed(row.state)) {
         if (input.pauseOnFailure) openDeployFailure(input, row, input.at);
         else if (!staleFailure(row)) deployNotice(input, input.at);
       }

@@ -8,6 +8,7 @@ import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW } from "../../core/te
 import { loadCredentials } from "../src/auth.ts";
 import { type Io, run } from "../src/cli.ts";
 import { startDeploys } from "../src/deploy.ts";
+import { createExec } from "../src/spawn.ts";
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -40,6 +41,67 @@ async function terminal() {
   return { io, store, clock, out, err, api };
 }
 
+test("merge startup carries machine settings through the real detached Node watcher to live and smoke commands", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "armada-background-deploy-"));
+  dirs.push(dir);
+  const configPath = join(dir, "armada.toml");
+  await writeFile(
+    configPath,
+    `${DEMO_TOML}\n[[deploy.target]]\nname = "api"\nrequires_env = ["DEPLOY_LINK_DIR"]\nlive_sha_command = 'test "$DEPLOY_LINK_DIR" = synthetic-linked-folder && printf %s "$ARMADA_DEPLOY_SHA"'\nsmoke = 'test "$DEPLOY_LINK_DIR" = synthetic-linked-folder'\ntimeout_minutes = 1\n`,
+  );
+  const build = await Bun.build({
+    entrypoints: [join(import.meta.dir, "support/deploy-background.ts")],
+    outdir: dir,
+    target: "node",
+  });
+  expect(build.success).toBe(true);
+  const result = await createExec()("node", [join(dir, "deploy-background.js"), configPath], {
+    cwd: dir,
+    timeoutMs: 10_000,
+    env: { PATH: process.env.PATH },
+  });
+  expect(result.code).toBe(0);
+  const evidence = JSON.parse(result.stdout);
+  expect(evidence.started).toBe(true);
+  expect(evidence.child.code).toBe(0);
+  expect(evidence.child.rows[0]?.state).toBe("healthy");
+  expect(evidence.child.holds).toHaveLength(0);
+});
+
+test.each([
+  ["live", 127, "sh: version-tool: command not found"],
+  ["live", 2, "sh: DEPLOY_LINK_DIR: set DEPLOY_LINK_DIR"],
+  ["live", 2, "sh: 1: cd: can't cd to /missing/link"],
+  ["smoke", 127, "sh: health-tool: not found"],
+  ["smoke", 1, "sh: DEPLOY_LINK_DIR: parameter null or not set"],
+] as const)(
+  "%s configuration error (%i, %s) warns once and sends a deploy notice without a hold",
+  async (stage, code, message) => {
+    const t = await terminal();
+    t.io.env.LINEAR_API_KEY = "synthetic-linear-key";
+    let failures = 0;
+    t.io.exec = async (_command, args) => {
+      const failing = stage === "live" ? args[1] === "version" : args[1] === "health";
+      if (failing) {
+        failures++;
+        return { code, stdout: "", stderr: message };
+      }
+      return { code: 0, stdout: sha, stderr: "" };
+    };
+    expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(0);
+    expect(failures).toBe(1);
+    expect(t.err).toHaveLength(1);
+    expect(t.err[0]).toContain("deploy check not runnable on this machine");
+    expect(t.err[0]).toContain(message);
+    expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe("not-runnable");
+    const items = await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+    expect(items).toHaveLength(1);
+    expect(items[0]?.kind).toBe("deploy");
+    expect(items[0]?.body).toContain(message);
+    expect(await t.store.openHolds("widgets")).toHaveLength(0);
+  },
+);
+
 test("watch commands are bounded, run at repo root with deploy environment, and coalesce smoke", async () => {
   const t = await terminal();
   let smoke = 0;
@@ -61,6 +123,24 @@ test("watch commands are bounded, run at repo root with deploy environment, and 
   expect(await t.store.openHolds("widgets")).toHaveLength(0);
   expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe("healthy");
   expect(t.out.join("") + t.err.join("")).not.toContain("CANARY");
+});
+
+test("a runnable live-commit command failure still waits to its deadline and holds", async () => {
+  const t = await terminal();
+  t.io.env.LINEAR_API_KEY = "synthetic-linear-key";
+  let commands = 0;
+  t.io.exec = async () => {
+    commands++;
+    return { code: 1, stdout: "", stderr: "hosting service unavailable" };
+  };
+  expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(1);
+  expect(commands).toBe(2);
+  expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe("timeout");
+  expect(await t.store.openHolds("widgets")).toHaveLength(1);
+  const items = await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+  expect(items).toHaveLength(1);
+  expect(items[0]?.body).toContain("hosting service unavailable");
+  expect(t.err.join("")).not.toContain("not runnable");
 });
 
 test("failing smoke pauses merges and a healthy newer deploy recovers", async () => {
