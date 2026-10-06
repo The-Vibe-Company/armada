@@ -36,7 +36,7 @@ import {
 } from "../lib/fleet-store.ts";
 import { answerJson, answerOverview } from "../lib/live-http.ts";
 import { submitAnswer as answer, submitLaunch as launchReq, submitDecision } from "../lib/requests.ts";
-import { markRepository } from "../lib/snapshots.ts";
+import { dbSnapshots, markRepository } from "../lib/snapshots.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
 const open: Database[] = [];
@@ -1114,4 +1114,124 @@ test("job beats reach the dashboard project report on its next Postgres read wit
   });
   expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.jobs?.[0]?.progress).toBe("40/120");
   expect(w.reads.snapshots).toBe(reads);
+});
+
+test("accepted refreshes persist one main-red pause and inbox item, then recover with the refreshed gates", async () => {
+  const db = await tempDb();
+  await upsertProject(db, WIDGETS);
+  let gates = ["test"];
+  let state: "failure" | "pending" | "success" = "failure";
+  const w = world(db, {
+    readConfig: async () => ({
+      config: { ...parseConfig(configTemplate(WIDGETS)), gates: { requiredChecks: gates, localCommands: [] } },
+      warning: null,
+    }),
+    readSnapshot: async (config) => ({
+      ...snapshot(config, T0, []),
+      forge: {
+        repo: WIDGETS.repository,
+        fetchedAt: new Date(T0).toISOString(),
+        prs: [],
+        warnings: [],
+        main: [
+          {
+            branch: "main",
+            sha: "a".repeat(40),
+            headline: "Improve export (#12)",
+            at: new Date(T0).toISOString(),
+            ci: state,
+            checks: [
+              { name: "test", state },
+              { name: "lint", state: "success" },
+            ],
+          },
+        ],
+      },
+    }),
+  });
+  const store = fleetStore(db);
+  const manual = await store.openHold({
+    project: WIDGETS.slug,
+    kind: "manual",
+    reason: "Owner review",
+    author: "owner",
+    at: w.at(0),
+  });
+  await w.warm();
+  const red = (await store.openHolds(WIDGETS.slug)).find((h) => h.kind === "main-red");
+  expect(red).toMatchObject({
+    ref: "a".repeat(40),
+    reason: "main red since #12: test failing on aaaaaaa",
+    openedBy: "armada",
+  });
+  if (!red) throw new Error("missing main-red hold");
+  const inbox = () => store.openInboxItems({ project: WIDGETS.slug, recipient: "coordinator" });
+  expect((await inbox()).filter((i) => i.kind === "hold")).toHaveLength(2);
+  const refresh = async () => {
+    w.advance(60_000);
+    await loadOverview(w.opts);
+    await w.settle();
+  };
+  await refresh();
+  expect((await store.openHolds(WIDGETS.slug)).map((h) => h.id)).toEqual([manual.id, red.id]);
+  expect((await inbox()).filter((i) => i.kind === "hold")).toHaveLength(2);
+  state = "pending";
+  await refresh();
+  expect((await store.openHolds(WIDGETS.slug)).map((h) => h.id)).toContain(red.id);
+  state = "failure";
+  gates = ["lint"];
+  await refresh();
+  expect((await store.openHolds(WIDGETS.slug)).map((h) => h.id)).toEqual([manual.id]);
+  expect((await inbox()).filter((i) => i.kind === "hold")).toHaveLength(1);
+  gates = ["test"];
+  await refresh();
+  const reopened = (await store.openHolds(WIDGETS.slug)).find((h) => h.kind === "main-red");
+  if (!reopened) throw new Error("missing reopened hold");
+  expect(reopened.id).not.toBe(red.id);
+  await store.clearHold({
+    project: WIDGETS.slug,
+    id: reopened.id,
+    reason: "Manual clear",
+    author: "owner",
+    at: w.at(0),
+  });
+  await refresh();
+  expect((await store.openHolds(WIDGETS.slug)).filter((h) => h.kind === "main-red")).toHaveLength(1);
+  // An old green refresh cannot clear the pause opened by a newer accepted red reading.
+  const snapshots = dbSnapshots(db, w.opts.cache.snapshots);
+  const key = WIDGETS.slug;
+  const previous = (await snapshots.entries([key])).get(key)?.snapshot;
+  if (!previous) throw new Error("missing saved snapshot");
+  const old = await snapshots.claim(key, w.at(600_000), 1);
+  const fresh = await snapshots.claim(key, w.at(600_002), 60_000);
+  if (!old || !fresh) throw new Error("missing refresh claims");
+  expect(await snapshots.save(key, previous, fresh, { full: true, now: w.at(600_002) })).toMatchObject({ saved: true });
+  if (!previous.sources.forge) throw new Error("missing forge reading");
+  const green = {
+    ...previous,
+    sources: {
+      ...previous.sources,
+      forge: {
+        ...previous.sources.forge,
+        main: previous.sources.forge?.main?.map((c) => ({
+          ...c,
+          ci: "success" as const,
+          checks: [{ name: "test", state: "success" as const }],
+        })),
+      },
+    },
+  };
+  expect(await snapshots.save(key, green, old, { full: true, now: w.at(600_003) })).toMatchObject({ saved: false });
+  expect((await store.openHolds(key)).filter((h) => h.kind === "main-red")).toHaveLength(1);
+  // A different repository's config can name our slug; it cannot clear our pause.
+  const foreign = await snapshots.claim("impostor", w.at(600_004), 60_000);
+  if (!foreign) throw new Error("missing foreign refresh claim");
+  expect(await snapshots.save("impostor", green, foreign, { full: true, now: w.at(600_004) })).toMatchObject({
+    saved: true,
+  });
+  expect((await store.openHolds(key)).filter((h) => h.kind === "main-red")).toHaveLength(1);
+  state = "success";
+  w.advance(600_004);
+  await refresh();
+  expect((await store.openHolds(WIDGETS.slug)).map((h) => h.id)).toEqual([manual.id]);
 });

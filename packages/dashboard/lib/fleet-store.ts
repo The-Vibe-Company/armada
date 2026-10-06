@@ -39,6 +39,7 @@ import type {
   JobState,
   LatestEvent,
   Lease,
+  MainHealth,
   MergeHold,
   NewRequest,
   OpenHold,
@@ -68,6 +69,7 @@ import {
   holdBody,
   isShippingStage,
   jobEndedBody,
+  mainRedHoldChange,
   OBSERVABLE_RUNTIMES,
   REQUEST_KINDS,
   TIMELINE_HOURS,
@@ -1846,63 +1848,67 @@ export async function openHold(
   db: Database,
   input: OpenHold & { project: string; author: string | null; at: Date },
 ): Promise<MergeHold> {
-  return transaction(db, async (q) => {
-    const ref = input.kind === "manual" ? null : (input.ref ?? null);
-    const result = await q.query(
-      `INSERT INTO merge_holds(project, kind, ref, reason, opened_by, opened_at)
+  return transaction(db, (q) => openHoldOn(q, input));
+}
+
+async function openHoldOn(q: Queryable, input: Parameters<typeof openHold>[1]): Promise<MergeHold> {
+  const ref = input.kind === "manual" ? null : (input.ref ?? null);
+  const result = await q.query(
+    `INSERT INTO merge_holds(project, kind, ref, reason, opened_by, opened_at)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (project, kind, ref) WHERE cleared_at IS NULL DO NOTHING RETURNING *`,
-      [input.project, input.kind, ref, input.reason, input.author, input.at],
+    [input.project, input.kind, ref, input.reason, input.author, input.at],
+  );
+  if (!result.rows[0]) {
+    const existing = await q.query(
+      "SELECT * FROM merge_holds WHERE project = $1 AND kind = $2 AND ref = $3 AND cleared_at IS NULL",
+      [input.project, input.kind, ref],
     );
-    if (!result.rows[0]) {
-      const existing = await q.query(
-        "SELECT * FROM merge_holds WHERE project = $1 AND kind = $2 AND ref = $3 AND cleared_at IS NULL",
-        [input.project, input.kind, ref],
-      );
-      // A concurrent clear after the conflicting insert: retry on the next call instead of returning a cleared pause.
-      if (!existing.rows[0]) throw new Error("the hold was cleared concurrently; open it again");
-      return holdRow(existing.rows[0]);
-    }
-    const hold = holdRow(result.rows[0]);
-    const itemId = await addInboxItem(q, {
-      project: input.project,
-      ticket: null,
-      kind: "hold",
-      recipient: "coordinator",
-      author: input.author,
-      body: holdBody(hold),
-      at: input.at,
-    });
-    await q.query("UPDATE merge_holds SET inbox_id = $2 WHERE id = $1", [hold.id, itemId]);
-    return hold;
+    // A concurrent clear after the conflicting insert: retry on the next call instead of returning a cleared pause.
+    if (!existing.rows[0]) throw new Error("the hold was cleared concurrently; open it again");
+    return holdRow(existing.rows[0]);
+  }
+  const hold = holdRow(result.rows[0]);
+  const itemId = await addInboxItem(q, {
+    project: input.project,
+    ticket: null,
+    kind: "hold",
+    recipient: "coordinator",
+    author: input.author,
+    body: holdBody(hold),
+    at: input.at,
   });
+  await q.query("UPDATE merge_holds SET inbox_id = $2 WHERE id = $1", [hold.id, itemId]);
+  return hold;
 }
 export async function clearHold(
   db: Database,
   input: { project: string; id: number; reason: string; author: string | null; at: Date },
 ): Promise<ClearHoldResult | null> {
-  return transaction(db, async (q) => {
-    const result = await q.query("SELECT * FROM merge_holds WHERE project = $1 AND id = $2 FOR UPDATE", [
-      input.project,
-      input.id,
-    ]);
-    const row = result.rows[0];
-    if (!row) return null;
-    if (row.cleared_at) return { hold: holdRow(row), cleared: false };
-    const updated = await q.query(
-      "UPDATE merge_holds SET cleared_at = $3, cleared_by = $4, clear_reason = $5 WHERE project = $1 AND id = $2 RETURNING *",
-      [input.project, input.id, input.at, input.author, input.reason],
-    );
-    await resolveInboxItem(q, {
-      project: input.project,
-      id: Number(row.inbox_id),
-      resolution: input.reason,
-      at: input.at,
-    });
-    const changed = updated.rows[0];
-    if (!changed) throw new Error("the locked hold could not be cleared");
-    return { hold: holdRow(changed), cleared: true };
+  return transaction(db, (q) => clearHoldOn(q, input));
+}
+
+async function clearHoldOn(q: Queryable, input: Parameters<typeof clearHold>[1]): Promise<ClearHoldResult | null> {
+  const result = await q.query("SELECT * FROM merge_holds WHERE project = $1 AND id = $2 FOR UPDATE", [
+    input.project,
+    input.id,
+  ]);
+  const row = result.rows[0];
+  if (!row) return null;
+  if (row.cleared_at) return { hold: holdRow(row), cleared: false };
+  const updated = await q.query(
+    "UPDATE merge_holds SET cleared_at = $3, cleared_by = $4, clear_reason = $5 WHERE project = $1 AND id = $2 RETURNING *",
+    [input.project, input.id, input.at, input.author, input.reason],
+  );
+  await resolveInboxItem(q, {
+    project: input.project,
+    id: Number(row.inbox_id),
+    resolution: input.reason,
+    at: input.at,
   });
+  const changed = updated.rows[0];
+  if (!changed) throw new Error("the locked hold could not be cleared");
+  return { hold: holdRow(changed), cleared: true };
 }
 export async function openHolds(db: Queryable, project: string): Promise<MergeHold[]> {
   return (
@@ -1910,6 +1916,20 @@ export async function openHolds(db: Queryable, project: string): Promise<MergeHo
       project,
     ])
   ).rows.map(holdRow);
+}
+
+/** Runs on the snapshot save's locked connection, before that reading becomes visible. */
+export async function applyMainRedHold(
+  q: Queryable,
+  project: string,
+  health: MainHealth | null,
+  at: Date,
+): Promise<void> {
+  if (!health || (health.state !== "red" && health.state !== "green")) return;
+  const change = mainRedHoldChange(health, await openHolds(q, project));
+  // Open first: even the supersession transaction never leaves merges unpaused.
+  if (change.open) await openHoldOn(q, { ...change.open, project, author: "armada", at });
+  for (const clear of change.clear ?? []) await clearHoldOn(q, { ...clear, project, author: "armada", at });
 }
 
 // ------------------------------------------------------------------ the store
@@ -1998,16 +2018,26 @@ export const fleetStore = (db: Database): FleetStore => ({
       );
       if (rs.rows[0]) {
         const job = jobOf(rs.rows[0]);
-        if (job.finishedAt)
+        if (job.finishedAt) {
+          // Route by the authenticated starter, never the observer or a replacement worker.
+          // Lock its session so ending it and choosing the notice recipient are serialized.
+          const worker = (
+            await tx.query(
+              `SELECT "id" FROM "armada_worker" WHERE "id" = $1 AND "project" = $2 AND "ticket" = $3
+             AND "tokenUsedAt" IS NOT NULL AND "endedAt" IS NULL AND "sessionExpiresAt" > $4 FOR UPDATE`,
+              [job.startedBy, job.project, job.ticket, input.at],
+            )
+          ).rows[0];
           await addInboxItem(tx, {
             project: job.project,
             ticket: job.ticket,
             kind: "job",
-            recipient: "coordinator",
+            recipient: worker ? "worker" : "coordinator",
             author: null,
             body: jobEndedBody(job),
             at: input.at,
           });
+        }
         return job;
       }
       const job = await getJob(tx, input.project, input.id);
