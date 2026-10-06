@@ -6,6 +6,8 @@ import type {
   AgentPhase,
   CiState,
   CoordinatorState,
+  DeployState,
+  HoldKind,
   JobState,
   MainHealth,
   RequestKind,
@@ -588,6 +590,26 @@ const en = {
         `${n.ready} ready to merge`,
         `${n.merged} merged today`,
       ].join(" · "),
+    /** An open merge pause (THE-1105): its reason, then its kind, id and age. */
+    pause: {
+      title: (reason: string) => `Merges paused: ${reason}`,
+      detail: (kind: string, id: number, ago: string) => `${kind} · hold #${id} · opened ${ago}`,
+      kinds: { manual: "manual", deploy: "deploy", "main-red": "main red" } satisfies Record<HoldKind, string>,
+    },
+    /** A project's deploy targets and their last state (THE-1105). */
+    deploys: {
+      title: "Deploys",
+      states: {
+        waiting: "waiting",
+        live: "live",
+        healthy: "healthy",
+        "deploy-failed": "deploy failed",
+        "smoke-failed": "smoke failed",
+        timeout: "timed out",
+      } satisfies Record<DeployState, string>,
+      none: "no deploy yet",
+      quiet: (d: string) => `no news for ${d}`,
+    },
     card: {
       blocked: (n: number) => `${n} blocked`,
       you: (n: number) => `${n} for you`,
@@ -1576,6 +1598,24 @@ const fr: Strings = {
         `${n.ready} prêt${n.ready > 1 ? "s" : ""} à merger`,
         `${n.merged} mergé${n.merged > 1 ? "s" : ""} aujourd'hui`,
       ].join(" · "),
+    pause: {
+      title: (reason) => `Merges en pause : ${reason}`,
+      detail: (kind, id, ago) => `${kind} · pause n° ${id} · ouverte ${ago}`,
+      kinds: { manual: "manuelle", deploy: "déploiement", "main-red": "main rouge" },
+    },
+    deploys: {
+      title: "Déploiements",
+      states: {
+        waiting: "en attente",
+        live: "en ligne",
+        healthy: "sain",
+        "deploy-failed": "déploiement échoué",
+        "smoke-failed": "smoke test échoué",
+        timeout: "délai dépassé",
+      },
+      none: "aucun déploiement",
+      quiet: (d) => `aucune nouvelle depuis ${d}`,
+    },
     card: {
       blocked: (n) => `${n} bloqué(s)`,
       you: (n) => `${n} pour toi`,

@@ -5,9 +5,10 @@
 import { newerRelease } from "./armada-api.ts";
 import type { Attachment } from "./attachments.ts";
 import { CONFIG_DEFAULTS, type ConductorProfile } from "./config.ts";
+import type { DeployRecord } from "./deploy.ts";
 import { workerLivenessAt } from "./fleet.ts";
 import type { JobSummary } from "./jobs.ts";
-import type { CoordinatorPresence, InboxItem, InboxReadEvent, SessionRecord } from "./live.ts";
+import type { CoordinatorPresence, InboxItem, InboxReadEvent, MergeHold, SessionRecord } from "./live.ts";
 import { REQUEST_KINDS } from "./request-kinds.ts";
 import type { FrontierTicket, InFlightTicket, MergedTicket, StatusReport } from "./status.ts";
 import {
@@ -162,6 +163,18 @@ export interface FleetTimeline {
 /** A long job as the dashboard shows it: no runner reference or starter, which no screen draws. */
 export type ShownJob = Omit<JobSummary, "ref" | "startedBy">;
 
+/**
+ * An open merge pause as the dashboard shows it (THE-1105): its reason's first
+ * line only, since a deploy pause carries the deploy's output under it.
+ */
+export type ShownHold = Pick<MergeHold, "id" | "kind" | "ref" | "reason" | "openedBy" | "openedAt">;
+
+/** A target of `[deploy]` and its last observation (THE-1105); null before the first one. */
+export interface ShownDeploy {
+  target: string;
+  last: Pick<DeployRecord, "sha" | "state" | "startedAt" | "updatedAt"> | null;
+}
+
 export type CoordinatorState = "active" | "idle" | "unknown";
 
 /**
@@ -189,6 +202,10 @@ export interface ProjectOverview {
   merged: MergedTicket[];
   /** Its long jobs (THE-1128): the open ones and those of its tickets ended lately, as the store gives them. */
   jobs: ShownJob[];
+  /** Its open merge pauses, oldest first; absent when the live data was not read (THE-1105). */
+  holds?: ShownHold[];
+  /** Each target of its `[deploy]`, in its order; absent without one, or when the live data was not read. */
+  deploys?: ShownDeploy[];
   requests: InboxItem[];
   slug: string;
   name: string;
@@ -256,7 +273,13 @@ export interface ProjectReading {
     sessions?: SessionRecord[];
     /** Open validations and those decided lately, with their gallery and their ticket's title when known. */
     validations?: OwnerValidation[];
+    /** Its open merge pauses (THE-1094). */
+    holds?: MergeHold[];
+    /** The last observation of each deploy target (THE-1101). */
+    deploys?: DeployRecord[];
   } | null;
+  /** The target names of its `[deploy]`; null without one. */
+  deployTargets?: string[] | null;
   /** `[conductor.profiles]` of its armada.toml. */
   profiles?: Record<string, ConductorProfile>;
   /** The snapshot's comments and Armada's recent events, which each row's timeline is drawn from. */
@@ -517,6 +540,29 @@ export function buildOverview(input: {
       pullRequests: p.report?.pullRequests ?? null,
       merged: p.report?.merged ?? [],
       jobs: (p.report?.jobs ?? []).map(({ ref: _ref, startedBy: _by, ...job }) => job),
+      ...(p.live?.holds
+        ? {
+            holds: p.live.holds.map(({ id, kind, ref, reason, openedBy, openedAt }) => ({
+              id,
+              kind,
+              ref,
+              reason: reason.split("\n", 1)[0] ?? "",
+              openedBy,
+              openedAt,
+            })),
+          }
+        : {}),
+      ...(p.deployTargets && p.live?.deploys
+        ? {
+            deploys: p.deployTargets.map((target): ShownDeploy => {
+              const d = p.live?.deploys?.find((r) => r.target === target);
+              return {
+                target,
+                last: d ? { sha: d.sha, state: d.state, startedAt: d.startedAt, updatedAt: d.updatedAt } : null,
+              };
+            }),
+          }
+        : {}),
       requests: inbox.filter((item) => REQUEST_KINDS.includes(item.kind as (typeof REQUEST_KINDS)[number])),
       slug: p.slug,
       name: p.name,

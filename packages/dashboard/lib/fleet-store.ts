@@ -2151,6 +2151,10 @@ export interface LiveStore extends RequestStore {
   /** The open long jobs, and those of some tickets ended since then (THE-1128). */
   shownJobs(project: string, tickets: readonly string[], endedSince: Date): Promise<Job[]>;
   openInboxItems(q: { project: string; recipient: InboxRecipient }): Promise<InboxItem[]>;
+  /** The project's open merge pauses (THE-1094), oldest first. */
+  openHolds(project: string): Promise<MergeHold[]>;
+  /** The last observation of each deploy target (THE-1101). */
+  latestDeploys(project: string): Promise<DeployRecord[]>;
   coordinatorPresence(project: string): Promise<{ seenAt: string; cliVersion: string | null } | null>;
   /** What an agent's page shows of its ticket's history. */
   ticketHistory(project: string, ticket: string): Promise<TicketHistory>;
@@ -2195,6 +2199,8 @@ export const liveStore = (db: Database): LiveStore => ({
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
   shownJobs: (project, tickets, endedSince) => shownJobs(db, project, tickets, endedSince),
   openInboxItems: (q) => openInboxItems(db, q),
+  openHolds: (project) => openHolds(db, project),
+  latestDeploys: (project) => deployState(db, project),
   coordinatorPresence: (project) => coordinatorPresence(db, project),
   ticketHistory: async (project, ticket) => {
     const [events, inbox, launches] = await Promise.all([
