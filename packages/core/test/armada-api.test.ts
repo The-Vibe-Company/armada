@@ -15,6 +15,9 @@ test("Armada retries only safe reads, including fleet reads; token consumption a
   const actions = [
     { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.whoami(signIn) },
     { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "events/latest", {}) },
+    { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/list", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/start", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/observe", {}) },
     { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "inbox", {}) },
     {
       retry: false,
@@ -34,6 +37,9 @@ test("Armada retries only safe reads, including fleet reads; token consumption a
     let calls = 0;
     const api = armadaApi({
       url: ARMADA_URL,
+      sleep: async () => {},
+      random: () => 0,
+      now: () => NOW,
       fetch: async () => {
         calls++;
         throw new DOMException("timed out", "TimeoutError");

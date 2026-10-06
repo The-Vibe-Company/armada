@@ -457,6 +457,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
         body,
         ...(timeoutMs ? { timeoutMs } : {}),
         retry: [
+          "job/list",
           "events/latest",
           "events/state",
           "heartbeats/latest",
