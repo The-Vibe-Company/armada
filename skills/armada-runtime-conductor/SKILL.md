@@ -99,7 +99,7 @@ jq -r '.data[].content.rawPayload | .type // .event.type // "(no payload)"' /tmp
 armada stop ABC-12
 ```
 
-Run this after the pull request is merged, or after `armada release --ticket ABC-12 --reason "<why>"`. Armada refuses while the worker still holds the ticket. It checks the exact stored claim and session’s workspace, waits for the final turn to finish (polling every 15 seconds for up to ten minutes), then cancels if needed and archives. A replaced claim is refused before any runtime write; an already archived workspace is safe to record again.
+`armada merge` archives the workspace automatically after GitHub confirms the merge; never archive before it prints "Merged". `--no-archive` retains it. Run `armada stop` only to finish a failed cleanup (the merge prints that command), or after `armada release --ticket ABC-12 --reason "<why>"`. Armada refuses while the worker still holds the ticket. It checks the exact stored claim and session’s workspace, waits for the final turn to finish (polling every 15 seconds for up to ten minutes), then cancels if needed and archives. A replaced claim is refused before any runtime write; an already archived workspace is safe to record again.
 
 ## Without Armada: manual stop and archive
 

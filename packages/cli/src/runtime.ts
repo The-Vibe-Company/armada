@@ -19,7 +19,7 @@ import {
 } from "@armada/core";
 import type { Io } from "./io.ts";
 import { requireSignIn } from "./login.ts";
-import { claimRef, guarded, runtimeFor } from "./runtimes/adapter.ts";
+import { archiveClaimKey, claimRef, guarded, runtimeFor } from "./runtimes/adapter.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
 const observing = new Set<string>();
@@ -167,6 +167,24 @@ export async function stop(io: Io, config: ArmadaConfig, credentials: Credential
   const ticket = raw.toUpperCase();
   const h = await fleet.runtimeHandle(ticket);
   if (!h) throw new Refusal(`${ticket} has no runtime claim to stop`, "armada status");
+  const target = claimRef(h);
+  const mergedPr = args.options["merged-pr"];
+  const claimKey = args.options["claim-key"];
+  if (claimKey && archiveClaimKey(target) !== claimKey)
+    throw new Refusal(`${ticket}'s claim changed since the merge; left its workspace untouched`, "armada status");
+  if (mergedPr) {
+    const event = (await fleet.latestEvents())[ticket];
+    if (
+      !h.releasedAt ||
+      event?.kind !== "merge" ||
+      event.prUrl !== mergedPr ||
+      Date.parse(event.at) < Date.parse(h.claimedAt)
+    )
+      throw new Refusal(
+        `${ticket} has no ended claim for that merged pull request; left its workspace untouched`,
+        "armada status",
+      );
+  }
   const adapter = runtimeFor(io, config, h.runtime);
   // Guided adapters must give their guide refusal even if an active claim exists.
   if (!adapter.can.archive)
@@ -176,7 +194,6 @@ export async function stop(io: Io, config: ArmadaConfig, credentials: Credential
       `cannot archive ${ticket} while it holds the ticket; release first`,
       `armada release --ticket ${ticket} --reason "<why>"`,
     );
-  const target = claimRef(h);
   const archived = await guarded(fleet, target, h.releasedAt ? "ended" : "active", () =>
     adapter.archive(target, {
       reason: "released",
