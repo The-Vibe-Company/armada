@@ -994,6 +994,40 @@ export function memoryFleet(): FleetStore & {
         runtimeState: same ? was.runtimeState : null,
       });
     },
+    async getRuntimeReference(project, ref) {
+      const current = handles.get(key(project, ref.ticket));
+      if (ref.claimedAt) {
+        if (current && current.handle === ref.handle && current.claimedAt === ref.claimedAt) {
+          if ((current.workerSessionId ?? null) !== ref.launchId) return null;
+          return {
+            ...ref,
+            releasedAt: current.releasedAt,
+            branch: current.branch,
+            coordinator: current.coordinator ?? null,
+          };
+        }
+        const row = sessions.find(
+          (s) =>
+            s.project === project &&
+            s.ticket === ref.ticket &&
+            s.handle === ref.handle &&
+            s.claimedAt === ref.claimedAt &&
+            runtimeNameOf(s.runtime) === ref.runtime,
+        );
+        return row
+          ? { ...ref, releasedAt: row.releasedAt, branch: row.branch, coordinator: row.coordinator ?? null }
+          : null;
+      }
+      const row = launches.find(
+        (l) =>
+          l.project === project &&
+          l.ticket === ref.ticket &&
+          l.id === ref.launchId &&
+          l.handle === ref.handle &&
+          l.runtime === ref.runtime,
+      );
+      return row ? { ...ref, releasedAt: row.endedAt, coordinator: row.coordinator ?? null } : null;
+    },
     async observeRuntime(input) {
       const h = handles.get(key(input.project, input.ticket));
       if (

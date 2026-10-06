@@ -5,6 +5,7 @@ import { detectLocalTools } from "../local-tools.ts";
 import {
   type Archived,
   type ArchiveOptions,
+  archiveClaimKey,
   checkedMutation,
   type Delivery,
   type Launched,
@@ -30,6 +31,8 @@ export class HerdrAdapter implements RuntimeAdapter {
     archive: true,
   };
   private readonly runtime: Herdr;
+  /** Local checkout provenance after this adapter's guarded branch retention. */
+  private readonly retainedBranches = new Map<string, string>();
   constructor(
     private readonly io: Io,
     private readonly config?: ArmadaConfig,
@@ -57,6 +60,34 @@ export class HerdrAdapter implements RuntimeAdapter {
   }
   async launch(spec: LaunchSpec): Promise<Launched> {
     return this.launchPrepared(spec, async () => spec.prompt);
+  }
+  async resumeState(target: ClaimRef) {
+    await this.verify(target);
+    const tree = await this.runtime.worktree(this.parse(target.handle));
+    const git = await this.io.exec?.("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+      cwd: tree.path,
+      timeoutMs: 5000,
+    });
+    if (git?.code !== 0)
+      throw new RuntimeError("could not read the old worktree", "unavailable", "herdr worktree list");
+    return { ready: true, clean: !git.stdout.trim(), path: tree.path };
+  }
+  /** Preserve the old branch, commits and dirty files while freeing the ticket branch for a fresh checkout. */
+  async retainBranch(target: ClaimRef, branch: string): Promise<ClaimRef> {
+    if (!target.releasedAt)
+      throw new RuntimeError("release the old worker before retaining its branch", "busy", "armada release");
+    const tree = await this.runtime.worktree(this.parse(target.handle));
+    await checkedMutation(
+      target,
+      () => this.verify(target),
+      async () => {
+        const result = await this.io.exec?.("git", ["branch", "-m", branch], { cwd: tree.path, timeoutMs: 5000 });
+        if (result?.code !== 0)
+          throw new RuntimeError("could not retain the old worktree branch", "unavailable", "herdr worktree list");
+      },
+    );
+    this.retainedBranches.set(archiveClaimKey(target), branch);
+    return target;
   }
   /** Legacy herdr briefs need the created handle before startup; no token touches disk. */
   async launchPrepared(spec: LaunchSpec, prepare: (worker: Launched) => Promise<string>): Promise<Launched> {
@@ -89,6 +120,7 @@ export class HerdrAdapter implements RuntimeAdapter {
             base: from.kind === "branch" ? from.head : spec.base,
             ticket: spec.ticket,
             secrets: spec.blankSecrets,
+            ...spec.herdrTarget,
             sign: this.config?.git.sign ?? "inherit",
           });
     const prompt = await prepare({ handle: herdrClaimHandle(h), path: h.path, link: null, state: "idle" });
@@ -110,6 +142,7 @@ export class HerdrAdapter implements RuntimeAdapter {
     return { handle: herdrClaimHandle(h), link: null, path: h.path, state: "working" };
   }
   async verify(target: ClaimRef): Promise<void> {
+    const checkoutBranch = this.retainedBranches.get(archiveClaimKey(target)) ?? target.branch;
     const tree = await this.runtime.worktree(this.parse(target.handle));
     const git = async (cwd: string, args: string[]) => {
       const r = await this.io.exec?.("git", args, { cwd, timeoutMs: 5000 });
@@ -123,7 +156,7 @@ export class HerdrAdapter implements RuntimeAdapter {
       !local ||
       local !== (await git(tree.path, common)) ||
       (target.claimedAt !== null && !target.branch) ||
-      (target.branch && (await git(tree.path, ["branch", "--show-current"])) !== target.branch)
+      (checkoutBranch && (await git(tree.path, ["branch", "--show-current"])) !== checkoutBranch)
     )
       throw new RuntimeError(
         "herdr workspace does not match the claimed repository and branch",
