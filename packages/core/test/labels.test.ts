@@ -43,6 +43,8 @@ describe("tracker labels", () => {
         'label group "Agent phase" lacks "awaiting-approval", "shipping", "blocked", "ready-to-merge", "awaiting-validation"',
       ],
       ["error", 'label group "Agent runtime" does not exist in Linear team DEMO'],
+      ["error", 'label "plan-approved" does not exist in Linear team DEMO'],
+      ["error", 'label "needs-plan-approval" does not exist in Linear team DEMO'],
     ]);
   });
 
@@ -65,6 +67,8 @@ describe("tracker labels", () => {
       "Agent runtime / Codex",
       "Agent runtime / Conductor",
       "Agent runtime / Herdr",
+      "plan-approved",
+      "needs-plan-approval",
     ]);
     expect(linear.created[0]).toEqual({ name: "awaiting-approval", parentId: "g-shared" });
     expect(linear.created[6]).toEqual({
@@ -76,6 +80,51 @@ describe("tracker labels", () => {
     expect(linear.created[7]).toEqual({ name: "Claude Code", parentId: "label-9", teamId: DEMO_TEAM.id });
     expect(checkLabels(await readLabels(demoConfig(), opts)).every((c) => c.level === "ok")).toBe(true);
   });
+});
+
+test("policy plan labels are checked, created as plain team labels, and left unchanged when present", async () => {
+  for (const names of [
+    ["plan-approved", "needs-plan-approval"],
+    ["Plan accepted", "Plan review"],
+    ["", ""],
+  ]) {
+    const config = demoConfig();
+    [config.policy.preApprovedLabel, config.policy.approvalLabel] = names as [string, string];
+    const wanted = names.filter(Boolean);
+    const linear = fakeLinearLabels(
+      wanted.flatMap((name, i) => [
+        { ...group(`other-${i}`, name, "team-other"), isGroup: false },
+        group(`group-${i}`, name, DEMO_TEAM.id),
+      ]),
+    );
+    const opts = { apiKey: "k", fetch: linear.fetch };
+    const missing = await readLabels(config, opts);
+    expect(checkLabels(missing).filter((c) => wanted.some((name) => c.id === `labels:${name}`))).toEqual(
+      wanted.map((name) => ({
+        id: `labels:${name}`,
+        level: "error",
+        message: `label "${name}" does not exist in Linear team DEMO`,
+        fix: "run `armada init` to create it",
+      })),
+    );
+    await createMissingLabels(missing, opts);
+    expect(linear.created.filter((l) => wanted.includes(String(l.name)))).toEqual(
+      wanted.map((name) => ({ name, teamId: DEMO_TEAM.id })),
+    );
+    expect(checkLabels(await readLabels(config, opts)).every((c) => c.level === "ok")).toBe(true);
+    const count = linear.created.length;
+    expect(await createMissingLabels(await readLabels(config, opts), opts)).toEqual([]);
+    expect(linear.created).toHaveLength(count);
+
+    // Existing shared labels apply too, regardless of case.
+    for (const label of linear.labels.filter(
+      (l) => wanted.includes(l.name) && !l.isGroup && l.teamId === DEMO_TEAM.id,
+    )) {
+      label.teamId = null;
+      label.name = label.name.toUpperCase();
+    }
+    expect(await createMissingLabels(await readLabels(config, opts), opts)).toEqual([]);
+  }
 });
 
 test("label-group reads retry temporary failures while label creation is sent only once", async () => {
