@@ -54,6 +54,7 @@ export function transientFailure(err: unknown): boolean {
 }
 
 export interface WatchOptions {
+  coordinatorName?: string;
   signal?: AbortSignal;
   facts?: import("./live.ts").CoordinatorFacts;
   project: string;
@@ -120,6 +121,7 @@ async function untilAborted<T>(signal: AbortSignal | undefined, work: () => T | 
 export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchReport> {
   const query = {
     coordinator: o.coordinator,
+    coordinatorName: o.coordinatorName,
     silentAfterMinutes: o.silentAfterMinutes,
     quietAfterMinutes: o.quietAfterMinutes,
     ...(o.facts ? { facts: o.facts } : {}),

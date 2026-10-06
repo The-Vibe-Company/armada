@@ -216,9 +216,15 @@ async function fixture(toml = TOML) {
 
 test("native launch routes the profile, sends the token and coordinator notes only on stdin, binds and prints ids", async () => {
   const f = await fixture();
+  f.io.env.ARMADA_COORDINATOR = "front";
   expect(await run(["launch", "DEMO-13", "--runtime", "conductor", "--notes", "notes.md", "--json"], f.io)).toBe(0);
   expect([...f.armada.launches.values()]).toEqual([
-    expect.objectContaining({ ticket: "DEMO-13", runtime: "conductor", runtimeHandle: "ws-1/ses-1" }),
+    expect.objectContaining({
+      ticket: "DEMO-13",
+      coordinator: "front",
+      runtime: "conductor",
+      runtimeHandle: "ws-1/ses-1",
+    }),
   ]);
   const create = f.calls.find((c) => c.args[2] === "create");
   if (!create?.input) throw new Error("no native launch prompt");

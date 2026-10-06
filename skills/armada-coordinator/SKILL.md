@@ -54,12 +54,19 @@ For a middle insertion, `armada spec add "<name>" --at 5` previews only; inspect
 
 ## Keep watching
 
+Keep your named role across sessions: set `ARMADA_COORDINATOR=<name>` in a cloud workspace,
+or `armada coordinator use <name>` for this checkout. The environment wins; otherwise the
+role is `default`. A coordinator handover comment carries this name, never just a process
+or session handle. `armada coordinator list` shows roles, sessions and tickets;
+`armada coordinator take ABC-12 --from <name>` records a guarded handover of that ticket.
+
+
 You only learn of something new when a command you run ends. So while a worker is in flight, always have exactly one `armada watch` running, in the background (in Claude Code, a Bash command with `run_in_background`; in another runtime, its own way of running a command in the background). It waits until something needs you (a question, a plan, a request, a hand-back, a silent worker or one that never started, you have not been shown yet), prints it and exits, and you are woken. Armada being down or a command time limit does not end it, and it tells the dashboard you are at work.
 
 - From any folder, set `ARMADA_CONFIG=/path/to/armada.toml` or pass `--project <slug>` to use this machine’s last watched checkout; `--config <path>` overrides both.
 - `armada inbox` and `armada status` run fine while a watch runs: never stop it to read the inbox or the fleet. To stop this project's watch, use `armada watch --stop`, never `pkill` or `killall` patterns: those can kill other projects' watches on the same machine.
 - Start it as soon as a worker is in flight, and start it again right after acting on what it returned. Never end your turn with a worker in flight and no watch running: that is how a hand-back sits unmerged.
-- The last line of `armada inbox`, `armada watch`, `armada merge` and `armada brief` says whether to: `2 workers in flight (ABC-1, ABC-2) — keep watching: armada watch`, `armada watch is already running (pid …)`, or `nothing to watch`. Follow it. A second `armada watch` on the same project only says the first one is running.
+- The last line of `armada inbox`, `armada watch`, `armada merge` and `armada brief` says whether to: `2 workers in flight (ABC-1, ABC-2) — keep watching: armada watch`, `armada watch is already running (pid …)`, or `nothing to watch`. Follow it. A second `armada watch` of the same named role only says the first one is running; different roles have independent locks and wake for their owned or unowned work. `armada watch --stop` stops your role; `--stop --name <name>` targets another role.
 - `armada watch` exits with "nothing to watch" when no worker is in flight and nothing is open: the round is over.
 - A `version` item means a newer Armada is out; any coordinator command also says so once, on stderr. It is not urgent: questions, plans, hand-backs and merges come first. Between rounds, upgrade the CLI with the `npm install -g` line it gives, run `armada init` and merge its pull request with `armada merge <n> --no-ticket`. Tell workers in flight nothing: each keeps the version its brief pinned, unless the release notes (the item's link) say otherwise. `armada status` and `armada doctor` say when this project's skills differ from your CLI's.
 - Your own coordination ticket is not a worker: the watch and the re-arm line leave out the claim whose handle is yours, taken from `ARMADA_COORDINATOR_HANDLE`, else from Conductor's workspace and session. Outside Conductor, set `ARMADA_COORDINATOR_HANDLE` to the handle you claimed with.

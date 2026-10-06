@@ -26,6 +26,7 @@ import {
   shellWord,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
+import { coordinatorName } from "./coordinator.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
 
@@ -135,6 +136,7 @@ function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
       const t = await apiOf(io, url).launchToken(signIn, {
         project: config.project.slug,
         ticket,
+        coordinator: await coordinatorName(io, config.project.slug),
       });
       const builtIn = armadaAddress(url) === armadaAddress(DEFAULT_ARMADA_API_URL);
       return { token: t.token, expiresAt: t.expiresAt, apiUrl: builtIn ? null : armadaAddress(url) };

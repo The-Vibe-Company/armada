@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
-import { parseProject, serveFleet } from "../src/fleet-api.ts";
+import { fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_PROJECT, fakeClock, NOW, tempFleet } from "./support.ts";
 
@@ -211,4 +211,281 @@ describe("the fleet through Armada", () => {
       programRoot: "DEMO-1",
     });
   });
+});
+
+describe("named coordinators", () => {
+  test("worker ownership is authenticated, legacy workers stay unowned, and resume preserves a handover", async () => {
+    const store = memoryFleet();
+    const run = (input: object, coordinator?: string | null) =>
+      serveFleet(
+        store,
+        {
+          op: "claim",
+          project: DEMO_PROJECT,
+          caller: { kind: "worker", ticket: "DEMO-7", sessionId: "session", coordinator },
+          input: { ...claim("DEMO-7"), ...input },
+        },
+        { now: () => NOW },
+      );
+    expect((await run({ coordinator: "spoof", coordinatorName: "INVALID NAME" }, "front")).status).toBe(200);
+    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.coordinator).toBe("front");
+    expect(
+      await store.transferTickets({ project: "widgets", tickets: ["DEMO-7"], from: "front", to: "back", at: NOW }),
+    ).toBe(true);
+    await run({ resuming: true }, "front");
+    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.coordinator).toBe("back");
+    expect((await store.listSessions("widgets", { since: NOW }))[0]?.coordinator).toBe("back");
+    await run({ handle: "legacy", coordinator: "front", coordinatorName: "front" });
+    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.coordinator).toBeNull();
+  });
+
+  test("names validate before writes; an older organization claim belongs to default", async () => {
+    const store = memoryFleet();
+    for (const name of ["Front", "a_b", "", null, "a".repeat(33)]) {
+      expect(
+        (
+          await serveFleet(
+            store,
+            {
+              op: "claim",
+              project: DEMO_PROJECT,
+              caller: { kind: "organization" },
+              input: { ...claim("DEMO-7"), coordinatorName: name },
+            },
+            { now: () => NOW },
+          )
+        ).status,
+      ).toBe(400);
+    }
+    expect(store.events).toHaveLength(0);
+    await serveFleet(
+      store,
+      { op: "claim", project: DEMO_PROJECT, caller: { kind: "organization" }, input: claim("DEMO-7") },
+      { now: () => NOW },
+    );
+    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.coordinator).toBe("default");
+  });
+
+  test("take refuses the whole batch on missing or stale owners, then records handover without changing phase", async () => {
+    const store = memoryFleet();
+    for (const ticket of ["DEMO-7", "DEMO-8"])
+      await serveFleet(
+        store,
+        {
+          op: "claim",
+          project: DEMO_PROJECT,
+          caller: { kind: "organization" },
+          input: { ...claim(ticket), coordinatorName: "front" },
+        },
+        { now: () => NOW },
+      );
+    store.launches.push({
+      project: "widgets",
+      ticket: "DEMO-9",
+      coordinator: "front",
+      launchedAt: NOW.toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+      endedAt: null,
+    });
+    const take = (tickets: string[], from: string) =>
+      serveFleet(
+        store,
+        {
+          op: "coordinators/take",
+          project: DEMO_PROJECT,
+          caller: { kind: "organization" },
+          input: { tickets, from, coordinatorName: "back" },
+        },
+        { now: () => new Date(NOW.getTime() + 1000) },
+      );
+    expect((await take(["DEMO-7", "DEMO-8"], "stale")).status).toBe(409);
+    expect((await take(["DEMO-7", "DEMO-99"], "front")).status).toBe(409);
+    expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.coordinator).toBe("front");
+    expect((await take(["DEMO-7", "DEMO-8", "DEMO-9"], "front")).body.result).toBe(true);
+    expect((await store.pendingLaunches("widgets", new Date(0)))[0]?.coordinator).toBe("back");
+    expect(store.events.filter((event) => event.kind === "handover")).toHaveLength(3);
+    expect((await store.latestEvents("widgets"))["DEMO-7"]).toMatchObject({ phase: "planning", kind: "claim" });
+    expect((await store.lastEventTimes("widgets"))["DEMO-7"]).toBe(NOW.toISOString());
+  });
+
+  test("inbox filters owners with active null taking precedence, and retains unowned and legacy reads", async () => {
+    const store = memoryFleet();
+    for (const [ticket, coordinator] of [
+      ["DEMO-7", "front"],
+      ["DEMO-8", "back"],
+      ["DEMO-9", null],
+    ] as const) {
+      await store.saveRuntimeHandle({
+        project: "widgets",
+        ticket,
+        coordinator,
+        runtime: "Conductor",
+        handle: ticket,
+        branch: null,
+        at: NOW,
+      });
+      await store.addInboxItem({
+        project: "widgets",
+        ticket,
+        coordinator: "back",
+        kind: "question",
+        recipient: "coordinator",
+        author: ticket,
+        body: "Question",
+        at: NOW,
+      });
+    }
+    store.launches.push({
+      project: "widgets",
+      ticket: "DEMO-10",
+      coordinator: "front",
+      launchedAt: NOW.toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+      endedAt: null,
+    });
+    await store.addInboxItem({
+      project: "widgets",
+      ticket: "DEMO-10",
+      coordinator: "back",
+      kind: "launch-request",
+      recipient: "coordinator",
+      author: null,
+      body: "Launch",
+      at: NOW,
+    });
+    await store.addInboxItem({
+      project: "widgets",
+      ticket: null,
+      coordinator: "front",
+      kind: "merge-request",
+      recipient: "coordinator",
+      author: null,
+      body: "Merge",
+      at: NOW,
+    });
+    const inbox = async (coordinatorName?: string) => {
+      const answer = await serveFleet(
+        store,
+        {
+          op: "inbox",
+          project: DEMO_PROJECT,
+          caller: { kind: "organization" },
+          input: { coordinator: null, coordinatorName, silentAfterMinutes: 15, etag: null },
+        },
+        { now: () => NOW },
+      );
+      return answer.body.result as import("../src/live.ts").InboxRead;
+    };
+    const front = await inbox("front");
+    expect(front.items.map((item) => [item.ticket, item.owner])).toEqual([
+      ["DEMO-7", "front"],
+      ["DEMO-9", null],
+      ["DEMO-10", "front"],
+      [null, "front"],
+    ]);
+    expect(front.inFlight).toEqual(["DEMO-10", "DEMO-7", "DEMO-9"]);
+    expect((await inbox("back")).items.map((item) => item.ticket)).toEqual(["DEMO-8", "DEMO-9"]);
+    expect((await inbox()).items).toHaveLength(5);
+  });
+
+  test("expired launch notifications are scoped and named presence keeps distinct sessions", async () => {
+    const store = memoryFleet();
+    const old = new Date(NOW.getTime() - 3 * 60 * 60_000).toISOString();
+    for (const coordinator of ["front", "back"])
+      store.launches.push({
+        project: "widgets",
+        ticket: coordinator === "front" ? "DEMO-7" : "DEMO-8",
+        coordinator,
+        launchedAt: old,
+        tokenUsedAt: null,
+        runtime: null,
+        handle: null,
+        endedAt: null,
+      });
+    const response = await serveFleet(
+      store,
+      {
+        op: "inbox",
+        project: DEMO_PROJECT,
+        caller: { kind: "organization" },
+        input: { coordinatorName: "front", coordinator: "session-1", silentAfterMinutes: 15, etag: null },
+      },
+      { now: () => NOW },
+    );
+    expect(
+      (response.body.result as import("../src/live.ts").InboxRead).items.map((item) => [item.ticket, item.owner]),
+    ).toEqual([["DEMO-7", "front"]]);
+    expect(store.launches.find((launch) => launch.ticket === "DEMO-8")?.endedAt).toBeNull();
+    await store.recordCoordinatorSeen({
+      project: "widgets",
+      name: "front",
+      handle: "session-2",
+      at: new Date(NOW.getTime() + 1000),
+    });
+    const roles = await store.listCoordinators("widgets");
+    const front = roles.find((role) => role.name === "front");
+    expect(front?.sessions.map((session) => session.handle)).toEqual(["session-2", "session-1"]);
+  });
+});
+
+test("fleet client resolves the coordinator preference for each request", async () => {
+  const requests: unknown[] = [];
+  let name = "front";
+  const fleet = fleetClient({
+    project: DEMO_PROJECT,
+    signIn: { kind: "api-key", key: "armada_key_TEST" },
+    coordinatorName: async () => name,
+    api: {
+      fleet: async (_signIn, _op, body) => {
+        requests.push((body as { input: object }).input);
+        return [];
+      },
+    },
+  });
+  await fleet.runtimeHandles();
+  name = "back";
+  await fleet.coordinators();
+  expect(requests).toEqual([{ coordinatorName: "front" }, { coordinatorName: "back" }]);
+});
+
+test("inbox ETag refreshes ownership when an unowned ticket is taken without changing visible entries", async () => {
+  const store = memoryFleet();
+  await store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-77",
+    runtime: "conductor",
+    handle: "workspace/worker",
+    branch: null,
+    at: NOW,
+  });
+  await store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-77",
+    kind: "question",
+    recipient: "coordinator",
+    author: null,
+    body: "Which option?",
+    at: NOW,
+  });
+  const read = async (etag: string | null) =>
+    serveFleet(
+      store,
+      {
+        op: "inbox",
+        project: DEMO_PROJECT,
+        caller: { kind: "organization" },
+        input: { coordinatorName: "front", coordinator: null, silentAfterMinutes: 15, etag },
+      },
+      { now: () => NOW },
+    );
+  const before = (await read(null)).body.result as import("../src/live.ts").InboxRead;
+  expect(before.items[0]?.owner).toBeNull();
+  expect(await store.transferTickets({ project: "widgets", tickets: ["DEMO-77"], to: "front", at: NOW })).toBe(true);
+  const after = await read(before.etag);
+  expect(after.status).toBe(200);
+  expect((after.body.result as import("../src/live.ts").InboxRead).items[0]?.owner).toBe("front");
 });

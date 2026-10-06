@@ -20,6 +20,7 @@ import {
   CLI_LATEST_HEADER,
   CLI_MINIMUM_HEADER,
   CLI_VERSION_HEADER,
+  COORDINATOR,
   compareVersions,
   type FleetCaller,
   type HandBackSnapshot,
@@ -106,7 +107,7 @@ export interface CliIdentity {
   /** The key's name and first characters, for an API key. */
   apiKey: { id: string; name: string | null; start: string | null } | null;
   /** The ticket a worker session acts on, and who launched it. */
-  worker: { id: string; project: string; ticket: string; launchedBy: string } | null;
+  worker: { id: string; project: string; ticket: string; launchedBy: string; coordinator?: string | null } | null;
   expiresAt: string | null;
 }
 
@@ -212,7 +213,13 @@ async function identify(
       user: null,
       organization,
       apiKey: null,
-      worker: { id: w.id, project: w.project, ticket: w.ticket, launchedBy: w.launchedBy.label },
+      worker: {
+        id: w.id,
+        project: w.project,
+        ticket: w.ticket,
+        launchedBy: w.launchedBy.label,
+        coordinator: w.coordinator ?? null,
+      },
       expiresAt: w.sessionExpiresAt,
       launch: w,
     };
@@ -384,11 +391,15 @@ async function launch(a: CliAccounts, request: Request, deps: CliApiDeps, now: D
       "a launch token needs the project slug and the ticket id",
       "armada brief <ticket>, in the project's repository",
     );
+  const coordinator = body.coordinator === undefined ? "default" : body.coordinator;
+  if (typeof coordinator !== "string" || !COORDINATOR.test(coordinator))
+    return refuse(400, "invalid coordinator name", "use 1 to 32 lowercase letters, digits or hyphens");
   const { worker, token } = await createLaunch(a.client, {
     organization: holder.organization.id,
     project: body.project,
     ticket: body.ticket,
     launcher: { kind: identity.via, id: holder.actor.id, label: holder.actor.label },
+    coordinator,
     now,
   });
   console.info(
@@ -463,7 +474,13 @@ async function exchange(a: CliAccounts, request: Request, now: Date): Promise<Re
     {
       schemaVersion: 1,
       token: r.token,
-      worker: { id: w.id, project: w.project, ticket: w.ticket, launchedBy: w.launchedBy.label },
+      worker: {
+        id: w.id,
+        project: w.project,
+        ticket: w.ticket,
+        launchedBy: w.launchedBy.label,
+        coordinator: w.coordinator ?? null,
+      },
       organization: { id: organization.id, name: organization.name, slug: organization.slug },
       expiresAt: w.sessionExpiresAt,
     },
@@ -699,7 +716,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
         `this worker session is for the project ${w.project}, not ${project.slug}`,
         "the coordinator does it",
       );
-    caller = { kind: "worker", ticket: w.ticket, sessionId: w.id };
+    caller = { kind: "worker", ticket: w.ticket, sessionId: w.id, coordinator: w.coordinator ?? null };
   }
   const home = async () => (await firstOrganization(a.client))?.id ?? null;
   if (!(await holdProject(a.client, project, organization.id, home, now())))

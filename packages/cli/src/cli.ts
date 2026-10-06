@@ -20,6 +20,7 @@ import { version } from "../package.json" with { type: "json" };
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
+import { coordinatorCommand } from "./coordinator.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
@@ -47,6 +48,12 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  coordinator: `  coordinator use <name>
+  coordinator list
+  coordinator take <ticket...> [--from <name>]
+                    Select a named role for this checkout, list roles and their sessions,
+                    or take tickets from a coordinator. ARMADA_COORDINATOR overrides use.
+`,
   attach: `  attach <ticket> <file|url>... [--caption <text>] [--for <item>]
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
                     or HTTPS links. Prints a dashboard URL for each attachment.
@@ -147,7 +154,7 @@ const COMMAND_HELP: Record<string, string> = {
                     when no worker is in flight and nothing is open. Armada being down or a
                     command time limit does not end it: it keeps asking. One per project on
                     this machine. Needs a sign-in to Armada
-  watch --stop      Stop only this project's verified watch and release its lock. Local,
+  watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
   stop: `  stop <ticket> [--merged-pr <url>] [--claim-key <key>]
@@ -262,6 +269,7 @@ const COMMAND_HELP: Record<string, string> = {
 const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
   "attach",
+  "coordinator",
   "status",
   "spec",
   "secrets",
@@ -323,7 +331,8 @@ Files:
     credentials        KEY=value lines, mode 0600, written by \`armada auth login\` and
                        \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
     config.toml        personal defaults: language, [dashboard] url, [api] url
-    watch/<project>.*  the project's watch: its lock, what you were shown, who is in flight
+    coordinators.json  coordinator role per project and checkout
+    watch/<project>[@<name>].*  the coordinator's watch: its lock, what you were shown, who is in flight
     releases.json      the Armada releases you were told of: a coordinator command says once
                        when a newer one is out (\`armada watch\` ends on it)
 `;
@@ -399,6 +408,7 @@ const VALUE_OPTIONS = [
   "validation",
   "validation-reason",
   "notes",
+  "from",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
@@ -430,7 +440,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
-  watch: ["stop"],
+  watch: ["stop", "name"],
+  coordinator: ["from"],
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
@@ -520,12 +531,16 @@ export async function findConfig(
         `${path} does not exist`,
         `armada ${command} --config <file>, with the path of an ${CONFIG_FILE}`,
       );
+    io.coordinatorRoot = dirname(path);
     return { path, text };
   }
   for (let dir = resolve(io.cwd); ; dir = dirname(dir)) {
     const path = join(dir, CONFIG_FILE);
     const text = await io.readFile(path);
-    if (text !== null) return { path, text };
+    if (text !== null) {
+      io.coordinatorRoot = dirname(path);
+      return { path, text };
+    }
     if (dirname(dir) === dir) break;
   }
   throw new UsageError(
@@ -682,13 +697,21 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       if (command === "inbox") await recordPresence(io, config, credentials);
       return await worker(command === "stop" ? { ...io, cwd: dirname(path) } : io, config, credentials, args);
     }
+    if (args.command === "coordinator") {
+      const { text } = await findConfig(io, args.config, "coordinator", args.project);
+      const config = parseConfig(text);
+      const credentials =
+        args.rest[0] === "use" ? null : (await loadCredentials(io, { project: config.project.slug })).credentials;
+      return await coordinatorCommand(io, config, credentials, args);
+    }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch", args.project);
       const config = parseConfig(text, path);
       if (args.options.stop === "true") {
         if (args.rest.length) throw new UsageError(`unexpected argument ${args.rest[0]}`);
-        return await stopWatch(io, config.project.slug, args.json);
+        return await stopWatch(io, config.project.slug, args.json, args.options.name);
       }
+      if (args.options.name) throw new UsageError("--name goes with watch --stop");
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       await recordPresence(io, config, credentials);
       return await watch(io, config, credentials, args, path);

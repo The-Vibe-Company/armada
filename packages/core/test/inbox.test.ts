@@ -96,6 +96,7 @@ describe("ask and answer", () => {
         id: 1,
         kind: "question",
         ticket: "DEMO-7",
+        owner: "default",
         author: "ws/DEMO-7",
         body,
         createdAt: NOW.toISOString(),

@@ -34,6 +34,7 @@ import {
   ValidationChoiceError,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
+import { coordinatorName } from "./coordinator.ts";
 import { type HerdrHandle, herdrWorktreePath, herdrWorktreesDirectory, parseHerdrHandle } from "./herdr.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { detectLocalTools, ensureLocalProfile } from "./local-tools.ts";
@@ -328,7 +329,11 @@ export async function launchWorker(
   try {
     await available();
     const started = now().toISOString();
-    const launch = await api.launchToken(signIn, { project: config.project.slug, ticket: ticketId });
+    const launch = await api.launchToken(signIn, {
+      project: config.project.slug,
+      ticket: ticketId,
+      coordinator: await coordinatorName(io, config.project.slug),
+    });
     let worker: Launched | null = null;
     let handle: HerdrHandle | undefined;
     const build = (herdr?: { choice: HerdrProfileChoice; handle: string }) =>

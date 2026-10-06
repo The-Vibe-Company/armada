@@ -51,6 +51,28 @@ Armada's app (the dashboard and the API terminals sign in to) keeps everything i
 5. Enter the organization's keys again on Organization > Keys, and create new organization API keys for cloud coordinators: the old database's sessions, API keys and launch tokens do not carry over. Every terminal runs `armada login` again; a cloud coordinator gets its new key as `ARMADA_API_KEY`.
 6. Register each project once: `armada init` from a signed-in terminal registers it for that terminal's organization, and so does the first claim, report or inbox read of a signed-in terminal. The first person running `init` becomes its owner. From `packages/dashboard`, `ARMADA_DATABASE_URL=<URL> bun run db register <path to the project's armada.toml>` registers one with no organization; it joins the first organization on the next dashboard read. This records the local username as owner; a service-account operator can add `--owner "Name"`. Later registrations preserve the first recorded owner.
 
+## Run a second coordinator
+
+A coordinator is a named role inside one project, independent of its machine or session.
+Set `ARMADA_COORDINATOR=front` for a cloud coordinator, or run `armada coordinator use front`
+to remember the role for this project and checkout. The environment wins over that preference;
+without either, the role is `default`. Names use 1–32 lowercase letters, digits or hyphens,
+starting with a letter or digit.
+
+`armada coordinator list` shows each role's sessions, last-seen times and tickets. A launch
+records the role in its authenticated launch token; a worker's claim inherits it, and cannot
+choose a different owner. Workers launched before this migration stay unowned until taken.
+Each role's `armada watch` has its own lock and memory on the machine and follows its owned
+and unowned work. `armada watch --stop` stops that role's watch; `--stop --name front` stops
+front's verified watch without stopping another role.
+
+To take over a stopped coordinator's tickets, choose your role and run
+`armada coordinator take ABC-12 ABC-13 --from front`. The source ownership must still match
+for every ticket: a concurrent handover refuses the entire take. The handover records an
+event, keeps the worker generation and phase, and its next inbox read follows the new owner.
+Pass the role name in any coordinator handover comment, along with the tickets and next actions.
+Deploy the dashboard migration before installing the new CLI.
+
 ## Reach the fleet through Armada
 
 From this version on, the CLI reads and writes the fleet's live data only through the Armada API (`/api/cli/fleet/*`), with the terminal's sign-in. The cut-over:

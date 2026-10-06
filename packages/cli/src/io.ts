@@ -40,6 +40,8 @@ export interface ProcessIdentity {
 
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
+  /** Root of the selected project checkout, set by config discovery. */
+  coordinatorRoot?: string;
   /** Host platform; local runtime install offers support macOS and Linux. */
   platform?: NodeJS.Platform;
   machineName?: string;

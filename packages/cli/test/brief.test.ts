@@ -490,6 +490,18 @@ describe("armada brief with a launch token", () => {
     return { ...b, armada };
   }
 
+  test("brief passes the named coordinator into its authenticated launch token", async () => {
+    const b = await signedIn();
+    b.io.env.ARMADA_COORDINATOR = "front";
+    expect(await run(["brief", "DEMO-13", "--prompt"], b.io)).toBe(0);
+    expect(b.armada.calls.find((call) => call.path === "launch-tokens")?.body).toMatchObject({
+      project: "widgets",
+      ticket: "DEMO-13",
+      coordinator: "front",
+    });
+    expect([...b.armada.launches.values()][0]?.coordinator).toBe("front");
+  });
+
   test("an undecided or invalid semantic brief never mints a token, even when signed in", async () => {
     const toml = TOML.replace("[conductor.profiles.codex]", '[conductor.profiles.codex]\nwhen = "back end: CLI"');
     const response = structuredClone(BRIEF_RESPONSE);

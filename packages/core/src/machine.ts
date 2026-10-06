@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { parse, TomlError } from "smol-toml";
 import { ConfigError } from "./config.ts";
 import { parseDotenv, updateDotenv } from "./dotenv.ts";
+import { COORDINATOR } from "./fleet-api.ts";
 import { EMPTY_WATCH_STATE, type WatchState } from "./watch.ts";
 
 export interface MachinePaths {
@@ -212,9 +213,11 @@ export async function ensurePersonalConfig(paths: MachinePaths): Promise<boolean
  * `armada watch` holds. The project is its armada.toml slug, already a safe
  * file name.
  */
-export function watchFiles(paths: MachinePaths, project: string): { state: string; lock: string } {
+export function watchFiles(paths: MachinePaths, project: string, name = "default"): { state: string; lock: string } {
+  if (!COORDINATOR.test(name)) throw new Error("invalid coordinator name");
   const dir = join(paths.dir, "watch");
-  return { state: join(dir, `${project}.json`), lock: join(dir, `${project}.pid`) };
+  const key = name === "default" ? project : `${project}@${name}`;
+  return { state: join(dir, `${key}.json`), lock: join(dir, `${key}.pid`) };
 }
 
 const strings = (v: unknown): string[] | null =>
@@ -222,10 +225,14 @@ const strings = (v: unknown): string[] | null =>
 const stringOr = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
 /** The project's watch state; null when there is none or it cannot be read as one. */
-export async function readWatchState(paths: MachinePaths, project: string): Promise<WatchState | null> {
+export async function readWatchState(
+  paths: MachinePaths,
+  project: string,
+  name = "default",
+): Promise<WatchState | null> {
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(watchFiles(paths, project).state, "utf8"));
+    raw = JSON.parse(await readFile(watchFiles(paths, project, name).state, "utf8"));
   } catch {
     return null;
   }
@@ -265,8 +272,10 @@ export async function readWatchProjects(paths: MachinePaths): Promise<{ project:
       .sort()
       .map(async (file) => {
         const name = file.slice(0, -5);
-        const project = name.split("@")[0];
-        const state = await readWatchState(paths, name);
+        const project = name.split("@")[0] ?? "";
+        const coordinator = name.includes("@") ? name.slice(name.indexOf("@") + 1) : "default";
+        if (!COORDINATOR.test(coordinator)) return null;
+        const state = await readWatchState(paths, project, coordinator);
         if (!project || !state?.root || !isAbsolute(state.root)) return null;
         const readAt = Date.parse(state.readAt ?? "");
         const at = Number.isFinite(readAt)
@@ -288,14 +297,16 @@ export async function updateWatchState(
   paths: MachinePaths,
   project: string,
   patch: Partial<WatchState>,
+  name = "default",
 ): Promise<WatchState> {
-  const state = { ...EMPTY_WATCH_STATE, ...(await readWatchState(paths, project)), ...patch };
-  await writePrivate(paths, watchFiles(paths, project).state, `${JSON.stringify(state, null, 2)}\n`, 0o600);
+  const state = { ...EMPTY_WATCH_STATE, ...(await readWatchState(paths, project, name)), ...patch };
+  await writePrivate(paths, watchFiles(paths, project, name).state, `${JSON.stringify(state, null, 2)}\n`, 0o600);
   return state;
 }
 
 /** The process identity captured by the watch that owns the lock. Legacy locks have none. */
 export interface WatchIdentity {
+  coordinatorName?: string;
   project: string;
   configPath: string;
   started: string;
@@ -309,9 +320,13 @@ export interface WatchLock {
 }
 
 /** Reads both legacy PID locks and locks with a process identity; malformed locks are unverified. */
-export async function readWatchLockInfo(paths: MachinePaths, project: string): Promise<WatchLock | null> {
+export async function readWatchLockInfo(
+  paths: MachinePaths,
+  project: string,
+  name = "default",
+): Promise<WatchLock | null> {
   try {
-    const raw = JSON.parse(await readFile(watchFiles(paths, project).lock, "utf8"));
+    const raw = JSON.parse(await readFile(watchFiles(paths, project, name).lock, "utf8"));
     const pid = typeof raw === "number" ? raw : raw?.pid;
     if (!Number.isSafeInteger(pid) || pid <= 0) return null;
     const i = raw?.identity;
@@ -322,6 +337,7 @@ export async function readWatchLockInfo(paths: MachinePaths, project: string): P
       identity: verified
         ? {
             project: i.project,
+            ...(typeof i.coordinatorName === "string" ? { coordinatorName: i.coordinatorName } : {}),
             configPath: i.configPath,
             started: i.started,
             command: i.command,
@@ -336,8 +352,8 @@ export async function readWatchLockInfo(paths: MachinePaths, project: string): P
 }
 
 /** The pid in the project's watch lock, including a legacy PID-only lock. */
-export async function readWatchLock(paths: MachinePaths, project: string): Promise<number | null> {
-  return (await readWatchLockInfo(paths, project))?.pid ?? null;
+export async function readWatchLock(paths: MachinePaths, project: string, name = "default"): Promise<number | null> {
+  return (await readWatchLockInfo(paths, project, name))?.pid ?? null;
 }
 
 /** Compares a captured lock with its current holder, including identity (a reused PID is another holder). */
@@ -346,6 +362,7 @@ export function sameWatchLock(a: WatchLock | null, b: WatchLock): boolean {
   const left = a.identity;
   const right = b.identity;
   if (!left || !right) return left === right;
+  if ((left.coordinatorName ?? "default") !== (right.coordinatorName ?? "default")) return false;
   return (["project", "configPath", "started", "command", "cwd"] as const).every(
     (field) => left[field] === right[field],
   );
@@ -363,8 +380,8 @@ export function processAlive(pid: number): boolean {
 }
 
 /**
- * Takes the project's watch lock for `pid`, atomically: one watch per project
- * and machine. A lock whose process is gone is stale and taken over. Returns
+ * Takes the coordinator's watch lock for `pid`, atomically: one watch per role
+ * of each project on the machine. A lock whose process is gone is stale and taken over. Returns
  * the pid of the watch already running otherwise.
  */
 export async function takeWatchLock(
@@ -373,8 +390,9 @@ export async function takeWatchLock(
   pid: number,
   alive: (pid: number) => boolean = processAlive,
   identity?: WatchIdentity,
+  name = "default",
 ): Promise<{ taken: true } | { taken: false; pid: number }> {
-  const { lock } = watchFiles(paths, project);
+  const { lock } = watchFiles(paths, project, name);
   await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
   // The pid is written first, then linked into place: the lock never exists empty.
   const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
@@ -387,10 +405,10 @@ export async function takeWatchLock(
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
-      const held = await readWatchLock(paths, project);
+      const held = await readWatchLock(paths, project, name);
       if (held !== null && held !== pid && alive(held)) return { taken: false, pid: held };
       // Stale: its watch is gone. Removed only if no other watch took it over meanwhile.
-      if ((await readWatchLock(paths, project)) === held) await rm(lock, { force: true });
+      if ((await readWatchLock(paths, project, name)) === held) await rm(lock, { force: true });
     }
     throw new Error(`cannot take the watch lock ${lock}`);
   } finally {
@@ -404,10 +422,11 @@ export async function releaseWatchLock(
   project: string,
   pid: number,
   identity?: WatchIdentity,
+  name = "default",
 ): Promise<void> {
-  const held = await readWatchLockInfo(paths, project).catch(() => null);
+  const held = await readWatchLockInfo(paths, project, name).catch(() => null);
   if (identity ? sameWatchLock(held, { pid, identity }) : held?.pid === pid)
-    await rm(watchFiles(paths, project).lock, { force: true });
+    await rm(watchFiles(paths, project, name).lock, { force: true });
 }
 
 /** The pid of the live watch of the project on this machine, or null. */
@@ -415,8 +434,9 @@ export async function runningWatch(
   paths: MachinePaths,
   project: string,
   alive: (pid: number) => boolean = processAlive,
+  name = "default",
 ): Promise<number | null> {
-  const pid = await readWatchLock(paths, project).catch(() => null);
+  const pid = await readWatchLock(paths, project, name).catch(() => null);
   return pid !== null && alive(pid) ? pid : null;
 }
 
@@ -480,4 +500,41 @@ export async function writeKeysFallback(paths: MachinePaths, fallback: KeysFallb
     return;
   }
   await writePrivate(paths, keysFallbackFile(paths), `${JSON.stringify(fallback, null, 2)}\n`, 0o644);
+}
+
+// ------------------------------------------------------------------ coordinator role per checkout
+
+/** A checkout keeps its coordinator role across terminal sessions. */
+export async function readCoordinatorName(paths: MachinePaths, project: string, root: string): Promise<string | null> {
+  try {
+    const raw = JSON.parse(await readFile(join(paths.dir, "coordinators.json"), "utf8"));
+    const value = raw?.[project]?.[root];
+    return typeof value === "string" && COORDINATOR.test(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeCoordinatorName(
+  paths: MachinePaths,
+  project: string,
+  root: string,
+  name: string,
+): Promise<void> {
+  if (!COORDINATOR.test(name)) throw new Error("invalid coordinator name");
+  const path = join(paths.dir, "coordinators.json");
+  let raw: Record<string, Record<string, string>> = {};
+  try {
+    const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
+    if (isTable(parsed)) raw = parsed as typeof raw;
+  } catch (err) {
+    if (!missing(err)) throw err;
+  }
+  const projectRoles = isTable(raw[project]) ? raw[project] : {};
+  await writePrivate(
+    paths,
+    path,
+    `${JSON.stringify({ ...raw, [project]: { ...projectRoles, [root]: name } }, null, 2)}\n`,
+    0o600,
+  );
 }

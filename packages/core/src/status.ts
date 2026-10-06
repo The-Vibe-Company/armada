@@ -66,6 +66,7 @@ export interface PrRef {
 }
 
 export interface InFlightTicket extends TicketRef {
+  coordinator?: string | null;
   phase: AgentPhase;
   shippingStage?: ShippingStage | null;
   phaseSource: "label" | "status-line" | "inferred" | "live";
@@ -252,6 +253,7 @@ export function buildStatus({
         phaseSource: l.phaseSource,
         runtime: l.runtime,
         handle: l.handle,
+        coordinator: l.coordinator ?? null,
         profile: profileName,
         profileReason: l.claim?.profileReason ?? null,
         ...(profile ? { harness: herdrHarnessLabel(profile.harness) } : {}),

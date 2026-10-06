@@ -24,6 +24,8 @@ export interface WorkerContext {
   workerHandle?: string | null;
   workerPane?: string | null;
   workerSession?: boolean;
+  /** Authenticated launch owner (workers), or the calling coordinator role. */
+  claimCoordinator?: () => Promise<string | null>;
   linear: LinearWriter;
   /**
    * The fleet's live data. A release checks its claim before writing Linear;
@@ -203,8 +205,9 @@ function claimLine(o: {
   branch: string | null;
   started: string;
   profile: ProfileChoice | null;
+  coordinator?: string | null;
 }) {
-  const line = `Agent claim — runtime: ${o.runtime} · session: ${o.handle} · branch: ${o.branch ?? "unknown"} · started: ${o.started}`;
+  const line = `Agent claim — runtime: ${o.runtime} · session: ${o.handle} · branch: ${o.branch ?? "unknown"} · started: ${o.started}${o.coordinator ? ` · coordinator: ${o.coordinator}` : ""}`;
   const p = o.profile;
   if (!p) return line;
   const settings = `agent ${p.profile.agent}, model ${p.profile.model}, effort ${p.profile.effort}${p.profile.fastMode ? ", fast mode" : ""}`;
@@ -294,9 +297,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
           throw new Refusal(err.message, `armada brief ${ticket.id}, which shows the profile the ticket routes to`);
         throw err;
       }
+    let coordinator: string | null = null;
+    try {
+      coordinator = (await ctx.claimCoordinator?.()) ?? null;
+    } catch {
+      warnings.push("could not read the authenticated launch coordinator; claim ownership is still recorded by Armada");
+    }
     const started = ctx.now().toISOString();
     const validation = validationClaimLine(input.validation ?? null);
-    const body = `Agent status: planning — claimed by ${runtime.name} (${input.handle})\n\n${claimLine({ runtime: runtime.name, handle: input.handle, branch, started, profile })}${validation ? `\n${validation}` : ""}`;
+    const body = `Agent status: planning — claimed by ${runtime.name} (${input.handle})\n\n${claimLine({ runtime: runtime.name, handle: input.handle, branch, started, profile, coordinator })}${validation ? `\n${validation}` : ""}`;
     const mine = await linear.comment(ticket.uuid, body);
     // Linear has no compare-and-swap: read back and let the oldest claim win.
     const after = await linear.readTicket(ticket.id);

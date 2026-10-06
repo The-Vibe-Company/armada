@@ -510,3 +510,59 @@ describe("armada watch", () => {
     expect(c.out()).toBe("");
   });
 });
+
+test("two named coordinators watch one project concurrently and each wakes for its own item", async () => {
+  const c = await coordinator();
+  for (const [ticket, name] of [
+    ["DEMO-2", "front"],
+    ["DEMO-3", "back"],
+  ] as const) {
+    await c.hold(ticket);
+    expect(await c.store.transferTickets({ project: P, tickets: [ticket], to: name, at: NOW })).toBe(true);
+  }
+  const start = (name: string, pid: number) => {
+    let wake: (() => void) | undefined;
+    let ready: (() => void) | undefined;
+    const sleeping = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const output: string[] = [];
+    c.alive.add(pid);
+    const io: Io = {
+      ...c.io,
+      pid,
+      env: { ...c.io.env, ARMADA_COORDINATOR: name },
+      stdout: (text) => output.push(text),
+      sleep: () =>
+        new Promise<void>((resolve) => {
+          wake = resolve;
+          ready?.();
+        }),
+    };
+    return { done: run(["watch", "--json"], io), sleeping, wake: () => wake?.(), output };
+  };
+  const front = start("front", 4242);
+  await front.sleeping;
+  const back = start("back", 4343);
+  await back.sleeping;
+  expect(await readWatchLock(c.paths, P, "front")).toBe(4242);
+  expect(await readWatchLock(c.paths, P, "back")).toBe(4343);
+  for (const ticket of ["DEMO-2", "DEMO-3"])
+    await c.store.addInboxItem({
+      project: P,
+      ticket,
+      kind: "question",
+      recipient: "coordinator",
+      author: ticket,
+      body: `Question for ${ticket}`,
+      at: NOW,
+    });
+  front.wake();
+  back.wake();
+  expect(await front.done).toBe(0);
+  expect(await back.done).toBe(0);
+  expect(JSON.parse(front.output.join("")).items.map((item: { ticket: string }) => item.ticket)).toEqual(["DEMO-2"]);
+  expect(JSON.parse(back.output.join("")).items.map((item: { ticket: string }) => item.ticket)).toEqual(["DEMO-3"]);
+  expect((await readWatchState(c.paths, P, "front"))?.inFlight).toEqual(["DEMO-2"]);
+  expect((await readWatchState(c.paths, P, "back"))?.inFlight).toEqual(["DEMO-3"]);
+});
