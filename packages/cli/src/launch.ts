@@ -38,6 +38,7 @@ import {
   ValidationChoiceError,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
+import { coordinatorName } from "./coordinator.ts";
 import { type HerdrHandle, herdrWorktreePath, herdrWorktreesDirectory, parseHerdrHandle } from "./herdr.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { detectLocalTools, ensureLocalProfile } from "./local-tools.ts";
@@ -105,7 +106,7 @@ export async function prepareLaunch(
   args: { rest: string[]; json: boolean; options: Record<string, string> },
   version: string,
   configPath: string,
-  replacement?: { branch: string; preApprovalReason?: string; command?: string },
+  replacement?: { branch: string; coordinator?: string | null; preApprovalReason?: string; command?: string },
 ) {
   const [input, ...extra] = args.rest;
   const o = args.options;
@@ -357,6 +358,7 @@ export async function prepareLaunch(
     available,
     approval,
     repo,
+    coordinator: replacement?.coordinator,
   };
 }
 
@@ -455,7 +457,13 @@ export async function executeLaunch(p: PreparedLaunch, bindLaunch?: BindLaunch) 
   briefInput.preApprovedReason = await p.approval?.apply();
   await recheckMutation();
   const started = now().toISOString();
-  const launch = await api.launchToken(signIn, { project: config.project.slug, ticket: ticketId });
+  const launch = await api.launchToken(signIn, {
+    project: config.project.slug,
+    ticket: ticketId,
+    // Explicit null preserves an unowned generation; only a normal launch
+    // chooses the coordinator selected in this terminal.
+    coordinator: p.coordinator === undefined ? await coordinatorName(io, config.project.slug) : p.coordinator,
+  });
   let worker: Launched | null = null;
   let handle: HerdrHandle | undefined;
   const build = (herdr?: { choice: HerdrProfileChoice; handle: string }) =>

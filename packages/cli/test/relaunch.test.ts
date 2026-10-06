@@ -33,7 +33,7 @@ const head = "a".repeat(40);
 const branch = "feature/demo-13";
 const oldHandle = "ws-old/ses-old";
 const json = (body: unknown) => ({ code: 0, stdout: JSON.stringify(body), stderr: "" });
-async function fixture() {
+async function fixture(coordinator: string | null = null) {
   const home = await mkdtemp(join(tmpdir(), "armada-relaunch-"));
   homes.push(home);
   let now = new Date(NOW);
@@ -55,6 +55,7 @@ async function fixture() {
     project: "widgets",
     ticket: "DEMO-13",
     handle: oldHandle,
+    coordinator,
     runtime: "conductor",
     branch,
     at: new Date(now.getTime() - 1000),
@@ -578,4 +579,64 @@ test("relaunch pre-approval checks before stopping and applies between release a
   expect(refused.order).not.toContain("cancel");
   expect(refused.order).not.toContain("fleet/release");
   expect((await refused.store.getRuntimeHandle("widgets", "DEMO-13"))?.releasedAt).toBeNull();
+});
+
+test("relaunch keeps authenticated launch ownership across claimed, pending, unowned and handed-over generations", async () => {
+  for (const mode of ["claimed", "released", "pending", "unowned", "handover", "pending-handover"] as const) {
+    const pending = mode === "pending" || mode === "pending-handover";
+    const f = await fixture(mode === "unowned" ? null : pending ? "back" : "front");
+    f.io.env.ARMADA_COORDINATOR = "back";
+    if (pending || mode === "released") await f.store.releaseRuntimeHandle("widgets", "DEMO-13", NOW);
+    if (pending)
+      f.store.launches.push({
+        id: "wk-old",
+        project: "widgets",
+        ticket: "DEMO-13",
+        coordinator: "front",
+        launchedAt: NOW.toISOString(),
+        runtime: "conductor",
+        handle: oldHandle,
+        tokenUsedAt: null,
+        endedAt: null,
+      });
+    const handedOver = mode === "handover" || mode === "pending-handover";
+    if (handedOver) {
+      const exec = f.io.exec as NonNullable<Io["exec"]>;
+      f.io.exec = async (command, args, options) => {
+        const result = await exec(command, args, options);
+        if (args[2] === "cancel")
+          expect(
+            await f.store.transferTickets({
+              project: "widgets",
+              tickets: ["DEMO-13"],
+              from: "front",
+              to: "ops",
+              at: NOW,
+            }),
+          ).toBe(true);
+        return result;
+      };
+    }
+    expect(await f.relaunch("--fresh"), `${mode}: ${f.text()}`).toBe(0);
+    const expected = mode === "unowned" ? null : handedOver ? "ops" : "front";
+    const minted = [...f.armada.launches.entries()].at(-1);
+    expect(minted?.[1].coordinator, mode).toBe(expected);
+    const api = armadaApi({ url: ARMADA_URL, fetch: f.armada.fetch });
+    const session = await api.exchangeLaunchToken(minted?.[0] ?? "missing");
+    await fleetClient({
+      api,
+      signIn: { kind: "worker", token: session.token, ticket: "DEMO-13", project: "widgets" },
+      project: DEMO_PROJECT,
+    }).claim({
+      ticket: "DEMO-13",
+      runtime: "conductor",
+      handle: "ws-new/ses-new",
+      branch,
+      phase: "planning",
+      resuming: false,
+      profile: null,
+      coordinator: "back",
+    });
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-13"))?.coordinator, mode).toBe(expected);
+  }
 });

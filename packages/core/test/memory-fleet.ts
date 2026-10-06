@@ -7,6 +7,7 @@ import { sinceSummary } from "../src/catchup.ts";
 import { type Job, jobIsOpen } from "../src/jobs.ts";
 import type {
   CoordinatorPresence,
+  CoordinatorRecord,
   EventInput,
   FleetStore,
   InboxItem,
@@ -70,6 +71,7 @@ export function memoryFleet(): FleetStore & {
   const leases = new Map<string, Lease>();
   const presence = new Map<string, { handle: string | null; cliVersion: string | null; at: string }>();
   const coordinators = new Map<string, CoordinatorPresence>();
+  const coordinatorSessions = new Map<string, CoordinatorPresence>();
   const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
   const validations: Validation[] = [];
@@ -384,6 +386,7 @@ export function memoryFleet(): FleetStore & {
       for (const e of events)
         if (
           e.kind !== "heartbeat" &&
+          e.kind !== "handover" &&
           e.project === project &&
           e.ticket &&
           (!out[e.ticket] || e.at > (out[e.ticket] ?? ""))
@@ -441,6 +444,7 @@ export function memoryFleet(): FleetStore & {
       for (const e of events) {
         if (
           e.kind === "heartbeat" ||
+          e.kind === "handover" ||
           e.project !== project ||
           !e.ticket ||
           e.at < since ||
@@ -475,17 +479,24 @@ export function memoryFleet(): FleetStore & {
           cliVersion: seen.cliVersion ?? seen.facts?.cliVersion ?? was?.cliVersion ?? null,
           at,
         });
-      if (was && was.at > at) return;
-      const previous = coordinators.get(seen.project);
-      coordinators.set(seen.project, {
+      const name = seen.name ?? seen.facts?.name ?? "default";
+      const roleKey = key(seen.project, name);
+      const handle = seen.facts ? seen.facts.handle : (seen.handle ?? null);
+      const sessionKey = key(roleKey, handle ?? "");
+      const previous = coordinatorSessions.get(sessionKey);
+      const next: CoordinatorPresence = {
+        name,
         harness: seen.facts?.harness ?? previous?.harness ?? null,
-        handle: seen.facts ? seen.facts.handle : (seen.handle ?? previous?.handle ?? null),
+        handle,
         model: seen.facts ? seen.facts.model : (previous?.model ?? null),
         cliVersion: seen.cliVersion ?? seen.facts?.cliVersion ?? previous?.cliVersion ?? null,
         startedAt: previous && seen.at.getTime() - Date.parse(previous.seenAt) < 30 * 60_000 ? previous.startedAt : at,
         seenAt: at,
         inboxSeenAt: seen.inboxRead === false ? (previous?.inboxSeenAt ?? null) : at,
-      });
+      };
+      if (!previous || previous.seenAt <= at) coordinatorSessions.set(sessionKey, next);
+      const role = coordinators.get(roleKey);
+      if (!role || role.seenAt <= at) coordinators.set(roleKey, next);
       if (seen.inboxRead !== false)
         await this.recordEvent({
           project: seen.project,
@@ -499,7 +510,97 @@ export function memoryFleet(): FleetStore & {
       return presence.get(project)?.at ?? null;
     },
     async getCoordinatorPresence(project) {
-      return coordinators.get(project) ?? null;
+      return (
+        [...coordinators.entries()]
+          .filter(([k]) => k.startsWith(`${project}\n`))
+          .map(([, value]) => value)
+          .sort((a, b) => b.seenAt.localeCompare(a.seenAt))[0] ?? null
+      );
+    },
+    async listCoordinators(project) {
+      const records = new Map<string, CoordinatorRecord>();
+      for (const [k, role] of coordinators) {
+        if (!k.startsWith(`${project}\n`)) continue;
+        const name = role.name ?? "default";
+        records.set(name, {
+          ...role,
+          name,
+          sessions: [...coordinatorSessions.entries()]
+            .filter(([k]) => k.startsWith(`${key(project, name)}\n`))
+            .map(([, session]) => ({ ...session }))
+            .sort((a, b) => b.seenAt.localeCompare(a.seenAt)),
+          tickets: [],
+        });
+      }
+      const active = [...handles.values()].filter((h) => h.project === project && !h.releasedAt);
+      const pending = await this.pendingLaunches(project, new Date(0));
+      for (const owned of [...active, ...pending]) {
+        const name = owned.coordinator;
+        if (!name) continue;
+        let record = records.get(name);
+        if (!record) {
+          const at = "claimedAt" in owned ? owned.claimedAt : owned.launchedAt;
+          record = {
+            name,
+            harness: null,
+            handle: null,
+            model: null,
+            cliVersion: null,
+            startedAt: at,
+            seenAt: at,
+            inboxSeenAt: null,
+            sessions: [],
+            tickets: [],
+          };
+          records.set(name, record);
+        }
+        if (!record.tickets.includes(owned.ticket)) record.tickets.push(owned.ticket);
+      }
+      return [...records.values()]
+        .map((r) => ({ ...r, tickets: r.tickets.sort() }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+    async transferTickets(input) {
+      const pending = await this.pendingLaunches(input.project, new Date(0));
+      const rows = input.tickets.map((ticket) => {
+        const handle = handles.get(key(input.project, ticket));
+        return handle && !handle.releasedAt ? handle : pending.find((launch) => launch.ticket === ticket);
+      });
+      if (
+        rows.some(
+          (row) =>
+            !row ||
+            (input.from !== undefined
+              ? row.coordinator !== input.from
+              : row.coordinator != null && row.coordinator !== input.to),
+        )
+      )
+        return false;
+      for (const row of rows) {
+        if (!row) continue;
+        const previous = row.coordinator ?? null;
+        row.coordinator = input.to;
+        for (const launch of launches)
+          if (
+            launch.project === input.project &&
+            launch.ticket === row.ticket &&
+            !launch.endedAt &&
+            ("claimedAt" in row || launch.launchedAt === row.launchedAt)
+          )
+            launch.coordinator = input.to;
+        for (const session of sessions)
+          if (session.project === input.project && session.ticket === row.ticket && !session.releasedAt)
+            session.coordinator = input.to;
+        events.push({
+          id: events.length + 1,
+          project: input.project,
+          ticket: row.ticket,
+          kind: "handover",
+          message: `coordinator ${previous ?? "unowned"} -> ${input.to}`,
+          at: input.at.toISOString(),
+        });
+      }
+      return true;
     },
     async inboxReads(project, now) {
       return events
@@ -543,6 +644,7 @@ export function memoryFleet(): FleetStore & {
       const same =
         was &&
         was.handle === h.handle &&
+        was.runtime === h.runtime &&
         !was.releasedAt &&
         (was.workerSessionId ?? null) === (h.workerSessionId ?? null);
       if (!same) {
@@ -556,6 +658,7 @@ export function memoryFleet(): FleetStore & {
           runtime: h.runtime,
           handle: h.handle,
           branch: h.branch,
+          coordinator: h.coordinator ?? null,
           claimedAt: h.at.toISOString(),
           releasedAt: null,
           profile: null,
@@ -571,6 +674,7 @@ export function memoryFleet(): FleetStore & {
         runtime: h.runtime,
         handle: h.handle,
         branch: h.branch,
+        coordinator: same ? (was.coordinator ?? null) : (h.coordinator ?? null),
         claimedAt: same ? was.claimedAt : h.at.toISOString(),
         releasedAt: null,
         lastHeartbeatAt: same && was.workerSessionId === h.workerSessionId ? was.lastHeartbeatAt : null,
@@ -583,7 +687,12 @@ export function memoryFleet(): FleetStore & {
       if (ref.claimedAt) {
         if (current && current.handle === ref.handle && current.claimedAt === ref.claimedAt) {
           if ((current.workerSessionId ?? null) !== ref.launchId) return null;
-          return { ...ref, releasedAt: current.releasedAt, branch: current.branch };
+          return {
+            ...ref,
+            releasedAt: current.releasedAt,
+            branch: current.branch,
+            coordinator: current.coordinator ?? null,
+          };
         }
         const row = sessions.find(
           (s) =>
@@ -593,7 +702,9 @@ export function memoryFleet(): FleetStore & {
             s.claimedAt === ref.claimedAt &&
             runtimeNameOf(s.runtime) === ref.runtime,
         );
-        return row ? { ...ref, releasedAt: row.releasedAt, branch: row.branch } : null;
+        return row
+          ? { ...ref, releasedAt: row.releasedAt, branch: row.branch, coordinator: row.coordinator ?? null }
+          : null;
       }
       const row = launches.find(
         (l) =>
@@ -603,7 +714,7 @@ export function memoryFleet(): FleetStore & {
           l.handle === ref.handle &&
           l.runtime === ref.runtime,
       );
-      return row ? { ...ref, releasedAt: row.endedAt } : null;
+      return row ? { ...ref, releasedAt: row.endedAt, coordinator: row.coordinator ?? null } : null;
     },
     async observeRuntime(input) {
       const h = handles.get(key(input.project, input.ticket));
@@ -747,6 +858,7 @@ export function memoryFleet(): FleetStore & {
         kind: i.kind,
         recipient: i.recipient,
         author: i.author,
+        coordinator: i.coordinator ?? null,
         body: i.body,
         createdAt: i.at.toISOString(),
         requestQuestion: null,
@@ -778,6 +890,7 @@ export function memoryFleet(): FleetStore & {
         kind: r.kind,
         recipient: "coordinator",
         author: r.author,
+        coordinator: r.coordinator ?? null,
         body: r.body,
         createdAt: r.at.toISOString(),
         requestQuestion: r.question,
@@ -1016,8 +1129,9 @@ export function memoryFleet(): FleetStore & {
             ),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
-        .map(({ id, ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle }) => ({
+        .map(({ id, ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle, coordinator }) => ({
           ...(id ? { id } : {}),
+          coordinator: coordinator ?? null,
           ticket,
           launchedAt,
           tokenUsedAt,
@@ -1027,9 +1141,13 @@ export function memoryFleet(): FleetStore & {
         }));
     },
 
-    async expireUnusedLaunches(project, now) {
+    async expireUnusedLaunches(project, now, coordinatorName) {
       const pending = await this.pendingLaunches(project, new Date(0));
-      const expired = pending.filter((launch) => unusedLaunchExpired(launch, now));
+      const expired = pending.filter(
+        (launch) =>
+          unusedLaunchExpired(launch, now) &&
+          (!coordinatorName || launch.coordinator == null || launch.coordinator === coordinatorName),
+      );
       for (const launch of expired) {
         const row = launches.find(
           (candidate) =>

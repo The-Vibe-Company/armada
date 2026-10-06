@@ -83,12 +83,18 @@ export async function relaunch(
     const reference = await fleet.runtimeReference(old);
     if (!reference || reference.releasedAt !== old.releasedAt)
       throw new UsageError(`${ticket}'s worker generation changed; nothing was released`, `armada peek ${ticket}`);
+    if (reference.coordinator === undefined)
+      throw new UsageError(
+        "Armada must support generation ownership before relaunch; nothing was released",
+        "upgrade the Armada API",
+      );
     const branch = old.branch ?? "";
     const options = { ...o };
     delete options.reason;
     if (o.profile) options.reason = o["reason-profile"] ?? "";
     const prepared = await prepareLaunch(io, config, credentials, argsWith(args, options), version, configPath, {
       branch,
+      coordinator: reference.coordinator,
       preApprovalReason: o["pre-approve"] === "true" ? reason : undefined,
       command: [
         `armada relaunch ${ticket}`,
@@ -255,7 +261,11 @@ export async function relaunch(
         });
       }
       const ended = await fleet.runtimeReference(old);
-      if (!ended?.releasedAt) throw new UsageError("old generation was not confirmed ended");
+      if (!ended?.releasedAt || ended.coordinator === undefined)
+        throw new UsageError("old generation and its ownership were not confirmed ended");
+      // Ownership may be handed over during preflight/cancellation. Ended
+      // generation metadata is frozen and comes from its authenticated launch.
+      prepared.coordinator = ended.coordinator;
       old = { ...ended, branch: old.branch };
     } catch (error) {
       throw new UsageError(

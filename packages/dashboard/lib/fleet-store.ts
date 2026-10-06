@@ -13,6 +13,7 @@ import type {
   CatchupRecords,
   ClearHoldResult,
   CoordinatorPresence,
+  CoordinatorRecord,
   CoordinatorSeen,
   EventInput,
   EventsSinceQuery,
@@ -213,7 +214,7 @@ export async function recordEvent(db: Queryable, e: EventInput): Promise<void> {
 /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
 export async function lastEventTimes(db: Queryable, project: string): Promise<Record<string, string>> {
   const rs = await db.query(
-    "SELECT ticket, max(created_at) AS at FROM events WHERE project = $1 AND ticket <> '' AND kind <> 'heartbeat' GROUP BY ticket",
+    "SELECT ticket, max(created_at) AS at FROM events WHERE project = $1 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover') GROUP BY ticket",
     [project],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
@@ -271,7 +272,7 @@ export async function latestEvents(
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
     `SELECT DISTINCT ON (ticket) ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
-     FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind <> 'heartbeat'
+     FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover')
      ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
      ORDER BY ticket, created_at DESC, id DESC`,
     opts.tickets ? [project, opts.since ?? new Date(0), opts.tickets] : [project, opts.since ?? new Date(0)],
@@ -338,23 +339,43 @@ export async function recentEvents(db: Queryable, project: string, since: Date):
 
 // ------------------------------------------------------------------ coordinator presence
 
-/** Records coordinator command activity and, separately, its inbox reads: one presence row per project. */
+/** Records activity per named role and per session; keeps default presence readable by older code. */
 export async function recordCoordinatorSeen(db: Queryable, seen: CoordinatorSeen): Promise<void> {
   const inboxRead = seen.inboxRead !== false;
+  const name = seen.name ?? seen.facts?.name ?? "default";
   await db.query(
     `WITH presence AS (
-       INSERT INTO coordinator_presence (project, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version)
-       VALUES ($1, $2, $3, $3, CASE WHEN $4 THEN $3::timestamptz END, $5, $6, $7)
-       ON CONFLICT (project) DO UPDATE SET
-         started_at = CASE WHEN excluded.seen_at - coordinator_presence.seen_at >= interval '30 minutes'
-                           THEN excluded.seen_at ELSE COALESCE(coordinator_presence.started_at, excluded.seen_at) END,
-         handle = CASE WHEN $5::text IS NOT NULL THEN excluded.handle ELSE COALESCE(excluded.handle, coordinator_presence.handle) END,
+       INSERT INTO coordinators (project, name, created_at, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version)
+       VALUES ($1, $8, $3, $2, $3, $3, CASE WHEN $4 THEN $3::timestamptz END, $5, $6, $7)
+       ON CONFLICT (project, name) DO UPDATE SET
+         started_at = CASE WHEN excluded.seen_at - coordinators.seen_at >= interval '30 minutes'
+                            OR (excluded.handle IS NOT NULL AND coordinators.handle IS DISTINCT FROM excluded.handle)
+                           THEN excluded.seen_at ELSE coordinators.started_at END,
+         handle = CASE WHEN $5::text IS NOT NULL THEN excluded.handle ELSE COALESCE(excluded.handle, coordinators.handle) END,
          seen_at = excluded.seen_at,
-         inbox_seen_at = CASE WHEN $4 THEN excluded.seen_at ELSE coordinator_presence.inbox_seen_at END,
-         harness = COALESCE(excluded.harness, coordinator_presence.harness),
-         model = CASE WHEN $5::text IS NOT NULL THEN excluded.model ELSE coordinator_presence.model END,
-         cli_version = COALESCE(excluded.cli_version, coordinator_presence.cli_version)
-       WHERE coordinator_presence.seen_at <= excluded.seen_at RETURNING project
+         inbox_seen_at = CASE WHEN $4 THEN excluded.seen_at ELSE coordinators.inbox_seen_at END,
+         harness = COALESCE(excluded.harness, coordinators.harness),
+         model = CASE WHEN $5::text IS NOT NULL THEN excluded.model ELSE coordinators.model END,
+         cli_version = COALESCE(excluded.cli_version, coordinators.cli_version)
+       WHERE coordinators.seen_at <= excluded.seen_at RETURNING *
+     ), sessions AS (
+       INSERT INTO coordinator_sessions (project, name, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at)
+       SELECT project, name, $2, harness, model, cli_version, $3, seen_at, CASE WHEN $4 THEN seen_at END
+       FROM presence WHERE $2::text IS NOT NULL
+       ON CONFLICT (project, name, handle) DO UPDATE SET
+         started_at = CASE WHEN excluded.seen_at - coordinator_sessions.seen_at >= interval '30 minutes'
+                           THEN excluded.seen_at ELSE coordinator_sessions.started_at END,
+         seen_at = excluded.seen_at,
+         inbox_seen_at = CASE WHEN $4 THEN excluded.seen_at ELSE coordinator_sessions.inbox_seen_at END,
+         harness = COALESCE(excluded.harness, coordinator_sessions.harness),
+         model = CASE WHEN $5::text IS NOT NULL THEN excluded.model ELSE coordinator_sessions.model END,
+         cli_version = COALESCE(excluded.cli_version, coordinator_sessions.cli_version)
+     ), legacy AS (
+       INSERT INTO coordinator_presence (project, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version)
+       SELECT project, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version FROM presence WHERE name = 'default'
+       ON CONFLICT (project) DO UPDATE SET handle = excluded.handle, seen_at = excluded.seen_at,
+         started_at = excluded.started_at, inbox_seen_at = excluded.inbox_seen_at,
+         harness = excluded.harness, model = excluded.model, cli_version = excluded.cli_version
      ) INSERT INTO events (project, ticket, kind, handle, created_at)
        SELECT project, '', 'inbox', $2, $3 FROM presence WHERE $4`,
     [
@@ -365,6 +386,7 @@ export async function recordCoordinatorSeen(db: Queryable, seen: CoordinatorSeen
       seen.facts?.harness ?? null,
       seen.facts?.model ?? null,
       seen.cliVersion ?? seen.facts?.cliVersion ?? null,
+      name,
     ],
   );
   if (inboxRead)
@@ -375,20 +397,109 @@ export async function recordCoordinatorSeen(db: Queryable, seen: CoordinatorSeen
     );
 }
 
+const coordinatorOf = (row: Row): CoordinatorPresence => ({
+  name: String(row.name),
+  harness: text(row.harness) as CoordinatorPresence["harness"],
+  handle: text(row.handle),
+  model: text(row.model),
+  cliVersion: text(row.cli_version),
+  startedAt: isoAt(row.started_at ?? row.seen_at),
+  seenAt: isoAt(row.seen_at),
+  inboxSeenAt: iso(row.inbox_seen_at),
+});
+
 export async function getCoordinatorPresence(db: Queryable, project: string): Promise<CoordinatorPresence | null> {
-  const result = await db.query("SELECT * FROM coordinator_presence WHERE project = $1", [project]);
-  const row = result.rows[0];
-  return row
-    ? {
-        harness: text(row.harness) as CoordinatorPresence["harness"],
-        handle: text(row.handle),
-        model: text(row.model),
-        cliVersion: text(row.cli_version),
-        startedAt: isoAt(row.started_at ?? row.seen_at),
-        seenAt: isoAt(row.seen_at),
-        inboxSeenAt: iso(row.inbox_seen_at),
-      }
-    : null;
+  const result = await db.query("SELECT * FROM coordinators WHERE project = $1 ORDER BY seen_at DESC, name LIMIT 1", [
+    project,
+  ]);
+  return result.rows[0] ? coordinatorOf(result.rows[0]) : null;
+}
+
+export async function listCoordinators(db: Queryable, project: string): Promise<CoordinatorRecord[]> {
+  const [roles, sessions, handles, launches] = await Promise.all([
+    db.query("SELECT * FROM coordinators WHERE project = $1 ORDER BY name", [project]),
+    db.query("SELECT * FROM coordinator_sessions WHERE project = $1 ORDER BY name, seen_at DESC, handle", [project]),
+    openRuntimeHandles(db, project),
+    pendingLaunches(db, project, new Date(0)),
+  ]);
+  return roles.rows.map((row) => ({
+    ...coordinatorOf(row),
+    name: String(row.name),
+    sessions: sessions.rows.filter((session) => session.name === row.name).map(coordinatorOf),
+    tickets: [
+      ...new Set(
+        [...handles, ...launches].filter((ticket) => ticket.coordinator === row.name).map((ticket) => ticket.ticket),
+      ),
+    ].sort(),
+  }));
+}
+
+/** Compare source ownership and move all tickets atomically. Claims serialize against this project row too. */
+export async function transferTickets(
+  db: Database,
+  input: {
+    project: string;
+    tickets: string[];
+    to: string;
+    from?: string;
+    at: Date;
+  },
+): Promise<boolean> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [input.project]);
+    const owners: { ticket: string; owner: string | null; launch: string | null }[] = [];
+    for (const ticket of [...new Set(input.tickets)].sort()) {
+      const handle = (
+        await tx.query(
+          "SELECT coordinator, worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 AND released_at IS NULL FOR UPDATE",
+          [input.project, ticket],
+        )
+      ).rows[0];
+      const launch = (
+        await tx.query(
+          `SELECT "id", "coordinator" FROM "armada_worker" WHERE "project" = $1 AND "ticket" = $2
+        ORDER BY "createdAt" DESC, "id" DESC LIMIT 1 FOR UPDATE`,
+          [input.project, ticket],
+        )
+      ).rows[0];
+      // Only the newest still-pending launch owns an unclaimed ticket.
+      const pending = handle
+        ? null
+        : (await pendingLaunches(tx, input.project, new Date(0))).find((item) => item.ticket === ticket);
+      if (!handle && !pending) return false;
+      const owner = handle ? text(handle.coordinator) : (pending?.coordinator ?? null);
+      if (input.from !== undefined ? owner !== input.from : owner !== null && owner !== input.to) return false;
+      owners.push({
+        ticket,
+        owner,
+        launch: handle ? text(handle.worker_session_id) : launch ? String(launch.id) : null,
+      });
+    }
+    await tx.query(
+      `INSERT INTO coordinators (project, name, created_at, started_at, seen_at)
+      VALUES ($1, $2, $3, $3, $3) ON CONFLICT DO NOTHING`,
+      [input.project, input.to, input.at],
+    );
+    for (const { ticket, owner, launch } of owners) {
+      await tx.query(
+        "UPDATE runtime_handles SET coordinator = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+        [input.project, ticket, input.to],
+      );
+      await tx.query(
+        "UPDATE fleet_sessions SET coordinator = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+        [input.project, ticket, input.to],
+      );
+      if (launch) await tx.query('UPDATE "armada_worker" SET "coordinator" = $2 WHERE "id" = $1', [launch, input.to]);
+      await recordEvent(tx, {
+        project: input.project,
+        ticket,
+        kind: "handover",
+        message: `coordinator: ${owner ?? "unowned"} -> ${input.to}`,
+        at: input.at,
+      });
+    }
+    return true;
+  });
 }
 
 /** The coordinators' inbox reads of the timeline's history: its whole span, and an hour before it for the gap that crosses its start. */
@@ -432,7 +543,10 @@ export async function coordinatorPresence(
   db: Queryable,
   project: string,
 ): Promise<{ seenAt: string; cliVersion: string | null } | null> {
-  const rs = await db.query("SELECT seen_at, cli_version FROM coordinator_presence WHERE project = $1", [project]);
+  const rs = await db.query(
+    "SELECT seen_at, cli_version FROM coordinators WHERE project = $1 ORDER BY seen_at DESC LIMIT 1",
+    [project],
+  );
   const row = rs.rows[0];
   const seenAt = iso(row?.seen_at);
   return seenAt ? { seenAt, cliVersion: text(row?.cli_version) } : null;
@@ -489,7 +603,7 @@ export async function getWorkerProfile(db: Queryable, project: string, ticket: s
 
 /** Records the session now holding a ticket; a new claim replaces a released one, the same session keeps its claim time. */
 export async function saveRuntimeHandle(
-  db: Queryable,
+  db: Database,
   h: {
     project: string;
     ticket: string;
@@ -497,16 +611,20 @@ export async function saveRuntimeHandle(
     handle: string;
     branch: string | null;
     workerSessionId?: string | null;
+    coordinator?: string | null;
     at: Date;
   },
 ): Promise<void> {
-  await db.query(
-    `WITH previous_sessions AS (
+  await transaction(db, async (tx) => {
+    // Separate statements give the owner read a fresh snapshot after a handover lock wait.
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [h.project]);
+    await tx.query(
+      `WITH previous_sessions AS (
        UPDATE fleet_sessions SET released_at = $6 WHERE project = $1 AND ticket = $2 AND released_at IS NULL
          AND (handle <> $4 OR EXISTS (SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = $2 AND h.worker_session_id IS DISTINCT FROM $7::text))
      ), current_handle AS (
-       INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at, worker_session_id)
-     VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)
+       INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at, worker_session_id, coordinator)
+     SELECT $1, $2, $3, $4, $5, $6, NULL, $7, CASE WHEN $7::text IS NULL THEN $8 ELSE (SELECT "coordinator" FROM "armada_worker" WHERE "id" = $7 AND "project" = $1 AND "ticket" = $2) END WHERE EXISTS (SELECT 1 FROM projects WHERE slug = $1)
      ON CONFLICT (project, ticket) DO UPDATE SET
        claimed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
                          AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
@@ -526,14 +644,22 @@ export async function saveRuntimeHandle(
        runtime_observed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
                          AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
                          THEN runtime_handles.runtime_observed_at ELSE NULL END,
+       coordinator = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
+                         AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
+                         THEN runtime_handles.coordinator ELSE excluded.coordinator END,
        worker_session_id = excluded.worker_session_id,
        runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch, released_at = NULL
-       RETURNING project, ticket, runtime, handle, branch, claimed_at
-     ) INSERT INTO fleet_sessions (project, ticket, runtime, handle, branch, claimed_at)
-     SELECT project, ticket, runtime, handle, branch, claimed_at FROM current_handle
-     ON CONFLICT (project, ticket, handle, claimed_at) DO UPDATE SET branch = excluded.branch`,
-    [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at, h.workerSessionId ?? null],
-  );
+       RETURNING project, ticket, runtime, handle, branch, claimed_at, coordinator
+     ), role AS (
+       INSERT INTO coordinators (project, name, created_at, started_at, seen_at)
+       SELECT project, coordinator, $6, $6, $6 FROM current_handle WHERE coordinator IS NOT NULL
+       ON CONFLICT DO NOTHING
+     ) INSERT INTO fleet_sessions (project, ticket, runtime, handle, branch, claimed_at, coordinator)
+     SELECT project, ticket, runtime, handle, branch, claimed_at, coordinator FROM current_handle
+     ON CONFLICT (project, ticket, handle, claimed_at) DO UPDATE SET branch = excluded.branch, coordinator = excluded.coordinator`,
+      [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at, h.workerSessionId ?? null, h.coordinator ?? null],
+    );
+  });
 }
 
 /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
@@ -607,7 +733,7 @@ function releaseGuardMatches(held: Record<string, unknown> | undefined, guard?: 
   );
 }
 
-const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, h.runtime_state_sequence, p.profile
+const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.coordinator, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, h.runtime_state_sequence, p.profile
   FROM runtime_handles h LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket`;
 
 const handleOf = (r: Row): RuntimeHandle => ({
@@ -630,6 +756,7 @@ const handleOf = (r: Row): RuntimeHandle => ({
         },
       }),
   ...(r.heartbeat_at == null ? {} : { lastHeartbeatAt: isoAt(r.heartbeat_at) }),
+  coordinator: text(r.coordinator),
   ...(r.worker_session_id == null ? {} : { workerSessionId: String(r.worker_session_id) }),
 });
 
@@ -780,6 +907,7 @@ export async function getRuntimeReference(
         return null;
       return {
         ticket: current.ticket,
+        coordinator: current.coordinator ?? null,
         runtime: ref.runtime,
         handle: current.handle,
         claimedAt: current.claimedAt,
@@ -789,7 +917,7 @@ export async function getRuntimeReference(
       };
     }
     const rows = await db.query(
-      `SELECT s.runtime, s.branch, s.released_at FROM fleet_sessions s
+      `SELECT s.runtime, s.branch, s.released_at, s.coordinator FROM fleet_sessions s
        WHERE s.project = $1 AND s.ticket = $2 AND s.handle = $3 AND s.claimed_at = $4
          AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM armada_worker w WHERE w.id = $5
            AND w.project = s.project AND w.ticket = s.ticket AND w."runtimeHandle" = s.handle))`,
@@ -797,21 +925,21 @@ export async function getRuntimeReference(
     );
     const row = rows.rows[0];
     if (!row || String(row.runtime).toLowerCase() !== ref.runtime) return null;
-    return { ...ref, releasedAt: iso(row.released_at), branch: text(row.branch) };
+    return { ...ref, releasedAt: iso(row.released_at), branch: text(row.branch), coordinator: text(row.coordinator) };
   }
   if (!ref.launchId) return null;
   const rows = await db.query(
-    `SELECT "endedAt", runtime FROM armada_worker WHERE project = $1 AND ticket = $2 AND id = $3 AND "runtimeHandle" = $4`,
+    `SELECT "endedAt", runtime, coordinator FROM armada_worker WHERE project = $1 AND ticket = $2 AND id = $3 AND "runtimeHandle" = $4`,
     [project, ref.ticket, ref.launchId, ref.handle],
   );
   const row = rows.rows[0];
   if (!row || row.runtime !== ref.runtime) return null;
-  return { ...ref, releasedAt: iso(row.endedAt) };
+  return { ...ref, releasedAt: iso(row.endedAt), coordinator: text(row.coordinator) };
 }
 
 // ------------------------------------------------------------------ inbox
 
-const INBOX_COLUMNS = `id, project, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
+const INBOX_COLUMNS = `id, project, coordinator, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
   request_question, request_profile, request_pr, request_validation, request_deferred`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
@@ -821,6 +949,7 @@ const inboxRow = (r: Row): StoredInboxItem => ({
   kind: String(r.kind) as InboxKind,
   recipient: String(r.recipient) as InboxRecipient,
   author: text(r.author),
+  coordinator: text(r.coordinator),
   body: String(r.body),
   createdAt: isoAt(r.created_at),
   ...(REQUEST_KINDS.includes(String(r.kind) as InboxKind & (typeof REQUEST_KINDS)[number])
@@ -856,9 +985,9 @@ export async function addInboxItem(
   item: Omit<InboxItem, "id" | "createdAt" | "request"> & { at: Date },
 ): Promise<number> {
   const rs = await db.query<{ id: unknown }>(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    [item.project, item.ticket, item.kind, item.recipient, item.author, item.body, item.at],
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [item.project, item.ticket, item.kind, item.recipient, item.author, item.body, item.at, item.coordinator ?? null],
   );
   return Number(rs.rows[0]?.id);
 }
@@ -876,10 +1005,22 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
                      AND q.recipient = 'coordinator' AND q.resolved_at IS NULL AND ($3 <> 'plan-changes' OR q.kind = 'plan'))`
       : "";
   const rs = await db.query<{ id: unknown }>(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr, request_deferred)
-     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint, $10::boolean WHERE true ${questionOpen}
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr, coordinator, request_deferred)
+     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint, $10, $11::boolean WHERE true ${questionOpen}
      ON CONFLICT DO NOTHING RETURNING id`,
-    [r.project, r.ticket, r.kind, r.author, r.body, r.at, r.question, r.profile, r.pr ?? null, r.deferred ?? false],
+    [
+      r.project,
+      r.ticket,
+      r.kind,
+      r.author,
+      r.body,
+      r.at,
+      r.question,
+      r.profile,
+      r.pr ?? null,
+      r.coordinator ?? null,
+      r.deferred ?? false,
+    ],
   );
   const id = rs.rows[0]?.id;
   return id === undefined ? null : Number(id);
@@ -888,28 +1029,28 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
 /** Adds or refreshes the ticket's open plan for the coordinator. */
 export async function putPlan(
   db: Queryable,
-  item: { project: string; ticket: string; author: string | null; body: string; at: Date },
+  item: { project: string; ticket: string; author: string | null; body: string; coordinator?: string | null; at: Date },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5)
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5, $6)
      ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
-     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at`,
-    [item.project, item.ticket, item.author, item.body, item.at],
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator`,
+    [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
   );
 }
 
 /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
 export async function putHandBack(
   db: Queryable,
-  item: { project: string; ticket: string; author: string | null; body: string; at: Date },
+  item: { project: string; ticket: string; author: string | null; body: string; coordinator?: string | null; at: Date },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, 'hand-back', 'coordinator', $3, $4, $5)
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+     VALUES ($1, $2, 'hand-back', 'coordinator', $3, $4, $5, $6)
      ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
-     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at`,
-    [item.project, item.ticket, item.author, item.body, item.at],
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator`,
+    [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
   );
 }
 
@@ -1125,8 +1266,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle" FROM (
-       SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "endedAt"
+    `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator" FROM (
+       SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -1145,6 +1286,7 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
     id: String(r.id),
     ticket: String(r.ticket),
     launchedAt: isoAt(r.createdAt),
+    coordinator: text(r.coordinator),
     tokenUsedAt: iso(r.tokenUsedAt),
     tokenExpiresAt: isoAt(r.tokenExpiresAt),
     runtime: text(r.runtime),
@@ -1152,13 +1294,19 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
   }));
 }
 
-export async function expireUnusedLaunches(db: Database, project: string, now: Date): Promise<PendingLaunch[]> {
+export async function expireUnusedLaunches(
+  db: Database,
+  project: string,
+  now: Date,
+  coordinatorName?: string,
+): Promise<PendingLaunch[]> {
   return transaction(db, async (tx) => {
     const candidates = await tx.query(
       `SELECT w."id", w."organizationId", w."ticket", w."createdAt", w."tokenExpiresAt", w."runtimeHandle"
        FROM "armada_worker" w
        WHERE w."project" = $1 AND w."organizationId" = (SELECT organization_id FROM projects WHERE slug = $1)
          AND w."endedAt" IS NULL AND w."tokenUsedAt" IS NULL AND w."tokenExpiresAt" < $2
+         AND ($3::text IS NULL OR w."coordinator" IS NULL OR w."coordinator" = $3)
          AND NOT EXISTS (
            SELECT 1 FROM "armada_worker" newer
            WHERE newer."organizationId" = w."organizationId" AND newer."project" = w."project" AND newer."ticket" = w."ticket"
@@ -1171,7 +1319,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
            SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = w."ticket" AND h.released_at IS NULL
          )
        ORDER BY w."createdAt", w."ticket" FOR UPDATE OF w`,
-      [project, new Date(now.getTime() - UNUSED_LAUNCH_GRACE_MS)],
+      [project, new Date(now.getTime() - UNUSED_LAUNCH_GRACE_MS), coordinatorName ?? null],
     );
     const expired: PendingLaunch[] = [];
     for (const row of candidates.rows) {
@@ -1185,6 +1333,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
       if (ended)
         expired.push({
           ticket: ended.ticket,
+          coordinator: ended.coordinator ?? null,
           launchedAt: ended.createdAt,
           tokenExpiresAt: ended.tokenExpiresAt,
           tokenUsedAt: null,
@@ -1408,6 +1557,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),
   lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
   getCoordinatorPresence: (project) => getCoordinatorPresence(db, project),
+  listCoordinators: (project) => listCoordinators(db, project),
+  transferTickets: (input) => transferTickets(db, input),
   inboxReads: (project, now) => inboxReads(db, project, now),
   listSessions: (project, opts) => listSessions(db, project, opts),
   saveWorkerProfile: (w) => saveWorkerProfile(db, w),
@@ -1441,7 +1592,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   renewLease: (l) => renewLease(db, l),
   releaseLease: (l) => releaseLease(db, l),
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
-  expireUnusedLaunches: (project, now) => expireUnusedLaunches(db, project, now),
+  expireUnusedLaunches: (project, now, name) => expireUnusedLaunches(db, project, now, name),
   addValidation: (v) => addValidation(db, v),
   listValidations: (q) => listValidations(db, q),
   getValidation: (project, id) => getValidation(db, project, id),
