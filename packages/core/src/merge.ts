@@ -1248,7 +1248,7 @@ async function keepTicketOpen(
   ctx: MergeContext,
   ticket: Ticket,
   merged: MergePull,
-  c: Checked,
+  c: Pick<Checked, "updatedFrom" | "decided">,
   more: string,
   unlocked: boolean,
   override: string,
