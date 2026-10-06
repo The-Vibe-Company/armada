@@ -66,6 +66,9 @@ test.each([
   "shared-other-owner",
   "boundary-owner-transfer",
   "late-owner-transfer",
+  "late-owner-transfer-state-outage",
+  "late-hand-back",
+  "late-shared-hand-back",
   "no-notify",
   "files-unknown",
   "truncated-prs",
@@ -83,7 +86,10 @@ test.each([
   if (scenario === "herdr") f.git("worktree", "add", "-b", "feature/demo-11-worker", herdrTree, "main");
   const pulls = structuredClone(githubPulls.data.repository.open.nodes) as RawPull[];
   for (const p of pulls) {
-    if (p.number === 7 || (["shared", "shared-other-owner"].includes(scenario) && p.number === 8)) {
+    if (
+      p.number === 7 ||
+      (["shared", "shared-other-owner", "late-shared-hand-back"].includes(scenario) && p.number === 8)
+    ) {
       p.files = { nodes: [{ path: "src/lists.ts", additions: 1, deletions: 1 }], pageInfo: { hasNextPage: false } };
     }
   }
@@ -119,7 +125,9 @@ test.each([
       return Response.json(body);
     };
   }
-  for (const ticket of ["shared", "shared-other-owner"].includes(scenario) ? ["DEMO-11", "DEMO-16"] : ["DEMO-11"]) {
+  for (const ticket of ["shared", "shared-other-owner", "late-shared-hand-back"].includes(scenario)
+    ? ["DEMO-11", "DEMO-16"]
+    : ["DEMO-11"]) {
     await f.store.saveRuntimeHandle({
       project: "widgets",
       ticket,
@@ -129,6 +137,7 @@ test.each([
       at: NOW,
     });
   }
+  let transferred = false;
   const transfer = async () => {
     expect(
       await f.store.transferTickets({
@@ -139,7 +148,15 @@ test.each([
         at: NOW,
       }),
     ).toBe(true);
+    transferred = true;
   };
+  if (scenario === "late-owner-transfer-state-outage") {
+    const original = f.io.fetch as Fetch;
+    f.io.fetch = (url, init) =>
+      transferred && url.endsWith("/fleet/events/state")
+        ? Promise.reject(new Error("synthetic phase read outage"))
+        : original(url, init);
+  }
   if (scenario === "fresh-own-transfer" || scenario === "shared-other-owner")
     expect(
       await f.store.transferTickets({
@@ -195,7 +212,17 @@ test.each([
     }
     if (command !== "conductor") return exec(command, args, options);
     native.push({ args, input: options.input });
-    if (scenario === "late-owner-transfer" && args[1] === "session") await transfer();
+    if (["late-owner-transfer", "late-owner-transfer-state-outage"].includes(scenario) && args[1] === "session")
+      await transfer();
+    if (["late-hand-back", "late-shared-hand-back"].includes(scenario) && args[1] === "session")
+      await f.store.recordEvent({
+        project: "widgets",
+        ticket: scenario === "late-shared-hand-back" ? "DEMO-16" : "DEMO-11",
+        kind: "report",
+        phase: "ready-to-merge",
+        message: "handed back during native provenance",
+        at: new Date(NOW.getTime() + 1000),
+      });
     if (scenario === "failed") return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
     if (scenario === "unknown-outcome" && args[1] === "message")
       return { code: 4, stdout: "", stderr: "lost reply after native write" };
@@ -279,14 +306,20 @@ test.each([
     }
   } else expect(o.notified).toEqual([]);
   if (
-    ["fresh-owner-transfer", "boundary-owner-transfer", "late-owner-transfer", "shared-other-owner"].includes(scenario)
+    [
+      "fresh-owner-transfer",
+      "boundary-owner-transfer",
+      "late-owner-transfer",
+      "late-owner-transfer-state-outage",
+      "shared-other-owner",
+    ].includes(scenario)
   ) {
     expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "owned by coordinator release" });
-    if (scenario !== "late-owner-transfer")
+    if (!["late-owner-transfer", "late-owner-transfer-state-outage"].includes(scenario))
       expect(f.armada.calls.some((c) => c.path === "fleet/merge-notice/prepare")).toBe(false);
     expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(0);
   }
-  if (["handed-back", "live-hand-back"].includes(scenario))
+  if (["handed-back", "live-hand-back", "late-hand-back", "late-shared-hand-back"].includes(scenario))
     expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "already handed back" });
   if (scenario === "no-pr") expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "no pull request yet" });
   if (["files-unknown", "truncated-prs", "both-outages"].includes(scenario))
@@ -298,9 +331,15 @@ test.each([
     expect(o.noticeFallback).toBe("worker state unknown");
   }
   if (
-    !["shared", "shared-other-owner", "files-unknown", "truncated-prs", "live-outage", "both-outages"].includes(
-      scenario,
-    )
+    ![
+      "shared",
+      "shared-other-owner",
+      "late-shared-hand-back",
+      "files-unknown",
+      "truncated-prs",
+      "live-outage",
+      "both-outages",
+    ].includes(scenario)
   )
     expect(o.notAffected).toContainEqual({ ticket: "DEMO-16", why: "not affected" });
   expect(f.err() + f.out()).not.toContain("CANARY");
@@ -437,7 +476,7 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
   const armada = fakeArmada({
     keys: { [KEY]: "coordinator" },
     store,
-    ...(unblocks ? { vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW } } : {}),
+    vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW },
   });
   const net = {
     armadaDown: false,
@@ -652,6 +691,25 @@ test.each([false, true])("merge lists unblocked tickets and routed launch hints 
   }
 });
 
+test("a coordinator's merge approval reason is masked before API and Linear comments", async () => {
+  const f = await fixture();
+  f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+  expect(
+    await run(
+      ["merge", "9", "--ask-owner", "--reason", "inspect synthetic-project-secret and sk-synthetic-unknown"],
+      f.io,
+    ),
+  ).toBe(0);
+  const sent = JSON.stringify(f.armada.calls.filter((c) => c.path.startsWith("fleet/"))) + f.linear.bodies.join("\n");
+  expect(sent).not.toContain("synthetic-project-secret");
+  expect(sent).not.toContain("sk-synthetic-unknown");
+  expect(sent).toContain("«secret CUSTOM_KEY»");
+  expect(sent).toContain("«redacted»");
+  expect(f.err()).toContain("masked CUSTOM_KEY");
+  expect(f.err()).toContain("masked a value matching a key pattern");
+  expect(f.merged()).toBe(false);
+});
+
 test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "configuration only"] }])(
   "a merge that closes no ticket lists nothing (%s)",
   async ({ options }) => {
@@ -723,6 +781,7 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
   // Under the merge lock on Armada, given back afterwards; the merge recorded and the worker's session ended.
   expect(f.armada.calls.map((c) => c.path)).toEqual([
     "fleet/coordinator",
+    "secrets/release",
     "fleet/lease/acquire",
     "fleet/holds",
     "fleet/validations",
@@ -1211,3 +1270,23 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
       expect(f.err()).toContain("run armada stop DEMO-18");
   },
 );
+
+test("confirmed merge ends worker sessions before starting matching deploy watchers", async () => {
+  const f = await fixture();
+  const read = f.io.readFile;
+  f.io.readFile = async (path) => {
+    const contents = await read(path);
+    return path.endsWith("armada.toml") && contents
+      ? `${contents}\n[[deploy.target]]\nname = "api"\nbranch = "main"\nlive_sha_command = "version"\n`
+      : contents;
+  };
+  let launched: string[] = [];
+  f.io.startBackground = async (args) => {
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(true);
+    launched = args;
+    return true;
+  };
+  expect(await run(["merge", "9"], f.io)).toBe(0);
+  expect(launched.slice(0, 6)).toEqual(["deploy", "watch", "--sha", SQUASH, "--target", "api"]);
+  expect(f.out()).toContain(`Watching the deploy of ${SQUASH} to api`);
+});

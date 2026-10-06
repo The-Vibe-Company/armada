@@ -223,6 +223,7 @@ function boundedWait(o: WatchOptions, ms: number): number {
 
 export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
   "hold",
+  "deploy",
   "question",
   "plan",
   "hand-back",

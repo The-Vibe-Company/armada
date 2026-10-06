@@ -214,6 +214,22 @@ async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "en
     )
   )
     throw stale(expected.ticket);
+  if (expected.skipHandedBack) {
+    const [open, events] = await Promise.all([fleet.runtimeHandles(), fleet.latestEvents()]);
+    if (
+      open.some(
+        (peer) =>
+          peer.handle === expected.handle &&
+          runtimeNameOf(peer.runtime) === expected.runtime &&
+          events[peer.ticket]?.phase === "ready-to-merge",
+      )
+    )
+      throw new RuntimeError(
+        `${expected.ticket}'s worker has handed back; left the runtime untouched`,
+        "stale",
+        "armada status",
+      );
+  }
   // Archive can wait for a final turn: ownership must be current at EACH native write,
   // not only in the merge's snapshot. Failure to read ownership leaves the runtime untouched.
   if (rule === "ended" && (await fleet.runtimeHandles()).some((open) => sharesRuntimeWorkspace(expected, open)))
@@ -243,7 +259,12 @@ export async function checkedMutation<T>(
   act: () => Promise<T>,
 ): Promise<T> {
   const guard = guards.getStore();
-  if (!guard || !same(guard.expected, target) || guard.expected.coordinator !== target.coordinator)
+  if (
+    !guard ||
+    !same(guard.expected, target) ||
+    guard.expected.coordinator !== target.coordinator ||
+    guard.expected.skipHandedBack !== target.skipHandedBack
+  )
     throw stale(target.ticket);
   await checkClaim(guard.fleet, target, guard.rule);
   await verify();

@@ -131,13 +131,23 @@ export async function deliverToRuntime(
   text: string,
   expected?: RuntimeHandle | null,
   config?: ArmadaConfig,
-  message: { item?: number | null; kind?: "answer" | "note" | "login"; key?: string; coordinator?: string } = {},
+  message: {
+    item?: number | null;
+    kind?: "answer" | "note" | "login";
+    key?: string;
+    coordinator?: string;
+    skipHandedBack?: boolean;
+  } = {},
 ): Promise<boolean> {
   const h = await fleet.runtimeHandle(ticket);
   if (!h || runtimeNameOf(h.runtime) === "claude-code" || !runtimeNameOf(h.runtime)) return false;
   if (!expected)
     throw new Refusal(`${ticket}'s claim changed before delivery; no answer was delivered`, "armada inbox");
-  const target = { ...claimRef(expected), coordinator: message.coordinator };
+  const target = {
+    ...claimRef(expected),
+    coordinator: message.coordinator,
+    skipHandedBack: message.skipHandedBack,
+  };
   if (target.releasedAt) throw new Refusal(`${ticket}'s worker has ended; no answer was delivered`, "armada status");
   const adapter = runtimeFor(io, config, expected.runtime);
   await guarded(fleet, target, "active", () =>

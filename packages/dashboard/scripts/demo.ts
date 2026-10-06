@@ -19,6 +19,7 @@ import {
   DEMO_COORDINATOR_SEEN,
   DEMO_INBOX,
   DEMO_JOBS,
+  DEMO_NAMED_COORDINATORS,
   DEMO_PROFILES,
   DEMO_PROJECT_FACTS,
   DEMO_PROJECTS,
@@ -71,6 +72,7 @@ async function seed(scenario: string) {
       runtime: e.runtime,
       handle: e.handle,
       branch: `feature/${e.ticket.toLowerCase()}`,
+      coordinator: e.coordinator,
       at: ago(e.claimed),
     });
     await saveWorkerProfile(db, {
@@ -110,6 +112,9 @@ async function seed(scenario: string) {
       for (const minutes of demoInboxReads(project).reverse())
         await recordCoordinatorSeen(db, { project, facts, at: ago(minutes) });
     }
+    for (const [project, named] of Object.entries(DEMO_NAMED_COORDINATORS))
+      for (const c of named)
+        await recordCoordinatorSeen(db, { project, name: c.name, facts: c.facts, at: ago(c.seen) });
   }
   await db.end();
   console.log(`Seeded the ${s} demo in ${configured ? "the database ARMADA_DEMO_DATABASE_URL names" : url}`);

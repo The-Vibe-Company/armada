@@ -2,15 +2,24 @@
 // the environment it is given, and its exit code passed on. Signals the
 // terminal sends (Ctrl-C) reach it directly, as one process group; Armada
 // waits for it to exit rather than leave it behind.
+
 import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import { constants } from "node:os";
+import { dirname } from "node:path";
 import type { Io, Spawn } from "./io.ts";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
-export const spawnInherited: Spawn = (command, args, { cwd, env }) =>
+export const spawnInherited: Spawn = (command, args, { cwd, env, output }) =>
   new Promise((done, fail) => {
-    const child = spawn(command, args, { cwd, env, stdio: "inherit" });
+    const child = spawn(command, args, { cwd, env, stdio: output ? ["inherit", "pipe", "pipe"] : "inherit" });
+    if (output) {
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", output.stdout);
+      child.stderr?.on("data", output.stderr);
+    }
     // A signal sent to Armada is passed on, except a terminal's Ctrl-C, which reached the child already.
     const fromTerminal = process.stdin.isTTY === true;
     const handlers = SIGNALS.map((signal) => {
@@ -27,21 +36,31 @@ export const spawnInherited: Spawn = (command, args, { cwd, env }) =>
       stop();
       fail(err.code === "ENOENT" ? new Error(`${command}: command not found`) : err);
     });
-    child.on("exit", (code, signal) => {
+    child.on("close", (code, signal) => {
       stop();
       done(code ?? 128 + (signal ? (constants.signals[signal] ?? 0) : 0));
     });
   });
 
-export const startBackground: NonNullable<Io["startBackground"]> = (args) =>
+export const startBackground: NonNullable<Io["startBackground"]> = (args, options) =>
   new Promise((resolve) => {
     if (process.platform === "win32") return resolve(false);
+    let log: number | undefined;
+    try {
+      if (options?.logPath) {
+        mkdirSync(dirname(options.logPath), { recursive: true, mode: 0o700 });
+        log = openSync(options.logPath, "a", 0o600);
+      }
+    } catch {
+      return resolve(false);
+    }
     const child = spawn(process.execPath, [...process.execArgv, process.argv[1] as string, ...args], {
       cwd: process.cwd(),
       env: process.env,
       detached: true,
-      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      stdio: ["ignore", log ?? "ignore", log ?? "ignore", "ipc"],
     });
+    if (log !== undefined) closeSync(log);
     let settled = false;
     const finish = (ready: boolean) => {
       if (settled) return;

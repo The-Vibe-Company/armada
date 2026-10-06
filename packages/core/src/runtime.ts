@@ -24,6 +24,8 @@ export interface ClaimRef {
   branch?: string | null;
   /** Optional delivery scope: refuse a notice after transfer to another coordinator. */
   coordinator?: string;
+  /** Merge notices must not wake a session after any of its tickets hands back. */
+  skipHandedBack?: boolean;
 }
 export type RuntimeErrorCode =
   | "unsupported"

@@ -459,9 +459,11 @@ What a project's workers need to build and test (an LLM provider key, a test dat
 - The coordinator sets them, signed in as an owner or admin (or with an organization API key whose creator still is one): `armada secrets set <NAME>` for the current project, `--org` for every project of the organization. The value is read from a hidden prompt, from standard input (`--value-stdin`), or from a variable of the coordinator's environment (`--from-env <VAR>`), so an agent can move a key without reading it. Never from the command line. `armada secrets unset <NAME> [--org]` removes one. Owners and admins can also do both on the Keys page.
 - `armada secrets` lists the names, where each is set (project or organization), who set it and when. Never a value.
 - A worker fetches them through Armada, with its worker session, for its own project only (another project's is refused, and the refusal is in the audit list), in this order:
-  - `armada run [--only A,B] -- <command>` runs the command with them in its environment: tests, builds, dev servers. Armada's value wins over a variable of the same name (stderr names it). Nothing is written to disk or printed; the exit code is the command's.
+  - `armada run [--only A,B] [--redact] -- <command>` runs the command with them in its environment: tests, builds, dev servers. Armada's value wins over a variable of the same name (stderr names it). Nothing is written to disk; the exit code is the command's. Non-interactive stdout and stderr are masked, including values split across output chunks. When stdout is a TTY, output inherits the terminal and **is not masked**; Armada warns once. `--redact` forces masked pipes for an interactive command.
   - `armada secrets export --file <path> [--only A,B]` writes a dotenv file with mode 0600, for a tool that reads one (`.env.local`). It refuses a path git tracks or does not ignore.
   - `armada secrets get <NAME>` prints one value, for a person, with a warning on stderr that it is now visible. An agent never runs it: its command output is its transcript.
+- Exact project secret values and the terminal's resolved credentials are replaced with `«secret OPENAI_API_KEY»` (using their name); well-known key formats and PEM private keys become `«redacted»`. Values **shorter than 8 characters are not masked**, to avoid false matches. A masking warning names only the secret or the key-pattern match. This is a safety net: never echo secrets, paste them into messages, or assume transformed/encoded values will be caught.
+- Reports, plans, questions, validations, answers, attachment captions and their Linear comments are masked before sending. The server also masks stored free text against the project's secrets, protecting older clients. If the CLI cannot read project secrets, it warns and continues with resolved credentials and patterns so Linear reporting still works; arbitrary project values then lack exact masking. A server with stored secrets it cannot decrypt refuses the text write.
 - Every fetch is one release in the audit list, naming the project and the secrets. Nothing is cached: an unset secret is no longer handed out, and a changed one takes effect on the next command.
 - `[secrets] names` in `armada.toml` lists what the project expects; `armada doctor` names those Armada does not keep for it.
 
@@ -635,3 +637,23 @@ numbered = true
 ```
 
 Declarations are optional documentation; undeclared keys can also be reserved. Reservations require Armada: if it is unavailable, ask the coordinator before choosing a value. After a lost response, check `armada reserve --list` before retrying, since the reservation may already have succeeded.
+
+### Check deploys after each merge
+
+Declare optional `[[deploy.target]]` entries in `armada.toml`:
+
+```toml
+[[deploy.target]]
+name = "api"
+branch = "main"                    # omit for the merged PR's base branch
+# Exactly one source of the live commit:
+github_environment = "production"
+# live_sha_command = "curl -fsS https://example.test/version"
+smoke = "curl -fsS https://example.test/health" # optional
+timeout_minutes = 20              # 1–120
+pause_on_failure = true
+```
+
+`armada merge` starts a background deploy watcher and prints `Watching the deploy of <sha> to <target>`. Deployment failures, smoke failures and timeouts create one inbox item and a shared deploy hold for that target. A later healthy deploy clears the failures it covers. Use `--through-hold "<why>"` to merge the repair. `pause_on_failure = false` keeps the inbox warning without pausing merges.
+
+`armada deploy status` shows each target's latest state and any open deploy hold; `armada status` includes deploy states. Commands run at the repository root with `ARMADA_DEPLOY_SHA` and `ARMADA_DEPLOY_TARGET`, bounded to one minute and the deploy deadline. Declare `armada run -- <command>` when a command needs project secrets. Watchers share smoke results for the same live SHA. If background startup fails, the merge prints a command to run in a persistent terminal. See the [deployment runbook](docs/runbook.md#check-deployments-after-merges) for recovery and logs.

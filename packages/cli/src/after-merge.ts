@@ -137,6 +137,7 @@ async function notifyWorkers(
             kind: "note",
             key,
             coordinator: owner,
+            skipHandedBack: true,
           }));
         if (!delivered) throw new Error("the runtime does not support delivery");
         detail = receipt === "delivered" ? "already delivered" : "delivered";
@@ -156,20 +157,23 @@ async function notifyWorkers(
       } catch (error) {
         // A same-generation handover may happen during native provenance checks.
         // Do not suggest manual delivery to a session now owned by a peer.
-        const peer = !delivered
-          ? (await fleet?.runtimeHandles().catch(() => []))?.find(
-              (h) =>
-                h.handle === w.handle &&
-                runtimeNameOf(h.runtime) === runtime &&
-                h.coordinator != null &&
-                h.coordinator !== owner,
-            )
-          : null;
+        const reading =
+          !delivered && fleet
+            ? await Promise.all([fleet.runtimeHandles().catch(() => []), fleet.latestEvents().catch(() => null)])
+            : null;
+        const active = reading?.[0] ?? [];
+        const sameSession = active.filter((h) => h.handle === w.handle && runtimeNameOf(h.runtime) === runtime);
+        const peer = sameSession.find((h) => h.coordinator != null && h.coordinator !== owner);
         if (peer) {
           outcome.notAffected ??= [];
           outcome.notAffected.push(
             ...workers.map((worker) => ({ ticket: worker.ticket, why: `owned by coordinator ${peer.coordinator}` })),
           );
+          continue;
+        }
+        if (sameSession.some((h) => reading?.[1]?.[h.ticket]?.phase === "ready-to-merge")) {
+          outcome.notAffected ??= [];
+          outcome.notAffected.push(...workers.map((worker) => ({ ticket: worker.ticket, why: "already handed back" })));
           continue;
         }
         detail = `${oneLine(redactRuntimeText(error instanceof Error ? error.message : String(error)))}; deliver manually with the runtime guide`;

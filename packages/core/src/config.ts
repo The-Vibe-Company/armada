@@ -13,6 +13,16 @@ export interface JobConfig {
   maxHours: number | null;
 }
 
+export interface DeployTarget {
+  name: string;
+  branch: string | null;
+  githubEnvironment: string | null;
+  liveShaCommand: string | null;
+  smoke: string | null;
+  timeoutMinutes: number;
+  pauseOnFailure: boolean;
+}
+
 export interface CiConfig {
   failurePatterns: string[];
   knownFailures: { check: string; pattern: string; ticket: string }[];
@@ -55,6 +65,7 @@ export interface ArmadaConfig {
     /** owner/name */
     repository: string;
   };
+  deploy?: { targets: DeployTarget[] };
   ci: CiConfig;
   merge: {
     /** Repository path globs whose merges concern every working pull request. */
@@ -87,6 +98,8 @@ export interface ArmadaConfig {
     preApprovedLabel: string;
     /** A ticket carrying this label waits for approval, whatever `plans` says; it wins over `preApprovedLabel`. */
     approvalLabel: string;
+    /** Image sample cap for owner validations, default four, at most eight. */
+    validationSamples?: number;
     attachmentsPerTicket: number;
     attachmentsProjectMb: number;
     attachmentsRetentionDays: number;
@@ -220,6 +233,7 @@ export const CONFIG_DEFAULTS = {
   plans: "approve",
   preApprovedLabel: "plan-approved",
   approvalLabel: "needs-plan-approval",
+  validationSamples: 4,
   attachmentsPerTicket: 20,
   attachmentsProjectMb: 200,
   attachmentsRetentionDays: 30,
@@ -388,6 +402,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "attachments_per_ticket",
         "attachments_project_mb",
         "attachments_retention_days",
+        "validation_samples",
         "merge_approval",
         "validation",
       ],
@@ -566,6 +581,53 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(herdrProfiles).some((profile) => profile.when)
   )
     problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
+  const deployRaw = raw.deploy ?? {};
+  if (!isTable(deployRaw)) problems.push('"deploy" must be a table');
+  const deployT = isTable(deployRaw) ? deployRaw : {};
+  known.push(["deploy", deployT, ["target"]]);
+  const deployTargets: DeployTarget[] = [];
+  if (deployT.target !== undefined && !Array.isArray(deployT.target))
+    problems.push('"deploy.target" must be an array of tables');
+  for (const [i, row] of (Array.isArray(deployT.target) ? deployT.target : []).entries()) {
+    const path = `deploy.target.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    known.push([
+      path,
+      row,
+      ["name", "branch", "github_environment", "live_sha_command", "smoke", "timeout_minutes", "pause_on_failure"],
+    ]);
+    const name = str(row, path, "name");
+    if (name.length > 200) problems.push(`"${path}.name" has at most 200 characters`);
+    if (deployTargets.some((t) => t.name === name)) problems.push(`"${path}.name" repeats ${name}`);
+    const optional = (key: string) => (row[key] === undefined ? null : str(row, path, key));
+    const githubEnvironment = optional("github_environment");
+    const liveShaCommand = optional("live_sha_command");
+    if ((githubEnvironment === null) === (liveShaCommand === null))
+      problems.push(`"${path}" needs exactly one of github_environment or live_sha_command`);
+    const timeoutMinutes = row.timeout_minutes ?? 20;
+    if (
+      typeof timeoutMinutes !== "number" ||
+      !Number.isFinite(timeoutMinutes) ||
+      timeoutMinutes < 1 ||
+      timeoutMinutes > 120
+    )
+      problems.push(`"${path}.timeout_minutes" must be from 1 to 120`);
+    if (row.pause_on_failure !== undefined && typeof row.pause_on_failure !== "boolean")
+      problems.push(`"${path}.pause_on_failure" must be true or false`);
+    deployTargets.push({
+      name,
+      branch: optional("branch"),
+      githubEnvironment,
+      liveShaCommand,
+      smoke: optional("smoke"),
+      timeoutMinutes: typeof timeoutMinutes === "number" ? timeoutMinutes : 20,
+      pauseOnFailure: row.pause_on_failure !== false,
+    });
+  }
+
   const jobs: Record<string, JobConfig> = {};
   const jobsRaw = raw.jobs ?? {};
   if (!isTable(jobsRaw)) problems.push('"jobs" must be a table of job definitions');
@@ -651,6 +713,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     problems.push(`"policy.${key}" must be a positive integer`);
     return fallback;
   };
+  const validationSamples = quota("validation_samples", CONFIG_DEFAULTS.validationSamples);
+  if (validationSamples > 8) problems.push('"policy.validation_samples" must be at most 8');
   const attachmentsPerTicket = quota("attachments_per_ticket", CONFIG_DEFAULTS.attachmentsPerTicket);
   const attachmentsProjectMb = quota("attachments_project_mb", CONFIG_DEFAULTS.attachmentsProjectMb);
   const attachmentsRetentionDays = quota("attachments_retention_days", CONFIG_DEFAULTS.attachmentsRetentionDays);
@@ -809,6 +873,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
+    ...(raw.deploy === undefined ? {} : { deploy: { targets: deployTargets } }),
     ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
     merge: { notifyPaths },
@@ -820,6 +885,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       plans,
       preApprovedLabel,
       approvalLabel,
+      validationSamples,
       attachmentsPerTicket,
       attachmentsProjectMb,
       attachmentsRetentionDays,
@@ -867,6 +933,16 @@ runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 
 [github]
 repository = ${q(p.repository)}
+
+# After merges, watch each declared target and pause merges if deploy or smoke fails.
+# [[deploy.target]]
+# name = "api"
+# branch = "main"  # omit to watch any merged base branch
+# github_environment = "production"
+# live_sha_command = "curl -fsS https://example.test/version"  # use exactly one live source
+# smoke = "curl -fsS https://example.test/health"
+# timeout_minutes = 20  # 1–120; smoke shares this deadline
+# pause_on_failure = true
 
 # A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
 # with \`armada ci why <pr> --rerun\`; unknown failures are refused.

@@ -1,4 +1,5 @@
 import { sinceSummary } from "../src/catchup.ts";
+import { type DeployInput, type DeployQuery, type DeployRecord, deployDetail, deployFailed } from "../src/deploy.ts";
 // The fleet's live data in memory, for tests: the same results as the app's
 // Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
 // with its unique rules (one open plan, hand-back and launch request per
@@ -39,7 +40,12 @@ interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestQuestion: number | null;
   requestProfile: string | null;
   requestValidation?: number | null;
+  deployTarget?: string | null;
+  deploySha?: string | null;
 }
+
+type DeployInputWithCoverage = DeployInput & { project: string; coveredShas?: readonly string[] | null };
+type DeployRow = DeployRecord & { coveredShas?: string[] };
 
 /** A launch as the app keeps it (`armada_worker`), with only what the fleet reads of it. */
 export interface LaunchRow extends PendingLaunch {
@@ -53,6 +59,7 @@ const key = (project: string, ticket: string) => `${project}\n${ticket}`;
 export function memoryFleet(): FleetStore & {
   events: EventRow[];
   items: ItemRow[];
+  deploys: DeployRow[];
   leases: Map<string, Lease>;
   presence: Map<string, { handle: string | null; cliVersion: string | null; at: string }>;
   /** Launches, as the app's `createLaunch` and `exchangeLaunch` write them: tests push and edit them. */
@@ -68,7 +75,8 @@ export function memoryFleet(): FleetStore & {
   const notices = new Map<string, { delivered: boolean; tickets: Set<string> }>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
-  const holds: (MergeHold & { itemId: number })[] = [];
+  const deploys: DeployRow[] = [];
+  const holds: (MergeHold & { itemId: number; deploySequence?: number; deploySha?: string | null })[] = [];
   const leases = new Map<string, Lease>();
   const presence = new Map<string, { handle: string | null; cliVersion: string | null; at: string }>();
   const coordinators = new Map<string, CoordinatorPresence>();
@@ -87,7 +95,16 @@ export function memoryFleet(): FleetStore & {
   };
 
   const stored = (r: ItemRow): StoredInboxItem => {
-    const { requestQuestion, requestProfile, requestPr, requestValidation, requestDeferred, ...rest } = r;
+    const {
+      requestQuestion,
+      requestProfile,
+      requestPr,
+      requestValidation,
+      requestDeferred,
+      deployTarget: _target,
+      deploySha: _sha,
+      ...rest
+    } = r;
     return {
       ...rest,
       ...(r.kind === "decision"
@@ -139,6 +156,148 @@ export function memoryFleet(): FleetStore & {
     for (const r of rows) Object.assign(r, { resolvedAt: at.toISOString(), resolution });
     return rows.length;
   };
+  const covered = (input: DeployInputWithCoverage): string[] => [
+    ...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha)),
+  ];
+  const deployTerminal = (state: string) => state === "healthy" || deployFailed(state as never);
+  const deployBody = (input: DeployInputWithCoverage) =>
+    `Deployment ${input.state} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
+  const staleFailure = (record: DeployRow) =>
+    deploys.some(
+      (row) =>
+        row.project === record.project &&
+        row.target === record.target &&
+        row.state === "healthy" &&
+        (row.sha === record.sha || (row.coveredShas ?? []).includes(record.sha)),
+    ) ||
+    deploys.some(
+      (row) =>
+        row.project === record.project &&
+        row.target === record.target &&
+        deployFailed(row.state) &&
+        row.sequence > record.sequence,
+    );
+  const deployNotice = (input: DeployInputWithCoverage, at: Date, preferredId?: number | null) => {
+    const body = deployBody(input);
+    const current =
+      items.find(
+        (row) =>
+          row.project === input.project &&
+          row.kind === "deploy" &&
+          row.recipient === "coordinator" &&
+          row.deployTarget === input.target &&
+          !row.resolvedAt,
+      ) ?? (preferredId == null ? undefined : items.find((row) => row.id === preferredId && !row.resolvedAt));
+    if (current) {
+      const wasKind = current.kind;
+      current.body = body;
+      current.kind = "deploy";
+      current.recipient = "coordinator";
+      current.deployTarget = input.target;
+      current.deploySha = input.sha;
+      if (wasKind !== "deploy" && preferredId !== current.id) {
+        const old = items.find((row) => row.id === preferredId && row.id !== current.id && !row.resolvedAt);
+        if (old) {
+          old.resolvedAt = at.toISOString();
+          old.resolution = `superseded by deployment notice for ${input.target}`;
+        }
+      }
+      return current.id;
+    }
+    return insert({
+      project: input.project,
+      ticket: null,
+      kind: "deploy",
+      recipient: "coordinator",
+      author: null,
+      body,
+      createdAt: at.toISOString(),
+      requestQuestion: null,
+      requestProfile: null,
+      deployTarget: input.target,
+      deploySha: input.sha,
+    });
+  };
+  const openDeployFailure = (input: DeployInputWithCoverage, record: DeployRow, at: Date) => {
+    if (staleFailure(record)) return;
+    const current = holds.find(
+      (hold) =>
+        hold.project === input.project && hold.kind === "deploy" && hold.ref === input.target && !hold.clearedAt,
+    );
+    if (current?.deploySequence !== undefined && current.deploySequence > record.sequence) return;
+    const manuallyCleared = holds
+      .filter(
+        (hold) =>
+          hold.project === input.project &&
+          hold.kind === "deploy" &&
+          hold.ref === input.target &&
+          !!hold.clearedAt &&
+          hold.deploySequence !== undefined,
+      )
+      .sort((a, b) => (b.deploySequence ?? 0) - (a.deploySequence ?? 0))[0];
+    if (manuallyCleared?.deploySequence !== undefined && manuallyCleared.deploySequence >= record.sequence) return;
+    const previousItemId = current?.itemId;
+    const id = deployNotice(input, at, previousItemId);
+    if (previousItemId !== undefined && previousItemId !== id) {
+      const old = items.find((row) => row.id === previousItemId && !row.resolvedAt);
+      if (old) {
+        old.resolvedAt = at.toISOString();
+        old.resolution = `superseded by deployment notice for ${input.target}`;
+      }
+    }
+    if (current) {
+      current.reason = `deployment ${input.state} for ${input.target} (${input.sha})\n${deployDetail(input.detail)}`;
+      current.openedAt = at.toISOString();
+      current.deploySequence = record.sequence;
+      current.deploySha = input.sha;
+      current.itemId = id;
+      return;
+    }
+    holds.push({
+      id: holds.length + 1,
+      project: input.project,
+      kind: "deploy",
+      ref: input.target,
+      reason: `deployment ${input.state} for ${input.target} (${input.sha})\n${deployDetail(input.detail)}`,
+      openedBy: null,
+      openedAt: at.toISOString(),
+      clearedAt: null,
+      clearedBy: null,
+      clearReason: null,
+      itemId: id,
+      deploySequence: record.sequence,
+      deploySha: input.sha,
+    });
+  };
+  const clearDeployHealthy = (input: DeployInputWithCoverage, record: DeployRow, at: Date) => {
+    const shas = covered(input);
+    for (const hold of holds) {
+      if (hold.project !== input.project || hold.kind !== "deploy" || hold.ref !== input.target || hold.clearedAt)
+        continue;
+      if (hold.deploySha && !shas.includes(hold.deploySha)) continue;
+      if (!hold.deploySha && hold.deploySequence !== undefined && hold.deploySequence > record.sequence) continue;
+      hold.clearedAt = at.toISOString();
+      hold.clearedBy = null;
+      hold.clearReason = `deployment healthy for ${input.target} (${input.sha})`;
+      const notice = items.find((item) => item.id === hold.itemId);
+      if (notice && !notice.resolvedAt) {
+        notice.resolvedAt = at.toISOString();
+        notice.resolution = hold.clearReason;
+      }
+    }
+    for (const notice of items) {
+      if (
+        notice.project === input.project &&
+        notice.kind === "deploy" &&
+        notice.deployTarget === input.target &&
+        !notice.resolvedAt &&
+        (!notice.deploySha || shas.includes(notice.deploySha))
+      ) {
+        notice.resolvedAt = at.toISOString();
+        notice.resolution = `deployment healthy for ${input.target} (${input.sha})`;
+      }
+    }
+  };
 
   return {
     async digestRecords(project, since, now) {
@@ -174,6 +333,7 @@ export function memoryFleet(): FleetStore & {
     },
     events,
     items,
+    deploys,
     leases,
     presence,
     launches,
@@ -209,6 +369,93 @@ export function memoryFleet(): FleetStore & {
       receipt.delivered = true;
       receipt.tickets.add(q.ticket);
       return `Note #${id} recorded.`;
+    },
+
+    async recordDeploy(input: DeployInputWithCoverage & { at: Date }) {
+      const detail = deployDetail(input.detail);
+      const known = deploys.find(
+        (row) => row.project === input.project && row.target === input.target && row.sha === input.sha,
+      );
+      if (known && deployTerminal(known.state)) {
+        if (known.state === "healthy" && input.state === "healthy") {
+          const previousCovered = known.coveredShas ?? [known.sha];
+          const mergedCovered = [...new Set([...previousCovered, ...covered(input)])];
+          if (mergedCovered.length > previousCovered.length) {
+            known.coveredShas = mergedCovered;
+            known.updatedAt = new Date(Math.max(Date.parse(known.updatedAt), input.at.getTime())).toISOString();
+            clearDeployHealthy({ ...input, coveredShas: mergedCovered }, known, input.at);
+          }
+        }
+        return structuredClone(known);
+      }
+      const row: DeployRow = known ?? {
+        project: input.project,
+        target: input.target,
+        sha: input.sha,
+        state: input.state,
+        detail,
+        pauseOnFailure: input.pauseOnFailure,
+        liveSha: input.liveSha ?? null,
+        coveredShas: covered(input),
+        startedAt: input.at.toISOString(),
+        updatedAt: input.at.toISOString(),
+        sequence: deploys.reduce((max, candidate) => Math.max(max, candidate.sequence), 0) + 1,
+      };
+      if (known) {
+        Object.assign(row, {
+          state: input.state,
+          detail,
+          pauseOnFailure: input.pauseOnFailure,
+          liveSha: input.liveSha ?? null,
+          coveredShas: covered(input),
+          updatedAt: input.at.toISOString(),
+        });
+      } else deploys.push(row);
+      if (row.state === "healthy") clearDeployHealthy(input, row, input.at);
+      else if (deployFailed(row.state)) {
+        if (input.pauseOnFailure) openDeployFailure(input, row, input.at);
+        else if (!staleFailure(row)) deployNotice(input, input.at);
+      }
+      return structuredClone(row);
+    },
+    async deployState(project: string, query: DeployQuery = {}) {
+      let rows = deploys.filter((row) => row.project === project);
+      if (query.target !== undefined) rows = rows.filter((row) => row.target === query.target);
+      if (query.sha !== undefined) rows = rows.filter((row) => row.sha === query.sha);
+      if (query.target === undefined && query.sha === undefined) {
+        const latest = new Map<string, DeployRow>();
+        for (const row of rows) {
+          const previous = latest.get(row.target);
+          if (!previous || row.sequence > previous.sequence) latest.set(row.target, row);
+        }
+        rows = [...latest.values()];
+      } else if (query.target !== undefined && query.sha === undefined) {
+        rows = rows
+          .map((row) => ({
+            row,
+            held:
+              holds.some(
+                (hold) =>
+                  hold.project === project &&
+                  hold.kind === "deploy" &&
+                  hold.ref === row.target &&
+                  !hold.clearedAt &&
+                  hold.deploySha === row.sha,
+              ) ||
+              items.some(
+                (item) =>
+                  item.project === project &&
+                  item.kind === "deploy" &&
+                  item.deployTarget === row.target &&
+                  !item.resolvedAt &&
+                  item.deploySha === row.sha,
+              ),
+          }))
+          .sort((a, b) => Number(b.held) - Number(a.held) || b.row.sequence - a.row.sequence)
+          .slice(0, 100)
+          .map(({ row }) => row);
+      } else rows = rows.sort((a, b) => b.sequence - a.sequence);
+      return structuredClone(rows);
     },
 
     async startJob(input) {
