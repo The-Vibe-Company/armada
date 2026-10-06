@@ -961,9 +961,9 @@ describe("armada merge --no-ticket", () => {
     expect([s.forge.merges, s.linear.writes]).toEqual([[{ number: 9, sha: HEAD }], []]);
 
     init(s, { state: "open", checks: [{ name: "test", state: "failure" }] });
-    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }))).toContain(
-      `#9 cannot be merged:\n  - on head 0123456: required check "test" is failure`,
-    );
+    const red = await refusal(mergePullRequest(s.ctx, { pr: 9, noTicket: true }));
+    expect(red).toContain(`#9 cannot be merged:\n  - on head 0123456: required check "test" is failure`);
+    expect(red).toContain("Next: armada ci why 9");
   });
 
   test("merges a release pull request on which no CI ran, with a note, once GitHub had time to start one", async () => {

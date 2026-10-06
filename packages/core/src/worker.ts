@@ -523,7 +523,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     if (problems.length)
       throw new Refusal(
         `${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
-        `fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
+        `${pr?.checks?.some((c) => c.state === "failure") ? `armada ci why ${pr.number}; ` : ""}fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
       );
     summary = `PR #${pr?.number}, head ${sha}, CI green; ${shippingPath}`;
     body = message;

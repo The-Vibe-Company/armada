@@ -26,6 +26,7 @@ export const SETUP: { command: string; note: string }[] = [
 export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" | "you"; what: string }[] = [
   { name: "reserve", role: "worker", what: "Reserve a shared name or number for your ticket." },
   { name: "unreserve", role: "worker", what: "Free your ticket's open shared resources." },
+  { name: "ci", role: "both", what: "Explain failing tests, first errors and runner problems" },
   { name: "attach", role: "worker", what: "Attach screenshots and links for the owner to check" },
   { name: "heartbeat", role: "worker", what: "Keep a worker's session alive in the background" },
   { name: "spec", role: "coordinator", what: "Add a spec or preview and apply title repairs" },
