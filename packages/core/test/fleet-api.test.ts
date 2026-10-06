@@ -393,6 +393,9 @@ describe("the fleet through Armada", () => {
     });
     expect((await run("report", { ticket: "DEMO-7", phase: "dreaming", summary: "x" })).status).toBe(400);
     expect((await run("merge", { ticket: "DEMO-7", number: 9, url: "u", headSha: "not-a-sha" })).status).toBe(400);
+    expect(
+      (await run("merge", { ticket: "DEMO-7", number: 9, url: "u", headSha: "a".repeat(40), keepOpen: "yes" })).status,
+    ).toBe(400);
     expect((await run("inbox", { silentAfterMinutes: 15, notStartedMinutes: "ten" })).status).toBe(400);
     expect((await run("unknown", {})).status).toBe(404);
     expect(store.events).toEqual([]);

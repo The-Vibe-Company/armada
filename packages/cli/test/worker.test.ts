@@ -385,15 +385,21 @@ describe("armada claim, report and release", () => {
   });
 
   test("a ready-to-merge report without a message option stays valid", async () => {
-    const w = worker();
+    const w = worker(SIGNED_IN);
+    w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
     w.linear.add("DEMO-7", {
       labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
     });
     w.net.rest = async () =>
       Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
-    expect(await run(["report", "ready-to-merge", "--pr", "9", "--sha", HEAD], w.io)).toBe(0);
+    expect(
+      await run(
+        ["report", "ready-to-merge", "--pr", "9", "--sha", HEAD, "--more-prs", "next synthetic-project-secret"],
+        w.io,
+      ),
+    ).toBe(0);
     expect(w.linear.bodies).toEqual([
-      `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported`,
+      `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported; more PRs: next «secret CUSTOM_KEY»`,
     ]);
   });
 
