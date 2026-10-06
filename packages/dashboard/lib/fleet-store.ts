@@ -1,3 +1,4 @@
+import { queueAdd, queueFinish, queueList, queueNext, queueRemove } from "./merge-queue";
 // The fleet's live data in the app's database (THE-849): the project
 // registry, events, the runtime session holding each ticket and the profile
 // its claim named, the coordinators' inboxes with the dashboard's requests,
@@ -1262,6 +1263,11 @@ export const fleetStore = (db: Database): FleetStore => ({
   resolveInboxItems: (q) => resolveInboxItems(db, q),
   resolveAnswerRequests: (q) => resolveAnswerRequests(db, q),
   resolvePlans: (q) => resolvePlans(db, q),
+  queueAdd: (e) => queueAdd(db, e),
+  queueList: (project, opts) => queueList(db, project, opts),
+  queueNext: (q) => queueNext(db, q),
+  queueFinish: (q) => queueFinish(db, q),
+  queueRemove: (q) => queueRemove(db, q),
   acquireLease: (l) => acquireLease(db, l),
   getLease: (project, name) => getLease(db, project, name),
   renewLease: (l) => renewLease(db, l),
