@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { Resvg } from "@resvg/resvg-js";
 import { icons, pngInfo, sourceHash } from "../scripts/icons";
 
 const ROOT = join(import.meta.dir, "..");
@@ -16,6 +17,12 @@ describe("the browser's icons (THE-881)", () => {
         });
         continue;
       }
+      // Decode the committed raster before comparing its pixels: its metadata alone cannot prove the mark.
+      const decoded = new Resvg(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${icon.px}" height="${icon.px}"><image width="${icon.px}" height="${icon.px}" href="data:image/png;base64,${Buffer.from(committed).toString("base64")}"/></svg>`,
+      ).render();
+      const current = new Resvg(icon.svg, { fitTo: { mode: "width", value: icon.px } }).render();
+      expect(Buffer.compare(decoded.pixels, current.pixels)).toBe(0);
       const { width, height, text } = pngInfo(committed);
       expect({ file: icon.file, width, height, source: text.source }).toEqual({
         file: icon.file,

@@ -23,7 +23,7 @@ import type {
   WorkerProfile,
 } from "../src/live.ts";
 import { FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
-import { MERGE_QUEUE_LEASE, type QueueEntry, queueOpen } from "../src/merge-queue.ts";
+import { MERGE_QUEUE_LEASE, type QueueEntry, queueOpen, queueRefusedPrefix } from "../src/merge-queue.ts";
 import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
 
@@ -1331,6 +1331,17 @@ export function memoryFleet(): FleetStore & {
         finishedAt: null,
       };
       queue.push(entry);
+      resolve(
+        items.filter(
+          (i) =>
+            i.project === e.project &&
+            i.kind === "queue-refused" &&
+            !i.resolvedAt &&
+            i.body.startsWith(queueRefusedPrefix(e.pr)),
+        ),
+        `resolved: PR #${e.pr} queued again`,
+        at,
+      );
       return {
         id: entry.id,
         position: queue.filter(
@@ -1392,9 +1403,17 @@ export function memoryFleet(): FleetStore & {
           kind: "queue-refused",
           recipient: "coordinator",
           author: q.holder,
-          body: `PR #${entry.pr} refused: ${q.detail ?? "merge refused"}`,
+          body: `${queueRefusedPrefix(entry.pr)} ${q.detail ?? "merge refused"}`,
           at: q.at,
         });
+      return true;
+    },
+    async queueProgress(q) {
+      const held = leases.get(key(q.project, MERGE_QUEUE_LEASE));
+      if (!held || held.holder !== q.holder || Date.parse(held.expiresAt) <= q.at.getTime()) return false;
+      const entry = queue.find((r) => r.project === q.project && r.id === q.id && r.state === "merging");
+      if (!entry) return false;
+      Object.assign(entry, { detail: q.detail, updatedAt: q.at.toISOString() });
       return true;
     },
     async queueRemove(q) {

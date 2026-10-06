@@ -85,7 +85,13 @@ test("unknown provider, model-name prefix, and command echoes never verify", asy
 
 test("unavailable provider catalog fails closed without surfacing metadata", async () => {
   const f = probe([deepseek], "CANARY_private_provider_key");
-  await expect(verifyOpenCodeModel(f.io, "w8:p9", "opencode/deepseek-v4.1-flash")).rejects.toThrow("could not verify");
+  const error = await verifyOpenCodeModel(f.io, "w8:p9", "opencode/deepseek-v4.1-flash").then(
+    () => null,
+    (error: Error) => error,
+  );
+  expect(error).toBeInstanceOf(Error);
+  expect(error?.message).toContain("could not verify");
+  expect(error?.message).not.toContain("CANARY_private_provider_key");
 });
 
 // `debug v2` uses a separate catalog; the interactive TUI still applies V1

@@ -256,6 +256,8 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
   "deploy",
   "job",
   "job-silent",
+  "queue-refused",
+  "queue-stalled",
   "question",
   "plan",
   "hand-back",

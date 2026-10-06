@@ -870,11 +870,15 @@ button.chip:hover {
 .sh-main:focus {
   outline: none;
 }
+/* Its scrollbar's room is kept before the page is long enough to scroll:
+   a page streamed in would otherwise move 15 px left when it grows past the
+   screen (THE-1179). Overlay scrollbars take none. */
 .sh-scroll {
   position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   isolation: isolate;
 }
 
@@ -2781,17 +2785,25 @@ button.chip:hover {
   height: 100%;
   background: var(--text-2);
 }
+/* The coordinator's 260 px column is a grid track, there before its card:
+   the streamed HTML may paint the sessions before the coordinator arrives,
+   and they no longer move (THE-1179: the flex row moved them 288 px left).
+   One column under 808 px, where that row wrapped (520 + 28 + 260). */
 .pj-body {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 260px;
+  align-items: start;
   gap: 28px;
+}
+@container pg (max-width: 807px) {
+  .pj-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 .pj-main {
   display: flex;
   flex-direction: column;
   gap: 28px;
-  flex: 999 1 520px;
   min-width: 0;
 }
 .pj-empty {
@@ -2856,7 +2868,8 @@ button.chip:hover {
 }
 .pj-ready,
 .pj-pr,
-.pj-deploy {
+.pj-deploy,
+.pj-queue {
   display: grid;
   align-items: center;
   gap: 12px;
@@ -2870,6 +2883,29 @@ button.chip:hover {
 .pj-deploy {
   grid-template-columns: minmax(0, 1fr) 64px auto;
   height: 38px;
+}
+/* A merge queue entry (THE-1103): its place, its pull request, who queued it
+   and what it waits on under its title, its state. */
+.pj-queue {
+  grid-template-columns: 20px 56px minmax(0, 1fr) auto;
+  min-height: 46px;
+  padding: 6px 0;
+}
+.pj-queue-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pj-queue-detail {
+  font-size: 12px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.pj-queue-paused {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  color: var(--amber);
 }
 .pj-pr {
   grid-template-columns: 56px minmax(0, 1fr) 120px;
@@ -2958,7 +2994,6 @@ a.pj-title:hover {
 .pj-coords {
   display: flex;
   flex-direction: column;
-  flex: 1 1 260px;
   gap: 12px;
   min-width: 0;
 }
@@ -3040,6 +3075,12 @@ a.pj-title:hover {
     padding: 6px 0;
   }
   .pj-deploy > .pj-id {
+    display: none;
+  }
+  .pj-queue {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+  }
+  .pj-queue > .pj-n {
     display: none;
   }
 }
@@ -3855,8 +3896,10 @@ a.pj-title:hover {
     clip: rect(0 0 0 0);
     white-space: nowrap;
   }
+  /* The document scrolls here, not .sh-scroll: no gutter of its own. */
   .sh-scroll {
     padding-bottom: calc(64px + env(safe-area-inset-bottom));
+    scrollbar-gutter: auto;
   }
   /* The sections: a tab bar at the bottom, the one blurred surface (THE-892).
      It comes last in the page's HTML, and the browser may paint the page

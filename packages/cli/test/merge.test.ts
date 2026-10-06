@@ -816,7 +816,12 @@ Result: merged #9
   // The throwaway worktree is gone.
   expect(f.git("worktree", "list").split("\n")).toHaveLength(1);
   // Under the merge lock on Armada, given back afterwards; the merge recorded and the worker's session ended.
-  expect(f.armada.calls.map((c) => c.path)).toEqual([
+  // After the merge, events and claims are read together (Promise.all): their order is not part of the contract.
+  const paths = f.armada.calls.map((c) => c.path);
+  const after = paths.indexOf("workers/end") + 1;
+  const released = paths.indexOf("fleet/lease/release");
+  paths.splice(after, released - after, ...paths.slice(after, released).sort());
+  expect(paths).toEqual([
     "fleet/coordinator",
     "secrets/release",
     "fleet/lease/acquire",

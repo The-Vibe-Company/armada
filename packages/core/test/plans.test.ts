@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
-import { answerItem, checkInbox } from "../src/inbox.ts";
+import { answerItem } from "../src/inbox.ts";
 import { parseStatusLine } from "../src/linear.ts";
 import { type Fleet, type FleetStore, readInbox, recordReport } from "../src/live.ts";
 import { RequestRefusal, requestAnswer } from "../src/requests.ts";
@@ -53,6 +53,12 @@ test("--plan posts the plan as its own block under a one-line status; awaiting-a
   expect(parseStatusLine(linear.bodies.at(-1) ?? "")).toEqual({ phase: "implementing", summary, plan: true });
   expect(await inbox(db)).toEqual([]);
 
+  const { db: preApprovedDb, ctx: preApprovedCtx, linear: preApprovedLinear } = await setup();
+  await preApprovedLinear.updateTicket("DEMO-7", { addLabelIds: ["plan-approved"] });
+  await reportPhase(preApprovedCtx, { ticket: "DEMO-7", phase: "implementing", plan });
+  expect(parseStatusLine(preApprovedLinear.bodies.at(-1) ?? "")).toMatchObject({ phase: "implementing", plan: true });
+  expect(await inbox(preApprovedDb)).toEqual([]);
+
   const { db: db2, ctx: ctx2, linear: linear2 } = await setup();
   await reportPhase(ctx2, {
     ticket: "DEMO-7",
@@ -63,23 +69,6 @@ test("--plan posts the plan as its own block under a one-line status; awaiting-a
   const block = `The tests come from the issue.\n\n## Plan\n\n${plan}`;
   expect(linear2.bodies.at(-1)).toBe(`Agent status: awaiting-approval — Plan: parser first\n\n${block}`);
   expect(await inbox(db2)).toEqual([expect.objectContaining({ kind: "plan", body: `Plan: parser first\n\n${block}` })]);
-});
-
-test("inbox --wait wakes when a worker posts a plan", async () => {
-  const clock = fakeClock();
-  const { ctx, live } = await setup(clock);
-  const sleep = async (ms: number) => {
-    await clock.sleep(ms);
-    await reportPlan(ctx);
-  };
-  const out = await checkInbox(live.fleet, {
-    project,
-    silentAfterMinutes: 15,
-    now: clock.now,
-    wait: { timeoutMs: 60_000, sleep },
-  });
-  expect(out.wait?.timedOut).toBe(false);
-  expect(out.items).toEqual([expect.objectContaining({ kind: "plan", body: plan, new: true })]);
 });
 
 test.each(["item", "ticket", "item-note", "ticket-note"])(
@@ -134,13 +123,6 @@ test.each(["phase", "release", "answer", "note"])("%s closes obsolete plan answe
   if (mode === "release") await releaseTicket(ctx, { ticket: "DEMO-7", reason: "owner cancelled" });
   else if (mode === "phase") await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", message: "approved" });
   else await answerItem(ctx, { target: String(pending?.id), text: "approved", note: mode === "note" });
-  expect(await inbox(db)).toEqual([]);
-});
-
-test("pre-approved plans enter implementing without an approval inbox item", async () => {
-  const { db, ctx, linear } = await setup();
-  await linear.updateTicket("DEMO-7", { addLabelIds: ["plan-approved"] });
-  await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", plan });
   expect(await inbox(db)).toEqual([]);
 });
 

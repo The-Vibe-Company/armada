@@ -167,6 +167,12 @@ describe("fetchProgram", () => {
   });
 
   test("Linear unreachable on a later page fails the read instead of warning once per issue", async () => {
+    const timedOut: Fetch = async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    };
+    await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch: timedOut })).rejects.toThrow(
+      "Linear API unreachable: no answer within 10 s; failed after 2 attempts (one retry)",
+    );
     const recorded = recordedFetch({
       linear: (r) => {
         const kid = r.Children[2]?.data.issues.nodes.find((n) => n.identifier === "DEMO-13");
@@ -179,16 +185,6 @@ describe("fetchProgram", () => {
       return recorded.fetch(url, init);
     };
     await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch })).rejects.toThrow(
-      "Linear API unreachable: no answer within 10 s; failed after 2 attempts (one retry)",
-    );
-  });
-
-  test("a request with no answer before the timeout fails naming Linear", async () => {
-    // Simulates the abort AbortSignal.timeout raises, without waiting for it.
-    const timedOut: Fetch = async () => {
-      throw new DOMException("The operation timed out.", "TimeoutError");
-    };
-    await expect(fetchProgram({ apiKey: "k", rootId: "DEMO-1", labels, fetch: timedOut })).rejects.toThrow(
       "Linear API unreachable: no answer within 10 s; failed after 2 attempts (one retry)",
     );
   });

@@ -144,7 +144,15 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     )
   )
     out.push(
-      'Dashboard requests: armada answer <id> "<answer>" delivers herdr and Conductor answer-requests automatically; for Claude Code deliver with the guide first; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>". Handle or decline merge-request, release-request and plan-changes, then resolve them with armada answer <id> "<result>". Plan changes are not an approval.',
+      'Dashboard requests: armada answer <id> "<answer>" delivers herdr and Conductor answer-requests automatically; for Claude Code deliver with the guide first; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>". A Merge press on a pull request handed back at its head arrives in the merge queue instead (keep armada merge --drain running); a merge-request is one the dashboard could not queue. Handle or decline merge-request, release-request and plan-changes, then resolve them with armada answer <id> "<result>". Plan changes are not an approval.',
+    );
+  if (items.some((e) => e.kind === "queue-stalled"))
+    out.push(
+      "Queued pull requests wait for a drain: run armada merge --drain in the background until the queue is empty.",
+    );
+  if (items.some((e) => e.kind === "queue-refused"))
+    out.push(
+      'A refused queue entry: fix what refused it, then queue it again (armada merge --when-green <pr>, or Merge on the dashboard), or record why not with armada answer <id> "<why>".',
     );
   return out;
 }
