@@ -115,3 +115,11 @@ export class UsageError extends Error {
 
 /** A key the command needs is not set: `armada auth login` stores it. */
 export const missingKey = (key: StoredKey) => new UsageError(missingKeyMessage(key), "armada auth login");
+
+/** Retry notices use the command's stderr and the same injected clock/waits as polling. */
+export const httpOptions = (io: Io) => ({
+  ...(io.fetch ? { fetch: io.fetch } : {}),
+  ...(io.sleep ? { sleep: io.sleep } : {}),
+  ...(io.now ? { now: io.now } : {}),
+  onRetry: (message: string) => io.stderr(`armada: ${message}\n`),
+});

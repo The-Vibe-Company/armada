@@ -2,11 +2,12 @@
 // agent phase and one for the agent runtime, each with every value. `armada
 // doctor` reads them and `armada init` creates what is missing.
 import type { ArmadaConfig } from "./config.ts";
+import type { HttpRetryOptions } from "./http.ts";
 import { type Fetch, gql, LinearError } from "./linear.ts";
 import type { Check } from "./setup.ts";
 import { LABEL_PHASES } from "./types.ts";
 
-export interface LabelOptions {
+export interface LabelOptions extends HttpRetryOptions {
   apiKey: string;
   fetch?: Fetch;
   timeoutMs?: number;
@@ -56,7 +57,7 @@ const LABELS_QUERY = /* GraphQL */ `
 export async function readLabels(config: ArmadaConfig, opts: LabelOptions): Promise<LabelState> {
   const wanted = requiredLabels(config);
   const data = await gql<{ issue: { team: { id: string; key: string } } | null; issueLabels: { nodes: RawGroup[] } }>(
-    opts,
+    { ...opts, retry: true },
     LABELS_QUERY,
     {
       root: config.tracker.programRoot,
