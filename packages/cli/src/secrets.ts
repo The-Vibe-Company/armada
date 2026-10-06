@@ -20,6 +20,7 @@ import {
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type Io, UsageError } from "./io.ts";
+import { commandRedactor, credentialSecrets } from "./redact.ts";
 
 export interface SecretsArgs {
   /** Positional arguments after the command: the subcommand, then its name. */
@@ -252,5 +253,25 @@ export async function runCommand(
     io.stderr(
       `! armada run: the project's ${overridden.join(", ")} override${overridden.length === 1 ? "s" : ""} the variable${overridden.length === 1 ? "" : "s"} of the same name in this environment\n`,
     );
-  return io.spawn(command, commandArgs, { cwd: io.cwd, env: { ...io.env, ...values } });
+  const env = { ...io.env, ...values };
+  if (io.stdoutIsTTY && args.options.redact !== "true") {
+    io.stderr("armada: warning: interactive output is not masked; use --redact to force masked pipes\n");
+    return io.spawn(command, commandArgs, { cwd: io.cwd, env });
+  }
+  const redact = commandRedactor(io, [...release.secrets, ...credentialSecrets(credentials)]);
+  const stdout = redact.stream();
+  const stderr = redact.stream();
+  try {
+    return await io.spawn(command, commandArgs, {
+      cwd: io.cwd,
+      env,
+      output: {
+        stdout: (chunk) => io.stdout(stdout.write(chunk)),
+        stderr: (chunk) => io.stderr(stderr.write(chunk)),
+      },
+    });
+  } finally {
+    io.stdout(stdout.end());
+    io.stderr(stderr.end());
+  }
 }

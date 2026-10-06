@@ -10,6 +10,7 @@ import {
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type Io, UsageError } from "./io.ts";
+import { outgoingRedactor } from "./redact.ts";
 
 export async function attachItems(
   io: Io,
@@ -34,6 +35,7 @@ export async function attachItems(
       `attachment ticket limit: this worker session acts on ${signIn.project}/${signIn.ticket} only`,
     );
   const api = apiOf(io, credentials.armadaApi.url);
+  const mask = await outgoingRedactor(io, config, credentials);
   const uploaded: { attachment: Attachment; url: string }[] = [];
   for (const item of target.items) {
     let input: { kind: "image"; contentType: string; data: string } | { kind: "link"; url: string };
@@ -55,7 +57,7 @@ export async function attachItems(
       project: projectOf(config),
       ticket,
       input,
-      caption: target.caption ?? null,
+      caption: target.caption == null ? null : mask.text(target.caption),
       reference: target.reference ?? null,
     });
     uploaded.push(saved);
