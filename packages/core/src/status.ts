@@ -26,6 +26,7 @@ import {
   type PendingLaunch,
   type RuntimeHandle,
   type RuntimeState,
+  ticketOwners,
 } from "./live.ts";
 import { buildModel, isDone, type Model } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
@@ -97,6 +98,8 @@ export interface InFlightTicket extends TicketRef {
 }
 
 export interface FrontierTicket extends TicketRef {
+  /** A pending launch stays visible on the whole frontier, including another role's. */
+  launchingBy?: string | null;
   readyForAgent: boolean;
   onCriticalPath: boolean;
   unlocks: string[];
@@ -161,6 +164,8 @@ export interface StatusReport {
 }
 
 export interface BuildStatusInput {
+  /** Set only for status --mine; full fleet derivation precedes list filtering. */
+  coordinatorName?: string;
   jobs?: Job[];
   config: ArmadaConfig;
   program: ProgramData;
@@ -187,6 +192,7 @@ function routeOf(config: ArmadaConfig, labels: string[]): FrontierTicket["route"
 }
 
 export function buildStatus({
+  coordinatorName,
   holds,
   config,
   program,
@@ -210,6 +216,13 @@ export function buildStatus({
     ...(heartbeats ? { heartbeats } : {}),
     ...(live ? { live } : {}),
   });
+  const owners = ticketOwners(
+    Object.entries(live?.handles ?? {}).map(([ticket, handle]) => ({ ticket, coordinator: handle.coordinator })),
+    launches,
+  );
+  const pending = followedLaunches(launches, now);
+  const pendingTickets = new Set(pending.map((launch) => launch.ticket));
+  const owned = (ticket: string) => coordinatorName === undefined || owners.get(ticket) === coordinatorName;
   const stageOf = new Map(lanes.map((l) => [l.issue.id, l.shippingStage ?? null]));
   const phaseOf = new Map(lanes.map((l) => [l.issue.id, l.phase]));
   const prRef = (
@@ -269,48 +282,52 @@ export function buildStatus({
     },
     silentAfterMinutes: config.policy.silentAfterMinutes,
     coordinatorMinutes: config.policy.coordinatorMinutes,
-    inFlight: lanes.map((l) => {
-      const profileName = live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null;
-      const profile = profileName && l.runtime?.toLowerCase() === "herdr" ? config.herdr.profiles[profileName] : null;
-      return {
-        id: l.issue.id,
-        title: l.issue.title,
-        url: l.issue.url,
-        spec: l.spec,
-        phase: l.phase,
-        shippingStage: l.shippingStage ?? null,
-        phaseSource: l.phaseSource,
-        runtime: l.runtime,
-        handle: l.handle,
-        coordinator: l.coordinator ?? null,
-        profile: profileName,
-        profileReason: l.claim?.profileReason ?? null,
-        ...(profile ? { harness: herdrHarnessLabel(profile.harness) } : {}),
-        agent: l.agent,
-        since: l.since,
-        lastUpdate: l.lastUpdate,
-        lastReport: l.lastReport,
-        lastHeartbeat: l.lastHeartbeat,
-        runtimeState: freshRuntimeState(
-          live?.handles?.[l.issue.id]?.runtimeState,
-          now,
-          config.policy.silentAfterMinutes,
-          live?.handles?.[l.issue.id]?.claimedAt,
-        ),
-        silent: l.flags.includes("silent"),
-        statusLine: l.statusLine
-          ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
-          : null,
-        pr: l.pr ? prRef(l.pr) : null,
-        openBlockers: l.openBlockers,
-        flags: l.flags,
-      };
-    }),
-    pendingLaunches: followedLaunches(launches, now),
-    notStarted: notStartedLaunches(launches, now, config.policy.notStartedMinutes).map((l) => {
-      const issue = issues.find((i) => i.id === l.ticket);
-      return { ...l, title: issue?.title ?? null, url: issue?.url ?? null, detail: notStartedBody(l, now) };
-    }),
+    inFlight: lanes
+      .filter((l) => owned(l.issue.id))
+      .map((l) => {
+        const profileName = live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null;
+        const profile = profileName && l.runtime?.toLowerCase() === "herdr" ? config.herdr.profiles[profileName] : null;
+        return {
+          id: l.issue.id,
+          title: l.issue.title,
+          url: l.issue.url,
+          spec: l.spec,
+          phase: l.phase,
+          shippingStage: l.shippingStage ?? null,
+          phaseSource: l.phaseSource,
+          runtime: l.runtime,
+          handle: l.handle,
+          coordinator: l.coordinator ?? null,
+          profile: profileName,
+          profileReason: l.claim?.profileReason ?? null,
+          ...(profile ? { harness: herdrHarnessLabel(profile.harness) } : {}),
+          agent: l.agent,
+          since: l.since,
+          lastUpdate: l.lastUpdate,
+          lastReport: l.lastReport,
+          lastHeartbeat: l.lastHeartbeat,
+          runtimeState: freshRuntimeState(
+            live?.handles?.[l.issue.id]?.runtimeState,
+            now,
+            config.policy.silentAfterMinutes,
+            live?.handles?.[l.issue.id]?.claimedAt,
+          ),
+          silent: l.flags.includes("silent"),
+          statusLine: l.statusLine
+            ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
+            : null,
+          pr: l.pr ? prRef(l.pr) : null,
+          openBlockers: l.openBlockers,
+          flags: l.flags,
+        };
+      }),
+    pendingLaunches: pending.filter((launch) => owned(launch.ticket)),
+    notStarted: notStartedLaunches(launches, now, config.policy.notStartedMinutes)
+      .filter((l) => owned(l.ticket))
+      .map((l) => {
+        const issue = issues.find((i) => i.id === l.ticket);
+        return { ...l, title: issue?.title ?? null, url: issue?.url ?? null, detail: notStartedBody(l, now) };
+      }),
     // The dashboard keeps whole configs in its snapshots, so a body written
     // before this field existed has none: fall back rather than park nothing.
     frontier: frontier(m, {
@@ -323,6 +340,9 @@ export function buildStatus({
         title: c.issue.title,
         url: c.issue.url,
         spec: c.spec,
+        ...(coordinatorName !== undefined && pendingTickets.has(c.issue.id)
+          ? { launchingBy: owners.get(c.issue.id) ?? null }
+          : {}),
         readyForAgent: c.readyForAgent,
         onCriticalPath: c.onCriticalPath,
         unlocks: c.unlocksAll,
@@ -395,6 +415,7 @@ const byMergeTime = (a: PullRequest, b: PullRequest) =>
   (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
 export interface LoadStatusOptions extends HttpRetryOptions {
+  coordinatorName?: string;
   jobs?: () => Promise<Job[]>;
   holds?: () => Promise<MergeHold[]>;
   linearApiKey: string;
@@ -553,6 +574,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     ),
   ]);
   return buildStatus({
+    coordinatorName: opts.coordinatorName,
     config,
     program,
     forge,
@@ -574,6 +596,9 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     ...(deferred && "items" in deferred ? { launchWhenUnblocked: deferred.items } : {}),
     extraWarnings: [
       events.warning,
+      ...(opts.coordinatorName !== undefined && !runtimeHandles
+        ? ["Armada’s coordinator ownership could not be read; --mine lists only tickets with known ownership"]
+        : []),
       launches.warning,
       jobs.warning,
       holds.warning,
