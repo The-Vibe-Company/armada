@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, checkInbox } from "../src/inbox.ts";
 import { parseStatusLine } from "../src/linear.ts";
-import { type Fleet, type FleetStore, readInbox } from "../src/live.ts";
+import { type Fleet, type FleetStore, readInbox, recordReport } from "../src/live.ts";
 import { RequestRefusal, requestAnswer } from "../src/requests.ts";
 import { claimTicket, releaseTicket, reportPhase, type WorkerContext } from "../src/worker.ts";
 import { DEMO_TOML, FakeLinear, fakeClock, NOW, tempFleet } from "./support.ts";
@@ -138,8 +138,41 @@ test.each(["phase", "release", "answer", "note"])("%s closes obsolete plan answe
 });
 
 test("pre-approved plans enter implementing without an approval inbox item", async () => {
+  const { db, ctx, linear } = await setup();
+  await linear.updateTicket("DEMO-7", { addLabelIds: ["plan-approved"] });
+  await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", plan });
+  expect(await inbox(db)).toEqual([]);
+});
+
+test("an older CLI's plain plan is annotated from the stored snapshot and one answer resolves it", async () => {
   const { db, ctx } = await setup();
-  await reportPhase(ctx, { ticket: "DEMO-7", phase: "implementing", message: plan });
+  // An older CLI sends no pre-approval hint in its report payload.
+  await recordReport(
+    db,
+    project,
+    {
+      ticket: "DEMO-7",
+      phase: "awaiting-approval",
+      previous: "planning",
+      summary: "Build the parser",
+      message: plan,
+      prUrl: null,
+      headSha: null,
+    },
+    NOW,
+  );
+  const snapshot = {
+    config: ctx.config,
+    repository: ctx.config.github.repository,
+    issues: [{ id: "DEMO-7", statusType: "started" as const, labels: ["plan-approved"] }],
+    prs: [],
+  };
+  const options = { project, now: NOW, silentAfterMinutes: 15, snapshot };
+  const pending = (await readInbox(db, options)).find((entry) => entry.kind === "plan");
+  expect(pending?.body).toBe(`Pre-approved at launch; answer approved to let this worker continue.\n\n${plan}`);
+  snapshot.issues[0]?.labels.push("needs-plan-approval");
+  expect((await readInbox(db, options)).find((entry) => entry.kind === "plan")?.body).toBe(plan);
+  await answerItem(ctx, { target: String(pending?.id), text: "approved" });
   expect(await inbox(db)).toEqual([]);
 });
 
