@@ -36,7 +36,9 @@ export async function ask(io: Io, config: ArmadaConfig, credentials: Credentials
     .map((o) => o.trim())
     .filter(Boolean);
   const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
-  return withContext(io, config, credentials, a.json, (ctx) => askCoordinator(ctx, { ticket, question, options }));
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    askCoordinator(ctx, redact({ ticket, question, options })),
+  );
 }
 
 export async function answer(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {
@@ -50,7 +52,7 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
     throw new UsageError("give the text once: as an argument, --message or --message-file");
   const text = positional ?? fromOption;
   if (!text?.trim()) throw new UsageError(`answer needs the text: ${usage}`);
-  return withContext(io, config, credentials, a.json, (ctx) =>
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
     answerItem(
       {
         ...ctx,
@@ -71,7 +73,7 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
           return delivered;
         },
       },
-      { target, text, note },
+      redact({ target, text, note }),
     ),
   );
 }

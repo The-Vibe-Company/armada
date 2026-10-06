@@ -8,9 +8,15 @@ import type { Io, Spawn } from "./io.ts";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
-export const spawnInherited: Spawn = (command, args, { cwd, env }) =>
+export const spawnInherited: Spawn = (command, args, { cwd, env, output }) =>
   new Promise((done, fail) => {
-    const child = spawn(command, args, { cwd, env, stdio: "inherit" });
+    const child = spawn(command, args, { cwd, env, stdio: output ? ["inherit", "pipe", "pipe"] : "inherit" });
+    if (output) {
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", output.stdout);
+      child.stderr?.on("data", output.stderr);
+    }
     // A signal sent to Armada is passed on, except a terminal's Ctrl-C, which reached the child already.
     const fromTerminal = process.stdin.isTTY === true;
     const handlers = SIGNALS.map((signal) => {
@@ -27,7 +33,7 @@ export const spawnInherited: Spawn = (command, args, { cwd, env }) =>
       stop();
       fail(err.code === "ENOENT" ? new Error(`${command}: command not found`) : err);
     });
-    child.on("exit", (code, signal) => {
+    child.on("close", (code, signal) => {
       stop();
       done(code ?? 128 + (signal ? (constants.signals[signal] ?? 0) : 0));
     });

@@ -319,10 +319,12 @@ const COMMAND_HELP: Record<string, string> = {
                     Print one value, for a person: it is then visible in any transcript.
                     An agent uses \`armada run\` or \`secrets export\` instead
 `,
-  run: `  run [--only <A,B>] -- <command> [args...]
+  run: `  run [--only <A,B>] [--redact] -- <command> [args...]
                     Run a command with the project's secrets in its environment (they win
                     over variables of the same name, named on stderr): tests, builds, dev
-                    servers. Nothing is written to disk or printed. Exits with its code
+                    servers. Output masks secret values (8+ characters) and key patterns.
+                    TTY output inherits with a warning; --redact forces masked pipes.
+                    Nothing is written to disk. Exits with its code
 `,
   hook: `  hook stop         Claude Code's Stop hook, installed by \`armada init\`: a coordinator
                     cannot end its turn while workers are in flight and no \`armada watch\`
@@ -556,6 +558,7 @@ const FLAG_OPTIONS = [
   "merge",
   "org",
   "value-stdin",
+  "redact",
   "ask-owner",
 ];
 /** Value options each command accepts. */
@@ -612,7 +615,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
   secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
-  run: ["ticket", "only"],
+  run: ["ticket", "only", "redact"],
 };
 
 /** The worker commands a worker session signs in, on its own ticket. */
