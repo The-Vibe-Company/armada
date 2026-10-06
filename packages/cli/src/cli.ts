@@ -71,10 +71,13 @@ const COMMAND_HELP: Record<string, string> = {
   unreserve: `  unreserve <key> [--ticket <id>]
                     Free this ticket's open reservations of a key.
 `,
-  ci: `  ci why <pr|url> [--json]
-  ci why --sha <sha> | --branch <branch> [--json]
+  ci: `  ci why <pr|url> [--rerun] [--json]
+  ci why --sha <sha> | --branch <branch> [--rerun] [--json]
                     Explain failing checks on this head: test names, first errors, links
                     and runner problems. Needs a GitHub token only (Actions read for logs).
+                    --rerun: failed jobs once per completed attempt-1 run, only when every
+                    failure is a declared known flake or runner problem (Actions write).
+                    Prints root-cause tickets; unknown/external failures are refused.
 `,
   attach: `  attach <ticket> <file|url>... [--caption <text>] [--for <item>]
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
@@ -575,6 +578,7 @@ const FLAG_OPTIONS = [
   "org",
   "value-stdin",
   "ask-owner",
+  "rerun",
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
@@ -584,7 +588,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   peek: ["actions"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
   unreserve: ["ticket"],
-  ci: ["sha", "branch"],
+  ci: ["sha", "branch", "rerun"],
   digest: ["since", "lang", "send"],
   spec: ["at", "apply"],
   attach: ["caption", "for"],
