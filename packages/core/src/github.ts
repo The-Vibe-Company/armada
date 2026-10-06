@@ -258,6 +258,26 @@ export async function fetchPullRequest(opts: FetchForgeOptions & { number: numbe
   return raw ? normalizePull(raw, opts.repository) : null;
 }
 
+/** Read a branch's open PR directly, even in a large fleet. */
+export async function fetchBranchPull(opts: FetchForgeOptions & { branch: string }): Promise<PullRequest | null> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{ repository: { pullRequests: { nodes: RawPull[] } } | null }>(
+    opts,
+    `${PULL_FIELDS}
+    query BranchPull($owner: String!, $name: String!, $branch: String!) {
+      repository(owner: $owner, name: $name) {
+        pullRequests(first: 2, states: [OPEN], headRefName: $branch) { nodes { ...P } }
+      }
+    }`,
+    { owner, name, branch: opts.branch },
+  );
+  if (!json.data?.repository) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
+  const nodes = json.data.repository.pullRequests.nodes;
+  if (nodes.length > 1)
+    throw new GithubError("more than one open pull request uses the ticket branch; inspect them before relaunching");
+  return nodes[0] ? normalizePull(nodes[0], opts.repository) : null;
+}
+
 export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
   const [owner, name] = opts.repository.split("/");
   const json = await githubQuery<{

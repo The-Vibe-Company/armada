@@ -286,9 +286,11 @@ export class Herdr {
     ticket: string;
     secrets?: string[];
     label?: string;
+    path?: string;
+    agent?: string;
     sign?: "inherit" | "off";
   }): Promise<HerdrHandle> {
-    const agent = input.ticket.toLowerCase();
+    const agent = input.agent ?? input.ticket.toLowerCase();
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(agent)) throw new UsageError("ticket cannot be used as a herdr agent name");
     if (input.sign === "off") await this.enableWorktreeConfig(input.repo);
     const r = object(
@@ -302,6 +304,7 @@ export class Herdr {
           input.branch,
           "--base",
           input.base,
+          ...(input.path ? ["--path", input.path] : []),
           "--no-focus",
           ...(input.label ? ["--label", input.label] : []),
         ])
@@ -647,9 +650,12 @@ export class Herdr {
     try {
       await this.prompt(handle, prompt);
     } catch (error) {
+      // A transport timeout cannot establish whether the prompt was accepted.
+      // Preserve it for the launcher; revocation could cut off a running worker.
+      if (error instanceof HerdrError && error.code === "timeout") throw error;
       const screen = await this.inspect(handle, profile.harness);
       if (screen.issue || screen.state === "blocked") throw this.screenError(handle, screen.issue);
-      if (error instanceof HerdrError && ["agent_prompt_stalled", "timeout"].includes(error.code ?? ""))
+      if (error instanceof HerdrError && error.code === "agent_prompt_stalled")
         throw this.screenError(handle, null, "The harness did not accept the brief");
       throw error;
     }
