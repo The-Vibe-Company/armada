@@ -6,7 +6,8 @@
 // a plan, as a request in the coordinator's inbox (answerQuestion, changePlan),
 // never an action: it shows "sent to the coordinator" on the click, and puts
 // the buttons back with the reason when the request is refused. A hand-back
-// has no button: the coordinator merges, on its own or after asking the owner.
+// has no button here: the coordinator merges, on its own or after asking the
+// owner; a Merge pressed on the session's action shows as queued (THE-1103).
 import type { CoordinatorState } from "@armada/core/read";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { answerQuestion, changePlan } from "@/app/actions";
@@ -142,7 +143,7 @@ export function DecisionActions({
               {/* Refused because another request got there first: say why, next to it. */}
               <ErrorLine t={t} code={req.error} />
               <PendingNote
-                label={t.overview.sent(projectName)}
+                label={pending.queued ? t.overview.queued(projectName) : t.overview.sent(projectName)}
                 detail={t.overview.sentBy(pending.author, t.ago(Math.max(0, now - Date.parse(pending.at))))}
                 quote={w.kind === "hand-back" ? `PR #${pr}` : `« ${pending.body} »`}
                 away={coordinator === "active" ? null : t.coordinatorAway}

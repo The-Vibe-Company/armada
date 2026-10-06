@@ -4,16 +4,18 @@
 // repository and owner over its name, one line of what is blocked, what waits
 // for the owner and what is ready, its program's progress; then its sessions
 // in flight grouped by state (the overview's rows), the tickets ready to
-// launch (a launch is a request to the coordinator), its open pull requests,
-// and its coordinator beside them, or each of them when it names them
-// (THE-1112). Renders from the overview the shell polls.
+// launch (a launch is a request to the coordinator), its merge queue
+// (THE-1103), its open pull requests, and its coordinator beside them, or each
+// of them when it names them (THE-1112). Renders from the overview the shell polls.
 import type { ProjectCoordinator, ProjectOverview, ReadyTicket } from "@armada/core/read";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
+import { clockIn } from "@/lib/activity-view";
 import { groupCounts, groupItems, showsOwners } from "@/lib/coordinator-view";
 import { HARNESS_NAME } from "@/lib/fleet-view";
 import { deployLines } from "@/lib/holds-view";
 import { coordinatorHarness, coordinatorLink, type PrState, progressPercent, prState } from "@/lib/project-view";
+import { type QueueRow, type QueueRowState, queueRows } from "@/lib/queue-view";
 import { Alert, LONG_LIST, Notice } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { useOverviewItems } from "../shell/use-items";
@@ -28,6 +30,13 @@ const PR_COLOR: Record<PrState, string> = {
   conflict: "var(--red)",
   pending: "var(--amber)",
   none: "var(--text-3)",
+};
+
+const QUEUE_COLOR: Record<QueueRowState, string> = {
+  merging: "var(--blue)",
+  queued: "var(--text-2)",
+  retry: "var(--amber)",
+  refused: "var(--red)",
 };
 
 const COORDINATOR_COLOR = { active: "var(--green)", idle: "var(--amber)", unknown: "var(--text-3)" } as const;
@@ -55,6 +64,8 @@ export function ProjectScreen() {
   const progress = project.progress;
   const percent = progressPercent(progress) ?? 0;
   const deploys = deployLines(project, now);
+  const queue = queueRows(project, now);
+  const pause = project.holds?.at(-1);
   return (
     <div className="pg is-wide pj">
       {project.error ? (
@@ -107,6 +118,21 @@ export function ProjectScreen() {
             <List groups={groups} names={names} named={named} boxed long={items.length > LONG_LIST} />
           ) : (
             <p className="pj-empty">{t.shell.noAgents}</p>
+          )}
+          {queue.length > 0 && (
+            <section className="pj-block" aria-labelledby="pj-queue">
+              <h2 className="pj-block-h" id="pj-queue">
+                {p.queue.title}
+                <span className="pj-n">{queue.filter((r) => r.position !== null).length}</span>
+                <span className="pj-hint">{p.queue.hint}</span>
+              </h2>
+              {pause && <p className="pj-queue-paused">{p.queue.paused(pause.reason)}</p>}
+              <ul className="pj-rows">
+                {queue.map((r) => (
+                  <QueueLine key={r.id} row={r} />
+                ))}
+              </ul>
+            </section>
           )}
           {deploys && (
             <section className="pj-block" aria-labelledby="pj-deploys">
@@ -183,6 +209,44 @@ export function ProjectScreen() {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * A merge queue entry: its place, its pull request, who queued it and what it
+ * waits on (or why it was refused), its state. Never read from GitHub: the
+ * title is the stored reading's.
+ */
+function QueueLine({ row: r }: { row: QueueRow }) {
+  const { t, zone } = useShell();
+  const q = t.projectPage.queue;
+  const detail = [
+    r.ticket,
+    q.by(r.queuedBy),
+    r.notBefore ? q.retryAt(clockIn(r.notBefore, zone, t.overview.locale)) : null,
+    r.waiting ? q.waiting(r.waiting) : r.detail,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const title = r.title ?? r.ticket ?? `#${r.pr}`;
+  return (
+    <li className="pj-queue">
+      <span className="pj-n">{r.position ?? "—"}</span>
+      <span className="pj-id">#{r.pr}</span>
+      <span className="pj-queue-main">
+        {r.url ? (
+          <a href={r.url} target="_blank" rel="noreferrer" className="pj-title">
+            {title}
+          </a>
+        ) : (
+          <span className="pj-title">{title}</span>
+        )}
+        <span className="pj-queue-detail">{detail}</span>
+      </span>
+      <span className="pj-state" style={{ color: QUEUE_COLOR[r.state] }}>
+        {q.states[r.state]}
+      </span>
+    </li>
   );
 }
 

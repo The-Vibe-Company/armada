@@ -26,11 +26,22 @@ export { freshRuntimeState } from "./fleet.ts";
 
 import { attachPullRequests } from "./github.ts";
 import type { Job, JobObservation, JobQuery, JobStart } from "./jobs.ts";
-import type { QueueAdded, QueueEntry, QueueFinish, QueueInput, QueueNext } from "./merge-queue.ts";
+import {
+  MERGE_QUEUE_LEASE,
+  QUEUE_STALL_MS,
+  type QueueAdded,
+  type QueueEntry,
+  type QueueFinish,
+  type QueueInput,
+  type QueueNext,
+  type QueueProgress,
+  queueOpen,
+} from "./merge-queue.ts";
 import { buildModel, isClosed } from "./model.ts";
 import { type OverlapReading, type OverlapWorker, overlapLines, overlaps } from "./overlap.ts";
 import { planRule } from "./phases.ts";
 import type { RequestKind } from "./request-kinds.ts";
+import type { MergeAsk } from "./requests.ts";
 import type { AgentPhase, ForgeData, Issue, LabelPhase, ProgramData, PullRequest, ShippingStage } from "./types.ts";
 import type { NewValidation, Validation, ValidationDecision } from "./validations.ts";
 
@@ -581,6 +592,8 @@ export interface FleetStore {
   queueList(project: string, opts: { since: Date }): Promise<QueueEntry[]>;
   queueNext(q: { project: string; holder: string; at: Date }): Promise<QueueNext>;
   queueFinish(q: QueueFinish & { project: string; at: Date }): Promise<boolean>;
+  /** The drain's current step on its merging entry, fenced by its lease; false when not ours. */
+  queueProgress(q: QueueProgress & { project: string; at: Date }): Promise<boolean>;
   queueRemove(q: { project: string; pr: number; at: Date }): Promise<boolean>;
 
   /** Takes a lease when it is free, expired or already ours (which renews it); atomic. */
@@ -1071,6 +1084,7 @@ export type InboxEntryKind =
   | "stopped"
   | "quiet"
   | "not-started"
+  | "queue-stalled"
   | "version";
 
 export interface InboxEntry {
@@ -1086,6 +1100,8 @@ export interface InboxEntry {
   kind: InboxEntryKind;
   /** Durable job id for a derived job-silent entry. */
   jobId?: number;
+  /** The oldest open queue entry of a derived queue-stalled entry: one wake per stall. */
+  queueEntry?: number;
   ticket: string | null;
   /** Runtime handle of the worker that asked, or of the silent or not started worker when known. */
   author: string | null;
@@ -1107,33 +1123,36 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
 
 /**
  * Stable keys include `silent:<ticket>:<level>`, `job-silent:<job>`,
- * `unblocked:<ticket>@<blocker>` and `version:<version>@<digest>`.
+ * `queue-stalled:<oldest open entry>`, `unblocked:<ticket>@<blocker>` and
+ * `version:<version>@<digest>`.
  * A hand-back, plan or deploy notice rewritten in place carries a digest
  * of its text too, so a new hand-back head wakes the coordinator again.
  */
 export const entryKey = (
-  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "unblockedBy" | "jobId" | "silenceLevel"> & {
+  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "unblockedBy" | "jobId" | "silenceLevel" | "queueEntry"> & {
     version?: string | undefined;
     createdAt?: string;
   },
 ) =>
   e.kind === "job-silent"
     ? `job-silent:${e.jobId}`
-    : e.id !== null
-      ? REWRITTEN.includes(e.kind)
-        ? `#${e.id}@${digest(e.body)}`
-        : `#${e.id}`
-      : e.kind === "unblocked"
-        ? `unblocked:${e.ticket}@${e.unblockedBy}`
-        : e.version
-          ? `version:${e.version}@${digest(e.body)}`
-          : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
-            ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-            : e.kind === "silent"
-              ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
-              : e.kind === "stopped"
-                ? `stopped:${e.ticket}@${e.createdAt}`
-                : `${e.kind}:${e.ticket}`;
+    : e.kind === "queue-stalled"
+      ? `queue-stalled:${e.queueEntry}`
+      : e.id !== null
+        ? REWRITTEN.includes(e.kind)
+          ? `#${e.id}@${digest(e.body)}`
+          : `#${e.id}`
+        : e.kind === "unblocked"
+          ? `unblocked:${e.ticket}@${e.unblockedBy}`
+          : e.version
+            ? `version:${e.version}@${digest(e.body)}`
+            : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+              ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+              : e.kind === "silent"
+                ? `silent:${e.ticket}:${e.silenceLevel ?? 0}`
+                : e.kind === "stopped"
+                  ? `stopped:${e.ticket}@${e.createdAt}`
+                  : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -1355,6 +1374,36 @@ export function notStartedBody(l: PendingLaunch, now: Date): string {
   return `launched ${minutes} min ago and never claimed; ${why}${l.handle ? ` (session ${l.handle})` : ""}. Check its session with the runtime guide's status section; launch it again with armada brief ${l.ticket} --prompt, or revoke it with armada launch revoke ${l.ticket}`;
 }
 
+/**
+ * Pull requests queued that nothing drains: open entries, the queue's lease
+ * free or expired, and no entry (open, or finished lately) changed for `QUEUE_STALL_MS`. Read-time only:
+ * no timer. Keyed by the oldest open entry, so it wakes a watch once per stall
+ * (a drain taking the lease ends it).
+ */
+export function queueStalled(entries: readonly QueueEntry[], lease: Lease | null, now: Date): InboxEntry | null {
+  const open = entries.filter(queueOpen).sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.id - b.id);
+  const oldest = open[0];
+  if (!oldest || (lease && Date.parse(lease.expiresAt) > now.getTime())) return null;
+  const last =
+    entries
+      .map((e) => e.updatedAt)
+      .sort()
+      .at(-1) ?? oldest.updatedAt;
+  if (now.getTime() - Date.parse(last) <= QUEUE_STALL_MS) return null;
+  const prs = open.map((e) => `#${e.pr}`).join(", ");
+  return {
+    id: null,
+    kind: "queue-stalled",
+    queueEntry: oldest.id,
+    owner: null,
+    ticket: null,
+    author: null,
+    body: `${open.length} pull request${open.length === 1 ? "" : "s"} queued (${prs}) and nothing drains ${open.length === 1 ? "it" : "them"} since ${hhmm(last)}: armada merge --drain`,
+    createdAt: last,
+    new: false,
+  };
+}
+
 /** The pending launches with no claim for longer than `minutes`: the workers that never started. */
 export const notStartedLaunches = (launches: readonly PendingLaunch[], now: Date, minutes: number) =>
   followedLaunches(launches, now).filter((l) => now.getTime() - Date.parse(l.launchedAt) > minutes * MIN);
@@ -1389,10 +1438,13 @@ async function readInboxAndFlight(
   ownedOpenJobs: number[];
 }> {
   const now = o.now.getTime();
-  let [handles, launches, jobs] = await Promise.all([
+  let [handles, launches, jobs, queue, queueLease] = await Promise.all([
     store.openRuntimeHandles(o.project),
     store.pendingLaunches(o.project, new Date(0)),
     store.listJobs(o.project, { open: true }),
+    // Entries finished within the stall window count as the drain's last sign of life.
+    store.queueList(o.project, { since: new Date(now - QUEUE_STALL_MS) }),
+    store.getLease(o.project, MERGE_QUEUE_LEASE),
   ]);
   // Read notices after jobs: a terminal transition atomically removes liveness and adds its notice.
   // The reverse order could read an old inbox and a closed job, making watch exit without the notice.
@@ -1520,6 +1572,8 @@ async function readInboxAndFlight(
       new: false,
     });
   }
+  const stalled = queueStalled(queue, queueLease, o.now);
+  if (stalled) entries.push(stalled);
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
   // A claim may arrive before its newly created ticket reaches the stored reading.
@@ -1890,7 +1944,7 @@ export interface Fleet {
     pr?: number;
     question?: number;
     text?: string;
-  }): Promise<number>;
+  }): Promise<number | MergeAsk>;
   deferLaunch(input: { ticket: string; profile: string | null; after?: string | null }): Promise<DeferredLaunch>;
   deferredLaunches(): Promise<DeferredLaunch[]>;
   /** Registers the project, or updates its name, repository and root (`armada init`). */
@@ -1943,6 +1997,7 @@ export interface Fleet {
   queueList(q?: { since?: string }): Promise<QueueEntry[]>;
   queueNext(q: { holder: string }): Promise<QueueNext>;
   queueFinish(q: QueueFinish): Promise<boolean>;
+  queueProgress(q: QueueProgress): Promise<boolean>;
   queueRemove(q: { pr: number }): Promise<boolean>;
   acquireLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<LeaseResult>;
   renewLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<boolean>;

@@ -33,13 +33,16 @@ import {
   LAUNCH_WINDOW_MS,
   type LatestEvent,
   type MergeHold,
+  type OpenPr,
   type OwnerValidation,
   type PendingLaunch,
   type ProjectConfigReading,
   type ProjectInsightRecords,
   type ProjectReading,
   type ProjectRecord,
+  type QueueEntry,
   RANGE_DAYS,
+  REFUSED_SHOWN_MS,
   type RuntimeHandle,
   reconcileHandles,
   type SessionRecord,
@@ -304,6 +307,8 @@ interface LiveProject {
   holds: MergeHold[];
   /** The last observation of each deploy target (THE-1101). */
   deploys: DeployRecord[];
+  /** The merge queue's open entries and those finished within a day (THE-1103). */
+  queue: QueueEntry[];
   coordinatorSeenAt: string | null;
   /** The CLI version the coordinator ran at its last inbox read; null when unknown. */
   coordinatorCliVersion: string | null;
@@ -364,6 +369,7 @@ async function readLive(
     inbox,
     holds,
     deploys,
+    queue,
     coordinators,
     inboxReads,
     sessions,
@@ -380,6 +386,7 @@ async function readLive(
     store.openInboxItems({ project, recipient: "coordinator" }),
     store.openHolds(project),
     store.latestDeploys(project),
+    store.queueList(project, { since: new Date(now.getTime() - REFUSED_SHOWN_MS) }),
     store.coordinatorRoles(project),
     store.inboxReads(project, now),
     store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
@@ -418,6 +425,7 @@ async function readLive(
     inbox,
     holds,
     deploys,
+    queue,
     coordinatorSeenAt: coordinator?.seenAt ?? null,
     coordinatorCliVersion: coordinator?.cliVersion ?? null,
     coordinator,
@@ -510,6 +518,8 @@ export interface ProjectState {
   store: LiveStore | null;
   config: ArmadaConfig;
   report: StatusReport;
+  /** Its open pull requests and their heads, as the stored reading of GitHub has them. */
+  openPrs: OpenPr[];
 }
 
 /** The projects the scope may see: the registry, or ARMADA_REPOSITORIES while it was never read. */
@@ -540,7 +550,14 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
         "reading live data",
       ).catch(() => null)
     : null;
-  return { store: l ? store : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
+  return {
+    store: l ? store : null,
+    config: snap.config,
+    report: statusOf(snap, l, opts.now()),
+    openPrs: (snap.sources.forge?.prs ?? [])
+      .filter((pr) => pr.state === "open")
+      .map((pr) => ({ number: pr.number, headSha: pr.headSha ?? null })),
+  };
 }
 
 /** The last reading of a project the scope may see, and the live data's store; null when there is none. */
@@ -700,6 +717,7 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
             inbox: l.inbox,
             holds: l.holds,
             deploys: l.deploys,
+            queue: l.queue,
             coordinatorSeenAt: l.coordinatorSeenAt,
             coordinatorCliVersion: l.coordinatorCliVersion,
             coordinator: l.coordinator,

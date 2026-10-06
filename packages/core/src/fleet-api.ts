@@ -67,7 +67,15 @@ import { buildModel } from "./model.ts";
 import { type OverlapReading, pathsProblem } from "./overlap.ts";
 import { isLabelPhase } from "./phases.ts";
 import { redactFreeText, redactor } from "./redact.ts";
-import { RequestRefusal, requestDeferredLaunch, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
+import {
+  type MergeAsk,
+  type OpenPr,
+  RequestRefusal,
+  requestDeferredLaunch,
+  requestMerge,
+  requestPlanChanges,
+  requestRelease,
+} from "./requests.ts";
 import type { CiState, LabelPhase } from "./types.ts";
 import { isShippingStage } from "./types.ts";
 import {
@@ -140,6 +148,7 @@ export const FLEET_OPS = [
   "queue/list",
   "queue/next",
   "queue/finish",
+  "queue/progress",
   "queue/remove",
   "lease/acquire",
   "lease/renew",
@@ -335,6 +344,7 @@ export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
   "chore",
   "queue/add",
   "queue/finish",
+  "queue/progress",
   "job/observe",
   "runtime/stop",
   "reserve",
@@ -370,7 +380,7 @@ const CLI_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][\w.-]{1,40})?$/;
 export async function serveFleet(
   store: FleetStore,
   req: { op: string; project: ProjectInput; caller: FleetCaller; input: unknown },
-  deps: ServeFleetDeps & { openPrs?: readonly number[] },
+  deps: ServeFleetDeps & { openPrs?: readonly OpenPr[] },
 ): Promise<FleetAnswer> {
   const { op, project, caller } = req;
   if (!isFleetOp(op))
@@ -1034,6 +1044,14 @@ export async function serveFleet(
             notBefore,
           });
         }
+        case "queue/progress":
+          return store.queueProgress({
+            project: slug,
+            at,
+            id: idOf(b, "id"),
+            holder: text(b, "holder", LINE_MAX),
+            detail: text(b, "detail", LINE_MAX),
+          });
         case "queue/remove": {
           const pr = idOf(b, "pr");
           if (pr > 2147483647) throw new Invalid("pr is too large");
@@ -1224,7 +1242,7 @@ export function fleetClient(o: {
     reservations: (ticket) => call<Reservation[]>("reservations", ticket ? { ticket } : {}),
     unreserve: (input) => call("unreserve", input),
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
-    request: (input) => call<number>("request", input),
+    request: (input) => call<number | MergeAsk>("request", input),
     deferLaunch: (input) => call<DeferredLaunch>("request", { ...input, kind: "launch-when-unblocked" }),
     deferredLaunches: () => call<DeferredLaunch[]>("launch-requests", {}),
     holds: () => call("holds", {}),
@@ -1267,6 +1285,7 @@ export function fleetClient(o: {
     queueList: (q = {}) => call<QueueEntry[]>("queue/list", q),
     queueNext: (q) => call<QueueNext>("queue/next", q),
     queueFinish: (q) => call<boolean>("queue/finish", q),
+    queueProgress: (q) => call<boolean>("queue/progress", q),
     queueRemove: (q) => call<boolean>("queue/remove", q),
     acquireLease: (l) => call<LeaseResult>("lease/acquire", l),
     renewLease: (l) => call<boolean>("lease/renew", l),

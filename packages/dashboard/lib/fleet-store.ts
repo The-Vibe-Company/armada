@@ -1,4 +1,4 @@
-import { queueAdd, queueFinish, queueList, queueNext, queueRemove } from "./merge-queue";
+import { queueAdd, queueFinish, queueList, queueNext, queueProgress, queueRemove } from "./merge-queue";
 import { requestSecret } from "./secret-requests";
 // The fleet's live data in the app's database (THE-849): the project
 // registry, events, the runtime session holding each ticket and the profile
@@ -2051,6 +2051,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   queueList: (project, opts) => queueList(db, project, opts),
   queueNext: (q) => queueNext(db, q),
   queueFinish: (q) => queueFinish(db, q),
+  queueProgress: (q) => queueProgress(db, q),
   queueRemove: (q) => queueRemove(db, q),
   acquireLease: (l) => acquireLease(db, l),
   getLease: (project, name) => getLease(db, project, name),
@@ -2304,6 +2305,7 @@ export interface LiveStore
       | "resolvePlans"
       | "resolveInboxItems"
       | "recordEvent"
+      | "queueList"
     > {
   coordinatorRoles(project: string): Promise<CoordinatorPresence[]>;
   inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
@@ -2377,6 +2379,8 @@ export const liveStore = (db: Database): LiveStore => ({
   openInboxItems: (q) => openInboxItems(db, q),
   openHolds: (project) => openHolds(db, project),
   latestDeploys: (project) => deployState(db, project),
+  queueAdd: (e) => queueAdd(db, e),
+  queueList: (project, opts) => queueList(db, project, opts),
   coordinatorPresence: (project) => coordinatorPresence(db, project),
   ticketHistory: async (project, ticket) => {
     const [events, inbox, launches] = await Promise.all([

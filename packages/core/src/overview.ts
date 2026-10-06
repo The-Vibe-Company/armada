@@ -9,6 +9,7 @@ import type { DeployRecord } from "./deploy.ts";
 import { workerLivenessAt } from "./fleet.ts";
 import type { JobSummary } from "./jobs.ts";
 import type { CoordinatorPresence, InboxItem, InboxReadEvent, MergeHold, SessionRecord } from "./live.ts";
+import { type QueueEntry, shownQueue } from "./merge-queue.ts";
 import { REQUEST_KINDS } from "./request-kinds.ts";
 import type { FrontierTicket, InFlightTicket, MergedTicket, StatusReport } from "./status.ts";
 import {
@@ -191,6 +192,12 @@ export interface ProjectCoordinator extends Partial<Omit<CoordinatorPresence, "s
   updateAvailable: boolean;
 }
 
+/** A merge queue entry as the dashboard shows it. */
+export type ShownQueueEntry = Pick<
+  QueueEntry,
+  "id" | "pr" | "ticket" | "state" | "detail" | "queuedBy" | "queuedAt" | "updatedAt" | "notBefore"
+>;
+
 export interface ProjectOverview {
   /** Default-branch CI, carried from the stored forge snapshot. */
   main?: StatusReport["main"];
@@ -206,6 +213,8 @@ export interface ProjectOverview {
   holds?: ShownHold[];
   /** Each target of its `[deploy]`, in its order; absent without one, or when the live data was not read. */
   deploys?: ShownDeploy[];
+  /** Its merge queue as `shownQueue` orders it; absent when the live data was not read (THE-1103). */
+  queue?: ShownQueueEntry[];
   requests: InboxItem[];
   slug: string;
   name: string;
@@ -279,6 +288,8 @@ export interface ProjectReading {
     holds?: MergeHold[];
     /** The last observation of each deploy target (THE-1101). */
     deploys?: DeployRecord[];
+    /** The merge queue's open entries and those finished lately (THE-1103). */
+    queue?: QueueEntry[];
   } | null;
   /** The target names of its `[deploy]`; null without one. */
   deployTargets?: string[] | null;
@@ -563,6 +574,23 @@ export function buildOverview(input: {
                 last: d ? { sha: d.sha, state: d.state, startedAt: d.startedAt, updatedAt: d.updatedAt } : null,
               };
             }),
+          }
+        : {}),
+      ...(p.live?.queue
+        ? {
+            queue: shownQueue(p.live.queue, input.now).map(
+              ({ id, pr, ticket, state, detail, queuedBy, queuedAt, updatedAt, notBefore }) => ({
+                id,
+                pr,
+                ticket,
+                state,
+                detail: detail?.split("\n", 1)[0] ?? null,
+                queuedBy,
+                queuedAt,
+                updatedAt,
+                notBefore,
+              }),
+            ),
           }
         : {}),
       requests: inbox.filter((item) => REQUEST_KINDS.includes(item.kind as (typeof REQUEST_KINDS)[number])),

@@ -28,6 +28,7 @@ import {
   type RuntimeState,
   ticketOwners,
 } from "./live.ts";
+import { type QueueEntry, shownQueue } from "./merge-queue.ts";
 import { buildModel, isDone, type Model } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
 import type { AgentPhase, CiState, ForgeData, MainHealth, ProgramData, PullRequest, ShippingStage } from "./types.ts";
@@ -131,6 +132,8 @@ export interface StatusReport {
   /** Open long jobs from Armada; absent when their optional live read was unavailable. */
   jobs?: JobSummary[];
   holds?: MergeHold[];
+  /** The merge queue as `shownQueue` orders it; absent when Armada was not read. */
+  queue?: QueueEntry[];
   /** Default-branch CI; absent in older reports, null when unavailable. */
   main?: MainHealth | null;
   progress?: { done: number; total: number };
@@ -178,6 +181,8 @@ export interface BuildStatusInput {
   live?: LaneOptions["live"];
   /** The shared standing merge pauses, when Armada was read. */
   holds?: MergeHold[];
+  /** The merge queue's open and recently finished entries, when Armada was read. */
+  queue?: QueueEntry[];
   /** Launches no claim followed, from Armada's live data. */
   launches?: PendingLaunch[];
   launchWhenUnblocked?: DeferredLaunch[];
@@ -194,6 +199,7 @@ function routeOf(config: ArmadaConfig, labels: string[]): FrontierTicket["route"
 export function buildStatus({
   coordinatorName,
   holds,
+  queue,
   config,
   program,
   forge,
@@ -272,6 +278,7 @@ export function buildStatus({
     schemaVersion: STATUS_SCHEMA_VERSION,
     ...(launchWhenUnblocked ? { launchWhenUnblocked } : {}),
     ...(holds ? { holds } : {}),
+    ...(queue ? { queue: shownQueue(queue, now) } : {}),
     main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
     progress: {
       done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
@@ -422,6 +429,7 @@ export interface LoadStatusOptions extends HttpRetryOptions {
   coordinatorName?: string;
   jobs?: () => Promise<Job[]>;
   holds?: () => Promise<MergeHold[]>;
+  queue?: () => Promise<QueueEntry[]>;
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
@@ -551,6 +559,14 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
+  const queueP: Promise<{ queue?: QueueEntry[]; warning?: string }> = opts.queue
+    ? opts.queue().then(
+        (queue) => ({ queue }),
+        (err: unknown) => ({
+          warning: `Armada's merge queue could not be read (${err instanceof Error ? err.message : String(err)})`,
+        }),
+      )
+    : Promise.resolve({});
   const [
     { program, forge, forgeError },
     events,
@@ -560,6 +576,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     latestEvents,
     jobs,
     holds,
+    queue,
     deferred,
   ] = await Promise.all([
     readStatusSources(config, opts),
@@ -570,6 +587,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     opts.latestEvents?.().catch(() => undefined),
     jobsP,
     holdsP,
+    queueP,
     opts.deferredLaunches?.().then(
       (items) => ({ items }),
       (err: unknown) => ({
@@ -597,6 +615,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
     ...(launches.launches ? { launches: launches.launches } : {}),
     ...(jobs.jobs ? { jobs: jobs.jobs } : {}),
     ...(holds.holds ? { holds: holds.holds } : {}),
+    ...(queue.queue ? { queue: queue.queue } : {}),
     ...(deferred && "items" in deferred ? { launchWhenUnblocked: deferred.items } : {}),
     extraWarnings: [
       events.warning,
@@ -606,6 +625,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
       launches.warning,
       jobs.warning,
       holds.warning,
+      queue.warning,
       deferred && "warning" in deferred ? deferred.warning : undefined,
     ].filter((w): w is string => !!w),
     now: now(),

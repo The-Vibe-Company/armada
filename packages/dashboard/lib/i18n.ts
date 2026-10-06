@@ -21,6 +21,7 @@ import type { ActivityShow, EntryKind } from "./activity-view";
 import type { SessionGroup } from "./coordinator-view";
 import type { AgentStatus, PageKind, Section, StatusReason } from "./fleet-view";
 import type { PrState } from "./project-view";
+import type { QueueRowState } from "./queue-view";
 import type { IndexPr, SearchKind } from "./search";
 
 export const LANGUAGES = ["en", "fr"] as const;
@@ -699,6 +700,13 @@ const en = {
         merged: (pr: number) => `#${pr} merged.`,
         working: "At work.",
       },
+      mergeButton: {
+        label: "Merge",
+        hint: "Adds the pull request to the merge queue when its worker handed back this head; the coordinator's drain retests it on a fresh main and merges it. Otherwise the coordinator decides.",
+        queued: "Queued",
+        queuedDetail: "In the merge queue: the coordinator's drain merges it once retested on main.",
+        asked: "Asked to merge",
+      },
     },
     approvePlan: "Approve the plan",
     requestChanges: "Request changes",
@@ -706,6 +714,7 @@ const en = {
     changesPlaceholder: "What should change, and why. The coordinator passes it to the worker.",
     readPlan: "Read the whole plan ↗",
     sent: (project: string) => `Sent to the ${project} coordinator`,
+    queued: (project: string) => `In the ${project} merge queue`,
     sentBy: (author: string | null, ago: string) => `by ${author ?? "you"}, ${ago}`,
   },
   validations: {
@@ -1047,6 +1056,7 @@ const en = {
         "release-request": "Asked to release",
         "plan-changes": "Asked for plan changes",
         "linear-pending": "Finish Linear",
+        "queue-refused": "Merge refused by the queue",
         request: "Sent a request",
       } as Record<string, string>,
       release: "Released",
@@ -1137,6 +1147,20 @@ const en = {
     notReady: "not ready yet",
     profile: (p: string) => `Profile: ${p}`,
     coordinatorChoice: "chosen by the coordinator",
+    queue: {
+      title: "Merge queue",
+      hint: "Merged one at a time, each retested on a fresh main.",
+      paused: (reason: string) => `Merges are paused: ${reason}`,
+      states: {
+        merging: "merging",
+        queued: "queued",
+        retry: "retrying",
+        refused: "refused",
+      } satisfies Record<QueueRowState, string>,
+      waiting: (what: string) => `waiting for ${what}`,
+      retryAt: (clock: string) => `next try at ${clock}`,
+      by: (who: string) => `queued by ${who}`,
+    },
   },
 };
 
@@ -1715,6 +1739,13 @@ const fr: Strings = {
         merged: (pr) => `#${pr} mergée.`,
         working: "Au travail.",
       },
+      mergeButton: {
+        label: "Fusionner",
+        hint: "Ajoute la pull request à la file de fusion si son worker a rendu cette tête ; la file du coordinateur la reteste sur un main à jour et la fusionne. Sinon, le coordinateur décide.",
+        queued: "En file",
+        queuedDetail: "Dans la file de fusion : la file du coordinateur la fusionne une fois retestée sur main.",
+        asked: "Fusion demandée",
+      },
     },
     approvePlan: "Approuver le plan",
     requestChanges: "Demander des changements",
@@ -1722,6 +1753,7 @@ const fr: Strings = {
     changesPlaceholder: "Ce qui doit changer, et pourquoi. Le coordinateur le transmet au worker.",
     readPlan: "Lire tout le plan ↗",
     sent: (project) => `Transmis au coordinateur ${project}`,
+    queued: (project) => `Dans la file de fusion de ${project}`,
     sentBy: (author, ago) => `par ${author ?? "toi"}, ${ago}`,
   },
   validations: {
@@ -2042,6 +2074,7 @@ const fr: Strings = {
         "release-request": "Demande de libération",
         "plan-changes": "Demande de changements au plan",
         "linear-pending": "Terminer Linear",
+        "queue-refused": "Fusion refusée par la file",
         request: "A envoyé une demande",
       },
       release: "Libéré",
@@ -2130,6 +2163,20 @@ const fr: Strings = {
     notReady: "pas encore prêt",
     profile: (p: string) => `Profil : ${p}`,
     coordinatorChoice: "choisi par le coordinateur",
+    queue: {
+      title: "File de fusion",
+      hint: "Fusionnées une à une, chacune retestée sur un main à jour.",
+      paused: (reason) => `Fusions en pause : ${reason}`,
+      states: {
+        merging: "en fusion",
+        queued: "en file",
+        retry: "nouvel essai",
+        refused: "refusée",
+      },
+      waiting: (what) => `en attente de ${what}`,
+      retryAt: (clock) => `prochain essai à ${clock}`,
+      by: (who) => `mise en file par ${who}`,
+    },
   },
 };
 

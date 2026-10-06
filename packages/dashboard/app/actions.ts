@@ -15,6 +15,7 @@ import {
   submitAnswer,
   submitDecision,
   submitLaunch,
+  submitMerge,
   submitPlanChanges,
   submitRelease,
 } from "@/lib/requests";
@@ -69,6 +70,20 @@ export async function releaseTicket(form: FormData): Promise<RequestResult> {
   return submitRelease(opts, scope, {
     project: text(form, "project"),
     ticket: text(form, "ticket"),
+    author: await author(access, form),
+  });
+}
+
+/** Merge on a handed-back pull request (THE-1103): queued when handed back at its head, else asked of the coordinator. */
+export async function mergePullRequest(form: FormData): Promise<RequestResult> {
+  const access = await requireFleetAccess();
+  const pr = Number(text(form, "pr"));
+  if (!Number.isSafeInteger(pr) || pr <= 0) return { ok: false, code: "no-pr", message: "no pull request number" };
+  const { opts, scope } = await fleetOf(access);
+  return submitMerge(opts, scope, {
+    project: text(form, "project"),
+    pr,
+    ticket: text(form, "ticket") || null,
     author: await author(access, form),
   });
 }

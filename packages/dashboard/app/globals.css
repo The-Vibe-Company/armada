@@ -2856,7 +2856,8 @@ button.chip:hover {
 }
 .pj-ready,
 .pj-pr,
-.pj-deploy {
+.pj-deploy,
+.pj-queue {
   display: grid;
   align-items: center;
   gap: 12px;
@@ -2870,6 +2871,31 @@ button.chip:hover {
 .pj-deploy {
   grid-template-columns: minmax(0, 1fr) 64px auto;
   height: 38px;
+}
+/* A merge queue entry (THE-1103): its place, its pull request, who queued it
+   and what it waits on under its title, its state. */
+.pj-queue {
+  grid-template-columns: 20px 56px minmax(0, 1fr) auto;
+  min-height: 46px;
+  padding: 6px 0;
+}
+.pj-queue-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.pj-queue-detail {
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pj-queue-paused {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  color: var(--amber);
 }
 .pj-pr {
   grid-template-columns: 56px minmax(0, 1fr) 120px;
@@ -3040,6 +3066,12 @@ a.pj-title:hover {
     padding: 6px 0;
   }
   .pj-deploy > .pj-id {
+    display: none;
+  }
+  .pj-queue {
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+  }
+  .pj-queue > .pj-n {
     display: none;
   }
 }
