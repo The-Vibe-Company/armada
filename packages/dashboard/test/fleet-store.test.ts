@@ -493,6 +493,89 @@ describe("leases", () => {
   });
 });
 
+test("long jobs persist across store instances, are project scoped and never revive after stopping", async () => {
+  const project = { slug: "job-project", name: "Runner", repository: "acme/runner", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  const job = await store.startJob({
+    project: project.slug,
+    ticket: "DEMO-7",
+    name: "eval",
+    startedBy: "worker-1",
+    at: at(0),
+  });
+  expect(job).toMatchObject({ state: "starting", ref: null, startedAt: at(0).toISOString(), finishedAt: null });
+  const next = fleetStore(db);
+  await next.observeJob({ project: project.slug, ticket: job.ticket, id: job.id, state: "running", at: at(0) });
+  const running = await next.observeJob({
+    project: project.slug,
+    ticket: job.ticket,
+    id: job.id,
+    ref: "run-1",
+    state: "running",
+    progress: "37/120 cases",
+    eta: at(120).toISOString(),
+    at: at(1),
+  });
+  expect(running).toMatchObject({
+    ref: "run-1",
+    state: "running",
+    progress: "37/120 cases",
+    eta: at(120).toISOString(),
+    observedAt: at(1).toISOString(),
+  });
+  expect(await store.listJobs(project.slug, { open: true })).toEqual(running ? [running] : []);
+  expect(await next.listJobs("other-project", {})).toEqual([]);
+  expect(await next.getJob("other-project", job.id)).toBeNull();
+  expect(
+    await next.observeJob({ project: project.slug, ticket: "DEMO-8", id: job.id, state: "stopped", at: at(2) }),
+  ).toBeNull();
+  expect(
+    (
+      await next.observeJob({
+        project: project.slug,
+        ticket: job.ticket,
+        id: job.id,
+        state: "running",
+        progress: "old",
+        at: at(0),
+      })
+    )?.progress,
+  ).toBe("37/120 cases");
+  expect(
+    await next.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "failed",
+      ref: "replacement",
+      at: at(2),
+    }),
+  ).toEqual(running);
+  const stopped = await next.observeJob({
+    project: project.slug,
+    ticket: job.ticket,
+    id: job.id,
+    state: "stopped",
+    at: at(2),
+  });
+  expect(stopped).toMatchObject({ state: "stopped", ref: "run-1", eta: null, finishedAt: at(2).toISOString() });
+  expect(
+    (
+      await next.observeJob({
+        project: project.slug,
+        ticket: job.ticket,
+        id: job.id,
+        state: "running",
+        ref: "forged",
+        at: at(3),
+      })
+    )?.state,
+  ).toBe("stopped");
+  expect(await next.listJobs(project.slug, { open: true })).toEqual([]);
+  expect(await next.listJobs(project.slug, { ticket: job.ticket, id: job.id })).toEqual(stopped ? [stopped] : []);
+});
+
 test("a deferred request survives storage, shares launch uniqueness and is resolved by the worker claim", async () => {
   const project = "deferred-requests";
   await upsertProject(

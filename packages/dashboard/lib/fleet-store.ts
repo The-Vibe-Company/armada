@@ -29,6 +29,9 @@ import type {
   InboxRecipient,
   InsightEvent,
   InsightWait,
+  Job,
+  JobQuery,
+  JobState,
   LatestEvent,
   Lease,
   MergeHold,
@@ -1166,6 +1169,43 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
   });
 }
 
+// ------------------------------------------------------------------ long jobs
+
+const jobOf = (r: Row): Job => ({
+  id: Number(r.id),
+  project: String(r.project),
+  ticket: String(r.ticket),
+  name: String(r.name),
+  ref: r.ref == null ? null : text(r.ref),
+  state: text(r.state) as JobState,
+  progress: r.progress == null ? null : text(r.progress),
+  eta: iso(r.eta),
+  startedBy: r.started_by == null ? null : text(r.started_by),
+  startedAt: isoAt(r.started_at),
+  observedAt: isoAt(r.observed_at),
+  finishedAt: iso(r.finished_at),
+});
+
+async function getJob(db: Queryable, project: string, id: number): Promise<Job | null> {
+  const r = (await db.query("SELECT * FROM jobs WHERE project = $1 AND id = $2", [project, id])).rows[0];
+  return r ? jobOf(r) : null;
+}
+
+async function listJobs(db: Queryable, project: string, q: JobQuery): Promise<Job[]> {
+  const params: unknown[] = [project];
+  const where = ["project = $1"];
+  if (q.ticket !== undefined) {
+    params.push(q.ticket);
+    where.push(`ticket = $${params.length}`);
+  }
+  if (q.id !== undefined) {
+    params.push(q.id);
+    where.push(`id = $${params.length}`);
+  }
+  if (q.open) where.push("state IN ('starting','running')");
+  return (await db.query(`SELECT * FROM jobs WHERE ${where.join(" AND ")} ORDER BY id DESC`, params)).rows.map(jobOf);
+}
+
 // ------------------------------------------------------------------ standing merge holds
 const holdRow = (r: Row): MergeHold => ({
   id: Number(r.id),
@@ -1254,6 +1294,41 @@ export async function openHolds(db: Queryable, project: string): Promise<MergeHo
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  async startJob(input) {
+    const rs = await db.query(
+      `INSERT INTO jobs (project, ticket, name, state, started_by, started_at, observed_at)
+       VALUES ($1, $2, $3, 'starting', $4, $5, $5) RETURNING *`,
+      [input.project, input.ticket, input.name, input.startedBy, input.at],
+    );
+    return jobOf(rs.rows[0] as Row);
+  },
+  getJob: (project, id) => getJob(db, project, id),
+  listJobs: (project, q) => listJobs(db, project, q),
+  async observeJob(input) {
+    const rs = await db.query(
+      `UPDATE jobs SET state = $4,
+       ref = CASE WHEN ref IS NULL AND $5::boolean THEN $6 ELSE ref END,
+       progress = $7, eta = CASE WHEN $4 = 'running' THEN $8::timestamptz ELSE NULL END,
+       observed_at = $9, finished_at = CASE WHEN $4 = 'running' THEN NULL ELSE $9 END
+       WHERE project = $1 AND id = $2 AND ticket = $3 AND state IN ('starting','running') AND observed_at <= $9
+       AND (NOT $5::boolean OR ref IS NULL OR ref = $6)
+       RETURNING *`,
+      [
+        input.project,
+        input.id,
+        input.ticket,
+        input.state,
+        input.ref !== undefined,
+        input.ref ?? null,
+        input.progress ?? null,
+        input.eta ?? null,
+        input.at,
+      ],
+    );
+    if (rs.rows[0]) return jobOf(rs.rows[0]);
+    const job = await getJob(db, input.project, input.id);
+    return job?.ticket === input.ticket ? job : null;
+  },
   openHold: (input) => openHold(db, input),
   clearHold: (input) => clearHold(db, input),
   openHolds: (project) => openHolds(db, project),
