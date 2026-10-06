@@ -3,14 +3,14 @@
 // before changing Linear; other commands record live detail afterwards.
 // Unavailable live data warns; a known replacement refuses the release.
 import { ArmadaApiError } from "./armada-api.ts";
-import type { ArmadaConfig } from "./config.ts";
+import { type ArmadaConfig, routingLabelKey } from "./config.ts";
 import type { MergePull } from "./github.ts";
 import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
 import { overlapLines, pathsProblem } from "./overlap.ts";
-import { handBackProblems, transitionProblem } from "./phases.ts";
+import { handBackProblems, planRule, transitionProblem } from "./phases.ts";
 import { Refusal } from "./refusal.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
@@ -564,6 +564,14 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       : `${ticket.id}: ${ticket.agentPhase} → ${input.phase}.`,
   ];
 
+  const reportMessage = plan || input.paths !== undefined ? [summary, body].filter(Boolean).join("\n\n") : message;
+  const preApproved =
+    input.phase === "awaiting-approval" &&
+    ticket.labels.some((l) => routingLabelKey(l.name) === routingLabelKey(ctx.config.policy.preApprovedLabel)) &&
+    planRule(
+      ctx.config,
+      ticket.labels.map((l) => l.name),
+    ).rule === "pre-approved";
   const recorded = await live(ctx, warnings, "record the report", (fleet) =>
     fleet.report({
       ticket: ticket.id,
@@ -573,7 +581,9 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       previous: ticket.agentPhase,
       summary,
       // The whole report: an awaiting-approval plan reaches the coordinator's inbox in full.
-      message: plan || input.paths !== undefined ? [summary, body].filter(Boolean).join("\n\n") : message,
+      message: preApproved
+        ? `Pre-approved at launch (${ctx.config.policy.preApprovedLabel}); answer approved to let this worker continue.\n\n${reportMessage}`
+        : reportMessage,
       prUrl: pr?.url ?? null,
       headSha: sha,
     }),
