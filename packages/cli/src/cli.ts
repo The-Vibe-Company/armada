@@ -36,6 +36,7 @@ import { statusAll } from "./projects.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
+import { reserveCommand, unreserveCommand } from "./reserve.ts";
 import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { printSkill, updateSkills } from "./skills.ts";
@@ -49,6 +50,13 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  reserve: `  reserve <key> [--value <v> | --next [--floor <n>]] [--note <text>] [--ticket <id>]
+  reserve --list    Show shared resources held or permanently used after merge.
+                    Requires Armada; ask the coordinator if it is unavailable.
+`,
+  unreserve: `  unreserve <key> [--ticket <id>]
+                    Free this ticket's open reservations of a key.
+`,
   ci: `  ci why <pr|url> [--json]
   ci why --sha <sha> | --branch <branch> [--json]
                     Explain failing checks on this head: test names, first errors, links
@@ -284,8 +292,20 @@ const COMMAND_HELP: Record<string, string> = {
 };
 
 /** Commands that take --ticket, --config and --json. */
-const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
+const TICKET_OPTION = new Set([
+  "report",
+  "release",
+  "ask",
+  "validate",
+  "merge",
+  "secrets",
+  "run",
+  "reserve",
+  "unreserve",
+]);
 const CONFIG_OPTION = new Set([
+  "reserve",
+  "unreserve",
   "ci",
   "digest",
   "attach",
@@ -389,6 +409,8 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "value",
+  "floor",
   "since",
   "tickets",
   "kinds",
@@ -436,6 +458,8 @@ const VALUE_OPTIONS = [
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
   "send",
+  "next",
+  "list",
   "pre-approve",
   "follow",
   "mine",
@@ -459,6 +483,8 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  reserve: ["ticket", "value", "next", "floor", "note", "list"],
+  unreserve: ["ticket"],
   ci: ["sha", "branch"],
   digest: ["since", "lang", "send"],
   spec: ["at", "apply"],
@@ -521,8 +547,20 @@ export function parseArgs(argv: string[]): Args {
     else if (a === "--all") args.all = true;
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
-    else if (name && FLAG_OPTIONS.includes(name) && named?.[2] === undefined) args.options[name] = "true";
-    else if (name && (name === "config" || name === "project" || VALUE_OPTIONS.includes(name))) {
+    else if (
+      name &&
+      FLAG_OPTIONS.includes(name) &&
+      !(name === "note" && args.command === "reserve") &&
+      named?.[2] === undefined
+    )
+      args.options[name] = "true";
+    else if (
+      name &&
+      (name === "config" ||
+        name === "project" ||
+        VALUE_OPTIONS.includes(name) ||
+        (name === "note" && args.command === "reserve"))
+    ) {
       const v = named?.[2] ?? argv[++k];
       if (v === undefined) throw new UsageError(`--${name} needs a value`);
       if (name === "config") args.config = v;
@@ -695,6 +733,27 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         worker: { command: "attach", project: config.project.slug, ticket: () => args.rest[0]?.toUpperCase() ?? null },
       });
       return await attachCommand(io, config, credentials, args);
+    }
+    if (args.command === "reserve" || args.command === "unreserve") {
+      const { text } = await findConfig(io, args.config, args.command, args.project);
+      const config = parseConfig(text);
+      const { credentials } = await loadCredentials(io, {
+        armada: false,
+        worker: {
+          command: args.command,
+          project: config.project.slug,
+          ticket: (stored) => {
+            try {
+              return currentTicket(io, config, args.options.ticket, stored);
+            } catch (error) {
+              if (args.options.list === "true" && !args.options.ticket && !io.env.ARMADA_TICKET && !stored.length)
+                return null;
+              throw error;
+            }
+          },
+        },
+      });
+      return await (args.command === "reserve" ? reserveCommand : unreserveCommand)(io, config, credentials, args);
     }
     if (args.command === "heartbeat") {
       const { path, text } = await findConfig(io, args.config, "heartbeat", args.project);

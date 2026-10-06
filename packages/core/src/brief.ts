@@ -21,6 +21,7 @@ import {
   parseStatusLine,
   readRest,
 } from "./linear.ts";
+import type { Reservation } from "./live.ts";
 import { buildModel } from "./model.ts";
 import { ARMADA_PACKAGE, type NpmCheck } from "./npm.ts";
 import type { OverlapReading } from "./overlap.ts";
@@ -103,6 +104,7 @@ export interface BriefLaunch {
 }
 
 export interface Brief {
+  sharedResources: { declared: ArmadaConfig["reservations"]; holders: Reservation[]; warning: string | null };
   launchHint?: string;
   ticket: { id: string; title: string; url: string; branch: string | null; status: string; description: string };
   parent: { id: string; title: string; url: string } | null;
@@ -325,6 +327,8 @@ export interface BuildBriefInput {
   notes?: string | null;
   now: Date;
   herdr?: { choice: HerdrProfileChoice; handle: string };
+  reservations?: Reservation[];
+  reservationsWarning?: string | null;
 }
 
 /** Thrown for a profile that does not exist or cannot be chosen (a usage mistake). */
@@ -468,6 +472,11 @@ export function buildBrief(input: BuildBriefInput): Brief {
   else if (extra && !extra.text?.trim()) warnings.push(`[brief] extra names ${extra.path}, which is empty`);
 
   const brief: Omit<Brief, "prompt"> = {
+    sharedResources: {
+      declared: config.reservations,
+      holders: input.reservations ?? [],
+      warning: input.reservationsWarning ?? null,
+    },
     ticket: {
       id: ticket.id,
       title: ticket.title,
@@ -703,6 +712,25 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
         : `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
   );
   // The project's own text, as is: it speaks to every worker of the project.
+  if (b.sharedResources.declared.length || b.sharedResources.holders.length || b.sharedResources.warning) {
+    out.push(
+      "",
+      "## Shared resources",
+      "",
+      "Reserve shared numbers and names with `armada reserve`; never guess. `armada reserve --list` shows current holders.",
+      "",
+    );
+    for (const r of b.sharedResources.declared)
+      out.push(`- ${r.key}: ${r.what}${r.numbered ? " (numbered; use --next --floor <last used number>)" : ""}`);
+    for (const r of b.sharedResources.holders)
+      out.push(
+        `- ${r.key}${r.value ? ` = ${r.value}` : " (exclusive)"}: ${r.ticket}${r.merged ? " (merged; used permanently)" : ""}${r.note ? ` — ${r.note}` : ""}`,
+      );
+    if (b.sharedResources.warning)
+      out.push(
+        `Current holders unavailable: ${b.sharedResources.warning}. Ask the coordinator before choosing a value.`,
+      );
+  }
   if (b.conventions) out.push("", "## Project conventions", "", b.conventions.text.trim());
   return `${out.join("\n")}\n`;
 }
@@ -710,6 +738,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 // ------------------------------------------------------------------ load
 
 export interface LoadBriefOptions extends HttpRetryOptions {
+  reservations?: () => Promise<Reservation[]>;
   overlap?: (input: { ticket: string; paths: string[] }) => Promise<OverlapReading>;
   prompt?: boolean;
   /** Checks/applies explicit plan pre-approval after policy judgments, before token minting. Previews return no reason. */
@@ -814,7 +843,13 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
   if (missed?.warn) ticket.warnings.push(`no launch token: ${missed.reason}`);
+  const { reservations, reservationsWarning } = await reservationsForBrief(
+    opts.reservations,
+    config.reservations.length > 0,
+  );
   const brief = buildBrief({
+    reservations,
+    reservationsWarning,
     config,
     ticket,
     program,
@@ -837,4 +872,17 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
 
 async function launchForBrief(ticket: BriefTicket, launch: LoadBriefOptions["launch"]) {
   return ticket.statusType !== "completed" && ticket.statusType !== "canceled" && launch ? launch(ticket.id) : null;
+}
+
+/** Every runtime's brief reads the holders opportunistically, with an explicit unavailable warning. */
+export async function reservationsForBrief(
+  read?: () => Promise<Reservation[]>,
+  declared = false,
+): Promise<{ reservations: Reservation[]; reservationsWarning: string | null }> {
+  if (!read) return { reservations: [], reservationsWarning: declared ? "sign in with armada login" : null };
+  try {
+    return { reservations: await read(), reservationsWarning: null };
+  } catch {
+    return { reservations: [], reservationsWarning: "Armada could not read reservations" };
+  }
 }

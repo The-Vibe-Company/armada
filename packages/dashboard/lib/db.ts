@@ -777,6 +777,19 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
     version: 27,
     statements: [
+      `CREATE TABLE reservations (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug), key text NOT NULL, value text NOT NULL,
+        ticket text NOT NULL, note text, reserved_at timestamptz NOT NULL,
+        ended_at timestamptz, merged boolean NOT NULL DEFAULT false
+      )`,
+      "CREATE UNIQUE INDEX reservations_held ON reservations (project, key, value) WHERE ended_at IS NULL OR merged",
+      "CREATE INDEX reservations_ticket ON reservations (project, ticket) WHERE ended_at IS NULL",
+    ],
+  },
+  {
+    version: 28,
+    statements: [
       `ALTER TABLE owner_channels ADD COLUMN digest_checked_at timestamptz`,
       `UPDATE owner_channels SET digest = '{"times":["09:00","13:00","18:00"],"days":[1,2,3,4,5],"skipQuiet":false}'::jsonb,
         digest_checked_at = created_at`,
