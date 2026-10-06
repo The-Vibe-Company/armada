@@ -64,3 +64,28 @@ test.each(["empty", "version 21", "version 21 without the retired table"])(
     }
   },
 );
+
+test("a reserved higher version never hides a pending lower migration", async () => {
+  const db = await pgliteDatabase();
+  try {
+    await db.query("CREATE TABLE armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)");
+    const pending = DB_MIGRATIONS.at(-1);
+    if (!pending) throw new Error("Expected a pending migration");
+    for (const migration of DB_MIGRATIONS.filter((m) => m.version !== pending.version)) {
+      for (const statement of migration.statements) await db.query(statement);
+      await db.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [migration.version, now]);
+    }
+    await db.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [pending.version + 1, now]);
+    expect(await migrateDatabase(db, now)).toBe(DB_SCHEMA_VERSION);
+    const versions = (
+      await db.query<{ version: number }>("SELECT version FROM armada_migrations ORDER BY version")
+    ).rows.map((row) => row.version);
+    expect(versions).toEqual([...DB_MIGRATIONS.map((m) => m.version), pending.version + 1]);
+    expect(await migrateDatabase(db, new Date("2026-01-02T12:00:00Z"))).toBe(DB_SCHEMA_VERSION);
+    expect(
+      (await db.query("SELECT version FROM armada_migrations ORDER BY version")).rows.map((row) => row.version),
+    ).toEqual(versions);
+  } finally {
+    await db.end();
+  }
+});

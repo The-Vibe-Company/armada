@@ -1,6 +1,7 @@
 // armada.toml v0: one project = one repository + one tracker program root.
 // Secrets never live in this file; tokens come from the environment.
 import { parse, TomlError } from "smol-toml";
+import { failurePattern } from "./ci.ts";
 import { JOB_NAME } from "./jobs.ts";
 
 export interface JobConfig {
@@ -10,8 +11,6 @@ export interface JobConfig {
   silenceMinutes: number;
   maxHours: number | null;
 }
-
-import { failurePattern } from "./ci.ts";
 
 export interface CiConfig {
   failurePatterns: string[];

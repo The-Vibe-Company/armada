@@ -822,13 +822,17 @@ const MIGRATION_LOCK = 4_849_001;
 
 /** Applies pending migrations and returns the schema version. */
 export async function migrateDatabase(db: Database, now: Date = new Date()): Promise<number> {
-  const current = async (q: Queryable) =>
-    Number((await q.query<{ v: unknown }>("SELECT max(version) AS v FROM armada_migrations")).rows[0]?.v ?? 0);
   // The usual case, without a lock: everything applied already.
   const applied = await db
     .query<{ t: unknown }>("SELECT to_regclass('armada_migrations') AS t")
     .then((rs) => rs.rows[0]?.t !== null && rs.rows[0]?.t !== undefined);
-  if (applied && (await current(db)) >= DB_SCHEMA_VERSION) return DB_SCHEMA_VERSION;
+  if (applied) {
+    const versions = await db.query<{ version: number }>(
+      "SELECT version FROM armada_migrations WHERE version = ANY($1::integer[])",
+      [DB_MIGRATIONS.map((m) => m.version)],
+    );
+    if (versions.rows.length === DB_MIGRATIONS.length) return DB_SCHEMA_VERSION;
+  }
   for (const m of DB_MIGRATIONS)
     await transaction(db, async (tx) => {
       // Whoever comes second waits here, then finds the version applied.
@@ -836,7 +840,8 @@ export async function migrateDatabase(db: Database, now: Date = new Date()): Pro
       await tx.query(
         "CREATE TABLE IF NOT EXISTS armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
       );
-      if ((await current(tx)) >= m.version) return;
+      // Reserved versions can arrive out of order; a higher one does not apply this one.
+      if ((await tx.query("SELECT version FROM armada_migrations WHERE version = $1", [m.version])).rows.length) return;
       for (const statement of m.statements) await tx.query(statement);
       await tx.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [m.version, now]);
     });
