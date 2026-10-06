@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.59](https://github.com/The-Vibe-Company/armada/compare/v0.2.58...v0.2.59) (2026-10-06)
+
+
+### Bug Fixes
+
+* **ci:** install the pinned test browser before publishing ([#272](https://github.com/The-Vibe-Company/armada/issues/272)) ([7a3cfd2](https://github.com/The-Vibe-Company/armada/commit/7a3cfd2ad788c91a922f76e166947ee622e014db))
+* **merge:** retry temporary GitHub merge locks in the queue ([#271](https://github.com/The-Vibe-Company/armada/issues/271)) ([750dfea](https://github.com/The-Vibe-Company/armada/commit/750dfea44190c90f23938b99db9f122e1c590d0a))
+
 ## [0.2.58](https://github.com/The-Vibe-Company/armada/compare/v0.2.57...v0.2.58) (2026-10-06)
 
 
