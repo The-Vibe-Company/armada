@@ -923,6 +923,13 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    // THE-1093: one visible follow-up for unfinished Linear work per ticket and project.
+    version: 37,
+    statements: [
+      "CREATE UNIQUE INDEX inbox_one_open_chore ON inbox_items (project, ticket, kind) WHERE resolved_at IS NULL AND kind = 'linear-pending'",
+    ],
+  },
+  {
     // THE-1084: reserve notification delivery and record each ticket once.
     version: 39,
     statements: [

@@ -7,6 +7,7 @@ import {
   addRequest,
   addValidation,
   decideValidation,
+  putChore,
   recordCoordinatorSeen,
   recordEvent,
   resolveInboxItem,
@@ -152,6 +153,31 @@ const query = (over: Partial<FeedQuery> = {}): FeedQuery => ({
 const kinds = (list: FeedEntry[]) => list.map((e) => `${e.kind}${e.detail ? `:${e.detail}` : ""} ${e.ticket ?? "-"}`);
 
 describe("feedPage", () => {
+  test("pending Linear work is visible as a coordinator follow-up", async () => {
+    const project = "linear-follow-up";
+    await upsertProject(
+      db,
+      { slug: project, name: "Follow-up", repository: "acme/follow-up", programRoot: "WID-1" },
+      at(0),
+    );
+    await putChore(db, {
+      project,
+      ticket: "WID-9",
+      kind: "linear-pending",
+      pr: 12,
+      author: "Synthetic Coordinator",
+      body: "Finish Linear for #12",
+      at: at(60),
+    });
+    expect(await feedPage(db, query({ projects: [project] }))).toMatchObject([
+      {
+        kind: "request",
+        detail: "linear-pending",
+        actor: { kind: "coordinator", name: "Synthetic Coordinator" },
+        text: "Finish Linear for #12",
+      },
+    ]);
+  });
   test("lists every event of the fleet newest first, and never a heartbeat or an inbox read", async () => {
     expect(kinds(await feedPage(db, query()))).toEqual([
       "coordinator:stop -",

@@ -58,7 +58,71 @@ describe("the fleet through Armada", () => {
     expect(store.items.find((i) => i.kind === "note")?.coordinator).toBe("default");
     expect(store.items.filter((i) => i.kind === "note")).toHaveLength(1);
   });
+  test("only a coordinator records validated Linear chores, scoped to its project and ticket", async () => {
+    const { fleet, store } = tempFleet();
+    const chore = { ticket: "DEMO-7", kind: "linear-pending" as const, pr: 11, body: "Finish Linear for #11" };
+    await fleet.chore(chore);
+    await fleet.chore({ ...chore, body: "Run: armada merge --finish 11" });
+    expect(await fleet.ticketItems("DEMO-7")).toMatchObject([
+      {
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "linear-pending",
+        recipient: "coordinator",
+        body: "Run: armada merge --finish 11",
+      },
+    ]);
+    expect(store.items).toHaveLength(1);
+    expect(
+      (
+        await serveFleet(
+          store,
+          { op: "chore", project: DEMO_PROJECT, caller: { kind: "worker", ticket: "DEMO-7" }, input: chore },
+          { now: () => NOW },
+        )
+      ).status,
+    ).toBe(403);
+    for (const invalid of [{ kind: "question" }, { ticket: "wrong" }, { pr: 0 }, { pr: 1.5 }, { body: " " }]) {
+      const answer = await serveFleet(
+        store,
+        { op: "chore", project: DEMO_PROJECT, caller: { kind: "organization" }, input: { ...chore, ...invalid } },
+        { now: () => NOW },
+      );
+      expect(answer.status).toBe(400);
+    }
+    expect(store.items).toHaveLength(1);
+    const other = await serveFleet(
+      store,
+      {
+        op: "chore",
+        project: { ...DEMO_PROJECT, slug: "other" },
+        caller: { kind: "organization", author: "Synthetic Coordinator" },
+        input: { ...chore, coordinatorName: "night" },
+      },
+      { now: () => NOW },
+    );
+    expect(other.status).toBe(200);
+    expect(store.items).toHaveLength(2);
+    expect(
+      (await store.openInboxItems({ project: "other", ticket: "DEMO-7", recipient: "coordinator" }))[0]?.author,
+    ).toBe("Synthetic Coordinator");
+    expect((await store.openInboxItems({ project: "other", recipient: "coordinator" }))[0]?.coordinator).toBe("night");
+    for (const name of ["night", "day"]) {
+      const inbox = await serveFleet(
+        store,
+        {
+          op: "inbox",
+          project: { ...DEMO_PROJECT, slug: "other" },
+          caller: { kind: "organization" },
+          input: { coordinatorName: name, coordinator: null, silentAfterMinutes: 15, etag: null },
+        },
+        { now: () => NOW },
+      );
+      expect((inbox.body.result as import("../src/live.ts").InboxRead).items).toHaveLength(name === "night" ? 1 : 0);
+    }
+  });
   test("masks prose from older clients, using injected project values plus patterns", async () => {
+    expect(FLEET_TEXT_OPERATIONS.has("chore")).toBe(true);
     const store = memoryFleet();
     const mask = redactor([{ name: "CUSTOM_KEY", value: "synthetic-project-secret" }]);
     const send = (op: string, input: unknown) =>
@@ -80,6 +144,16 @@ describe("the fleet through Armada", () => {
       ).status,
     ).toBe(200);
     expect((await send("ask", { ticket: "DEMO-7", body: "synthetic-project-secret" })).status).toBe(200);
+    expect(
+      (
+        await send("chore", {
+          ticket: "DEMO-7",
+          kind: "linear-pending",
+          pr: 11,
+          body: "synthetic-project-secret",
+        })
+      ).status,
+    ).toBe(200);
     expect((await send("answer", { ticket: "DEMO-7", text: "synthetic-project-secret", note: true })).status).toBe(200);
     await send("merge-notice/prepare", { key: "mask-merge-9" });
     expect(
