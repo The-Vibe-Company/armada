@@ -13,6 +13,16 @@ const problemsOf = (text: string) => {
 };
 
 describe("armada.toml", () => {
+  test("merge notification paths default to workflows and accept configured globs or an empty opt-out", () => {
+    expect(parseConfig(DEMO_TOML).merge.notifyPaths).toEqual([".github/workflows/**"]);
+    expect(
+      parseConfig(`${DEMO_TOML}\n[merge]\nnotify_paths = ["package.json", "migrations/**/*.sql"]`).merge.notifyPaths,
+    ).toEqual(["package.json", "migrations/**/*.sql"]);
+    expect(parseConfig(`${DEMO_TOML}\n[merge]\nnotify_paths = []`).merge.notifyPaths).toEqual([]);
+    expect(problemsOf(`${DEMO_TOML}\n[merge]\nnotify_paths = [42]`)).toContain(
+      '"merge.notify_paths" must be a list of path globs',
+    );
+  });
   test("spec title styles default to N, accept totals explicitly, and reject other values", () => {
     expect(parseConfig(DEMO_TOML).tracker.specTitles).toBe("N");
     expect(parseConfig(DEMO_TOML.replace("[tracker]", '[tracker]\nspec_titles = "N/M"')).tracker.specTitles).toBe(
@@ -60,6 +70,7 @@ describe("armada.toml", () => {
       github: { repository: "acme/widgets" },
       ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
+      merge: { notifyPaths: [".github/workflows/**"] },
       policy: {
         validationSamples: 4,
         attachmentsPerTicket: 20,

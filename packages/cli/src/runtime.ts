@@ -133,10 +133,18 @@ export async function deliverToRuntime(
   text: string,
   expected?: RuntimeHandle | null,
   config?: ArmadaConfig,
-  message: { item?: number | null; kind?: "answer" | "note" | "login"; identityText?: string } = {},
+  message: {
+    item?: number | null;
+    kind?: "answer" | "note" | "login";
+    identityText?: string;
+    key?: string;
+    coordinator?: string;
+    skipHandedBack?: boolean;
+  } = {},
   launch?: PendingLaunch | null,
 ): Promise<Delivery | null> {
-  const target = expected && !expected.releasedAt ? claimRef(expected) : launch ? launchRef(launch) : null;
+  const ref = expected && !expected.releasedAt ? claimRef(expected) : launch ? launchRef(launch) : null;
+  const target = ref && { ...ref, coordinator: message.coordinator, skipHandedBack: message.skipHandedBack };
   if (!target) throw new Refusal(`${ticket}'s claim is missing or changed; no answer was delivered`, "armada inbox");
   const adapter = runtimeFor(io, config, target.runtime);
   if (!adapter.can.deliver) return null;
@@ -145,18 +153,20 @@ export async function deliverToRuntime(
     adapter.deliver(target, {
       text,
       kind: message.kind ?? "answer",
-      key: deliveryKey({
-        project: config?.project.slug ?? expected?.project ?? "",
-        ticket,
-        // Claiming does not create a new generation for a bound launch.
-        claimedAt: target.launchId ? null : target.claimedAt,
-        launchId: target.launchId,
-        item: message.item ?? null,
-        kind: message.kind ?? "answer",
-        // Masking availability can change between retries. The original text
-        // is only hashed here; delivery and records keep the masked payload.
-        text: message.identityText ?? text,
-      }),
+      key:
+        message.key ??
+        deliveryKey({
+          project: config?.project.slug ?? expected?.project ?? "",
+          ticket,
+          // Claiming does not create a new generation for a bound launch.
+          claimedAt: target.launchId ? null : target.claimedAt,
+          launchId: target.launchId,
+          item: message.item ?? null,
+          kind: message.kind ?? "answer",
+          // Masking availability can change between retries. The original text
+          // is only hashed here; delivery and records keep the masked payload.
+          text: message.identityText ?? text,
+        }),
     }),
   );
 }
