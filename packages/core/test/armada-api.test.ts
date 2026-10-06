@@ -174,15 +174,16 @@ test("a CLI older than the server expects gets one upgrade line instead of an an
   expect(older.serverCli()).toBeNull();
 });
 
-test("a newer release is named with its install command, the skills step and its notes", () => {
+test("a newer release names setup only when behind, plus the upgrade command and notes", () => {
   expect(newerRelease("0.2.3", "0.2.4")).toBe("0.2.4");
   expect(newerRelease("0.2.4", "0.2.4")).toBeNull();
   expect(newerRelease("0.2.5", "0.2.4")).toBeNull();
   expect(newerRelease("0.2.3", null)).toBeNull();
+  expect(releaseLine("0.2.3", "0.2.4", { setupBehind: false })).not.toContain("armada init");
   // A development build is never told to install a release.
   expect(newerRelease("0.0.0", "0.2.4")).toBeNull();
-  expect(releaseLine("0.2.3", "0.2.4")).toBe(
-    "Armada 0.2.4 is out (you run 0.2.3): npm install -g @the-vibe-company/armada@0.2.4 — then armada init to refresh this project's skills. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4",
+  expect(releaseLine("0.2.3", "0.2.4", { setupBehind: true })).toBe(
+    "Armada 0.2.4 is out (you run 0.2.3): armada upgrade — then armada init to refresh this project's skills if still behind. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4",
   );
 });
 

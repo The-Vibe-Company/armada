@@ -225,6 +225,11 @@ function Coordinator({ project }: { project: ProjectOverview }) {
       <p className="pj-coord-state" style={{ color }}>
         {state}
       </p>
+      {c.updateAvailable && (
+        <p className="pj-coord-state" style={{ color: "var(--text-3)" }}>
+          {p.updateAvailable}
+        </p>
+      )}
       <dl className="pj-coord-facts">
         {facts.map((f) => (
           <div key={f.k}>
