@@ -50,6 +50,9 @@ async function signUp(email: string, name: string): Promise<string> {
 
 beforeAll(async () => {
   client = await tempDatabase();
+}, 10_000);
+
+beforeAll(async () => {
   const mode = accountsModeOf(ENV);
   if (mode.kind !== "accounts") throw new Error("test settings incomplete");
   settings = mode.settings;
