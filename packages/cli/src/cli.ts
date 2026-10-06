@@ -24,7 +24,7 @@ import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { jobCommand } from "./job.ts";
 import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
@@ -556,7 +556,7 @@ async function status(io: Io, args: Args): Promise<number> {
     linearApiKey,
     githubToken,
     ...(live ?? {}),
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
     ...(io.now ? { now: io.now } : {}),
   });
   const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
