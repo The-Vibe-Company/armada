@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type NewRequest, recordRelease } from "@armada/core/read";
+import { type NewRequest, recordClaim, recordRelease } from "@armada/core/read";
 import { type Database, DB_MIGRATIONS, DB_SCHEMA_VERSION, migrateDatabase } from "../lib/db.ts";
 import {
   acquireLease,
@@ -515,6 +515,48 @@ test("long jobs persist across store instances, are project scoped and never rev
   ).toBe("stopped");
   expect(await next.listJobs(project.slug, { open: true })).toEqual([]);
   expect(await next.listJobs(project.slug, { ticket: job.ticket, id: job.id })).toEqual(stopped ? [stopped] : []);
+});
+
+test("a deferred request survives storage, shares launch uniqueness and is resolved by the worker claim", async () => {
+  const project = "deferred-requests";
+  await upsertProject(
+    db,
+    { slug: project, name: "Deferred", repository: "acme/deferred", programRoot: "WID-1" },
+    at(0),
+  );
+  const store = fleetStore(db);
+  const request = {
+    project,
+    ticket: "WID-9",
+    kind: "launch-request" as const,
+    author: "Ada",
+    body: "Wait for blockers",
+    question: null,
+    profile: "backend",
+    deferred: true,
+    at: at(0),
+  };
+  const id = await store.addRequest(request);
+  expect(id).not.toBeNull();
+  expect(await store.addRequest({ ...request, deferred: false })).toBeNull();
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toMatchObject([
+    { id, request: { deferred: true, profile: "backend" } },
+  ]);
+  await recordClaim(
+    store,
+    project,
+    {
+      ticket: "WID-9",
+      runtime: "Conductor",
+      handle: "ws/9",
+      branch: null,
+      phase: null,
+      resuming: false,
+      profile: null,
+    },
+    at(1),
+  );
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toEqual([]);
 });
 
 test("merge holds deduplicate automatic pauses and atomically open and resolve their inbox items", async () => {

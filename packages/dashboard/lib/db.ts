@@ -837,9 +837,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX merge_holds_open ON merge_holds(project, cleared_at)",
     ],
   },
+  { version: 33, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
   {
     // THE-1125: durable references to jobs dispatched on a project's own runner.
-    version: 33,
+    version: 36,
     statements: [
       `CREATE TABLE jobs (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
