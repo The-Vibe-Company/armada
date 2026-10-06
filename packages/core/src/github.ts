@@ -96,7 +96,10 @@ export interface RawPull {
   additions?: number;
   deletions?: number;
   mergeStateStatus?: string;
-  files?: { nodes: { path: string; additions: number; deletions: number }[]; pageInfo: { hasNextPage: boolean } };
+  files?: {
+    nodes: { path: string; additions: number; deletions: number; changeType?: string }[];
+    pageInfo: { hasNextPage: boolean };
+  };
   number: number;
   title: string;
   url: string;
@@ -165,7 +168,7 @@ export function normalizePull(raw: RawPull, repo: string): PullRequest {
 const PULL_FIELDS = /* GraphQL */ `
   fragment P on PullRequest {
     number title url state isDraft mergeable mergeStateStatus headRefName headRefOid createdAt updatedAt mergedAt additions deletions
-    files(first: 100) { nodes { path additions deletions } pageInfo { hasNextPage } }
+    files(first: 100) { nodes { path additions deletions changeType } pageInfo { hasNextPage } }
     commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 50) { pageInfo { hasNextPage } nodes {
       __typename
       ... on CheckRun { name status conclusion }

@@ -46,6 +46,7 @@ import type {
   ProjectInsightRecords,
   ProjectRecord,
   ReleaseGuard,
+  ReleaseRecord,
   RequestStore,
   Reservation,
   ReserveRecord,
@@ -634,6 +635,14 @@ export async function saveRuntimeHandle(
   await transaction(db, async (tx) => {
     // Separate statements give the owner read a fresh snapshot after a handover lock wait.
     await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [h.project]);
+    if (h.workerSessionId) {
+      const ended = await tx.query(
+        `SELECT "id" FROM "armada_worker" WHERE "id" = $1 AND "project" = $2 AND "ticket" = $3
+         AND ("endedAt" IS NOT NULL OR "sessionExpiresAt" <= $4)`,
+        [h.workerSessionId, h.project, h.ticket, h.at],
+      );
+      if (ended.rows.length) throw new Error("the worker session ended before its claim was recorded");
+    }
     await tx.query(
       `WITH previous_sessions AS (
        UPDATE fleet_sessions SET released_at = $6 WHERE project = $1 AND ticket = $2 AND released_at IS NULL
@@ -680,20 +689,20 @@ export async function saveRuntimeHandle(
 
 /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
 export async function releaseRuntimeHandle(
-  db: Database,
+  db: Database | Queryable,
   project: string,
   ticket: string,
   at: Date,
   guard?: ReleaseGuard,
   merged = false,
 ): Promise<boolean> {
-  return transaction(db, async (tx) => {
+  const run = async (tx: Queryable) => {
     // Reservations and ticket endings share this lock, including an empty reservation key.
     await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
     // Lock and compare the current claim before touching history or its profile.
     const held = (
       await tx.query(
-        "SELECT handle, claimed_at, released_at, worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 FOR UPDATE",
+        "SELECT h.handle, h.claimed_at, h.released_at, h.worker_session_id, p.organization_id FROM runtime_handles h JOIN projects p ON p.slug = h.project WHERE h.project = $1 AND h.ticket = $2 FOR UPDATE OF h",
         [project, ticket],
       )
     ).rows[0];
@@ -734,6 +743,31 @@ export async function releaseRuntimeHandle(
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [project, ticket]);
     await endReservations(tx, project, ticket, at, merged);
+    if (held?.worker_session_id && held.organization_id)
+      await endWorker(tx, {
+        organization: String(held.organization_id),
+        id: String(held.worker_session_id),
+        reason: merged ? "merged" : "released",
+        by: { kind: "dashboard", id: "", label: "Armada" },
+        now: at,
+      });
+    return true;
+  };
+  return "connect" in db ? transaction(db, run) : run(db);
+}
+
+/** No replacement can claim between ending this generation and cleaning up its work. */
+export async function releaseClaim(db: Database, project: string, release: ReleaseRecord, at: Date): Promise<boolean> {
+  return transaction(db, async (tx) => {
+    if (!(await releaseRuntimeHandle(tx, project, release.ticket, at, release))) return false;
+    const resolution = `ticket released: ${release.reason}`;
+    await tx.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, release.ticket]);
+    await resolvePlans(tx, { project, ticket: release.ticket, resolution, at });
+    for (const kind of ["question", "answer-request"] as const)
+      await resolveInboxItems(tx, { project, ticket: release.ticket, kind, resolution, at });
+    if (release.reason.startsWith("relaunch:"))
+      await resolveInboxItems(tx, { project, ticket: release.ticket, kind: "hand-back", resolution, at });
+    await recordEvent(tx, { project, ticket: release.ticket, kind: "release", message: release.reason, at });
     return true;
   });
 }
@@ -1051,23 +1085,38 @@ export async function putPlan(
     `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
      VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5, $6)
      ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
-     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator`,
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator
+     WHERE inbox_items.created_at <= excluded.created_at`,
     [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
   );
 }
 
 /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
 export async function putHandBack(
-  db: Queryable,
+  db: Database | Queryable,
   item: { project: string; ticket: string; author: string | null; body: string; coordinator?: string | null; at: Date },
 ): Promise<void> {
-  await db.query(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+  const run = async (tx: Queryable) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [item.project]);
+    if (item.author) {
+      const held = (
+        await tx.query(
+          "SELECT worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+          [item.project, item.ticket],
+        )
+      ).rows[0];
+      if (held?.worker_session_id && held.worker_session_id !== item.author) return;
+    }
+    await tx.query(
+      `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
      VALUES ($1, $2, 'hand-back', 'coordinator', $3, $4, $5, $6)
      ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
-     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator`,
-    [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
-  );
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator
+     WHERE inbox_items.created_at <= excluded.created_at`,
+      [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
+    );
+  };
+  await ("connect" in db ? transaction(db, run) : run(db));
 }
 
 /** Adds or refreshes the coordinator's unfinished Linear work after a confirmed merge. */
@@ -1187,10 +1236,10 @@ export async function resolveAnswerRequests(
 
 /** Resolves a ticket's open plan and the answer-requests waiting on it; returns how many plans. */
 export async function resolvePlans(
-  db: Database,
+  db: Database | Queryable,
   input: { project: string; ticket: string; resolution: string; at: Date },
 ): Promise<number> {
-  return transaction(db, async (tx) => {
+  const run = async (tx: Queryable) => {
     await tx.query(
       `UPDATE inbox_items SET resolved_at = $1, resolution = $2
        WHERE project = $3 AND kind = 'answer-request' AND resolved_at IS NULL
@@ -1204,7 +1253,8 @@ export async function resolvePlans(
       [input.at, input.resolution, input.project, input.ticket],
     );
     return rs.rowCount;
-  });
+  };
+  return "connect" in db ? transaction(db, run) : run(db);
 }
 
 // ------------------------------------------------------------------ leases
@@ -1975,6 +2025,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
   observeRuntime: (input) => observeRuntime(db, input),
   stopRuntime: (input) => stopRuntime(db, input),
+  releaseClaim: (project, release, at) => releaseClaim(db, project, release, at),
   releaseRuntimeHandle: (project, ticket, at, guard, merged) =>
     releaseRuntimeHandle(db, project, ticket, at, guard, merged),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
@@ -2224,7 +2275,17 @@ export async function insightRecords(
 // ------------------------------------------------------------------ what the dashboard reads
 
 /** What the Fleet view reads on each poll, and what its requests write. */
-export interface LiveStore extends RequestStore {
+export interface LiveStore
+  extends RequestStore,
+    Pick<
+      FleetStore,
+      | "releaseClaim"
+      | "releaseRuntimeHandle"
+      | "deleteTicketPaths"
+      | "resolvePlans"
+      | "resolveInboxItems"
+      | "recordEvent"
+    > {
   coordinatorRoles(project: string): Promise<CoordinatorPresence[]>;
   inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
@@ -2273,6 +2334,13 @@ export interface TicketHistory {
 }
 
 export const liveStore = (db: Database): LiveStore => ({
+  releaseClaim: (project, release, at) => releaseClaim(db, project, release, at),
+  releaseRuntimeHandle: (project, ticket, at, guard, merged) =>
+    releaseRuntimeHandle(db, project, ticket, at, guard, merged),
+  deleteTicketPaths: (project, ticket, guard) => fleetStore(db).deleteTicketPaths(project, ticket, guard),
+  resolvePlans: (q) => resolvePlans(db, q),
+  resolveInboxItems: (q) => resolveInboxItems(db, q),
+  recordEvent: (e) => recordEvent(db, e),
   coordinatorRoles: (project) => coordinatorRoles(db, project),
   inboxReads: (project, now) => inboxReads(db, project, now),
   listSessions: (project, opts) => listSessions(db, project, opts),

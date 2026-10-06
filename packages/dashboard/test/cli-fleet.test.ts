@@ -491,7 +491,7 @@ describe("the fleet through the Armada API", () => {
     });
     expect([raw.status, await raw.text(), raw.headers.get("cache-control")]).toEqual([304, "", "no-store"]);
     // A worker turning silent is a new entry; then its minutes change, its entry does not: not modified.
-    clock += 20 * 60_000;
+    clock += 35 * 60_000;
     const silent = await coordinator.inbox({ ...read, etag: first.etag });
     expect(silent?.items.map((e) => [e.kind, e.ticket])).toContainEqual(["silent", "WID-10"]);
     clock += 5 * 60_000;
@@ -906,13 +906,35 @@ test("exact runtime references preserve an ended generation after replacement, a
     releasedAt: null,
   };
   expect((await fleet.runtimeReference({ ...ref, coordinator: "spoof" }))?.coordinator).toBe("default");
+  await fleetStore(client).putHandBack({
+    project: WIDGETS.slug,
+    ticket: ref.ticket,
+    author: ref.handle,
+    body: "Previous worker's open PR",
+    at: now(),
+  });
+  expect((await fleet.ticketItems(ref.ticket)).some((item) => item.kind === "hand-back")).toBe(true);
   await fleet.release({
     ticket: ref.ticket,
     reason: "relaunch: stopped",
     handle: ref.handle,
     claimedAt: ref.claimedAt,
   });
+  expect((await fleet.ticketItems(ref.ticket)).some((item) => item.kind === "hand-back")).toBe(false);
   await fleet.claim({ ...claim, handle: "new-ws/new-session" });
+  await fleetStore(client).putHandBack({
+    project: WIDGETS.slug,
+    ticket: ref.ticket,
+    author: "new-ws/new-session",
+    body: "Replacement worker's open PR",
+    at: now(),
+  });
+  expect(
+    await fleet.release({ ticket: ref.ticket, reason: "relaunch: late", handle: ref.handle, claimedAt: ref.claimedAt }),
+  ).toEqual({ released: false });
+  expect((await fleet.ticketItems(ref.ticket)).find((item) => item.kind === "hand-back")?.body).toBe(
+    "Replacement worker's open PR",
+  );
   expect(await fleet.runtimeReference({ ...ref, coordinator: "spoof" })).toMatchObject({
     ...ref,
     releasedAt: now().toISOString(),
@@ -920,6 +942,17 @@ test("exact runtime references preserve an ended generation after replacement, a
   });
   expect(await fleet.runtimeReference({ ...ref, handle: "unrelated/session" })).toBeNull();
   expect(await fleet.runtimeReference({ ...ref, runtime: "herdr" })).toBeNull();
+  const replacement = await fleet.runtimeHandle(ref.ticket);
+  if (!replacement) throw new Error("missing replacement claim");
+  await fleet.release({
+    ticket: ref.ticket,
+    reason: "ordinary release",
+    handle: replacement.handle,
+    claimedAt: replacement.claimedAt,
+  });
+  expect((await fleet.ticketItems(ref.ticket)).find((item) => item.kind === "hand-back")?.body).toBe(
+    "Replacement worker's open PR",
+  );
   expect(await fleet.runtimeReference({ ...ref, claimedAt: "2099-01-01T00:00:00.000Z" })).toBeNull();
   const scoped = await worker("WID-1085");
   expect(await refusal(fleetOf(scoped).runtimeReference(ref))).toEqual([

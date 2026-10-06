@@ -30,6 +30,7 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   { name: "unreserve", role: "worker", what: "Free your ticket's open shared resources." },
   { name: "ci", role: "both", what: "Explain failing tests, first errors and runner problems" },
   { name: "attach", role: "worker", what: "Attach screenshots and links for the owner to check" },
+  { name: "acceptance", role: "both", what: "Run live checks before hand-back; grant more runs as coordinator" },
   { name: "job", role: "both", what: "Track a ticket's long jobs on the project's runner" },
   { name: "lint", role: "coordinator", what: "Check ready tickets and specs for readable titles and summaries" },
   { name: "heartbeat", role: "worker", what: "Keep a worker's session alive in the background" },

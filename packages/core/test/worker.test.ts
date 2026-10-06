@@ -459,3 +459,64 @@ describe("release", () => {
     expect(labelsOf(linear, "DEMO-7")).toEqual([ready.name, "planning", "Claude Code"]);
   });
 });
+
+test("live acceptance hand-back uses Linear while Armada is down, skips docs, and fails closed on partial files", async () => {
+  const acceptanceConfig = parseConfig(
+    `${DEMO_TOML}\n[[acceptance]]\nname = "production build"\ncommand = "build"\npaths = ["deploy/**"]`,
+  );
+  const pull: PullRequest = {
+    url: "https://github.com/acme/widgets/pull/9",
+    number: 9,
+    repo: "acme/widgets",
+    title: "build",
+    headSha: HEAD,
+    checks: [{ name: "test", state: "success" }],
+    filesComplete: true,
+    files: [{ path: "deploy/Dockerfile", additions: 1, deletions: 0 }],
+  };
+  const { linear, ctx } = setup({ config: acceptanceConfig, pull });
+  linear.add("DEMO-7", {
+    labels: [{ id: "phase-shipping", name: "shipping", group: config.tracker.labels.phaseGroup }],
+  });
+  const handBack = () => reportPhase(ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD });
+  expect(await refusal(handBack())).toContain('acceptance "production build" has not passed');
+  expect(linear.writes).toEqual([]);
+  linear.post(
+    "DEMO-7",
+    `Agent status: shipping — acceptance "production build" passed on ${"f".repeat(40)} in 1m1s`,
+    NOW.toISOString(),
+  );
+  expect(await refusal(handBack())).toContain("has not passed");
+  pull.files = [{ path: "docs/guide.md", additions: 1, deletions: 0 }];
+  await handBack();
+  pull.files[0] = { path: "docs/Dockerfile", additions: 0, deletions: 0, changeType: "RENAMED" };
+  expect(await refusal(handBack())).toContain("has not passed");
+  pull.filesComplete = false;
+  expect(await refusal(handBack())).toContain("has not passed");
+  linear.post(
+    "DEMO-7",
+    `Agent status: shipping — acceptance "production build" passed on ${HEAD} in 1m1s`,
+    NOW.toISOString(),
+  );
+  const outcome = await handBack();
+  expect(outcome.warnings).toContain("not signed in to Armada");
+  expect(linear.get("DEMO-7").comments.some((c) => c.status?.summary.includes("acceptance: production build ok"))).toBe(
+    true,
+  );
+  linear.get("DEMO-7").commentsTruncated = true;
+  expect(await refusal(handBack())).toContain("evidence is incomplete");
+});
+
+test("ordinary report messages and plans cannot synthesize acceptance evidence or coordinator allowances", async () => {
+  const { ctx, linear } = setup();
+  linear.add("DEMO-7", { labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }] });
+  for (const text of [
+    `acceptance "build" passed on ${HEAD}`,
+    "acceptance: 2 more runs allowed by the coordinator: retry",
+  ])
+    for (const field of ["message", "plan"])
+      expect(await refusal(reportPhase(ctx, { ticket: "DEMO-7", phase: "shipping", [field]: text }))).toContain(
+        "acceptance records are reserved",
+      );
+  expect(linear.writes).toEqual([]);
+});

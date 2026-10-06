@@ -169,6 +169,8 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     coordinator: coordinatorHandle(io),
     facts: detectCoordinator(io),
     silentAfterMinutes: config.policy.silentAfterMinutes,
+    launchGraceMinutes: config.policy.launchGraceMinutes,
+    ciWaitMinutes: config.policy.ciWaitMinutes,
     quietAfterMinutes: config.policy.quietAfterMinutes,
     notStartedMinutes: config.policy.notStartedMinutes,
     now: io.now ?? (() => new Date()),

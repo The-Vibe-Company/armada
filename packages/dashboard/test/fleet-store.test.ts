@@ -116,6 +116,11 @@ describe("live data", () => {
     const ids: number[] = [];
     for (const kind of ["plan", "question", "answer-request"] as const)
       ids.push(await addInboxItem(db, { ...common, kind }));
+    await putHandBack(db, { project, ticket, author: "worker-new", body: "PR #97", at: at(6) });
+    await putHandBack(db, { project, ticket, author: "worker-old", body: "PR #96", at: at(6) });
+    expect(
+      (await openInboxItems(db, { project, recipient: "coordinator", ticket })).find((i) => i.kind === "hand-back"),
+    ).toMatchObject({ author: "worker-new", body: "PR #97" });
     const before = await lastEventTimes(db, project);
     for (const guard of [
       { handle: "ws/s", claimedAt: at(0).toISOString() },
@@ -134,6 +139,35 @@ describe("live data", () => {
       ).toHaveLength(3);
       expect(await lastEventTimes(db, project)).toEqual(before);
     }
+    // Failure late in cleanup rolls back the handle, paths and inbox together.
+    await store.saveTicketPaths(project, ticket, ["src/replacement.ts"], at(6));
+    const failing: Database = {
+      query: db.query.bind(db),
+      end: async () => {},
+      connect: async () => {
+        const connection = await db.connect();
+        return {
+          release: connection.release.bind(connection),
+          query: async (sql, params) => {
+            if (sql.startsWith("INSERT INTO events")) throw new Error("synthetic cleanup failure");
+            return connection.query(sql, params);
+          },
+        };
+      },
+    };
+    await expect(
+      recordRelease(
+        fleetStore(failing),
+        project,
+        { ticket, reason: "done", handle: "ws/s", claimedAt: at(5).toISOString() },
+        at(7),
+      ),
+    ).rejects.toThrow("cleanup failure");
+    expect((await getRuntimeHandle(db, project, ticket))?.releasedAt).toBeNull();
+    expect((await store.ticketPaths(project))[ticket]).toEqual(["src/replacement.ts"]);
+    expect(
+      (await openInboxItems(db, { project, recipient: "coordinator", ticket })).filter((i) => ids.includes(i.id)),
+    ).toHaveLength(3);
     expect(
       await recordRelease(
         store,
