@@ -684,7 +684,10 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     );
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
-    out.push("Before you change one of these files, say so in a report and ask the coordinator.", "");
+    out.push(
+      "Declare overlaps in your plan, proceed additively, and bring in main before hand-back. Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
+      "",
+    );
     for (const w of b.parallel) {
       out.push(
         `- ${w.id} — ${w.title} (${w.phase})${w.branch ? `, branch \`${w.branch}\`` : ""}${w.pr ? `, ${w.pr}` : ""}`,
