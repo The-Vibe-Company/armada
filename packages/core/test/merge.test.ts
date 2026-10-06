@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { allowAcceptance } from "../src/acceptance.ts";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
 import type { CommitShape, Comparison, MergePull } from "../src/github.ts";
@@ -14,6 +15,7 @@ import {
   type MergeContext,
   type MergeForge,
   mergePullRequest,
+  noticeFileCoverage,
   prepareQueueEntry,
   type TestMergeResult,
   type WorkerToTell,
@@ -80,6 +82,27 @@ test("merge selects only affected working PRs, conservatively when paths are inc
   );
   expect(owned.tell.map((w) => w.ticket)).toEqual(["DEMO-20", "DEMO-22"]);
   expect(owned.skipped).toEqual([{ ticket: "DEMO-21", why: "owned by coordinator release" }]);
+  // GitHub reports a rename's destination but not its old path. The old path may
+  // overlap a worker's PR or have matched a global notify glob.
+  for (const path of ["src/renamed.ts", "ci/renamed.yml"]) {
+    const rename = noticeFileCoverage({
+      files: [{ path, changeType: "RENAMED", additions: 0, deletions: 0 }],
+      filesComplete: true,
+    });
+    const renamed = workersToTell(rename, workers, [".github/workflows/**"]);
+    expect(renamed.tell.map((w) => w.ticket)).toEqual(["DEMO-10", "DEMO-11", "DEMO-14"]);
+    expect(renamed.tell.every((w) => w.why === "merged PR files incomplete")).toBe(true);
+  }
+  const workerRename = worker("DEMO-30", {
+    pr: {
+      number: 30,
+      ...noticeFileCoverage({
+        files: [{ path: "src/renamed.ts", changeType: "RENAMED", additions: 0, deletions: 0 }],
+        filesComplete: true,
+      }),
+    },
+  });
+  expect(workersToTell(merged, [workerRename], []).tell[0]?.why).toBe("worker PR files incomplete");
 });
 
 function pull(over: Partial<MergePull> = {}): MergePull {
@@ -1624,6 +1647,67 @@ test("queuing preserves the merge judgement and pending owner decision without a
     now: NOW,
   });
   expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9, reason: "Reviewed" }))).toContain("owner requested changes");
+});
+
+test("acceptance information keeps the confirmed hand-back usable during a Linear outage", async () => {
+  const live = tempFleet();
+  const { ctx, linear } = setup({
+    live,
+    toml: `${GATES}\n[[acceptance]]\nname = "production build"\ncommand = "build"`,
+  });
+  await live.store.putHandBack({
+    project: "widgets",
+    ticket: "DEMO-7",
+    author: null,
+    body: `PR #9, head ${HEAD}, CI green, acceptance: production build ok`,
+    at: NOW,
+  });
+  linear.readTicket = async () => {
+    throw new LinearError("Linear API HTTP 503", true, true);
+  };
+  const out = await mergePullRequest(ctx, { pr: 9, dryRun: true });
+  expect(out.lines).toContain(
+    'Acceptance "production build": Linear evidence unavailable; hand-back checked on Armada.',
+  );
+  expect(out.merged).toBe(false);
+});
+
+test("the merge checklist shows acceptance evidence without adding a refusal", async () => {
+  const { ctx, linear } = setup({ toml: `${GATES}\n[[acceptance]]\nname = "production build"\ncommand = "build"` });
+  const before = await mergePullRequest(ctx, { pr: 9, dryRun: true });
+  expect(before.lines).toContain('Acceptance "production build": no recorded pass on the head or handed-back head.');
+  linear.post(
+    "DEMO-7",
+    `Agent status: shipping — acceptance "production build" passed on ${HEAD} in 3m12s`,
+    NOW.toISOString(),
+  );
+  const after = await mergePullRequest(ctx, { pr: 9, dryRun: true });
+  expect(after.lines).toContain(`Acceptance "production build": passed on ${HEAD}.`);
+});
+
+test("a coordinator allowance at ready-to-merge preserves the original hand-back and its inbox metadata", async () => {
+  const live = tempFleet();
+  const { ctx, linear } = setup({
+    live,
+    toml: `${GATES}\n[[acceptance]]\nname = "production build"\ncommand = "build"`,
+  });
+  // The MergeContext carries the same Linear/fleet adapters; allowances need no forge write.
+  const workerCtx = {
+    config: ctx.config,
+    linear,
+    fleet: ctx.fleet,
+    now: () => new Date(NOW.getTime() + 1000),
+    readPull: null,
+  };
+  await allowAcceptance(workerCtx, { ticket: "DEMO-7", runs: 2, reason: "main is moving" });
+  const out = await mergePullRequest(ctx, { pr: 9, dryRun: true });
+  expect(out.lines[0]).toContain(`handed back at ${HEAD}`);
+  const item = live.store.items.find((item) => item.kind === "hand-back");
+  expect(item?.body).toContain(`PR #9, head ${HEAD}`);
+  expect(live.store.events.at(-1)).toMatchObject({
+    prUrl: "https://github.com/acme/widgets/pull/9",
+    headSha: HEAD,
+  });
 });
 
 test("a hold override survives Linear failure and unreadable audit until finish can post it once", async () => {

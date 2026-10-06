@@ -22,13 +22,14 @@ import {
   type MergeRecorded,
   type RuntimeHandle,
 } from "./live.ts";
+import { acceptancePasses, applicableAcceptance } from "./phases.ts";
 
 export { MERGE_LEASE } from "./live.ts";
 
 import type { QueueInput } from "./merge-queue.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
 import type { FrontierTicket } from "./status.ts";
-import type { MainHealth } from "./types.ts";
+import type { MainHealth, PullRequest } from "./types.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
@@ -187,6 +188,19 @@ export interface WorkerNotice extends WorkerToTell {
   why: string;
 }
 
+/** Path coverage used by both merged and working PR notice selection. */
+export function noticeFileCoverage(pr: Pick<PullRequest, "files" | "filesComplete">): {
+  files: string[] | null;
+  filesComplete: boolean;
+} {
+  return {
+    files: pr.files?.map((file) => file.path) ?? null,
+    // GitHub omits the original path of a rename; both overlap and notify globs
+    // must conservatively account for that unknown path before flattening files.
+    filesComplete: pr.filesComplete === true && !pr.files?.some((file) => file.changeType === "RENAMED"),
+  };
+}
+
 /** Selecting recipients never performs I/O or wakes a completed worker. */
 export function workersToTell(
   merged: { files: string[] | null; filesComplete: boolean },
@@ -304,7 +318,11 @@ export interface HandBack {
 
 /** The newest `Agent status: ready-to-merge — PR #<n>, head <sha>, …` comment of the ticket. */
 export function findHandBack(ticket: Ticket): HandBack | null {
-  const c = ticket.comments.find((x) => x.status?.phase === "ready-to-merge");
+  const c = ticket.comments.find(
+    (x) =>
+      x.status?.phase === "ready-to-merge" &&
+      !/^acceptance: \d+ more runs allowed by the coordinator:/.test(x.status.summary),
+  );
   if (!c?.status) return null;
   const pr = c.status.summary.match(/\bPR #(\d+)/i)?.[1];
   const sha = c.status.summary.match(/\bhead ([0-9a-f]+)\b/i)?.[1];
@@ -941,6 +959,26 @@ async function checklist(ctx: MergeContext, input: MergeInput, run: Run, enqueue
     `Checklist passed for ${label(pull, ticket)}: ${head}, ${pull.mergeStateStatus}, checks green, no open review thread.`,
     ...l.notes,
   );
+  if (ticket && config.acceptance.length) {
+    const evidence = "comments" in ticket ? acceptancePasses(ticket.comments) : null;
+    for (const rule of applicableAcceptance(config.acceptance, pull)) {
+      if (!evidence) {
+        lines.push(
+          `Acceptance ${JSON.stringify(rule.name)}: Linear evidence unavailable; hand-back checked on Armada.`,
+        );
+        continue;
+      }
+      const passed = evidence.checks.find((c) => c.name === rule.name)?.passed ?? [];
+      const provenHead = passed.includes(pull.headSha)
+        ? pull.headSha
+        : updatedFrom && passed.includes(updatedFrom)
+          ? updatedFrom
+          : null;
+      lines.push(
+        `Acceptance ${JSON.stringify(rule.name)}: ${provenHead ? `passed on ${provenHead}` : "no recorded pass on the head or handed-back head"}${"commentsTruncated" in ticket && ticket.commentsTruncated ? " (Linear reading incomplete)" : ""}.`,
+      );
+    }
+  }
   const chain = [pull.headSha, ...(l.lineage?.why === null ? (l.lineage.chain ?? [l.lineage.from]) : [])];
   return { pull, ticket, sha: pull.headSha, updatedFrom, baseSha: cmp?.baseSha ?? null, lines, hints, warnings, chain };
 }
@@ -1649,12 +1687,7 @@ async function after(
   }
   const selected =
     filesKnown && !noticeFallback
-      ? workersToTell(
-          { files: merged.files?.map((f) => f.path) ?? null, filesComplete: merged.filesComplete === true },
-          workers,
-          ctx.config.merge.notifyPaths,
-          ctx.coordinatorName,
-        )
+      ? workersToTell(noticeFileCoverage(merged), workers, ctx.config.merge.notifyPaths, ctx.coordinatorName)
       : { tell: [], skipped: workers.map((w) => ({ ticket: w.ticket, why: noticeFallback ?? "files unknown" })) };
   const notifications = { filesKnown, noticeFallback, notices: selected.tell, notAffected: selected.skipped };
   if (!ticket)

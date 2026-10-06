@@ -32,6 +32,7 @@ import {
   type MergePull,
   MergeStateError,
   mergePullRequest,
+  noticeFileCoverage,
   parsePullRequestUrl,
   prepareQueueEntry,
   queueOpen,
@@ -419,8 +420,7 @@ export async function merge(
               pr: pr
                 ? {
                     number: pr.number,
-                    files: pr.files?.map((f) => f.path) ?? null,
-                    filesComplete: pr.filesComplete === true,
+                    ...noticeFileCoverage(pr),
                   }
                 : null,
             };

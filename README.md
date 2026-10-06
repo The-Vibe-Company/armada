@@ -641,6 +641,40 @@ numbered = true
 
 Declarations are optional documentation; undeclared keys can also be reserved. Reservations require Armada: if it is unavailable, ask the coordinator before choosing a value. After a lost response, check `armada reserve --list` before retrying, since the reservation may already have succeeded.
 
+### Live acceptance before hand-back
+
+Declare real build or preview checks in `armada.toml`. Each worker brief lists the
+commands and limits; `armada report ready-to-merge` requires a Linear pass on the
+exact PR head for every applicable check.
+
+```toml
+[[acceptance]]
+name = "production build"
+command = "docker build -f deploy/Dockerfile ."
+paths = ["deploy/**", "Dockerfile", "package.json"]
+timeout_minutes = 20
+max_runs = 3
+```
+
+Omit `paths` to check every PR. Patterns support `*`, `**` and `?`; paths match
+GitHub's changed files. An incomplete file reading or a rename whose original
+path is unavailable applies every rule. The
+default timeout is 15 minutes (maximum 120) and the default cap is three runs per
+check and ticket. For commands needing project secrets, use `armada run -- …`.
+
+Bring main in, commit and push, then run `armada acceptance run` in the clean
+checkout (`--name "production build"` selects one check; `--ticket <id>` selects
+the ticket). HEAD must equal the linked PR head. Fix every error before handing
+back. Failed, timed-out and interrupted attempts count; a changed head needs a
+new pass. At the cap, ask the coordinator, who can grant more with
+`armada acceptance allow <ticket> --runs 2 --reason "<why>"`. Results and run
+counts live in Linear. A local per-ticket lock prevents overlapping runs on the
+worker's machine, even across checkouts. Diagnostics are masked with released
+project secret values; if those values cannot be read, failure output is withheld.
+Live fleet reports remain optional when Armada is
+down. The merge checklist shows the evidence without adding a merge refusal,
+so bringing main in with `merge --wait` preserves the worker's proven hand-back.
+
 ### Check deploys after each merge
 
 Declare optional `[[deploy.target]]` entries in `armada.toml`:
