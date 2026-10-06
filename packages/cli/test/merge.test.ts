@@ -157,11 +157,19 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
               },
             });
           }
+          // The native follow-up launcher reads the program again before minting a token.
+          recorded.Root.push(...structuredClone(recorded.Root));
+          recorded.Children.push(...structuredClone(recorded.Children));
+          recorded.Comments.push(...structuredClone(recorded.Comments));
         }
       : undefined,
   });
   const store = memoryFleet();
-  const armada = fakeArmada({ keys: { [KEY]: "coordinator" }, store });
+  const armada = fakeArmada({
+    keys: { [KEY]: "coordinator" },
+    store,
+    ...(unblocks ? { vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW } } : {}),
+  });
   const net = { armadaDown: false, confirmMerge: true };
   const fetch: Fetch = async (url, init) => {
     if (url.startsWith(`${ARMADA_URL}/`)) {
@@ -174,8 +182,8 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
       if (!unblocks) return response;
       // The post-close read sees the writer's state, while relation states can still be old.
       expect(linear.get("DEMO-18").statusType).toBe(merged ? "completed" : "started");
-      const body = (await response.json()) as { data: { issues?: { nodes: RawIssue[] } } };
-      for (const i of body.data.issues?.nodes ?? [])
+      const body = (await response.json()) as { data?: { issues?: { nodes: RawIssue[] } } };
+      for (const i of body.data?.issues?.nodes ?? [])
         if (i.identifier === "DEMO-18" && i.state) {
           i.state.type = linear.get("DEMO-18").statusType;
         }
@@ -399,6 +407,7 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
     "fleet/lease/renew",
     "fleet/merge",
     "fleet/lease/release",
+    "fleet/launch-requests",
     "workers/end",
   ]);
   expect(f.store.leases.size).toBe(0);
@@ -520,6 +529,92 @@ test("CLI accepts --no-ticket --reason and posts its audit comment without endin
   expect(f.store.leases.size).toBe(0);
 });
 
+test.each([{ options: [] }, { options: ["--no-archive"] }])(
+  "a confirmed merge launches its owned deferred follow-up through the shared Conductor launcher in the same run (%s)",
+  async ({ options }) => {
+    const f = await fixture({ unblocks: true });
+    const originalFetch = f.io.fetch;
+    const originalExec = f.io.exec;
+    if (!originalFetch || !originalExec) throw new Error("missing adapters");
+    f.io.env.XDG_CONFIG_HOME = join(f.io.cwd, ".config");
+    f.io.fetch = async (url, init) => {
+      if (url.endsWith("/fleet/launch-requests"))
+        return Response.json({
+          result: [
+            {
+              id: 3,
+              ticket: "DEMO-19",
+              profile: "backend",
+              author: "Ada",
+              owned: true,
+              blockers: ["DEMO-18"],
+              reason: "waits on DEMO-18",
+              command: "armada launch DEMO-19 --profile backend",
+            },
+            {
+              id: 4,
+              ticket: "DEMO-20",
+              profile: "backend",
+              author: "Other",
+              owned: false,
+              blockers: ["DEMO-21"],
+              reason: "waits on DEMO-21",
+              command: "armada launch DEMO-20 --profile backend",
+            },
+          ],
+        });
+      if (url === "https://api.linear.app/graphql" && /query Brief\(/.test(String(init.body)))
+        return Response.json({
+          data: {
+            issue: {
+              identifier: "DEMO-19",
+              title: "Follow-up DEMO-19",
+              url: "https://linear.app/acme/issue/DEMO-19",
+              branchName: "feature/demo-19",
+              description: "Build the follow-up",
+              state: { name: "Backlog", type: "backlog" },
+              labels: { nodes: [{ name: "ready-for-agent" }], pageInfo: { hasNextPage: false } },
+              parent: { identifier: "DEMO-2", title: "Spec 1 — Widgets", url: "https://linear.app/acme/issue/DEMO-2" },
+              comments: { nodes: [], pageInfo: { hasNextPage: false } },
+              inverseRelations: { nodes: [], pageInfo: { hasNextPage: false } },
+            },
+          },
+        });
+      return originalFetch(url, init);
+    };
+    const created: string[] = [];
+    f.io.exec = async (command, args, options) => {
+      if (command !== "conductor") return originalExec(command, args, options);
+      const a = args.slice(1);
+      if (a[0] === "--version") return { code: 0, stdout: "0.90.1", stderr: "" };
+      if (a[0] === "auth") return { code: 0, stdout: "", stderr: "" };
+      const result =
+        a[0] === "model"
+          ? { agents: [{ agent: "codex", models: ["example-model"], efforts: ["high"], fastModeModels: [] }] }
+          : {
+              workspaceId: "ws-follow",
+              sessionId: "s-follow",
+              deepLink: "conductor://workspace?id=ws-follow&session=s-follow",
+              initialMessage: { messageId: "msg-1", state: "queued" },
+            };
+      if (a[0] === "workspace" && a[1] === "create") {
+        expect(f.merged()).toBe(true);
+        expect(f.linear.get("DEMO-18").statusType).toBe("completed");
+        expect(options.input).toContain("armada claim DEMO-19");
+        created.push("DEMO-19");
+      }
+      return { code: 0, stdout: JSON.stringify(result), stderr: "" };
+    };
+    expect(await run(["merge", "9", "--json", ...options], f.io)).toBe(0);
+    expect(f.err()).not.toContain("was not launched");
+    expect(created).toEqual(["DEMO-19"]);
+    expect(JSON.parse(f.out()).deferredLaunches).toMatchObject([
+      { ticket: "DEMO-19", status: "launched", output: expect.stringContaining("Launched DEMO-19") },
+    ]);
+    expect(JSON.parse(f.out()).watch.inFlight).toContain("DEMO-20");
+    expect(f.out()).not.toContain("armada_launch_");
+  },
+);
 test("when-green persists intent without merging, deduplicates, lists on a new invocation and removes", async () => {
   const f = await fixture();
   f.pr.state = "BEHIND";

@@ -1,0 +1,8 @@
+{
+  "data": [
+    {"id":"ev_1","receivedAt":"2026-07-01T12:00:00Z","content":{"rawPayload":{"event":{"type":"item.completed","item":{"type":"agentMessage","phase":"commentary","text":"Running tests; armada_launch_CANARY_peek and lin_api_CANARY_peek are hidden."}}}}},
+    {"id":"ev_2","receivedAt":"2026-07-01T12:01:00Z","content":{"rawPayload":{"event":{"type":"item.completed","item":{"type":"commandExecution","command":"bun test packages/core","exitCode":0}}}}},
+    {"id":"ev_3","receivedAt":"2026-07-01T12:02:00Z","content":{"rawPayload":{"event":{"type":"item.completed","item":{"type":"commandExecution","command":"curl -H ghp_CANARY_peek -H gho_CANARY_peek -H ghs_CANARY_peek -H github_pat_CANARY_peek -H sk-CANARY_peek -H private-value","exitCode":1}}}}}
+  ],
+  "hasMore": false
+}

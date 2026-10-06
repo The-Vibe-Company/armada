@@ -837,6 +837,7 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX merge_holds_open ON merge_holds(project, cleared_at)",
     ],
   },
+  { version: 33, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
   {
     // THE-1101: deployment observations and their target-scoped pause notices.
     // The sequence is the first observation of a (project, target, sha), not

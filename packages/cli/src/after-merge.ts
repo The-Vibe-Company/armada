@@ -1,7 +1,10 @@
 // Cleanup runs only after GitHub confirmed the pinned merge and Armada ended its worker generation.
 import { dirname, resolve } from "node:path";
 import { type ArmadaConfig, type Credentials, type MergeOutcome, runtimeNameOf, shellWord } from "@armada/core";
-import type { Io } from "./io.ts";
+import { version } from "../package.json" with { type: "json" };
+import { type DeferredLaunchResult, launchDeferredAfterMerge } from "./deferred-launch.ts";
+import { type Io, UsageError } from "./io.ts";
+import { launchWorker } from "./launch.ts";
 import { archiveClaimKey, claimRef, guarded, redactRuntimeText, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle } from "./watch.ts";
 import { liveFleet } from "./worker.ts";
@@ -19,8 +22,37 @@ export async function afterMerge(
   config: ArmadaConfig,
   credentials: Credentials,
   outcome: MergeOutcome,
-  opts: { noArchive?: boolean; keepOpen?: boolean; configPath?: string },
+  opts: {
+    noArchive?: boolean;
+    keepOpen?: boolean;
+    configPath?: string;
+    /** Notifications and watch re-arm finish before potentially slow archival. */
+    onDeferredLaunch?: (results: DeferredLaunchResult[]) => Promise<void>;
+  },
 ): Promise<ArchiveResult | null> {
+  const deferred =
+    outcome.merged && outcome.pr.mergeCommit && outcome.ticket && !opts.keepOpen
+      ? await launchDeferredAfterMerge(outcome, config, liveFleet(io, config, credentials).fleet, async (request) => {
+          const printed: string[] = [];
+          const code = await launchWorker(
+            { ...io, stdout: (line) => printed.push(line) },
+            config,
+            credentials,
+            {
+              rest: [request.ticket],
+              json: false,
+              options: request.profile
+                ? { profile: request.profile, reason: "deferred launch requested by the coordinator" }
+                : {},
+            },
+            version,
+            opts.configPath ?? resolve(io.cwd, "armada.toml"),
+          );
+          if (code !== 0) throw new UsageError("the launcher did not start a worker");
+          return printed.join("");
+        })
+      : [];
+  await opts.onDeferredLaunch?.(deferred);
   const a = outcome.archive;
   if (!outcome.merged || outcome.pr.mergeCommit === null || !outcome.ticket || !a) return null;
   const result = (archived: boolean, detail: string): ArchiveResult => ({

@@ -160,6 +160,7 @@ const code = await run(process.argv.slice(2), {
     ? spawnSync("tty", [], { encoding: "utf8", stdio: ["inherit", "pipe", "ignore"] }).stdout?.trim() || null
     : null,
   cwd: process.cwd(),
+  terminalWidth: process.stdout.isTTY ? process.stdout.columns : undefined,
   env: process.env,
   // Only "not there" means keep searching upward; any other error must surface.
   readFile: (path) =>

@@ -40,6 +40,7 @@ import {
   unblockedBy,
 } from "@armada/core";
 import { afterMerge } from "./after-merge.ts";
+import type { DeferredLaunchResult } from "./deferred-launch.ts";
 import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
@@ -468,34 +469,58 @@ export async function merge(
     reason: a.options.reason ?? null,
     throughHold: a.options["through-hold"],
   });
-  // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
-  const project = config.project.slug;
-  const coordinator = coordinatorHandle(io);
-  const known = (await watchOf(io, project)).state?.inFlight ?? null;
-  const inFlight = o.workersListed
-    ? o.workers
-        .filter((w) => !coordinator || w.handle !== coordinator)
-        .map((w) => w.ticket)
-        .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
-    : o.merged && known
-      ? known.filter((t) => t !== o.ticket?.id)
-      : known;
-  if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
-  const next = await rearmFor(io, project, { inFlight, open: null });
-  if (!a.json) io.stdout(`${render(o)}${next.line}\n`);
-  for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
-  if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
-  const deploys =
-    o.merged && o.deploy
-      ? await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json)
-      : [];
+  let deferredLaunches: DeferredLaunchResult[] = [];
+  let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
+  let deploys: Awaited<ReturnType<typeof startDeploys>> = [];
   const archive = await afterMerge(io, config, credentials, o, {
     configPath,
     noArchive: !!a.options["no-archive"],
     keepOpen: !!a.options["keep-open"],
+    onDeferredLaunch: async (results) => {
+      deferredLaunches = results;
+      // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
+      const project = config.project.slug;
+      const coordinator = coordinatorHandle(io);
+      const known = (await watchOf(io, project)).state?.inFlight ?? null;
+      const inFlight = o.workersListed
+        ? o.workers
+            .filter((w) => !coordinator || w.handle !== coordinator)
+            .map((w) => w.ticket)
+            .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
+        : o.merged && known
+          ? known.filter((t) => t !== o.ticket?.id)
+          : known;
+      if (inFlight)
+        for (const launch of deferredLaunches)
+          if (launch.status === "launched" && !inFlight.includes(launch.ticket)) inFlight.push(launch.ticket);
+      if (o.merged && inFlight && live.fleet) {
+        try {
+          // Follow every open request; the next inbox reading prunes tickets proved closed.
+          for (const request of await live.fleet.deferredLaunches())
+            if (!inFlight.includes(request.ticket)) inFlight.push(request.ticket);
+        } catch {
+          // Retain the previous watch set if pending requests cannot be refreshed.
+          for (const ticket of known ?? [])
+            if (ticket !== o.ticket?.id && !inFlight.includes(ticket)) inFlight.push(ticket);
+          o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
+        }
+      }
+      if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
+      next = await rearmFor(io, project, { inFlight, open: null });
+      if (!a.json)
+        io.stdout(
+          `${render(o)}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
+        );
+      for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
+      if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+      if (o.merged && o.deploy)
+        deploys = await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json);
+    },
   });
   if (a.json)
-    io.stdout(`${JSON.stringify({ ...o, archive, ...(deploys.length ? { deploys } : {}), watch: next }, null, 2)}\n`);
+    io.stdout(
+      `${JSON.stringify({ ...o, archive, deferredLaunches, ...(deploys.length ? { deploys } : {}), watch: next }, null, 2)}\n`,
+    );
   else if (archive)
     io.stdout(`${archive.detail.endsWith(".") ? archive.detail : `${o.ticket?.id}: ${archive.detail}.`}\n`);
   return 0;

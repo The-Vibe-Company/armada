@@ -10,6 +10,7 @@
 
 import { createHash } from "node:crypto";
 import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
+import { type DeferredLaunch, deferredLaunchState, deferredWakeBody } from "./deferred.ts";
 import type { DeployInput, DeployQuery, DeployRecord } from "./deploy.ts";
 import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
@@ -246,7 +247,13 @@ export interface InboxItem {
   body: string;
   createdAt: string;
   /** Set on dashboard requests: the question or plan an answer-request answers, the profile a launch-request asks for. */
-  request?: { question: number | null; profile: string | null; pr?: number | null; validation?: number | null };
+  request?: {
+    question: number | null;
+    profile: string | null;
+    pr?: number | null;
+    validation?: number | null;
+    deferred?: boolean;
+  };
 }
 
 /** An inbox item with its resolution: when it was resolved, and the answer or reason. */
@@ -266,6 +273,7 @@ export interface NewRequest {
   /** launch-request: the profile asked for. */
   profile: string | null;
   pr?: number | null;
+  deferred?: boolean;
   at: Date;
 }
 
@@ -975,6 +983,9 @@ export const entryKey = (
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
   repository: string;
+  parkedLabel?: string;
+  /** Guided profiles from the same trusted stored configuration. */
+  guidedProfiles?: readonly string[];
   issues: readonly (Pick<Issue, "id" | "statusType"> & Partial<Pick<Issue, "labels">>)[];
   /** Stored policy for annotating legacy workers' plan items, without a tracker read. */
   config?: ArmadaConfig;
@@ -1131,7 +1142,7 @@ async function readInboxAndFlight(
     store.openRuntimeHandles(o.project),
     store.pendingLaunches(o.project, new Date(now - LAUNCH_WINDOW_MS)),
   ]);
-  const items = await reconcileHandBacks(store, stored, o.snapshot, o.now);
+  let items = await reconcileHandBacks(store, stored, o.snapshot, o.now);
   const flight = o.snapshot?.flight;
   const closed = new Set(o.snapshot?.issues.filter(isClosed).map((i) => i.id));
   const model = flight ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId) : null;
@@ -1156,6 +1167,28 @@ async function readInboxAndFlight(
       ? store.lastAnsweredAt(o.project, { since, tickets: answerTickets })
       : Promise.resolve({} as Record<string, string>),
   ]);
+  const held =
+    flight && model
+      ? new Set(
+          statusInFlight(model, flight.program.comments, {
+            now,
+            silentAfterMinutes: o.silentAfterMinutes,
+            live: { after: flight.after, events, handles: Object.fromEntries(handles.map((h) => [h.ticket, h])) },
+          }).map((lane) => lane.issue.id),
+        )
+      : null;
+  items = items.flatMap((item) => {
+    if (item.kind !== "launch-request" || !item.request?.deferred) return [item];
+    const state = deferredLaunchState(
+      item,
+      model,
+      o.snapshot?.parkedLabel,
+      !!item.ticket && !!held?.has(item.ticket),
+      null,
+      !!item.request?.profile && !!o.snapshot?.guidedProfiles?.includes(item.request.profile),
+    );
+    return state.reason || !model ? [] : [{ ...item, body: deferredWakeBody(item, model, state.command) }];
+  });
   const planConfig = o.snapshot?.config;
   const preApproved = new Set(
     planConfig
@@ -1184,20 +1217,20 @@ async function readInboxAndFlight(
   }));
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
-  const held =
-    flight && model
-      ? new Set(
-          statusInFlight(model, flight.program.comments, {
-            now,
-            silentAfterMinutes: o.silentAfterMinutes,
-            live: { after: flight.after, events, handles: Object.fromEntries(handles.map((h) => [h.ticket, h])) },
-          }).map((lane) => lane.issue.id),
-        )
-      : null;
   // A claim may arrive before its newly created ticket reaches the stored reading.
   const known = new Set(flight?.program.issues.map((i) => i.id));
   const own = new Set(handles.filter((h) => o.coordinator && h.handle === o.coordinator).map((h) => h.ticket));
   const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket)) : [];
+  for (const item of stored) {
+    if (
+      item.kind === "launch-request" &&
+      item.request?.deferred &&
+      item.ticket &&
+      !closed.has(item.ticket) &&
+      !inFlight.includes(item.ticket)
+    )
+      inFlight.push(item.ticket);
+  }
   for (const h of handles) {
     const derived = held !== null && known.has(h.ticket);
     if (own.has(h.ticket) || closed.has(h.ticket) || (derived && !held?.has(h.ticket))) continue;
@@ -1420,6 +1453,8 @@ export interface Fleet {
     question?: number;
     text?: string;
   }): Promise<number>;
+  deferLaunch(input: { ticket: string; profile: string | null; after?: string | null }): Promise<DeferredLaunch>;
+  deferredLaunches(): Promise<DeferredLaunch[]>;
   /** Registers the project, or updates its name, repository and root (`armada init`). */
   register(): Promise<void>;
   /** Time of the newest event of every ticket (`armada status`). */

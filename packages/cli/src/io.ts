@@ -52,6 +52,8 @@ export interface Io {
   machineName?: string;
   ttyName?: string | null;
   cwd: string;
+  /** Output terminal width; absent for redirected output (80 columns). */
+  terminalWidth?: number;
   env: Record<string, string | undefined>;
   readFile: (path: string) => Promise<string | null>;
   /** Installed Codex model/list catalog for the current sign-in; null if unavailable. */
