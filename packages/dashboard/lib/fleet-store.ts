@@ -58,6 +58,7 @@ import {
 import { catchupRecords, type FeedQuery, feedPage } from "./activity-store";
 import { captionedAttachments, ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
+import { digestRecords } from "./digest";
 import { endWorker } from "./workers";
 
 // ------------------------------------------------------------------ projects
@@ -1147,6 +1148,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  digestRecords: (project, since, now) => digestRecords(db, project, since, now),
   reserve: (input) => reserve(db, input),
   reservations: (project) => reservations(db, project),
   unreserve: (input) => unreserve(db, input),
