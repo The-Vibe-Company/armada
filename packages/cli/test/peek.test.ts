@@ -120,6 +120,9 @@ async function fixture(runtime = "Conductor", pending = false) {
               };
         return { code: 0, stdout: JSON.stringify({ result }), stderr: "" };
       }
+      if (args[1] === "auth") return { code: 0, stdout: "{}", stderr: "" };
+      if (args[1] === "workspace")
+        return { code: 0, stdout: JSON.stringify({ workspaceId: "ws_8", status: "ready" }), stderr: "" };
       const body =
         args[1] === "session" && args[2] === "status"
           ? { workspaceId: "ws_8", sessionId: "ses_9", status: "working", updatedAt: "2026-07-01T12:05:00Z" }
@@ -332,6 +335,7 @@ test("Conductor bounds a long transcript, resumes from its cursor and reads arch
     ...f.io,
     exec: async (_cmd, args, options) => {
       expect(options.maxOutputBytes).toBe(2_000_000);
+      if (args[1] === "auth") return { code: 0, stdout: "{}", stderr: "" };
       let body: unknown;
       if (args[2] === "status")
         body =
