@@ -51,6 +51,8 @@ type DeployRow = DeployRecord & { coveredShas?: string[] };
 export interface LaunchRow extends PendingLaunch {
   project: string;
   endedAt: string | null;
+  /** Older fixtures do not model the session's idle expiry. */
+  sessionExpiresAt?: string | null;
 }
 
 const REQUEST_KINDS = ["answer-request", "launch-request", "merge-request", "release-request", "plan-changes"];
@@ -510,11 +512,21 @@ export function memoryFleet(): FleetStore & {
         job.observedAt = input.at.toISOString();
         if (!jobIsOpen(job)) {
           job.finishedAt = input.at.toISOString();
+          const worker = launches.find(
+            (l) =>
+              l.id === job.startedBy &&
+              l.project === job.project &&
+              l.ticket === job.ticket &&
+              l.tokenUsedAt &&
+              !l.endedAt &&
+              (l.sessionExpiresAt === undefined ||
+                (l.sessionExpiresAt !== null && l.sessionExpiresAt > input.at.toISOString())),
+          );
           insert({
             project: job.project,
             ticket: job.ticket,
             kind: "job",
-            recipient: "coordinator",
+            recipient: worker ? "worker" : "coordinator",
             author: null,
             body: jobEndedBody(job),
             createdAt: input.at.toISOString(),

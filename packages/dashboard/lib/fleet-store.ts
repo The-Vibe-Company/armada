@@ -1953,16 +1953,26 @@ export const fleetStore = (db: Database): FleetStore => ({
       );
       if (rs.rows[0]) {
         const job = jobOf(rs.rows[0]);
-        if (job.finishedAt)
+        if (job.finishedAt) {
+          // Route by the authenticated starter, never the observer or a replacement worker.
+          // Lock its session so ending it and choosing the notice recipient are serialized.
+          const worker = (
+            await tx.query(
+              `SELECT "id" FROM "armada_worker" WHERE "id" = $1 AND "project" = $2 AND "ticket" = $3
+             AND "tokenUsedAt" IS NOT NULL AND "endedAt" IS NULL AND "sessionExpiresAt" > $4 FOR UPDATE`,
+              [job.startedBy, job.project, job.ticket, input.at],
+            )
+          ).rows[0];
           await addInboxItem(tx, {
             project: job.project,
             ticket: job.ticket,
             kind: "job",
-            recipient: "coordinator",
+            recipient: worker ? "worker" : "coordinator",
             author: null,
             body: jobEndedBody(job),
             at: input.at,
           });
+        }
         return job;
       }
       const job = await getJob(tx, input.project, input.id);
