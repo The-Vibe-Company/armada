@@ -20,6 +20,7 @@ import { version } from "../package.json" with { type: "json" };
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
+import { ciWhy } from "./ci.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
@@ -47,6 +48,11 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  ci: `  ci why <pr|url> [--json]
+  ci why --sha <sha> | --branch <branch> [--json]
+                    Explain failing checks on this head: test names, first errors, links
+                    and runner problems. Needs a GitHub token only (Actions read for logs).
+`,
   attach: `  attach <ticket> <file|url>... [--caption <text>] [--for <item>]
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
                     or HTTPS links. Prints a dashboard URL for each attachment.
@@ -144,9 +150,16 @@ const COMMAND_HELP: Record<string, string> = {
   watch: `  watch             Coordinator: run in the background while workers are in flight. Waits
                     until something needs you (a question, plan, request, hand-back or silent
                     worker you have not seen), prints it and exits; exits "nothing to watch"
-                    when no worker is in flight and nothing is open. Armada being down or a
-                    command time limit does not end it: it keeps asking. One per project on
+                    when no worker is in flight and nothing is open. An Armada
+                    outage does not end it: it keeps asking. One per project on
                     this machine. Needs a sign-in to Armada
+  watch --follow    Stream lines without exiting on new items; --json prints NDJSON.
+                    --since <cursor> resumes events; defaults to this machine's cursor.
+                    --tickets A-1,B-2 and --kinds question,hand-back filter the stream.
+                    --kinds all also prints claims, reports, releases and merges.
+                    --all follows the whole project (the default).
+                    --mine needs "Show each coordinator only its own work" (not yet available).
+                    --for <minutes> ends either watch cleanly with a resume command.
   watch --stop      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
@@ -273,6 +286,7 @@ const COMMAND_HELP: Record<string, string> = {
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
+  "ci",
   "attach",
   "status",
   "spec",
@@ -374,6 +388,9 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "since",
+  "tickets",
+  "kinds",
   "merged-pr",
   "claim-key",
   "at",
@@ -416,6 +433,8 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "follow",
+  "mine",
   "apply",
   "stop",
   "background",
@@ -438,6 +457,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  ci: ["sha", "branch"],
   spec: ["at", "apply"],
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
@@ -446,7 +466,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
-  watch: ["stop"],
+  watch: ["stop", "follow", "since", "tickets", "kinds", "mine", "for"],
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
@@ -643,7 +663,8 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     const allowed = COMMAND_OPTIONS[args.command] ?? [];
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
-    if (args.all && args.command !== "status") throw new UsageError(`--all does not apply to ${args.command}`);
+    if (args.all && args.command !== "status" && args.command !== "watch")
+      throw new UsageError(`--all does not apply to ${args.command}`);
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
     if (args.command === "secrets" || args.command === "run") {
@@ -687,6 +708,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "ci") {
+      const { path, text } = await findConfig(io, args.config, "ci", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { armada: false });
+      return await ciWhy(io, config, credentials, args);
     }
     const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
       args.command
