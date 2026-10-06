@@ -341,7 +341,11 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
         lines.push("Deliver with the armada-runtime-claude-code guide first; this command records the answer.");
       }
       if (ticket.agentPhase) {
-        await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref));
+        await linear.comment(ticket.uuid, statusComment(ticket.agentPhase, input.note ? "note" : "answer", text, ref), {
+          beforeWrite: deliveredToRuntime
+            ? () => ctx.checkAnswerTarget?.({ claim, launch }) ?? Promise.resolve()
+            : undefined,
+        });
         lines.push(`${input.note ? "Note" : "Answer"} posted on ${ticket.id} (${ticket.agentPhase}).`);
       } else warnings.push(`${ticket.id} has no tracker phase; the delivered answer is recorded in Armada`);
     }

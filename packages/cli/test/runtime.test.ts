@@ -2,7 +2,15 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildStatus, type Fleet, herdrHarnessLabel, parseConfig, recordClaim, recordMerge } from "@armada/core";
+import {
+  buildStatus,
+  createLinearWriter,
+  type Fleet,
+  herdrHarnessLabel,
+  parseConfig,
+  recordClaim,
+  recordMerge,
+} from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, fakeClock, issue, NOW } from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
@@ -476,6 +484,59 @@ test.each([
   expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
   expect(f.linear.bodies).toHaveLength(at === "comment" ? 1 : 0);
   expect(f.api.calls.some((c) => c.path === "fleet/answer")).toBe(false);
+});
+
+test("a replacement during the Linear answer retry prevents another physical comment post", async () => {
+  const f = await fixture("codex", "conductor");
+  const id = await f.store.addInboxItem({
+    project: "widgets",
+    ticket: "DEMO-7",
+    recipient: "coordinator",
+    kind: "plan",
+    body: "Proceed?",
+    author: "worker",
+    at: NOW,
+  });
+  let posts = 0;
+  const writer = createLinearWriter({
+    apiKey: "CANARY",
+    labels: parseConfig(DEMO_TOML).tracker.labels,
+    fetch: async (_url, init) => {
+      const request = JSON.parse(String(init.body)) as { query: string };
+      if (request.query.includes("mutation Comment")) {
+        if (++posts === 1) return new Response("unavailable", { status: 503 });
+        return Response.json({ data: { commentCreate: { success: true, comment: { id: "comment-1" } } } });
+      }
+      if (request.query.includes("query RecentComments"))
+        return Response.json({ data: { issue: { comments: { nodes: [], pageInfo: { hasNextPage: false } } } } });
+      throw new Error("unexpected Linear operation");
+    },
+    sleep: async () => {
+      await f.store.releaseRuntimeHandle("widgets", "DEMO-7", NOW);
+      await recordClaim(
+        f.store,
+        "widgets",
+        {
+          ticket: "DEMO-7",
+          runtime: "Conductor",
+          handle: "cw8/cs10",
+          branch,
+          phase: "implementing",
+          resuming: false,
+          profile: null,
+        },
+        new Date(NOW.getTime() + 1000),
+      );
+    },
+    random: () => 0,
+  });
+  f.linear.comment = writer.comment;
+  expect(await run(["answer", String(id), "approved"], f.io)).toBe(1);
+  expect(posts).toBe(1);
+  expect(f.calls.filter((c) => c[0] === "conductor" && c[2] === "message")).toHaveLength(1);
+  expect((await f.store.getInboxItem("widgets", id))?.resolvedAt).toBeNull();
+  expect(f.api.calls.some((c) => c.path === "fleet/answer")).toBe(false);
+  expect(f.err.join("")).toContain("worker generation changed after delivery");
 });
 
 test("a stored Conductor blocked state does not advertise a herdr-only approval", async () => {

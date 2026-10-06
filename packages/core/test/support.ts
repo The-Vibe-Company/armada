@@ -18,6 +18,7 @@ import { type FleetCaller, fleetClient, parseProject, serveFleet } from "../src/
 import { GITHUB_GRAPHQL } from "../src/github.ts";
 import { agentLabels, type Fetch, LINEAR_ENDPOINT, normalizeComment, parsePullRequestUrl } from "../src/linear.ts";
 import type {
+  CommentWriteOptions,
   IssueCreate,
   LinearWriter,
   Ticket,
@@ -350,7 +351,8 @@ export class FakeLinear implements LinearWriter {
     }
   }
 
-  async comment(uuid: string, body: string) {
+  async comment(uuid: string, body: string, options?: CommentWriteOptions) {
+    await options?.beforeWrite?.();
     const t = this.get(uuid);
     this.writes.push(`comment ${t.id} ${body.split("\n")[0]}`);
     this.bodies.push(body);
