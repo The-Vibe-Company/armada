@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { allowAcceptance } from "../src/acceptance.ts";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { parseConfig } from "../src/config.ts";
 import type { CommitShape, Comparison, MergePull } from "../src/github.ts";
@@ -1359,4 +1360,42 @@ test("queuing preserves the merge judgement and pending owner decision without a
     now: NOW,
   });
   expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9, reason: "Reviewed" }))).toContain("owner requested changes");
+});
+
+test("the merge checklist shows acceptance evidence without adding a refusal", async () => {
+  const { ctx, linear } = setup({ toml: `${GATES}\n[[acceptance]]\nname = "production build"\ncommand = "build"` });
+  const before = await mergePullRequest(ctx, { pr: 9, dryRun: true });
+  expect(before.lines).toContain('Acceptance "production build": no recorded pass on the head or handed-back head.');
+  linear.post(
+    "DEMO-7",
+    `Agent status: shipping — acceptance "production build" passed on ${HEAD} in 3m12s`,
+    NOW.toISOString(),
+  );
+  const after = await mergePullRequest(ctx, { pr: 9, dryRun: true });
+  expect(after.lines).toContain(`Acceptance "production build": passed on ${HEAD}.`);
+});
+
+test("a coordinator allowance at ready-to-merge preserves the original hand-back and its inbox metadata", async () => {
+  const live = tempFleet();
+  const { ctx, linear } = setup({
+    live,
+    toml: `${GATES}\n[[acceptance]]\nname = "production build"\ncommand = "build"`,
+  });
+  // The MergeContext carries the same Linear/fleet adapters; allowances need no forge write.
+  const workerCtx = {
+    config: ctx.config,
+    linear,
+    fleet: ctx.fleet,
+    now: () => new Date(NOW.getTime() + 1000),
+    readPull: null,
+  };
+  await allowAcceptance(workerCtx, { ticket: "DEMO-7", runs: 2, reason: "main is moving" });
+  const out = await mergePullRequest(ctx, { pr: 9, dryRun: true });
+  expect(out.lines[0]).toContain(`handed back at ${HEAD}`);
+  const item = live.store.items.find((item) => item.kind === "hand-back");
+  expect(item?.body).toContain(`PR #9, head ${HEAD}`);
+  expect(live.store.events.at(-1)).toMatchObject({
+    prUrl: "https://github.com/acme/widgets/pull/9",
+    headSha: HEAD,
+  });
 });

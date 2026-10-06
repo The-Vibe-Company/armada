@@ -17,6 +17,7 @@ import {
   skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { acceptance } from "./acceptance.ts";
 import { apiOf, heard } from "./api.ts";
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
@@ -71,6 +72,12 @@ const COMMAND_HELP: Record<string, string> = {
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
                     or HTTPS links. Prints a dashboard URL for each attachment.
                     --for keeps a free reference for an owner validation item
+`,
+  acceptance: `  acceptance run [--name <name>] [--ticket <id>]
+                    Run applicable [[acceptance]] checks on a clean PR head, with bounded
+                    time and runs. Results live in Linear; required before hand-back.
+  acceptance allow <ticket> --runs <n> --reason <why>
+                    Coordinator only: grant more runs per check on this ticket.
 `,
   job: `  job start <name> [--ticket <id>]
   job status [<id>]
@@ -341,6 +348,7 @@ const COMMAND_HELP: Record<string, string> = {
 
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set([
+  "acceptance",
   "job",
   "report",
   "release",
@@ -353,6 +361,7 @@ const TICKET_OPTION = new Set([
   "unreserve",
 ]);
 const CONFIG_OPTION = new Set([
+  "acceptance",
   "job",
   "peek",
   "reserve",
@@ -467,6 +476,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "runs",
   "ref",
   "state",
   "actions",
@@ -550,6 +560,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  acceptance: ["ticket", "name", "runs", "reason"],
   job: ["ticket", "ref", "state"],
   peek: ["actions"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
@@ -605,7 +616,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
 };
 
 /** The worker commands a worker session signs in, on its own ticket. */
-const WORKER_COMMANDS = new Set(["claim", "report", "release", "ask", "validate"]);
+const WORKER_COMMANDS = new Set(["acceptance", "claim", "report", "release", "ask", "validate"]);
 
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -884,9 +895,20 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, { armada: false });
       return await digest(io, config, credentials, args);
     }
-    const worker = { hold, claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
-      args.command
-    ];
+    const worker = {
+      acceptance,
+      hold,
+      claim,
+      report,
+      release,
+      ask,
+      inbox,
+      answer,
+      stop,
+      validate,
+      "ask-owner": askOwner,
+      done,
+    }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);
@@ -896,11 +918,11 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         WORKER_COMMANDS.has(command) && !(command === "validate" && namedTicket(args.rest, args.options));
       const scope = workerScope
         ? {
-            command,
+            command: command === "acceptance" ? "report" : command,
             project: config.project.slug,
             ticket: (stored: string[]) =>
-              command === "claim"
-                ? (args.rest[0]?.toUpperCase() ?? null)
+              command === "claim" || (command === "acceptance" && args.rest[0] === "allow")
+                ? ((command === "claim" ? args.rest[0] : args.rest[1])?.toUpperCase() ?? null)
                 : currentTicket(io, config, args.options.ticket, stored),
           }
         : undefined;

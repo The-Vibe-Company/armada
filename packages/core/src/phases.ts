@@ -1,7 +1,10 @@
 // The worker phase machine and the hand-back gate. Pure: the commands read
 // the ticket and the pull request, these rules decide.
+
+import type { AcceptanceRule } from "./config.ts";
 import { type ArmadaConfig, type PlanPolicy, routingLabelKey } from "./config.ts";
-import type { CiState, LabelPhase, PullRequest } from "./types.ts";
+import { globToRegExp } from "./overlap.ts";
+import type { CiState, Comment, LabelPhase, PullRequest } from "./types.ts";
 import { LABEL_PHASES } from "./types.ts";
 
 /**
@@ -127,3 +130,71 @@ export function checkIssues(
 
 export const checkProblems = (checks: readonly { name: string; state: CiState }[], requiredChecks: readonly string[]) =>
   checkIssues(checks, requiredChecks).map((i) => i.text);
+
+/** Rules apply conservatively when GitHub could not enumerate every changed file. */
+export function applicableAcceptance(rules: readonly AcceptanceRule[], pr: PullRequest): AcceptanceRule[] {
+  return rules.filter(
+    (rule) =>
+      !rule.paths ||
+      pr.filesComplete !== true ||
+      !pr.files ||
+      pr.files.some((file) => file.changeType === "RENAMED") ||
+      rule.paths.some((path) => pr.files?.some((file) => globToRegExp(path).test(file.path))),
+  );
+}
+
+export interface AcceptanceEvidence {
+  name: string;
+  runs: number;
+  passed: string[];
+}
+
+/** Only first-line status records count; quoted output and ordinary prose cannot pass a gate. */
+export function acceptancePasses(comments: readonly Comment[]): { checks: AcceptanceEvidence[]; allowance: number } {
+  const checks = new Map<string, AcceptanceEvidence>();
+  const starts = new Map<string, { name: string; head: string; ordinal: string | null }>();
+  let allowance = 0;
+  for (const comment of [...comments].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+  )) {
+    if (!comment.status) continue;
+    const line = `Agent status: ${comment.status.phase} — ${comment.status.summary}`;
+    const allowed = /^Agent status: [a-z-]+ — acceptance: (\d+) more runs allowed by the coordinator: \S/.exec(line);
+    if (allowed && isLabelPhase(comment.status.phase)) {
+      const runs = Number(allowed[1]);
+      if (Number.isSafeInteger(runs) && runs > 0 && Number.isSafeInteger(allowance + runs)) allowance += runs;
+      continue;
+    }
+    const match =
+      /^Agent status: shipping — acceptance ("(?:[^"\\]|\\.)*") (started|passed|failed) on ([0-9a-f]{40})(?= |$)/.exec(
+        line,
+      );
+    if (!match) continue;
+    let name: string;
+    try {
+      name = JSON.parse(match[1] ?? "");
+    } catch {
+      continue;
+    }
+    const check = checks.get(name) ?? { name, runs: 0, passed: [] };
+    const ordinal = / \(run (\d+)\/\d+\)(?: |$)/.exec(line)?.[1] ?? null;
+    const receipt = / \(attempt ([a-zA-Z0-9-]+)\)$/.exec(line)?.[1];
+    const head = match[3] ?? "";
+    if (match[2] === "started") {
+      starts.set(comment.id, { name, head, ordinal });
+      check.runs++;
+    } else {
+      const start = receipt
+        ? starts.get(receipt)
+        : [...starts.values()].find(
+            (s) => s.name === name && s.head === head && ordinal !== null && s.ordinal === ordinal,
+          );
+      // A terminal result that references a missing/different start is not evidence.
+      if (receipt && (!start || start.name !== name || start.head !== head)) continue;
+      if (!start) check.runs++;
+      if (match[2] === "passed" && !check.passed.includes(head)) check.passed.push(head);
+    }
+    checks.set(name, check);
+  }
+  return { checks: [...checks.values()], allowance };
+}

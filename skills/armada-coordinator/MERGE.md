@@ -32,6 +32,10 @@ When none of the required checks ran on the head (a release pull request opened 
 
 Configured `[gates] required_checks` decide health; without them, GitHub's rollup does. A green reading clears the warning. Older snapshots have no reading until the next GitHub refresh. `armada merge` includes the red reading as a note only. The shared merge pause and coordinator wake-up are added separately by THE-1104; this reading alone does not block a merge. THE-1102's queue can use the same fresh `mainHealth` adapter.
 
+## Live acceptance
+
+`[[acceptance]]` in `armada.toml` declares live checks (builds or preview runs), their paths, timeouts and per-ticket run caps. Workers bring main in, then run `armada acceptance run` on a clean, pushed PR head before hand-back. Linear carries attempts and passes, so the hand-back gate works with Armada down. `armada merge` lists the recorded acceptance passes on the head or the original handed-back head. This is informational: `--wait` may merge main into a head the worker already proved. At a run cap, judge the cause and use `armada acceptance allow <ticket> --runs 2 --reason "<why>"` to grant two additional attempts to each check on that ticket. Workers cannot grant themselves more.
+
 ## Before
 
 1. The worker has handed back: `Agent phase` is `ready-to-merge` and you have the full 40-character head SHA it reported.

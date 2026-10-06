@@ -75,7 +75,11 @@ export function parseStatusLine(body: string): Comment["status"] {
   if (!m?.[1]) return null;
   const raw = m[1].toLowerCase();
   const phase = LEGACY[raw] ?? (raw as AgentPhase);
-  const summary = (m[2] ?? "").trim();
+  // Acceptance names are machine evidence: preserve punctuation that the
+  // human status parser normally removes as Markdown formatting.
+  const rawLine = body.split("\n").find((l) => l.trim()) ?? "";
+  const acceptance = /^Agent status: [a-z-]+ — (acceptance(?: |: ).*)$/.exec(rawLine);
+  const summary = (acceptance?.[1] ?? m[2] ?? "").trim();
   if (COORDINATOR_RECORD.test(summary)) return null;
   if (!PHASES.includes(phase)) return null;
   return PLAN_BLOCK.test(body) ? { phase, summary, plan: true } : { phase, summary };

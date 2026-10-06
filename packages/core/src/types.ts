@@ -54,6 +54,8 @@ export interface PullRequest {
 }
 
 export interface ChangedFile {
+  /** GitHub GraphQL has no previous path; rename provenance is incomplete. */
+  changeType?: string;
   path: string;
   additions: number;
   deletions: number;

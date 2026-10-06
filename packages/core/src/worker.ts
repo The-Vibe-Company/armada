@@ -10,7 +10,7 @@ import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
 import { overlapLines, pathsProblem } from "./overlap.ts";
-import { handBackProblems, planRule, transitionProblem } from "./phases.ts";
+import { acceptancePasses, applicableAcceptance, handBackProblems, planRule, transitionProblem } from "./phases.ts";
 import { Refusal } from "./refusal.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
@@ -58,6 +58,8 @@ export interface TicketState {
 }
 
 export interface Outcome {
+  /** Linear receipt of a report, used to pair acceptance starts and results. */
+  commentId?: string;
   ticket: string;
   url: string;
   /** What was done, one line each. */
@@ -368,6 +370,8 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
 // ------------------------------------------------------------------ report
 
 export interface ReportInput {
+  /** Internal acceptance runner only; the public report command never sets this. */
+  acceptanceRecord?: true;
   paths?: string[];
   ticket: string;
   phase: LabelPhase;
@@ -498,6 +502,15 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       sha,
       requiredChecks: config.gates.requiredChecks,
     });
+    const applicable = pr && inRepo ? applicableAcceptance(config.acceptance, pr) : [];
+    const evidence = acceptancePasses(ticket.comments);
+    if (applicable.length && ticket.commentsTruncated)
+      problems.push("not every Linear comment could be read; acceptance evidence is incomplete");
+    for (const rule of applicable)
+      if (!evidence.checks.some((check) => check.name === rule.name && check.passed.includes(pr?.headSha ?? "")))
+        problems.push(
+          `acceptance ${JSON.stringify(rule.name)} has not passed on ${pr?.headSha}; run armada acceptance run --name ${JSON.stringify(rule.name)}`,
+        );
     if (pr && inRepo) {
       let threads: MergePull["reviewThreads"] | null = null;
       try {
@@ -525,7 +538,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
         `${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
         `${pr?.checks?.some((c) => c.state === "failure") ? `armada ci why ${pr.number}; ` : ""}fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
       );
-    summary = `PR #${pr?.number}, head ${sha}, CI green; ${shippingPath}`;
+    summary = `PR #${pr?.number}, head ${sha}, CI green; ${shippingPath}${applicable.length ? `, acceptance: ${applicable.map((r) => `${r.name} ok`).join(", ")}` : ""}`;
     body = message;
   } else {
     if (!message && !plan)
@@ -542,6 +555,17 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
   if (input.paths !== undefined)
     body = [body, `Paths: ${input.paths.join(", ") || "(none)"}`].filter(Boolean).join("\n\n");
 
+  if (
+    !input.acceptanceRecord &&
+    /^acceptance(?: "(?:[^"\\]|\\.)*" (?:started|passed|failed) on |: \d+ more runs allowed by the coordinator:)/i.test(
+      summary.replace(/[*_`]/g, ""),
+    )
+  )
+    throw new Refusal(
+      "acceptance records are reserved for armada acceptance run and coordinator-only acceptance allow",
+      "use armada acceptance run; ask the coordinator for more runs",
+    );
+
   // Every lookup that can refuse happens before the first write.
   const target =
     ticket.agentPhase === input.phase
@@ -557,7 +581,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     });
   }
   const statusLine = `Agent status: ${input.phase} — ${summary}`;
-  await linear.comment(ticket.uuid, body ? `${statusLine}\n\n${body}` : statusLine);
+  const receipt = await linear.comment(ticket.uuid, body ? `${statusLine}\n\n${body}` : statusLine);
   const lines = [
     ticket.agentPhase === input.phase
       ? `Status update posted on ${ticket.id} (${input.phase}).`
@@ -590,7 +614,15 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
   );
   const state = await readBack(ctx, ticket.id, warnings);
   if (recorded) lines.push(...overlapLines(recorded));
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: recorded?.inbox ?? null, state };
+  return {
+    ticket: ticket.id,
+    url: ticket.url,
+    lines,
+    warnings,
+    inbox: recorded?.inbox ?? null,
+    state,
+    commentId: receipt.id,
+  };
 }
 
 // ------------------------------------------------------------------ release

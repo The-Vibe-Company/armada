@@ -104,6 +104,7 @@ export interface BriefLaunch {
 }
 
 export interface Brief {
+  acceptance: ArmadaConfig["acceptance"];
   sharedResources: { declared: ArmadaConfig["reservations"]; holders: Reservation[]; warning: string | null };
   launchHint?: string;
   ticket: { id: string; title: string; url: string; branch: string | null; status: string; description: string };
@@ -508,6 +509,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
     blockers: ticket.blockers.map(({ notes, ...b }) => ({ ...b, handBack: handBackNote(notes) })),
     notes: ticket.notes.slice(0, MAX_NOTES),
     parallel,
+    acceptance: config.acceptance,
     plans: (() => {
       const plans = planRule(config, ticket.labels);
       return plans.rule === "pre-approved" && input.preApprovedReason
@@ -672,6 +674,23 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       : `Plans need the coordinator's approval for ${t.id} (${b.plans.why}): post your plan with \`armada report awaiting-approval --plan-file -\` and wait for approval.`,
     "",
   );
+  if (b.acceptance.length) {
+    out.push(
+      "## Live acceptance",
+      "",
+      "Bring main in before the final run. Run applicable checks with `armada acceptance run` (or `--name <name>` for one check). Your checkout must be clean and HEAD must equal the PR head. Every error the check prints is part of this ticket: fix them all before handing back.",
+      "",
+    );
+    for (const rule of b.acceptance)
+      out.push(
+        `- ${rule.name}: \`${rule.command}\`; ${rule.paths ? `paths: ${rule.paths.join(", ")}` : "every PR"}; timeout ${rule.timeoutMinutes} minutes; ${rule.maxRuns} runs per ticket.`,
+        "",
+      );
+    out.push(
+      "A changed head needs a new pass. Failed, timed-out and interrupted attempts count. At the cap, ask the coordinator for `armada acceptance allow <ticket> --runs <n> --reason <why>`. Commands needing secrets must use `armada run -- …`.",
+      "",
+    );
+  }
   const validation = b.validation?.rules ?? [];
   if (validation.length)
     out.push(
