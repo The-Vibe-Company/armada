@@ -6,6 +6,7 @@ import {
   type ArmadaConfig,
   CONFIG_FILE,
   ConfigError,
+  deployLine,
   LINEAR_KEY,
   LinearError,
   loadStatus,
@@ -22,7 +23,8 @@ import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { ciWhy } from "./ci.ts";
-import { coordinatorCommand } from "./coordinator.ts";
+import { coordinatorCommand, coordinatorName } from "./coordinator.ts";
+import { deploy, deployStatus } from "./deploy.ts";
 import { digest } from "./digest.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
@@ -34,8 +36,8 @@ import { jobCommand } from "./job.ts";
 import { launch } from "./launch.ts";
 import { lint } from "./lint.ts";
 import { setupLocal } from "./local-setup.ts";
-import { login, logout, whoami } from "./login.ts";
-import { merge } from "./merge.ts";
+import { login, logout, requireSignIn, whoami } from "./login.ts";
+import { MergeCommandError, merge, notMergedResult } from "./merge.ts";
 import { peek, requirePeekCoordinator } from "./peek.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
@@ -57,6 +59,10 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  deploy: `  deploy status [--json]
+  deploy watch --sha <sha> --target <name>
+                    Watch a declared deploy and smoke check; failures pause merges.
+`,
   coordinator: `  coordinator use <name>
   coordinator list
   coordinator take <ticket...> [--from <name>]
@@ -70,10 +76,13 @@ const COMMAND_HELP: Record<string, string> = {
   unreserve: `  unreserve <key> [--ticket <id>]
                     Free this ticket's open reservations of a key.
 `,
-  ci: `  ci why <pr|url> [--json]
-  ci why --sha <sha> | --branch <branch> [--json]
+  ci: `  ci why <pr|url> [--rerun] [--json]
+  ci why --sha <sha> | --branch <branch> [--rerun] [--json]
                     Explain failing checks on this head: test names, first errors, links
                     and runner problems. Needs a GitHub token only (Actions read for logs).
+                    --rerun: failed jobs once per completed attempt-1 run, only when every
+                    failure is a declared known flake or runner problem (Actions write).
+                    Prints root-cause tickets; unknown/external failures are refused.
 `,
   attach: `  attach <ticket> <file|url>... [--caption <text>] [--for <item>]
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
@@ -85,6 +94,7 @@ const COMMAND_HELP: Record<string, string> = {
   job stop <id>
   job list [--ticket <id>]
   job recover <id> [--ref <reference>] [--state <state>]
+  job beat <id> [--progress <text>] [--state running|succeeded|failed|stopped|lost]
                     Track long jobs on the project's own runner through [jobs.<name>].
                     start reserves an id, dispatches within 2 minutes and saves the runner
                     reference. status polls open jobs; list reads stored progress only.
@@ -112,6 +122,7 @@ const COMMAND_HELP: Record<string, string> = {
                     --send posts it through Organization > Notifications; no address is released.
 `,
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
+  status --mine     Only your owned workers; the frontier stays whole
   status --all      The same for every project registered by \`armada init\`
 `,
   setup: `  setup local       Open local harness panes for the owner to answer first-run questions,
@@ -122,6 +133,8 @@ const COMMAND_HELP: Record<string, string> = {
                     and whether this terminal is signed in to Armada. Local herdr profiles
                     check tools and harness sign-in; offers official installs with y/N.
                     No terminal, CI and --json only print fixes and never install.
+                    --deep signs a throwaway commit object with a 10 s limit; no refs move.
+                    Default signing checks predict prompts from config without signing.
                     For harness first-run questions, the owner runs armada setup local
 `,
   upgrade: `  upgrade           Install the newest Armada npm serves, verify armada --version,
@@ -176,15 +189,18 @@ const COMMAND_HELP: Record<string, string> = {
                     goes on the ticket and in the coordinator's inbox. Then stop and wait
                     for the answer in your session, and report the phase you resume
 `,
-  validate: `  validate [<ticket>] "<what to check>" [--attach <file|url>]... [--caption <text>]
+  validate: `  validate [<ticket>] "<headline>" [--check "<check>"]... [--attach <file|url>]...
+        [--excerpt <file>[:from-to]]... [--details-file <file>] [--caption <text>]
         [--choices "<a> | <b>"]
+                    One question, about a minute to judge: headline up to 200 characters,
+                    up to 3 checks, 4 images and excerpts up to 40 lines. Longer context is folded.
                     Ask the owner to validate on Armada's Validations page, with the
                     attachments (images up to 2 MB, HTTPS links). Prints the approval link.
                     Worker: its own ticket; the phase becomes awaiting-validation: stop until
                     the coordinator relays the owner's decision. Coordinator: any ticket.
                     The owner's buttons are Approve and Request changes, or the --choices
 `,
-  "ask-owner": `  ask-owner <ticket> "<question>" --choices "<a> | <b>"
+  "ask-owner": `  ask-owner <ticket> "<question>" --choices "<a> | <b>" [--check "<check>"]...
                     Coordinator: escalate a question or a plan to the owner, with its
                     choices. Prints the approval link; the owner's pick arrives in the inbox
 `,
@@ -197,7 +213,7 @@ const COMMAND_HELP: Record<string, string> = {
   hold clear <id> --reason "<why>"
                     Pause this project's merges until cleared, shared with every coordinator.
                     Merge a fix with --through-hold "<why>"; the hold stays open.`,
-  inbox: `  inbox [--wait [--timeout <seconds>]]
+  inbox: `  inbox [--mine|--all] [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
                     oldest first; records that the coordinator is at work. --wait returns
                     when a new item arrives or after --timeout (default 300 s); \`armada watch\`
@@ -213,8 +229,8 @@ const COMMAND_HELP: Record<string, string> = {
                     --since <cursor> resumes events; defaults to this machine's cursor.
                     --tickets A-1,B-2 and --kinds question,hand-back filter the stream.
                     --kinds all also prints claims, reports, releases and merges.
-                    --all retains project events; inbox lines use the selected coordinator.
-                    --mine needs "Show each coordinator only its own work" (not yet available).
+                    --mine filters events and inbox by coordinator ownership, including unowned entries.
+                    Named watches default to --mine; --all sees the whole fleet.
                     --for <minutes> ends either watch cleanly with a resume command.
   watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
@@ -230,12 +246,12 @@ const COMMAND_HELP: Record<string, string> = {
                     copy the complete command. Ordinary stop retains its existing behavior.
 `,
   answer: `  answer <item|ticket> "<answer>"
-                    Coordinator: deliver to a herdr worker and record the answer. For other
-                    runtimes, deliver with the runtime guide first. Resolves the question or
+                    Coordinator: deliver to a herdr or Conductor worker and record the answer.
+                    For Claude Code, deliver with the runtime guide first. Resolves the question or
                     plan and posts it on the ticket. A ticket id also answers a live herdr block.
                     A hand-back id can clear a merged/closed PR or a Done/Canceled ticket
   answer --note <ticket|plan item> "<message>"
-                    Coordinator: record a delivered note; an open plan is resolved
+                    Coordinator: deliver and record a note; a targeted open plan is resolved
 `,
   merge: `  merge --when-green <pr...> [--no-ticket] [--keep-open] [--through-hold <why>] [--reason <why>]
                     Queue handed-back pull requests durably in order. Checks/behind-base,
@@ -251,6 +267,8 @@ const COMMAND_HELP: Record<string, string> = {
                     To pause merges, use armada hold add "<why>".
   merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
         [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive]
+  merge --finish <pr> [--ticket <id>]
+                    Complete Linear bookkeeping for a confirmed merge; no merge lock.
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
@@ -325,10 +343,12 @@ const COMMAND_HELP: Record<string, string> = {
                     Print one value, for a person: it is then visible in any transcript.
                     An agent uses \`armada run\` or \`secrets export\` instead
 `,
-  run: `  run [--only <A,B>] -- <command> [args...]
+  run: `  run [--only <A,B>] [--redact] -- <command> [args...]
                     Run a command with the project's secrets in its environment (they win
                     over variables of the same name, named on stderr): tests, builds, dev
-                    servers. Nothing is written to disk or printed. Exits with its code
+                    servers. Output masks secret values (8+ characters) and key patterns.
+                    TTY output inherits with a warning; --redact forces masked pipes.
+                    Nothing is written to disk. Exits with its code
 `,
   hook: `  hook stop         Claude Code's Stop hook, installed by \`armada init\`: a coordinator
                     cannot end its turn while workers are in flight and no \`armada watch\`
@@ -369,6 +389,7 @@ const CONFIG_OPTION = new Set([
   "lint",
   "job",
   "peek",
+  "deploy",
   "reserve",
   "unreserve",
   "ci",
@@ -483,6 +504,8 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "finish",
+  "progress",
   "ref",
   "state",
   "actions",
@@ -508,6 +531,7 @@ const VALUE_OPTIONS = [
   "paths",
   "pr",
   "sha",
+  "target",
   "shipped-with",
   "stage",
   "through-hold",
@@ -526,6 +550,9 @@ const VALUE_OPTIONS = [
   "caption",
   "for",
   "attach",
+  "check",
+  "excerpt",
+  "details-file",
   "choices",
   "validation",
   "validation-reason",
@@ -538,6 +565,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "deep",
   "ready",
   "when-unblocked",
   "send",
@@ -564,16 +592,20 @@ const FLAG_OPTIONS = [
   "merge",
   "org",
   "value-stdin",
+  "redact",
   "ask-owner",
+  "rerun",
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  doctor: ["deep"],
   lint: ["ready"],
-  job: ["ticket", "ref", "state"],
+  job: ["ticket", "ref", "state", "progress"],
   peek: ["actions"],
+  deploy: ["sha", "target"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
   unreserve: ["ticket"],
-  ci: ["sha", "branch"],
+  ci: ["sha", "branch", "rerun"],
   digest: ["since", "lang", "send"],
   spec: ["at", "apply"],
   attach: ["caption", "for"],
@@ -582,7 +614,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage", "paths"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
-  inbox: ["wait", "timeout"],
+  inbox: ["wait", "timeout", "mine"],
+  status: ["mine"],
   watch: ["stop", "name", "follow", "since", "tickets", "kinds", "mine", "for"],
   coordinator: ["from"],
   stop: ["merged-pr", "claim-key"],
@@ -590,6 +623,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   hold: ["reason"],
   merge: [
+    "finish",
     "ticket",
     "no-ticket",
     "no-archive",
@@ -617,11 +651,11 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "when-unblocked",
     "after",
   ],
-  validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
-  "ask-owner": ["choices"],
+  validate: ["ticket", "attach", "caption", "choices", "message", "message-file", "check", "excerpt", "details-file"],
+  "ask-owner": ["choices", "check"],
   login: ["api-key", "launch-token", "api-url"],
   secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
-  run: ["ticket", "only"],
+  run: ["ticket", "only", "redact"],
 };
 
 /** The worker commands a worker session signs in, on its own ticket. */
@@ -674,7 +708,7 @@ export function parseArgs(argv: string[]): Args {
         args.project = v;
       }
       // `--attach` repeats: one value per line.
-      else if ((name === "attach" || name === "paths") && args.options[name] !== undefined)
+      else if (["attach", "check", "excerpt", "paths"].includes(name) && args.options[name] !== undefined)
         args.options[name] += `\n${v}`;
       else args.options[name] = v;
     } else if (a?.startsWith("-"))
@@ -738,17 +772,31 @@ async function status(io: Io, args: Args): Promise<number> {
   const { linearApiKey, githubToken } = credentials;
   await recordPresence(io, config, credentials);
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
+  if (args.options.mine) requireSignIn(credentials);
   const live = statusLive(io, config, credentials);
   const report = await loadStatus(config, {
     linearApiKey,
     githubToken,
     ...(live ?? {}),
+    ...(args.options.mine ? { coordinatorName: await coordinatorName(io, config.project.slug) } : {}),
     ...httpOptions(io),
     ...(io.now ? { now: io.now } : {}),
   });
   const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
   if (behind) report.warnings.push(skillsBehindLine(behind, version));
-  io.stdout(args.json ? `${JSON.stringify(report, null, 2)}\n` : renderStatus(report));
+  let deploys = null;
+  if (config.deploy?.targets.length) {
+    try {
+      deploys = await deployStatus(io, config, credentials);
+    } catch {
+      report.warnings.push("could not read deploy state; armada deploy status");
+    }
+  }
+  io.stdout(
+    args.json ? `${JSON.stringify({ ...report, ...(deploys ? { deploys } : {}) }, null, 2)}\n` : renderStatus(report),
+  );
+  if (!args.json && deploys)
+    for (const row of deploys.rows) io.stdout(`Deploy ${deployLine(row, (io.now ?? (() => new Date()))())}\n`);
   return 0;
 }
 
@@ -816,8 +864,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     const allowed = COMMAND_OPTIONS[args.command] ?? [];
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
-    if (args.all && args.command !== "status" && args.command !== "watch")
+    if (args.all && args.command !== "status" && args.command !== "watch" && args.command !== "inbox")
       throw new UsageError(`--all does not apply to ${args.command}`);
+    if (args.all && args.options.mine) throw new UsageError("choose --mine or --all");
+    if (args.all) args.options.all = "true";
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
     if (args.command === "secrets" || args.command === "run") {
@@ -857,7 +907,15 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         worker: {
           command: "job",
           project: config.project.slug,
-          ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
+          ticket: (stored) => {
+            try {
+              return currentTicket(io, config, args.options.ticket, stored);
+            } catch (error) {
+              if (args.rest[0] !== "start" && !args.options.ticket && !io.env.ARMADA_TICKET && !stored.length)
+                return null;
+              throw error;
+            }
+          },
         },
       });
       return await jobCommand(io, config, credentials, args, path);
@@ -895,6 +953,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "deploy") {
+      const { path, text } = await findConfig(io, args.config, "deploy", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await deploy(io, config, credentials, args, path);
     }
     if (args.command === "ci") {
       const { path, text } = await findConfig(io, args.config, "ci", args.project);
@@ -1028,7 +1092,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     }
     if (args.command === "doctor") {
       noExtra(args.rest);
-      return await doctor(io, args.json, version);
+      return await doctor(io, args.json, version, args.options.deep === "true");
     }
     if (args.command === "upgrade") {
       noExtra(args.rest);
@@ -1098,11 +1162,20 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     throw new UsageError(`unknown command "${args.command}"`);
   } catch (err) {
     const command = commandOf(argv);
-    const next = nextStep(err, command && Object.hasOwn(COMMAND_HELP, command) ? command : null);
-    io.stderr(`armada: ${err instanceof Error ? err.message : String(err)}\n${next ? `Next: ${next}\n` : ""}`);
-    return err instanceof UsageError ||
-      err instanceof ConfigError ||
-      (err instanceof Refusal && err.cause instanceof UsageError)
+    if (command === "merge" && !(err instanceof MergeCommandError)) {
+      const result = notMergedResult(err);
+      io.stdout(
+        argv.includes("--json")
+          ? `${JSON.stringify({ merged: false, error: err instanceof Error ? err.message : String(err), result })}\n`
+          : `${result}\n`,
+      );
+    }
+    const error = err instanceof MergeCommandError ? err.cause : err;
+    const next = nextStep(error, command && Object.hasOwn(COMMAND_HELP, command) ? command : null);
+    io.stderr(`armada: ${error instanceof Error ? error.message : String(error)}\n${next ? `Next: ${next}\n` : ""}`);
+    return error instanceof UsageError ||
+      error instanceof ConfigError ||
+      (error instanceof Refusal && error.cause instanceof UsageError)
       ? 2
       : 1;
   }

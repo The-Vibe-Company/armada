@@ -19,16 +19,21 @@ import {
   checkLabels,
   checkRepository,
   compareVersions,
+  fetchBranchRules,
   fetchRepository,
   GithubError,
   installCommand,
   LINEAR_KEY,
+  mergeCompatibility,
   parseConfig,
   projectOf,
   RETIRED_VARIABLES,
   readLabels,
   repositoryOfRemote,
+  type SigningConfig,
+  type SigningSetup,
   STORED_KEYS,
+  signingSetup,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { describeSource, loadCredentials, type Machine } from "./auth.ts";
@@ -172,6 +177,174 @@ async function labelChecks(io: Io, config: ArmadaConfig | null, credentials: Cre
       },
     ];
   }
+}
+
+async function branchRuleChecks(
+  io: Io,
+  config: ArmadaConfig | null,
+  credentials: Credentials,
+  signing: SigningSetup | null,
+): Promise<Check[]> {
+  if (!config) return [];
+  const warning = (reason: string): Check[] => [
+    {
+      id: "merge-rules",
+      level: "warning",
+      message: `GitHub branch rules not checked: ${reason}`,
+      fix: "use a GitHub token with repository Metadata read access, then run doctor again; classic protection also needs Administration read access",
+    },
+  ];
+  if (!credentials.githubToken) return warning("no GitHub token");
+  try {
+    const rules = await fetchBranchRules({
+      repository: config.github.repository,
+      token: credentials.githubToken,
+      ...httpOptions(io),
+    });
+    const disabled = config.git.sign === "off" || signing?.enabled === false;
+    return [
+      ...mergeCompatibility(rules, config.gates),
+      ...(rules.requiredSignatures
+        ? [
+            {
+              id: "git-signing-rules",
+              level: disabled ? ("error" as const) : signing ? ("ok" as const) : ("warning" as const),
+              message: disabled
+                ? `GitHub default branch ${rules.defaultBranch} requires signed commits, but ${config.git.sign === "off" ? '[git] sign = "off" disables signing in Herdr worktrees' : "commit.gpgsign is disabled in this checkout"}`
+                : signing
+                  ? `GitHub default branch ${rules.defaultBranch} requires signed commits; this checkout enables signing (cloud workers use their environment's signing configuration)`
+                  : `GitHub default branch ${rules.defaultBranch} requires signed commits; local signing could not be checked`,
+              fix:
+                disabled || !signing
+                  ? 'use [git] sign = "inherit", enable commit.gpgsign and configure a signing key agents can use without a person; cloud workers must enable signing in their own environment'
+                  : null,
+            },
+          ]
+        : []),
+    ];
+  } catch {
+    // Provider bodies and transport errors are deliberately omitted: they may contain credentials.
+    return warning("GitHub did not return readable, complete rules; check access or retry once GitHub answers");
+  }
+}
+
+const SIGNING_FIX =
+  'configure a signing key agents can use without a person; when repository branch rules allow unsigned commits, set [git] sign = "off" for new Herdr worktrees, or disable signing in agents’ worktrees';
+
+/** Predict from config only: no signatures or interactive prompts on a normal doctor run. */
+async function readSigning(io: Io, root: string): Promise<SigningSetup | null> {
+  if (!io.exec) return null;
+  const config: SigningConfig = {};
+  for (const key of [
+    "commit.gpgsign",
+    "gpg.format",
+    "gpg.ssh.program",
+    "gpg.x509.program",
+    "user.signingkey",
+  ] as const) {
+    const result = await io
+      .exec("git", ["config", ...(key === "commit.gpgsign" ? ["--bool"] : []), "--get", key], {
+        cwd: root,
+        timeoutMs: 10_000,
+        maxOutputBytes: 16_384,
+      })
+      .catch(() => null);
+    // Exit 1 means the key is unset, not that Git failed to read it.
+    if (!result || result.timedOut || result.outputExceeded || (result.code !== 0 && result.code !== 1)) return null;
+    if (result.code === 0) config[key] = result.stdout.trim();
+  }
+  // Git's legacy/canonical OpenPGP keys are aliases: the last encountered
+  // entry wins, including across scopes. Read them together in config order.
+  const programs = await io
+    .exec("git", ["config", "--null", "--get-regexp", "^gpg\\.(openpgp\\.)?program$"], {
+      cwd: root,
+      timeoutMs: 10_000,
+      maxOutputBytes: 16_384,
+    })
+    .catch(() => null);
+  if (!programs || programs.timedOut || programs.outputExceeded || (programs.code !== 0 && programs.code !== 1))
+    return null;
+  if (programs.code === 0) {
+    const entries = programs.stdout.split("\0").filter(Boolean);
+    const last = entries.at(-1);
+    if (last) config.openpgpProgram = last.slice(last.indexOf("\n") + 1).trim();
+  }
+  const setup = signingSetup(config);
+  if (setup.enabled && (setup.format === "openpgp" || setup.format === "x509")) {
+    const result = await io
+      .exec("gpgconf", ["--list-options", "gpg-agent"], {
+        cwd: root,
+        timeoutMs: 10_000,
+        maxOutputBytes: 65_536,
+        env: io.env,
+      })
+      .catch(() => null);
+    if (result?.code === 0 && !result.timedOut && !result.outputExceeded) {
+      // gpgconf fields: name:flags:level:description:type:alt-type:argname:default:argdef:value.
+      const fields = result.stdout
+        .split("\n")
+        .find((line) => line.startsWith("pinentry-program:"))
+        ?.split(":");
+      const value = fields?.[9] || fields?.[7];
+      if (value) {
+        try {
+          config.pinentryProgram = decodeURIComponent(value.replace(/^"/, ""));
+        } catch {
+          /* Unreadable pinentry cannot be classified. */
+        }
+      }
+    }
+  }
+  return signingSetup(config);
+}
+
+async function signingChecks(io: Io, root: string, signing: SigningSetup | null, deep: boolean): Promise<Check[]> {
+  const checks: Check[] = [
+    signing
+      ? {
+          id: "git-signing",
+          level: signing.interactive ? "warning" : "ok",
+          message: !signing.enabled
+            ? "commit signing is disabled in this checkout"
+            : signing.interactive
+              ? `commit signing uses ${signing.signer}; ${signing.interactive} may wait for a person's approval and block a worker`
+              : `commit signing uses ${signing.signer}; no known interactive signer detected (run armada doctor --deep to test signing)`,
+          fix: signing.interactive ? SIGNING_FIX : null,
+        }
+      : {
+          id: "git-signing",
+          level: "warning",
+          message: "commit signing not checked: effective Git configuration could not be read",
+          fix: "run doctor in a Git checkout with readable config",
+        },
+  ];
+  if (!deep) return checks;
+  const result = await io
+    .exec?.("git", ["commit-tree", "HEAD^{tree}", "-S", "-m", "armada-doctor"], {
+      cwd: root,
+      timeoutMs: 10_000,
+      maxOutputBytes: 16_384,
+      processGroup: true,
+      env: { ...io.env, GIT_TERMINAL_PROMPT: "0" },
+    })
+    .catch(() => null);
+  const success =
+    result?.code === 0 &&
+    !result.timedOut &&
+    !result.outputExceeded &&
+    /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.stdout.trim());
+  checks.push({
+    id: "git-signing-deep",
+    level: success ? "ok" : "error",
+    message: success
+      ? "signed a throwaway commit object successfully; no refs moved"
+      : result?.timedOut
+        ? "commit signing timed out after 10 seconds; a signer may be waiting for a person"
+        : "could not sign a throwaway commit object; no refs moved",
+    // Never surface signer output: it may contain private key material or provider credentials.
+    fix: success ? null : SIGNING_FIX,
+  });
+  return checks;
 }
 
 /**
@@ -374,7 +547,7 @@ export async function localRuntimeChecks(
 export async function buildDoctor(
   io: Io,
   armadaVersion: string,
-  options: { readOnly?: boolean } = { readOnly: true },
+  options: { readOnly?: boolean; deep?: boolean } = { readOnly: true },
 ): Promise<DoctorReport> {
   const root = (io.exec ? await gitRoot(io.exec, io.cwd) : null) ?? io.cwd;
   // Older than Armada expects, it gets no keys from it: the checks go on with this machine's.
@@ -399,6 +572,7 @@ export async function buildDoctor(
     outdated = upgrade(err);
     if (!outdated) throw err;
   }
+  const signing = await readSigning(io, root);
   const checks = [
     ...(await checkRepository(fsRepoView(root), armadaVersion)),
     ...signIn,
@@ -422,6 +596,8 @@ export async function buildDoctor(
       : []),
     ...(await labelChecks(io, config, credentials)),
     ...(await remoteChecks({ ...io, cwd: root }, config, credentials)),
+    ...(await branchRuleChecks(io, config, credentials, signing)),
+    ...(await signingChecks(io, root, signing, options.deep === true)),
     ...(await conductorChecks(io, config)),
     ...(config?.conductor.projectId || config?.conductor.baseBranch
       ? [
@@ -461,7 +637,7 @@ export function renderDoctor(r: DoctorReport): string {
   if (!r.errors && !r.warnings) lines.push("Everything Armada needs is in place.");
   else
     lines.push(
-      `${plural(r.errors, "error")}, ${plural(r.warnings, "warning")}.${r.errors ? " Workers cannot be launched until the errors are fixed." : ""}`,
+      `${plural(r.errors, "error")}, ${plural(r.warnings, "warning")}.${r.errors ? " Fix errors before running the fleet." : ""}`,
     );
   const errors = r.checks.filter((c) => c.level === "error");
   if (errors.length)
@@ -477,8 +653,8 @@ export function renderDoctor(r: DoctorReport): string {
   return `${lines.join("\n")}\n`;
 }
 
-export async function doctor(io: Io, json: boolean, armadaVersion: string): Promise<number> {
-  const report = await buildDoctor(io, armadaVersion, { readOnly: json });
+export async function doctor(io: Io, json: boolean, armadaVersion: string, deep = false): Promise<number> {
+  const report = await buildDoctor(io, armadaVersion, { readOnly: json, deep });
   io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : renderDoctor(report));
   return report.errors ? 1 : 0;
 }

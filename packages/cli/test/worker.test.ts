@@ -308,6 +308,85 @@ describe("armada claim, report and release", () => {
     }
   });
 
+  test("outgoing reports, plans, questions, validations and answers mask before API and Linear", async () => {
+    const w = worker({ ...SIGNED_IN, LINEAR_API_KEY: "synthetic-linear-key" });
+    const messages: string[] = [];
+    w.io.exec = async (command, args, options) => {
+      expect(command).toBe("conductor");
+      if (args[1] === "session")
+        return { code: 0, stdout: JSON.stringify({ workspaceId: "ws", sessionId: "s", status: "idle" }), stderr: "" };
+      if (args[1] === "workspace")
+        return { code: 0, stdout: JSON.stringify({ workspaceId: "ws", status: "ready" }), stderr: "" };
+      expect(args.slice(0, 3)).toEqual(["--json", "message", "create"]);
+      messages.push(options?.input ?? "");
+      return { code: 0, stdout: JSON.stringify({ messageId: args.at(-1), state: "sent" }), stderr: "" };
+    };
+    w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+    w.linear.add("DEMO-7");
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], w.io)).toBe(0);
+    w.reset();
+    expect(
+      await run(
+        [
+          "report",
+          "implementing",
+          "--message",
+          "synthetic-project-secret sk-synthetic-unknown",
+          "--plan",
+          "synthetic-linear-key",
+        ],
+        w.io,
+      ),
+    ).toBe(0);
+    expect(
+      await run(["ask", "use synthetic-project-secret?", "--options", "synthetic-project-secret | continue"], w.io),
+    ).toBe(0);
+    expect(await run(["answer", "DEMO-7", "rotate synthetic-project-secret"], w.io)).toBe(0);
+    expect(messages).toEqual(["rotate «secret CUSTOM_KEY»"]);
+    expect(await run(["validate", "DEMO-7", "check synthetic-project-secret"], w.io)).toBe(0);
+    expect(
+      await run(
+        ["ask-owner", "DEMO-7", "use synthetic-project-secret?", "--choices", "synthetic-project-secret | fine"],
+        w.io,
+      ),
+    ).toBe(0);
+    const written =
+      JSON.stringify(w.armada.calls.filter((c) => c.path.startsWith("fleet/"))) +
+      w.linear.bodies.join("\n") +
+      messages.join("\n") +
+      w.out() +
+      w.err();
+    expect(written).not.toContain("synthetic-project-secret");
+    expect(written).not.toContain("synthetic-linear-key");
+    expect(written).not.toContain("sk-synthetic-unknown");
+    expect(written).toContain("«secret CUSTOM_KEY»");
+    expect(written).toContain("«secret LINEAR_API_KEY»");
+    expect(w.err()).toContain("masked a value matching a key pattern");
+  });
+
+  test("a partial secret release still masks every readable value", async () => {
+    const w = worker(SIGNED_IN);
+    w.linear.add("DEMO-7");
+    const fetch = w.io.fetch;
+    w.io.fetch = async (url, init) => {
+      if (url.endsWith("/secrets/release"))
+        return Response.json({
+          schemaVersion: 1,
+          project: "widgets",
+          secrets: [{ name: "CUSTOM_KEY", value: "synthetic-readable-secret", scope: "project" }],
+          warnings: ["unreadable secret"],
+          missing: [],
+        });
+      if (!fetch) throw new Error("missing fetch");
+      return fetch(url, init);
+    };
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/s"], w.io)).toBe(0);
+    expect(await run(["report", "implementing", "--message", "synthetic-readable-secret"], w.io)).toBe(0);
+    expect(w.linear.bodies.join("\n")).toContain("«secret CUSTOM_KEY»");
+    expect(w.linear.bodies.join("\n") + w.out() + w.err()).not.toContain("synthetic-readable-secret");
+    expect(w.err()).toContain("project secrets unavailable for masking");
+  });
+
   test("an unreachable Armada only warns; Linear is still written", async () => {
     const w = worker(SIGNED_IN);
     w.io.fetch = async (url, init) => {
@@ -318,7 +397,7 @@ describe("armada claim, report and release", () => {
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
     expect(w.err()).toMatch(
-      /^armada: warning: Armada: could not record the claim \(Armada \(armada\.example\.test\) unreachable: .+\); Linear is up to date\n$/,
+      /armada: warning: Armada: could not record the claim \(Armada \(armada\.example\.test\) unreachable: .+\); Linear is up to date\n$/,
     );
   });
 
@@ -327,7 +406,8 @@ describe("armada claim, report and release", () => {
     w.linear.add("DEMO-7");
     expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1"], w.io)).toBe(0);
     expect(w.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(["planning", "Conductor"]);
-    expect(w.err()).toBe(
+    expect(w.err()).toContain("project secrets unavailable for masking");
+    expect(w.err()).toContain(
       "armada: warning: Armada: could not record the claim (not signed in to Armada); Linear is up to date\n",
     );
     expect(w.err()).not.toContain("CANARY");
@@ -470,22 +550,33 @@ describe("armada ask, inbox and answer", () => {
     expect(w.out()).toBe(
       [
         "Inbox of widgets (1), oldest first:",
-        `  #1 question · DEMO-7 · from ws-1/s-1 · ${NOW.toISOString()}`,
+        `  #1 question · DEMO-7 · owner: default · from ws-1/s-1 · ${NOW.toISOString()}`,
         "    Which store keeps the sessions?",
         "",
         "    Options:",
         "    1. SQLite",
         "    2. Redis",
-        'For herdr, armada answer delivers automatically. Deliver each other answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+        'armada answer delivers to herdr and Conductor workers; for Claude Code deliver with the guide first, then record it: armada answer <id> "<answer>".',
         "1 worker in flight (DEMO-7) — act on the items above, then keep watching: armada watch",
         "",
       ].join("\n"),
     );
 
     w.reset();
-    expect(await run(["answer", "1", "SQLite, for the first slice."], { ...coordinator, env: w.io.env })).toBe(0);
+    const exec: Io["exec"] = async (_cmd, args) => ({
+      code: 0,
+      stdout: JSON.stringify(
+        args[1] === "session"
+          ? { workspaceId: "ws-1", sessionId: "s-1", status: "idle" }
+          : args[1] === "workspace"
+            ? { workspaceId: "ws-1", status: "ready" }
+            : { messageId: args.at(-1), state: "sent" },
+      ),
+      stderr: "",
+    });
+    expect(await run(["answer", "1", "SQLite, for the first slice."], { ...coordinator, env: w.io.env, exec })).toBe(0);
     expect(w.out()).toBe(
-      "Answer posted on DEMO-7 (blocked).\nInbox item #1 resolved.\nThe worker resumes once it reports its phase again.\nhttps://linear.app/acme/issue/DEMO-7\n",
+      "Delivered to DEMO-7's Conductor session (conductor).\nAnswer posted on DEMO-7 (blocked).\nInbox item #1 resolved.\nThe worker resumes once it reports its phase again.\nhttps://linear.app/acme/issue/DEMO-7\n",
     );
     expect(w.store.items[0]).toMatchObject({ kind: "question", resolution: "SQLite, for the first slice." });
 
@@ -550,6 +641,92 @@ describe("armada ask, inbox and answer", () => {
     expect(await run(["answer", "3"], w.io)).toBe(2);
     expect(w.err()).toContain("answer needs the text");
   });
+});
+
+test("validate reads inclusive excerpts, repeated checks and folded details without uploading refused samples", async () => {
+  const w = worker({
+    ...SIGNED_IN,
+    LINEAR_API_KEY: "synthetic-linear-credential",
+    GITHUB_TOKEN: "synthetic-github-credential",
+  });
+  w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+  w.linear.add("DEMO-7");
+  const original = w.io.readFile;
+  w.io.readFile = async (path) =>
+    path === "/work/widgets/out.txt"
+      ? Array.from(
+          { length: 50 },
+          (_, n) =>
+            `Line ${n + 1}${n === 19 ? ` ${KEY}` : n === 20 ? " lin_api_example" : n === 21 ? " synthetic-project-secret" : ""}`,
+        ).join("\n")
+      : path === "/work/widgets/context.txt"
+        ? "Longer context synthetic-linear-credential synthetic-project-secret"
+        : original(path);
+  w.io.readBinaryFile = async () => Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const fetch = w.io.fetch;
+  if (!fetch) throw new Error("expected test fetch");
+  w.io.fetch = async (url, init) =>
+    url === `${ARMADA_URL}/api/cli/attachments`
+      ? Response.json({ attachment: { id: "image-1" }, url: `${ARMADA_URL}/agents/DEMO-7?attachment=image-1` })
+      : fetch(url, init);
+  expect(
+    await run(
+      [
+        "validate",
+        "DEMO-7",
+        "Does the card read clearly?",
+        "--check",
+        "Title is legible",
+        "--check",
+        "Action fits",
+        "--attach",
+        "x.png",
+        "--excerpt",
+        "out.txt:10-40",
+        "--details-file",
+        "context.txt",
+      ],
+      w.io,
+    ),
+    w.err(),
+  ).toBe(0);
+  expect(w.store.validations[0]).toMatchObject({
+    checks: ["Title is legible", "Action fits"],
+    excerpts: [
+      {
+        label: "out.txt:10-40",
+        text: Array.from(
+          { length: 31 },
+          (_, n) =>
+            `Line ${n + 10}${n === 10 ? " «secret ARMADA_API_KEY»" : n === 11 ? " «redacted»" : n === 12 ? " «secret CUSTOM_KEY»" : ""}`,
+        ).join("\n"),
+      },
+    ],
+    details: "Longer context «secret LINEAR_API_KEY» «secret CUSTOM_KEY»",
+  });
+  const before = w.armada.calls.filter((c) => c.path === "attachments").length;
+  expect(await run(["validate", "DEMO-7", "Short", "--attach", "x.png", "--excerpt", "out.txt"], w.io)).toBe(1);
+  expect(w.err()).toContain("--excerpt <file>:1-40");
+  expect(w.armada.calls.filter((c) => c.path === "attachments")).toHaveLength(before);
+  expect(await run(["validate", "DEMO-7", "Short", "--excerpt", "out.txt:0-4"], w.io)).toBe(2);
+  expect(await run(["validate", "DEMO-7", "Short", "--excerpt", "missing.txt"], w.io)).toBe(2);
+  expect(
+    await run(
+      [
+        "ask-owner",
+        "DEMO-7",
+        "Keep the current layout?",
+        "--choices",
+        "Keep | Change",
+        "--check",
+        "Fits a phone",
+        "--check",
+        "Title reads clearly",
+      ],
+      w.io,
+    ),
+  ).toBe(0);
+  expect(w.store.validations.at(-1)?.checks).toEqual(["Fits a phone", "Title reads clearly"]);
 });
 
 test("worker claim comments inherit the authenticated launch owner despite a different environment name", async () => {

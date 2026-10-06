@@ -1,4 +1,65 @@
 import { describe, expect, test } from "bun:test";
+import type { BranchRules } from "../src/github.ts";
+import { mergeCompatibility, signingSetup } from "../src/setup.ts";
+
+const branchRules: BranchRules = {
+  defaultBranch: "trunk",
+  allowSquashMerge: true,
+  deleteBranchOnMerge: false,
+  requiredChecks: ["test"],
+  requiredApprovals: 0,
+  requiredCodeOwnerReview: false,
+  requiredLastPushApproval: false,
+  mergeQueue: false,
+  requiredSignatures: true,
+  requiredLinearHistory: true,
+  strictChecks: true,
+  classicProtection: "read",
+};
+
+describe("mergeCompatibility", () => {
+  const checks = (rules: Partial<BranchRules> = {}, requiredChecks = ["test"]) =>
+    mergeCompatibility({ ...branchRules, ...rules }, { requiredChecks, localCommands: [] });
+
+  test("matching gates, signatures, linear history and up-to-date rules allow squash merges", () => {
+    expect(checks()).toHaveLength(5);
+    expect(checks().every((c) => c.level === "ok" && c.fix === null)).toBe(true);
+    expect(checks({}, []).every((c) => c.level === "ok")).toBe(true);
+    expect(checks({ requiredChecks: ["test", "test"] }).every((c) => c.level === "ok")).toBe(true);
+  });
+
+  test("one check line names both differences and errors when GitHub can block a hand-back", () => {
+    const c = checks({ requiredChecks: ["test", "deploy"] }, ["test", "lint"])[0];
+    expect(c?.level).toBe("error");
+    expect(c?.message).toContain("deploy");
+    expect(c?.message).toContain("lint");
+    expect(c?.fix).toContain("required_checks");
+    const weaker = checks({ requiredChecks: [] })[0];
+    expect(weaker?.level).toBe("warning");
+    expect(weaker?.fix).toContain("GitHub");
+  });
+
+  test("squash, external approvals and GitHub queue block merges; branch deletion warns", () => {
+    const results = checks({
+      allowSquashMerge: false,
+      requiredApprovals: 2,
+      mergeQueue: true,
+      deleteBranchOnMerge: true,
+    });
+    expect(results.map((c) => c.level)).toEqual(["ok", "error", "error", "error", "warning"]);
+    expect(results.filter((c) => c.level !== "ok").every((c) => !!c.fix)).toBe(true);
+    expect(results[2]?.fix).toContain("reviewer");
+    expect(results[4]?.fix).toContain("Automatically delete head branches");
+  });
+
+  test("code-owner and last-push review rules block even with a zero approving count", () => {
+    for (const rule of [{ requiredCodeOwnerReview: true }, { requiredLastPushApproval: true }]) {
+      expect(checks(rule)[2]?.level).toBe("error");
+      expect(checks(rule)[2]?.fix).toContain("reviewer");
+    }
+  });
+});
+
 import {
   BUNDLED_SKILLS,
   type Check,
@@ -359,4 +420,75 @@ describe("repositoryOfRemote", () => {
     ])
       expect(repositoryOfRemote(remote)).toBeNull();
   });
+});
+
+describe("signingSetup", () => {
+  test("disabled signing ignores unused interactive programs", () => {
+    for (const value of [undefined, "false", "0", "no", "off"])
+      expect(signingSetup({ "commit.gpgsign": value, "gpg.ssh.program": "/app/op-ssh-sign" })).toMatchObject({
+        enabled: false,
+        interactive: null,
+      });
+  });
+  test("recognizes Git booleans and only the selected format's signer", () => {
+    for (const value of ["true", "1", "yes", "on", ""])
+      expect(
+        signingSetup({
+          "commit.gpgsign": value,
+          "gpg.format": "ssh",
+          "gpg.ssh.program": '"/Applications/Password Manager.app/op-ssh-sign"',
+          "user.signingkey": "CANARY_KEY",
+        }),
+      ).toMatchObject({ enabled: true, format: "ssh", interactive: "op-ssh-sign", hasKey: true });
+    expect(
+      signingSetup({ "commit.gpgsign": "true", "gpg.program": "gpg", "gpg.ssh.program": "op-ssh-sign" }),
+    ).toMatchObject({ enabled: true, interactive: null, signer: "gpg" });
+    expect(signingSetup({ "commit.gpgsign": "true", "gpg.format": "ssh" })).toMatchObject({
+      signer: "ssh-keygen",
+      interactive: null,
+      hasKey: false,
+    });
+  });
+  test("known password-manager signers and GUI pinentry predict a person is needed", () => {
+    for (const signer of ["op-ssh-sign", "1password-ssh-sign", "pinentry-mac", "pinentry-qt", "pinentry-gnome3"])
+      expect(signingSetup({ "commit.gpgsign": "true", "gpg.program": `/bin/${signer}` }).interactive).toBe(signer);
+    expect(signingSetup({ "commit.gpgsign": "true", pinentryProgram: "/bin/pinentry-mac" }).interactive).toBe(
+      "pinentry-mac",
+    );
+    expect(
+      signingSetup({ "commit.gpgsign": "true", "gpg.program": "gpg", pinentryProgram: "pinentry-curses" }).interactive,
+    ).toBeNull();
+    expect(JSON.stringify(signingSetup({ "user.signingkey": "CANARY_KEY" }))).not.toContain("CANARY_KEY");
+  });
+});
+
+test("signingSetup resolves canonical format programs without warning on unused legacy programs", () => {
+  expect(
+    signingSetup({ "commit.gpgsign": "true", "gpg.openpgp.program": "/app/pinentry-mac", "gpg.program": "gpg" }),
+  ).toMatchObject({ signer: "/app/pinentry-mac", interactive: "pinentry-mac" });
+  expect(
+    signingSetup({
+      "commit.gpgsign": "true",
+      "gpg.format": "x509",
+      "gpg.x509.program": "gpgsm",
+      "gpg.program": "pinentry-mac",
+    }),
+  ).toMatchObject({ signer: "gpgsm", interactive: null });
+  expect(
+    signingSetup({ "commit.gpgsign": "true", "gpg.format": "x509", "gpg.x509.program": "/app/pinentry-mac" }),
+  ).toMatchObject({ interactive: "pinentry-mac" });
+});
+
+test("adapter-resolved OpenPGP alias takes precedence while X.509 ignores it", () => {
+  expect(
+    signingSetup({ "commit.gpgsign": "true", "gpg.openpgp.program": "pinentry-mac", openpgpProgram: "gpg" }),
+  ).toMatchObject({ signer: "gpg", interactive: null });
+  expect(
+    signingSetup({
+      "commit.gpgsign": "true",
+      "gpg.format": "x509",
+      "gpg.x509.program": "gpgsm",
+      openpgpProgram: "pinentry-mac",
+    }),
+  ).toMatchObject({ signer: "gpgsm", interactive: null });
 });

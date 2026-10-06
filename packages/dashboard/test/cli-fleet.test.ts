@@ -18,8 +18,8 @@ import type { Database } from "../lib/db.ts";
 import type { Scope } from "../lib/fleet-data.ts";
 import { fleetStore, liveStore } from "../lib/fleet-store.ts";
 import { saveOwnerChannel } from "../lib/owner-push.ts";
-import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
-import { listEvents, vaultModeOf } from "../lib/vault.ts";
+import { addSnapshotIssue, dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
+import { deleteSecret, listEvents, setSecret, vaultModeOf } from "../lib/vault.ts";
 import { listWorkers } from "../lib/workers.ts";
 import { tempDatabase } from "./support.ts";
 
@@ -536,6 +536,7 @@ describe("the fleet through the Armada API", () => {
     ]);
     expect(await coordinator.pendingLaunches()).toContainEqual(
       expect.objectContaining({
+        id: made.worker.id,
         ticket: "WID-95",
         runtime: "conductor",
         handle: binding.handle,
@@ -900,4 +901,76 @@ test("digest reads and sends use organization scope and keep the channel address
   expect(sent.sent).toBe(true);
   expect(JSON.parse(payload).text).toContain("flotte");
   expect(JSON.stringify(sent)).not.toContain("private-digest-address");
+});
+
+test("older callers' prose and captions are masked with scoped vault values before persistence", async () => {
+  clock += 60_000;
+  const coordinator: ArmadaSignIn = { kind: "api-key", key: apiKey };
+  const f = fleetOf(coordinator);
+  const organization = (await api.whoami(coordinator)).organization?.id ?? "";
+  const mode = deps.vault?.();
+  if (mode?.kind !== "on") throw new Error("missing vault");
+  const value = "synthetic-arbitrary-project-value";
+  const target = {
+    organization,
+    project: WIDGETS.slug,
+    name: "CUSTOM_KEY",
+    user: null,
+    actor: { kind: "person" as const, id: "owner", label: "Olive Owner" },
+    now: now(),
+  };
+  await setSecret(client, mode.key, { ...target, value });
+  try {
+    const session = await worker("WID-78");
+    const wf = fleetOf(session);
+    await wf.claim(claim("WID-78", "ws/masked"));
+    await wf.report({
+      ticket: "WID-78",
+      phase: "implementing",
+      previous: "planning",
+      summary: value,
+      message: "sk-synthetic-unknown",
+      prUrl: null,
+      headSha: null,
+    });
+    await wf.ask({ ticket: "WID-78", body: value });
+    await f.answer({ ticket: "WID-78", text: value, item: null, note: true });
+    await wf.validate({
+      ticket: "WID-78",
+      kind: "validation",
+      what: value,
+      reason: null,
+      choices: [value, "fine"],
+      pr: null,
+      attachments: [],
+    });
+    await addSnapshotIssue(client, parseConfig(configTemplate(WIDGETS)), issue("WID-78", { parentId: "WID-1" }));
+    const attachment = await api.attach(coordinator, {
+      project: WIDGETS,
+      ticket: "WID-78",
+      caption: value,
+      reference: null,
+      input: { kind: "link", url: "https://example.test/masked-evidence" },
+    });
+    expect(attachment.attachment.caption).toBe("«secret CUSTOM_KEY»");
+    const rows = await client.query("SELECT message FROM events WHERE ticket = $1", ["WID-78"]);
+    expect(JSON.stringify(rows.rows)).not.toContain(value);
+    expect(JSON.stringify(rows.rows)).not.toContain("sk-synthetic-unknown");
+    expect(JSON.stringify(rows.rows)).toContain("«secret CUSTOM_KEY»");
+    expect(JSON.stringify(await f.validations({ ticket: "WID-78" }))).not.toContain(value);
+    // An unreadable vault refuses the write, rather than storing raw text.
+    const response = await handleCli(
+      new Request(`${BASE}/api/cli/fleet/ask`, {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "content-type": "application/json" },
+        body: JSON.stringify({ project: WIDGETS, input: { ticket: "WID-78", body: value } }),
+      }),
+      ["fleet", "ask"],
+      { accounts: async () => accounts, vault: () => ({ kind: "off" }), now },
+    );
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain(value);
+  } finally {
+    await deleteSecret(client, target);
+  }
 });

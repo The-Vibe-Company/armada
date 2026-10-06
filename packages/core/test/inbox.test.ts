@@ -177,7 +177,100 @@ test("a stored merge unblocks another coordinator's pending work once, until lau
   expect((await read("front")).filter((e) => e.kind === "unblocked")).toEqual([]);
 });
 
+test("mine resolves ticket ownership before filtering entries, flight and ETags", async () => {
+  const store = memoryFleet();
+  for (const [ticket, coordinator] of [
+    ["DEMO-7", "front"],
+    ["DEMO-8", "default"],
+    ["DEMO-9", null],
+  ] as const) {
+    await store.saveRuntimeHandle({
+      project: P,
+      ticket,
+      coordinator,
+      runtime: "conductor",
+      handle: `ws/${ticket}`,
+      branch: null,
+      at: at(30),
+    });
+    await store.putHandBack({ project: P, ticket, coordinator: "other", author: null, body: "PR #7", at: NOW });
+  }
+  // The newest pending launch wins, regardless of returned order; an open
+  // session (even an unowned one) wins over a pending launch and item column.
+  for (const [ticket, coordinator, launchedAt] of [
+    ["DEMO-10", "front", at(1)],
+    ["DEMO-10", "default", at(2)],
+    ["DEMO-9", "default", at(1)],
+  ] as const)
+    store.launches.push({
+      project: P,
+      ticket,
+      coordinator,
+      launchedAt: launchedAt.toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+      endedAt: null,
+    });
+  await store.putPlan({ project: P, ticket: "DEMO-10", coordinator: "default", author: null, body: "Plan", at: NOW });
+  await store.addInboxItem({
+    project: P,
+    ticket: null,
+    coordinator: "default",
+    kind: "merge-request",
+    recipient: "coordinator",
+    author: null,
+    body: "Please merge",
+    at: NOW,
+  });
+  await store.addInboxItem({
+    project: P,
+    ticket: "DEMO-11",
+    coordinator: "default",
+    kind: "note",
+    recipient: "coordinator",
+    author: null,
+    body: "Owned by the item",
+    at: NOW,
+  });
+  const read = (scope: "mine" | "all", coordinatorName = "front", etag: string | null = null) =>
+    serveInbox(store, P, { scope, coordinatorName, coordinator: null, silentAfterMinutes: 15, etag }, NOW);
+  const mine = await read("mine");
+  const all = await read("all");
+  expect(mine?.items.filter((entry) => entry.id !== null).map((entry) => [entry.ticket, entry.owner])).toEqual([
+    ["DEMO-7", "front"],
+    ["DEMO-9", null],
+    ["DEMO-10", "front"],
+    [null, null],
+  ]);
+  expect(mine?.inFlight).toEqual(["DEMO-10", "DEMO-7"]);
+  expect(mine?.items.some((entry) => entry.kind === "silent" && entry.ticket === "DEMO-9")).toBe(true);
+  expect(all?.inFlight).toEqual(["DEMO-10", "DEMO-7", "DEMO-8", "DEMO-9"]);
+  expect(all?.ownedInFlight).toEqual(mine?.inFlight);
+  expect(mine?.etag).not.toBe(all?.etag);
+  expect((await read("mine", "default"))?.etag).not.toBe(mine?.etag);
+  await store.putHandBack({ project: P, ticket: "DEMO-8", author: null, body: "PR #8 updated", at: NOW });
+  expect(await read("mine", "front", mine?.etag)).toBeNull();
+  // Taking the unowned silent worker removes its alarm for other roles.
+  expect(await store.transferTickets({ project: P, tickets: ["DEMO-9"], to: "default", at: NOW })).toBe(true);
+  const taken = await read("mine", "front", mine?.etag);
+  expect(taken?.items.some((entry) => entry.ticket === "DEMO-9")).toBe(false);
+});
+
 describe("ask and answer", () => {
+  test("a coordinator can resolve Linear follow-up work without reading or writing Linear", async () => {
+    const live = tempFleet();
+    const { linear, ctx } = setup(live);
+    await live.fleet.chore({ ticket: "DEMO-7", kind: "linear-pending", pr: 11, body: "Finish Linear for #11" });
+    // The ticket does not exist in FakeLinear: a tracker read here would fail.
+    const item = (await live.fleet.ticketItems("DEMO-7"))[0];
+    if (!item) throw new Error("missing chore");
+    expect((await answerItem(ctx, { target: `#${item.id}`, text: "Completed by hand" })).lines).toEqual([
+      `Inbox item #${item.id} resolved.`,
+    ]);
+    expect((await live.fleet.inboxItem(item.id))?.resolvedAt).toBe(NOW.toISOString());
+    expect(linear.writes).toEqual([]);
+  });
   test("answering steering requests closes only the request, never approves the plan or acts on Linear", async () => {
     const live = tempFleet();
     const { linear, ctx } = setup(live);
@@ -816,4 +909,140 @@ describe("the coordinator's inbox", () => {
     const got = await checkInbox(live.fleet, { project: P, silentAfterMinutes: 15, now: () => NOW });
     expect([got.items, got.wait, live.calls]).toEqual([[], null, ["inbox"]]);
   });
+});
+
+describe("job alarms", () => {
+  test("derives silence per running job at read time, even on Done tickets, and clears on news", async () => {
+    const store = memoryFleet();
+    const jobConfig = parseConfig(`${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstop = "stop"\nsilence_minutes = 15`);
+    const snapshot: HandBackSnapshot = {
+      repository: "acme/widgets",
+      issues: [{ id: "DEMO-7", statusType: "completed" }],
+      prs: [],
+      config: jobConfig,
+    };
+    const jobs = [];
+    for (let i = 0; i < 2; i++) {
+      const job = await store.startJob({ project: P, ticket: "DEMO-7", name: "eval", startedBy: "runner", at: at(30) });
+      await store.observeJob({
+        project: P,
+        ticket: job.ticket,
+        id: job.id,
+        state: "running",
+        progress: "40/120",
+        at: at(20),
+      });
+      jobs.push(job);
+    }
+    await store.startJob({ project: P, ticket: "DEMO-8", name: "eval", startedBy: null, at: at(30) });
+    const query = { coordinator: null, silentAfterMinutes: 1, etag: null };
+    const read = await serveInbox(store, P, query, NOW, null, snapshot);
+    expect(read?.items.map((e) => e.kind)).toEqual(["job-silent", "job-silent"]);
+    const { entryKey } = await import("../src/live.ts");
+    expect(read?.items.map(entryKey)).toEqual(jobs.map((j) => `job-silent:${j.id}`).reverse());
+    expect(read?.items[0]?.body).toContain("40/120");
+    expect(read?.inFlight).toEqual([]);
+    expect(read?.openJobs).toHaveLength(3);
+    expect(await serveInbox(store, P, { ...query, etag: read?.etag ?? null }, NOW, null, snapshot)).toBeNull();
+    for (const job of jobs)
+      await store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", at: NOW });
+    expect((await serveInbox(store, P, query, NOW, null, snapshot))?.items).toEqual([]);
+    expect((await serveInbox(store, P, query, new Date(NOW.getTime() + 15 * 60000), null, snapshot))?.items).toEqual(
+      [],
+    );
+    expect(
+      (await serveInbox(store, P, query, new Date(NOW.getTime() + 16 * 60000), null, snapshot))?.items,
+    ).toHaveLength(2);
+  });
+
+  test("job alarms and liveness follow the ticket's named coordinator", async () => {
+    const live = tempFleet();
+    const { ctx, linear } = setup(live);
+    await working(ctx, linear, "DEMO-7");
+    expect(
+      await live.store.transferTickets({ project: P, tickets: ["DEMO-7"], from: "default", to: "back", at: NOW }),
+    ).toBe(true);
+    const job = await live.store.startJob({
+      project: P,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: at(30),
+    });
+    await live.store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", at: at(20) });
+    const query = { coordinator: null, silentAfterMinutes: 15, etag: null };
+    const front = await serveInbox(live.store, P, { ...query, coordinatorName: "front" }, NOW);
+    expect(front?.items.filter((item) => item.kind === "job-silent")).toEqual([]);
+    expect(front?.openJobs).toBeUndefined();
+    const back = await serveInbox(live.store, P, { ...query, coordinatorName: "back" }, NOW);
+    expect(back?.items.filter((item) => item.kind === "job-silent")).toMatchObject([{ jobId: job.id, owner: "back" }]);
+    expect(back?.openJobs).toEqual([job.id]);
+  });
+
+  test("terminal jobs wake watch once and their notices can be acknowledged without Linear writes", async () => {
+    const clock = fakeClock();
+    const live = tempFleet({ clock });
+    const { ctx, linear } = setup(live);
+    for (const state of ["succeeded", "failed", "stopped", "lost"] as const) {
+      const job = await live.fleet.startJob({ ticket: "DEMO-7", name: "eval" });
+      await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state: "running", progress: "40/120" });
+      await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state });
+      await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state });
+    }
+    const report = await watchInbox(live.fleet, {
+      project: P,
+      coordinator: null,
+      silentAfterMinutes: 15,
+      seen: [],
+      now: clock.now,
+      sleep: clock.sleep,
+    });
+    expect(report.outcome).toBe("items");
+    expect(report.items).toHaveLength(4);
+    expect(report.items.every((item) => item.kind === "job" && item.body.includes("40/120"))).toBe(true);
+    const { entryKey } = await import("../src/live.ts");
+    const again = await watchInbox(live.fleet, {
+      project: P,
+      coordinator: null,
+      silentAfterMinutes: 15,
+      seen: report.items.map(entryKey),
+      now: clock.now,
+      sleep: clock.sleep,
+      until: new Date(clock.now().getTime() + 60000),
+    });
+    expect(again.outcome).toBe("timeout");
+    expect(again.items.every((item) => !item.new)).toBe(true);
+    for (const item of report.items) await answerItem(ctx, { target: `#${item.id}`, text: "Runner outcome checked" });
+    expect(await inbox(live.store)).toEqual([]);
+    expect(linear.writes).toEqual([]);
+  });
+});
+
+test("watch sees a terminal notice when the job ends during the inbox read", async () => {
+  const clock = fakeClock();
+  const store = memoryFleet();
+  const job = await store.startJob({ project: P, ticket: "DEMO-7", name: "eval", startedBy: null, at: NOW });
+  await store.observeJob({ project: P, ticket: job.ticket, id: job.id, state: "running", progress: "40/120", at: NOW });
+  const list = store.listJobs.bind(store);
+  let ended = false;
+  store.listJobs = async (project, query) => {
+    if (!ended) {
+      ended = true;
+      await store.observeJob({ project, ticket: job.ticket, id: job.id, state: "succeeded", at: NOW });
+    }
+    return list(project, query);
+  };
+  const live = tempFleet({ store, clock });
+  const report = await watchInbox(live.fleet, {
+    project: P,
+    coordinator: null,
+    silentAfterMinutes: 15,
+    seen: [],
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+  expect(report.outcome).toBe("items");
+  expect(report.items).toMatchObject([{ kind: "job", body: expect.stringContaining("succeeded") }]);
+  expect(report.inFlight).toEqual([]);
+  expect(report.openJobs).toBeUndefined();
 });

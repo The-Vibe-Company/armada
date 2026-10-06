@@ -26,6 +26,7 @@ export type Exec = (
     input?: string;
     env?: Record<string, string | undefined>;
     processGroup?: boolean;
+    signal?: AbortSignal;
   },
 ) => Promise<ExecResult>;
 
@@ -36,7 +37,12 @@ export type Exec = (
 export type Spawn = (
   command: string,
   args: string[],
-  options: { cwd: string; env: Record<string, string | undefined> },
+  options: {
+    cwd: string;
+    env: Record<string, string | undefined>;
+    /** Absent: inherited output. Present: UTF-8 decoded pipe chunks, drained before completion. */
+    output?: { stdout: (chunk: string) => void; stderr: (chunk: string) => void };
+  },
 ) => Promise<number>;
 
 export type WatchSignal = "SIGTERM" | "SIGINT" | "SIGHUP";
@@ -57,6 +63,8 @@ export interface Io {
   cwd: string;
   /** Output terminal width; absent for redirected output (80 columns). */
   terminalWidth?: number;
+  /** Output is a terminal: interactive child output may inherit it unless --redact is set. */
+  stdoutIsTTY?: boolean;
   env: Record<string, string | undefined>;
   readFile: (path: string) => Promise<string | null>;
   /** Installed Codex model/list catalog for the current sign-in; null if unavailable. */
@@ -107,7 +115,7 @@ export interface Io {
   ) => Promise<boolean>;
   /** Runs `armada run` or an explicitly accepted official installer, attached to this terminal. */
   spawn?: Spawn;
-  startBackground?: (args: string[]) => Promise<boolean>;
+  startBackground?: (args: string[], options?: { logPath?: string }) => Promise<boolean>;
   backgroundReady?: (ready: boolean) => void;
   stopped?: () => boolean;
 }

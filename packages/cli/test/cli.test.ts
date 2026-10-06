@@ -210,6 +210,51 @@ describe("project config resolution", () => {
 });
 
 describe("armada status", () => {
+  test("status mine uses the selected coordinator and annotates other launches", async () => {
+    const root = await mkdtemp(join(tmpdir(), "armada-status-mine-"));
+    try {
+      const store = memoryFleet();
+      const { io, out } = fakeIo(
+        { "/work/widgets/armada.toml": DEMO_TOML },
+        {
+          XDG_CONFIG_HOME: root,
+          ARMADA_API_KEY: "synthetic-coordinator",
+          ARMADA_API_URL: ARMADA_URL,
+          ARMADA_COORDINATOR: "front",
+          LINEAR_API_KEY: "k",
+          GITHUB_TOKEN: "t",
+        },
+      );
+      const api = fakeArmada({ keys: { "synthetic-coordinator": "fleet" }, store });
+      const sources = recordedFetch();
+      io.fetch = (url, init) => (url.startsWith(ARMADA_URL) ? api.fetch(url, init) : sources.fetch(url, init));
+      await store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-11",
+        coordinator: "front",
+        runtime: "conductor",
+        handle: "ws/front",
+        branch: null,
+        at: NOW,
+      });
+      store.launches.push({
+        project: "widgets",
+        ticket: "DEMO-13",
+        coordinator: "default",
+        launchedAt: NOW.toISOString(),
+        tokenUsedAt: null,
+        runtime: null,
+        handle: null,
+        endedAt: null,
+      });
+      expect(await run(["status", "--mine"], io)).toBe(0);
+      expect(out()).toContain("In flight (1)");
+      expect(out()).toContain("launching by default");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("human status shows the recorded profile and reason", async () => {
     const { io, out } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
     expect(await run(["status", "--json"], io)).toBe(0);
@@ -369,8 +414,10 @@ describe("armada help", () => {
 
   test("an unknown command or option names the help to read", async () => {
     const unknown = fakeIo({});
-    expect(await run(["deploy"], unknown.io)).toBe(2);
-    expect(unknown.err()).toBe('armada: unknown command "deploy"\nNext: armada --help, which lists every command\n');
+    expect(await run(["frobnicate"], unknown.io)).toBe(2);
+    expect(unknown.err()).toBe(
+      'armada: unknown command "frobnicate"\nNext: armada --help, which lists every command\n',
+    );
     const option = fakeIo({});
     expect(await run(["report", "--force"], option.io)).toBe(2);
     expect(option.err()).toBe("armada: unknown option --force\nNext: armada report --help\n");

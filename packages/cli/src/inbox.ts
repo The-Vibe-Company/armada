@@ -1,5 +1,5 @@
 // `armada ask | inbox | answer`: questions between a worker and the
-// coordinator. Local herdr delivery is automatic; other runtimes use the guide.
+// coordinator. Herdr and Conductor delivery is automatic; Claude Code uses the guide.
 import {
   type ArmadaConfig,
   answerItem,
@@ -11,11 +11,15 @@ import {
   type InboxReport,
   type Rearm,
   Refusal,
+  RuntimeError,
+  runtimeNameOf,
 } from "@armada/core";
+import { coordinatorName } from "./coordinator.ts";
 import { type Io, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
 import { deliverToRuntime, observingFleet } from "./runtime.ts";
+import { claimRef, guarded, launchRef, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, shown } from "./watch.ts";
 import { currentTicket, liveFleet, readMessage, type WorkerArgs, withContext } from "./worker.ts";
 
@@ -36,7 +40,9 @@ export async function ask(io: Io, config: ArmadaConfig, credentials: Credentials
     .map((o) => o.trim())
     .filter(Boolean);
   const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
-  return withContext(io, config, credentials, a.json, (ctx) => askCoordinator(ctx, { ticket, question, options }));
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    askCoordinator(ctx, redact({ ticket, question, options })),
+  );
 }
 
 export async function answer(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {
@@ -50,28 +56,43 @@ export async function answer(io: Io, config: ArmadaConfig, credentials: Credenti
     throw new UsageError("give the text once: as an argument, --message or --message-file");
   const text = positional ?? fromOption;
   if (!text?.trim()) throw new UsageError(`answer needs the text: ${usage}`);
-  return withContext(io, config, credentials, a.json, (ctx) =>
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
     answerItem(
       {
         ...ctx,
-        deliverAnswer: async (ticket, message, runtime, claim) => {
-          if (runtime && runtime.toLowerCase() !== "herdr") return false;
+        deliversTo: (runtime) => !!runtimeNameOf(runtime) && runtimeFor(io, config, runtime).can.deliver,
+        checkAnswerTarget: async ({ claim, launch }) => {
           const { fleet } = liveFleet(io, config, credentials);
-          if (!fleet) {
-            if (runtime?.toLowerCase() === "herdr")
-              throw new Refusal("cannot read the herdr claim before delivery", "armada whoami");
-            return false;
+          if (!fleet) throw new Refusal("cannot recheck the runtime generation before recording", "armada whoami");
+          const ref = launch ? launchRef(launch) : claim ? claimRef(claim) : null;
+          if (!ref) throw new Refusal("the runtime target is missing; no answer was recorded", "armada inbox");
+          try {
+            await guarded(fleet, ref, "active", async () => {});
+          } catch (error) {
+            if (error instanceof RuntimeError && error.code === "stale")
+              throw new Refusal(
+                "the worker generation changed after delivery; no further answer was recorded",
+                "armada inbox",
+              );
+            throw error;
           }
-          const delivered = await deliverToRuntime(io, fleet, ticket, message, claim, config, {
-            kind: note ? "note" : "answer",
-            item: /^\d+$/.test(target) ? Number(target) : null,
-          });
-          if (!delivered && runtime?.toLowerCase() === "herdr")
-            throw new Refusal("the herdr claim is missing or changed; no answer was delivered", "armada status");
-          return delivered;
+        },
+        deliverAnswer: async ({ ticket, text: maskedText, claim, launch, item, kind }) => {
+          const { fleet } = liveFleet(io, config, credentials);
+          if (!fleet) throw new Refusal("cannot read the runtime claim before delivery", "armada whoami");
+          return deliverToRuntime(
+            io,
+            fleet,
+            ticket,
+            maskedText,
+            claim,
+            config,
+            { kind, item, identityText: text.trim() },
+            launch,
+          );
         },
       },
-      { target, text, note },
+      redact({ target, text, note }),
     ),
   );
 }
@@ -91,6 +112,7 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     const head = [
       e.id === null ? e.kind : `#${e.id} ${e.kind}`,
       e.ticket,
+      e.owner ? `owner: ${e.owner}` : "unowned",
       e.author && `from ${e.author}`,
       e.request?.question && `${e.kind === "plan-changes" ? "amends" : "answers"} #${e.request.question}`,
       e.request?.profile && `profile ${e.request.profile}`,
@@ -107,7 +129,7 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     out.push('Read the blocked herdr pane with its runtime guide, then answer: armada answer <ticket> "<answer>".');
   if (items.some((e) => e.kind === "question" || e.kind === "plan"))
     out.push(
-      'For herdr, armada answer delivers automatically. Deliver each other answer in the worker\'s session with the runtime guide, then record it: armada answer <id> "<answer>".',
+      'armada answer delivers to herdr and Conductor workers; for Claude Code deliver with the guide first, then record it: armada answer <id> "<answer>".',
     );
   if (
     items.some((e) =>
@@ -115,7 +137,7 @@ export function renderEntries(project: string, items: InboxEntry[]): string[] {
     )
   )
     out.push(
-      'Dashboard requests: armada answer <id> "<answer>" delivers herdr answer-requests automatically; deliver answers for other runtimes first; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>". Handle or decline merge-request, release-request and plan-changes, then resolve them with armada answer <id> "<result>". Plan changes are not an approval.',
+      'Dashboard requests: armada answer <id> "<answer>" delivers herdr and Conductor answer-requests automatically; for Claude Code deliver with the guide first; launch a launch-request (its claim resolves it), or decline it with armada answer <id> "<why>". Handle or decline merge-request, release-request and plan-changes, then resolve them with armada answer <id> "<result>". Plan changes are not an approval.',
     );
   return out;
 }
@@ -131,6 +153,8 @@ export function renderInbox(r: InboxReport, next: Rearm): string {
 /** Reads the inbox through Armada only: no Linear key needed, cheap enough to run in a loop. */
 export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {
   if (a.rest.length) throw new UsageError(`unexpected argument ${a.rest[0]}`);
+  const name = await coordinatorName(io, config.project.slug);
+  const scope = a.options.mine ? "mine" : "all";
   const wait = a.options.wait === "true";
   if (!wait && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
   const timeoutMs = waitSeconds(a.options.timeout) * 1000;
@@ -140,6 +164,8 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     throw new Refusal(`the inbox is on Armada, which cannot be reached: ${warning ?? "no answer"}`, "armada whoami");
   const report = await checkInbox(observingFleet(io, fleet, config), {
     project: config.project.slug,
+    scope,
+    coordinatorName: name,
     coordinator: coordinatorHandle(io),
     facts: detectCoordinator(io),
     silentAfterMinutes: config.policy.silentAfterMinutes,
@@ -150,14 +176,19 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
       ? { wait: { timeoutMs, sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))) } }
       : {}),
   });
-  await remember(io, report.project, shown(io, report.items, report.inFlight));
+  const inFlight =
+    name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
+  const openJobs =
+    name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
+  await remember(io, report.project, shown(io, report.items, inFlight, openJobs));
   const next = await rearmFor(io, report.project, {
-    inFlight: report.inFlight,
+    inFlight,
     open: report.items.length,
+    openJobs,
     act: report.items.length > 0,
   });
   const runtimes = (await fleet.runtimeHandles().catch(() => []))
-    .filter((h) => h.runtimeState)
+    .filter((h) => h.runtimeState && (scope === "all" || h.coordinator === name))
     .map((h) => ({
       ticket: h.ticket,
       runtime: h.runtime,

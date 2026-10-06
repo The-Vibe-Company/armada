@@ -798,6 +798,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    version: 29,
+    statements: ["ALTER TABLE validations ADD COLUMN checks jsonb, ADD COLUMN excerpts jsonb, ADD COLUMN details text"],
+  },
+  {
     // THE-1098: merge intent survives a coordinator session.
     version: 30,
     statements: [
@@ -871,6 +875,38 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   },
   { version: 33, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
   {
+    // THE-1101: deployment observations and their target-scoped pause notices.
+    // The sequence is the first observation of a (project, target, sha), not
+    // an update timestamp: late watchers must be ordered by when their
+    // deployment was first seen.
+    version: 35,
+    statements: [
+      `CREATE TABLE deploys (
+        project text NOT NULL REFERENCES projects(slug),
+        target text NOT NULL,
+        sha text NOT NULL,
+        state text NOT NULL CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout')),
+        detail text NOT NULL,
+        pause_on_failure boolean NOT NULL,
+        live_sha text,
+        covered_shas text[] NOT NULL DEFAULT '{}',
+        started_at timestamptz NOT NULL,
+        updated_at timestamptz NOT NULL,
+        sequence bigint GENERATED ALWAYS AS IDENTITY UNIQUE,
+        PRIMARY KEY (project, target, sha)
+      )`,
+      "CREATE INDEX deploys_target_sequence ON deploys (project, target, sequence DESC)",
+      "CREATE INDEX deploys_project_sequence ON deploys (project, sequence DESC)",
+      "CREATE INDEX deploys_project_sha ON deploys (project, sha, sequence DESC)",
+      "ALTER TABLE merge_holds ADD COLUMN deploy_sequence bigint",
+      "ALTER TABLE merge_holds ADD COLUMN deploy_sha text",
+      "ALTER TABLE inbox_items ADD COLUMN deploy_target text",
+      "ALTER TABLE inbox_items ADD COLUMN deploy_sha text",
+      `CREATE UNIQUE INDEX inbox_deploy_one_open ON inbox_items (project, deploy_target)
+        WHERE kind = 'deploy' AND resolved_at IS NULL AND deploy_target IS NOT NULL`,
+    ],
+  },
+  {
     // THE-1125: durable references to jobs dispatched on a project's own runner.
     version: 36,
     statements: [
@@ -885,6 +921,17 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX jobs_open_idx ON jobs (project, state, id DESC) WHERE state IN ('starting','running')",
       "CREATE INDEX jobs_ticket_idx ON jobs (project, ticket, id DESC)",
     ],
+  },
+  {
+    // THE-1093: one visible follow-up for unfinished Linear work per ticket and project.
+    version: 37,
+    statements: [
+      "CREATE UNIQUE INDEX inbox_one_open_chore ON inbox_items (project, ticket, kind) WHERE resolved_at IS NULL AND kind = 'linear-pending'",
+    ],
+  },
+  {
+    version: 38,
+    statements: ["ALTER TABLE jobs ADD COLUMN revision bigint NOT NULL DEFAULT 0"],
   },
 ];
 

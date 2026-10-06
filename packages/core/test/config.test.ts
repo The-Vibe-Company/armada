@@ -55,10 +55,12 @@ describe("armada.toml", () => {
           runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
         },
       },
+      git: { sign: "inherit" },
       github: { repository: "acme/widgets" },
-      ci: { failurePatterns: [] },
+      ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
       policy: {
+        validationSamples: 4,
         attachmentsPerTicket: 20,
         attachmentsProjectMb: 200,
         attachmentsRetentionDays: 30,
@@ -446,6 +448,14 @@ profile = "missing"
   });
 });
 
+test("owner validation sample policy defaults to four and accepts at most eight", () => {
+  const base = `[project]\nname = "Widgets"\nslug = "widgets"\n[tracker]\nprogram_root = "WID-1"\n[github]\nrepository = "acme/widgets"\n`;
+  expect(parseConfig(base).policy.validationSamples).toBe(4);
+  expect(parseConfig(`${base}[policy]\nvalidation_samples = 8`).policy.validationSamples).toBe(8);
+  for (const value of [0, 9, 4.5])
+    expect(() => parseConfig(`${base}[policy]\nvalidation_samples = ${value}`)).toThrow("policy.validation_samples");
+});
+
 test("declared reservation keys are optional, descriptive and unique", () => {
   const declaration = '\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n';
   expect(parseConfig(DEMO_TOML + declaration).reservations).toEqual([
@@ -472,4 +482,16 @@ test("tracker lint is opt-in with configurable defaults and rejects invalid rule
   ])
     expect(problemsOf(`${DEMO_TOML}\n[tracker.lint]\n${field}`).join(" ")).toContain("tracker.lint");
   expect(problemsOf(DEMO_TOML.replace("[tracker]", "[tracker]\nlint = false")).join(" ")).toContain("tracker.lint");
+});
+
+test("git signing defaults to inherit, accepts off, rejects invalid values and typos", () => {
+  expect(parseConfig(DEMO_TOML).git.sign).toBe("inherit");
+  for (const sign of ["inherit", "off"] as const)
+    expect(parseConfig(`${DEMO_TOML}\n[git]\nsign = "${sign}"\n`).git.sign).toBe(sign);
+  for (const value of ['"on"', "false", "1", '""'])
+    expect(problemsOf(`${DEMO_TOML}\n[git]\nsign = ${value}\n`).join(" ")).toContain("git.sign");
+  expect(problemsOf(`${DEMO_TOML}\n[git]\nsignn = "off"\n`)).toContain('unknown key "git.signn"');
+  expect(
+    configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+  ).toContain('sign = "inherit"');
 });

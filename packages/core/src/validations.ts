@@ -44,11 +44,23 @@ export interface ValidationDecision {
   at: string;
 }
 
-export interface NewValidation {
+export interface ValidationExcerpt {
+  label: string;
+  text: string;
+}
+
+/** Optional fields distinguish older CLI submissions from short validations. */
+export interface ValidationSamples {
+  checks?: string[];
+  excerpts?: ValidationExcerpt[];
+  details?: string | null;
+}
+
+export interface NewValidation extends ValidationSamples {
   project: string;
   ticket: string;
   kind: ValidationKind;
-  /** What to check, or the question. */
+  /** One-line headline for new CLIs; legacy CLIs may send longer free text. */
   what: string;
   /** Why the coordinator asks: its judgement of the project's rule. */
   reason: string | null;
@@ -68,7 +80,66 @@ export interface Validation extends Omit<NewValidation, "at"> {
   decision: ValidationDecision | null;
 }
 
-export const VALIDATION_LIMITS = { what: 4000, reason: 1000, choice: 120, choices: 6, note: 4000, attachments: 20 };
+export const VALIDATION_LIMITS = {
+  what: 4000,
+  headline: 200,
+  checks: 3,
+  check: 200,
+  images: 4,
+  maxImages: 8,
+  excerpts: 3,
+  excerptLines: 40,
+  excerpt: 4000,
+  details: 4000,
+  samples: 5,
+  reason: 1000,
+  choice: 120,
+  choices: 6,
+  note: 4000,
+  attachments: 20,
+};
+
+/** CRLF and a final newline do not add a phantom line to a text sample. */
+export const excerptLines = (text: string) => text.replace(/\r\n?/g, "\n").replace(/\n$/, "").split("\n");
+
+/** One boundary rule shared by new CLI submissions and their API input. */
+export function validationSampleProblem(
+  v: { what: string; checks?: unknown; excerpts?: unknown; details?: unknown },
+  attachments: number,
+  images = VALIDATION_LIMITS.images,
+): string | null {
+  const L = VALIDATION_LIMITS;
+  if (v.what.length > L.headline || /[\r\n]/.test(v.what))
+    return `use a one-line headline of at most ${L.headline} characters; move context to --details-file`;
+  if (
+    !Array.isArray(v.checks) ||
+    v.checks.length > L.checks ||
+    !v.checks.every((c) => typeof c === "string" && c.trim() && c.length <= L.check && !/[\r\n]/.test(c))
+  )
+    return `use at most ${L.checks} --check values of at most ${L.check} characters each`;
+  if (attachments > images) return `keep at most ${images} --attach samples`;
+  if (!Array.isArray(v.excerpts) || v.excerpts.length > L.excerpts)
+    return `keep at most ${L.excerpts} --excerpt samples`;
+  for (const e of v.excerpts) {
+    if (
+      !e ||
+      typeof e !== "object" ||
+      typeof e.label !== "string" ||
+      !e.label.trim() ||
+      e.label.length > L.headline ||
+      typeof e.text !== "string" ||
+      !e.text.trim() ||
+      e.text.length > L.excerpt ||
+      excerptLines(e.text).length > L.excerptLines
+    )
+      return `use --excerpt <file>:1-${L.excerptLines} with a short label and at most ${L.excerpt} characters`;
+  }
+  if (attachments + v.excerpts.length > Math.max(L.samples, images))
+    return `keep at most ${Math.max(L.samples, images)} samples total across --attach and --excerpt`;
+  if (v.details != null && (typeof v.details !== "string" || v.details.length > L.details))
+    return `shorten --details-file to at most ${L.details} characters`;
+  return null;
+}
 
 /** The page an approval link opens, on the dashboard. */
 export const approvalPath = (id: number) => `/approve/${id}`;

@@ -889,7 +889,7 @@ describe("what the owner validates (THE-885)", () => {
     const shot = await saveAttachment(db, {
       project: "widgets",
       ticket: "WID-2",
-      input: { kind: "link", url: "https://preview.example.test/wid-2" },
+      input: { kind: "image", contentType: "image/png", bytes: Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]) },
       caption: "The new card",
       reference: null,
       author: "ws/2",
@@ -962,8 +962,19 @@ describe("what the owner validates (THE-885)", () => {
 
     // Asked again on a new head: the open one is superseded, never two open for one pull request.
     const store = fleetStore(db);
-    const asked = { ...merge, at: new Date(T0 + 1_000) };
+    const asked = {
+      ...merge,
+      checks: ["Title is legible"],
+      excerpts: [{ label: "output.txt:10-40", text: "A short sample" }],
+      details: "Longer context",
+      at: new Date(T0 + 1_000),
+    };
     const first = await store.addValidation(asked);
+    expect(await store.getValidation("widgets", first.id)).toMatchObject({
+      checks: asked.checks,
+      excerpts: asked.excerpts,
+      details: asked.details,
+    });
     await store.addValidation({ ...asked, at: new Date(T0 + 2_000) });
     expect((await store.getValidation("widgets", first.id))?.decision?.outcome).toBe("superseded");
   });
@@ -991,4 +1002,39 @@ test("archived sessions remain ended after the dashboard's seven-day live window
   await w.settle();
   expect((await loadOverview(w.opts)).rows.map((r) => r.id)).not.toContain(claim.ticket);
   expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.inFlight.map((r) => r.id)).not.toContain(claim.ticket);
+});
+
+test("job beats reach the dashboard project report on its next Postgres read without external reads", async () => {
+  const db = await tempDb();
+  await upsertProject(db, WIDGETS, new Date(T0));
+  const w = world(db);
+  await w.warm();
+  const store = fleetStore(db);
+  const job = await store.startJob({
+    project: WIDGETS.slug,
+    ticket: "WID-2",
+    name: "eval",
+    startedBy: "runner",
+    at: new Date(T0),
+  });
+  await store.observeJob({
+    project: job.project,
+    ticket: job.ticket,
+    id: job.id,
+    state: "running",
+    progress: "1/120",
+    at: new Date(T0),
+  });
+  const reads = w.reads.snapshots;
+  expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.jobs?.[0]?.progress).toBe("1/120");
+  await store.observeJob({
+    project: job.project,
+    ticket: job.ticket,
+    id: job.id,
+    state: "running",
+    progress: "40/120",
+    at: new Date(T0 + 1000),
+  });
+  expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.jobs?.[0]?.progress).toBe("40/120");
+  expect(w.reads.snapshots).toBe(reads);
 });

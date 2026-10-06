@@ -631,6 +631,7 @@ interface RawFailedCommit {
 export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string; headSha?: string }): Promise<{
   sha: string;
   checks: import("./ci.ts").FailedCheck[];
+  runIds: number[];
   warnings: string[];
 }> {
   const [owner, name] = opts.repository.split("/");
@@ -646,8 +647,10 @@ export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string;
   if (commit.checkSuites.pageInfo?.hasNextPage)
     warnings.push("CI reading is incomplete: only the first 50 check suites were read");
   const ids = new Set<number>();
+  const runIds = new Set<number>();
   for (const suite of commit.checkSuites.nodes) {
     if (!suite) continue;
+    if (suite.app?.slug === "github-actions" && suite.workflowRun) runIds.add(suite.workflowRun.databaseId);
     if (suite.checkRuns.pageInfo?.hasNextPage)
       warnings.push("CI reading is incomplete: only the first 50 failing checks of a suite were read");
     for (const run of suite.checkRuns.nodes) {
@@ -698,7 +701,7 @@ export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string;
       annotations: [],
     });
   }
-  return { sha: commit.oid, checks, warnings };
+  return { sha: commit.oid, checks, runIds: [...runIds], warnings };
 }
 
 /** Resolve a named branch to its commit, without reading Linear or the fleet. */
@@ -718,6 +721,126 @@ export async function fetchBranchHead(opts: FetchForgeOptions & { branch: string
 }
 
 const GITHUB_REST = "https://api.github.com";
+
+/** Effective requirements, shared by doctor and merge/commit-signing callers. */
+export interface BranchRules {
+  defaultBranch: string;
+  allowSquashMerge: boolean;
+  deleteBranchOnMerge: boolean;
+  requiredChecks: string[];
+  requiredApprovals: number;
+  requiredCodeOwnerReview: boolean;
+  requiredLastPushApproval: boolean;
+  mergeQueue: boolean;
+  requiredSignatures: boolean;
+  requiredLinearHistory: boolean;
+  strictChecks: boolean;
+  /** 403/404 is an expected fallback to active rules, not proof of no classic protection. */
+  classicProtection: "read" | "unavailable";
+}
+
+interface BranchRule {
+  type: string;
+  parameters?: {
+    required_status_checks?: { context: string }[];
+    strict_required_status_checks_policy?: boolean;
+    required_approving_review_count?: number;
+    require_code_owner_review?: boolean;
+    require_last_push_approval?: boolean;
+    allowed_merge_methods?: string[];
+  };
+}
+
+interface ClassicProtection {
+  required_status_checks?: { contexts?: string[]; checks?: { context: string }[]; strict?: boolean } | null;
+  required_pull_request_reviews?: {
+    required_approving_review_count: number;
+    require_code_owner_reviews?: boolean;
+    require_last_push_approval?: boolean;
+  } | null;
+  required_signatures?: { enabled: boolean };
+  required_linear_history?: { enabled: boolean };
+}
+
+/** Read the default branch's active rules and, when permitted, classic protection. */
+export async function fetchBranchRules(opts: FetchForgeOptions): Promise<BranchRules> {
+  const root = `${GITHUB_REST}/repos/${opts.repository}`;
+  const get = <T>(path: string, classic = false): Promise<T | null> =>
+    httpRequest(
+      `${root}${path}`,
+      { method: "GET", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${opts.token}` } },
+      { ...opts, retry: true, retryStatus, service: "GitHub" },
+      async (res) => {
+        if (classic && [403, 404].includes(res.status)) return null;
+        if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading branch rules`);
+        return (await res.json()) as T;
+      },
+    );
+  const repo = await get<{ default_branch: string; allow_squash_merge: boolean; delete_branch_on_merge: boolean }>("");
+  if (
+    !repo?.default_branch ||
+    typeof repo.allow_squash_merge !== "boolean" ||
+    typeof repo.delete_branch_on_merge !== "boolean"
+  )
+    throw new GithubError("GitHub: incomplete repository merge settings");
+  const branch = encodeURIComponent(repo.default_branch);
+  const rules: BranchRule[] = [];
+  for (let page = 1; ; page++) {
+    const batch = await get<BranchRule[]>(`/rules/branches/${branch}?per_page=100&page=${page}`);
+    if (!Array.isArray(batch) || batch.some((r) => !r || typeof r.type !== "string"))
+      throw new GithubError("GitHub: invalid branch rules");
+    rules.push(...batch);
+    if (batch.length < 100) break;
+    if (page === 10) throw new GithubError("GitHub: branch rules exceeded 1000 entries; not fully checked");
+  }
+  const classic = await get<ClassicProtection>(`/branches/${branch}/protection`, true);
+  const checks = new Set([
+    ...(classic?.required_status_checks?.contexts ?? []),
+    ...(classic?.required_status_checks?.checks?.map((c) => c.context) ?? []),
+  ]);
+  let approvals = classic?.required_pull_request_reviews?.required_approving_review_count ?? 0;
+  let strict = classic?.required_status_checks?.strict === true;
+  let squash = repo.allow_squash_merge;
+  for (const rule of rules) {
+    if (rule.type === "required_status_checks") {
+      if (
+        !Array.isArray(rule.parameters?.required_status_checks) ||
+        rule.parameters.required_status_checks.some((c) => !c || typeof c.context !== "string")
+      )
+        throw new GithubError("GitHub: invalid required status checks rule");
+      for (const check of rule.parameters.required_status_checks) checks.add(check.context);
+      strict ||= rule.parameters.strict_required_status_checks_policy === true;
+    }
+    if (rule.type === "pull_request") {
+      const count = rule.parameters?.required_approving_review_count;
+      if (typeof count !== "number" || !Number.isInteger(count) || count < 0)
+        throw new GithubError("GitHub: invalid required approvals rule");
+      approvals = Math.max(approvals, count);
+      if (rule.parameters?.allowed_merge_methods) squash &&= rule.parameters.allowed_merge_methods.includes("squash");
+    }
+  }
+  return {
+    defaultBranch: repo.default_branch,
+    allowSquashMerge: squash,
+    deleteBranchOnMerge: repo.delete_branch_on_merge,
+    requiredChecks: [...checks].sort(),
+    requiredApprovals: approvals,
+    requiredCodeOwnerReview:
+      classic?.required_pull_request_reviews?.require_code_owner_reviews === true ||
+      rules.some((r) => r.type === "pull_request" && r.parameters?.require_code_owner_review === true),
+    requiredLastPushApproval:
+      classic?.required_pull_request_reviews?.require_last_push_approval === true ||
+      rules.some((r) => r.type === "pull_request" && r.parameters?.require_last_push_approval === true),
+    mergeQueue: rules.some((r) => r.type === "merge_queue"),
+    requiredSignatures:
+      classic?.required_signatures?.enabled === true || rules.some((r) => r.type === "required_signatures"),
+    requiredLinearHistory:
+      classic?.required_linear_history?.enabled === true || rules.some((r) => r.type === "required_linear_history"),
+    strictChecks: strict,
+    classicProtection: classic ? "read" : "unavailable",
+  };
+}
+
 const LOG_BYTES = 5 * 1024 * 1024;
 
 /** Actions job log: bounded streaming read, redirects never carry a key off GitHub. */
@@ -798,6 +921,13 @@ export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): 
 
 /** Attempt number for an Actions workflow run. Log access remains optional. */
 export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number }): Promise<number> {
+  return (await fetchWorkflowRun(opts)).attempt;
+}
+
+/** A fresh workflow status prevents rerunning a run that is already queued or active. */
+export async function fetchWorkflowRun(
+  opts: FetchForgeOptions & { runId: number },
+): Promise<{ attempt: number; status: string | null }> {
   return httpRequest(
     `${GITHUB_REST}/repos/${opts.repository}/actions/runs/${opts.runId}`,
     {
@@ -807,10 +937,60 @@ export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number 
     async (res) => {
       if (!res.ok)
         throw new GithubError(`GitHub Actions HTTP ${res.status}; token needs Actions repository permission (read)`);
-      const json = (await res.json()) as { run_attempt?: number };
+      const json = (await res.json()) as { run_attempt?: number; status?: string };
       if (!Number.isSafeInteger(json.run_attempt) || (json.run_attempt ?? 0) < 1)
         throw new GithubError("GitHub Actions returned no run attempt");
-      return json.run_attempt as number;
+      return { attempt: json.run_attempt as number, status: typeof json.status === "string" ? json.status : null };
     },
   );
+}
+
+/** Commit ancestry by SHA; branch-based fetchComparison cannot compare two commits. */
+export async function fetchShaComparison(opts: FetchForgeOptions & { base: string; head: string }): Promise<boolean> {
+  return httpRequest(
+    `https://api.github.com/repos/${opts.repository}/compare/${encodeURIComponent(opts.base)}...${encodeURIComponent(opts.head)}`,
+    { method: "GET", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${opts.token}` } },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
+    async (res) => {
+      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} comparing deploy commits`);
+      const comparison = (await res.json()) as { status: string };
+      return comparison.status === "ahead" || comparison.status === "identical";
+    },
+  );
+}
+
+/** One read per poll, independent of the hosting provider or preview status contexts. */
+export async function fetchLiveDeploy(
+  opts: FetchForgeOptions & { environment: string },
+): Promise<import("./deploy.ts").LiveDeploy> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{
+    repository: {
+      deployments: {
+        nodes: {
+          commit: { oid: string } | null;
+          latestStatus: { state: string; description: string | null } | null;
+        }[];
+      };
+    } | null;
+  }>(
+    opts,
+    `query LiveDeploy($owner: String!, $name: String!, $environment: String!) {
+    repository(owner: $owner, name: $name) {
+      deployments(last: 1, environments: [$environment], orderBy: {field: CREATED_AT, direction: ASC}) {
+        nodes { commit { oid } latestStatus { state description } }
+      }
+    }
+  }`,
+    { owner, name, environment: opts.environment },
+  );
+  const deploy = json.data?.repository?.deployments.nodes[0];
+  const state = deploy?.latestStatus?.state?.toLowerCase();
+  return {
+    sha: deploy?.commit?.oid ?? null,
+    state: state === "success" || state === "failure" || state === "error" ? state : "pending",
+    detail: deploy
+      ? `${opts.environment}: ${state ?? "pending"}\n${deploy.latestStatus?.description ?? ""}`
+      : `no deployment for ${opts.environment}`,
+  };
 }

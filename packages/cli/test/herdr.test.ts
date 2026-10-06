@@ -527,3 +527,79 @@ test("pane and metadata failures are sanitized, even when pane cleanup also fail
     "No worker brief was sent",
   );
 });
+
+test("sign off enables worktree config and disables signing only in the created worktree; inherit writes no Git config", async () => {
+  for (const sign of ["inherit", "off"] as const) {
+    const f = fake([created, tab, {}]);
+    const native = f.io.exec;
+    if (!native) throw new Error("test exec missing");
+    const calls: string[][] = [];
+    f.io.exec = async (command, args, options) => {
+      calls.push([command, ...args]);
+      if (command !== "git") return native(command, args, options);
+      if (args.includes("--get"))
+        return {
+          code: args.at(-1) === "commit.gpgsign" ? 0 : 1,
+          stdout: args.at(-1) === "commit.gpgsign" ? "false" : "",
+          stderr: "",
+        };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await new Herdr(f.io).create({ repo: "/repo", branch: "feature/demo-7", base: "main", ticket: "DEMO-7", sign });
+    const writes = calls.filter(([cmd, ...args]) => cmd === "git" && !args.includes("--get"));
+    expect(writes).toEqual(
+      sign === "off"
+        ? [
+            ["git", "-C", "/repo", "config", "--local", "extensions.worktreeConfig", "true"],
+            ["git", "-C", "/work/worktrees/widgets", "config", "--worktree", "commit.gpgsign", "false"],
+          ]
+        : [],
+    );
+    if (sign === "off")
+      expect(calls.findIndex((call) => call.includes("commit.gpgsign"))).toBeLessThan(
+        calls.findIndex((call) => call[0] === "herdr" && call[1] === "tab"),
+      );
+  }
+});
+
+test("worktree config migration risks or Git write failures stop launch without leaking output", async () => {
+  for (const risk of ["core.bare", "core.worktree", "core.sparseCheckout", "write"]) {
+    const f = fake([created, tab, {}]);
+    const native = f.io.exec;
+    if (!native) throw new Error("test exec missing");
+    f.io.exec = async (command, args, options) => {
+      if (command !== "git") return native(command, args, options);
+      if (args.includes("--get")) {
+        expect(args).toContain("--includes");
+        return args.at(-1) === risk
+          ? { code: 0, stdout: risk === "core.worktree" ? "/owner" : "true", stderr: "" }
+          : { code: 1, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "CANARY_PRIVATE", stderr: "CANARY_PRIVATE" };
+    };
+    await expect(
+      new Herdr(f.io).create({ repo: "/repo", branch: "feature/demo-7", base: "main", ticket: "DEMO-7", sign: "off" }),
+    ).rejects.toThrow("worktree");
+    expect(f.calls).toHaveLength(0);
+  }
+});
+
+test("a copied include overriding signing off stops launch before a worker tab is created", async () => {
+  const f = fake([created, tab, {}]);
+  const native = f.io.exec;
+  if (!native) throw Error("test exec missing");
+  f.io.exec = async (command, args, options) => {
+    if (command !== "git") return native(command, args, options);
+    if (args.includes("--get"))
+      return {
+        code: 0,
+        stdout: args.at(-1) === "extensions.worktreeConfig" || args.at(-1) === "commit.gpgsign" ? "true" : "",
+        stderr: "",
+      };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  await expect(
+    new Herdr(f.io).create({ repo: "/repo", branch: "feature/demo-7", base: "main", ticket: "DEMO-7", sign: "off" }),
+  ).rejects.toThrow("still enabled");
+  expect(f.calls).toHaveLength(1);
+});

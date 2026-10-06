@@ -10,12 +10,14 @@
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { attachPullRequests } from "./github.ts";
 import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
+  type ChoreRecord,
   type ClaimRecord,
   type CoordinatorRecord,
   type EventsRead,
@@ -55,6 +57,7 @@ import {
   recordValidation,
   type StoredInboxItem,
   serveInbox,
+  ticketOwners,
   type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
@@ -62,6 +65,7 @@ import type { QueueAdded, QueueEntry, QueueNext } from "./merge-queue.ts";
 import { buildModel } from "./model.ts";
 import { type OverlapReading, pathsProblem } from "./overlap.ts";
 import { isLabelPhase } from "./phases.ts";
+import { redactFreeText, redactor } from "./redact.ts";
 import { RequestRefusal, requestDeferredLaunch, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
 import type { CiState, LabelPhase } from "./types.ts";
 import { isShippingStage } from "./types.ts";
@@ -72,6 +76,8 @@ import {
   type Validation,
   type ValidationKind,
   type ValidationPr,
+  type ValidationSamples,
+  validationSampleProblem,
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
@@ -94,6 +100,8 @@ export const WORKER_FLEET_OPS = [
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "deploy/record",
+  "deploy/state",
   "holds",
   "hold/open",
   "hold/clear",
@@ -121,6 +129,7 @@ export const FLEET_OPS = [
   "inbox/resolve",
   "answer",
   "merge",
+  "chore",
   "validations",
   "done",
   "queue/add",
@@ -186,6 +195,12 @@ function optText(b: Body, key: string, max: number): string | null {
   if (typeof v !== "string") throw new Invalid(`${key} must be text`);
   if (v.length > max) throw new Invalid(`${key} has at most ${max} characters`);
   return v;
+}
+
+function scopeOf(b: Body): import("./live.ts").CoordinatorScope | undefined {
+  if (b.scope === undefined) return undefined;
+  if (b.scope !== "mine" && b.scope !== "all") throw new Invalid("scope must be mine or all");
+  return b.scope;
 }
 
 function coordinatorNameOf(b: Body, key = "coordinatorName", fallback = "default"): string {
@@ -297,7 +312,31 @@ const refuse = (status: number, error: string, next: string): FleetAnswer => ({ 
 const NOT_MODIFIED = Symbol("not modified");
 const TRANSFER_REFUSED = Symbol("transfer refused");
 
+/** Writes carrying prose. Read-only polls never need the vault. */
+export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
+  "claim",
+  "report",
+  "ask",
+  "answer",
+  "release",
+  "validate",
+  "done",
+  "request",
+  "hold/open",
+  "hold/clear",
+  "inbox/resolve",
+  "merge",
+  "chore",
+  "queue/add",
+  "queue/finish",
+  "job/observe",
+  "runtime/stop",
+  "reserve",
+]);
+
 export interface ServeFleetDeps {
+  /** Prepared by the host from this authorized project's secrets, once per request. */
+  redact?: (text: string) => string;
   sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
   /** Stored project facts, supplied by the host, never by the caller. */
   snapshot?: HandBackSnapshot;
@@ -307,6 +346,8 @@ export interface ServeFleetDeps {
   appUrl?: string | null;
   /** The caller's CLI version (`x-armada-cli-version`): the coordinator's presence keeps it. */
   cliVersion?: string | null;
+  /** Trusted project policy from the stored snapshot; never caller supplied. */
+  validationSamples?: number;
 }
 
 /** A CLI version as a release names it (0.2.4, 1.0.0-beta.1); anything else is not kept. */
@@ -328,7 +369,7 @@ export async function serveFleet(
   const { op, project, caller } = req;
   if (!isFleetOp(op))
     return refuse(404, `no fleet operation ${op}`, "update the CLI: npm install -g @the-vibe-company/armada");
-  const b = objectOf(req.input);
+  const b = redactFreeText(objectOf(req.input), deps.redact ?? redactor([]).text);
   const slug = project.slug;
   const at = deps.now();
   try {
@@ -356,6 +397,36 @@ export async function serveFleet(
           );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "deploy/record": {
+          const sha = shaOf(b, "sha");
+          if (!sha || !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full 40-character SHA");
+          if (!DEPLOY_STATES.includes(b.state as DeployState)) throw new Invalid("unknown deploy state");
+          const liveSha = shaOf(b, "liveSha");
+          if (liveSha && !/^[0-9a-f]{40}$/.test(liveSha)) throw new Invalid("liveSha must be a full SHA");
+          if (
+            b.coveredShas !== undefined &&
+            (!Array.isArray(b.coveredShas) ||
+              b.coveredShas.length > 100 ||
+              b.coveredShas.some((sha) => typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)))
+          )
+            throw new Invalid("coveredShas must contain at most 100 full SHAs");
+          return store.recordDeploy({
+            coveredShas: b.coveredShas as string[] | undefined,
+            project: slug,
+            at,
+            target: text(b, "target", 200).trim(),
+            sha,
+            state: b.state as DeployState,
+            detail: deployDetail(optText(b, "detail", BODY_MAX) ?? ""),
+            pauseOnFailure: bool(b, "pauseOnFailure"),
+            liveSha,
+          });
+        }
+        case "deploy/state": {
+          const target = optText(b, "target", 200);
+          const sha = shaOf(b, "sha");
+          return store.deployState(slug, { ...(target ? { target } : {}), ...(sha ? { sha } : {}) });
+        }
         case "job/start": {
           const name = text(b, "name", 64);
           if (!JOB_NAME.test(name) || name === "__proto__") throw new Invalid("name must be a configured job name");
@@ -389,13 +460,17 @@ export async function serveFleet(
             throw new Invalid("runner reference is already recorded and cannot change");
           const eta = optText(b, "eta", 40);
           if (eta !== null && !Number.isFinite(Date.parse(eta))) throw new Invalid("eta must be a timestamp");
+          const expectedRevision = b.expectedRevision === undefined ? undefined : countOrNull(b, "expectedRevision");
+          if (b.expectedRevision !== undefined && expectedRevision === null)
+            throw new Invalid("expectedRevision must be a nonnegative integer");
           return store.observeJob({
+            ...(expectedRevision == null ? {} : { expectedRevision }),
             project: slug,
             id,
             ticket,
             state: b.state as Exclude<JobState, "starting">,
             ...(ref === undefined ? {} : { ref }),
-            progress: optText(b, "progress", JOB_PROGRESS_MAX),
+            ...(b.progress === undefined ? {} : { progress: optText(b, "progress", JOB_PROGRESS_MAX) }),
             eta: eta === null ? null : new Date(eta).toISOString(),
             at,
           });
@@ -633,7 +708,20 @@ export async function serveFleet(
               throw new Invalid("invalid page cursor");
             }
           }
+          const scope = scopeOf(b);
+          const owners =
+            scope === "mine"
+              ? ticketOwners(
+                  ...(await Promise.all([store.openRuntimeHandles(slug), store.pendingLaunches(slug, new Date(0))])),
+                )
+              : null;
+          const excludedTickets = owners
+            ? [...owners]
+                .filter(([, owner]) => owner !== null && owner !== (coordinatorName ?? "default"))
+                .map(([ticket]) => ticket)
+            : undefined;
           const events = await store.eventsSince(slug, {
+            excludedTickets,
             ...cursor,
             kinds: b.kinds,
             handoverOnly: b.handoverOnly,
@@ -748,6 +836,7 @@ export async function serveFleet(
             store,
             slug,
             {
+              scope: scopeOf(b),
               coordinator: optText(b, "coordinator", LINE_MAX),
               ...(b.coordinatorName === undefined ? {} : { coordinatorName: coordinatorName ?? "default" }),
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
@@ -815,8 +904,21 @@ export async function serveFleet(
             at,
           );
         }
+        case "chore": {
+          if (b.kind !== "linear-pending") throw new Invalid("unknown chore kind");
+          return store.putChore({
+            project: slug,
+            ticket: ticketOf(b),
+            kind: "linear-pending",
+            pr: idOf(b, "pr"),
+            body: text(b, "body", BODY_MAX),
+            author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
+            coordinator: coordinatorName,
+            at,
+          });
+        }
         case "validate": {
-          const input = validationOf(b);
+          const input = validationOf(b, deps.validationSamples);
           if (caller.kind === "worker" && input.kind !== "validation")
             throw new Invalid("a worker session only asks the owner to validate its work (kind validation)");
           const validation = await recordValidation(
@@ -990,7 +1092,7 @@ function validationPrOf(v: unknown): ValidationPr | null {
   };
 }
 
-function validationOf(b: Body): ValidationRecord {
+function validationOf(b: Body, images = VALIDATION_LIMITS.images): ValidationRecord {
   const kind = b.kind;
   if (!VALIDATION_KINDS.includes(kind as ValidationKind))
     throw new Invalid("kind must be merge, validation or question");
@@ -1012,12 +1114,20 @@ function validationOf(b: Body): ValidationRecord {
     !attachments.every((a) => typeof a === "string" && /^[\w-]{1,64}$/.test(a))
   )
     throw new Invalid(`attachments must be at most ${L.attachments} attachment ids`);
+  const what = text(b, "what", L.what);
+  const modern = b.checks !== undefined || b.excerpts !== undefined || b.details !== undefined;
+  const samples = modern ? { checks: b.checks ?? [], excerpts: b.excerpts ?? [], details: b.details ?? null } : {};
+  if (modern) {
+    const problem = validationSampleProblem({ what, ...samples }, attachments.length, images);
+    if (problem) throw new Invalid(problem);
+  }
   const pr = validationPrOf(b.pr);
   if (kind === "merge" && !pr) throw new Invalid("a merge approval names its pull request");
   return {
     ticket: ticketOf(b),
     kind: kind as ValidationKind,
-    what: text(b, "what", L.what),
+    what,
+    ...(samples as ValidationSamples),
     reason: optText(b, "reason", L.reason),
     choices: Array.isArray(choices) ? choices.map((c: string) => c.trim()) : null,
     pr,
@@ -1054,6 +1164,9 @@ export function fleetClient(o: {
     )) as T;
   };
   return {
+    recordDeploy: (input) => call("deploy/record", input),
+    deployState: (input = {}) => call("deploy/state", input),
+
     coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
     takeTickets: (input) => call<boolean>("coordinators/take", input),
     startJob: (input) => call<Job>("job/start", input),
@@ -1098,6 +1211,7 @@ export function fleetClient(o: {
     answer: (a: AnswerRecord) => call<string>("answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
     merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
+    chore: (c: ChoreRecord) => call<null>("chore", c).then(() => undefined),
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),

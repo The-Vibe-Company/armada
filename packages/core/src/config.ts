@@ -13,8 +13,19 @@ export interface JobConfig {
   maxHours: number | null;
 }
 
+export interface DeployTarget {
+  name: string;
+  branch: string | null;
+  githubEnvironment: string | null;
+  liveShaCommand: string | null;
+  smoke: string | null;
+  timeoutMinutes: number;
+  pauseOnFailure: boolean;
+}
+
 export interface CiConfig {
   failurePatterns: string[];
+  knownFailures: { check: string; pattern: string; ticket: string }[];
 }
 
 export const CONFIG_FILE = "armada.toml";
@@ -54,6 +65,9 @@ export interface ArmadaConfig {
     /** owner/name */
     repository: string;
   };
+  deploy?: { targets: DeployTarget[] };
+  /** Signing policy for newly created Herdr worktrees; cloud environments keep their own policy. */
+  git: { sign: "inherit" | "off" };
   ci: CiConfig;
   gates: {
     /**
@@ -82,6 +96,8 @@ export interface ArmadaConfig {
     preApprovedLabel: string;
     /** A ticket carrying this label waits for approval, whatever `plans` says; it wins over `preApprovedLabel`. */
     approvalLabel: string;
+    /** Image sample cap for owner validations, default four, at most eight. */
+    validationSamples?: number;
     attachmentsPerTicket: number;
     attachmentsProjectMb: number;
     attachmentsRetentionDays: number;
@@ -201,6 +217,7 @@ export interface HerdrProfile {
 }
 
 export const CONFIG_DEFAULTS = {
+  gitSign: "inherit",
   language: "en",
   readyLabel: "ready-for-agent",
   parkedLabel: "parked",
@@ -214,6 +231,7 @@ export const CONFIG_DEFAULTS = {
   plans: "approve",
   preApprovedLabel: "plan-approved",
   approvalLabel: "needs-plan-approval",
+  validationSamples: 4,
   attachmentsPerTicket: 20,
   attachmentsProjectMb: 200,
   attachmentsRetentionDays: 30,
@@ -328,6 +346,11 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const lint: LintRules = { inShort, inShortParts, titleMax, severity: lintRaw === undefined ? "warning" : "error" };
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
+  const git = raw.git ?? {};
+  if (!isTable(git)) problems.push('"git" must be a table');
+  const gitT = isTable(git) ? git : {};
+  const sign = gitT.sign ?? CONFIG_DEFAULTS.gitSign;
+  if (sign !== "inherit" && sign !== "off") problems.push('"git.sign" must be "inherit" or "off"');
   const ci = raw.ci ?? {};
   if (!isTable(ci)) problems.push(`"ci" must be a table`);
   const ciT = isTable(ci) ? ci : {};
@@ -361,7 +384,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker.lint", lintT, ["in_short", "in_short_parts", "title_max"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
-    ["ci", ciT, ["failure_patterns"]],
+    ["git", gitT, ["sign"]],
+    ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     [
       "policy",
@@ -378,6 +402,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "attachments_per_ticket",
         "attachments_project_mb",
         "attachments_retention_days",
+        "validation_samples",
         "merge_approval",
         "validation",
       ],
@@ -556,6 +581,53 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(herdrProfiles).some((profile) => profile.when)
   )
     problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
+  const deployRaw = raw.deploy ?? {};
+  if (!isTable(deployRaw)) problems.push('"deploy" must be a table');
+  const deployT = isTable(deployRaw) ? deployRaw : {};
+  known.push(["deploy", deployT, ["target"]]);
+  const deployTargets: DeployTarget[] = [];
+  if (deployT.target !== undefined && !Array.isArray(deployT.target))
+    problems.push('"deploy.target" must be an array of tables');
+  for (const [i, row] of (Array.isArray(deployT.target) ? deployT.target : []).entries()) {
+    const path = `deploy.target.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    known.push([
+      path,
+      row,
+      ["name", "branch", "github_environment", "live_sha_command", "smoke", "timeout_minutes", "pause_on_failure"],
+    ]);
+    const name = str(row, path, "name");
+    if (name.length > 200) problems.push(`"${path}.name" has at most 200 characters`);
+    if (deployTargets.some((t) => t.name === name)) problems.push(`"${path}.name" repeats ${name}`);
+    const optional = (key: string) => (row[key] === undefined ? null : str(row, path, key));
+    const githubEnvironment = optional("github_environment");
+    const liveShaCommand = optional("live_sha_command");
+    if ((githubEnvironment === null) === (liveShaCommand === null))
+      problems.push(`"${path}" needs exactly one of github_environment or live_sha_command`);
+    const timeoutMinutes = row.timeout_minutes ?? 20;
+    if (
+      typeof timeoutMinutes !== "number" ||
+      !Number.isFinite(timeoutMinutes) ||
+      timeoutMinutes < 1 ||
+      timeoutMinutes > 120
+    )
+      problems.push(`"${path}.timeout_minutes" must be from 1 to 120`);
+    if (row.pause_on_failure !== undefined && typeof row.pause_on_failure !== "boolean")
+      problems.push(`"${path}.pause_on_failure" must be true or false`);
+    deployTargets.push({
+      name,
+      branch: optional("branch"),
+      githubEnvironment,
+      liveShaCommand,
+      smoke: optional("smoke"),
+      timeoutMinutes: typeof timeoutMinutes === "number" ? timeoutMinutes : 20,
+      pauseOnFailure: row.pause_on_failure !== false,
+    });
+  }
+
   const jobs: Record<string, JobConfig> = {};
   const jobsRaw = raw.jobs ?? {};
   if (!isTable(jobsRaw)) problems.push('"jobs" must be a table of job definitions');
@@ -641,6 +713,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     problems.push(`"policy.${key}" must be a positive integer`);
     return fallback;
   };
+  const validationSamples = quota("validation_samples", CONFIG_DEFAULTS.validationSamples);
+  if (validationSamples > 8) problems.push('"policy.validation_samples" must be at most 8');
   const attachmentsPerTicket = quota("attachments_per_ticket", CONFIG_DEFAULTS.attachmentsPerTicket);
   const attachmentsProjectMb = quota("attachments_project_mb", CONFIG_DEFAULTS.attachmentsProjectMb);
   const attachmentsRetentionDays = quota("attachments_retention_days", CONFIG_DEFAULTS.attachmentsRetentionDays);
@@ -717,6 +791,30 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
   }
 
+  const knownFailures: CiConfig["knownFailures"] = [];
+  if (ciT.known_failure !== undefined) {
+    if (!Array.isArray(ciT.known_failure)) problems.push('"ci.known_failure" must be an array of tables');
+    else
+      for (const [i, entry] of ciT.known_failure.entries()) {
+        const path = `ci.known_failure[${i + 1}]`;
+        if (!isTable(entry)) {
+          problems.push(`"${path}" must be a table`);
+          continue;
+        }
+        for (const key of Object.keys(entry))
+          if (!["check", "pattern", "ticket"].includes(key)) problems.push(`unknown key "${path}.${key}"`);
+        const check = str(entry, path, "check");
+        const pattern = str(entry, path, "pattern");
+        const ticket = str(entry, path, "ticket", { pattern: ISSUE_ID, hint: "an issue identifier such as ABC-1" });
+        try {
+          new RegExp(pattern);
+        } catch {
+          problems.push(`"${path}.pattern" must be a valid regex`);
+        }
+        knownFailures.push({ check, pattern, ticket });
+      }
+  }
+
   let specTitles: SpecTitleStyle = "N";
   if (tracker.spec_titles !== undefined) {
     if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
@@ -767,7 +865,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
-    ci: { failurePatterns },
+    ...(raw.deploy === undefined ? {} : { deploy: { targets: deployTargets } }),
+    git: { sign: sign === "off" ? "off" : "inherit" },
+    ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,
@@ -777,6 +877,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       plans,
       preApprovedLabel,
       approvalLabel,
+      validationSamples,
       attachmentsPerTicket,
       attachmentsProjectMb,
       attachmentsRetentionDays,
@@ -825,6 +926,25 @@ runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 [github]
 repository = ${q(p.repository)}
 
+# After merges, watch each declared target and pause merges if deploy or smoke fails.
+# [[deploy.target]]
+# name = "api"
+# branch = "main"  # omit to watch any merged base branch
+# github_environment = "production"
+# live_sha_command = "curl -fsS https://example.test/version"  # use exactly one live source
+# smoke = "curl -fsS https://example.test/health"
+# timeout_minutes = 20  # 1–120; smoke shares this deadline
+# pause_on_failure = true
+[git]
+sign = "inherit"        # "off" disables commit signing only in new Herdr worktrees, when branch rules allow it
+
+# A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
+# with \`armada ci why <pr> --rerun\`; unknown failures are refused.
+# [[ci.known_failure]]
+# check = "test"  # exact check run name
+# pattern = "flaky_suite > times out on cold start"  # regex over failing test names or error block
+# ticket = "ABC-123"
+
 [gates]
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
 
@@ -856,8 +976,10 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # start = "./scripts/start-eval.sh"   # returns within 2 min; last stdout line is the runner reference
 # status = "./scripts/job-status.sh" # last line: running|succeeded|failed [progress, e.g. 37/120 cases]
 # stop = "./scripts/stop-eval.sh"     # exit 0 means stopped
-# silence_minutes = 15
+# silence_minutes = 15              # inbox alarm without news; watch polls at half this interval
 # max_hours = 12                     # overdue, never auto-stopped
+# Remote runner: set ARMADA_API_KEY as its secret (organization API key), armada login --api-key.
+# Push news: armada job beat "$ARMADA_JOB_ID" --progress "40/120" [--state succeeded|failed].
 # Declare the shared resources workers reserve through Armada (optional).
 # [[reservations]]
 # key = "db-migration"

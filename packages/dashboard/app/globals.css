@@ -1894,6 +1894,10 @@ button.chip:hover {
   margin-left: auto;
   white-space: nowrap;
 }
+/* A project that names its coordinators: one per line's item, each with its own state (THE-1112). */
+.ov-project-roles .ov-project-coord {
+  margin-left: 0;
+}
 .ov-diamond {
   width: 6px;
   height: 6px;
@@ -2087,6 +2091,13 @@ button.chip:hover {
 }
 .ov-reason {
   font-size: 12px;
+}
+/* The session's coordinator, before its reason (THE-1112). */
+.ov-owner {
+  margin-right: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
 }
 .ov-proj {
   font-size: 12px;
@@ -2937,6 +2948,13 @@ a.pj-title:hover {
   background: var(--sunken);
   color: var(--text);
   font-size: 12.5px;
+}
+.pj-coords {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 260px;
+  gap: 12px;
+  min-width: 0;
 }
 .pj-coord {
   display: flex;
@@ -4209,4 +4227,60 @@ a.pj-title:hover {
   .sh-switch::after {
     transition: none;
   }
+}
+
+.vd-checks {
+  margin: 0;
+  padding: 0 0 0 20px;
+  display: grid;
+  gap: 8px;
+  font-size: 14px;
+}
+.vd-excerpts {
+  display: grid;
+  gap: 12px;
+}
+.vd-excerpts figure {
+  margin: 0;
+  min-width: 0;
+}
+.vd-excerpts figcaption {
+  color: var(--text-3);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.vd-excerpt-text {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 240px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.vd-excerpt-text pre {
+  margin: 0;
+  font: inherit;
+}
+.vd-context summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.vd-context .vd-body {
+  margin-top: 12px;
+}
+.vd-more {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.vd-what,
+.vd-checks,
+.vd-excerpts figcaption,
+.vd-context .vd-body {
+  overflow-wrap: anywhere;
 }

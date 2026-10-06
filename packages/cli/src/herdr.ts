@@ -245,6 +245,40 @@ export class Herdr {
     throw new UsageError("herdr server did not become ready; inspect herdr status");
   }
 
+  /** Shared extension first, then a setting scoped to the newly created worktree. */
+  private async gitConfig(repo: string, args: string[], read = false): Promise<string | null> {
+    if (!read) await this.beforeWrite?.();
+    const result = await this.io
+      .exec?.("git", ["-C", repo, "config", ...args], { cwd: this.io.cwd, timeoutMs: 10_000, maxOutputBytes: 16_384 })
+      .catch(() => null);
+    if (read && result?.code === 1 && !result.timedOut && !result.outputExceeded) return null;
+    if (result?.code !== 0 || result.timedOut || result.outputExceeded)
+      throw new UsageError("could not configure worktree signing; inspect Git configuration before retrying");
+    return result.stdout.trim();
+  }
+
+  private async enableWorktreeConfig(repo: string): Promise<void> {
+    if (
+      (await this.gitConfig(repo, ["--local", "--includes", "--bool", "--get", "extensions.worktreeConfig"], true)) ===
+      "true"
+    )
+      return;
+    // Enabling the extension changes how these common settings apply. Leave
+    // migration to the owner instead of changing their checkout's behavior.
+    const worktree = await this.gitConfig(repo, ["--local", "--includes", "--get", "core.worktree"], true);
+    const bare = await this.gitConfig(repo, ["--local", "--includes", "--bool", "--get", "core.bare"], true);
+    const sparse = await this.gitConfig(
+      repo,
+      ["--local", "--includes", "--bool", "--get", "core.sparseCheckout"],
+      true,
+    );
+    if (worktree !== null || bare === "true" || sparse === "true")
+      throw new UsageError(
+        "worktree signing needs extensions.worktreeConfig: migrate core.worktree, core.bare or core.sparseCheckout to per-worktree config first (see git worktree documentation), or keep [git] sign = inherit",
+      );
+    await this.gitConfig(repo, ["--local", "extensions.worktreeConfig", "true"]);
+  }
+
   async create(input: {
     repo: string;
     branch: string;
@@ -252,9 +286,11 @@ export class Herdr {
     ticket: string;
     secrets?: string[];
     label?: string;
+    sign?: "inherit" | "off";
   }): Promise<HerdrHandle> {
     const agent = input.ticket.toLowerCase();
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(agent)) throw new UsageError("ticket cannot be used as a herdr agent name");
+    if (input.sign === "off") await this.enableWorktreeConfig(input.repo);
     const r = object(
       (
         await this.call([
@@ -282,6 +318,15 @@ export class Herdr {
       object(r?.root_pane)?.workspace_id !== workspace
     )
       throw new UsageError("invalid herdr worktree response; inspect herdr worktree list before retrying");
+    if (input.sign === "off") {
+      await this.gitConfig(path, ["--worktree", "commit.gpgsign", "false"]);
+      // An include copied from the owner's worktree can still override the
+      // direct value. Check all scopes before starting an unattended worker.
+      if ((await this.gitConfig(path, ["--includes", "--bool", "--get", "commit.gpgsign"], true)) !== "false")
+        throw new UsageError(
+          "worktree signing is still enabled by included or overriding Git configuration; move the signing override after includes in the worker's config.worktree before retrying",
+        );
+    }
     // A pre-existing server may carry coordinator credentials. Override them in
     // a dedicated worker shell, and use the pane ID returned by herdr.
     const tab = object(

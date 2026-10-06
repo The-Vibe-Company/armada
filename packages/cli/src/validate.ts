@@ -2,11 +2,14 @@
 // Armada's Validations page. A worker submits its own work (its phase becomes
 // awaiting-validation); the coordinator sends a validation or a question for
 // any ticket, and closes a ticket whose validation the owner approved.
+
+import { basename, resolve } from "node:path";
 import {
   type ArmadaConfig,
   type Credentials,
   closeValidated,
   createMissingLabels,
+  excerptLines,
   parseChoices,
   readLabels,
   submitValidation,
@@ -14,6 +17,34 @@ import {
 import { attachItems } from "./attach.ts";
 import { httpOptions, type Io, UsageError } from "./io.ts";
 import { currentTicket, endWorkerSessions, readMessage, type WorkerArgs, withContext } from "./worker.ts";
+
+/** A local text sample, with an optional inclusive, one-based line range. */
+export async function readExcerpt(io: Io, raw: string) {
+  const match = /^(.*):(\d+)-(\d+)$/.exec(raw);
+  const file = match?.[1] ?? raw;
+  const from = match ? Number(match[2]) : 1;
+  const to = match ? Number(match[3]) : null;
+  const usage = `armada validate "<headline>" --excerpt '${file.replaceAll("'", "'\\''")}':1-40`;
+  if (!file || !Number.isSafeInteger(from) || from < 1 || (to !== null && (!Number.isSafeInteger(to) || to < from)))
+    throw new UsageError(`--excerpt needs <file>[:from-to], with a one-based inclusive range: ${usage}`);
+  const text = await io.readFile(resolve(io.cwd, file));
+  if (text === null) throw new UsageError(`cannot read excerpt file: ${file}`);
+  const lines = excerptLines(text);
+  if (from > lines.length || (to !== null && to > lines.length))
+    throw new UsageError(`excerpt range exceeds ${lines.length} lines: ${usage}`);
+  return {
+    label: `${basename(file)}${match ? `:${from}-${to}` : ""}`,
+    text: lines.slice(from - 1, to ?? undefined).join("\n"),
+  };
+}
+
+async function validationFiles(io: Io, options: Record<string, string>) {
+  const excerpts = await Promise.all(attachList(options.excerpt).map((raw) => readExcerpt(io, raw)));
+  const file = options["details-file"];
+  const details = file ? await io.readFile(resolve(io.cwd, file)) : null;
+  if (file && details === null) throw new UsageError(`cannot read details file: ${file}`);
+  return { excerpts, details };
+}
 
 const TICKET = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
@@ -66,28 +97,35 @@ export async function validate(io: Io, config: ArmadaConfig, credentials: Creden
   const ticket = named ?? currentTicket(io, config, a.options.ticket, credentials.workerTickets);
   const worker = !named && credentials.armadaSignIn?.kind === "worker";
   const items = attachList(a.options.attach);
+  const samples = await validationFiles(io, a.options);
   if (worker) await ensurePhaseLabel(io, config, credentials);
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    submitValidation(ctx, {
-      ticket,
-      kind: "validation",
-      what,
-      choices: parseChoices(a.options.choices),
-      attachments: [],
-      // Uploaded once every check passed: a refused submission leaves nothing behind.
-      upload: async () =>
-        items.length
-          ? (
-              await attachItems(io, config, credentials, {
-                ticket,
-                items,
-                ...(a.options.caption ? { caption: a.options.caption } : {}),
-                reference: "validation",
-              })
-            ).map((saved) => saved.attachment.id)
-          : [],
-      worker,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    submitValidation(
+      ctx,
+      redact({
+        ticket,
+        kind: "validation",
+        what,
+        checks: attachList(a.options.check),
+        ...samples,
+        uploadCount: items.length,
+        choices: parseChoices(a.options.choices),
+        attachments: [],
+        // Uploaded once every check passed: a refused submission leaves nothing behind.
+        upload: async () =>
+          items.length
+            ? (
+                await attachItems(io, config, credentials, {
+                  ticket,
+                  items,
+                  ...(a.options.caption ? { caption: redact({ caption: a.options.caption }).caption } : {}),
+                  reference: "validation",
+                })
+              ).map((saved) => saved.attachment.id)
+            : [],
+        worker,
+      }),
+    ),
   );
 }
 
@@ -101,15 +139,19 @@ export async function askOwner(io: Io, config: ArmadaConfig, credentials: Creden
   if (!choices || choices.length < 2) throw new UsageError(`give the owner at least two choices: ${usage}`);
   if (credentials.armadaSignIn?.kind === "worker")
     throw new UsageError("a worker asks the coordinator (armada ask), who escalates to the owner");
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    submitValidation(ctx, {
-      ticket: ticket.toUpperCase(),
-      kind: "question",
-      what: question,
-      choices,
-      attachments: [],
-      worker: false,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    submitValidation(
+      ctx,
+      redact({
+        ticket: ticket.toUpperCase(),
+        kind: "question",
+        what: question,
+        checks: attachList(a.options.check),
+        choices,
+        attachments: [],
+        worker: false,
+      }),
+    ),
   );
 }
 
