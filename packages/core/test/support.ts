@@ -14,7 +14,7 @@ import {
 } from "../src/armada-api.ts";
 import { NPM_REGISTRY_URL } from "../src/brief.ts";
 import { type ArmadaConfig, parseConfig } from "../src/config.ts";
-import { type FleetCaller, fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
+import { type FleetCaller, fleetClient, parseProject, type ServeFleetDeps, serveFleet } from "../src/fleet-api.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
 import { agentLabels, type Fetch, LINEAR_ENDPOINT, normalizeComment, parsePullRequestUrl } from "../src/linear.ts";
 import type {
@@ -151,6 +151,7 @@ export async function answerFleet(
   body: unknown,
   caller: FleetCaller & { project?: string },
   cliVersion: string | null = null,
+  sendDigest?: ServeFleetDeps["sendDigest"],
 ): Promise<Response> {
   const b = (body ?? {}) as { project?: unknown; input?: unknown };
   const project = parseProject(b.project);
@@ -165,7 +166,7 @@ export async function answerFleet(
   const answer = await serveFleet(
     store,
     { op, project, caller, input: b.input },
-    { now: clock.now, cliVersion, appUrl: ARMADA_URL },
+    { now: clock.now, cliVersion, appUrl: ARMADA_URL, sendDigest },
   );
   if (answer.status === 304) return new Response(null, { status: 304 });
   return Response.json(answer.body, { status: answer.status });
@@ -237,6 +238,7 @@ export const LABELS: TicketLabel[] = [
   { id: "rt-claude", name: "Claude Code", group: "Agent runtime" },
   { id: "rt-herdr", name: "Herdr", group: "Agent runtime" },
   { id: "ready", name: "ready-for-agent", group: null },
+  { id: "plan-approved", name: "plan-approved", group: null },
 ];
 
 export const STATES: WorkflowState[] = [
@@ -321,6 +323,10 @@ export class FakeLinear implements LinearWriter {
 
   async groupLabels(group: string) {
     return LABELS.filter((l) => l.group === group);
+  }
+
+  async labelByName(name: string, _teamId: string) {
+    return LABELS.find((l) => l.name.toLowerCase() === name.toLowerCase()) ?? null;
   }
 
   async createIssue(input: IssueCreate) {
@@ -540,6 +546,7 @@ export function fakeArmada(
     cli?: ServerCli;
     /** Secrets for workers, by project slug ("" for the organization's), then name. */
     secrets?: Record<string, Record<string, string>>;
+    sendDigest?: ServeFleetDeps["sendDigest"];
   } = {},
 ) {
   const store = o.store ?? memoryFleet();
@@ -618,6 +625,7 @@ export function fakeArmada(
           ? { kind: "worker", ticket: worker.ticket, project: worker.project, sessionId: worker.id }
           : { kind: "organization" },
         call.version,
+        o.sendDigest,
       );
     }
     if (call.method === "POST" && call.path.startsWith("secrets/")) {

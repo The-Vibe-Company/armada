@@ -168,7 +168,8 @@ export async function httpRequest<T>(
                 status: response.status,
                 ms: Math.min(10_000, remaining, Math.max(after ?? 0, Math.round(jitter))),
               };
-              await response.arrayBuffer();
+              // This response is discarded; draining it would buffer an unbounded error body.
+              await response.body?.cancel().catch(() => {});
               return undefined;
             }
           }

@@ -7,7 +7,7 @@ slug = "armada"          # stable id: one project = one repository + one program
 
 [tracker]
 program_root = "THE-812" # Linear issue at the root of the program
-language = "en"          # language of owner-facing output
+language = "fr"          # language of owner-facing output
 ready_label = "ready-for-agent"
 
 [tracker.labels]

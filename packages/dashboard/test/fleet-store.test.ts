@@ -7,6 +7,7 @@ import {
   addRequest,
   assignUnownedProjects,
   coordinatorPresence,
+  eventsSince,
   fleetStore,
   getLease,
   getRuntimeHandle,
@@ -490,6 +491,55 @@ describe("leases", () => {
     await releaseLease(db, { ...lease, holder: loser });
     expect(await getLease(db, P, "merge")).toBeNull();
   });
+});
+
+test("events/since uses the project, kinds and tickets, pages ties and reads late commits once", async () => {
+  const project = "follow-stream";
+  await upsertProject(db, { slug: project, name: "Follow", repository: "acme/follow", programRoot: "WID-1" }, at(0));
+  for (const kind of ["report", "report", "heartbeat", "claim"] as const)
+    await recordEvent(db, { project, ticket: "WID-2", kind, message: kind, at: at(1) });
+  const q = { afterId: 0, afterAt: at(0).toISOString(), kinds: ["report"] as const, tickets: ["WID-2"], limit: 1 };
+  const first = await eventsSince(db, project, q);
+  expect(first).toHaveLength(1);
+  const firstEvent = first[0];
+  if (!firstEvent) throw new Error("missing first page");
+  const next = await eventsSince(db, project, { ...q, pageAfter: { id: firstEvent.id, at: firstEvent.at } });
+  expect(next).toHaveLength(1);
+  const one = first[0],
+    two = next[0];
+  if (!one || !two) throw new Error("missing event page");
+  expect(two.id).toBeGreaterThan(one.id);
+  const boundary = { ...q, afterId: two.id, afterAt: two.at, seenIds: [one.id, two.id] };
+  expect(await eventsSince(db, project, boundary)).toEqual([]);
+  await recordEvent(db, {
+    project,
+    ticket: "WID-2",
+    kind: "report",
+    message: "late",
+    at: new Date(at(1).getTime() - 10000),
+  });
+  const late = await eventsSince(db, project, boundary);
+  expect(late.map((e) => e.message)).toEqual(["late"]);
+  const lateEvent = late[0];
+  if (!lateEvent) throw new Error("missing late event");
+  expect(await eventsSince(db, project, { ...boundary, seenIds: [...boundary.seenIds, lateEvent.id] })).toEqual([]);
+  expect(await eventsSince(db, project, { ...q, tickets: ["WID-3"] })).toEqual([]);
+  expect(await eventsSince(db, "unknown-project", q)).toEqual([]);
+});
+
+test("events/since selects handover reports before pagination", async () => {
+  const project = "follow-handover";
+  await upsertProject(db, { slug: project, name: "Handover", repository: "acme/follow", programRoot: "WID-1" }, at(0));
+  await recordEvent(db, { project, ticket: "WID-2", kind: "report", phase: "implementing", at: at(1) });
+  await recordEvent(db, { project, ticket: "WID-2", kind: "report", phase: "ready-to-merge", at: at(2) });
+  const events = await eventsSince(db, project, {
+    afterId: 0,
+    afterAt: at(0).toISOString(),
+    kinds: ["report"],
+    handoverOnly: true,
+    limit: 1,
+  });
+  expect(events.map((e) => e.phase)).toEqual(["ready-to-merge"]);
 });
 
 test("declared paths replace the old plan, stay scoped to a project and are cleared on release and merge", async () => {
