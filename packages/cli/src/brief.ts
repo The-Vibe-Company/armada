@@ -26,9 +26,10 @@ import {
   shellWord,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { preApprovalReason, preparePreApproval } from "./plan-approval.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
+import { liveFleet } from "./worker.ts";
 
 export interface BriefArgs {
   rest: string[];
@@ -214,6 +215,7 @@ export async function brief(
           }
         : {}),
       launch: launcher(io, config, credentials),
+      overlap: liveFleet(io, config, credentials).fleet?.overlap,
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
       conventions,
@@ -222,7 +224,7 @@ export async function brief(
         reason: a.options["validation-reason"] ?? null,
         command: briefCommand(ticket.toUpperCase(), a),
       },
-      ...(io.fetch ? { fetch: io.fetch } : {}),
+      ...httpOptions(io),
       ...(io.now ? { now: io.now } : {}),
     });
   } catch (err) {

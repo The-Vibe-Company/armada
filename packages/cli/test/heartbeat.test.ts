@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordClaim } from "@armada/core";
+import { machinePaths, recordClaim, updateWatchState } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
@@ -87,6 +87,21 @@ describe("armada heartbeat", () => {
     expect(await run([...args, "--background"], setup.io)).toBe(1);
     expect(setup.err.join("")).not.toContain("CANARY");
     expect(setup.err.join("")).toContain("report manually at least every 15 minutes");
+  });
+
+  test("a detached heartbeat keeps the project selected from an unrelated folder", async () => {
+    const setup = await terminal();
+    const paths = machinePaths(setup.io.env);
+    if (!paths) throw new Error("temporary machine store missing");
+    await updateWatchState(paths, "widgets", { root: setup.io.cwd });
+    setup.io.cwd = "/tmp";
+    setup.io.startBackground = async (parameters) => {
+      // Run the real child dispatch against the fake clock and fleet, from the same unrelated cwd.
+      expect(await run(parameters, setup.io)).toBe(0);
+      return true;
+    };
+    expect(await run([...args, "--project", "widgets", "--background"], setup.io)).toBe(0);
+    expect(setup.api.calls.map((call) => call.path)).toEqual(["fleet/heartbeat", "fleet/heartbeat", "fleet/heartbeat"]);
   });
 
   test("unsafe interval or transient shell PID is refused before any API call", async () => {

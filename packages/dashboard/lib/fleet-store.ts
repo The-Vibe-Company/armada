@@ -573,7 +573,8 @@ export async function observeRuntime(
        runtime_changed_at = COALESCE($8::timestamptz, CASE WHEN runtime_state IS DISTINCT FROM $5
          OR ($7::bigint IS NOT NULL AND runtime_state_sequence IS DISTINCT FROM $7) THEN $6 ELSE runtime_changed_at END),
        runtime_state_sequence = COALESCE($7::bigint, runtime_state_sequence)
-     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND released_at IS NULL
+     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4
+       AND (released_at IS NULL OR $5 = 'gone')
        AND lower(runtime) = ANY($9::text[]) AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
     [
       input.project,
@@ -596,6 +597,13 @@ export async function stopRuntime(
   input: { project: string; ticket: string; handle: string; claimedAt: string; at: Date },
 ): Promise<boolean> {
   return transaction(db, async (tx) => {
+    const previous = await tx.query(
+      `SELECT runtime, released_at FROM runtime_handles
+       WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4
+         AND lower(runtime) = ANY($5::text[]) FOR UPDATE`,
+      [input.project, input.ticket, input.handle, input.claimedAt, OBSERVABLE_RUNTIMES],
+    );
+    if (!previous.rows.length) return false;
     const held = await tx.query(
       `UPDATE runtime_handles SET released_at = COALESCE(released_at, $5)
        WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND lower(runtime) = ANY($6::text[]) RETURNING ticket`,
@@ -608,6 +616,17 @@ export async function stopRuntime(
       [input.project, input.ticket, input.handle, input.claimedAt, input.at],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [input.project, input.ticket]);
+    if (previous.rows[0]?.released_at === null)
+      await recordEvent(tx, {
+        project: input.project,
+        ticket: input.ticket,
+        kind: "release",
+        phase: "released",
+        runtime: String(previous.rows[0].runtime),
+        handle: input.handle,
+        message: "Runtime workspace archived",
+        at: input.at,
+      });
     return true;
   });
 }
@@ -649,13 +668,24 @@ export async function openRuntimeHandles(db: Queryable, project: string): Promis
   const rs = await db.query(`${HANDLE_SELECT} WHERE h.project = $1 AND h.released_at IS NULL ORDER BY h.ticket`, [
     project,
   ]);
-  return rs.rows.map(handleOf);
+  return withHandleAnswers(db, project, rs.rows.map(handleOf));
 }
 
 export async function getRuntimeHandle(db: Queryable, project: string, ticket: string): Promise<RuntimeHandle | null> {
   const rs = await db.query(`${HANDLE_SELECT} WHERE h.project = $1 AND h.ticket = $2`, [project, ticket]);
   const r = rs.rows[0];
-  return r ? handleOf(r) : null;
+  return r ? ((await withHandleAnswers(db, project, [handleOf(r)]))[0] ?? null) : null;
+}
+
+/** One indexed answer read for all current handles, filtered again to each claim generation. */
+async function withHandleAnswers(db: Queryable, project: string, handles: RuntimeHandle[]): Promise<RuntimeHandle[]> {
+  if (!handles.length) return handles;
+  const since = new Date(handles.map((h) => h.claimedAt).sort()[0] ?? 0);
+  const answers = await lastAnsweredAt(db, project, { since, tickets: handles.map((h) => h.ticket) });
+  return handles.map((h) => {
+    const answer = answers[h.ticket];
+    return { ...h, ...(answer && answer >= h.claimedAt ? { lastAnsweredAt: answer } : {}) };
+  });
 }
 
 // ------------------------------------------------------------------ inbox
@@ -733,14 +763,16 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
   return id === undefined ? null : Number(id);
 }
 
-/** Adds the ticket's plan for the coordinator, unless one is already open. */
+/** Adds or refreshes the ticket's open plan for the coordinator. */
 export async function putPlan(
   db: Queryable,
   item: { project: string; ticket: string; author: string | null; body: string; at: Date },
 ): Promise<void> {
   await db.query(
     `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5) ON CONFLICT DO NOTHING`,
+     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5)
+     ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at`,
     [item.project, item.ticket, item.author, item.body, item.at],
   );
 }
@@ -971,8 +1003,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtimeHandle" FROM (
-       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtimeHandle", "endedAt"
+    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle" FROM (
+       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -992,6 +1024,7 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
     launchedAt: isoAt(r.createdAt),
     tokenUsedAt: iso(r.tokenUsedAt),
     tokenExpiresAt: isoAt(r.tokenExpiresAt),
+    runtime: text(r.runtime),
     handle: text(r.runtimeHandle),
   }));
 }
@@ -1032,6 +1065,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
           launchedAt: ended.createdAt,
           tokenExpiresAt: ended.tokenExpiresAt,
           tokenUsedAt: null,
+          runtime: ended.runtime,
           handle: ended.handle,
         });
     }
@@ -1046,6 +1080,23 @@ export const fleetStore = (db: Database): FleetStore => ({
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
+  saveTicketPaths: async (project, ticket, paths, at) => {
+    await db.query(
+      `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
+      ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
+      [project, ticket, paths, at],
+    );
+  },
+  ticketPaths: async (project) => {
+    const result = await db.query<{ ticket: string; paths: string[] }>(
+      "SELECT ticket, paths FROM ticket_paths WHERE project = $1",
+      [project],
+    );
+    return Object.fromEntries(result.rows.map((r) => [r.ticket, r.paths]));
+  },
+  deleteTicketPaths: async (project, ticket) => {
+    await db.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
+  },
   recordEvent: (e) => recordEvent(db, e),
   recordHeartbeat: (input) => recordHeartbeat(db, input),
   heartbeatTimes: (project) => heartbeatTimes(db, project),
@@ -1302,7 +1353,10 @@ export interface LiveStore extends RequestStore {
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
   assignUnownedProjects(organization: string, now: Date): Promise<number>;
-  latestEvents(project: string, opts: { since: Date }): Promise<Record<string, LatestEvent>>;
+  latestEvents(
+    project: string,
+    opts: { since: Date; tickets?: readonly string[] },
+  ): Promise<Record<string, LatestEvent>>;
   recentEvents(project: string, since: Date): Promise<HistoryEvent[]>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;

@@ -2,8 +2,16 @@
 // recently closed ones with their CI rollup and mergeability. The rollup's
 // check runs need a token with the Checks permission: the dashboard's GitHub
 // App installation token has it (THE-851), fine-grained personal tokens do not.
-import { type Fetch, HttpRequestError, httpRequest } from "./http.ts";
-import type { CiState, ForgeData, Issue, ProgramData, PullRequest } from "./types.ts";
+import { MAIN_HISTORY_WINDOW, mainHealth } from "./fleet.ts";
+import {
+  type Fetch,
+  HttpRequestError,
+  type HttpRequestOptions,
+  HttpStatusError,
+  httpRequest,
+  retryStatus,
+} from "./http.ts";
+import type { CiState, ForgeData, Issue, MainCommit, MainHealth, ProgramData, PullRequest } from "./types.ts";
 
 export const GITHUB_GRAPHQL = "https://api.github.com/graphql";
 
@@ -47,6 +55,42 @@ export function ticketIdFromBranch(branch: string, known: ReadonlySet<string>): 
 type RawContext =
   | { __typename: "CheckRun"; name: string; status: string; conclusion: string | null }
   | { __typename: "StatusContext"; context: string; state: string };
+
+interface RawMainBranch {
+  name: string;
+  target: {
+    history?: {
+      nodes: {
+        oid: string;
+        committedDate: string;
+        messageHeadline: string;
+        statusCheckRollup: {
+          state: string;
+          contexts: { nodes: RawContext[]; pageInfo?: { hasNextPage: boolean } };
+        } | null;
+      }[];
+      pageInfo?: { hasNextPage: boolean };
+    };
+  };
+}
+
+function normalizeMain(branch: RawMainBranch | null | undefined): MainCommit[] {
+  if (!branch) return [];
+  return (branch.target.history?.nodes ?? []).map((c) => ({
+    branch: branch.name,
+    sha: c.oid,
+    at: c.committedDate,
+    headline: c.messageHeadline,
+    checksComplete: c.statusCheckRollup?.contexts.pageInfo?.hasNextPage !== true,
+    ci: c.statusCheckRollup ? checkState("", c.statusCheckRollup.state) : "none",
+    checks:
+      c.statusCheckRollup?.contexts.nodes.map((context) =>
+        context.__typename === "CheckRun"
+          ? { name: context.name, state: checkState(context.status, context.conclusion) }
+          : { name: context.context, state: checkState("", context.state) },
+      ) ?? [],
+  }));
+}
 
 export interface RawPull {
   additions?: number;
@@ -129,9 +173,22 @@ const PULL_FIELDS = /* GraphQL */ `
     } } } } } }
   }`;
 
+const MAIN_FIELDS = /* GraphQL */ `
+  defaultBranchRef { name target { ... on Commit {
+    history(first: ${MAIN_HISTORY_WINDOW}) { pageInfo { hasNextPage } nodes {
+      oid committedDate messageHeadline
+      statusCheckRollup { state contexts(first: 50) { pageInfo { hasNextPage } nodes {
+        __typename
+        ... on CheckRun { name status conclusion }
+        ... on StatusContext { context state }
+      } } }
+    } }
+  } } }`;
+
 const PULLS_QUERY = /* GraphQL */ `${PULL_FIELDS}
   query Pulls($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
+      ${MAIN_FIELDS}
       open: pullRequests(states: OPEN, first: 100, orderBy: { field: UPDATED_AT, direction: DESC }) {
         pageInfo { hasNextPage }
         nodes { ...P }
@@ -140,7 +197,7 @@ const PULLS_QUERY = /* GraphQL */ `${PULL_FIELDS}
     }
   }`;
 
-export interface FetchForgeOptions {
+export interface FetchForgeOptions extends HttpRequestOptions {
   token: string;
   /** owner/name */
   repository: string;
@@ -161,7 +218,7 @@ async function githubQuery<T>(
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
       body: JSON.stringify({ query, variables }),
     },
-    { ...opts, retry: true },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
       const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
@@ -169,6 +226,7 @@ async function githubQuery<T>(
       return json;
     },
   ).catch((err: unknown) => {
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
     if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
     throw err;
   });
@@ -195,6 +253,7 @@ export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
   const [owner, name] = opts.repository.split("/");
   const json = await githubQuery<{
     repository: {
+      defaultBranchRef?: RawMainBranch | null;
       open: { nodes: RawPull[]; pageInfo?: { hasNextPage: boolean } };
       closed: { nodes: RawPull[] };
     } | null;
@@ -205,6 +264,8 @@ export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
     repo: opts.repository,
     fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
     prs: [...repo.open.nodes, ...repo.closed.nodes].map((p) => normalizePull(p, opts.repository)),
+    main: normalizeMain(repo.defaultBranchRef),
+    mainComplete: repo.defaultBranchRef?.target.history?.pageInfo?.hasNextPage === false,
     warnings: [
       ...(repo.open.pageInfo?.hasNextPage
         ? ["more than 100 open pull requests; the least recently updated are ignored"]
@@ -217,6 +278,25 @@ export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
       ]),
     ],
   };
+}
+
+/** A fresh default-branch health reading for merge and queue callers. */
+export async function fetchMainHealth(
+  opts: FetchForgeOptions & { requiredChecks?: readonly string[] },
+): Promise<MainHealth | null> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{ repository: { defaultBranchRef: RawMainBranch | null } | null }>(
+    opts,
+    `query MainHealth($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${MAIN_FIELDS} } }`,
+    { owner, name },
+  );
+  if (!json.data?.repository) throw new GithubError(`GitHub: repository ${opts.repository} not found`);
+  const branch = json.data.repository.defaultBranchRef;
+  return mainHealth(
+    normalizeMain(branch),
+    opts.requiredChecks ?? [],
+    branch?.target.history?.pageInfo?.hasNextPage === false,
+  );
 }
 
 /**
@@ -248,7 +328,7 @@ const FILE_QUERY = /* GraphQL */ `
     repository(owner: $owner, name: $name) { object(expression: $expression) { ... on Blob { text } } }
   }`;
 
-export interface FetchFileOptions {
+export interface FetchFileOptions extends HttpRequestOptions {
   token: string;
   /** owner/name */
   repository: string;
@@ -268,7 +348,7 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.token}` },
       body: JSON.stringify({ query: FILE_QUERY, variables: { owner, name, expression: `HEAD:${opts.path}` } }),
     },
-    { ...opts, retry: true },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
       const json = (await res.json()) as {
@@ -280,6 +360,7 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
       return json.data.repository.object?.text ?? null;
     },
   ).catch((err: unknown) => {
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
     if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
     throw err;
   });
@@ -389,12 +470,13 @@ export async function fetchPullDiff(opts: FetchForgeOptions & { number: number }
       method: "GET",
       headers: { Accept: "application/vnd.github.diff", Authorization: `Bearer ${opts.token}` },
     },
-    { ...opts, retry: true },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
       if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status} reading the diff of #${opts.number}`);
       return res.text();
     },
   ).catch((err: unknown) => {
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
     if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
     throw err;
   });

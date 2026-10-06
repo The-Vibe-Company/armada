@@ -17,7 +17,14 @@ import { type ArmadaConfig, parseConfig } from "../src/config.ts";
 import { type FleetCaller, fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
 import { agentLabels, type Fetch, LINEAR_ENDPOINT, normalizeComment, parsePullRequestUrl } from "../src/linear.ts";
-import type { LinearWriter, Ticket, TicketChange, TicketLabel, WorkflowState } from "../src/linear-write.ts";
+import type {
+  IssueCreate,
+  LinearWriter,
+  Ticket,
+  TicketChange,
+  TicketLabel,
+  WorkflowState,
+} from "../src/linear-write.ts";
 import type { Fleet, FleetStore, ProjectInput } from "../src/live.ts";
 import { type Comment, type Issue, LABEL_PHASES } from "../src/types.ts";
 import githubPulls from "./fixtures/github-pulls.json";
@@ -247,6 +254,7 @@ export const STATES: WorkflowState[] = [
 export class FakeLinear implements LinearWriter {
   readonly tickets = new Map<string, Ticket>();
   readonly writes: string[] = [];
+  readonly creates: IssueCreate[] = [];
   /** Full body of every comment posted through the writer, in order. */
   readonly bodies: string[] = [];
   private seq = 0;
@@ -320,9 +328,18 @@ export class FakeLinear implements LinearWriter {
     return LABELS.find((l) => l.name.toLowerCase() === name.toLowerCase()) ?? null;
   }
 
+  async createIssue(input: IssueCreate) {
+    this.creates.push(structuredClone(input));
+    const id = `DEMO-${Math.max(0, ...[...this.tickets.keys()].map((key) => Number(key.split("-").at(-1)) || 0)) + 1}`;
+    const ticket = this.add(id, { teamId: input.teamId, title: input.title });
+    this.writes.push(`create ${id} ${JSON.stringify(input)}`);
+    return { uuid: ticket.uuid, id, url: ticket.url };
+  }
+
   async updateTicket(uuid: string, change: TicketChange) {
     const t = this.get(uuid);
     this.writes.push(`update ${t.id} ${JSON.stringify(change)}`);
+    if (change.title !== undefined) t.title = change.title;
     if (change.stateId) {
       const s = STATES.find((x) => x.id === change.stateId);
       if (!s) throw new Error(`unknown state ${change.stateId}`);

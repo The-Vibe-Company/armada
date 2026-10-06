@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import type { LiveEvent } from "../src/fleet.ts";
 import { serveFleet } from "../src/fleet-api.ts";
-import { readInbox } from "../src/live.ts";
+import { entryKey, readInbox, serveInbox } from "../src/live.ts";
 import { buildStatus, loadStatus } from "../src/status.ts";
 import { DEMO_PROJECT, demoConfig, issue, NOW, recordedFetch, tempFleet } from "./support.ts";
 
@@ -230,4 +230,169 @@ describe("runtime readings", () => {
     });
     expect((await read(3)).map((e) => e.kind)).toEqual(["plan"]);
   });
+});
+
+describe("runtime-aware liveness", () => {
+  test("working doubles silence in both inbox and status, then explains the fresh reading", async () => {
+    const { fleet, store, clock } = tempFleet();
+    await fleet.claim({ ...claim, runtime: "Conductor", handle: "ws-1/ses-1" });
+    const read = () => readInbox(store, { project: DEMO_PROJECT.slug, now: clock.now(), silentAfterMinutes: 15 });
+    const status = async () => {
+      const held = (await fleet.runtimeHandles())[0];
+      if (!held) throw new Error("missing claim");
+      return buildStatus({
+        config: demoConfig(),
+        now: clock.now(),
+        forge: null,
+        program: {
+          rootId: "DEMO-1",
+          fetchedAt: NOW.toISOString(),
+          issues: [
+            issue("DEMO-1"),
+            issue(claim.ticket, {
+              parentId: "DEMO-1",
+              statusType: "started",
+              agentPhase: "implementing",
+              startedAt: NOW.toISOString(),
+              updatedAt: NOW.toISOString(),
+            }),
+          ],
+          comments: [],
+          warnings: [],
+        },
+        live: { after: NOW.toISOString(), events: {}, handles: { [claim.ticket]: held } },
+        lastEvents: { [claim.ticket]: NOW.toISOString() },
+      }).inFlight[0];
+    };
+    clock.advance(20 * 60_000);
+    await fleet.observeRuntime({
+      ticket: claim.ticket,
+      handle: "ws-1/ses-1",
+      claimedAt: NOW.toISOString(),
+      state: "working",
+    });
+    expect(await read()).toEqual([]);
+    expect((await status())?.silent).toBe(false);
+    clock.advance(10 * 60_000 + 1);
+    await fleet.observeRuntime({
+      ticket: claim.ticket,
+      handle: "ws-1/ses-1",
+      claimedAt: NOW.toISOString(),
+      state: "working",
+    });
+    expect(await read()).toMatchObject([
+      { kind: "silent", body: expect.stringContaining("but its session is still working (observed") },
+    ]);
+    expect((await status())?.silent).toBe(true);
+    clock.advance(16 * 60_000);
+    expect((await read())[0]?.body).not.toContain("still working");
+  });
+
+  test("idle stops active work after report grace, ignores heartbeats, and re-alarms each idle period", async () => {
+    const { fleet, store, clock } = tempFleet();
+    await fleet.claim({ ...claim, runtime: "Conductor", handle: "ws-1/ses-1" });
+    const input = { ticket: claim.ticket, handle: "ws-1/ses-1", claimedAt: NOW.toISOString() };
+    const read = () => readInbox(store, { project: DEMO_PROJECT.slug, now: clock.now(), silentAfterMinutes: 15 });
+    await fleet.observeRuntime({ ...input, state: "idle" });
+    clock.advance(5 * 60_000);
+    expect(await read()).toEqual([]);
+    clock.advance(1);
+    await fleet.heartbeat({ ticket: claim.ticket, handle: "ws-1/ses-1", claimedAt: NOW.toISOString() });
+    const first = (await read())[0];
+    if (!first) throw new Error("missing stopped entry");
+    expect(first).toMatchObject({
+      kind: "stopped",
+      body: expect.stringContaining("its session is idle and it did not hand back"),
+    });
+    await fleet.observeRuntime({ ...input, state: "idle" });
+    expect(entryKey((await read())[0] ?? first)).toBe(entryKey(first));
+    await fleet.observeRuntime({ ...input, state: "working" });
+    clock.advance(60_000);
+    await fleet.observeRuntime({ ...input, state: "idle" });
+    expect(entryKey((await read())[0] ?? first)).not.toBe(entryKey(first));
+    await fleet.report({
+      ticket: claim.ticket,
+      phase: "awaiting-approval",
+      message: "Please approve",
+      summary: "Please approve",
+      previous: "implementing",
+      prUrl: null,
+      headSha: null,
+    });
+    clock.advance(6 * 60_000);
+    expect((await read()).map((e) => e.kind)).toEqual(["plan"]);
+    await fleet.answer({ ticket: claim.ticket, item: null, text: "Resume", note: false });
+    const status = async () => {
+      const h = await fleet.runtimeHandle(claim.ticket);
+      if (!h) throw new Error("missing claim");
+      return buildStatus({
+        config: demoConfig(),
+        now: clock.now(),
+        forge: null,
+        program: {
+          rootId: "DEMO-1",
+          fetchedAt: NOW.toISOString(),
+          issues: [
+            issue("DEMO-1"),
+            issue(claim.ticket, { parentId: "DEMO-1", statusType: "started", agentPhase: "awaiting-approval" }),
+          ],
+          comments: [],
+          warnings: [],
+        },
+        live: { after: NOW.toISOString(), events: await fleet.latestEvents(), handles: { [claim.ticket]: h } },
+      }).inFlight[0];
+    };
+    expect(await read()).toEqual([]);
+    expect((await status())?.flags).not.toContain("stopped");
+    clock.advance(6 * 60_000);
+    expect((await read())[0]?.kind).toBe("stopped");
+    expect((await status())?.flags).toContain("stopped");
+  });
+});
+
+test("archived Conductor claims stay out of flight even after a tracker snapshot refresh", async () => {
+  const { fleet, store, clock } = tempFleet();
+  await fleet.claim({ ...claim, runtime: "Conductor", handle: "ws-1/ses-1" });
+  clock.advance(10 * 60_000);
+  await fleet.stopRuntime({ ticket: claim.ticket, handle: "ws-1/ses-1", claimedAt: NOW.toISOString() });
+  const events = await fleet.latestEvents();
+  const program = {
+    rootId: "DEMO-1",
+    fetchedAt: advance(11).toISOString(),
+    issues: [
+      issue("DEMO-1"),
+      issue(claim.ticket, {
+        parentId: "DEMO-1",
+        statusType: "started",
+        agentPhase: "implementing",
+        startedAt: NOW.toISOString(),
+      }),
+    ],
+    comments: [],
+    warnings: [],
+  };
+  const status = buildStatus({
+    config: demoConfig(),
+    now: advance(11),
+    forge: null,
+    program,
+    live: { after: program.fetchedAt, events, handles: {} },
+  });
+  expect(status.inFlight).toEqual([]);
+  clock.advance(60_000);
+  expect(
+    await serveInbox(
+      store,
+      DEMO_PROJECT.slug,
+      { coordinator: null, etag: null, silentAfterMinutes: 15 },
+      clock.now(),
+      null,
+      {
+        repository: DEMO_PROJECT.repository,
+        issues: program.issues,
+        prs: [],
+        flight: { program, forge: null, after: program.fetchedAt },
+      },
+    ),
+  ).toMatchObject({ inFlight: [] });
 });

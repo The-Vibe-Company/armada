@@ -1,16 +1,19 @@
 // Interface strings in English and French. The language is the dashboard's
 // own setting: the viewer's choice (a cookie), else ARMADA_DASHBOARD_LANGUAGE,
 // else English. Tracker content (titles, statuses, questions) is shown as is.
+
 import type {
   AgentPhase,
   CiState,
   CoordinatorState,
+  MainHealth,
   RequestKind,
   RequestRefusalCode,
   StatusType,
   ValidationKind,
   ValidationOutcome,
 } from "@armada/core/read";
+import { MAIN_HISTORY_WINDOW, mainHealthLine } from "@armada/core/read";
 import type { ActivityShow, EntryKind } from "./activity-view";
 import type { SessionGroup } from "./coordinator-view";
 import type { AgentStatus, PageKind, Section, StatusReason } from "./fleet-view";
@@ -67,6 +70,14 @@ export type GithubNotice = (typeof GITHUB_NOTICES)[number];
 /** Why a worker could not be revoked (a `?error=` of the Workers page). */
 export const WORKERS_ERRORS = ["forbidden", "gone", "failed"] as const;
 export type WorkersError = (typeof WORKERS_ERRORS)[number];
+
+/** Why an owner notification channel could not be changed. */
+export const NOTIFICATIONS_ERRORS = ["forbidden", "invalid", "failed"] as const;
+export type NotificationsError = (typeof NOTIFICATIONS_ERRORS)[number];
+
+/** What an owner notification channel change did. */
+export const NOTIFICATIONS_NOTICES = ["saved", "sent", "removed"] as const;
+export type NotificationsNotice = (typeof NOTIFICATIONS_NOTICES)[number];
 
 /** Where a launch stands, as the Workers page shows it (`workerState` in lib/workers.ts). */
 type WorkerStateLabel = "waiting" | "unused" | "active" | "idle" | "released" | "merged" | "revoked" | "expired";
@@ -419,6 +430,63 @@ const en = {
     } satisfies Record<WorkersError, string>,
     revoked: "Revoked. The worker's next command fails.",
   },
+  notifications: {
+    nav: "Notifications",
+    lead: "Send owner alerts to one Slack webhook or JSON endpoint. The cron is off by default; stopped coordinators are noticed on the next fleet traffic or dashboard poll.",
+    channel: "Owner alert channel",
+    none: "No owner notification channel configured.",
+    url: "Webhook URL",
+    urlHint: "Write-only. Leave blank to keep the saved URL.",
+    signingSecret: "Signing secret",
+    signingSecretHint:
+      "Required for JSON: a signing secret of at least 16 characters, shared with your receiver. Leave blank to keep it.",
+    format: "Format",
+    slack: "Slack",
+    json: "JSON",
+    languages: { en: "English", fr: "French" },
+    project: "Project filter",
+    allProjects: "All projects",
+    alerts: "Send alerts",
+    alertsHint: "Saving with alerts on resumes a paused channel.",
+    language: "Alert language",
+    timezone: "Time zone",
+    timezoneHint: "Used for quiet hours. Defaults to this browser's time zone.",
+    quiet: "Quiet hours",
+    noQuiet: "Off",
+    from: "From",
+    to: "To",
+    save: "Save",
+    sendTest: "Send a test",
+    remove: "Remove",
+    setBy: (who: string, when: string) => `set by ${who}, ${when}`,
+    created: (when: string) => `created ${when}`,
+    lastDelivery: (when: string) => `last delivery ${when}`,
+    neverDelivered: "no delivery yet",
+    delivered: "delivered",
+    failed: (when: string) => `failed ${when}`,
+    paused: (reason: string | null) => (reason ? `paused: ${reason}` : "paused"),
+    pauseReasons: {
+      failures: "10 consecutive deliveries failed",
+      "http-404": "the webhook was not found (404)",
+      "http-410": "the webhook was removed (410)",
+    },
+    disabled: "alerts off",
+    quietStored: "saved for the next summary (quiet hours)",
+    vaultOff: "Set ARMADA_SECRETS_KEY on the deployment to store a webhook safely.",
+    active: "active",
+    attempts: (n: number) => `${n} attempt${n === 1 ? "" : "s"}`,
+    cron: "Cron is off by default. A stopped coordinator is noticed on the next fleet traffic or dashboard poll.",
+    errors: {
+      forbidden: "Your role does not allow this.",
+      invalid: "Check the URL, format, project, quiet hours and time zone.",
+      failed: "That did not work. Try again in a moment.",
+    } satisfies Record<NotificationsError, string>,
+    notices: {
+      saved: "Saved. Alerts use the new settings.",
+      sent: "Test sent.",
+      removed: "Notification channel removed.",
+    } satisfies Record<NotificationsNotice, string>,
+  },
   device: {
     title: "Sign in from a terminal",
     enterLead: "Type the code your terminal shows after armada login.",
@@ -485,6 +553,7 @@ const en = {
   } satisfies Record<RequestError, string>,
   overview: {
     locale: "en-GB",
+    mainHealth: mainHealthLine,
     /** The overview's states (THE-1020), most urgent first, and what each means. */
     groups: {
       blocked: "Blocked",
@@ -543,6 +612,7 @@ const en = {
       ci: (pr: number) => `Red CI on #${pr}`,
       conflict: (pr: number) => `Conflict with main on #${pr}`,
       silent: (d: string) => `Silent for ${d}`,
+      stopped: "Stopped: its session is idle and it did not hand back",
       blocked: (text: string | null) => (text ? `Blocked: ${text}` : "Blocked"),
       plan: "Plan to approve",
       merge: (pr: number | null, ci: string) =>
@@ -779,6 +849,7 @@ const en = {
       ci: "Red CI",
       conflict: "Conflict with main",
       blocked: "Blocked",
+      stopped: "Session idle, no hand-back",
       silent: "Silent",
       ready: "Ready to merge",
     } satisfies Record<Exclude<StatusReason, "phase">, string>,
@@ -1306,6 +1377,63 @@ const fr: Strings = {
     },
     revoked: "Révoqué. La prochaine commande du worker échoue.",
   },
+  notifications: {
+    nav: "Notifications",
+    lead: "Envoie les alertes du propriétaire à un webhook Slack ou à un endpoint JSON. Le cron est désactivé par défaut ; les coordinateurs arrêtés sont détectés au prochain trafic de la flotte ou sondage du tableau de bord.",
+    channel: "Canal d'alertes du propriétaire",
+    none: "Aucun canal de notifications du propriétaire n'est configuré.",
+    url: "URL du webhook",
+    urlHint: "Écriture seule. Laisse vide pour garder l'URL enregistrée.",
+    signingSecret: "Secret de signature",
+    signingSecretHint:
+      "Requis pour JSON : un secret de signature de 16 caractères minimum, partagé avec le destinataire. Laisse vide pour le garder.",
+    format: "Format",
+    slack: "Slack",
+    json: "JSON",
+    languages: { en: "Anglais", fr: "Français" },
+    project: "Filtre de projet",
+    allProjects: "Tous les projets",
+    alerts: "Envoyer les alertes",
+    alertsHint: "Enregistrer avec les alertes activées reprend un canal en pause.",
+    language: "Langue des alertes",
+    timezone: "Fuseau horaire",
+    timezoneHint: "Utilisé pour les heures calmes. Par défaut, le fuseau de ce navigateur.",
+    quiet: "Heures calmes",
+    noQuiet: "Désactivées",
+    from: "De",
+    to: "À",
+    save: "Enregistrer",
+    sendTest: "Envoyer un test",
+    remove: "Supprimer",
+    setBy: (who, when) => `défini par ${who}, ${when}`,
+    created: (when) => `créé ${when}`,
+    lastDelivery: (when) => `dernière livraison ${when}`,
+    neverDelivered: "aucune livraison",
+    delivered: "livré",
+    failed: (when) => `échec ${when}`,
+    paused: (reason) => (reason ? `en pause : ${reason}` : "en pause"),
+    pauseReasons: {
+      failures: "10 livraisons consécutives ont échoué",
+      "http-404": "webhook introuvable (404)",
+      "http-410": "webhook supprimé (410)",
+    },
+    disabled: "alertes désactivées",
+    quietStored: "gardé pour le prochain résumé (heures calmes)",
+    vaultOff: "Définis ARMADA_SECRETS_KEY sur le déploiement pour garder un webhook en sécurité.",
+    active: "actif",
+    attempts: (n) => `${n} tentative${n > 1 ? "s" : ""}`,
+    cron: "Le cron est désactivé par défaut. Un coordinateur arrêté est détecté au prochain trafic de la flotte ou sondage du tableau de bord.",
+    errors: {
+      forbidden: "Ton rôle ne le permet pas.",
+      invalid: "Vérifie l'URL, le format, le projet, les heures calmes et le fuseau horaire.",
+      failed: "Ça n'a pas marché. Réessaie dans un instant.",
+    },
+    notices: {
+      saved: "Enregistré. Les alertes utilisent les nouveaux réglages.",
+      sent: "Test envoyé.",
+      removed: "Canal de notifications supprimé.",
+    },
+  },
   device: {
     title: "Connexion depuis un terminal",
     enterLead: "Tape le code que ton terminal affiche après armada login.",
@@ -1372,6 +1500,18 @@ const fr: Strings = {
   },
   overview: {
     locale: "fr-FR",
+    mainHealth: (h: MainHealth) => {
+      const ref = (c: { sha: string; pr: number | null }) => (c.pr === null ? c.sha.slice(0, 7) : `#${c.pr}`);
+      const since = h.redBeyondWindow
+        ? `en échec depuis plus de ${MAIN_HISTORY_WINDOW} commits`
+        : `en échec depuis ${h.redSince ? ref(h.redSince) : "une date inconnue"}`;
+      const fix = h.fixRunning ? `, un correctif est en cours (${ref(h.fixRunning)})` : "";
+      const failing =
+        h.redSince?.failing.length && !h.redBeyondWindow
+          ? ` (${h.redSince.failing.join(", ")} en échec sur ${h.redSince.sha.slice(0, 7)})`
+          : "";
+      return `${h.branch} ${since}${fix}${failing}`;
+    },
     groups: {
       blocked: "Bloqué",
       you: "Attend ta décision",
@@ -1429,6 +1569,7 @@ const fr: Strings = {
       ci: (pr) => `CI rouge sur #${pr}`,
       conflict: (pr) => `Conflit avec main sur #${pr}`,
       silent: (d) => `Silencieux depuis ${d}`,
+      stopped: "Arrêté : sa session est inactive et il n’a pas rendu son travail",
       blocked: (text) => (text ? `Bloqué : ${text}` : "Bloqué"),
       plan: "Plan à approuver",
       merge: (pr, ci) => ["Merge à approuver", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),
@@ -1649,6 +1790,7 @@ const fr: Strings = {
       ci: "CI rouge",
       conflict: "Conflit avec main",
       blocked: "Bloqué",
+      stopped: "Session inactive, travail non rendu",
       silent: "Silencieux",
       ready: "Prêt à fusionner",
     },

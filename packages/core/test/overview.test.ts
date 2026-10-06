@@ -137,7 +137,7 @@ describe("fleet overview", () => {
       },
     );
     // Launched, never claimed: no lane, it waits like a silent worker.
-    const launched = { ticket: "W-5", launchedAt: at("09:15"), tokenUsedAt: null, handle: "ws-5" };
+    const launched = { ticket: "W-5", launchedAt: at("09:15"), tokenUsedAt: null, runtime: null, handle: "ws-5" };
     if (widgets.report)
       widgets.report.notStarted = [{ ...launched, title: "Parse", url: "u5", detail: "launched 45 min ago" }];
     const gadgets = reading("gadgets", [ticket("G-1", { phase: "awaiting-approval", since: at("08:00") })], {
@@ -406,4 +406,20 @@ describe("fleet overview", () => {
     expect(o.rows.map((r) => [r.id, r.step])).toEqual([["W-1", "implementing"]]);
     expect(o.projects[0]?.merged).toEqual(merged);
   });
+});
+
+test("the overview carries each project's default-branch health", () => {
+  const r = reading("widgets", [], null);
+  if (!r.report) throw new Error("missing report fixture");
+  r.report.main = {
+    branch: "main",
+    head: "a".repeat(40),
+    state: "red",
+    redSince: { sha: "a".repeat(40), pr: 17, at: NOW.toISOString(), failing: ["test"] },
+    fixRunning: null,
+    redBeyondWindow: false,
+  };
+  const o = buildOverview({ projects: [r, reading("older", [], null)], live: { state: "ok", error: null }, now: NOW });
+  expect(o.projects[0]?.main).toEqual(r.report.main);
+  expect(o.projects[1]?.main).toBeNull();
 });

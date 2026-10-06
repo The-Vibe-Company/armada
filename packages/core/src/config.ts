@@ -4,6 +4,8 @@ import { parse, TomlError } from "smol-toml";
 
 export const CONFIG_FILE = "armada.toml";
 
+export type SpecTitleStyle = "N" | "N/M";
+
 export interface ArmadaConfig {
   project: {
     name: string;
@@ -13,6 +15,8 @@ export interface ArmadaConfig {
   tracker: {
     /** Identifier of the Linear issue at the root of the program, e.g. ABC-1. */
     programRoot: string;
+    /** Style used when creating and renumbering specs; both forms are always readable. */
+    specTitles: SpecTitleStyle;
     /** Language of owner-facing output (BCP 47 tag). Tracker comments stay in English. */
     language: string;
     /** Label that marks a ticket as specified enough for an agent to take. */
@@ -84,6 +88,9 @@ export interface ArmadaConfig {
     names: string[];
   };
   conductor: {
+    /** Optional explicit Conductor project and base branch for native launches. */
+    projectId?: string | null;
+    baseBranch?: string | null;
     /** Profile `armada brief` uses without `--profile`; null when none is declared. */
     defaultProfile: string | null;
     /** Launch settings by profile name, from `[conductor.profiles.<name>]`. */
@@ -303,7 +310,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   // left alone so newer sections do not break older readers.
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
-    ["tracker", tracker, ["program_root", "language", "ready_label", "parked_label", "labels"]],
+    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
@@ -328,7 +335,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ],
     ["brief", briefT, ["extra"]],
     ["secrets", secretsT, ["names"]],
-    ["conductor", conductorT, ["default_profile", "profiles", "routing"]],
+    ["conductor", conductorT, ["default_profile", "profiles", "routing", "project_id", "base_branch"]],
     ["herdr", herdrT, ["default_profile", "profiles", "routing"]],
   ];
   const profiles: Record<string, ConductorProfile> = {};
@@ -369,6 +376,23 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         `"conductor.default_profile" is "${defaultProfile}", but there is no [conductor.profiles.${defaultProfile}]`,
       );
   }
+  const projectId =
+    conductorT.project_id === undefined
+      ? null
+      : str(conductorT, "conductor", "project_id", {
+          pattern: /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/,
+          hint: "a Conductor project id",
+        });
+  const baseBranch =
+    conductorT.base_branch === undefined
+      ? null
+      : str(conductorT, "conductor", "base_branch", {
+          pattern:
+            /^(?![-/.])(?!.*\/\.)(?!.*\.lock(?:\/|$))(?!.*[\s~^:?*[\\])(?!.*\.\.)(?!.*@\{)(?!.*\/\/)(?!.*\/$)(?!.*\.$)(?!.*\.lock$)[^\s]+$/,
+          hint: "a git branch name",
+        });
+  if (baseBranch && [...baseBranch].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
+    problems.push('"conductor.base_branch" must be a git branch name');
   const routing: RoutingRule[] = [];
   const routingRaw = conductorT.routing ?? [];
   if (!Array.isArray(routingRaw)) problems.push(`"conductor.routing" must be a list of [[conductor.routing]] rules`);
@@ -597,12 +621,19 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"gates.local_commands" must be a list of shell commands`);
   }
 
+  let specTitles: SpecTitleStyle = "N";
+  if (tracker.spec_titles !== undefined) {
+    if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
+    else problems.push('"tracker.spec_titles" must be "N" or "N/M"');
+  }
+
   const config: ArmadaConfig = {
     project: {
       name: str(project, "project", "name"),
       slug: str(project, "project", "slug", { pattern: SLUG, hint: "lowercase letters, digits and dashes" }),
     },
     tracker: {
+      specTitles,
       programRoot: str(tracker, "tracker", "program_root", {
         pattern: ISSUE_ID,
         hint: "an issue identifier such as ABC-1",
@@ -636,7 +667,13 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     },
     brief: { extra },
     secrets: { names: secretNames },
-    conductor: { defaultProfile, profiles, routing },
+    conductor: {
+      defaultProfile,
+      profiles,
+      routing,
+      ...(projectId ? { projectId } : {}),
+      ...(baseBranch ? { baseBranch } : {}),
+    },
     herdr: { defaultProfile: herdrDefaultProfile, profiles: herdrProfiles, routing: herdrRouting },
   };
   if (problems.length) throw new ConfigError(source, problems);
@@ -656,6 +693,7 @@ slug = ${q(p.slug)}          # stable id: lowercase letters, digits and dashes
 
 [tracker]
 program_root = ${q(p.programRoot)}  # Linear issue at the root of the program
+spec_titles = "N"       # "N/M" keeps totals and updates them when adding a spec
 language = "en"          # language of owner-facing output
 ready_label = "ready-for-agent"
 # parked_label = "parked"  # a ticket with this label is parked on purpose: never listed as work to start

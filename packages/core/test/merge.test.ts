@@ -379,7 +379,14 @@ describe("armada merge", () => {
     expect(out.workers).toEqual([
       { ticket: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code", handle: "ws-2" },
     ]);
-    expect(out.archive).toEqual({ runtime: "Conductor", handle: "ws-1/s-1", guide: "armada-runtime-conductor" });
+    expect(out.archive).toMatchObject({
+      runtime: "Conductor",
+      handle: "ws-1/s-1",
+      guide: "armada-runtime-conductor",
+      source: "armada",
+      claim: { ticket: "DEMO-7", handle: "ws-1/s-1", releasedAt: NOW.toISOString() },
+      open: [{ ticket: "DEMO-8", handle: "ws-2", releasedAt: null }],
+    });
     expect(out.warnings).toEqual([]);
     expect(await db.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([]);
     expect((await db.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
@@ -1151,4 +1158,24 @@ describe("merge lease", () => {
       false,
     ]);
   });
+});
+
+test("main red is an informative merge note and health read failures do not block", async () => {
+  const s = setup();
+  s.ctx.forge.mainHealth = async () => ({
+    branch: "main",
+    head: BASE,
+    state: "red",
+    redSince: { sha: BASE, pr: 17, at: NOW.toISOString(), failing: ["test"] },
+    fixRunning: null,
+    redBeyondWindow: false,
+  });
+  const out = await mergePullRequest(s.ctx, { pr: 9, dryRun: true });
+  expect(out.lines).toContain("main red since #17 (test failing on fedcba9)");
+  expect(s.forge.merges).toEqual([]);
+  s.ctx.forge.mainHealth = async () => {
+    throw new Error("synthetic outage");
+  };
+  const unavailable = await mergePullRequest(s.ctx, { pr: 9, dryRun: true });
+  expect(unavailable.lines).toContain("default-branch CI could not be read; check it on GitHub");
 });

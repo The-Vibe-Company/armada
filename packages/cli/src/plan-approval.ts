@@ -5,7 +5,7 @@ import {
   createLinearWriter,
   routingLabelKey,
 } from "@armada/core";
-import { type Io, UsageError } from "./io.ts";
+import { httpOptions, type Io, UsageError } from "./io.ts";
 
 /** --reason can explain a profile choice, explicit pre-approval, or both. */
 export function preApprovalReason(options: Record<string, string>): string | null {
@@ -26,7 +26,7 @@ export async function preparePreApproval(
   const options = {
     apiKey: credentials.linearApiKey as string,
     labels: config.tracker.labels,
-    fetch: io.fetch ?? fetch,
+    ...httpOptions(io),
   };
   const linear = io.linearWriter ? io.linearWriter(options) : createLinearWriter(options);
   const ticket = await linear.readTicket(briefTicket.id);

@@ -1,6 +1,6 @@
 // Conductor JSON is an untrusted boundary. Never include its stdout/stderr in errors.
 import { type ClaimRef, conductorSessionState, RuntimeError, type RuntimeErrorCode } from "@armada/core";
-import { BUNDLED_CONDUCTOR } from "../doctor.ts";
+import { BUNDLED_CONDUCTOR, CONDUCTOR_INSTALL_FIX } from "../doctor.ts";
 import type { ExecResult, Io } from "../io.ts";
 import {
   type Archived,
@@ -8,6 +8,7 @@ import {
   checkedMutation,
   type Delivery,
   type Launched,
+  type LaunchRecovery,
   type LaunchSpec,
   type OutgoingMessage,
   type Peek,
@@ -20,10 +21,52 @@ import {
 
 const object = (v: unknown): Record<string, unknown> | null =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-const id = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/.test(v);
+const id = (v: unknown): v is string =>
+  typeof v === "string" && /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/.test(v) && redactRuntimeText(v) === v;
 const invalid = () => new RuntimeError("Conductor returned an invalid response", "invalid", "conductor --help");
+const safeLink = (v: unknown): string | null => {
+  if (
+    typeof v !== "string" ||
+    [...v].some((c) => c.charCodeAt(0) <= 32 || c.charCodeAt(0) === 127) ||
+    redactRuntimeText(v) !== v
+  )
+    return null;
+  try {
+    return new URL(v).protocol === "conductor:" ? v : null;
+  } catch {
+    return null;
+  }
+};
 const timestamp = (v: unknown): string | null =>
   typeof v === "string" && Number.isFinite(Date.parse(v)) ? new Date(v).toISOString() : null;
+
+/** The same argv is used by native launch and its read-only plan. */
+export function conductorLaunchArguments(spec: LaunchSpec): string[] {
+  const p = spec.profile;
+  const base = spec.from.kind === "branch" ? spec.branch : spec.base;
+  return [
+    "workspace",
+    "create",
+    ...(spec.projectId ? ["--project-id", spec.projectId] : ["--repo-url", `https://github.com/${spec.repository}`]),
+    "--branch",
+    base,
+    "--name",
+    `${spec.ticket} ${spec.title.slice(0, 60)}`,
+    "--session-name",
+    spec.ticket,
+    "--agent",
+    p.agent,
+    "--model",
+    p.model,
+    "--effort",
+    p.effort,
+    ...(p.fastMode ? ["--fast-mode"] : []),
+    "--message-file",
+    "-",
+    "--env",
+    `ARMADA_TICKET=${spec.ticket}`,
+  ];
+}
 
 export class ConductorAdapter implements RuntimeAdapter {
   readonly name = "conductor";
@@ -65,13 +108,13 @@ export class ConductorAdapter implements RuntimeAdapter {
       code === "auth" || code === "not-found" ? "conductor auth whoami" : "use the armada-runtime-conductor guide",
     );
   }
-  private async exec(args: string[], input?: string, mutation = false): Promise<ExecResult> {
+  private async exec(args: string[], input?: string, mutation = false, timeoutMs = 10_000): Promise<ExecResult> {
     if (!this.io.exec) throw this.error("unavailable");
     let r: ExecResult;
     try {
       r = await this.io.exec(this.binary, ["--json", ...args], {
         cwd: this.io.cwd,
-        timeoutMs: mutation ? 60_000 : 10_000,
+        timeoutMs: mutation ? (args[0] === "workspace" && args[1] === "create" ? 120_000 : 60_000) : timeoutMs,
         maxOutputBytes: 2_000_000,
         input,
       });
@@ -82,9 +125,11 @@ export class ConductorAdapter implements RuntimeAdapter {
         (e as NodeJS.ErrnoException).code === "ENOENT"
       ) {
         this.binary = BUNDLED_CONDUCTOR;
-        return this.exec(args, input, mutation);
+        return this.exec(args, input, mutation, timeoutMs);
       }
-      throw this.error("unavailable");
+      if ((e as NodeJS.ErrnoException).code === "ENOENT")
+        throw new RuntimeError("Conductor CLI is missing", "unavailable", CONDUCTOR_INSTALL_FIX);
+      throw this.error(mutation ? "unknown-outcome" : "unavailable");
     }
     if (r.timedOut) throw this.error(mutation ? "unknown-outcome" : "unavailable");
     if (r.code !== 0) {
@@ -93,23 +138,36 @@ export class ConductorAdapter implements RuntimeAdapter {
           ? "auth"
           : r.code === 4
             ? "unavailable"
-            : r.code === 2
-              ? "invalid"
-              : r.code === 1 && ["status", "message"].includes(args[1] ?? "")
-                ? "not-found"
-                : "unavailable";
+            : r.code === 1 && args[1] === "create"
+              ? "unknown-outcome"
+              : r.code === 2
+                ? "invalid"
+                : r.code === 1 && ["status", "message"].includes(args[1] ?? "")
+                  ? "not-found"
+                  : "unavailable";
+      if (code === "unknown-outcome")
+        throw new RuntimeError(
+          "Conductor create failed without confirming whether a worker was created",
+          code,
+          "conductor model",
+        );
       throw this.error(code);
     }
     return r;
   }
-  private async call(args: string[], input?: string, mutation = false): Promise<Record<string, unknown>> {
-    const r = await this.exec(args, input, mutation);
+  private async call(
+    args: string[],
+    input?: string,
+    mutation = false,
+    timeoutMs = 10_000,
+  ): Promise<Record<string, unknown>> {
+    const r = await this.exec(args, input, mutation, timeoutMs);
     try {
       const value = object(JSON.parse(r.stdout));
       if (!value) throw invalid();
       return value;
     } catch {
-      throw invalid();
+      throw mutation ? this.error("unknown-outcome") : invalid();
     }
   }
   async preflight(input: PreflightInput): Promise<PreflightCheck[]> {
@@ -195,32 +253,13 @@ export class ConductorAdapter implements RuntimeAdapter {
       const base = spec.from.kind === "branch" ? spec.branch : spec.base;
       if (!base || base.startsWith("-") || [...base].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))
         throw invalid();
-      result = await this.call(
-        [
-          "workspace",
-          "create",
-          "--repo-url",
-          `https://github.com/${spec.repository}`,
-          "--branch",
-          base,
-          "--name",
-          `${spec.ticket} ${spec.title.slice(0, 60)}`,
-          "--session-name",
-          spec.ticket,
-          ...this.profile(spec),
-          "--message-file",
-          "-",
-          "--env",
-          `ARMADA_TICKET=${spec.ticket}`,
-        ],
-        spec.prompt,
-        true,
-      );
-      if (!id(result.workspaceId)) throw invalid();
+      if (spec.projectId && !id(spec.projectId)) throw invalid();
+      result = await this.call(conductorLaunchArguments(spec), spec.prompt, true);
+      if (!id(result.workspaceId)) throw this.error("unknown-outcome");
       workspace = result.workspaceId;
     }
     const session = spec.from.kind === "in-place" ? result.id : result.sessionId;
-    if (!id(session)) throw invalid();
+    if (!id(session)) throw this.error("unknown-outcome");
     const acknowledgement = object(result.initialMessage);
     if (
       !acknowledgement ||
@@ -234,20 +273,111 @@ export class ConductorAdapter implements RuntimeAdapter {
       );
     return {
       handle: `${workspace}/${session}`,
-      link: typeof result.deepLink === "string" ? result.deepLink : null,
+      link: safeLink(result.deepLink),
       path: null,
       state: "idle",
     };
   }
-  private async session(target: ClaimRef) {
+  async recoverLaunch(spec: LaunchSpec, since: string): Promise<LaunchRecovery> {
+    if (!timestamp(since)) throw invalid();
+    // Names may change while create's response is in flight. Search stable repository/creation facts.
+    const r = await this.call([
+      "workspace",
+      "list",
+      "--mine",
+      "--repo",
+      spec.repository,
+      "--since",
+      since,
+      "--limit",
+      "10",
+    ]);
+    if (!Array.isArray(r.data) || typeof r.hasMore !== "boolean") throw invalid();
+    const workers: Launched[] = [];
+    const candidates: string[] = [];
+    let complete = !r.hasMore;
+    for (const value of r.data) {
+      const w = object(value);
+      if (!w || !id(w.id) || typeof w.repoUrl !== "string" || !timestamp(w.createdAt)) throw invalid();
+      // --since filters activity, not creation. Older workspaces are not candidates for this create.
+      if (
+        Date.parse(String(w.createdAt)) < Date.parse(since) ||
+        w.repoUrl
+          .replace(/\.git$/, "")
+          .replace(/\/$/, "")
+          .toLowerCase() !== `https://github.com/${spec.repository}`.toLowerCase() ||
+        w.state === "archived"
+      )
+        continue;
+      candidates.push(w.id);
+      let sessions: Record<string, unknown>;
+      try {
+        sessions = await this.call(["workspace", "session", w.id, "--limit", "10"]);
+      } catch {
+        complete = false;
+        continue;
+      }
+      if (!Array.isArray(sessions.data) || typeof sessions.hasMore !== "boolean") {
+        complete = false;
+        continue;
+      }
+      const visible = sessions.data.map(object);
+      if (visible.some((s) => !s || !id(s.id))) {
+        complete = false;
+        continue;
+      }
+      if (visible.length) {
+        candidates.pop();
+        candidates.push(...visible.map((s) => `${w.id}/${s?.id}`));
+      }
+      if (sessions.hasMore || visible.length !== 1) {
+        complete = false;
+        continue;
+      }
+      const session = visible[0];
+      if (!session || !id(session.id)) {
+        complete = false;
+        continue;
+      }
+      // Repository/time finds renamed candidates too, but cannot prove which ticket created them.
+      // Only matching requested names can be adopted automatically; retain all others for inspection.
+      if (w.name !== `${spec.ticket} ${spec.title.slice(0, 60)}` || session.name !== spec.ticket) {
+        complete = false;
+        continue;
+      }
+      const handle = `${w.id}/${session.id}`;
+      let status: Record<string, unknown>;
+      try {
+        status = await this.session({
+          ticket: spec.ticket,
+          runtime: "conductor",
+          handle,
+          claimedAt: null,
+          releasedAt: null,
+          launchId: null,
+        });
+      } catch {
+        complete = false;
+        continue;
+      }
+      workers.push({
+        handle,
+        link: safeLink(session.deepLink) ?? safeLink(w.deepLink),
+        path: null,
+        state: conductorSessionState(String(status.status)),
+      });
+    }
+    return { workers, candidates: [...new Set(candidates)], complete };
+  }
+  private async session(target: ClaimRef, timeoutMs = 10_000) {
     const h = this.parse(target.handle);
-    const result = await this.call(["session", "status", h.session]);
+    const result = await this.call(["session", "status", h.session], undefined, false, timeoutMs);
     if (!id(result.sessionId) || !id(result.workspaceId) || typeof result.status !== "string") throw invalid();
     if (result.sessionId !== h.session || result.workspaceId !== h.workspace) throw this.error("mismatch");
     return result;
   }
-  private async workspace(workspace: string) {
-    const result = await this.call(["workspace", "status", workspace]);
+  private async workspace(workspace: string, timeoutMs = 10_000) {
+    const result = await this.call(["workspace", "status", workspace], undefined, false, timeoutMs);
     if (result.workspaceId !== workspace || typeof result.status !== "string") throw invalid();
     return result;
   }
@@ -272,17 +402,17 @@ export class ConductorAdapter implements RuntimeAdapter {
     return { via: "conductor", messageId: result.messageId, queued: result.state === "queued" };
   }
   async observe(target: ClaimRef): Promise<RuntimeReading> {
-    const session = await this.session(target);
-    let state = conductorSessionState(String(session.status));
-    let detail = String(session.status);
-    if (session.status === "idle" || session.status === "archived") {
-      const ws = await this.workspace(this.parse(target.handle).workspace);
-      if (ws.status === "archived" || session.status === "archived") {
-        state = "gone";
-        detail = "archived";
-      }
-    }
-    return { state, detail, since: timestamp(session.updatedAt) };
+    const h = this.parse(target.handle);
+    await this.exec(["auth", "whoami"], undefined, false, 5000);
+    // The workspace remains readable even when its archived session is no longer available.
+    const ws = await this.workspace(h.workspace, 5000);
+    if (ws.status === "archived") return { state: "gone", detail: "archived", since: timestamp(ws.updatedAt) };
+    const session = await this.session(target, 5000);
+    return {
+      state: conductorSessionState(String(session.status)),
+      detail: String(session.status),
+      since: timestamp(session.updatedAt),
+    };
   }
   async peek(target: ClaimRef, options: { actions: number; cursor: string | null }): Promise<Peek> {
     if (

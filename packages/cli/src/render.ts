@@ -1,6 +1,6 @@
 // Human-readable rendering of a status report. Plain text, no colors, so the
 // output reads the same in a terminal, a log or an agent transcript.
-import type { InFlightTicket, StatusReport } from "@armada/core";
+import { type InFlightTicket, mainHealthLine, type StatusReport } from "@armada/core";
 
 const MIN = 60_000;
 
@@ -57,6 +57,8 @@ export function renderStatus(r: StatusReport): string {
   const gh = r.sources.github.error ? `GitHub not read: ${r.sources.github.error}` : `GitHub ${r.project.repository}`;
   out.push(`Read ${r.generatedAt.slice(0, 16).replace("T", " ")} UTC · Linear ${r.programRoot.id} · ${gh}`);
 
+  if (r.main) out.push(mainHealthLine(r.main));
+
   out.push("", `In flight (${r.inFlight.length})`);
   if (!r.inFlight.length) out.push("  nobody is working");
   for (const t of r.inFlight) {
@@ -73,7 +75,10 @@ export function renderStatus(r: StatusReport): string {
     if (t.statusLine?.summary) out.push(`${indent}“${truncate(t.statusLine.summary, 100)}”`);
     if (t.statusLine?.plan) out.push(`${indent}plan: ${t.statusLine.url}`);
     if (t.pr) out.push(`${indent}${[`PR #${t.pr.number}`, prState(t.pr)].filter(Boolean).join(" · ")}`);
-    if (t.flags.length) out.push(`${indent}! ${t.flags.join(", ")}`);
+    if (t.flags.length)
+      out.push(
+        `${indent}! ${t.flags.map((flag) => (flag === "stopped" ? "stopped: its session is idle and it did not hand back" : flag === "silent" && t.runtimeState === "working" ? "silent, but its session is still working" : flag)).join(", ")}`,
+      );
   }
 
   const pending = r.pendingLaunches ?? r.notStarted;
@@ -81,7 +86,7 @@ export function renderStatus(r: StatusReport): string {
     out.push("", `Pending launches (${pending.length})`);
     for (const l of pending) {
       out.push(
-        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.handle ? ` · ${l.handle}` : ""}`,
+        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.runtime ? ` · ${l.runtime}` : ""}${l.handle ? ` · ${l.handle}` : ""}`,
       );
       const title = r.notStarted.find((launch) => launch.ticket === l.ticket)?.title;
       if (title) out.push(`${indent}${truncate(title, 90)}`);

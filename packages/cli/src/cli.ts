@@ -9,8 +9,10 @@ import {
   LINEAR_KEY,
   LinearError,
   loadStatus,
+  machinePaths,
   parseConfig,
   Refusal,
+  readWatchProjects,
   skillsBehind,
   skillsBehindLine,
 } from "@armada/core";
@@ -22,7 +24,7 @@ import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
@@ -35,6 +37,7 @@ import { CommandError, fsRepoView } from "./repo.ts";
 import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
 import { updateSkills } from "./skills.ts";
+import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, stopWatch, watch } from "./watch.ts";
 import { claim, currentTicket, release, report, statusLive } from "./worker.ts";
@@ -54,6 +57,13 @@ const COMMAND_HELP: Record<string, string> = {
                     Linear comment. Stops with the parent or the released/revoked session.
                     --background detaches from the command shell and keeps a PID file
 `,
+  spec: `  spec add "<name>" [--at <position>] [--apply]
+  spec renumber [--apply]
+                    Coordinator: create a spec under the program root with the In short
+                    template. Plain append creates immediately if no titles must change.
+                    --at and renumber preview changes; --apply writes them sequentially.
+                    [tracker] spec_titles = "N/M" opts into updating every total.
+`,
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
   status --all      The same for every project registered by \`armada init\`
 `,
@@ -67,12 +77,14 @@ const COMMAND_HELP: Record<string, string> = {
                     No terminal, CI and --json only print fixes and never install.
                     For harness first-run questions, the owner runs armada setup local
 `,
-  init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook]
+  init: `  init [--program-root <ISSUE-ID>] [--name <name>] [--slug <slug>] [--no-stop-hook] [--merge]
                     Open one pull request that installs or updates it all, create the
                     missing Linear labels and register the project. The options are for
                     a repository without armada.toml (Linear issue at the program root).
                     It asks before adding the Claude Code stop hook to the repository's
                     .claude/settings.json (yes without a terminal); --no-stop-hook skips it
+                    Reuses armada/setup across versions and closes legacy armada/init-* PRs.
+                    --merge waits for the normal merge checks and merges only setup paths
 `,
   skills: `  skills update     Update all bundled skills, links and skills-lock.json in the current
                     checkout, and ignore shipping artifacts. No sign-in required; review
@@ -87,7 +99,7 @@ const COMMAND_HELP: Record<string, string> = {
                     rules the coordinator judged apply. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
-        [--plan <text> | --plan-file <path|->] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--stage review|ci]
+        [--plan <text> | --plan-file <path|->] [--paths <comma list>] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--stage review|ci]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge, awaiting-validation); the same phase again is a
                     status update; armada validate is how a worker enters awaiting-validation.
@@ -138,8 +150,10 @@ const COMMAND_HELP: Record<string, string> = {
   watch --stop      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
-  stop: `  stop <ticket>
-                    Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed
+  stop: `  stop <ticket> [--merged-pr <url>] [--claim-key <key>]
+                    Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed.
+                    Merge recovery prints --merged-pr and --claim-key to protect replacement workers;
+                    copy the complete command. Ordinary stop retains its existing behavior.
 `,
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: deliver to a herdr worker and record the answer. For other
@@ -150,12 +164,15 @@ const COMMAND_HELP: Record<string, string> = {
                     Coordinator: record a delivered note; an open plan is resolved
 `,
   merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
-        [--reason <why>] [--ask-owner --reason <why>]
+        [--reason <why>] [--ask-owner --reason <why>] [--no-archive]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
                     lock, close the ticket and list the workers to tell. Never deletes
-                    the branch. --dry-run only runs the checklist. Signed in to Armada,
+                    the branch. After GitHub confirms the merge, archives the worker's
+                    Armada workspace; --no-archive leaves it open. Cleanup failures print
+                    an armada stop command and do not fail the merge.
+                    --dry-run only runs the checklist. Signed in to Armada,
                     refused while Armada is down; --no-lock then merges without the lock.
                     --wait (--timeout in minutes, default 30): a head behind its base is
                     updated on GitHub (a merge commit, no force-push) and its checks waited
@@ -170,17 +187,18 @@ const COMMAND_HELP: Record<string, string> = {
                     A pull request the owner was asked about merges only once they approved
                     that exact head (or it with only the base merged in).
 `,
-  launch: `  launch <ticket> --runtime herdr [--harness claude|codex|opencode|deepseek]
-    deepseek (OpenCode + DeepSeek model) runs a persistent session
-                    [--profile <name> [--reason <why>]] [--validation <n|none>]
-                    Create the ticket's worktree and start a persistent local worker
-                    with its launch-token brief. Profiles follow [[herdr.routing]]
+  launch: `  launch <ticket> [--runtime conductor|herdr] [--profile <name> [--reason <why>]]
+        [--notes <file|->] [--validation <n|none>] [--dry-run] [--json]
+                    Check the ticket, choose its profile and launch one worker with its
+                    one-time sign-in brief. Runtime defaults to the chosen profile;
+                    Claude Code profiles point to armada brief and the Agent tool.
                     --pre-approve --reason "<why>" adds the plan-approved label before launch
-  launch <ticket> --runtime herdr --dry-run [--json]
-                    Print the launch plan (profile and why, harness and exact model,
-                    branch and worktree path, preflight) and create nothing: no
-                    worktree, token, pane or install. Exits 0 when the preflight
-                    passes, else non-zero, listing every gap
+                    --notes adds coordinator context from a file or stdin (at most 16 KB).
+                    Pending launches and active workers are refused before a token exists.
+                    Conductor uses explicit profile settings and receives the brief through stdin;
+                    stdout prints its workspace, session and link, never the token.
+                    Herdr creates a persistent local worktree; --harness must match its profile.
+                    --dry-run prints settings and preflight and creates nothing.
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
@@ -248,6 +266,7 @@ const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", 
 const CONFIG_OPTION = new Set([
   "attach",
   "status",
+  "spec",
   "secrets",
   "run",
   "claim",
@@ -283,7 +302,9 @@ Commands:
 ${Object.values(COMMAND_HELP).join("")}
 Options:
   --json            Print the result as JSON
-  --config <path>   Use this armada.toml instead of searching from the current directory
+  --config <path>   Use this armada.toml (overrides ARMADA_CONFIG and --project)
+  --project <slug>  Use the checkout this machine last watched for the project
+                    Config order: --config, ARMADA_CONFIG, --project, nearest armada.toml
 ${TICKET_HELP}  -h, --help        Show this help; \`armada <command> --help\` shows one command
   -v, --version     Print the version
 
@@ -319,7 +340,7 @@ export function commandHelp(command: string): string | null {
       ? `  --json            Print the result as JSON${command === "auth" ? " (auth status)" : ""}\n`
       : "",
     CONFIG_OPTION.has(command)
-      ? "  --config <path>   Use this armada.toml instead of searching from the current directory\n"
+      ? "  --config <path>   Use this armada.toml (overrides ARMADA_CONFIG and --project)\n  --project <slug>  Use the checkout this machine last watched for the project\n                    Config order: --config, ARMADA_CONFIG, --project, nearest armada.toml\n"
       : "",
     TICKET_OPTION.has(command) ? TICKET_HELP : "",
     "  -h, --help        Show this help (`armada --help` lists every command)\n",
@@ -334,15 +355,19 @@ interface Args {
   json: boolean;
   all: boolean;
   config: string | null;
+  project: string | null;
   help: boolean;
   version: boolean;
-  /** Options that take a value, other than --config. */
+  /** Options that take a value, other than --config and --project. */
   options: Record<string, string>;
   /** Everything after `--`, untouched: the command `armada run` runs. Null without `--`. */
   passthrough: string[] | null;
 }
 
 const VALUE_OPTIONS = [
+  "merged-pr",
+  "claim-key",
+  "at",
   "every",
   "parent",
   "runtime",
@@ -354,6 +379,7 @@ const VALUE_OPTIONS = [
   "message-file",
   "plan",
   "plan-file",
+  "paths",
   "pr",
   "sha",
   "shipped-with",
@@ -376,40 +402,56 @@ const VALUE_OPTIONS = [
   "choices",
   "validation",
   "validation-reason",
+  "notes",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
   "pre-approve",
+  "apply",
   "stop",
   "background",
   "dry-run",
   "no-lock",
   "no-ticket",
+  "no-archive",
   "prompt",
   "profile-line",
   "wait",
   "note",
   "api-key",
   "no-stop-hook",
+  "merge",
   "org",
   "value-stdin",
   "ask-owner",
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  spec: ["at", "apply"],
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
-  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage"],
+  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage", "paths"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
   watch: ["stop"],
+  stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
-  init: ["program-root", "name", "slug", "no-stop-hook"],
-  merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
+  init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
+  merge: ["ticket", "no-ticket", "no-archive", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["pre-approve", "runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run"],
+  launch: [
+    "pre-approve",
+    "runtime",
+    "harness",
+    "profile",
+    "reason",
+    "validation",
+    "validation-reason",
+    "dry-run",
+    "notes",
+  ],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
@@ -427,6 +469,7 @@ export function parseArgs(argv: string[]): Args {
     json: false,
     all: false,
     config: null,
+    project: null,
     help: false,
     version: false,
     options: {},
@@ -445,12 +488,17 @@ export function parseArgs(argv: string[]): Args {
     else if (a === "-h" || a === "--help") args.help = true;
     else if (a === "-v" || a === "--version") args.version = true;
     else if (name && FLAG_OPTIONS.includes(name) && named?.[2] === undefined) args.options[name] = "true";
-    else if (name && (name === "config" || VALUE_OPTIONS.includes(name))) {
+    else if (name && (name === "config" || name === "project" || VALUE_OPTIONS.includes(name))) {
       const v = named?.[2] ?? argv[++k];
       if (v === undefined) throw new UsageError(`--${name} needs a value`);
       if (name === "config") args.config = v;
+      else if (name === "project") {
+        if (!v.trim()) throw new UsageError("--project needs a non-empty slug");
+        args.project = v;
+      }
       // `--attach` repeats: one value per line.
-      else if (name === "attach" && args.options.attach !== undefined) args.options.attach += `\n${v}`;
+      else if ((name === "attach" || name === "paths") && args.options[name] !== undefined)
+        args.options[name] += `\n${v}`;
       else args.options[name] = v;
     } else if (a?.startsWith("-"))
       // Never the value: `--api-key=<key>` must not print the key.
@@ -461,14 +509,27 @@ export function parseArgs(argv: string[]): Args {
   return args;
 }
 
-/** Finds armada.toml in `start` or the nearest parent directory. */
+/** Resolves explicit config, environment, watched project, then the nearest armada.toml. */
 export async function findConfig(
   io: Io,
   explicit: string | null,
   command = "status",
+  project: string | null = null,
 ): Promise<{ path: string; text: string }> {
-  if (explicit) {
-    const path = resolve(io.cwd, explicit);
+  let selected = explicit || io.env.ARMADA_CONFIG?.trim();
+  if (!selected && project) {
+    const paths = machinePaths(io.env);
+    const known = paths ? await readWatchProjects(paths) : [];
+    const checkout = known.find((p) => p.project === project);
+    if (!checkout)
+      throw new UsageError(
+        `unknown project "${project}". Known projects on this machine: ${[...new Set(known.map((p) => p.project))].sort().join(", ") || "none"}`,
+        `armada ${command} --config <file>, with the path of an ${CONFIG_FILE}`,
+      );
+    selected = join(checkout.root, CONFIG_FILE);
+  }
+  if (selected) {
+    const path = resolve(io.cwd, selected);
     const text = await io.readFile(path);
     if (text === null)
       throw new UsageError(
@@ -490,7 +551,7 @@ export async function findConfig(
 }
 
 async function status(io: Io, args: Args): Promise<number> {
-  const { path, text } = await findConfig(io, args.config, "status");
+  const { path, text } = await findConfig(io, args.config, "status", args.project);
   const config: ArmadaConfig = parseConfig(text, path);
   const { credentials } = await loadCredentials(io, { project: config.project.slug });
   const { linearApiKey, githubToken } = credentials;
@@ -501,7 +562,7 @@ async function status(io: Io, args: Args): Promise<number> {
     linearApiKey,
     githubToken,
     ...(live ?? {}),
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
     ...(io.now ? { now: io.now } : {}),
   });
   const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
@@ -519,7 +580,7 @@ function commandOf(argv: string[]): string | null {
   for (let k = 0; k < argv.length; k++) {
     const a = argv[k] ?? "";
     const name = a.match(/^--([a-z-]+)$/)?.[1];
-    if (name && (name === "config" || VALUE_OPTIONS.includes(name))) k++;
+    if (name && (name === "config" || name === "project" || VALUE_OPTIONS.includes(name))) k++;
     else if (!a.startsWith("-")) return a;
   }
   return null;
@@ -572,7 +633,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
     if (args.command === "secrets" || args.command === "run") {
-      const { path, text } = await findConfig(io, args.config, args.command);
+      const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);
       // Fetching: the worker session of this ticket when the machine holds one, else this terminal's
       // sign-in. Setting is the coordinator's, never a worker session's, even on a machine that holds one.
@@ -592,7 +653,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       return await (args.command === "run" ? runCommand : secretsCommand)(io, config, credentials, args);
     }
     if (args.command === "attach") {
-      const { path, text } = await findConfig(io, args.config, "attach");
+      const { path, text } = await findConfig(io, args.config, "attach", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, {
         armada: false,
@@ -601,7 +662,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       return await attachCommand(io, config, credentials, args);
     }
     if (args.command === "heartbeat") {
-      const { path, text } = await findConfig(io, args.config, "heartbeat");
+      const { path, text } = await findConfig(io, args.config, "heartbeat", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, {
         armada: false,
@@ -611,13 +672,13 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
           ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
         },
       });
-      return await heartbeat(io, config, credentials, args);
+      return await heartbeat(io, config, credentials, { ...args, config: path });
     }
     const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
       args.command
     ];
     if (worker) {
-      const { path, text } = await findConfig(io, args.config, args.command);
+      const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);
       const command = args.command;
       // `validate <ticket> "<what>"` is the coordinator's form: the terminal's sign-in, never a worker session.
@@ -635,10 +696,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         : undefined;
       const { credentials } = await loadCredentials(io, scope ? { worker: scope } : { project: config.project.slug });
       if (command === "inbox") await recordPresence(io, config, credentials);
-      return await worker(io, config, credentials, args);
+      return await worker(command === "stop" ? { ...io, cwd: dirname(path) } : io, config, credentials, args);
     }
     if (args.command === "watch") {
-      const { path, text } = await findConfig(io, args.config, "watch");
+      const { path, text } = await findConfig(io, args.config, "watch", args.project);
       const config = parseConfig(text, path);
       if (args.options.stop === "true") {
         if (args.rest.length) throw new UsageError(`unexpected argument ${args.rest[0]}`);
@@ -648,27 +709,46 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       await recordPresence(io, config, credentials);
       return await watch(io, config, credentials, args, path);
     }
-    if (args.command === "hook") return await hookStop(io, args.rest, (at) => findConfig(at, null, "hook"));
+    if (args.command === "hook")
+      return await hookStop(io, args.rest, (at) =>
+        findConfig({ ...at, env: { ...at.env, ARMADA_CONFIG: undefined } }, null, "hook"),
+      );
     if (args.command === "merge") {
-      const { path, text } = await findConfig(io, args.config, "merge");
+      const { path, text } = await findConfig(io, args.config, "merge", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       await recordPresence(io, config, credentials);
       return await merge(io, config, credentials, args, path);
     }
+    if (args.command === "spec") {
+      const { text } = await findConfig(io, args.config, "spec", args.project);
+      const config = parseConfig(text);
+      // Identify this checkout's worker before requesting any coordinator keys.
+      const local = await loadCredentials(io, {
+        armada: false,
+        worker: {
+          command: "spec",
+          project: config.project.slug,
+          ticket: (stored) => currentTicket(io, config, undefined, stored),
+        },
+      });
+      requireSpecCoordinator(local.credentials);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await specCommand(io, config, credentials, args);
+    }
     if (args.command === "brief") {
-      const { path, text } = await findConfig(io, args.config, "brief");
+      const { path, text } = await findConfig(io, args.config, "brief", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       if (args.options.prompt === "true") await recordPresence(io, config, credentials);
       return await brief(io, config, credentials, args, version, path);
     }
     if (args.command === "setup") {
-      const { path, text } = await findConfig(io, args.config, "setup");
+      const { path, text } = await findConfig(io, args.config, "setup", args.project);
       return await setupLocal(io, parseConfig(text, path), path, args);
     }
     if (args.command === "launch") {
-      const { path, text } = await findConfig(io, args.config, "launch");
+      const { path, text } = await findConfig(io, args.config, "launch", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       return await launch(io, config, credentials, args, version, path);
@@ -693,6 +773,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         name: args.options.name ?? null,
         slug: args.options.slug ?? null,
         stopHook: args.options["no-stop-hook"] === "true" ? false : null,
+        merge: args.options.merge === "true",
       });
     }
     if (args.command === "login" || args.command === "logout" || args.command === "whoami") {

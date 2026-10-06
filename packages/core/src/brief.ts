@@ -9,6 +9,7 @@
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
 import { inFlight } from "./fleet.ts";
 import { herdrChoice } from "./herdr-profile.ts";
+import type { HttpRetryOptions } from "./http.ts";
 import {
   type Connection,
   type Fetch,
@@ -22,6 +23,7 @@ import {
 } from "./linear.ts";
 import { buildModel } from "./model.ts";
 import { ARMADA_PACKAGE, type NpmCheck } from "./npm.ts";
+import type { OverlapReading } from "./overlap.ts";
 import { planRule } from "./phases.ts";
 import {
   checkRequestedProfile,
@@ -69,6 +71,9 @@ export interface BriefBlocker {
 }
 
 export interface BriefWorker {
+  files: string[];
+  filesIncomplete: boolean;
+  planPaths: string[];
   id: string;
   title: string;
   url: string;
@@ -133,6 +138,8 @@ export interface Brief {
   validation: ValidationChoice | null;
   /** `[brief] extra`: the file every brief carries under "Project conventions"; null when unset or unreadable. */
   conventions: { path: string; text: string } | null;
+  /** Context supplied by the coordinator for this launch; never changes plan policy. */
+  coordinatorNotes: string | null;
   /** The first message of the worker's session. */
   prompt: string;
   warnings: string[];
@@ -258,10 +265,12 @@ export function normalizeBriefTicket(raw: RawBriefIssue, warnings: string[] = []
 }
 
 export async function fetchBriefTicket(opts: LinearRequestOptions, id: string): Promise<BriefTicket | null> {
-  const data = await gql<{ issue: RawBriefIssue | null }>(opts, BRIEF_QUERY, { id }).catch((err: unknown) => {
-    if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
-    throw err;
-  });
+  const data = await gql<{ issue: RawBriefIssue | null }>({ ...opts, retry: true }, BRIEF_QUERY, { id }).catch(
+    (err: unknown) => {
+      if (err instanceof LinearError && /not found/i.test(err.message)) return { issue: null };
+      throw err;
+    },
+  );
   const raw = data.issue;
   if (!raw) return null;
   const warnings: string[] = [];
@@ -286,6 +295,7 @@ const VARIABLES: { name: string; required: boolean; purpose: string }[] = [
 ];
 
 export interface BuildBriefInput {
+  overlap?: OverlapReading;
   config: ArmadaConfig;
   ticket: BriefTicket;
   /** The program as `armada status` reads it, for the workers in flight. */
@@ -312,6 +322,7 @@ export interface BuildBriefInput {
   conventions?: { path: string; text: string | null } | null;
   /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
   validation?: ValidationChoice | null;
+  notes?: string | null;
   now: Date;
   herdr?: { choice: HerdrProfileChoice; handle: string };
 }
@@ -332,6 +343,10 @@ export function buildBrief(input: BuildBriefInput): Brief {
   const { config, ticket, program } = input;
   // Both reads may warn about the same failed page; say it once.
   const warnings = [...new Set([...ticket.warnings, ...program.warnings])];
+  if (!input.overlap || input.overlap.incomplete)
+    warnings.push(
+      "Comparison incomplete: in-flight PR files could not be read from Armada; sign in and refresh the project's stored reading.",
+    );
 
   let choice: ProfileChoice | null;
   try {
@@ -375,7 +390,28 @@ export function buildBrief(input: BuildBriefInput): Brief {
       phase: l.phase,
       branch: l.claim?.branch ?? null,
       pr: l.pr?.url ?? null,
+      files: input.overlap?.workers.find((w) => w.ticket === l.issue.id)?.files ?? [],
+      filesIncomplete:
+        input.overlap?.incomplete !== false ||
+        input.overlap.workers.find((w) => w.ticket === l.issue.id)?.filesComplete !== true,
+      planPaths: input.overlap?.workers.find((w) => w.ticket === l.issue.id)?.plan ?? [],
     }));
+
+  for (const worker of input.overlap?.workers ?? []) {
+    if (worker.ticket === ticket.id || parallel.some((w) => w.id === worker.ticket)) continue;
+    const issue = program.issues.find((i) => i.id === worker.ticket);
+    parallel.push({
+      id: worker.ticket,
+      title: issue?.title ?? "Live worker",
+      url: issue?.url ?? "",
+      phase: issue?.agentPhase ?? "planning",
+      branch: null,
+      pr: worker.pr === null ? null : `https://github.com/${config.github.repository}/pull/${worker.pr}`,
+      files: worker.files ?? [],
+      filesIncomplete: input.overlap?.incomplete !== false || !worker.filesComplete,
+      planPaths: worker.plan,
+    });
+  }
 
   // Not `npx <package>`: inside the Armada repository itself, npx resolves the
   // workspace package of the same name, which has no built command.
@@ -469,6 +505,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
         ? { ...plans, why: `${plans.why} (added at launch: ${input.preApprovedReason})` }
         : plans;
     })(),
+    coordinatorNotes: input.notes?.trim() || null,
     validation: input.validation ?? null,
     conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
     warnings,
@@ -592,6 +629,15 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   if (t.description) out.push("## Ticket", "", quote(t.description), "");
   if (b.parent)
     out.push("## Parent", "", `${b.parent.id} — ${b.parent.title} (${b.parent.url}). Read it before planning.`, "");
+  if (b.coordinatorNotes)
+    out.push(
+      "## Coordinator notes",
+      "",
+      "From the coordinator, for this launch. They add context; the Plan line below still decides whether your plan waits for approval.",
+      "",
+      b.coordinatorNotes,
+      "",
+    );
   if (b.blockers.length) {
     out.push("## Blockers and their hand-back notes", "");
     for (const x of b.blockers) {
@@ -628,11 +674,22 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     );
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
-    out.push("Stay out of their areas. If you must change the same files, say so in a report before you do.", "");
-    for (const w of b.parallel)
+    out.push("Before you change one of these files, say so in a report and ask the coordinator.", "");
+    for (const w of b.parallel) {
       out.push(
         `- ${w.id} — ${w.title} (${w.phase})${w.branch ? `, branch \`${w.branch}\`` : ""}${w.pr ? `, ${w.pr}` : ""}`,
       );
+      if (w.files.length)
+        out.push(
+          `  PR files: ${w.files
+            .slice(0, 15)
+            .map((f) => `\`${f}\``)
+            .join(", ")}${w.files.length > 15 ? `, +${w.files.length - 15} more` : ""}`,
+        );
+      if (w.planPaths.length) out.push(`  Plan paths: ${w.planPaths.map((f) => `\`${f}\``).join(", ")}`);
+      if (!w.files.length && !w.planPaths.length && !w.filesIncomplete) out.push("  no files yet");
+      if (w.filesIncomplete) out.push("  Comparison incomplete: PR files are unavailable or not all files were read.");
+    }
   } else out.push("None.");
   out.push(
     "",
@@ -651,7 +708,8 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 
 // ------------------------------------------------------------------ load
 
-export interface LoadBriefOptions {
+export interface LoadBriefOptions extends HttpRetryOptions {
+  overlap?: (input: { ticket: string; paths: string[] }) => Promise<OverlapReading>;
   prompt?: boolean;
   /** Checks/applies explicit plan pre-approval after policy judgments, before token minting. Previews return no reason. */
   preApprove?: (ticket: BriefTicket) => Promise<string | null>;
@@ -682,7 +740,7 @@ export interface LoadBriefOptions {
 export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): Promise<Brief | ProfileSelectionBrief> {
   const launchHint = "a one-time token is made when you print the prompt (--prompt)";
   const now = opts.now ?? (() => new Date());
-  const linear = { apiKey: opts.linearApiKey, ...(opts.fetch ? { fetch: opts.fetch } : {}) };
+  const linear = { apiKey: opts.linearApiKey, ...opts };
   // Fail on a bad profile before any network call.
   try {
     checkRequestedProfile(config, opts.profile);
@@ -745,6 +803,12 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     throw err;
   }
   const preApprovedReason = await opts.preApprove?.(ticket);
+  let overlap: OverlapReading | undefined;
+  try {
+    overlap = await opts.overlap?.({ ticket: ticket.id, paths: [] });
+  } catch {
+    /* Live detail stays optional; Linear still supplies the brief. */
+  }
   const launch = await launchForBrief(ticket, opts.prompt === true ? opts.launch : undefined);
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
@@ -753,6 +817,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     config,
     ticket,
     program,
+    overlap,
     profile: opts.profile,
     reason: opts.reason ?? null,
     version: opts.version,

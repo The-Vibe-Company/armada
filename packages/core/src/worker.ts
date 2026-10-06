@@ -9,6 +9,7 @@ import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
 import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
+import { overlapLines, pathsProblem } from "./overlap.ts";
 import { handBackProblems, planRule, transitionProblem } from "./phases.ts";
 import { Refusal } from "./refusal.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
@@ -367,6 +368,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
 // ------------------------------------------------------------------ report
 
 export interface ReportInput {
+  paths?: string[];
   ticket: string;
   phase: LabelPhase;
   /** First line becomes the status summary; the rest is the comment body. Optional for ready-to-merge and with a plan. */
@@ -428,6 +430,10 @@ export function resolvePr(ticket: Ticket, repository: string, pr: string | null 
  * and records the event. Returns the inbox items waiting for the worker.
  */
 export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promise<Outcome> {
+  if (input.paths !== undefined) {
+    const problem = pathsProblem(input.paths);
+    if (problem) throw new Refusal(problem, "report --paths <comma-separated relative paths>");
+  }
   const { config, linear } = ctx;
   const groups = config.tracker.labels;
   if (input.stage != null && (input.phase !== "shipping" || !isShippingStage(input.stage)))
@@ -533,6 +539,9 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
   }
   if (plan) body = [body, `${PLAN_HEADING}\n\n${plan}`].filter(Boolean).join("\n\n");
 
+  if (input.paths !== undefined)
+    body = [body, `Paths: ${input.paths.join(", ") || "(none)"}`].filter(Boolean).join("\n\n");
+
   // Every lookup that can refuse happens before the first write.
   const target =
     ticket.agentPhase === input.phase
@@ -555,7 +564,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       : `${ticket.id}: ${ticket.agentPhase} → ${input.phase}.`,
   ];
 
-  const reportMessage = plan ? [summary, body].join("\n\n") : message;
+  const reportMessage = plan || input.paths !== undefined ? [summary, body].filter(Boolean).join("\n\n") : message;
   const preApproved =
     input.phase === "awaiting-approval" &&
     ticket.labels.some((l) => routingLabelKey(l.name) === routingLabelKey(ctx.config.policy.preApprovedLabel)) &&
@@ -563,9 +572,10 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       ctx.config,
       ticket.labels.map((l) => l.name),
     ).rule === "pre-approved";
-  const inbox = await live(ctx, warnings, "record the report", (fleet) =>
+  const recorded = await live(ctx, warnings, "record the report", (fleet) =>
     fleet.report({
       ticket: ticket.id,
+      ...(input.paths !== undefined ? { paths: input.paths } : {}),
       phase: input.phase,
       shippingStage: isShippingStage(input.stage) ? input.stage : null,
       previous: ticket.agentPhase,
@@ -579,7 +589,8 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     }),
   );
   const state = await readBack(ctx, ticket.id, warnings);
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox, state };
+  if (recorded) lines.push(...overlapLines(recorded));
+  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: recorded?.inbox ?? null, state };
 }
 
 // ------------------------------------------------------------------ release

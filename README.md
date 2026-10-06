@@ -74,8 +74,10 @@ vendored `review-code-dev` setup notes for supported platforms and exact fixes.
 `armada init` fixes the repository setup in one go:
 
 1. It creates the missing Linear labels (a missing group goes in the team of the program root).
-2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the branch `armada/init-<version>` and opens a pull request with `gh`. Your own checkout is not touched. Running it again rebuilds that branch and updates the same pull request. When the default branch already has everything, no pull request is opened.
+2. It builds the missing or outdated files on a fresh checkout of the default branch, commits them on the stable branch `armada/setup` and opens a pull request with `gh`. Your own checkout is not touched. Running it again, including with a newer CLI version, rebuilds that branch and updates the same open pull request. The first run replaces legacy `armada/init-*` pull requests, closing each with a link to the replacement. When the default branch already has everything, no pull request is opened.
 3. It registers the project (slug, name, repository, program root) on Armada, for the organization the terminal is signed in to, so `armada status --all` and the dashboard list it. A slug another organization already holds is refused.
+
+`armada init --merge` waits for the same checks as `armada merge <n> --no-ticket --wait` and merges the setup pull request itself. It refuses changes outside `.agents/skills/**`, `.claude/skills/**`, `skills-lock.json`, `.conductor/settings.toml`, `.claude/settings.json` and `.gitignore`; `armada.toml` is allowed only when the default branch has none.
 
 To update the bundled skills on an existing ticket branch, run `armada skills update`.
 It uses init's vendoring rules for skills, links, `skills-lock.json` and the shipping
@@ -239,6 +241,12 @@ armada merge 35 --no-ticket # a pull request no ticket owns: armada init's, a re
 - The page polls every 5 s while work is in flight (a worker, a request waiting for the coordinator, a first reading), every 30 s when the fleet is quiet, and not at all while its tab is hidden. The server answers 304 while nothing changed. Answer, Approve and Launch show as sent on the click; a refusal puts the form back with the reason.
 - When that database is unreachable, a banner says so and the view falls back to the last readings the server holds, refreshed from Linear and GitHub.
 - The interface is in English or French (`ARMADA_DASHBOARD_LANGUAGE`, or the EN/FR switch).
+
+**Owner alerts in chat.** With accounts and `ARMADA_SECRETS_KEY`, an owner or admin opens Organization > Notifications, saves a public HTTPS webhook and clicks **Send a test**. V1 has one channel per organization, optionally filtered to a project. Slack format posts `{"text":"…"}` to Slack-compatible receivers (including Discord's `/slack` URL); JSON posts `{schema:1,kind:"alert",organization,items:[{key,kind,project,ticket,title,url}],text}` and signs the exact body with `x-armada-signature: sha256=<HMAC-SHA256>`. For JSON, enter a signing secret of at least 16 characters that your receiver also knows. The address and signing secret are sealed in the vault, write-only and never released to terminals. Only titles and links are sent.
+
+Alerts use the same owner items as browser notifications: work or merges to validate, escalated questions, and stopped coordinators with items waiting. Ticks run after fleet traffic and dashboard polls, throttled to once per minute per project, and read stored snapshots only. The outbox deduplicates across instances and claims retries too; a failed item gets at most five attempts. Ten consecutive failures pause the channel, as do HTTP 404/410 immediately; saving resumes it. Quiet-hour arrivals are retained for the next summary rather than posted as delayed alerts (summary scheduling is separate work).
+
+**Optional scheduler, off by default.** `GET /api/cron/owner` requires `Authorization: Bearer <CRON_SECRET>`. Production ships with no enabled `crons` entry. Without a scheduler, a coordinator that stops with no worker in flight is noticed on the next fleet call or dashboard poll. To enable Vercel Cron deliberately, set `CRON_SECRET` in the deployment and add `"crons": [{"path":"/api/cron/owner","schedule":"*/15 * * * *"}]` to `packages/dashboard/vercel.json`, then redeploy. Every 15 minutes requires a paid plan; the free plan allows a daily schedule such as `"0 9 * * *"`. The endpoint never refreshes Linear or GitHub and does nothing under the shared-password gate.
 
 Try it locally with synthetic data and no key:
 
@@ -514,7 +522,13 @@ profile = "debug"
 
 A missing or invalid key stops the command with a message naming it, for example `missing required key "tracker.program_root"`. This repository's own configuration is in [`armada.toml`](https://github.com/The-Vibe-Company/armada/blob/main/armada.toml).
 
-The program follows one convention: specs are direct children of the root titled `Spec N/M — Name`, tickets are their sub-issues, and dependencies are Linear blocked-by relations. Agents declare their phase with a label from the phase group (`planning`, `awaiting-approval`, `implementing`, `shipping`, `blocked`, `ready-to-merge`) and start every comment with `Agent status: <phase> — <summary>`.
+The program follows one convention: specs are direct children of the root titled `Spec N — Name` or `Spec N/M — Name`, tickets are their sub-issues, and dependencies are Linear blocked-by relations. Both title forms are always read, including in mixed programs. Agents declare their phase with a label from the phase group (`planning`, `awaiting-approval`, `implementing`, `shipping`, `blocked`, `ready-to-merge`) and start every comment with `Agent status: <phase> — <summary>`.
+
+The coordinator creates a spec with `armada spec add "Search images"`. It appends after the largest spec number, uses the program root as parent, includes the **In short** template and prints the new issue's URL. The default `[tracker] spec_titles = "N"` keeps existing titles unchanged when appending. New project configurations write that setting; configurations without it also default to `"N"`.
+
+To insert in the middle, run `armada spec add "Search images" --at 5`: it displays the suffix renames and creates nothing. Repeat with `--apply` to rename 5→6 and so on, then create the new Spec 5. `armada spec renumber` previews a repair of gaps and duplicates in ordinal order (creation time, then issue identifier break ties); `--apply` applies it and normalizes all titles to the configured style.
+
+**Projects whose own rules require N/M:** set `[tracker] spec_titles = "N/M"` before using these commands. Adding then updates every total, and requires `--apply` even when appending. In default N mode, inserting preserves any legacy denominators rather than bumping them; `renumber --apply` removes them. Writes run one at a time and stop on the first failure, listing the unconfirmed renames and creation. Inspect Linear before retrying, since a timed-out write may have arrived; `renumber` can preview a repair. Worker sessions cannot run `armada spec`.
 
 ## Develop
 

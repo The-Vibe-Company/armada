@@ -65,6 +65,8 @@ export function reasonText(t: Strings, r: Reason, now: number): string {
       return o.ci(r.pr);
     case "conflict":
       return o.conflict(r.pr);
+    case "stopped":
+      return o.stopped;
     case "silent":
       return o.silent(t.duration(r.since ? Math.max(0, now - Date.parse(r.since)) : 0));
     case "blocked":
@@ -186,6 +188,14 @@ export function Overview({
       )}
       <div className="ov-head">
         <p className="ov-headline">{t.overview.headline(head.blocked, head.you)}</p>
+        {projects.map(
+          (p) =>
+            p.main?.redSince && (
+              <p key={p.slug} className="ov-subline" style={{ color: "var(--red)" }}>
+                {p.name}: {t.overview.mainHealth(p.main)}
+              </p>
+            ),
+        )}
         <p className="ov-subline">
           {t.overview.subline({
             live: head.live,
@@ -314,6 +324,11 @@ function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummari
       <span className="ov-project-bar" aria-hidden>
         <span style={{ width: `${pct}%` }} />
       </span>
+      {p.main?.redSince && (
+        <span className="ov-project-facts" style={{ color: "var(--red)" }}>
+          {t.overview.mainHealth(p.main)}
+        </span>
+      )}
       <span className="ov-project-facts">
         <span style={{ color: s.blocked ? "var(--red)" : "var(--text-3)" }}>{c.blocked(s.blocked)}</span>
         <span style={{ color: s.you ? "var(--amber)" : "var(--text-3)" }}>{c.you(s.you)}</span>

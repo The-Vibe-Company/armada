@@ -2,6 +2,7 @@
 import {
   ArmadaApiError,
   type ArmadaConfig,
+  CONFIG_DEFAULTS,
   type Credentials,
   deliveryKey,
   type Fleet,
@@ -18,7 +19,7 @@ import {
 } from "@armada/core";
 import type { Io } from "./io.ts";
 import { requireSignIn } from "./login.ts";
-import { claimRef, guarded, runtimeFor } from "./runtimes/adapter.ts";
+import { archiveClaimKey, claimRef, guarded, runtimeFor } from "./runtimes/adapter.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
 const observing = new Set<string>();
@@ -54,6 +55,10 @@ export async function observeRuntimes(io: Io, fleet: Fleet, config?: ArmadaConfi
       const observed = { ...saved?.runtimeObserved };
       const eligible = local.filter((h) => {
         if (runtimeNameOf(h.runtime) !== "conductor") return true;
+        const age = now.getTime() - Date.parse(h.lastHeartbeatAt ?? h.claimedAt);
+        if (age <= (config?.policy.silentAfterMinutes ?? CONFIG_DEFAULTS.silentAfterMinutes) * 30_000) return false;
+        const readingAge = now.getTime() - Date.parse(h.runtimeState?.at ?? "");
+        if (Number.isFinite(readingAge) && readingAge >= 0 && readingAge < 5 * 60_000) return false;
         const key = `${h.handle}@${h.claimedAt}`;
         const last = Date.parse(observed[key] ?? "");
         if (Number.isFinite(last) && now.getTime() >= last && now.getTime() - last < 60_000) return false;
@@ -70,6 +75,11 @@ export async function observeRuntimes(io: Io, fleet: Fleet, config?: ArmadaConfi
         eligible.map(async (h) => {
           try {
             const reading = await runtimeFor(io, config, h.runtime).observe(claimRef(h));
+            if (reading.state === "gone" && runtimeNameOf(h.runtime) === "conductor") {
+              changed =
+                (await fleet.stopRuntime({ ticket: h.ticket, handle: h.handle, claimedAt: h.claimedAt })) || changed;
+              return;
+            }
             const input = {
               ticket: h.ticket,
               handle: h.handle,
@@ -157,6 +167,24 @@ export async function stop(io: Io, config: ArmadaConfig, credentials: Credential
   const ticket = raw.toUpperCase();
   const h = await fleet.runtimeHandle(ticket);
   if (!h) throw new Refusal(`${ticket} has no runtime claim to stop`, "armada status");
+  const target = claimRef(h);
+  const mergedPr = args.options["merged-pr"];
+  const claimKey = args.options["claim-key"];
+  if (claimKey && archiveClaimKey(target) !== claimKey)
+    throw new Refusal(`${ticket}'s claim changed since the merge; left its workspace untouched`, "armada status");
+  if (mergedPr) {
+    const event = (await fleet.latestEvents())[ticket];
+    if (
+      !h.releasedAt ||
+      event?.kind !== "merge" ||
+      event.prUrl !== mergedPr ||
+      Date.parse(event.at) < Date.parse(h.claimedAt)
+    )
+      throw new Refusal(
+        `${ticket} has no ended claim for that merged pull request; left its workspace untouched`,
+        "armada status",
+      );
+  }
   const adapter = runtimeFor(io, config, h.runtime);
   // Guided adapters must give their guide refusal even if an active claim exists.
   if (!adapter.can.archive)
@@ -166,7 +194,6 @@ export async function stop(io: Io, config: ArmadaConfig, credentials: Credential
       `cannot archive ${ticket} while it holds the ticket; release first`,
       `armada release --ticket ${ticket} --reason "<why>"`,
     );
-  const target = claimRef(h);
   const archived = await guarded(fleet, target, h.releasedAt ? "ended" : "active", () =>
     adapter.archive(target, {
       reason: "released",

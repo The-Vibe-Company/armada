@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import {
   type ArmadaConfig,
   type ClaimRef,
@@ -39,6 +40,7 @@ export interface LaunchSpec {
   title: string;
   repository: string;
   base: string;
+  projectId?: string | null;
   branch: string;
   from: { kind: "base" } | { kind: "branch"; head: string } | { kind: "in-place"; previous: ClaimRef };
   profile: ResolvedProfile;
@@ -51,6 +53,12 @@ export interface Launched {
   link: string | null;
   path: string | null;
   state: RuntimeState;
+}
+export interface LaunchRecovery {
+  workers: Launched[];
+  /** Safe workspace/session ids for a manual decision, including incomplete searches. */
+  candidates: string[];
+  complete: boolean;
 }
 export interface OutgoingMessage {
   text: string;
@@ -100,6 +108,8 @@ export interface RuntimeAdapter {
   parse(handle: string): ParsedHandle;
   preflight(input: PreflightInput): Promise<PreflightCheck[]>;
   launch(spec: LaunchSpec): Promise<Launched>;
+  /** Read-only recovery after create may have succeeded; never retries a launch. */
+  recoverLaunch?(spec: LaunchSpec, since: string): Promise<LaunchRecovery>;
   deliver(target: ClaimRef, message: OutgoingMessage): Promise<Delivery>;
   observe(target: ClaimRef): Promise<RuntimeReading>;
   peek(target: ClaimRef, options: { actions: number; cursor: string | null }): Promise<Peek>;
@@ -136,6 +146,22 @@ export function claimRef(h: RuntimeHandle): ClaimRef {
     branch: h.branch,
   };
 }
+/** Non-secret recovery identity for exactly this generation, including its ended state. */
+export function archiveClaimKey(ref: ClaimRef): string {
+  return createHash("sha256")
+    .update(JSON.stringify([ref.ticket, ref.runtime, ref.handle, ref.claimedAt, ref.launchId, ref.releasedAt]))
+    .digest("hex");
+}
+
+export function sharesRuntimeWorkspace(ref: ClaimRef, other: Pick<RuntimeHandle, "runtime" | "handle">): boolean {
+  return (
+    ref.handle === other.handle ||
+    (ref.runtime === "conductor" &&
+      runtimeNameOf(other.runtime) === "conductor" &&
+      ref.handle.split("/")[0] === other.handle.split("/")[0])
+  );
+}
+
 const stale = (ticket: string) =>
   new RuntimeError(`${ticket}'s claim changed; left the runtime untouched`, "stale", "armada inbox");
 const guards = new AsyncLocalStorage<{ fleet: Fleet; expected: ClaimRef; rule: "active" | "ended" }>();
@@ -158,6 +184,14 @@ async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "en
     (rule === "active" ? !!h.releasedAt : !h.releasedAt)
   )
     throw stale(expected.ticket);
+  // Archive can wait for a final turn: ownership must be current at EACH native write,
+  // not only in the merge's snapshot. Failure to read ownership leaves the runtime untouched.
+  if (rule === "ended" && (await fleet.runtimeHandles()).some((open) => sharesRuntimeWorkspace(expected, open)))
+    throw new RuntimeError(
+      "another open ticket uses the worker's workspace; left it untouched",
+      "busy",
+      "armada status",
+    );
 }
 /** A scoped guard: adapters recheck the generation after provenance checks and before EACH native write. */
 export async function guarded<T>(
