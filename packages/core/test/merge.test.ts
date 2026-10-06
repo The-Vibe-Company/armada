@@ -302,6 +302,28 @@ describe("closing a finished spec after a merge", () => {
     expect(linear.writes.some((line) => /^(update|comment) DEMO-2 /.test(line))).toBe(false);
   });
 
+  for (const unavailable of ["null", "error"] as const) {
+    test(`unavailable parent setting (${unavailable}) warns and falls back without pending Linear work`, async () => {
+      const live = tempFleet();
+      const { ctx, linear } = setup({ live });
+      linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+      linear.get("DEMO-7").parentId = "DEMO-2";
+      linear.autoCloseParentIssues = null;
+      if (unavailable === "error")
+        linear.parentAutoClose = async () => {
+          throw new Error("team setting unavailable");
+        };
+      const out = await mergePullRequest(ctx, { pr: 9 });
+      expect(out.merged).toBe(true);
+      expect(out.linearPending).toBe(false);
+      expect(out.warnings).toHaveLength(1);
+      expect(out.warnings[0]).toContain("Parent auto-close");
+      expect(linear.get("DEMO-7").statusType).toBe("completed");
+      expect(linear.get("DEMO-2").statusType).toBe("completed");
+      expect(live.store.items.some((item) => item.kind === "linear-pending")).toBe(false);
+    });
+  }
+
   test("nested open descendants keep the spec open, including under closed parents", async () => {
     const { ctx, linear } = setup();
     linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
@@ -328,13 +350,13 @@ describe("closing a finished spec after a merge", () => {
     };
     const out = await mergePullRequest(ctx, { pr: 9 });
     expect(out.merged).toBe(true);
-    expect(out.linearPending).toBe(true);
+    expect(out.linearPending).toBe(false);
     expect(linear.get("DEMO-7").statusType).toBe("completed");
     expect(linear.get("DEMO-2").statusType).toBe("backlog");
     expect(out.warnings.join("\n")).toContain("Could not close spec");
   });
 
-  test("finish retries a failed spec update without duplicating its shipped summary", async () => {
+  test("finish resolves an old chore despite a spec failure, and retries without duplicating its summary", async () => {
     const live = tempFleet();
     const { ctx, linear } = setup({ live });
     linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
@@ -346,11 +368,18 @@ describe("closing a finished spec after a merge", () => {
     };
     const merged = await mergePullRequest(ctx, { pr: 9 });
     expect(merged.merged).toBe(true);
-    expect(merged.linearPending).toBe(true);
-    expect(merged.lines).toContain("Next: armada merge --finish 9");
-    expect(live.store.items.some((item) => item.kind === "linear-pending" && !item.resolvedAt)).toBe(true);
+    expect(merged.linearPending).toBe(false);
+    expect(merged.lines).not.toContain("Next: armada merge --finish 9");
+    expect(live.store.items.some((item) => item.kind === "linear-pending")).toBe(false);
     expect(merged.warnings.join("\n")).toContain("spec update failed");
     expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    // Chores opened by older CLIs must be finishable while the spec is still unavailable.
+    await live.fleet.chore({ ticket: "DEMO-7", kind: "linear-pending", pr: 9, body: "Finish Linear for #9" });
+    const recovered = await finishMerge(ctx, { pr: 9 });
+    expect(recovered.linearPending).toBe(false);
+    expect(recovered.warnings).toHaveLength(1);
+    expect(recovered.warnings[0]).toContain("spec update failed");
+    expect(live.store.items.some((item) => item.kind === "linear-pending" && !item.resolvedAt)).toBe(false);
     linear.updateTicket = update;
     const finished = await finishMerge(ctx, { pr: 9 });
     expect(finished.linearPending).toBe(false);
@@ -369,7 +398,7 @@ describe("closing a finished spec after a merge", () => {
     linear.get("DEMO-7").parentId = "DEMO-2";
     const out = await mergePullRequest(ctx, { pr: 9 });
     expect(out.merged).toBe(true);
-    expect(out.linearPending).toBe(true);
+    expect(out.linearPending).toBe(false);
     expect(out.warnings.join("\n")).toContain("every spec comment");
     expect(linear.get("DEMO-2").statusType).toBe("backlog");
     expect(linear.writes.some((write) => /^(update|comment) DEMO-2 /.test(write))).toBe(false);
@@ -1651,6 +1680,7 @@ describe("Linear outage merge recovery", () => {
       resolutionFails = mode === "partial-resolve-failure";
       const repaired = await finishMerge(s.ctx, { pr: 9 });
       expect(repaired.linearPending).toBe(false);
+      if (keepOpen && !resolutionFails) expect(repaired.warnings).toEqual([]);
       expect(s.linear.get("DEMO-2").statusType).toBe(keepOpen ? "backlog" : "completed");
       expect(repaired.armadaPending).toBe(resolutionFails);
       resolutionFails = false;
@@ -1883,6 +1913,7 @@ describe("a ticket in several pull requests", () => {
       };
       const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: mode === "keep-open", close: closed });
       expect(out.linearPending).toBeFalsy();
+      if (!closed) expect(out.warnings).toEqual([]);
       expect(s.linear.get("DEMO-2").statusType).toBe(closed ? "completed" : "backlog");
       expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
       expect(s.linear.get("DEMO-7").statusType).toBe(closed ? "completed" : "started");
