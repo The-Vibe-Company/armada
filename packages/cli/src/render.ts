@@ -75,7 +75,10 @@ export function renderStatus(r: StatusReport): string {
     if (t.statusLine?.summary) out.push(`${indent}“${truncate(t.statusLine.summary, 100)}”`);
     if (t.statusLine?.plan) out.push(`${indent}plan: ${t.statusLine.url}`);
     if (t.pr) out.push(`${indent}${[`PR #${t.pr.number}`, prState(t.pr)].filter(Boolean).join(" · ")}`);
-    if (t.flags.length) out.push(`${indent}! ${t.flags.join(", ")}`);
+    if (t.flags.length)
+      out.push(
+        `${indent}! ${t.flags.map((flag) => (flag === "stopped" ? "stopped: its session is idle and it did not hand back" : flag === "silent" && t.runtimeState === "working" ? "silent, but its session is still working" : flag)).join(", ")}`,
+      );
   }
 
   const pending = r.pendingLaunches ?? r.notStarted;
