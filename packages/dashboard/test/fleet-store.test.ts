@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type NewRequest, recordClaim, recordRelease } from "@armada/core/read";
+import { type Job, type NewRequest, readInbox, recordClaim, recordRelease, serveFleet } from "@armada/core/read";
 import { type Database, DB_MIGRATIONS, DB_SCHEMA_VERSION, migrateDatabase } from "../lib/db.ts";
 import {
   acquireLease,
@@ -36,6 +36,7 @@ import {
   shownJobs,
   upsertProject,
 } from "../lib/fleet-store.ts";
+import { createLaunch, endWorker, exchangeLaunch } from "../lib/workers.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
 // Synthetic projects and tickets, for these tests only.
@@ -875,6 +876,15 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
   expect(await store.queueRemove({ project, pr: 12, at: at(5) })).toBe(true);
   expect(await store.queueNext({ project, holder: "b", at: at(5) })).toMatchObject({ entry: { pr: 15 } });
   const second = (await store.queueList(project, { since: at(0) }))[1]!;
+  // The drain's step on the entry it merges (THE-1103): written by the lease's holder only.
+  const step = { project, id: second.id, detail: "Waiting: the checks on the updated head of #15", at: at(5) };
+  expect(await store.queueProgress({ ...step, holder: "a" })).toBe(false);
+  expect(await store.queueProgress({ ...step, holder: "b" })).toBe(true);
+  expect((await store.queueList(project, { since: at(0) }))[1]).toMatchObject({
+    state: "merging",
+    detail: step.detail,
+    updatedAt: at(5).toISOString(),
+  });
   expect(
     await store.queueFinish({
       project: "other",
@@ -911,6 +921,10 @@ test("merge queue preserves intent, deduplicates concurrent adds and fences dequ
   expect(await store.queueRemove({ project, pr: 12, at: at(3) })).toBe(false);
   expect(await store.queueList(project, { since: at(6) })).toEqual([]);
   expect(await store.queueAdd({ ...input, at: at(4) })).toMatchObject({ position: 1 });
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toHaveLength(1);
+  // Queuing the refused pull request again settles its refusal.
+  await store.queueAdd({ ...input, pr: 15, at: at(4) });
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toEqual([]);
 });
 
 test("events/since uses the project, kinds and tickets, pages ties and reads late commits once", async () => {
@@ -1079,4 +1093,113 @@ test("concurrent terminal job observations atomically store one coordinator noti
   }
   expect(items.map((i) => i.body).join("\n")).toContain("succeeded");
   expect(items.map((i) => i.body).join("\n")).toContain("lost");
+});
+
+test("terminal jobs notify their live originating worker; silence and orphaned jobs notify the coordinator", async () => {
+  const project = { slug: "job-routing", name: "Jobs", repository: "acme/jobs", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  await db.query("UPDATE projects SET organization_id = $2 WHERE slug = $1", [project.slug, "org-a"]);
+  const launcher = { kind: "session" as const, id: "person-a", label: "Demo coordinator" };
+  for (const [index, owner] of ["worker", "coordinator", "revoked", "expired", "replacement"].entries()) {
+    const ticket = `DEMO-${index + 20}`;
+    const launch = await createLaunch(db, {
+      organization: "org-a",
+      project: project.slug,
+      ticket,
+      launcher,
+      now: at(0),
+    });
+    const signedIn = await exchangeLaunch(db, { token: launch.token, address: `demo-${index}`, now: at(0) });
+    expect(signedIn.ok).toBe(true);
+    const workerCaller = { kind: "worker" as const, ticket, sessionId: launch.worker.id };
+    const startCaller = owner === "coordinator" ? { kind: "organization" as const, author: launcher.id } : workerCaller;
+    const coordinatorItems = () => store.openInboxItems({ project: project.slug, recipient: "coordinator", ticket });
+    const jobs: Job[] = [];
+    for (let i = 0; i < 2; i++) {
+      const started = await serveFleet(
+        store,
+        {
+          op: "job/start",
+          project,
+          caller: startCaller,
+          input: { ticket, name: "eval", startedBy: "forged" },
+        },
+        { now: () => at(0) },
+      );
+      expect(started.status).toBe(200);
+      const job = started.body.result as Job;
+      jobs.push(job);
+      expect(job.startedBy).toBe(startCaller === workerCaller ? launch.worker.id : launcher.id);
+      await store.observeJob({
+        project: project.slug,
+        ticket,
+        id: job.id,
+        state: "running",
+        progress: "40/120",
+        at: at(0),
+      });
+      const silent = await readInbox(store, { project: project.slug, silentAfterMinutes: 15, now: at(16) });
+      expect(silent.filter((item) => item.kind === "job-silent" && item.jobId === job.id)).toHaveLength(1);
+    }
+    if (owner === "revoked" || owner === "replacement") {
+      await endWorker(db, {
+        organization: "org-a",
+        id: launch.worker.id,
+        reason: "revoked",
+        by: launcher,
+        now: at(16),
+      });
+      if (owner === "replacement") {
+        const next = await createLaunch(db, {
+          organization: "org-a",
+          project: project.slug,
+          ticket,
+          launcher,
+          now: at(16),
+        });
+        expect((await exchangeLaunch(db, { token: next.token, address: "replacement", now: at(16) })).ok).toBe(true);
+      }
+    } else if (owner === "expired") {
+      await db.query('UPDATE "armada_worker" SET "sessionExpiresAt" = $1 WHERE "id" = $2', [at(17), launch.worker.id]);
+    }
+    for (const [i, job] of jobs.entries()) {
+      const input = {
+        project: project.slug,
+        ticket,
+        id: job.id,
+        state: i ? ("failed" as const) : ("succeeded" as const),
+        at: at(17),
+      };
+      // Completion may be observed by a coordinator probe or the remote runner; ownership stays with the starter.
+      const outcomes = await Promise.all([store.observeJob(input), fleetStore(db).observeJob(input)]);
+      expect(outcomes[0]).toEqual(outcomes[1]);
+      expect(outcomes[0]?.progress).toBe("40/120");
+    }
+    const workerItems = await store.openInboxItems({ project: project.slug, recipient: "worker", ticket });
+    expect(await coordinatorItems()).toHaveLength(owner === "worker" ? 0 : 2);
+    expect(workerItems).toHaveLength(owner === "worker" ? 2 : 0);
+    if (owner === "worker") {
+      const report = await serveFleet(
+        store,
+        {
+          op: "report",
+          project,
+          caller: workerCaller,
+          input: { ticket, phase: "implementing", previous: "implementing", summary: "Checking job results" },
+        },
+        { now: () => at(18) },
+      );
+      expect(report.status).toBe(200);
+      expect(report.body.result).toEqual(workerItems);
+    }
+    const durable = await store.listJobs(project.slug, { ticket });
+    expect(durable.map((job) => job.state)).toEqual(["failed", "succeeded"]);
+    expect(await shownJobs(db, project.slug, [ticket], at(0))).toEqual(durable);
+    expect(
+      (await readInbox(store, { project: project.slug, silentAfterMinutes: 15, now: at(18) })).filter(
+        (item) => item.ticket === ticket && (item.kind === "job" || item.kind === "job-silent"),
+      ),
+    ).toHaveLength(owner === "worker" ? 0 : 2);
+  }
 });

@@ -11,13 +11,16 @@
 import type { ActivityEntry, FleetRow, OwnerValidation } from "@armada/core/read";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import { mergePullRequest } from "@/app/actions";
 import { clockIn } from "@/lib/activity-view";
 import type { OverviewItem } from "@/lib/coordinator-view";
 import { paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import { decisionCards, handBackPr, sentRequest } from "@/lib/overview-view";
+import { mergeAsked } from "@/lib/queue-view";
 import { type ActionContext, splitQuestion } from "../Actions";
 import { useFleet, useNow, useShell } from "../shell/context";
+import { RequestAction } from "./AgentActions";
 import { DecisionActions } from "./DecisionCard";
 import { JobStrip } from "./JobStrip";
 import { itemColor, itemHref, StepBar } from "./OverviewRow";
@@ -284,8 +287,37 @@ export function Action({ item, ctx, projectName }: { item: OverviewItem; ctx: Ac
       );
     case "awaiting-validation":
       return <Title>{a.awaitingValidation}</Title>;
-    case "ready":
-      return <Title>{a.ready(r.by, r.pr)}</Title>;
+    case "ready": {
+      // Merge (THE-1103): the queue takes a pull request handed back at its head; else the coordinator decides.
+      const m = p.mergeButton;
+      const asked = mergeAsked(project, r.pr);
+      return (
+        <>
+          <Title>{a.ready(r.by, r.pr)}</Title>
+          {r.pr !== null && (
+            <Buttons>
+              <RequestAction
+                ctx={ctx}
+                label={m.label}
+                what={m.asked}
+                send={mergePullRequest}
+                fields={{ project: item.project, ticket: item.id, pr: r.pr }}
+                pending={
+                  asked && {
+                    author: asked.author,
+                    createdAt: asked.at,
+                    ...(asked.queued ? { what: m.queued, detail: m.queuedDetail } : {}),
+                  }
+                }
+                coordinator={coordinator}
+                hint={m.hint}
+                queued={{ what: m.queued, detail: m.queuedDetail }}
+              />
+            </Buttons>
+          )}
+        </>
+      );
+    }
     case "merged":
       return <Title>{a.merged(r.pr)}</Title>;
     case "working":

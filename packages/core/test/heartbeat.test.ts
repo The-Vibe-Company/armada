@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { serveFleet } from "../src/fleet-api.ts";
 import { heartbeatLoop } from "../src/heartbeat.ts";
-import { readInbox, recordClaim, recordRelease } from "../src/live.ts";
+import { type HeartbeatRecord, readInbox, recordClaim, recordRelease } from "../src/live.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_PROJECT, fakeClock, NOW } from "./support.ts";
 
@@ -86,9 +86,10 @@ describe("worker heartbeats", () => {
   });
 
   test("stops on session end or auth refusal; transient failure retries without losing the pinned claim", async () => {
-    for (const ending of ["released", "merged", "revoked"] as const) {
+    for (const ending of ["inactive", "revoked"] as const) {
       const clock = fakeClock(NOW);
       let calls = 0;
+      const inputs: HeartbeatRecord[] = [];
       const result = await heartbeatLoop({
         ticket: claim.ticket,
         handle: claim.handle,
@@ -96,7 +97,8 @@ describe("worker heartbeats", () => {
         now: clock.now,
         sleep: clock.sleep,
         parentAlive: () => true,
-        ping: async () => {
+        ping: async (input) => {
+          inputs.push(input);
           calls++;
           if (calls === 2) throw new ArmadaApiError("unreachable");
           if (calls === 3) {
@@ -108,6 +110,11 @@ describe("worker heartbeats", () => {
       });
       expect(result).toBe("session-ended");
       expect(calls).toBe(3);
+      expect(inputs).toEqual([
+        { ticket: claim.ticket, handle: claim.handle, claimedAt: null },
+        { ticket: claim.ticket, handle: claim.handle, claimedAt: NOW.toISOString() },
+        { ticket: claim.ticket, handle: claim.handle, claimedAt: NOW.toISOString() },
+      ]);
     }
   });
 

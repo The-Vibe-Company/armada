@@ -85,17 +85,19 @@ describe("answering from the dashboard", () => {
     const live = tempFleet();
     const db = live.store;
     const { linear, ctx } = setup(live);
-    for (const id of ["DEMO-7", "DEMO-8"]) {
+    for (const id of ["DEMO-7", "DEMO-8", "DEMO-9"]) {
       linear.add(id);
       await claimTicket(ctx, { ticket: id, runtime: "conductor", handle: `ws/${id}` });
     }
     const first = (await askCoordinator(ctx, { ticket: "DEMO-7", question: "A?" })).item ?? 0;
     const second = (await askCoordinator(ctx, { ticket: "DEMO-8", question: "B?" })).item ?? 0;
+    await askCoordinator(ctx, { ticket: "DEMO-9", question: "C?" });
     await requestAnswer(db, { project: P, question: first, text: "yes", author: "Ada", now: NOW });
     await requestAnswer(db, { project: P, question: second, text: "no", author: "Ada", now: NOW });
 
     await answerItem(ctx, { target: String(first), text: "yes, decided already" });
     await releaseTicket(ctx, { ticket: "DEMO-8", reason: "not needed" });
+    await releaseTicket(ctx, { ticket: "DEMO-9", reason: "not needed" });
     expect(await inbox(db)).toEqual([]);
   });
 });

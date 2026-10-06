@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
+import { isIP } from "node:net";
+import { fileURLToPath } from "node:url";
 import {
   buildDigest,
   configTemplate,
@@ -35,6 +37,7 @@ import {
   type VaultKey,
   vaultModeOf,
 } from "../lib/vault.ts";
+import { renderModule } from "./render-module.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
 
 const now = new Date("2026-04-06T12:00:00Z");
@@ -494,7 +497,7 @@ test("civil digest slots handle weekdays, offsets and both DST transitions witho
   ).toHaveLength(0);
 });
 
-test("webhooks refuse private addresses, local hosts, userinfo, redirects and HTTP", () => {
+test("webhooks refuse private addresses, local hosts, userinfo, redirects and HTTP", async () => {
   for (const url of [
     "http://hooks.example.test",
     "https://127.0.0.1/x",
@@ -519,4 +522,46 @@ test("webhooks refuse private addresses, local hosts, userinfo, redirects and HT
     expect(publicAddress(ip)).toBe(false);
   expect(publicAddress("8.8.8.8")).toBe(true);
   expect(publicAddress("2606:4700::1111")).toBe(true);
+  await save();
+  const calls: URL[] = [];
+  const transport = renderModule(
+    fileURLToPath(new URL("../lib/owner-push.ts", import.meta.url)),
+    {
+      "node:crypto": {},
+      "node:dns/promises": { lookup: async () => [{ address: "8.8.8.8", family: 4 }] },
+      "node:net": { isIP },
+      "node:https": {
+        request: (url: URL, _options: unknown, respond: (response: unknown) => void) => {
+          calls.push(url);
+          return {
+            on: () => {},
+            end: () =>
+              respond({ statusCode: 302, headers: { location: "http://127.0.0.1/private" }, resume: () => {} }),
+          };
+        },
+      },
+      "@armada/core/read": {},
+      "./db": {},
+      "./digest": {},
+      "./digest-slots": {},
+      "./fleet-data": {},
+      "./fleet-store": {},
+      "./i18n": {},
+      "./notify": {},
+      "./vault": {},
+    },
+    { URL, Response },
+  ).safeWebhookFetch as typeof import("../lib/owner-push.ts").safeWebhookFetch;
+  const requests: RequestInit[] = [];
+  await sendOwnerTest(db, {
+    ...opts(),
+    fetch: async (url, init) => {
+      requests.push(init ?? {});
+      return transport(url, init);
+    },
+  });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]?.hostname).toBe("hooks.example.test");
+  expect(requests[0]?.redirect).toBe("error");
+  expect((await listOwnerChannels(db, org))[0]?.last).toMatchObject({ sentAt: null, error: "http-302", attempts: 1 });
 });

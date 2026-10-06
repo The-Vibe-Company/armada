@@ -86,7 +86,14 @@ describe("the demo world", () => {
   });
 
   test("keeps the mockup's project colors", () => {
-    expect(["widgets", "gadgets", "armada"].map(projectColor)).toEqual(["#7ea6ff", "#ffb547", "#b6f15a"]);
+    expect(["widgets", "gadgets", "armada", "unknown-project"].map(projectColor)).toEqual([
+      "#7ea6ff",
+      "#ffb547",
+      "#b6f15a",
+      "#ff8ab8",
+    ]);
+    projectColor("another-project");
+    expect(projectColor("unknown-project")).toBe("#ff8ab8");
   });
 
   test("the large world has lists of hundreds of rows, and one ticket with hours of reports", () => {

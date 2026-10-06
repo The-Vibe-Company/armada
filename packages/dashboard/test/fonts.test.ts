@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import { type ComponentType, createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import {
   cmap,
   cuts,
@@ -12,6 +14,7 @@ import {
   notdefOutline,
   tables,
 } from "../scripts/fonts";
+import { renderModule } from "./render-module";
 
 // Every page preloads the Latin cut of Geist and Geist Mono only (THE-889): the
 // cut must hold every character the app writes, and the full font must follow
@@ -86,8 +89,22 @@ describe("the dashboard's fonts (THE-889)", () => {
     const css = readFileSync(join(ROOT, "app/globals.css"), "utf8");
     expect(css).toContain("--font-sans: var(--font-geist-sans-full), var(--font-geist-sans),");
     expect(css).toContain("--font-mono: var(--font-geist-mono-full), var(--font-geist-mono),");
-    expect(readFileSync(join(ROOT, "app/layout.tsx"), "utf8")).toContain(
-      "[geist, geistFull, geistMono, geistMonoFull].map((font) => font.variable)",
-    );
+    const layout = renderModule(join(ROOT, "app/layout.tsx"), {
+      "./fonts/geist": {
+        geist: { variable: "sans-latin" },
+        geistFull: { variable: "sans-full" },
+        geistMono: { variable: "mono-latin" },
+        geistMonoFull: { variable: "mono-full" },
+      },
+      "./globals.css": {},
+      "@vercel/speed-insights/next": { SpeedInsights: () => null },
+    }).default as ComponentType<{ children?: string }>;
+    const html = renderToStaticMarkup(createElement(layout, null, "Font registration"));
+    expect(
+      html
+        .match(/<html[^>]*class="([^"]+)"/)?.[1]
+        ?.split(/\s+/)
+        .sort(),
+    ).toEqual(["mono-full", "mono-latin", "sans-full", "sans-latin"]);
   });
 });

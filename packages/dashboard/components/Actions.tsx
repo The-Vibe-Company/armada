@@ -51,7 +51,8 @@ export function splitQuestion(body: string): { text: string; options: string[] }
 /** What a request does to the screen: at once on submit, once recorded, and back if refused. */
 export interface RequestSteps {
   start: (form: FormData) => void;
-  done: (form: FormData) => void;
+  /** `queued`: the answer says the merge queue took it (THE-1103). */
+  done: (form: FormData, answer: { queued?: boolean }) => void;
   undo: () => void;
 }
 
@@ -98,7 +99,7 @@ export function useRequest(send: (form: FormData) => Promise<RequestResult>, ste
         code: "failed" as const,
         message: "",
       }));
-      if (result.ok) steps.done(form);
+      if (result.ok) steps.done(form, result);
       else {
         steps.undo();
         setError(result.code);

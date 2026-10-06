@@ -1,6 +1,6 @@
 // Human-readable rendering of a status report. Plain text, no colors, so the
 // output reads the same in a terminal, a log or an agent transcript.
-import { type InFlightTicket, mainHealthLine, type StatusReport } from "@armada/core";
+import { type InFlightTicket, mainHealthLine, type QueueEntry, queueOpen, type StatusReport } from "@armada/core";
 
 const MIN = 60_000;
 
@@ -40,6 +40,15 @@ const phaseLabel = (t: InFlightTicket) => {
   return t.phaseSource === "label" ? phase : `${phase} (${t.phaseSource})`;
 };
 
+/** The merge queue, one line per entry: the open ones numbered in drain order. */
+export function queueLines(entries: readonly QueueEntry[]): string[] {
+  let position = 0;
+  return entries.map(
+    (e) =>
+      `${queueOpen(e) ? `${++position}.` : "  "} #${e.pr}  ${e.state}${e.ticket ? `  ${e.ticket}` : ""} · queued by ${e.queuedBy}${e.detail ? ` — ${e.detail}` : ""}`,
+  );
+}
+
 export function renderStatus(r: StatusReport): string {
   const now = Date.parse(r.generatedAt);
   const out: string[] = [];
@@ -60,6 +69,10 @@ export function renderStatus(r: StatusReport): string {
   for (const h of r.holds ?? [])
     out.push(`Merges paused since ${h.openedAt.slice(11, 16)} UTC: ${h.reason} (hold #${h.id})`);
   if (r.main) out.push(mainHealthLine(r.main));
+  if (r.queue?.length) {
+    out.push("", `Merge queue (${r.queue.filter(queueOpen).length} queued)`);
+    for (const line of queueLines(r.queue)) out.push(`  ${line}`);
+  }
 
   out.push("", `In flight (${r.inFlight.length})`);
   if (!r.inFlight.length) out.push("  nobody is working");

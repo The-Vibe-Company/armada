@@ -225,6 +225,11 @@ test("first claim reads the pending handover owner after acquiring the project l
   expect(write).toBeGreaterThan(lock);
   // Session revalidation may run between the lock and claim write, inside this transaction.
   expect(statements.slice(lock, write)).not.toContain("COMMIT");
-  expect(statements[lock - 1]).toBe("BEGIN");
-  expect(statements[write + 1]).toBe("COMMIT");
+  const begin = statements.lastIndexOf("BEGIN", lock);
+  const commit = statements.indexOf("COMMIT", write);
+  const owner = statements.findIndex((sql) => sql.includes('SELECT "coordinator" FROM "armada_worker"'));
+  expect(begin).toBeGreaterThanOrEqual(0);
+  expect(owner).toBeGreaterThan(lock);
+  expect(write).toBeGreaterThanOrEqual(owner);
+  expect(commit).toBeGreaterThan(write);
 });

@@ -736,7 +736,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     out.push(
       "## Live acceptance",
       "",
-      "Bring main in before the final run. Run applicable checks with `armada acceptance run` (or `--name <name>` for one check). Your checkout must be clean and HEAD must equal the PR head. Every error the check prints is part of this ticket: fix them all before handing back.",
+      "Bring main in first only if your pull request conflicts (GitHub says DIRTY). Run applicable checks with `armada acceptance run` (or `--name <name>` for one check). Your checkout must be clean and HEAD must equal the PR head. Every error the check prints is part of this ticket: fix them all before handing back.",
       "",
     );
     for (const rule of b.acceptance)
@@ -762,7 +762,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
     out.push(
-      "Declare overlaps in your plan, proceed additively, and bring in main before hand-back. Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
+      "Declare overlaps in your plan and proceed additively; bring main in only if your pull request conflicts (GitHub says DIRTY). Ask the coordinator only when you must change a contract that another in-flight ticket relies on.",
       "",
     );
     for (const w of b.parallel) {

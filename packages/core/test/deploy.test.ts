@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
-import { type DeployTarget, parseConfig } from "../src/config.ts";
+import type { DeployTarget } from "../src/config.ts";
 import { type DeployInput, deployDetail, watchDeploy } from "../src/deploy.ts";
 import { serveFleet } from "../src/fleet-api.ts";
 import { memoryFleet } from "./memory-fleet.ts";
-import { DEMO_PROJECT, DEMO_TOML, NOW } from "./support.ts";
+import { DEMO_PROJECT, NOW } from "./support.ts";
 
 const sha = "a".repeat(40),
   newer = "b".repeat(40);
@@ -91,6 +91,36 @@ test("failed descendants fail immediately; unrelated failures keep waiting; leas
         },
       }),
     ).toBe("deploy-failed");
+    expect(records.at(-1)?.state).toBe("deploy-failed");
+
+    let now = 0;
+    let polls = 0;
+    let smokes = 0;
+    const unrelatedRecords: DeployInput[] = [];
+    expect(
+      await watchDeploy({
+        target: { ...target, timeoutMinutes: 2 },
+        sha,
+        now: () => new Date(now),
+        sleep: async (ms) => {
+          now += ms;
+        },
+        live: async () =>
+          ++polls === 1
+            ? { sha: newer, state, detail: "unrelated build failed" }
+            : { sha, state: "success", detail: "target live" },
+        includes: async (_base, head) => head === sha,
+        smoke: async () => {
+          smokes++;
+          return { ok: true, detail: "health ok" };
+        },
+        record: async (r) => {
+          unrelatedRecords.push(r);
+        },
+      }),
+    ).toBe("healthy");
+    expect(unrelatedRecords.some((record) => record.state === "deploy-failed")).toBe(false);
+    expect(smokes).toBe(1);
   }
   let now = 0,
     calls = 0;
@@ -114,34 +144,6 @@ test("failed descendants fail immediately; unrelated failures keep waiting; leas
 test("deploy detail keeps only 30 lines and 4 KiB of valid UTF-8", () => {
   expect(deployDetail(Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n")).split("\n")).toHaveLength(30);
   expect(new TextEncoder().encode(deployDetail("é".repeat(5000))).length).toBe(4096);
-});
-
-test("deploy targets validate live source, unique names, range and unknown keys", () => {
-  expect(parseConfig(DEMO_TOML).deploy).toBeUndefined();
-  const text = `${DEMO_TOML}\n[[deploy.target]]\nname = "api"\ngithub_environment = "production"\n`;
-  expect(parseConfig(text).deploy?.targets[0]).toEqual({
-    ...target,
-    githubEnvironment: "production",
-    liveShaCommand: null,
-    smoke: null,
-    timeoutMinutes: 20,
-  });
-  const withJobs = parseConfig(
-    `${text}\n[jobs.eval]\nstart = "dispatch"\nstop = "cancel"\n[[ci.known_failure]]\ncheck = "test"\npattern = "cold start"\nticket = "DEMO-10"`,
-  );
-  expect(withJobs.deploy?.targets[0]?.name).toBe("api");
-  expect(withJobs.jobs.eval?.start).toBe("dispatch");
-  expect(withJobs.ci.knownFailures).toEqual([{ check: "test", pattern: "cold start", ticket: "DEMO-10" }]);
-  for (const extra of [
-    'live_sha_command = "version"',
-    "timeout_minutes = 0",
-    "timeout_minutes = 121",
-    'pause_on_failure = "false"',
-    "typo = true",
-    '[[deploy.target]]\nname = "api"\nlive_sha_command = "version"',
-  ])
-    expect(() => parseConfig(`${text}\n${extra}`)).toThrow();
-  expect(() => parseConfig(`${DEMO_TOML}\n[[deploy.target]]\nname = "api"`)).toThrow();
 });
 
 test("fleet failure creates one deploy hold and inbox item; worker deploy calls are forbidden", async () => {

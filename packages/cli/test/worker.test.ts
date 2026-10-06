@@ -562,6 +562,7 @@ describe("armada claim, report and release", () => {
       "fleet/launches",
       "fleet/job/list",
       "fleet/holds",
+      "fleet/queue/list",
       "fleet/heartbeats/latest",
       "fleet/runtime/handles",
       "fleet/events/state",
@@ -936,6 +937,25 @@ test("hold commands share the pause with status and clear it idempotently", asyn
     w.reset();
     expect(await run(args, w.io)).toBe(2);
   }
+});
+
+test("status lists the merge queue in drain order, with who queued each and why one was refused", async () => {
+  const w = worker(SIGNED_IN);
+  w.net.rest = recordedFetch().fetch;
+  const entry = { project: "widgets", noTicket: false, keepOpen: false, throughHold: null, reason: null };
+  await w.store.queueAdd({ ...entry, pr: 12, ticket: "DEMO-7", headSha: "a".repeat(40), queuedBy: "Owner", at: NOW });
+  await w.store.queueAdd({
+    ...entry,
+    pr: 15,
+    ticket: "DEMO-8",
+    headSha: "b".repeat(40),
+    queuedBy: "coordinator",
+    at: NOW,
+  });
+  expect(await run(["status"], w.io)).toBe(0);
+  expect(w.out()).toContain(
+    "Merge queue (2 queued)\n  1. #12  queued  DEMO-7 · queued by Owner\n  2. #15  queued  DEMO-8 · queued by coordinator\n",
+  );
 });
 
 test("report accepts repeated --paths, records declarations in Linear and prints overlap warnings", async () => {

@@ -1,4 +1,4 @@
-import { queueAdd, queueFinish, queueList, queueNext, queueRemove } from "./merge-queue";
+import { queueAdd, queueFinish, queueList, queueNext, queueProgress, queueRemove } from "./merge-queue";
 import { requestSecret } from "./secret-requests";
 // The fleet's live data in the app's database (THE-849): the project
 // registry, events, the runtime session holding each ticket and the profile
@@ -1998,16 +1998,26 @@ export const fleetStore = (db: Database): FleetStore => ({
       );
       if (rs.rows[0]) {
         const job = jobOf(rs.rows[0]);
-        if (job.finishedAt)
+        if (job.finishedAt) {
+          // Route by the authenticated starter, never the observer or a replacement worker.
+          // Lock its session so ending it and choosing the notice recipient are serialized.
+          const worker = (
+            await tx.query(
+              `SELECT "id" FROM "armada_worker" WHERE "id" = $1 AND "project" = $2 AND "ticket" = $3
+             AND "tokenUsedAt" IS NOT NULL AND "endedAt" IS NULL AND "sessionExpiresAt" > $4 FOR UPDATE`,
+              [job.startedBy, job.project, job.ticket, input.at],
+            )
+          ).rows[0];
           await addInboxItem(tx, {
             project: job.project,
             ticket: job.ticket,
             kind: "job",
-            recipient: "coordinator",
+            recipient: worker ? "worker" : "coordinator",
             author: null,
             body: jobEndedBody(job),
             at: input.at,
           });
+        }
         return job;
       }
       const job = await getJob(tx, input.project, input.id);
@@ -2097,6 +2107,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   queueList: (project, opts) => queueList(db, project, opts),
   queueNext: (q) => queueNext(db, q),
   queueFinish: (q) => queueFinish(db, q),
+  queueProgress: (q) => queueProgress(db, q),
   queueRemove: (q) => queueRemove(db, q),
   acquireLease: (l) => acquireLease(db, l),
   getLease: (project, name) => getLease(db, project, name),
@@ -2350,6 +2361,7 @@ export interface LiveStore
       | "resolvePlans"
       | "resolveInboxItems"
       | "recordEvent"
+      | "queueList"
     > {
   coordinatorRoles(project: string): Promise<CoordinatorPresence[]>;
   inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
@@ -2423,6 +2435,8 @@ export const liveStore = (db: Database): LiveStore => ({
   openInboxItems: (q) => openInboxItems(db, q),
   openHolds: (project) => openHolds(db, project),
   latestDeploys: (project) => deployState(db, project),
+  queueAdd: (e) => queueAdd(db, e),
+  queueList: (project, opts) => queueList(db, project, opts),
   coordinatorPresence: (project) => coordinatorPresence(db, project),
   ticketHistory: async (project, ticket) => {
     const [events, inbox, launches] = await Promise.all([

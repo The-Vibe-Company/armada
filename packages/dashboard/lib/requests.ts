@@ -8,6 +8,7 @@ import {
   requestAnswer,
   requestDecision,
   requestLaunch,
+  requestMerge,
   requestPlanChanges,
   requestRelease,
 } from "@armada/core/read";
@@ -16,7 +17,10 @@ import { type LoadOptions, loadProject, type ProjectState, type Scope } from "./
 import type { LiveStore } from "./fleet-store";
 import type { RequestError } from "./i18n";
 
-export type RequestResult = { ok: true; id: number } | { ok: false; code: RequestError; message: string };
+/** `queued`: a Merge press the merge queue took (THE-1103), not a request to the coordinator. */
+export type RequestResult =
+  | { ok: true; id: number; queued?: boolean }
+  | { ok: false; code: RequestError; message: string };
 
 export interface AnswerForm {
   project: string;
@@ -89,6 +93,25 @@ export function submitRelease(
   form: { project: string; ticket: string; author: string },
 ): Promise<RequestResult> {
   return withProject(opts, scope, form.project, ({ store }) => requestRelease(store, { ...form, now: opts.now() }));
+}
+
+/**
+ * The owner presses Merge (THE-1103): a pull request handed back at its head
+ * joins the merge queue, any other one becomes a request to the coordinator;
+ * the overview's next poll shows which.
+ */
+export async function submitMerge(
+  opts: LoadOptions,
+  scope: Scope | null,
+  form: { project: string; pr: number; ticket: string | null; author: string },
+): Promise<RequestResult> {
+  let queued = false;
+  const result = await withProject(opts, scope, form.project, async ({ store, openPrs }) => {
+    const asked = await requestMerge(store, { ...form, openPrs, now: opts.now() });
+    queued = asked.kind !== "request";
+    return asked.id;
+  });
+  return result.ok ? { ...result, queued } : result;
 }
 
 export function submitPlanChanges(opts: LoadOptions, scope: Scope | null, form: AnswerForm): Promise<RequestResult> {
