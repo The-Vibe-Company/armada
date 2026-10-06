@@ -4,7 +4,7 @@
 import { type ArmadaProject, LINEAR_KEY, loadStatus, readProjectConfig, type StatusReport } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { loadCredentials } from "./auth.ts";
-import { type Io, missingKey } from "./io.ts";
+import { httpOptions, type Io, missingKey } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { recordPresence } from "./presence.ts";
 import { renderStatus } from "./render.ts";
@@ -43,7 +43,7 @@ export async function statusAll(io: Io, json: boolean): Promise<number> {
       try {
         const read = await readProjectConfig(p, {
           githubToken: credentials.githubToken,
-          ...(io.fetch ? { fetch: io.fetch } : {}),
+          ...httpOptions(io),
         });
         warning = read.warning;
         const config = read.config;
@@ -56,7 +56,7 @@ export async function statusAll(io: Io, json: boolean): Promise<number> {
         const report = await loadStatus(config, {
           linearApiKey: own ?? linearApiKey,
           githubToken: credentials.githubToken,
-          ...(io.fetch ? { fetch: io.fetch } : {}),
+          ...httpOptions(io),
           ...(io.now ? { now: io.now } : {}),
         });
         return { ...base, report, error: null, configWarning: warning };

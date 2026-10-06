@@ -121,6 +121,7 @@ function briefIo(
     ghToken: () => null,
     fetch,
     now: () => NOW,
+    sleep: async () => {},
   };
   return { io, calls, out: () => out.join(""), err: () => err.join("") };
 }
@@ -629,4 +630,24 @@ test("a brief uses Armada's stored file inventory and declared paths, truncating
   expect(brief.prompt).toContain("Comparison incomplete");
   expect(brief.prompt).toContain("no files yet");
   expect(brief.prompt).toContain("Before you change one of these files, say so in a report and ask the coordinator.");
+});
+
+test("the initial brief ticket read retries temporary failures and preserves nonempty output", async () => {
+  const b = briefIo();
+  const recorded = b.io.fetch;
+  let attempts = 0;
+  const waits: number[] = [];
+  b.io.sleep = async (ms) => {
+    waits.push(ms);
+  };
+  b.io.fetch = async (url, init) => {
+    if (String(init.body).includes("query Brief(") && ++attempts <= 2) return new Response("busy", { status: 503 });
+    if (!recorded) throw new Error("missing recorded fetch");
+    return recorded(url, init);
+  };
+  expect(await run(["brief", "DEMO-13", "--json"], b.io)).toBe(0);
+  expect(JSON.parse(b.out()).ticket.id).toBe("DEMO-13");
+  expect(attempts).toBe(3);
+  expect(waits).toHaveLength(2);
+  expect(b.err().match(/Linear answered 503/g)).toHaveLength(2);
 });
