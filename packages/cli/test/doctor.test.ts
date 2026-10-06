@@ -71,8 +71,11 @@ async function terminal(
     ...(more.exec ? { exec: more.exec } : {}),
   };
   /** The sign-in, key-file, version and conductor checks of `armada doctor --json`. */
-  const doctor = async (ids = ["sign-in", "cli-version", "local-keys", "retired-keys", "conductor-cli", "secrets"]) => {
-    await run(["doctor", "--json"], io);
+  const doctor = async (
+    ids = ["sign-in", "cli-version", "local-keys", "retired-keys", "conductor-cli", "secrets"],
+    args: string[] = [],
+  ) => {
+    await run(["doctor", "--json", ...args], io);
     const text = out.splice(0).join("");
     for (const secret of [KEY, SESSION, LINEAR]) expect([text, ...errs].join("")).not.toContain(secret);
     const report = JSON.parse(text.slice(text.indexOf("{"))) as { checks: Check[] };
@@ -778,8 +781,27 @@ test("doctor names missing deploy settings per target and gives a working machin
     message: "api: DEPLOY_LINK_DIR, DEPLOY_REGION not set on this machine; deploy check will be skipped",
   });
   expect(check?.fix).toBe(
-    `armada config set deploy.env.DEPLOY_LINK_DIR <value> --config '${join(t.home, "armada.toml")}'\narmada config set deploy.env.DEPLOY_REGION <value> --config '${join(t.home, "armada.toml")}'`,
+    "armada config set deploy.env.DEPLOY_LINK_DIR <value>\narmada config set deploy.env.DEPLOY_REGION <value>",
   );
+  const selected = join(t.home, "project's config.toml");
+  await writeFile(selected, toml);
+  const elsewhere = join(t.home, "elsewhere");
+  await mkdir(elsewhere);
+  await writeFile(join(elsewhere, "armada.toml"), DEMO_TOML);
+  t.io.readFile = async (path) => readFile(path, "utf8").catch(() => null);
+  t.io.cwd = elsewhere;
+  const suffix = ` --config '${t.home}/project'\\''s config.toml'`;
+  const explicitFix = `armada config set deploy.env.DEPLOY_LINK_DIR <value>${suffix}\narmada config set deploy.env.DEPLOY_REGION <value>${suffix}`;
+  // The flag wins over an environment selector for a different project config.
+  t.io.env.ARMADA_CONFIG = join(elsewhere, "armada.toml");
+  expect((await t.doctor(["deploy-env:api"], ["--config", "../project's config.toml"]))[0]).toMatchObject({
+    level: "warning",
+    fix: explicitFix,
+  });
+  t.io.env.ARMADA_CONFIG = "../project's config.toml";
+  expect((await t.doctor(["deploy-env:api"]))[0]).toMatchObject({ level: "warning", fix: explicitFix });
+  delete t.io.env.ARMADA_CONFIG;
+  t.io.cwd = t.home;
   expect(await run(["config", "set", "deploy.env.DEPLOY_LINK_DIR", "/synthetic/linked folder"], t.io)).toBe(0);
   // Clear the config command's output before doctor emits JSON.
   await t.doctor([]);
@@ -794,6 +816,18 @@ test("doctor names missing deploy settings per target and gives a working machin
     "PRIVATE-corrupt-file-sentinel",
   );
   expect(damaged.find((c) => c.id === "deploy-env:api")?.fix).toContain("armada config set deploy.env.DEPLOY_LINK_DIR");
+  t.io.env.DEPLOY_LINK_DIR = "/environment/linked-service";
+  t.io.env.ARMADA_CONFIG = "../project's config.toml";
+  t.io.cwd = elsewhere;
+  const completeEnv = await t.doctor(["deploy-env:api", "deploy-machine-settings"]);
+  expect(completeEnv.find((c) => c.id === "deploy-env:api")).toMatchObject({ level: "ok", fix: null });
+  expect(completeEnv.find((c) => c.id === "deploy-machine-settings")).toMatchObject({
+    level: "warning",
+    fix: `armada config set deploy.env.<VAR> <value>${suffix}`,
+  });
+  delete t.io.env.DEPLOY_LINK_DIR;
+  delete t.io.env.ARMADA_CONFIG;
+  t.io.cwd = t.home;
   expect(await run(["config", "set", "deploy.env.DEPLOY_LINK_DIR", "/repaired/linked-service"], t.io)).toBe(0);
   await t.doctor([]);
   expect(await t.doctor(["deploy-env:api", "deploy-machine-settings"])).toEqual([
