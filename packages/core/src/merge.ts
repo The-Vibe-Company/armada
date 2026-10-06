@@ -21,6 +21,7 @@ import {
 
 export { MERGE_LEASE } from "./live.ts";
 
+import type { QueueInput } from "./merge-queue.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
 import type { FrontierTicket } from "./status.ts";
 import type { MainHealth } from "./types.ts";
@@ -767,22 +768,24 @@ interface Checked {
 }
 
 /** Every checklist rule, the base-branch rule (with a test merge when allowed) and the hints. */
-async function checklist(ctx: MergeContext, input: MergeInput, run: Run): Promise<Checked> {
+async function checklist(ctx: MergeContext, input: MergeInput, run: Run, enqueue = false): Promise<Checked> {
   const { config } = ctx;
   const l = await look(ctx, input, run);
   const { pull, ticket, cmp } = l;
   const warnings = [...(ticket?.warnings ?? [])];
   const lines: string[] = [];
   const problems = [...l.problems];
-  if (input.wait && !input.dryRun) {
+  if (enqueue) {
+    // Readiness is rechecked by the drain; enqueue records durable intent only.
+  } else if (input.wait && !input.dryRun) {
     // Whatever time settles goes back to the wait, out of the lease.
     if (!problems.length && (l.waits.length || l.mustUpdate))
       throw new NotYet(l.mustUpdate ? `${pull.baseRef} moved` : (l.waits[0] ?? "not ready"));
   } else problems.push(...l.waits, ...(l.pull.mergeStateStatus === "BEHIND" ? [stateLine(pull)] : []));
 
   const behind = baseProblem(pull, cmp, config.gates.localCommands);
-  if (behind) problems.push(behind);
-  else if (cmp && cmp.behindBy > 0) {
+  if (behind && !(enqueue && cmp && l.behind)) problems.push(behind);
+  else if (!enqueue && cmp && cmp.behindBy > 0) {
     if (!ctx.repo)
       problems.push(`the head lacks commits of ${pull.baseRef} and git is not available to test the merge`);
     else if (!problems.length) {
@@ -886,6 +889,7 @@ async function ownerDecision(
   input: MergeInput,
   c: Checked,
   dryRun: boolean,
+  enqueue = false,
 ): Promise<{ lines: string[]; decided: string | null }> {
   const n = c.pull.number;
   // The rule judges a ticket's merge; a pull request no ticket owns (a release) is still held by an approval asked for it.
@@ -936,10 +940,36 @@ async function ownerDecision(
       `the owner's approvals of #${n} could not be read (${unreadable}); none is required without a merge rule`,
     );
   if (problem) {
+    if (enqueue && approval.state === "pending") return { lines: [...lines, problem], decided: null };
     if (dryRun) return { lines: [...lines, `Not mergeable yet: ${problem}`, `Next: ${next}`], decided: null };
     throw new Refusal(`#${n}${c.ticket ? ` (${c.ticket.id})` : ""} cannot be merged: ${problem}`, next);
   }
   return { lines: decided ? [...lines, `Decided: ${decided}.`] : lines, decided };
+}
+
+/** The merge checklist for durable intent: hard failures refuse, readiness waits survive. */
+export async function prepareQueueEntry(
+  ctx: MergeContext,
+  input: MergeInput & { keepOpen?: boolean },
+): Promise<QueueInput> {
+  if (ctx.config.policy.mergeApproval && !mergeReason(input))
+    throw new Refusal(
+      "queuing under [policy] merge_approval requires --reason",
+      'armada merge --when-green --reason "<judgement>" <pr>',
+    );
+  const run: Run = { pin: null, updated: new Map(), lineages: new Map() };
+  const c = await checklist(ctx, input, run, true);
+  await ownerDecision(ctx, input, c, false, true);
+  return {
+    pr: c.pull.number,
+    ticket: c.ticket?.id ?? null,
+    noTicket: !!input.noTicket,
+    keepOpen: !!input.keepOpen,
+    throughHold: input.throughHold?.trim() || null,
+    reason: mergeReason(input),
+    headSha: (c.ticket ? findHandBack(c.ticket)?.sha : c.sha) ?? c.sha,
+    queuedBy: ctx.holder,
+  };
 }
 
 /**

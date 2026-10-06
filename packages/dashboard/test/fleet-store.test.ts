@@ -492,6 +492,112 @@ test("merge holds deduplicate automatic pauses and atomically open and resolve t
   }
 });
 
+test("merge queue preserves intent, deduplicates concurrent adds and fences dequeue and finish with the lease", async () => {
+  const project = "queue-test";
+  const input = {
+    project,
+    pr: 12,
+    ticket: "WID-12",
+    noTicket: false,
+    keepOpen: false,
+    throughHold: null,
+    reason: "Reviewed",
+    headSha: "a".repeat(40),
+    queuedBy: "coordinator-a",
+    at: at(0),
+  };
+  const store = fleetStore(db);
+  const adds = await Promise.all([store.queueAdd(input), store.queueAdd(input)]);
+  expect(adds.filter((e) => "existing" in e)).toHaveLength(1);
+  const first = (await fleetStore(db).queueList(project, { since: at(0) }))[0]!;
+  expect(first).toMatchObject({ pr: 12, reason: "Reviewed", state: "queued", headSha: input.headSha });
+  expect(await store.queueAdd({ ...input, pr: 15 })).toMatchObject({ position: 2 });
+  expect(await store.queueNext({ project, holder: "a", at: at(1) })).toEqual({ refused: true, held: null });
+  expect(await store.acquireLease({ project, name: "merge-queue", holder: "a", ttlMs: 60_000, at: at(1) })).toEqual({
+    acquired: true,
+  });
+  const secondHolder = await store.acquireLease({
+    project,
+    name: "merge-queue",
+    holder: "b",
+    ttlMs: 60_000,
+    at: at(1),
+  });
+  expect(secondHolder).toMatchObject({ acquired: false, held: { holder: "a" } });
+  expect(await store.queueNext({ project, holder: "b", at: at(1) })).toMatchObject({
+    refused: true,
+    held: { holder: "a" },
+  });
+  expect(await store.queueNext({ project, holder: "a", at: at(1) })).toMatchObject({
+    entry: { id: first.id, state: "merging" },
+    holds: [],
+  });
+  expect(await store.queueRemove({ project, pr: 12, at: at(1) })).toBe(false);
+  expect(
+    await store.queueFinish({ project, id: first.id, holder: "b", outcome: "merged", detail: null, at: at(1) }),
+  ).toBe(false);
+  // A lost session's successor resumes its unfinished entry before taking another.
+  await store.acquireLease({ project, name: "merge-queue", holder: "b", ttlMs: 60_000, at: at(3) });
+  expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: { id: first.id } });
+  expect(
+    await store.queueFinish({ project, id: first.id, holder: "a", outcome: "merged", detail: null, at: at(3) }),
+  ).toBe(false);
+  expect(
+    await store.queueFinish({
+      project,
+      id: first.id,
+      holder: "b",
+      outcome: "retry",
+      detail: "CI running",
+      notBefore: at(5).toISOString(),
+      at: at(3),
+    }),
+  ).toBe(true);
+  expect((await store.queueList(project, { since: at(0) }))[0]).toMatchObject({
+    state: "queued",
+    attempts: 1,
+    detail: "CI running",
+  });
+  expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: { pr: 15 } });
+  const second = (await store.queueList(project, { since: at(0) }))[1]!;
+  expect(
+    await store.queueFinish({
+      project: "other",
+      id: second.id,
+      holder: "b",
+      outcome: "refused",
+      detail: "head moved",
+      at: at(3),
+    }),
+  ).toBe(false);
+  expect(
+    await store.queueFinish({
+      project,
+      id: second.id,
+      holder: "b",
+      outcome: "refused",
+      detail: "head moved",
+      at: at(3),
+    }),
+  ).toBe(true);
+  expect(
+    await store.queueFinish({
+      project,
+      id: second.id,
+      holder: "b",
+      outcome: "refused",
+      detail: "head moved",
+      at: at(3),
+    }),
+  ).toBe(false);
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toMatchObject([
+    { kind: "queue-refused", ticket: "WID-12", body: expect.stringContaining("head moved") },
+  ]);
+  expect(await store.queueRemove({ project, pr: 12, at: at(3) })).toBe(true);
+  expect(await store.queueList(project, { since: at(4) })).toEqual([]);
+  expect(await store.queueAdd({ ...input, at: at(4) })).toMatchObject({ position: 1 });
+});
+
 test("events/since uses the project, kinds and tickets, pages ties and reads late commits once", async () => {
   const project = "follow-stream";
   await upsertProject(db, { slug: project, name: "Follow", repository: "acme/follow", programRoot: "WID-1" }, at(0));
