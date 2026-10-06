@@ -10,6 +10,22 @@ import { type AgentClaim, type AgentPhase, type Comment, type Issue, LABEL_PHASE
 
 const MIN = 60_000;
 
+/** A runtime reading expires with the project's liveness threshold. */
+export function freshRuntimeState(
+  observation: RuntimeObservation | null | undefined,
+  now: Date,
+  minutes: number,
+  claimedAt?: string,
+): RuntimeObservation["state"] | null {
+  // A session can start its turn before the worker claims. The observation is
+  // generation-checked by the store; its transition time may legitimately precede the claim.
+  if (!observation || (claimedAt && observation.at < claimedAt)) return null;
+  const age = now.getTime() - Date.parse(observation.at);
+  return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
+    ? observation.state
+    : null;
+}
+
 /** Phases where the coordinator or a human must act. */
 export const NEEDS_HUMAN: AgentPhase[] = ["awaiting-approval", "awaiting-validation", "blocked", "ready-to-merge"];
 
@@ -30,6 +46,7 @@ const PLAN_HINT = /\b(plan|objective|assumptions|awaiting (?:plan )?approval)\b/
 
 export type LaneFlag =
   | "silent"
+  | "stopped"
   | "ci-failing"
   | "conflict"
   | "double-claim"
@@ -100,6 +117,35 @@ export function workerLivenessAt(worker: Pick<Lane, "lastHeartbeat" | "lastRepor
   return latest(worker.lastHeartbeat, worker.lastReport) || worker.lastUpdate;
 }
 
+/** One liveness decision for the inbox and status, from worker activity and a fresh runtime reading. */
+export function liveness(input: {
+  now: Date;
+  silentAfterMinutes: number;
+  phase: string | null | undefined;
+  lastReport: string;
+  lastHeartbeat?: string | null;
+  runtimeState?: RuntimeObservation | null;
+  claimedAt?: string;
+  owesReport?: boolean;
+}): { kind: "silent" | "stopped" | null; alive: string; silence: number; state: ReturnType<typeof freshRuntimeState> } {
+  const alive = workerLivenessAt({
+    lastReport: input.lastReport,
+    lastHeartbeat: input.lastHeartbeat,
+    lastUpdate: input.lastReport,
+  });
+  const silence = input.now.getTime() - Date.parse(alive);
+  const state = freshRuntimeState(input.runtimeState, input.now, input.silentAfterMinutes, input.claimedAt);
+  let kind: "silent" | "stopped" | null = null;
+  if (!(NEEDS_HUMAN.includes(input.phase as AgentPhase) && !input.owesReport) && input.phase !== "merged") {
+    if (state === "idle") {
+      if (input.now.getTime() - Date.parse(input.lastReport) > 5 * MIN) kind = "stopped";
+    } else if (state !== "blocked" && silence > input.silentAfterMinutes * MIN * (state === "working" ? 2 : 1)) {
+      kind = "silent";
+    }
+  }
+  return { kind, alive, silence, state };
+}
+
 /** Legacy workers: checks on the PR head mean CI, including completed checks. */
 export function deriveShippingStage(pr: PullRequest | null): ShippingStage | null {
   if (pr?.state !== "open") return null;
@@ -147,6 +193,7 @@ export interface LaneOptions {
         handle: string;
         profile?: string | null;
         lastHeartbeatAt?: string | null;
+        lastAnsweredAt?: string | null;
         runtimeState?: RuntimeObservation | null;
         claimedAt?: string;
         releasedAt?: string | null;
@@ -244,12 +291,23 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
   const agent = issue.delegate ?? issue.assignee;
 
   const flags: LaneFlag[] = [];
-  const waitingOnHuman = NEEDS_HUMAN.includes(phase) || phase === "merged";
   // A resumed report is fresh liveness even if the previous turn's heartbeat stopped.
   // Ticket edits and ordinary comments count only when the worker has never reported or pinged.
   const lastHeartbeat = opts.heartbeats?.[issue.id] ?? opts.live?.handles?.[issue.id]?.lastHeartbeatAt ?? null;
-  const alive = workerLivenessAt({ lastHeartbeat, lastReport, lastUpdate });
-  if (!waitingOnHuman && opts.now - Date.parse(alive) > opts.silentAfterMinutes * MIN) flags.push("silent");
+  const answer = opts.live?.handles?.[issue.id]?.lastAnsweredAt;
+  const reported = lastReport ?? lastUpdate;
+  const owesReport = !!answer && answer > reported;
+  const life = liveness({
+    now: new Date(opts.now),
+    silentAfterMinutes: opts.silentAfterMinutes,
+    phase,
+    lastReport: owesReport ? answer : reported,
+    owesReport,
+    lastHeartbeat,
+    runtimeState: opts.live?.handles?.[issue.id]?.runtimeState,
+    claimedAt: opts.live?.handles?.[issue.id]?.claimedAt,
+  });
+  if (life.kind) flags.push(life.kind);
   if (pr?.state === "open" && pr.ci === "failure") flags.push("ci-failing");
   if (pr?.state === "open" && pr.mergeable === "CONFLICTING") flags.push("conflict");
   const runtimes = new Set(claims.map((c) => c.runtime).filter(Boolean));
@@ -314,6 +372,13 @@ export function inFlight(m: Model, comments: Comment[], opts: LaneOptions): Lane
       if (!ENDS_WORK.includes(fresh.kind)) return true;
       // A replacement claim survives an older release or merge in the reading.
       return open && !!handle.claimedAt && handle.claimedAt > fresh.at;
+    }
+    // A runtime archive does not edit Linear. Preserve its end evidence after
+    // the next snapshot refresh, unless the tracker has newer worker activity.
+    const ended = opts.live?.events[i.id];
+    if (ended && ENDS_WORK.includes(ended.kind) && !open) {
+      const workerAt = latest(commentsFor(comments, i.id).find((c) => c.status || c.claim)?.createdAt, i.startedAt);
+      if (workerAt ? ended.at >= workerAt : !!ended.handle) return false;
     }
     return open || !!i.agentPhase || isStarted(i);
   };

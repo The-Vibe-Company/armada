@@ -108,13 +108,13 @@ export class ConductorAdapter implements RuntimeAdapter {
       code === "auth" || code === "not-found" ? "conductor auth whoami" : "use the armada-runtime-conductor guide",
     );
   }
-  private async exec(args: string[], input?: string, mutation = false): Promise<ExecResult> {
+  private async exec(args: string[], input?: string, mutation = false, timeoutMs = 10_000): Promise<ExecResult> {
     if (!this.io.exec) throw this.error("unavailable");
     let r: ExecResult;
     try {
       r = await this.io.exec(this.binary, ["--json", ...args], {
         cwd: this.io.cwd,
-        timeoutMs: mutation ? (args[0] === "workspace" && args[1] === "create" ? 120_000 : 60_000) : 10_000,
+        timeoutMs: mutation ? (args[0] === "workspace" && args[1] === "create" ? 120_000 : 60_000) : timeoutMs,
         maxOutputBytes: 2_000_000,
         input,
       });
@@ -125,7 +125,7 @@ export class ConductorAdapter implements RuntimeAdapter {
         (e as NodeJS.ErrnoException).code === "ENOENT"
       ) {
         this.binary = BUNDLED_CONDUCTOR;
-        return this.exec(args, input, mutation);
+        return this.exec(args, input, mutation, timeoutMs);
       }
       if ((e as NodeJS.ErrnoException).code === "ENOENT")
         throw new RuntimeError("Conductor CLI is missing", "unavailable", CONDUCTOR_INSTALL_FIX);
@@ -155,8 +155,13 @@ export class ConductorAdapter implements RuntimeAdapter {
     }
     return r;
   }
-  private async call(args: string[], input?: string, mutation = false): Promise<Record<string, unknown>> {
-    const r = await this.exec(args, input, mutation);
+  private async call(
+    args: string[],
+    input?: string,
+    mutation = false,
+    timeoutMs = 10_000,
+  ): Promise<Record<string, unknown>> {
+    const r = await this.exec(args, input, mutation, timeoutMs);
     try {
       const value = object(JSON.parse(r.stdout));
       if (!value) throw invalid();
@@ -364,15 +369,15 @@ export class ConductorAdapter implements RuntimeAdapter {
     }
     return { workers, candidates: [...new Set(candidates)], complete };
   }
-  private async session(target: ClaimRef) {
+  private async session(target: ClaimRef, timeoutMs = 10_000) {
     const h = this.parse(target.handle);
-    const result = await this.call(["session", "status", h.session]);
+    const result = await this.call(["session", "status", h.session], undefined, false, timeoutMs);
     if (!id(result.sessionId) || !id(result.workspaceId) || typeof result.status !== "string") throw invalid();
     if (result.sessionId !== h.session || result.workspaceId !== h.workspace) throw this.error("mismatch");
     return result;
   }
-  private async workspace(workspace: string) {
-    const result = await this.call(["workspace", "status", workspace]);
+  private async workspace(workspace: string, timeoutMs = 10_000) {
+    const result = await this.call(["workspace", "status", workspace], undefined, false, timeoutMs);
     if (result.workspaceId !== workspace || typeof result.status !== "string") throw invalid();
     return result;
   }
@@ -402,17 +407,17 @@ export class ConductorAdapter implements RuntimeAdapter {
     return { via: "conductor", messageId: result.messageId, queued: result.state === "queued" };
   }
   async observe(target: ClaimRef): Promise<RuntimeReading> {
-    const session = await this.session(target);
-    let state = conductorSessionState(String(session.status));
-    let detail = String(session.status);
-    if (session.status === "idle" || session.status === "archived") {
-      const ws = await this.workspace(this.parse(target.handle).workspace);
-      if (ws.status === "archived" || session.status === "archived") {
-        state = "gone";
-        detail = "archived";
-      }
-    }
-    return { state, detail, since: timestamp(session.updatedAt) };
+    const h = this.parse(target.handle);
+    await this.exec(["auth", "whoami"], undefined, false, 5000);
+    // The workspace remains readable even when its archived session is no longer available.
+    const ws = await this.workspace(h.workspace, 5000);
+    if (ws.status === "archived") return { state: "gone", detail: "archived", since: timestamp(ws.updatedAt) };
+    const session = await this.session(target, 5000);
+    return {
+      state: conductorSessionState(String(session.status)),
+      detail: String(session.status),
+      since: timestamp(session.updatedAt),
+    };
   }
   async peek(target: ClaimRef, options: { actions: number; cursor: string | null }): Promise<Peek> {
     if (

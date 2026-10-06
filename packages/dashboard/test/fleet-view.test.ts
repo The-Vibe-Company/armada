@@ -45,6 +45,10 @@ describe("agentState", () => {
     expect(agentState(row({ phase: "shipping", pr: pr("pending", "CONFLICTING") })).reason).toBe("conflict");
     expect(agentState(row({ phase: "blocked" }))).toEqual({ status: "error", reason: "blocked" });
     expect(agentState(row({ silent: true })).status).toBe("silent");
+    expect(agentState(row({ phase: "awaiting-approval", flags: ["stopped"] }))).toEqual({
+      status: "error",
+      reason: "stopped",
+    });
     expect(agentState(row({ phase: "ready-to-merge", pr: pr("success") })).status).toBe("done");
     expect(agentState(row({ phase: "planning" }))).toEqual({ status: "running", reason: "phase" });
   });
