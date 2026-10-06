@@ -729,6 +729,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
       handBackSnapshot = {
         repository: project.repository,
+        config: snapshot.config,
         issues: snapshot.sources.program.issues,
         prs: snapshot.sources.forge?.prs ?? [],
         flight: { ...snapshot.sources, after: snapshot.startedAt.toISOString() },

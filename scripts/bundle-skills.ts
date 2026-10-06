@@ -16,7 +16,7 @@ for (const name of (await readdir(root)).sort()) {
       if ((err as NodeJS.ErrnoException).code !== "EISDIR") throw err;
     }
   }
-  skills.push({ name, files });
+  skills.push({ name, delivery: name.startsWith("armada-") ? "pointer" : "vendored", files });
 }
 await writeFile(
   join(import.meta.dir, "../packages/core/src/skills.generated.json"),
