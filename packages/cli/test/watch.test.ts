@@ -504,6 +504,62 @@ describe("armada watch", () => {
   });
 });
 
+test("two named coordinators watch one project concurrently and each wakes for its own item", async () => {
+  const c = await coordinator();
+  for (const [ticket, name] of [
+    ["DEMO-2", "front"],
+    ["DEMO-3", "back"],
+  ] as const) {
+    await c.hold(ticket);
+    expect(await c.store.transferTickets({ project: P, tickets: [ticket], to: name, at: NOW })).toBe(true);
+  }
+  const start = (name: string, pid: number) => {
+    let wake: (() => void) | undefined;
+    let ready: (() => void) | undefined;
+    const sleeping = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const output: string[] = [];
+    c.alive.add(pid);
+    const io: Io = {
+      ...c.io,
+      pid,
+      env: { ...c.io.env, ARMADA_COORDINATOR: name },
+      stdout: (text) => output.push(text),
+      sleep: () =>
+        new Promise<void>((resolve) => {
+          wake = resolve;
+          ready?.();
+        }),
+    };
+    return { done: run(["watch", "--json"], io), sleeping, wake: () => wake?.(), output };
+  };
+  const front = start("front", 4242);
+  await front.sleeping;
+  const back = start("back", 4343);
+  await back.sleeping;
+  expect(await readWatchLock(c.paths, P, "front")).toBe(4242);
+  expect(await readWatchLock(c.paths, P, "back")).toBe(4343);
+  for (const ticket of ["DEMO-2", "DEMO-3"])
+    await c.store.addInboxItem({
+      project: P,
+      ticket,
+      kind: "question",
+      recipient: "coordinator",
+      author: ticket,
+      body: `Question for ${ticket}`,
+      at: NOW,
+    });
+  front.wake();
+  back.wake();
+  expect(await front.done).toBe(0);
+  expect(await back.done).toBe(0);
+  expect(JSON.parse(front.output.join("")).items.map((item: { ticket: string }) => item.ticket)).toEqual(["DEMO-2"]);
+  expect(JSON.parse(back.output.join("")).items.map((item: { ticket: string }) => item.ticket)).toEqual(["DEMO-3"]);
+  expect((await readWatchState(c.paths, P, "front"))?.inFlight).toEqual(["DEMO-2"]);
+  expect((await readWatchState(c.paths, P, "back"))?.inFlight).toEqual(["DEMO-3"]);
+});
+
 test("follow NDJSON streams both items, persists, times out cleanly and shares the watch lock", async () => {
   const c = await coordinator();
   await c.hold("DEMO-2");
@@ -711,4 +767,49 @@ test("watch cancellation aborts a pending job status probe without a late observ
   expect(aborted).toBe(true);
   expect((await c.store.getJob(P, job.id))?.state).toBe("running");
   expect(await readWatchLock(c.paths, P)).toBeNull();
+});
+
+test("named follow watches retain independent cursors, seen items and resume roles", async () => {
+  const c = await coordinator();
+  for (const [ticket, name] of [
+    ["DEMO-2", "front"],
+    ["DEMO-3", "back"],
+  ] as const) {
+    await c.hold(ticket);
+    await c.store.transferTickets({ project: P, tickets: [ticket], to: name, at: NOW });
+    await c.store.addInboxItem({
+      project: P,
+      ticket,
+      kind: "question",
+      recipient: "coordinator",
+      author: null,
+      body: name,
+      at: NOW,
+    });
+  }
+  for (const [name, ticket] of [
+    ["front", "DEMO-2"],
+    ["back", "DEMO-3"],
+  ] as const) {
+    c.reset();
+    c.io.env.ARMADA_COORDINATOR = name;
+    c.onSleep.push(async () => {});
+    expect(await run(["watch", "--follow", "--json", "--for", "0.25"], c.io)).toBe(0);
+    expect(
+      c
+        .out()
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).ticket),
+    ).toEqual([ticket]);
+    expect(c.err()).toContain(`resume: ARMADA_COORDINATOR=${name} armada watch --follow`);
+    const state = await readWatchState(c.paths, P, name);
+    expect(state?.cursor).toMatch(/^v1\./);
+    expect(state?.seen).toHaveLength(1);
+    expect(state?.inFlight).toEqual([ticket]);
+  }
+  expect((await readWatchState(c.paths, P, "front"))?.seen).not.toEqual(
+    (await readWatchState(c.paths, P, "back"))?.seen,
+  );
+  expect(await readWatchState(c.paths, P)).toBeNull();
 });

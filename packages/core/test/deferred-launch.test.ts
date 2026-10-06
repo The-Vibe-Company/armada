@@ -119,9 +119,17 @@ test("fleet checks deferred requests against server facts and reports ownership 
         ticket: "DEMO-9",
         profile: "codex",
         author: "Other",
+        coordinatorName: "front",
       })
     ).status,
   ).toBe(200);
+  expect(store.items[0]?.coordinator).toBe("front");
+  expect((await call("launch-requests", "Ada [user:synthetic-1]", { coordinatorName: "backend" })).body.result).toEqual(
+    [],
+  );
+  expect(
+    (await call("launch-requests", "Ada [user:synthetic-1]", { coordinatorName: "front" })).body.result,
+  ).toMatchObject([{ owned: true }]);
   expect((await call("launch-requests", "Renamed [user:synthetic-1]")).body.result).toMatchObject([
     { owned: true, blockers: ["DEMO-7"], author: "Ada [user:synthetic-1]" },
   ]);
