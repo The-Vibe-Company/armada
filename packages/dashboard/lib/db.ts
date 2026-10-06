@@ -841,6 +841,7 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX merge_holds_open ON merge_holds(project, cleared_at)",
     ],
   },
+  { version: 33, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

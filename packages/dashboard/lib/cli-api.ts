@@ -689,7 +689,21 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   const project = parseProject(body.project);
   if (!project)
     return refuse(400, "a fleet request names its project: slug, name, repository and program root", UPDATE_CLI);
-  let caller: FleetCaller = { kind: "organization", author: identity.user?.name ?? null };
+  // Stable authenticated identity prevents two people (or keys) with the same name
+  // from executing each other's deferred launches. Keep it in the existing author field.
+  const authorKey = identity.user
+    ? `user:${identity.user.id}`
+    : identity.apiKey
+      ? `api-key:${identity.apiKey.id}`
+      : null;
+  const authorSuffix = authorKey ? ` [${authorKey}]` : "";
+  const launchAuthor = authorKey
+    ? `${(identity.user?.name ?? identity.apiKey?.name ?? "Coordinator")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, Math.max(0, 80 - authorSuffix.length))}${authorSuffix}`
+    : null;
+  let caller: FleetCaller = { kind: "organization", author: identity.user?.name ?? null, launchAuthor };
   if (identity.via === "worker") {
     const w = identity.launch;
     if (!w) return workerRefusal(null);
@@ -710,10 +724,10 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
     );
   let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
-  let validationSamples: number | undefined;
+  let storedConfig: ArmadaConfig | undefined;
   if (
     op === "validate" ||
-    ((op === "request" || op === "inbox") && caller.kind === "organization") ||
+    ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") ||
     op === "overlap" ||
     op === "report"
   ) {
@@ -725,10 +739,14 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       snapshot.config.github.repository === project.repository &&
       snapshot.config.tracker.programRoot === project.programRoot
     ) {
-      validationSamples = snapshot.config.policy.validationSamples;
+      storedConfig = snapshot.config;
       openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
       handBackSnapshot = {
         repository: project.repository,
+        parkedLabel: snapshot.config.tracker.parkedLabel,
+        guidedProfiles: Object.entries(snapshot.config.conductor.profiles)
+          .filter(([, profile]) => profile.runtime === "claude-code")
+          .map(([name]) => name),
         config: snapshot.config,
         issues: snapshot.sources.program.issues,
         prs: snapshot.sources.forge?.prs ?? [],
@@ -743,7 +761,8 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       now,
       openPrs,
       snapshot: handBackSnapshot,
-      validationSamples,
+      config: storedConfig,
+      validationSamples: storedConfig?.policy.validationSamples,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
       sendDigest: async (slug, digest, language, at) => {

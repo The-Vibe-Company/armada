@@ -348,6 +348,7 @@ describe("armada claim, report and release", () => {
       "fleet/heartbeats/latest",
       "fleet/runtime/handles",
       "fleet/events/state",
+      "fleet/launch-requests",
     ]);
   });
 
