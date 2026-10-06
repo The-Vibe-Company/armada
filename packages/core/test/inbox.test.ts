@@ -1385,3 +1385,54 @@ test("a queue nobody drains wakes the coordinator once; a refusal clears when qu
   await db.queueAdd({ ...entry, project: P, pr: 12, queuedBy: "owner", at: NOW });
   expect((await inbox(db)).map((e) => e.kind)).toEqual([]);
 });
+
+test("a main-red pause wakes watch once and names the waiting queue without another stall alarm", async () => {
+  const clock = fakeClock();
+  const live = tempFleet({ clock });
+  const store = live.store;
+  const hold = {
+    project: P,
+    kind: "main-red" as const,
+    ref: "a".repeat(40),
+    reason: "main red since #12: test failing on aaaaaaa",
+    author: "armada",
+    at: at(5),
+  };
+  const opened = await store.openHold(hold);
+  const entry = {
+    project: P,
+    ticket: null,
+    noTicket: true,
+    keepOpen: false,
+    throughHold: null,
+    reason: null,
+    headSha: "b".repeat(40),
+    queuedBy: "owner",
+    at: at(5),
+  };
+  await store.queueAdd({ ...entry, pr: 15 });
+  await store.queueAdd({ ...entry, pr: 16 });
+  const options = { project: P, coordinator: null, silentAfterMinutes: 15, now: clock.now, sleep: clock.sleep };
+  const first = await watchInbox(live.fleet, { ...options, seen: [] });
+  expect(first.outcome).toBe("items");
+  expect(first.items).toHaveLength(1);
+  expect(first.items[0]?.kind).toBe("hold");
+  expect(first.items[0]?.body).toContain("main red since #12: test failing on aaaaaaa");
+  expect(first.items[0]?.body.endsWith("merge queue paused (2 waiting)")).toBe(true);
+  expect((await store.openHold(hold)).id).toBe(opened.id);
+  const second = await watchInbox(live.fleet, {
+    ...options,
+    seen: first.items.map(entryKey),
+    until: new Date(clock.now().getTime() + 60_000),
+  });
+  expect(second.outcome).toBe("timeout");
+  await store.clearHold({
+    project: P,
+    id: opened.id,
+    reason: "main green again at bbbbbbb",
+    author: "armada",
+    at: clock.now(),
+  });
+  expect((await inbox(store)).some((i) => i.kind === "hold")).toBe(false);
+  expect((await inbox(store)).some((i) => i.kind === "queue-stalled")).toBe(true);
+});

@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { buildLane, frontier, inFlight, mainHealth, mainHealthLine, unblockedBy } from "../src/fleet.ts";
+import {
+  buildLane,
+  frontier,
+  inFlight,
+  mainHealth,
+  mainHealthLine,
+  mainRedHoldChange,
+  unblockedBy,
+} from "../src/fleet.ts";
+import type { MergeHold } from "../src/live.ts";
 import { buildModel } from "../src/model.ts";
-import type { Comment, Issue, MainCommit } from "../src/types.ts";
+import type { Comment, Issue, MainCommit, MainHealth } from "../src/types.ts";
 import { issue } from "./support.ts";
 
 const program = (...children: Issue[]) =>
@@ -469,4 +478,57 @@ test("a claim's status line is not its first report and a newer claim survives r
       },
     }).map((l) => l.issue.id),
   ).toEqual(["P-2"]);
+});
+
+test("main red holds follow streaks and clear only when green", () => {
+  const health: MainHealth = {
+    branch: "trunk",
+    head: "b".repeat(40),
+    state: "red",
+    fixRunning: null,
+    redBeyondWindow: false,
+    redSince: { sha: "a".repeat(40), pr: 12, at: "2026-03-04T10:00:00Z", failing: ["test"] },
+  };
+  const hold: MergeHold = {
+    id: 1,
+    project: "widgets",
+    kind: "main-red",
+    ref: "a".repeat(40),
+    reason: "Main failed",
+    openedBy: "armada",
+    openedAt: "2026-03-04T10:00:00Z",
+    clearedAt: null,
+    clearedBy: null,
+    clearReason: null,
+  };
+  const manual = { ...hold, id: 2, kind: "manual" as const, ref: null };
+  const open = {
+    kind: "main-red" as const,
+    ref: "a".repeat(40),
+    reason: "main red since #12: test failing on aaaaaaa",
+  };
+  for (const row of [
+    { health, holds: [manual], expected: { open } },
+    { health, holds: [hold, manual], expected: {} },
+    {
+      health,
+      holds: [{ ...hold, ref: "old" }, manual],
+      expected: { open, clear: [{ id: 1, reason: "superseded by a new red streak" }] },
+    },
+    {
+      health: { ...health, state: "green" as const, redSince: null },
+      holds: [hold, manual],
+      expected: { clear: [{ id: 1, reason: "main green again at bbbbbbb" }] },
+    },
+    { health: { ...health, state: "running" as const }, holds: [hold], expected: {} },
+    { health: { ...health, state: "none" as const }, holds: [hold], expected: {} },
+    { health: null, holds: [hold], expected: {} },
+  ])
+    expect(mainRedHoldChange(row.health, row.holds)).toEqual(row.expected);
+  expect(
+    mainRedHoldChange(
+      { ...health, redSince: { sha: "a".repeat(40), pr: null, at: "2026-03-04T10:00:00Z", failing: ["test"] } },
+      [],
+    ).open?.reason,
+  ).toBe("main red since aaaaaaa: test failing on aaaaaaa");
 });
