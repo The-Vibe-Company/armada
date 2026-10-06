@@ -23,6 +23,33 @@ function graphql(answers: Record<string, unknown>) {
 }
 
 describe("Linear write adapter", () => {
+  test("looks up an ungrouped label by name in the ticket's team, then the workspace", async () => {
+    const nodes = [
+      { id: "shared", name: "plan-approved", parent: null, team: null },
+      { id: "own", name: "plan-approved", parent: null, team: { id: "team-1" } },
+      { id: "other", name: "plan-approved", parent: null, team: { id: "team-2" } },
+    ];
+    const { writer, sent } = graphql({ LabelByName: { data: { issueLabels: { nodes } } } });
+    expect(await writer.labelByName("plan-approved", "team-1")).toEqual({
+      id: "own",
+      name: "plan-approved",
+      group: null,
+    });
+    expect(sent[0]?.variables).toEqual({
+      filter: {
+        name: { eqIgnoreCase: "plan-approved" },
+        or: [{ team: { id: { eq: "team-1" } } }, { team: { null: true } }],
+      },
+    });
+    expect(await writer.labelByName("plan-approved", "team-3")).toEqual({
+      id: "shared",
+      name: "plan-approved",
+      group: null,
+    });
+    nodes.splice(0, 1);
+    expect(await writer.labelByName("plan-approved", "team-3")).toBeNull();
+  });
+
   test("creates a child issue and updates its title through the only write adapter", async () => {
     const { writer, sent } = graphql({
       CreateIssue: {

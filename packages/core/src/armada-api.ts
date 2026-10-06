@@ -459,6 +459,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
         retry: [
           "events/latest",
           "events/state",
+          "events/since",
           "heartbeats/latest",
           "runtime/handles",
           "runtime/handle",
@@ -466,6 +467,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
           "inbox/item",
           "inbox/ticket",
           "validations",
+          "reservations",
         ].includes(op),
       });
       if (status === 304) return null;

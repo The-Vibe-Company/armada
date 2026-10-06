@@ -231,7 +231,7 @@ describe("armada claim, report and release", () => {
     w.reset();
     expect(await run(["report", "ready-to-merge", "--sha", HEAD.slice(0, 7), "--pr", "9"], w.io)).toBe(1);
     expect(w.err()).toBe(
-      'armada: DEMO-7: hand-back refused:\n  - --sha must be the full 40-character commit SHA, got "0123456" (7 characters)\n  - check "test" is failure\nNext: fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done\n',
+      'armada: DEMO-7: hand-back refused:\n  - --sha must be the full 40-character commit SHA, got "0123456" (7 characters)\n  - check "test" is failure\nNext: armada ci why 9; fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done\n',
     );
   });
 

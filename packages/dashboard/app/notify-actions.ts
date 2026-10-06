@@ -7,6 +7,7 @@ import { redirect } from "next/navigation";
 import { requireFleetAccess } from "@/lib/access";
 import { requireAccounts } from "@/lib/accounts-server";
 import { NOTIFICATIONS_PATH } from "@/lib/accounts-settings";
+import { digestSchedule } from "@/lib/digest-slots";
 import type { NotificationsError, NotificationsNotice } from "@/lib/i18n";
 import { removeOwnerChannel, safeWebhookFetch, saveOwnerChannel, sendOwnerTest } from "@/lib/owner-push";
 import { vaultModeOf } from "@/lib/vault";
@@ -63,6 +64,14 @@ export async function saveOwnerNotifications(form: FormData): Promise<void> {
   if ((formatValue !== "slack" && formatValue !== "json") || (languageValue !== "en" && languageValue !== "fr"))
     redirect(page({ error: "invalid" }));
 
+  const digest = digestSchedule({
+    times: text(form, "digestTimes")
+      .split(/[\s,]+/)
+      .filter(Boolean),
+    days: form.getAll("digestDays").map(Number),
+    skipQuiet: form.get("skipQuiet") === "on",
+  });
+  if (!digest) redirect(page({ error: "invalid" }));
   const quietFrom = text(form, "quietFrom");
   const quietTo = text(form, "quietTo");
   const quiet = quietFrom || quietTo ? { from: quietFrom, to: quietTo } : null;
@@ -73,6 +82,7 @@ export async function saveOwnerNotifications(form: FormData): Promise<void> {
       project: text(form, "project") || null,
       format: formatValue,
       alerts: form.get("alerts") === "on",
+      digest,
       timeZone: text(form, "timeZone"),
       language: languageValue,
       quiet,

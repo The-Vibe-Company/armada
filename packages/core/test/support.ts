@@ -151,7 +151,7 @@ export async function answerFleet(
   body: unknown,
   caller: FleetCaller & { project?: string },
   cliVersion: string | null = null,
-  facts: Pick<ServeFleetDeps, "snapshot" | "config"> = {},
+  facts: Pick<ServeFleetDeps, "snapshot" | "config" | "sendDigest"> | ServeFleetDeps["sendDigest"] = {},
 ): Promise<Response> {
   const b = (body ?? {}) as { project?: unknown; input?: unknown };
   const project = parseProject(b.project);
@@ -166,7 +166,12 @@ export async function answerFleet(
   const answer = await serveFleet(
     store,
     { op, project, caller, input: b.input },
-    { now: clock.now, cliVersion, appUrl: ARMADA_URL, ...facts },
+    {
+      now: clock.now,
+      cliVersion,
+      appUrl: ARMADA_URL,
+      ...(typeof facts === "function" ? { sendDigest: facts } : facts),
+    },
   );
   if (answer.status === 304) return new Response(null, { status: 304 });
   return Response.json(answer.body, { status: answer.status });
@@ -238,6 +243,7 @@ export const LABELS: TicketLabel[] = [
   { id: "rt-claude", name: "Claude Code", group: "Agent runtime" },
   { id: "rt-herdr", name: "Herdr", group: "Agent runtime" },
   { id: "ready", name: "ready-for-agent", group: null },
+  { id: "plan-approved", name: "plan-approved", group: null },
 ];
 
 export const STATES: WorkflowState[] = [
@@ -322,6 +328,10 @@ export class FakeLinear implements LinearWriter {
 
   async groupLabels(group: string) {
     return LABELS.filter((l) => l.group === group);
+  }
+
+  async labelByName(name: string, _teamId: string) {
+    return LABELS.find((l) => l.name.toLowerCase() === name.toLowerCase()) ?? null;
   }
 
   async createIssue(input: IssueCreate) {
@@ -542,6 +552,7 @@ export function fakeArmada(
     cli?: ServerCli;
     /** Secrets for workers, by project slug ("" for the organization's), then name. */
     secrets?: Record<string, Record<string, string>>;
+    sendDigest?: ServeFleetDeps["sendDigest"];
   } = {},
 ) {
   const store = o.store ?? memoryFleet();
@@ -620,7 +631,7 @@ export function fakeArmada(
           ? { kind: "worker", ticket: worker.ticket, project: worker.project, sessionId: worker.id }
           : { kind: "organization", author: PERSON.user?.name },
         call.version,
-        o.facts,
+        { ...o.facts, sendDigest: o.sendDigest },
       );
     }
     if (call.method === "POST" && call.path.startsWith("secrets/")) {
