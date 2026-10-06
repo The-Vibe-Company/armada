@@ -129,9 +129,12 @@ test("named coordinators keep independent watch locks, state and checkout prefer
   if (!paths) throw new Error("no paths");
   const alive = () => true;
   expect(watchFiles(paths, "widgets", "default")).toEqual(watchFiles(paths, "widgets"));
-  expect(await takeWatchLock(paths, "widgets", 101, alive, undefined, "front")).toEqual({ taken: true });
-  expect(await takeWatchLock(paths, "widgets", 202, alive, undefined, "back")).toEqual({ taken: true });
-  expect(await takeWatchLock(paths, "widgets", 303, alive, undefined, "front")).toEqual({ taken: false, pid: 101 });
+  expect(await takeWatchLock(paths, "widgets", 101, alive, undefined, undefined, "front")).toEqual({ taken: true });
+  expect(await takeWatchLock(paths, "widgets", 202, alive, undefined, undefined, "back")).toEqual({ taken: true });
+  expect(await takeWatchLock(paths, "widgets", 303, alive, undefined, undefined, "front")).toEqual({
+    taken: false,
+    pid: 101,
+  });
   await updateWatchState(paths, "widgets", { seen: ["front-item"], root: "/work/widgets" }, "front");
   await updateWatchState(paths, "widgets", { seen: ["back-item"] }, "back");
   expect((await readWatchState(paths, "widgets", "front"))?.seen).toEqual(["front-item"]);

@@ -19,6 +19,7 @@ import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import { ARMADA_URL, DEMO_TOML, fakeArmada, fakeClock, NOW } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
+import { watchDeadline } from "../src/watch.ts";
 
 const KEY = "armada_key_CANARY_watch";
 const P = "widgets";
@@ -152,6 +153,7 @@ describe("armada watch", () => {
   test("stop recognizes source and bundled watches with global options before the command", async () => {
     for (const command of [
       "/usr/bin/bun packages/cli/src/main.ts --json watch",
+      "/usr/bin/node /usr/local/bin/armada --project widgets watch --follow",
       "/usr/bin/node /usr/local/bin/armada --config /work/widgets/armada.toml watch",
     ]) {
       const c = await coordinator();
@@ -565,4 +567,157 @@ test("two named coordinators watch one project concurrently and each wakes for i
   expect(JSON.parse(back.output.join("")).items.map((item: { ticket: string }) => item.ticket)).toEqual(["DEMO-3"]);
   expect((await readWatchState(c.paths, P, "front"))?.inFlight).toEqual(["DEMO-2"]);
   expect((await readWatchState(c.paths, P, "back"))?.inFlight).toEqual(["DEMO-3"]);
+});
+
+test("follow NDJSON streams both items, persists, times out cleanly and shares the watch lock", async () => {
+  const c = await coordinator();
+  await c.hold("DEMO-2");
+  c.onSleep.push(
+    async () => {
+      await c.store.addInboxItem({
+        project: P,
+        ticket: "DEMO-2",
+        kind: "question",
+        recipient: "coordinator",
+        author: "ws/DEMO-2",
+        body: "Which table?",
+        at: c.clock.now(),
+      });
+    },
+    async () => {
+      await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #4", at: c.clock.now() });
+    },
+    async () => {},
+    async () => {},
+  );
+  expect(await run(["watch", "--follow", "--all", "--json", "--for", "1"], c.io)).toBe(0);
+  const lines = c
+    .out()
+    .trim()
+    .split("\n")
+    .map((s) => JSON.parse(s));
+  expect(lines.map((l) => l.kind)).toEqual(["question", "hand-back"]);
+  expect(lines.every((l) => /^v1\./.test(l.cursor))).toBe(true);
+  expect(c.err()).toContain("resume: armada watch --follow");
+  expect(c.err()).toContain("--project widgets");
+  expect(await readWatchLock(c.paths, P)).toBeNull();
+  expect((await readWatchState(c.paths, P))?.seen).toHaveLength(2);
+  c.reset();
+  c.onSleep.push(async () => {});
+  const cursor = (await readWatchState(c.paths, P))?.cursor;
+  if (!cursor) throw new Error("follow did not save its cursor");
+  expect(await run(["watch", "--follow", "--json", "--since", cursor, "--for", "0.25"], c.io)).toBe(0);
+  expect(c.out()).toBe("");
+  await takeWatchLock(c.paths, P, 777, () => false, undefined, "follow");
+  c.alive.add(777);
+  c.reset();
+  expect(await run(["watch"], c.io)).toBe(0);
+  expect(c.out()).toContain("following for widgets (pid 777)");
+  c.reset();
+  expect(await run(["watch", "--follow", "--json"], c.io)).toBe(0);
+  expect(c.out()).toBe("");
+  expect(c.err()).toContain("following for widgets (pid 777)");
+});
+
+test("plain watch accepts a bounded lifetime and follow refuses unsupported or malformed filters", async () => {
+  const c = await coordinator();
+  await c.hold("DEMO-2");
+  c.onSleep.push(
+    async () => {},
+    async () => {},
+    async () => {},
+    async () => {},
+  );
+  expect(await run(["watch", "--for", "1"], c.io)).toBe(0);
+  expect(c.err()).toContain("no new item in 1 min; resume: armada watch");
+  for (const flags of [
+    ["--follow", "--kinds", "typo"],
+    ["--follow", "--since", "bad"],
+    ["--follow", "--tickets", "bad"],
+    ["--for", "0"],
+    ["--mine"],
+  ]) {
+    c.reset();
+    expect(await run(["watch", ...flags], c.io)).toBe(2);
+  }
+  expect(c.err()).toContain("Show each coordinator only its own work");
+});
+
+test("long watch deadlines are chunked below Node's timer limit and cancellable", () => {
+  let at = 0,
+    expired = 0;
+  const calls: { run: () => void; ms: number; cancelled: boolean }[] = [];
+  const stop = watchDeadline(
+    new Date(31536000000),
+    () => new Date(at),
+    () => {
+      expired++;
+    },
+    (run, ms) => {
+      const call = { run, ms, cancelled: false };
+      calls.push(call);
+      return () => {
+        call.cancelled = true;
+      };
+    },
+  );
+  const first = calls[0];
+  if (!first) throw new Error("no timer");
+  expect(first.ms).toBe(2 ** 31 - 1);
+  at = first.ms;
+  first.run();
+  expect(expired).toBe(0);
+  expect(calls).toHaveLength(2);
+  const next = calls[1];
+  if (!next) throw new Error("no re-armed timer");
+  at = 31536000000;
+  next.run();
+  expect(expired).toBe(1);
+  stop();
+  expect(next.cancelled).toBe(true);
+});
+
+test("named follow watches retain independent cursors, seen items and resume roles", async () => {
+  const c = await coordinator();
+  for (const [ticket, name] of [
+    ["DEMO-2", "front"],
+    ["DEMO-3", "back"],
+  ] as const) {
+    await c.hold(ticket);
+    await c.store.transferTickets({ project: P, tickets: [ticket], to: name, at: NOW });
+    await c.store.addInboxItem({
+      project: P,
+      ticket,
+      kind: "question",
+      recipient: "coordinator",
+      author: null,
+      body: name,
+      at: NOW,
+    });
+  }
+  for (const [name, ticket] of [
+    ["front", "DEMO-2"],
+    ["back", "DEMO-3"],
+  ] as const) {
+    c.reset();
+    c.io.env.ARMADA_COORDINATOR = name;
+    c.onSleep.push(async () => {});
+    expect(await run(["watch", "--follow", "--json", "--for", "0.25"], c.io)).toBe(0);
+    expect(
+      c
+        .out()
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).ticket),
+    ).toEqual([ticket]);
+    expect(c.err()).toContain(`resume: ARMADA_COORDINATOR=${name} armada watch --follow`);
+    const state = await readWatchState(c.paths, P, name);
+    expect(state?.cursor).toMatch(/^v1\./);
+    expect(state?.seen).toHaveLength(1);
+    expect(state?.inFlight).toEqual([ticket]);
+  }
+  expect((await readWatchState(c.paths, P, "front"))?.seen).not.toEqual(
+    (await readWatchState(c.paths, P, "back"))?.seen,
+  );
+  expect(await readWatchState(c.paths, P)).toBeNull();
 });

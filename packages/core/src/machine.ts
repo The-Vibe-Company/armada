@@ -244,6 +244,12 @@ export async function readWatchState(
     inFlight: strings(r.inFlight),
     readAt: stringOr(r.readAt),
     stopped: stringOr(r.stopped),
+    ...(typeof r.cursor === "string" ? { cursor: r.cursor } : {}),
+    ...(typeof r.baselinePending === "boolean" ? { baselinePending: r.baselinePending } : {}),
+    ...(typeof r.freshStart === "boolean" ? { freshStart: r.freshStart } : {}),
+    ...(Array.isArray(r.eventIds)
+      ? { eventIds: r.eventIds.filter((id: unknown) => Number.isSafeInteger(id) && Number(id) > 0).slice(-500) }
+      : {}),
     ...(typeof r.runtimeObserved === "object" && r.runtimeObserved !== null && !Array.isArray(r.runtimeObserved)
       ? {
           runtimeObserved: Object.fromEntries(
@@ -317,6 +323,7 @@ export interface WatchIdentity {
 export interface WatchLock {
   pid: number;
   identity: WatchIdentity | null;
+  mode?: "follow";
 }
 
 /** Reads both legacy PID locks and locks with a process identity; malformed locks are unverified. */
@@ -334,6 +341,7 @@ export async function readWatchLockInfo(
       i && [i.project, i.configPath, i.started, i.command, i.cwd].every((v) => typeof v === "string" && v);
     return {
       pid,
+      ...(raw?.mode === "follow" ? { mode: "follow" as const } : {}),
       identity: verified
         ? {
             project: i.project,
@@ -390,13 +398,18 @@ export async function takeWatchLock(
   pid: number,
   alive: (pid: number) => boolean = processAlive,
   identity?: WatchIdentity,
+  mode?: "follow",
   name = "default",
 ): Promise<{ taken: true } | { taken: false; pid: number }> {
   const { lock } = watchFiles(paths, project, name);
   await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
   // The pid is written first, then linked into place: the lock never exists empty.
   const tmp = `${lock}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(tmp, `${identity ? JSON.stringify({ pid, identity }) : pid}\n`, { mode: 0o600 });
+  await writeFile(
+    tmp,
+    `${identity || mode ? JSON.stringify({ pid, identity: identity ?? null, ...(mode ? { mode } : {}) }) : pid}\n`,
+    { mode: 0o600 },
+  );
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
