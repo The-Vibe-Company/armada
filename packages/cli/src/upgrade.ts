@@ -5,6 +5,7 @@ import {
   type Check,
   checkPublished,
   compareVersions,
+  type InfoCheck,
   NPM_CHECK_MS,
   NPM_REGISTRY_URL,
   versionToInstall,
@@ -77,7 +78,8 @@ export async function upgrade(io: Io, running: string, root: string): Promise<nu
     );
 
   const doctor = await exec("armada", ["doctor", "--json"], { cwd: root, timeoutMs: 60_000 });
-  let report: { schemaVersion?: number; armadaVersion?: string; root?: string; checks?: Check[] } | null = null;
+  let report: { schemaVersion?: number; armadaVersion?: string; root?: string; checks?: (Check | InfoCheck)[] } | null =
+    null;
   try {
     report = JSON.parse(doctor.stdout);
   } catch {}
@@ -90,7 +92,7 @@ export async function upgrade(io: Io, running: string, root: string): Promise<nu
     !Array.isArray(report.checks) ||
     !report.checks.length ||
     report.checks.some(
-      (check) => !check || typeof check.id !== "string" || !["ok", "warning", "error"].includes(check.level),
+      (check) => !check || typeof check.id !== "string" || !["ok", "info", "warning", "error"].includes(check.level),
     )
   )
     throw new CommandError("the upgraded doctor could not check setup; run armada doctor before refreshing it");

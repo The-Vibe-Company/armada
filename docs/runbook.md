@@ -1,5 +1,18 @@
 # Runbook: start a coordinator
 
+## Upgrade an existing project
+
+For a project on 0.2.55, install the current CLI with `npm install -g @the-vibe-company/armada` and confirm `armada --version`. Self-hosted installations deploy the current dashboard and its additive migrations first; hosted Armada handles that step.
+
+1. Sign in with `armada login`, run `armada doctor`, then `armada init` from the checkout. Review and merge its one setup PR (skills, links, setup scripts and labels). Init preserves an existing `armada.toml`; add the optional examples below yourself. If it reports setup is current, no PR is needed.
+2. Configure `[[deploy.target]]` with exactly one live source (`github_environment` or `live_sha_command`) and an optional `smoke` command ([deployment example](#check-deployments-after-merges)). Add known flakes as `[[ci.known_failure]]` with an exact `check`, regex `pattern` and root-cause `ticket`; `armada ci why <pr> --rerun` only retries eligible first-attempt failures once.
+3. Review `[merge] notify_paths` for shared files, `[[acceptance]]` for live pre-hand-back checks and `[jobs.<name>]` for surviving runners. Tune `[policy] plans`, `pre_approved_label`, `approval_label`, `silence_minutes`, `launch_grace_minutes` and `ci_wait_minutes`; use `merge_approval` or `[[policy.validation]]` for owner decisions. Defaults keep old projects working; doctor’s optional lines are informational.
+4. Open Organization > Notifications as an owner/admin, set the webhook and send a test. Choose language, time zone, quiet hours and digest times/days ([owner alerts](#get-owner-alerts-in-chat)); these are dashboard settings, not TOML sections. Production cron stays off unless you explicitly configure it.
+5. Name each coordinator with `armada coordinator use backend` (or `ARMADA_COORDINATOR=backend` in its cloud environment). Check `armada coordinator list`; [handover](#run-a-second-coordinator) explicitly assigns existing tickets.
+6. Use `armada launch ABC-12 --runtime conductor` to launch cloud workers, replacing the runtime guide’s manual create/bind/token steps. Configure `[conductor] project_id` or `base_branch` only when repository/default-branch discovery needs an override. Run `armada doctor` again and check the fleet with `armada status`.
+
+For queued merges, set `[merge] queue_retest = "ci"` to update queued branches and wait for fresh CI, or `"local"` to use `[gates] local_commands`. Queue intent with `armada merge --when-green <pr...>`. Check `armada merge --help` before enabling the drain setting on an older CLI.
+
 ## Worker liveness
 
 Launch briefs start a heartbeat immediately after claim. On Conductor Cloud it must detach from the short-lived command shell: `armada heartbeat --every 5m --parent "$PPID" --background` uses a new process group (like `nohup` + `setsid`) and a PID file under `~/.config/armada/watch/`. Plain background `&` and `nohup` alone can be killed by command-tool cleanup. The persistent agent parent must survive between turns; do not pass the shell's `$$`. The PID file prevents duplicates for the same current claim.
