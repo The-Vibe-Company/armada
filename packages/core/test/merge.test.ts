@@ -15,9 +15,12 @@ import {
   type MergeContext,
   type MergeForge,
   mergePullRequest,
+  noticeFileCoverage,
   prepareQueueEntry,
   type TestMergeResult,
+  type WorkerToTell,
   withLease,
+  workersToTell,
 } from "../src/merge.ts";
 import { requestDecision } from "../src/requests.ts";
 import { Refusal } from "../src/worker.ts";
@@ -30,6 +33,77 @@ const GATES = '\n[gates]\nrequired_checks = ["test"]\n';
 /** The head after GitHub's "update branch": HEAD with BASE merged in. */
 const UPDATED = "abababababababababababababababababababab";
 const TREE = "7777777777777777777777777777777777777777";
+
+test("merge selects only affected working PRs, conservatively when paths are incomplete", () => {
+  const worker = (ticket: string, over: Partial<WorkerToTell> = {}): WorkerToTell => ({
+    ticket,
+    title: "Synthetic task",
+    phase: "implementing",
+    runtime: "Conductor",
+    handle: null,
+    pr: { number: 12, files: ["src/a.ts"], filesComplete: true },
+    ...over,
+  });
+  const workers = [
+    worker("DEMO-10"),
+    worker("DEMO-11", { pr: { number: 13, files: ["src/b.ts"], filesComplete: true } }),
+    worker("DEMO-12", { pr: null }),
+    worker("DEMO-13", { phase: "ready-to-merge" }),
+    worker("DEMO-14", { pr: { number: 14, files: [], filesComplete: false } }),
+  ];
+  const merged = { files: ["src/a.ts"], filesComplete: true };
+  const selected = workersToTell(merged, workers, [".github/workflows/**"]);
+  expect(selected.tell.map((w) => [w.ticket, w.sharedFiles, w.why])).toEqual([
+    ["DEMO-10", ["src/a.ts"], "shared files"],
+    ["DEMO-14", [], "worker PR files incomplete"],
+  ]);
+  expect(selected.skipped).toEqual([
+    { ticket: "DEMO-11", why: "not affected" },
+    { ticket: "DEMO-12", why: "no pull request yet" },
+    { ticket: "DEMO-13", why: "already handed back" },
+  ]);
+  for (const change of [
+    { files: [".github/workflows/ci.yml"], filesComplete: true },
+    { files: [], filesComplete: false },
+  ])
+    expect(workersToTell(change, workers, [".github/workflows/**"]).tell.map((w) => w.ticket)).toEqual([
+      "DEMO-10",
+      "DEMO-11",
+      "DEMO-14",
+    ]);
+  expect(
+    workersToTell({ files: ["migrations/001.sql"], filesComplete: true }, workers, ["migrations/**/*.sql"]).tell,
+  ).toHaveLength(3);
+  const owned = workersToTell(
+    { files: [".github/workflows/ci.yml"], filesComplete: true },
+    [worker("DEMO-20", { coordinator: "build" }), worker("DEMO-21", { coordinator: "release" }), worker("DEMO-22")],
+    [".github/workflows/**"],
+    "build",
+  );
+  expect(owned.tell.map((w) => w.ticket)).toEqual(["DEMO-20", "DEMO-22"]);
+  expect(owned.skipped).toEqual([{ ticket: "DEMO-21", why: "owned by coordinator release" }]);
+  // GitHub reports a rename's destination but not its old path. The old path may
+  // overlap a worker's PR or have matched a global notify glob.
+  for (const path of ["src/renamed.ts", "ci/renamed.yml"]) {
+    const rename = noticeFileCoverage({
+      files: [{ path, changeType: "RENAMED", additions: 0, deletions: 0 }],
+      filesComplete: true,
+    });
+    const renamed = workersToTell(rename, workers, [".github/workflows/**"]);
+    expect(renamed.tell.map((w) => w.ticket)).toEqual(["DEMO-10", "DEMO-11", "DEMO-14"]);
+    expect(renamed.tell.every((w) => w.why === "merged PR files incomplete")).toBe(true);
+  }
+  const workerRename = worker("DEMO-30", {
+    pr: {
+      number: 30,
+      ...noticeFileCoverage({
+        files: [{ path: "src/renamed.ts", changeType: "RENAMED", additions: 0, deletions: 0 }],
+        filesComplete: true,
+      }),
+    },
+  });
+  expect(workersToTell(merged, [workerRename], []).tell[0]?.why).toBe("worker PR files incomplete");
+});
 
 function pull(over: Partial<MergePull> = {}): MergePull {
   return {
@@ -480,7 +554,7 @@ describe("armada merge", () => {
       phase: "merged",
       summary: `PR #9 squash-merged into main as ${SQUASH}, head ${HEAD}; merged on its own (no merge rule)`,
     });
-    expect(out.workers).toEqual([
+    expect(out.workers).toMatchObject([
       { ticket: "DEMO-8", title: "Rename a list", phase: "implementing", runtime: "Claude Code", handle: "ws-2" },
     ]);
     expect(out.archive).toMatchObject({
