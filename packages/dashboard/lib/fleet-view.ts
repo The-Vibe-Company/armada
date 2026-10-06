@@ -16,6 +16,7 @@ export type StatusReason =
   | "conflict"
   | "blocked"
   | "silent"
+  | "stopped"
   | "ready"
   | "phase";
 
@@ -27,6 +28,7 @@ export interface AgentState {
 /** The mockup's rule: a decision first, then a failure, a silence, a hand-back, else the phase at work. */
 export function agentState(row: Pick<FleetRow, "phase" | "pr" | "silent" | "question" | "flags">): AgentState {
   if (row.question) return { status: "waiting", reason: "question" };
+  if (row.flags.includes("stopped")) return { status: "error", reason: "stopped" };
   if (row.phase === "awaiting-approval") return { status: "waiting", reason: "approval" };
   if (row.phase === "awaiting-validation") return { status: "waiting", reason: "validation" };
   if (row.pr?.ci === "failure" || row.flags.includes("ci-failing")) return { status: "error", reason: "ci" };
