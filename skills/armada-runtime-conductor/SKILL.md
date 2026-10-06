@@ -55,48 +55,15 @@ Armada reads Conductor's session and workspace state itself before inbox and sta
 The coordinator reads the transcript to decide how to resume a stopped worker. For a manual check:
 
 ```sh
-conductor --json session status <sessionId>
+armada peek ABC-12
+armada peek ABC-12 --actions 10 --json
 ```
 
-The output is `{"workspaceId", "sessionId", "status", "updatedAt"}`. For a worker:
+Peek reads the claimed session or a bound launch before claim. It shows the runtime state and when it began, the worker's last reply, recent commands and exit codes, report and heartbeat ages, pull request checks and open questions. Times follow the coordinator's `TZ`. Runtime transcript secrets are masked; no runtime command writes to the worker. A fresh observation is published to Armada for status and the dashboard. The separate machine cursor and bounded reply/action tail make repeat reads incremental; “older events skipped” means the 20-page cap was reached, and the next peek continues from the saved cursor.
 
-- `working`: a turn is running. A silent worker that is `working` is busy (a long build or test run): leave it, and read the transcript if it stays silent past twice `policy.silence_minutes`.
-- `idle`: no turn is running. The worker finished its turn: it handed back, it waits for an answer, or it stopped without finishing. If `armada status` does not show it `ready-to-merge`, `awaiting-approval`, `awaiting-validation` or `blocked`, it has stopped: read its last reply, then message it to go on, or release and relaunch the ticket.
-- `error`: the last turn failed (agent or provider failure). Read the transcript and message it to resume; if it fails again, cancel, archive, release and relaunch.
-- Right after launch the session is `idle` for a few seconds while the workspace is initializing and the first message is queued; it turns `working` when the agent starts.
+`working` means a turn is running; `idle` means it ended, so compare the last report with its reply before nudging it to continue. `failed` means the last turn failed; `archived` means the workspace ended but its retained transcript can still be read. An unreachable runtime shows Armada's stored state and observation age. Check a new launch's setup reply before launching again.
 
-The workspace itself: `conductor --json workspace status <workspaceId>` gives `status` `initializing`, `ready` or `archived`.
-
-**Read the transcript** to see what a worker did or said. Events come oldest first, 100 per page; `hasMore` tells when to fetch the next page with `--after` the last event id. Keep the last id you read and poll from it.
-
-```sh
-conductor --json session message <sessionId> --limit 100 > /tmp/abc-12-events.json
-jq -r '.hasMore, .data[-1].id' /tmp/abc-12-events.json
-conductor --json session message <sessionId> --after <lastEventId> --limit 100
-```
-
-The second line prints whether more pages exist and the id to continue from. `.content.rawPayload` is the agent's own event format, so the filters depend on the worker's agent (the `agent` of its profile in `armada.toml`).
-
-A `claude` worker: each turn's final reply, then the commands and tools it ran.
-
-```sh
-jq -r '.data[] | select(.content.rawPayload.type == "result") | .content.rawPayload | "error=\(.is_error)\n\(.result)"' /tmp/abc-12-events.json
-jq -r '.data[] | select(.content.rawPayload.type == "assistant") | .content.rawPayload.message.content[] | select(.type == "tool_use") | .input.command // .name' /tmp/abc-12-events.json
-```
-
-A `codex` worker: its events are `.content.rawPayload.event`, each item once as `item.started` and once as `item.completed`; read the completed ones. Its messages (`phase` is `commentary` along the way, `final_answer` at the end of a turn), then each command with its exit code, and its tool calls (Linear and other MCP servers).
-
-```sh
-jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "agentMessage") | "[\(.phase)] \(.text)"' /tmp/abc-12-events.json
-jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "commandExecution") | "exit=\(.exitCode) \(.command)"' /tmp/abc-12-events.json
-jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "mcpToolCall") | "\(.server) \(.tool)"' /tmp/abc-12-events.json
-```
-
-Another agent, or a filter that prints nothing: count the event types, look at one event of the type you need, and adapt the filter.
-
-```sh
-jq -r '.data[].content.rawPayload | .type // .event.type // "(no payload)"' /tmp/abc-12-events.json | sort | uniq -c
-```
+**Read the transcript** with `armada peek ABC-12` first. Use `--json` when a script needs the same facts; the raw Conductor recipes are in the “Without Armada” appendix.
 
 ## Stop and archive
 
@@ -139,6 +106,52 @@ done
 conductor --json workspace archive <workspaceId>
 ```
 - After an archive, `session status` still answers `idle`; `workspace status` says `archived`.
+
+## Without Armada: status and transcript
+
+```sh
+conductor --json session status <sessionId>
+```
+
+The output is `{"workspaceId", "sessionId", "status", "updatedAt"}`. For a worker:
+
+- `working`: a turn is running. A silent worker that is `working` is busy (a long build or test run): leave it, and read the transcript if it stays silent past twice `policy.silence_minutes`.
+- `idle`: no turn is running. The worker finished its turn: it handed back, it waits for an answer, or it stopped without finishing. If `armada status` does not show it `ready-to-merge`, `awaiting-approval`, `awaiting-validation` or `blocked`, it has stopped: read its last reply, then message it to go on, or release and relaunch the ticket.
+- `error`: the last turn failed (agent or provider failure). Read the transcript and message it to resume; if it fails again, cancel, archive, release and relaunch.
+- Right after launch the session is `idle` for a few seconds while the workspace is initializing and the first message is queued; it turns `working` when the agent starts.
+
+The workspace itself: `conductor --json workspace status <workspaceId>` gives `status` `initializing`, `ready` or `archived`.
+
+**Read the transcript** to see what a worker did or said. Events come oldest first, 100 per page; `hasMore` tells when to fetch the next page with `--after` the last event id. Keep the last id you read and poll from it.
+
+```sh
+conductor --json session message <sessionId> --limit 100 > /tmp/abc-12-events.json
+jq -r '.hasMore, .data[-1].id' /tmp/abc-12-events.json
+conductor --json session message <sessionId> --after <lastEventId> --limit 100
+```
+
+The second line prints whether more pages exist and the id to continue from. `.content.rawPayload` is the agent's own event format, so the filters depend on the worker's agent (the `agent` of its profile in `armada.toml`).
+
+A `claude` worker: each turn's final reply, then the commands and tools it ran.
+
+```sh
+jq -r '.data[] | select(.content.rawPayload.type == "result") | .content.rawPayload | "error=\(.is_error)\n\(.result)"' /tmp/abc-12-events.json
+jq -r '.data[] | select(.content.rawPayload.type == "assistant") | .content.rawPayload.message.content[] | select(.type == "tool_use") | .input.command // .name' /tmp/abc-12-events.json
+```
+
+A `codex` worker: its events are `.content.rawPayload.event`, each item once as `item.started` and once as `item.completed`; read the completed ones. Its messages (`phase` is `commentary` along the way, `final_answer` at the end of a turn), then each command with its exit code, and its tool calls (Linear and other MCP servers).
+
+```sh
+jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "agentMessage") | "[\(.phase)] \(.text)"' /tmp/abc-12-events.json
+jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "commandExecution") | "exit=\(.exitCode) \(.command)"' /tmp/abc-12-events.json
+jq -r '.data[] | .content.rawPayload.event | select(.type == "item.completed") | .item | select(.type == "mcpToolCall") | "\(.server) \(.tool)"' /tmp/abc-12-events.json
+```
+
+Another agent, or a filter that prints nothing: count the event types, look at one event of the type you need, and adapt the filter.
+
+```sh
+jq -r '.data[].content.rawPayload | .type // .event.type // "(no payload)"' /tmp/abc-12-events.json | sort | uniq -c
+```
 
 ## Without native Armada launch: manual Conductor creation
 

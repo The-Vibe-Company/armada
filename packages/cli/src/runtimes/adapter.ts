@@ -11,6 +11,7 @@ import {
   type RuntimeHandle,
   type RuntimeName,
   type RuntimeState,
+  redactSecrets,
   runtimeNameOf,
 } from "@armada/core";
 import { type HerdrClaimHandle, HerdrError } from "../herdr.ts";
@@ -77,7 +78,15 @@ export interface RuntimeReading {
 export interface Peek extends RuntimeReading {
   link: string | null;
   lastReply: { at: string | null; text: string } | null;
-  actions: { at: string | null; kind: "command" | "tool" | "message"; text: string; exit?: number | null }[];
+  actions: {
+    id?: string;
+    at: string | null;
+    kind: "command" | "tool" | "message";
+    text: string;
+    exit?: number | null;
+  }[];
+  /** Completion updates for Claude tools started before the caller's cursor. Not user-facing text. */
+  actionResults?: { id: string; exit: number | null }[];
   cursor: string | null;
   truncated: boolean;
 }
@@ -115,12 +124,21 @@ export interface RuntimeAdapter {
   archive(target: ClaimRef, options: ArchiveOptions): Promise<Archived>;
 }
 
-export function runtimeFor(io: Io, config: ArmadaConfig | undefined, runtime: string): RuntimeAdapter {
+export function runtimeFor(
+  io: Io,
+  config: ArmadaConfig | undefined,
+  runtime: string,
+  secretValues: readonly string[] = [],
+): RuntimeAdapter {
+  const values = [
+    ...secretValues,
+    ...(config?.secrets.names ?? []).map((n) => io.env[n]).filter((v): v is string => !!v),
+  ];
   switch (runtimeNameOf(runtime)) {
     case "conductor":
-      return new ConductorAdapter(io);
+      return new ConductorAdapter(io, values);
     case "herdr":
-      return herdrErrors(new HerdrAdapter(io, config));
+      return herdrErrors(new HerdrAdapter(io, config, values));
     case "claude-code":
       return new ClaudeCodeAdapter();
     default:
@@ -238,11 +256,8 @@ export async function recheckMutation(): Promise<void> {
 }
 
 /** Minimal transcript protection pending the dedicated secret-redaction ticket. */
-export function redactRuntimeText(text: string): string {
-  return text.replace(
-    /\b(?:armada_(?:launch|worker|key)_[A-Za-z0-9_-]+|(?:sk|ghp|github_pat)_[A-Za-z0-9_-]+|sk-[A-Za-z0-9_-]+)\b/g,
-    "[redacted]",
-  );
+export function redactRuntimeText(text: string, values: readonly string[] = []): string {
+  return redactSecrets(text, values);
 }
 
 /** Keep herdr's JSON boundary intact, while exposing the common error codes to adapter callers. */

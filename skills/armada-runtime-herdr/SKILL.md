@@ -26,6 +26,8 @@ For herdr, Armada verifies the saved pane, delivers literal text plus Enter and 
 ## Status
 
 ```sh
+armada peek ABC-12
+armada peek ABC-12 --json
 armada status --json
 armada inbox
 herdr agent get <pane>
@@ -34,6 +36,8 @@ herdr agent wait <pane> --until idle --until done --until blocked --timeout 3000
 ```
 
 `status`, `inbox` and each `watch` poll discover workers from persisted claims and publish local observations to Armada. The dashboard shows that stored live state beside the last report; it never probes a local runtime. Observations expire after `policy.silence_minutes`.
+
+Use `armada peek` first for the local worker's live state, recent pane output, reports, heartbeat, checks and open questions. Pane output has no structured command timestamps or exit codes, so peek leaves actions empty. A claim from another machine retains the last stored state with its observation age and says the runtime is unreachable.
 
 Herdr's `.result.agent` carries `workspace_id`, `pane_id`, `name` and `agent_status`. Verify all three IDs against the claim. `working` is a running turn, `blocked` is an approval or question UI, and `idle`/`done` are ready for input. A live `runtime-blocked` inbox entry can appear before a worker report; read its pane and answer by ticket. It clears after an answer until the next blocked transition. Herdr's state-change counter preserves approvals that arrive between polls, even when both readings are blocked. `unknown` falls back to Armada reports; it is not proof of completion. DeepSeek and other harnesses also report their phase to herdr via `pane report-agent --source armada` on report, ask and heartbeat. Reporting failures warn and do not fail the worker command.
 
