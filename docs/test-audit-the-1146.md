@@ -109,7 +109,7 @@ These are supplemental proof, not a claim that every retained R contract was mut
 | Supported Slack app-token format is masked | Correct supported input plus complete original literal absence | Remove the app-token variant from both prefix patterns |
 | Every project’s whole read keeps its own identity | Assert persisted config slug/root/repository and source root/issue/repository | Pass the widgets root to the other project’s source read |
 
-For each, the mutant passed the pre-restoration filtered keeper (1 pass), then failed its restored keeper at the intended assertion (0 pass, 1 fail). Each production source returned byte for byte with the same SHA-256. This is the required step 6 mutation evidence, separate from the ten supplemental mutations. The same reviewer refreshed all 48 files, carried 43 unchanged entries by matching hashes, inspected all 45 OCR default exclusions directly, and reported no remaining findings. This includes the repaired tests, evidence and the added fixture correction below. All original R declarations remain; no broad deletion-count target overrides their contracts.
+For each, the mutant passed the pre-restoration filtered keeper (1 pass), then failed its restored keeper at the intended assertion (0 pass, 1 fail). Each production source returned byte for byte with the same SHA-256. This is the required step 6 mutation evidence, separate from the ten supplemental mutations. The same reviewer refreshed all 48 files, carried 43 unchanged entries by matching hashes, inspected all 45 OCR default exclusions directly, and reported no remaining findings. This initial cutover refresh includes the repaired tests, evidence and the added fixture correction below; a subsequent main-integration finding is recorded separately below. All original R declarations remain; no broad deletion-count target overrides their contracts.
 
 ## Product control
 
@@ -131,6 +131,21 @@ Cutover counts against the refreshed baseline; TypeScript declarations 1,349 →
 Thirty-one weak assertions require stronger fixtures, so test LOC grows while duplicate declarations retire. The 31-line support module compiles real TS/TSX with per-module boundary substitutes; it avoids global mocks and adds no production hook. All 141 test files remain. Python: three files, 14 cases, 211 lines, unchanged.
 
 Counts use tracked physical text lines (plus the intended new support file), tests separately from other files under each package’s test directory, and production TypeScript separately. The stable reviewed candidate passes lint/typecheck and 1,563 Bun cases in 141 files, zero failures, two snapshots and 13,102 assertions: 22 fewer runtime cases. Bun took 382.93 s and the equivalent full verify sequence took 443.69 s, versus 373.54 s / 432.51 s before. These single observations show no measured speedup (complete sequence +2.6%); stronger fixtures add assertions and the database/browser runs vary. Production shrinks by 16 lines. Node 22 packed-install smoke, dashboard production build and all 14 Python cases also pass.
+
+## Main reconciliation
+
+Main `ac7b4fb4370fdfbbbe506c06185266f065f540e6` (#256) was merged after the reviewed cutover, preserving the new merge queue parser, selected CI/local retest policy and FIFO recovery matrix. The incoming CLI queue and dashboard store regressions are unchanged. No launch/relaunch or queue regression was cut. The automatic merges in AGENTS, CLI help, config tests and merge tests retain both changes. Integration review found one additional missing proof: the new drain matrix covered default CI but did not prove configured local retesting reached the drain. A `local-retest` row now asserts both local test merges against successive fresh base tips, no branch updates and FIFO completion. No production queue behavior changes.
+
+| Package | Current main tests → final | Support → final | Production TS → final |
+| --- | --- | --- | --- |
+| Core | 15,755 → 15,892 | 3,452 → 3,452 | 21,975 → 21,975 |
+| CLI | 15,977 → 15,987 | 118 → 118 | 13,673 → 13,674 |
+| Dashboard | 11,647 → 11,902 | 46 → 77 | 31,603 → 31,586 |
+| Total | 43,379 → 43,781 (+402) | 3,616 → 3,647 (+31) | 67,251 → 67,235 (−16) |
+
+The original refreshed baseline and equivalent before/after observations above stay pinned. Incoming main adds three declarations; final discovery is 1,332 declarations in 141 files. These totals separate incoming-main growth from this campaign’s final +402 test / +31 support / −16 production lines. The additional keeper row adds 25 lines and one runtime case without another declaration. Its hardcoded-CI source mutant passes all 25 prior drain rows, then fails the repaired row (25 pass / 1 fail). The source SHA-256 is restored byte for byte. This is the fourth preservation repair and mutation, beyond the original 55 dispositions.
+
+Merged main before that row passes 1,599 cases in 141 files, zero failures, two snapshots and 13,480 assertions (402.15 s Bun / 465.66 s verify). Dashboard build and Node 22 packed-install smoke pass again. The stable final keeper passes lint/typecheck and all 1,600 Bun cases across 141 files, zero failures, two snapshots and 13,490 assertions (395.65 s Bun / 455.75 s verify). Current-main runtime cases are 1,621 → 1,600 (−21); the extra restored row accounts for the difference from the initial −22 cutover. The pinned comparison above remains the equivalent cutover before incoming-main growth. The complete final run is +5.4% versus the refreshed baseline, which also contains 36 fewer incoming-main cases; no speedup is claimed. The final independent gate covers 50 branch/workspace identities across 48 paths, zero skipped, all four findings repaired and mutation-proven, and no remaining findings. Dashboard build and packed Node 22 smoke remain fresh because production bytes are unchanged after the successful merged-head runs; the transient queue mutant was restored exactly.
 
 ## Durable ownership
 

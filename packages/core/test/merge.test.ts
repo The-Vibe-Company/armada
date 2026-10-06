@@ -2086,6 +2086,7 @@ test("after merge selects declared deploy targets by base branch, including no-t
 
 test.each([
   "ordered",
+  "local-retest",
   "outage",
   "exhausted",
   "lineage-outage",
@@ -2112,7 +2113,11 @@ test.each([
   "owner",
 ])("queue drain owns FIFO retests, durable outcomes and recovery (%s)", async (scenario) => {
   const live = tempFleet();
-  const s = setup({ live, toml: `${GATES}local_commands = ["bun run verify"]\n` });
+  const s = setup({
+    live,
+    toml: `${GATES}local_commands = ["bun run verify"]\n${scenario === "local-retest" ? '[merge]\nqueue_retest = "local"\n' : ""}`,
+  });
+  if (scenario === "local-retest") s.repo.trees.set(`${HEAD}:${SQUASH}`, TREE);
   const forges = new Map(
     [12, 15].map((n) => {
       const forge = new FakeForge();
@@ -2390,10 +2395,30 @@ test.each([
   expect(live.store.items.filter((i) => i.kind === "queue-refused")).toHaveLength(
     ["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? 1 : 0,
   );
-  expect(s.repo.testMerges).toEqual([]);
+  expect(s.repo.testMerges).toEqual(
+    scenario === "local-retest"
+      ? [
+          { base: BASE, head: HEAD, commands: ["bun run verify"] },
+          { base: SQUASH, head: HEAD, commands: ["bun run verify"] },
+        ]
+      : [],
+  );
+  if (scenario === "local-retest") {
+    expect([...forges.values()].flatMap((forge) => forge.updates)).toEqual([]);
+    expect(order.indexOf("after 12")).toBeLessThan(order.indexOf("merge 15"));
+  }
   if (scenario === "owner") expect(s.progress.join("\n")).toContain("owner has not decided");
   if (
-    !["red", "exhausted", "recovery", "recovered-ticket", "queued-head", "head-mismatch", "owner"].includes(scenario)
+    ![
+      "red",
+      "exhausted",
+      "recovery",
+      "recovered-ticket",
+      "queued-head",
+      "head-mismatch",
+      "owner",
+      "local-retest",
+    ].includes(scenario)
   ) {
     expect(order.indexOf(`update 12 on ${BASE}`)).toBeLessThan(order.indexOf("merge 12"));
     expect(order.indexOf("after 12")).toBeLessThan(order.indexOf(`update 15 on ${SQUASH}`));
