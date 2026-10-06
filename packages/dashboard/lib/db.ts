@@ -766,6 +766,16 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   },
   {
     version: 26,
+    statements: [
+      `CREATE TABLE ticket_paths (
+      project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+      ticket text NOT NULL, paths text[] NOT NULL, declared_at timestamptz NOT NULL,
+      PRIMARY KEY (project, ticket)
+    )`,
+    ],
+  },
+  {
+    version: 27,
     statements: ["ALTER TABLE validations ADD COLUMN checks jsonb, ADD COLUMN excerpts jsonb, ADD COLUMN details text"],
   },
 ];

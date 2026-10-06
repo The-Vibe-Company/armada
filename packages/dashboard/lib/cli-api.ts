@@ -711,7 +711,12 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
   let validationSamples: number | undefined;
-  if (op === "validate" || ((op === "request" || op === "inbox") && caller.kind === "organization")) {
+  if (
+    op === "validate" ||
+    ((op === "request" || op === "inbox") && caller.kind === "organization") ||
+    op === "overlap" ||
+    op === "report"
+  ) {
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
