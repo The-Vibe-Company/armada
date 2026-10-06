@@ -97,6 +97,16 @@ export function renderStatus(r: StatusReport): string {
     }
   }
 
+  if (r.jobs?.length) {
+    out.push("", `Jobs running (${r.jobs.length})`);
+    for (const j of r.jobs) {
+      out.push(`  Job ${j.id} · ${j.ticket} · ${j.name} · ${j.state}${j.overdue ? " · overdue" : ""}`);
+      out.push(`    Runner: ${j.ref ?? "no runner reference"} · ${j.progress ?? "no progress reported"}`);
+      out.push(`    Observed ${relative(j.observedAt, now)}${j.eta ? ` · ETA ${j.eta}` : ""}`);
+      if (j.ticketDone) out.push("    ! ticket is Done; job continues until the runner ends or you stop it");
+    }
+  }
+
   if (r.launchWhenUnblocked?.length) {
     out.push("", `Launch when unblocked (${r.launchWhenUnblocked.length})`);
     for (const request of r.launchWhenUnblocked) {
