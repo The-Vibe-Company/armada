@@ -1399,3 +1399,15 @@ test("a coordinator allowance at ready-to-merge preserves the original hand-back
     headSha: HEAD,
   });
 });
+
+test("after merge selects declared deploy targets by base branch, including no-ticket merges", async () => {
+  const text = `${GATES}\n[[deploy.target]]\nname = "api"\ngithub_environment = "production"\n[[deploy.target]]\nname = "docs"\nbranch = "docs"\nlive_sha_command = "version"\n`;
+  for (const noTicket of [false, true]) {
+    const s = setup({ toml: text });
+    const outcome = await mergePullRequest(s.ctx, { pr: 9, noTicket, ...(noTicket ? { reason: "deploy test" } : {}) });
+    expect(outcome.deploy).toEqual({ targets: ["api"] });
+    expect(outcome.pr.mergeCommit).toBe(SQUASH);
+  }
+  expect((await mergePullRequest(setup().ctx, { pr: 9 })).deploy).toBeNull();
+  expect((await mergePullRequest(setup({ toml: text }).ctx, { pr: 9, dryRun: true })).deploy).toBeUndefined();
+});

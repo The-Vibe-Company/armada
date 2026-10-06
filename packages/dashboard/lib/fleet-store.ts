@@ -15,6 +15,9 @@ import type {
   CoordinatorPresence,
   CoordinatorRecord,
   CoordinatorSeen,
+  DeployInput,
+  DeployQuery,
+  DeployRecord,
   EventInput,
   EventsSinceQuery,
   FeedEntry,
@@ -57,6 +60,8 @@ import type {
   WorkerProfile,
 } from "@armada/core/read";
 import {
+  deployDetail,
+  deployFailed,
   holdBody,
   isShippingStage,
   OBSERVABLE_RUNTIMES,
@@ -1375,6 +1380,334 @@ export async function shownJobs(
 }
 
 // ------------------------------------------------------------------ standing merge holds
+type DeployInputWithCoverage = DeployInput & { project: string; coveredShas?: readonly string[] | null };
+
+/** A deploy state which ends observation for that (target, sha) row. */
+const deployTerminal = (state: string): boolean => state === "healthy" || deployFailed(state as never);
+
+const coveredShasOf = (input: DeployInputWithCoverage): string[] => [
+  ...new Set([input.sha, ...(input.coveredShas ?? [])].filter((sha): sha is string => !!sha)),
+];
+
+const coveredShasFromRow = (row: Row): string[] => {
+  const shas = row.covered_shas;
+  if (Array.isArray(shas)) return shas.map(String);
+  if (typeof shas === "string")
+    return shas
+      ? shas
+          .replace(/^\{|\}$/g, "")
+          .split(",")
+          .filter(Boolean)
+      : [];
+  return [];
+};
+
+const deployRow = (r: Row): DeployRecord => {
+  const result = {
+    project: String(r.project),
+    target: String(r.target),
+    sha: String(r.sha),
+    state: String(r.state) as DeployRecord["state"],
+    detail: String(r.detail),
+    pauseOnFailure: r.pause_on_failure === true,
+    liveSha: text(r.live_sha),
+    coveredShas: coveredShasFromRow(r),
+    startedAt: isoAt(r.started_at),
+    updatedAt: isoAt(r.updated_at),
+    sequence: Number(r.sequence),
+  };
+  // `coveredShas` is optional while older CLI/core packages are in flight;
+  // returning it when present keeps the store forward compatible.
+  return result as DeployRecord;
+};
+
+const deployBody = (input: DeployInputWithCoverage): string =>
+  `Deployment ${input.state} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
+
+/**
+ * Finds or creates the one open deploy notice for a target. The target is a
+ * private column on inbox_items: the public inbox contract keeps its body
+ * human-readable while the store can coalesce retries without parsing it.
+ */
+async function deployInbox(
+  q: Queryable,
+  input: DeployInputWithCoverage,
+  at: Date,
+  existingId?: number | null,
+): Promise<number> {
+  const body = deployBody(input);
+  const targetFound = await q.query<{ id: unknown }>(
+    `SELECT id FROM inbox_items
+     WHERE project = $1 AND kind = 'deploy' AND recipient = 'coordinator' AND resolved_at IS NULL
+       AND deploy_target = $2
+     ORDER BY created_at, id LIMIT 1 FOR UPDATE`,
+    [input.project, input.target],
+  );
+  const found = targetFound.rows[0]
+    ? targetFound
+    : existingId === null || existingId === undefined
+      ? targetFound
+      : await q.query<{ id: unknown }>(
+          "SELECT id FROM inbox_items WHERE project = $1 AND id = $2 AND recipient = 'coordinator' AND resolved_at IS NULL FOR UPDATE",
+          [input.project, existingId],
+        );
+  const id = found.rows[0]?.id;
+  if (id !== undefined) {
+    await q.query(
+      `UPDATE inbox_items SET kind = 'deploy', body = $1, deploy_target = $2, deploy_sha = $3
+       WHERE id = $4 AND project = $5 AND resolved_at IS NULL`,
+      [body, input.target, input.sha, Number(id), input.project],
+    );
+    return Number(id);
+  }
+  const inserted = await q.query<{ id: unknown }>(
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, deploy_target, deploy_sha)
+     VALUES ($1, NULL, 'deploy', 'coordinator', NULL, $2, $3, $4, $5)
+     ON CONFLICT (project, deploy_target) WHERE kind = 'deploy' AND resolved_at IS NULL AND deploy_target IS NOT NULL
+     DO UPDATE SET body = excluded.body, deploy_sha = excluded.deploy_sha
+     RETURNING id`,
+    [input.project, body, at, input.target, input.sha],
+  );
+  const result = inserted.rows[0]?.id;
+  if (result === undefined) throw new Error("the deployment inbox item was not written");
+  return Number(result);
+}
+
+/** A failure may only supersede an observation which is still the target's newest terminal failure. */
+async function deployFailureIsStale(q: Queryable, input: DeployRecord): Promise<boolean> {
+  const healthy = await q.query(
+    `SELECT 1 FROM deploys
+     WHERE project = $1 AND target = $2 AND state = 'healthy'
+       AND (sha = $3 OR $3 = ANY(covered_shas))
+     LIMIT 1`,
+    [input.project, input.target, input.sha],
+  );
+  if (healthy.rows.length) return true;
+  const newerFailure = await q.query(
+    `SELECT 1 FROM deploys WHERE project = $1 AND target = $2
+       AND sequence > $3 AND state IN ('deploy-failed', 'smoke-failed', 'timeout') LIMIT 1`,
+    [input.project, input.target, input.sequence],
+  );
+  return newerFailure.rows.length > 0;
+}
+
+/** Opens/coalesces the target's deploy pause and its deploy inbox item. */
+async function openDeployFailure(
+  q: Queryable,
+  input: DeployInputWithCoverage,
+  record: DeployRecord,
+  at: Date,
+): Promise<void> {
+  if (await deployFailureIsStale(q, record)) return;
+  const existing = await q.query<Row>(
+    `SELECT * FROM merge_holds
+     WHERE project = $1 AND kind = 'deploy' AND ref = $2 AND cleared_at IS NULL FOR UPDATE`,
+    [input.project, input.target],
+  );
+  const current = existing.rows[0];
+  if (current && current.deploy_sequence !== null && Number(current.deploy_sequence) > record.sequence) return;
+
+  // A manually cleared hold for this or a newer observation is a decision;
+  // retries and late watchers must not reopen it.
+  const cleared = await q.query(
+    `SELECT deploy_sequence FROM merge_holds
+     WHERE project = $1 AND kind = 'deploy' AND ref = $2 AND cleared_at IS NOT NULL
+       AND deploy_sequence IS NOT NULL ORDER BY deploy_sequence DESC LIMIT 1`,
+    [input.project, input.target],
+  );
+  if (cleared.rows[0] && Number(cleared.rows[0].deploy_sequence) >= record.sequence) return;
+
+  const reason = `deployment ${input.state} for ${input.target} (${input.sha})\n${deployDetail(input.detail)}`;
+  let hold: Row;
+  if (current) {
+    const updated = await q.query<Row>(
+      `UPDATE merge_holds SET reason = $3, opened_at = $4, deploy_sequence = $5, deploy_sha = $6
+       WHERE id = $1 AND project = $2 RETURNING *`,
+      [current.id, input.project, reason, at, record.sequence, input.sha],
+    );
+    hold = updated.rows[0] ?? current;
+  } else {
+    const inserted = await q.query<Row>(
+      `INSERT INTO merge_holds (project, kind, ref, reason, opened_by, opened_at, deploy_sequence, deploy_sha)
+       VALUES ($1, 'deploy', $2, $3, NULL, $4, $5, $6) RETURNING *`,
+      [input.project, input.target, reason, at, record.sequence, input.sha],
+    );
+    hold = inserted.rows[0] as Row;
+  }
+  const previousItemId = hold.inbox_id === null ? null : Number(hold.inbox_id);
+  const itemId = await deployInbox(q, input, at, previousItemId);
+  if (previousItemId !== null && previousItemId !== itemId)
+    await resolveInboxItem(q, {
+      project: input.project,
+      id: previousItemId,
+      resolution: `superseded by deployment notice for ${input.target}`,
+      at,
+    });
+  await q.query("UPDATE merge_holds SET inbox_id = $2 WHERE id = $1", [Number(hold.id), itemId]);
+}
+
+/** Resolves only a deploy failure explicitly covered by the healthy observation. */
+async function clearDeployHealthy(
+  q: Queryable,
+  input: DeployInputWithCoverage,
+  record: DeployRecord,
+  at: Date,
+): Promise<void> {
+  const covered = coveredShasOf(input);
+  const holds = await q.query<Row>(
+    `SELECT * FROM merge_holds
+     WHERE project = $1 AND kind = 'deploy' AND ref = $2 AND cleared_at IS NULL FOR UPDATE`,
+    [input.project, input.target],
+  );
+  for (const hold of holds.rows) {
+    const source = text(hold.deploy_sha);
+    if (source && !covered.includes(source)) continue;
+    if (hold.deploy_sequence !== null && Number(hold.deploy_sequence) > record.sequence && !source) continue;
+    const updated = await q.query<Row>(
+      `UPDATE merge_holds SET cleared_at = $3, cleared_by = NULL, clear_reason = $4
+       WHERE id = $1 AND project = $2 AND cleared_at IS NULL RETURNING *`,
+      [hold.id, input.project, at, `deployment healthy for ${input.target} (${input.sha})`],
+    );
+    if (updated.rows[0]?.inbox_id !== null && updated.rows[0]?.inbox_id !== undefined)
+      await resolveInboxItem(q, {
+        project: input.project,
+        id: Number(updated.rows[0].inbox_id),
+        resolution: `deployment healthy for ${input.target} (${input.sha})`,
+        at,
+      });
+  }
+
+  const items = await q.query<Row>(
+    `SELECT id, deploy_sha FROM inbox_items
+     WHERE project = $1 AND kind = 'deploy' AND deploy_target = $2 AND resolved_at IS NULL FOR UPDATE`,
+    [input.project, input.target],
+  );
+  for (const item of items.rows) {
+    const source = text(item.deploy_sha);
+    if (source && !covered.includes(source)) continue;
+    await resolveInboxItem(q, {
+      project: input.project,
+      id: Number(item.id),
+      resolution: `deployment healthy for ${input.target} (${input.sha})`,
+      at,
+    });
+  }
+}
+
+/** Records one observation and atomically reconciles its target's pause notice. */
+export async function recordDeploy(db: Database, input: DeployInputWithCoverage & { at: Date }): Promise<DeployRecord> {
+  return transaction(db, async (q) => {
+    // All observations of a target serialize together, including different
+    // SHAs, so stale failure/recovery decisions see one coherent target view.
+    await q.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [input.project, input.target]);
+    const found = await q.query<Row>(
+      "SELECT * FROM deploys WHERE project = $1 AND target = $2 AND sha = $3 FOR UPDATE",
+      [input.project, input.target, input.sha],
+    );
+    let row: Row;
+    const detail = deployDetail(input.detail);
+    const coveredShas = coveredShasOf(input);
+    if (found.rows[0]) {
+      const previous = found.rows[0];
+      const previousRecord = deployRow(previous);
+      if (deployTerminal(previousRecord.state)) {
+        // A healthy merged/live observation can arrive again after a watcher
+        // has discovered more ancestry. Enrich that same terminal row so the
+        // later healthy record can clear the newly covered failure. Failed
+        // terminal rows remain immutable, as do healthy retries with no new
+        // coverage.
+        if (previousRecord.state === "healthy" && input.state === "healthy") {
+          const mergedCovered = [...new Set([...coveredShasFromRow(previous), ...coveredShas])];
+          if (mergedCovered.length > coveredShasFromRow(previous).length) {
+            const enriched = await q.query<Row>(
+              `UPDATE deploys SET covered_shas = $4, updated_at = GREATEST(updated_at, $5)
+               WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
+              [input.project, input.target, input.sha, mergedCovered, input.at],
+            );
+            const enrichedRecord = deployRow(enriched.rows[0] as Row);
+            await clearDeployHealthy(q, { ...input, coveredShas: mergedCovered }, enrichedRecord, input.at);
+            return enrichedRecord;
+          }
+        }
+        return previousRecord;
+      }
+      const updated = await q.query<Row>(
+        `UPDATE deploys SET state = $4, detail = $5, pause_on_failure = $6, live_sha = $7,
+            covered_shas = $8, updated_at = $9
+         WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
+        [
+          input.project,
+          input.target,
+          input.sha,
+          input.state,
+          detail,
+          input.pauseOnFailure,
+          input.liveSha ?? null,
+          coveredShas,
+          input.at,
+        ],
+      );
+      row = updated.rows[0] as Row;
+    } else {
+      const inserted = await q.query<Row>(
+        `INSERT INTO deploys
+          (project, target, sha, state, detail, pause_on_failure, live_sha, covered_shas, started_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9) RETURNING *`,
+        [
+          input.project,
+          input.target,
+          input.sha,
+          input.state,
+          detail,
+          input.pauseOnFailure,
+          input.liveSha ?? null,
+          coveredShas,
+          input.at,
+        ],
+      );
+      row = inserted.rows[0] as Row;
+    }
+    const record = deployRow(row);
+    if (record.state === "healthy") await clearDeployHealthy(q, input, record, input.at);
+    else if (deployFailed(record.state) && input.pauseOnFailure) await openDeployFailure(q, input, record, input.at);
+    else if (deployFailed(record.state)) {
+      // A non-pausing deployment still wakes the coordinator exactly once.
+      if (!(await deployFailureIsStale(q, record))) await deployInbox(q, input, input.at);
+    }
+    return record;
+  });
+}
+
+/** Reads bounded deploy history, coalescing the unfiltered view to one row per target. */
+export async function deployState(db: Queryable, project: string, query: DeployQuery = {}): Promise<DeployRecord[]> {
+  const target = query.target ?? null;
+  const sha = query.sha ?? null;
+  const sql =
+    target === null && sha === null
+      ? `SELECT DISTINCT ON (target) * FROM deploys WHERE project = $1 ORDER BY target, sequence DESC`
+      : target !== null && sha === null
+        ? `SELECT d.* FROM deploys d
+           WHERE d.project = $1 AND d.target = $2
+           ORDER BY
+             (EXISTS (SELECT 1 FROM merge_holds h WHERE h.project = d.project AND h.kind = 'deploy'
+                      AND h.ref = d.target AND h.cleared_at IS NULL AND h.deploy_sha = d.sha)) DESC,
+             (EXISTS (SELECT 1 FROM inbox_items i WHERE i.project = d.project AND i.kind = 'deploy'
+                      AND i.deploy_target = d.target AND i.resolved_at IS NULL AND i.deploy_sha = d.sha)) DESC,
+             d.sequence DESC LIMIT 100`
+        : `SELECT * FROM deploys WHERE project = $1 ${target === null ? "" : "AND target = $2"}
+           AND sha = $${target === null ? 2 : 3} ORDER BY sequence DESC`;
+  const params =
+    target === null && sha === null
+      ? [project]
+      : target !== null && sha === null
+        ? [project, target]
+        : target === null
+          ? [project, sha]
+          : [project, target, sha];
+  const rows = await db.query(sql, params);
+  return rows.rows.map(deployRow);
+}
+
 const holdRow = (r: Row): MergeHold => ({
   id: Number(r.id),
   project: String(r.project),
@@ -1462,6 +1795,9 @@ export async function openHolds(db: Queryable, project: string): Promise<MergeHo
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  recordDeploy: (input) => recordDeploy(db, input),
+  deployState: (project, query) => deployState(db, project, query),
+
   async startJob(input) {
     const rs = await db.query(
       `INSERT INTO jobs (project, ticket, name, state, started_by, started_at, observed_at)

@@ -671,3 +671,23 @@ project secret values; if those values cannot be read, failure output is withhel
 Live fleet reports remain optional when Armada is
 down. The merge checklist shows the evidence without adding a merge refusal,
 so bringing main in with `merge --wait` preserves the worker's proven hand-back.
+
+### Check deploys after each merge
+
+Declare optional `[[deploy.target]]` entries in `armada.toml`:
+
+```toml
+[[deploy.target]]
+name = "api"
+branch = "main"                    # omit for the merged PR's base branch
+# Exactly one source of the live commit:
+github_environment = "production"
+# live_sha_command = "curl -fsS https://example.test/version"
+smoke = "curl -fsS https://example.test/health" # optional
+timeout_minutes = 20              # 1–120
+pause_on_failure = true
+```
+
+`armada merge` starts a background deploy watcher and prints `Watching the deploy of <sha> to <target>`. Deployment failures, smoke failures and timeouts create one inbox item and a shared deploy hold for that target. A later healthy deploy clears the failures it covers. Use `--through-hold "<why>"` to merge the repair. `pause_on_failure = false` keeps the inbox warning without pausing merges.
+
+`armada deploy status` shows each target's latest state and any open deploy hold; `armada status` includes deploy states. Commands run at the repository root with `ARMADA_DEPLOY_SHA` and `ARMADA_DEPLOY_TARGET`, bounded to one minute and the deploy deadline. Declare `armada run -- <command>` when a command needs project secrets. Watchers share smoke results for the same live SHA. If background startup fails, the merge prints a command to run in a persistent terminal. See the [deployment runbook](docs/runbook.md#check-deployments-after-merges) for recovery and logs.
