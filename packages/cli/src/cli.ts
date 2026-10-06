@@ -22,7 +22,7 @@ import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { ciWhy } from "./ci.ts";
-import { coordinatorCommand } from "./coordinator.ts";
+import { coordinatorCommand, coordinatorName } from "./coordinator.ts";
 import { digest } from "./digest.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
@@ -34,7 +34,7 @@ import { jobCommand } from "./job.ts";
 import { launch } from "./launch.ts";
 import { lint } from "./lint.ts";
 import { setupLocal } from "./local-setup.ts";
-import { login, logout, whoami } from "./login.ts";
+import { login, logout, requireSignIn, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
 import { peek, requirePeekCoordinator } from "./peek.ts";
 import { recordPresence } from "./presence.ts";
@@ -112,6 +112,7 @@ const COMMAND_HELP: Record<string, string> = {
                     --send posts it through Organization > Notifications; no address is released.
 `,
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
+  status --mine     Only your owned workers; the frontier stays whole
   status --all      The same for every project registered by \`armada init\`
 `,
   setup: `  setup local       Open local harness panes for the owner to answer first-run questions,
@@ -197,7 +198,7 @@ const COMMAND_HELP: Record<string, string> = {
   hold clear <id> --reason "<why>"
                     Pause this project's merges until cleared, shared with every coordinator.
                     Merge a fix with --through-hold "<why>"; the hold stays open.`,
-  inbox: `  inbox [--wait [--timeout <seconds>]]
+  inbox: `  inbox [--mine|--all] [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
                     oldest first; records that the coordinator is at work. --wait returns
                     when a new item arrives or after --timeout (default 300 s); \`armada watch\`
@@ -213,8 +214,8 @@ const COMMAND_HELP: Record<string, string> = {
                     --since <cursor> resumes events; defaults to this machine's cursor.
                     --tickets A-1,B-2 and --kinds question,hand-back filter the stream.
                     --kinds all also prints claims, reports, releases and merges.
-                    --all retains project events; inbox lines use the selected coordinator.
-                    --mine needs "Show each coordinator only its own work" (not yet available).
+                    --mine filters events and inbox by coordinator ownership, including unowned entries.
+                    Named watches default to --mine; --all sees the whole fleet.
                     --for <minutes> ends either watch cleanly with a resume command.
   watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
@@ -582,7 +583,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage", "paths"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
-  inbox: ["wait", "timeout"],
+  inbox: ["wait", "timeout", "mine"],
+  status: ["mine"],
   watch: ["stop", "name", "follow", "since", "tickets", "kinds", "mine", "for"],
   coordinator: ["from"],
   stop: ["merged-pr", "claim-key"],
@@ -738,11 +740,13 @@ async function status(io: Io, args: Args): Promise<number> {
   const { linearApiKey, githubToken } = credentials;
   await recordPresence(io, config, credentials);
   if (!linearApiKey) throw missingKey(LINEAR_KEY);
+  if (args.options.mine) requireSignIn(credentials);
   const live = statusLive(io, config, credentials);
   const report = await loadStatus(config, {
     linearApiKey,
     githubToken,
     ...(live ?? {}),
+    ...(args.options.mine ? { coordinatorName: await coordinatorName(io, config.project.slug) } : {}),
     ...httpOptions(io),
     ...(io.now ? { now: io.now } : {}),
   });
@@ -816,8 +820,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     const allowed = COMMAND_OPTIONS[args.command] ?? [];
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
-    if (args.all && args.command !== "status" && args.command !== "watch")
+    if (args.all && args.command !== "status" && args.command !== "watch" && args.command !== "inbox")
       throw new UsageError(`--all does not apply to ${args.command}`);
+    if (args.all && args.options.mine) throw new UsageError("choose --mine or --all");
+    if (args.all) args.options.all = "true";
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
     if (args.command === "secrets" || args.command === "run") {
