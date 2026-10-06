@@ -21,6 +21,7 @@ import {
   parseStatusLine,
   readRest,
 } from "./linear.ts";
+import { extractInShort, lintTicket, lintWarning } from "./lint.ts";
 import type { Reservation } from "./live.ts";
 import { buildModel } from "./model.ts";
 import { ARMADA_PACKAGE, type NpmCheck } from "./npm.ts";
@@ -347,6 +348,12 @@ export function buildBrief(input: BuildBriefInput): Brief {
   const { config, ticket, program } = input;
   // Both reads may warn about the same failed page; say it once.
   const warnings = [...new Set([...ticket.warnings, ...program.warnings])];
+  warnings.push(
+    ...lintTicket(
+      { ...ticket, isSpec: ticket.parent?.id === config.tracker.programRoot && /^Spec\b/i.test(ticket.title) },
+      config.tracker.lint,
+    ).map((p) => lintWarning(ticket.id, p)),
+  );
   if (!input.overlap || input.overlap.incomplete)
     warnings.push(
       "Comparison incomplete: in-flight PR files could not be read from Armada; sign in and refresh the project's stored reading.",
@@ -795,11 +802,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
         id: ticket.id,
         title: ticket.title,
         url: ticket.url,
-        inShort:
-          ticket.description
-            .match(/^## In short[^\S\n]*\n([\s\S]*)/m)?.[1]
-            ?.split(/^## |^---\s*$/m)[0]
-            ?.trim() ?? "",
+        inShort: extractInShort(ticket.description, config.tracker.lint.inShort) ?? "",
       },
       parent: ticket.parent,
       selection: {
@@ -809,7 +812,16 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
         })),
         hint: profileChoiceHint(ticket.id),
       },
-      warnings: [...new Set([...ticket.warnings, ...program.warnings])],
+      warnings: [
+        ...new Set([
+          ...ticket.warnings,
+          ...program.warnings,
+          ...lintTicket(
+            { ...ticket, isSpec: ticket.parent?.id === config.tracker.programRoot && /^Spec\b/i.test(ticket.title) },
+            config.tracker.lint,
+          ).map((p) => lintWarning(ticket.id, p)),
+        ]),
+      ],
     };
   try {
     chooseProfile(config, {
