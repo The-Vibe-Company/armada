@@ -22,7 +22,8 @@ import type { ActionContext } from "../Actions";
 import { Alert } from "../page";
 import { useFleet, useNow, useShell } from "../shell/context";
 import { RelativeTime } from "../ui";
-import { type DecideKeys, type Sent, VALIDATION_COLOR, ValidationDetail, validationTitle } from "./ValidationCard";
+import type { DecideKeys, Sent } from "./Decide";
+import { VALIDATION_COLOR, ValidationDetail, validationTitle } from "./ValidationCard";
 
 const MINUTE = 60_000;
 

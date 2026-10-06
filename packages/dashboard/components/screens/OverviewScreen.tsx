@@ -32,7 +32,6 @@ import {
   parseOverviewView,
   projectSummaries,
   type Reason,
-  type SessionGroup,
   showsOwners,
   urgentCoordinator,
 } from "@/lib/coordinator-view";
@@ -45,21 +44,10 @@ import { useOverviewItems } from "../shell/use-items";
 import { RelativeTime, Steady } from "../ui";
 import { useLazy } from "../use-lazy";
 import { deployColor, deployText, HoldAlerts } from "./ShipState";
+import { GROUP_COLOR, itemColor, itemHref, StepBar } from "./session-state";
 
 // The preview pane is its own chunk (THE-892): the list does not wait for its code.
 const loadPreview = () => import("./OverviewPreview").then((m) => m.OverviewPreview);
-
-/** Each state's color: a dot, its group's header, its reason. */
-export const GROUP_COLOR: Record<SessionGroup, string> = {
-  blocked: "var(--red)",
-  you: "var(--amber)",
-  running: "var(--blue)",
-  ready: "var(--green)",
-  merged: "var(--text-3)",
-};
-
-export const itemColor = (item: Pick<OverviewItem, "group" | "reason">) =>
-  item.reason.kind === "runtime" && item.reason.state === "gone" ? "var(--text-3)" : GROUP_COLOR[item.group];
 
 const COORDINATOR_COLOR = { active: "var(--green)", idle: "var(--amber)", unknown: "var(--text-3)" } as const;
 
@@ -98,23 +86,6 @@ export function reasonText(t: Strings, r: Reason, now: number): string {
     case "working":
       return r.text ?? o.working;
   }
-}
-
-/** Where a row opens: its session's page, else (merged earlier today) its pull request. */
-export const itemHref = (i: OverviewItem) => (i.row || !i.pr ? paths.agent(i.id) : i.pr.url);
-
-/** The six steps, the done ones grey, the one at work in its state's color. */
-export function StepBar({ step, color, wide = false }: { step: number; color: string; wide?: boolean }) {
-  const { t } = useShell();
-  const steps = t.overview.steps;
-  const label = steps[Math.min(step, steps.length - 1)] ?? "";
-  return (
-    <span className={wide ? "ov-steps is-wide" : "ov-steps"} role="img" aria-label={t.overview.stepLabel(label)}>
-      {steps.map((s, k) => (
-        <span key={s} style={{ background: k < step ? "var(--step-done)" : k === step ? color : "var(--step-next)" }} />
-      ))}
-    </span>
-  );
 }
 
 export function OverviewScreen() {

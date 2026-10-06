@@ -27,7 +27,7 @@ import { EmptyState, RelativeTime, Tabs } from "../ui";
 import { RequestAction } from "./AgentActions";
 import { JobStrip } from "./JobStrip";
 import { Action, entryText } from "./OverviewPreview";
-import { itemColor } from "./OverviewScreen";
+import { itemColor } from "./session-state";
 import { useActivity } from "./use-activity";
 
 const TABS = ["summary", "files"] as const;
