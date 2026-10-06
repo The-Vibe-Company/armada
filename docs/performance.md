@@ -46,7 +46,7 @@ Lighthouse and Playwright use the Chrome installed on the machine (`CHROME_PATH`
 
 - **A route grew on purpose** (a new page, a feature that needs its code on first load): run `bun run perf bundles --update` after `bun run build`, and say why in the pull request. A new route has no baseline and fails until then.
 - **Heavy code that is not needed on first paint** loads apart instead: `useLazy` (`components/use-lazy.ts`) fetches its chunk when the browser is idle and renders it without suspending, as ⌘K and the attachment viewer do.
-- **A helper another screen needs** (a color, a bar, the decision buttons) lives in its own small module, not in the screen that first drew it: importing one function from `OverviewScreen.tsx` or `ValidationCard.tsx` ships the whole screen. A session's page went over its budget that way (THE-1177): with `OverviewRow.tsx` and `Decide.tsx` split out, it went from 198.7 KB to 187.2 KB.
+- **A helper another screen needs** (a color, a bar, the decision buttons) lives in its own small module, not in the screen that first drew it: importing one function from `OverviewScreen.tsx` or `ValidationCard.tsx` ships the whole screen. A session's page went over its budget that way (THE-1177): with `OverviewRow.tsx` and `ValidationDecide.tsx` split out, it went from 198.7 KB to 187.2 KB.
 - **A list that can pass 100 rows** gets `long` on its `Section` (or `CardGrid`): rows off screen skip style, layout and paint (`content-visibility`), and every row stays in the page for j/k, find and screen readers.
 - **A new main page** goes in `lighthouse.pages`.
 

@@ -763,7 +763,8 @@ export function fakeArmada(
       launches.set(t, {
         project: String(body.project),
         ticket: String(body.ticket),
-        coordinator: typeof body.coordinator === "string" ? body.coordinator : "default",
+        coordinator:
+          body.coordinator === null ? null : typeof body.coordinator === "string" ? body.coordinator : "default",
         used: false,
       });
       return Response.json({

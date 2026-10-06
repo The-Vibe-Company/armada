@@ -45,6 +45,8 @@ Herdr's `.result.agent` carries `workspace_id`, `pane_id`, `name` and `agent_sta
 
 Terminal reads print text directly, not JSON. Do not paste credentials or complete transcripts into tickets. A coordinator restart changes no worker handle: read `armada status` and continue from those claims.
 
+Replace a stopped worker with `armada relaunch ABC-12 --reason "<why>"`. A clean local worktree defaults to a new pane in the same worktree; `--in-place` also keeps uncommitted files. `--fresh` preserves the old checkout's branch, commits and dirty files under an `armada-retained/` local branch before creating a new checkout from the pushed ticket branch. Relaunch closes only the old pane after launching the replacement; preserved files remain available. A pane on another machine is refused unless `--fresh --keep-old` is explicit: stop that old pane on its machine. Follow the printed ownership state and recovery command on a partial failure.
+
 ## Stop and archive
 
 ```sh

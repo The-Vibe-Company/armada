@@ -1,9 +1,7 @@
 "use client";
 
-// The owner's buttons on one validation (THE-885): shared by the Validations
-// page (with a note and the keys, THE-1113), the overview's pane and a
-// session's page. Apart from ValidationCard so those two do not ship its
-// gallery, viewer and pull request strip on first load (THE-1177).
+// Shared validation decisions for the owner pages and session previews.
+// Keep this entry independent of the detail card's gallery and Next Image.
 import type { OwnerValidation } from "@armada/core/read";
 import {
   type FormEvent,

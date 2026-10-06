@@ -4,7 +4,7 @@
 // row selects, its state and what to do about it first. A worker's question
 // is answered and a plan approved or amended as on its page (DecisionCard:
 // a request in the coordinator's inbox); a merge to approve or an escalated
-// question is decided as on the Validations page (Decide), a piece
+// question is decided as on the Validations page (ValidationCard), a piece
 // of work to check opens there, with its images; a red CI or a conflict
 // opens its pull request. Then its step, its pull request, CI, files and
 // last report, its last reports, and its page. Loaded apart from the list.
@@ -18,11 +18,11 @@ import type { Strings } from "@/lib/i18n";
 import { decisionCards, handBackPr, sentRequest } from "@/lib/overview-view";
 import { type ActionContext, splitQuestion } from "../Actions";
 import { useFleet, useNow, useShell } from "../shell/context";
-import { Decide } from "./Decide";
 import { DecisionActions } from "./DecisionCard";
 import { JobStrip } from "./JobStrip";
 import { itemColor, itemHref, StepBar } from "./OverviewRow";
 import { useActivity } from "./use-activity";
+import { Decide } from "./ValidationDecide";
 
 /** How many reports the pane lists. */
 const REPORTS = 3;

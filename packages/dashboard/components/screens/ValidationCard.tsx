@@ -7,10 +7,9 @@
 // arrow keys between them, THE-916), then the links; a note for the
 // coordinator and the owner's buttons, or the decision once taken. Each
 // button is a request: the decision lands in the coordinator's inbox, which
-// merges or relays it. The buttons are `Decide` (Decide.tsx), shared with
-// the overview's pane and a session's page, without the note. On the
-// Validations page they take the keys too (THE-1113, lib/validation-keys.ts):
-// A, C and 1–6.
+// merges or relays it. `Decide` is shared with the overview's pane and a
+// session's page, without the note. On the Validations page it takes the
+// keys too (THE-1113, lib/validation-keys.ts): A, C and 1–6.
 import type { Attachment, CiState, OwnerValidation } from "@armada/core/read";
 import Image from "next/image";
 import Link from "next/link";
@@ -18,7 +17,7 @@ import { type Ref, useEffect, useRef, useState } from "react";
 import { paths } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
 import type { ActionContext } from "../Actions";
-import { Decide, type DecideKeys, type Sent } from "./Decide";
+import { Decide, type DecideKeys, type Sent } from "./ValidationDecide";
 
 /** A kind's color: a question is blue, a merge or work to check amber. */
 export const VALIDATION_COLOR: Record<OwnerValidation["kind"], string> = {
