@@ -37,7 +37,7 @@ import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
 import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
-import { updateSkills } from "./skills.ts";
+import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, stopWatch, watch } from "./watch.ts";
@@ -91,6 +91,10 @@ const COMMAND_HELP: Record<string, string> = {
                     .claude/settings.json (yes without a terminal); --no-stop-hook skips it
                     Reuses armada/setup across versions and closes legacy armada/init-* PRs.
                     --merge waits for the normal merge checks and merges only setup paths
+`,
+  skill: `  skill <name> [<file>]
+                    Print instructions from this Armada version (default SKILL.md).
+                    No checkout, sign-in or network needed; linked files use their relative path
 `,
   skills: `  skills update     Update all bundled skills, links and skills-lock.json in the current
                     checkout, and ignore shipping artifacts. No sign-in required; review
@@ -217,6 +221,7 @@ const COMMAND_HELP: Record<string, string> = {
                     Check the ticket, choose its profile and launch one worker with its
                     one-time sign-in brief. Runtime defaults to the chosen profile;
                     Claude Code profiles point to armada brief and the Agent tool.
+                    --pre-approve --reason "<why>" adds the plan-approved label before launch
                     --notes adds coordinator context from a file or stdin (at most 16 KB).
                     Pending launches and active workers are refused before a token exists.
                     Conductor uses explicit profile settings and receives the brief through stdin;
@@ -227,8 +232,10 @@ const COMMAND_HELP: Record<string, string> = {
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
 `,
-  brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
+  brief: `  brief <ticket> [--pre-approve --reason <why>] [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
         [--validation none | --validation <n,...> --validation-reason <why>]
+                    --pre-approve requires --reason and adds the configured plan-approved label
+                    only with --prompt; previews say what would change. needs-approval labels refuse it
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
@@ -433,6 +440,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "pre-approve",
   "follow",
   "mine",
   "apply",
@@ -484,8 +492,18 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "keep-open",
     "through-hold",
   ],
-  brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
+  brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  launch: [
+    "pre-approve",
+    "runtime",
+    "harness",
+    "profile",
+    "reason",
+    "validation",
+    "validation-reason",
+    "dry-run",
+    "notes",
+  ],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
@@ -802,6 +820,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       noExtra(args.rest);
       return await doctor(io, args.json, version);
     }
+    if (args.command === "skill") return printSkill(io, args.rest);
     if (args.command === "skills") {
       if (args.rest.length !== 1 || args.rest[0] !== "update") throw new UsageError("skills needs a command: update");
       return await updateSkills(io, version, args.json);
