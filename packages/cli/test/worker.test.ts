@@ -231,7 +231,7 @@ describe("armada claim, report and release", () => {
     w.reset();
     expect(await run(["report", "ready-to-merge", "--sha", HEAD.slice(0, 7), "--pr", "9"], w.io)).toBe(1);
     expect(w.err()).toBe(
-      'armada: DEMO-7: hand-back refused:\n  - --sha must be the full 40-character commit SHA, got "0123456" (7 characters)\n  - check "test" is failure\nNext: fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done\n',
+      'armada: DEMO-7: hand-back refused:\n  - --sha must be the full 40-character commit SHA, got "0123456" (7 characters)\n  - check "test" is failure\nNext: armada ci why 9; fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done\n',
     );
   });
 
@@ -541,4 +541,31 @@ describe("armada ask, inbox and answer", () => {
     expect(await run(["answer", "3"], w.io)).toBe(2);
     expect(w.err()).toContain("answer needs the text");
   });
+});
+
+test("report accepts repeated --paths, records declarations in Linear and prints overlap warnings", async () => {
+  const w = worker(SIGNED_IN);
+  w.linear.add("DEMO-7");
+  await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws/self"], w.io);
+  await w.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-8",
+    runtime: "conductor",
+    handle: "ws/other",
+    branch: null,
+    at: NOW,
+  });
+  await w.store.saveTicketPaths("widgets", "DEMO-8", ["src/**"], NOW);
+  w.reset();
+  expect(
+    await run(
+      ["report", "awaiting-approval", "--plan", "Change core", "--paths", "src/a.ts,docs/**", "--paths=skills/**"],
+      w.io,
+    ),
+  ).toBe(0);
+  expect(w.out()).toContain("Overlaps DEMO-8: src/a.ts");
+  expect(w.out()).toContain("Comparison incomplete");
+  expect(await w.store.ticketPaths("widgets")).toMatchObject({ "DEMO-7": ["src/a.ts", "docs/**", "skills/**"] });
+  expect(w.linear.bodies.at(-1)).toContain("Paths: src/a.ts, docs/**, skills/**");
+  expect(await run(["report", "implementing", "--message", "bad", "--paths", "../bad"], w.io)).toBe(1);
 });

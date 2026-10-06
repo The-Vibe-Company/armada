@@ -3,7 +3,7 @@
 // runtime guide skill does, with what this returns. No secret value is ever
 // part of a brief: environment variables are named, never read into it. The
 // one exception is a one-time launch token (THE-841), made by Armada for a
-// signed-in coordinator: the worker's first command exchanges it for a
+// signed-in coordinator: the worker's first authenticated command exchanges it for a
 // session limited to its ticket, so its runtime needs no key at all. It works
 // once, within the hour, which makes a copy left in a transcript useless.
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
@@ -21,8 +21,10 @@ import {
   parseStatusLine,
   readRest,
 } from "./linear.ts";
+import type { Reservation } from "./live.ts";
 import { buildModel } from "./model.ts";
 import { ARMADA_PACKAGE, type NpmCheck } from "./npm.ts";
+import type { OverlapReading } from "./overlap.ts";
 import { planRule } from "./phases.ts";
 import {
   checkRequestedProfile,
@@ -70,6 +72,9 @@ export interface BriefBlocker {
 }
 
 export interface BriefWorker {
+  files: string[];
+  filesIncomplete: boolean;
+  planPaths: string[];
   id: string;
   title: string;
   url: string;
@@ -99,6 +104,7 @@ export interface BriefLaunch {
 }
 
 export interface Brief {
+  sharedResources: { declared: ArmadaConfig["reservations"]; holders: Reservation[]; warning: string | null };
   launchHint?: string;
   ticket: { id: string; title: string; url: string; branch: string | null; status: string; description: string };
   parent: { id: string; title: string; url: string } | null;
@@ -120,7 +126,7 @@ export interface Brief {
   claimCommand: string;
   /** Actual local runtime handle, supplied after herdr creates the worktree. */
   handle?: string;
-  /** `armada login --launch-token <token>`, the worker's first command, and when the token expires; null without one. */
+  /** `armada login --launch-token <token>`, the worker's first authenticated command, and when the token expires; null without one. */
   launch: { command: string; expiresAt: string } | null;
   /** Why there is no launch token, when there is none. */
   noLaunch: string | null;
@@ -291,6 +297,7 @@ const VARIABLES: { name: string; required: boolean; purpose: string }[] = [
 ];
 
 export interface BuildBriefInput {
+  overlap?: OverlapReading;
   config: ArmadaConfig;
   ticket: BriefTicket;
   /** The program as `armada status` reads it, for the workers in flight. */
@@ -311,6 +318,8 @@ export interface BuildBriefInput {
   launch?: BriefLaunch | null;
   /** Why there is none: the terminal is not signed in, or Armada refused. */
   noLaunch?: string | null;
+  /** Why the coordinator added the pre-approved label for this launch. */
+  preApprovedReason?: string | null;
   /** The `[brief] extra` file as read from the repository; `text` is null when it could not be read. */
   conventions?: { path: string; text: string | null } | null;
   /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
@@ -318,6 +327,8 @@ export interface BuildBriefInput {
   notes?: string | null;
   now: Date;
   herdr?: { choice: HerdrProfileChoice; handle: string };
+  reservations?: Reservation[];
+  reservationsWarning?: string | null;
 }
 
 /** Thrown for a profile that does not exist or cannot be chosen (a usage mistake). */
@@ -336,6 +347,10 @@ export function buildBrief(input: BuildBriefInput): Brief {
   const { config, ticket, program } = input;
   // Both reads may warn about the same failed page; say it once.
   const warnings = [...new Set([...ticket.warnings, ...program.warnings])];
+  if (!input.overlap || input.overlap.incomplete)
+    warnings.push(
+      "Comparison incomplete: in-flight PR files could not be read from Armada; sign in and refresh the project's stored reading.",
+    );
 
   let choice: ProfileChoice | null;
   try {
@@ -379,7 +394,28 @@ export function buildBrief(input: BuildBriefInput): Brief {
       phase: l.phase,
       branch: l.claim?.branch ?? null,
       pr: l.pr?.url ?? null,
+      files: input.overlap?.workers.find((w) => w.ticket === l.issue.id)?.files ?? [],
+      filesIncomplete:
+        input.overlap?.incomplete !== false ||
+        input.overlap.workers.find((w) => w.ticket === l.issue.id)?.filesComplete !== true,
+      planPaths: input.overlap?.workers.find((w) => w.ticket === l.issue.id)?.plan ?? [],
     }));
+
+  for (const worker of input.overlap?.workers ?? []) {
+    if (worker.ticket === ticket.id || parallel.some((w) => w.id === worker.ticket)) continue;
+    const issue = program.issues.find((i) => i.id === worker.ticket);
+    parallel.push({
+      id: worker.ticket,
+      title: issue?.title ?? "Live worker",
+      url: issue?.url ?? "",
+      phase: issue?.agentPhase ?? "planning",
+      branch: null,
+      pr: worker.pr === null ? null : `https://github.com/${config.github.repository}/pull/${worker.pr}`,
+      files: worker.files ?? [],
+      filesIncomplete: input.overlap?.incomplete !== false || !worker.filesComplete,
+      planPaths: worker.plan,
+    });
+  }
 
   // Not `npx <package>`: inside the Armada repository itself, npx resolves the
   // workspace package of the same name, which has no built command.
@@ -436,6 +472,11 @@ export function buildBrief(input: BuildBriefInput): Brief {
   else if (extra && !extra.text?.trim()) warnings.push(`[brief] extra names ${extra.path}, which is empty`);
 
   const brief: Omit<Brief, "prompt"> = {
+    sharedResources: {
+      declared: config.reservations,
+      holders: input.reservations ?? [],
+      warning: input.reservationsWarning ?? null,
+    },
     ticket: {
       id: ticket.id,
       title: ticket.title,
@@ -467,7 +508,12 @@ export function buildBrief(input: BuildBriefInput): Brief {
     blockers: ticket.blockers.map(({ notes, ...b }) => ({ ...b, handBack: handBackNote(notes) })),
     notes: ticket.notes.slice(0, MAX_NOTES),
     parallel,
-    plans: planRule(config, ticket.labels),
+    plans: (() => {
+      const plans = planRule(config, ticket.labels);
+      return plans.rule === "pre-approved" && input.preApprovedReason
+        ? { ...plans, why: `${plans.why} (added at launch: ${input.preApprovedReason})` }
+        : plans;
+    })(),
     coordinatorNotes: input.notes?.trim() || null,
     validation: input.validation ?? null,
     conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
@@ -522,7 +568,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   const out: string[] = [
     `# ${t.id} — ${t.title}`,
     "",
-    `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. Follow the \`armada-worker\` skill (\`${WORKER_SKILL_PATH}\`) and the repository's \`AGENTS.md\`. Never merge.`,
+    `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. After installing Armada, read your skill with \`armada skill armada-worker\` and follow its output and the repository's \`AGENTS.md\`. Never merge.`,
     "",
     ...(subagent
       ? [
@@ -536,12 +582,13 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     ...(subagent
       ? [
-          "Run install, login and claim first. Immediately after claim, run the final heartbeat line as a separate Bash tool call with `run_in_background: true`; keep that Bash owned by this subagent.",
+          "Run install, read the worker skill, login and claim first. Immediately after claim, run the final heartbeat line as a separate Bash tool call with `run_in_background: true`; keep that Bash owned by this subagent.",
           "",
         ]
       : []),
     "```sh",
     b.install,
+    "armada skill armada-worker",
     ...(b.launch ? [b.launch.command] : []),
     b.claimCommand,
     `armada heartbeat --every 5m --ticket ${t.id} --handle ${b.handle ? shellWord(b.handle) : subagent ? subagentName(t.id) : CONDUCTOR_HANDLE} --parent "$PPID"${subagent ? "" : " --background"}`,
@@ -555,7 +602,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     ...(b.launch
       ? [
           "",
-          `\`armada login --launch-token\` signs this workspace in to Armada as the worker of ${t.id}, with a one-time token valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC. Run it first, once.`,
+          `\`armada login --launch-token\` signs this workspace in to Armada as the worker of ${t.id}, with a one-time token valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC. Run it once before claim.`,
         ]
       : []),
     "",
@@ -637,11 +684,22 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     );
   out.push("## Workers in flight", "");
   if (b.parallel.length) {
-    out.push("Stay out of their areas. If you must change the same files, say so in a report before you do.", "");
-    for (const w of b.parallel)
+    out.push("Before you change one of these files, say so in a report and ask the coordinator.", "");
+    for (const w of b.parallel) {
       out.push(
         `- ${w.id} — ${w.title} (${w.phase})${w.branch ? `, branch \`${w.branch}\`` : ""}${w.pr ? `, ${w.pr}` : ""}`,
       );
+      if (w.files.length)
+        out.push(
+          `  PR files: ${w.files
+            .slice(0, 15)
+            .map((f) => `\`${f}\``)
+            .join(", ")}${w.files.length > 15 ? `, +${w.files.length - 15} more` : ""}`,
+        );
+      if (w.planPaths.length) out.push(`  Plan paths: ${w.planPaths.map((f) => `\`${f}\``).join(", ")}`);
+      if (!w.files.length && !w.planPaths.length && !w.filesIncomplete) out.push("  no files yet");
+      if (w.filesIncomplete) out.push("  Comparison incomplete: PR files are unavailable or not all files were read.");
+    }
   } else out.push("None.");
   out.push(
     "",
@@ -654,6 +712,25 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
         : `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
   );
   // The project's own text, as is: it speaks to every worker of the project.
+  if (b.sharedResources.declared.length || b.sharedResources.holders.length || b.sharedResources.warning) {
+    out.push(
+      "",
+      "## Shared resources",
+      "",
+      "Reserve shared numbers and names with `armada reserve`; never guess. `armada reserve --list` shows current holders.",
+      "",
+    );
+    for (const r of b.sharedResources.declared)
+      out.push(`- ${r.key}: ${r.what}${r.numbered ? " (numbered; use --next --floor <last used number>)" : ""}`);
+    for (const r of b.sharedResources.holders)
+      out.push(
+        `- ${r.key}${r.value ? ` = ${r.value}` : " (exclusive)"}: ${r.ticket}${r.merged ? " (merged; used permanently)" : ""}${r.note ? ` — ${r.note}` : ""}`,
+      );
+    if (b.sharedResources.warning)
+      out.push(
+        `Current holders unavailable: ${b.sharedResources.warning}. Ask the coordinator before choosing a value.`,
+      );
+  }
   if (b.conventions) out.push("", "## Project conventions", "", b.conventions.text.trim());
   return `${out.join("\n")}\n`;
 }
@@ -661,7 +738,11 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
 // ------------------------------------------------------------------ load
 
 export interface LoadBriefOptions extends HttpRetryOptions {
+  reservations?: () => Promise<Reservation[]>;
+  overlap?: (input: { ticket: string; paths: string[] }) => Promise<OverlapReading>;
   prompt?: boolean;
+  /** Checks/applies explicit plan pre-approval after policy judgments, before token minting. Previews return no reason. */
+  preApprove?: (ticket: BriefTicket) => Promise<string | null>;
   linearApiKey: string;
   ticket: string;
   profile: string | null;
@@ -751,14 +832,28 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     if (err instanceof ValidationChoiceError) throw new BriefError(`${err.message}`, err.next);
     throw err;
   }
+  const preApprovedReason = await opts.preApprove?.(ticket);
+  let overlap: OverlapReading | undefined;
+  try {
+    overlap = await opts.overlap?.({ ticket: ticket.id, paths: [] });
+  } catch {
+    /* Live detail stays optional; Linear still supplies the brief. */
+  }
   const launch = await launchForBrief(ticket, opts.prompt === true ? opts.launch : undefined);
   const made = launch && "token" in launch ? launch : null;
   const missed = launch && "reason" in launch ? launch : null;
   if (missed?.warn) ticket.warnings.push(`no launch token: ${missed.reason}`);
+  const { reservations, reservationsWarning } = await reservationsForBrief(
+    opts.reservations,
+    config.reservations.length > 0,
+  );
   const brief = buildBrief({
+    reservations,
+    reservationsWarning,
     config,
     ticket,
     program,
+    overlap,
     profile: opts.profile,
     reason: opts.reason ?? null,
     version: opts.version,
@@ -767,6 +862,7 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
     ...(opts.stored ? { stored: opts.stored } : {}),
     launch: made,
     noLaunch: missed?.reason ?? null,
+    preApprovedReason,
     conventions: opts.conventions ?? null,
     validation,
     now: now(),
@@ -776,4 +872,17 @@ export async function loadBrief(config: ArmadaConfig, opts: LoadBriefOptions): P
 
 async function launchForBrief(ticket: BriefTicket, launch: LoadBriefOptions["launch"]) {
   return ticket.statusType !== "completed" && ticket.statusType !== "canceled" && launch ? launch(ticket.id) : null;
+}
+
+/** Every runtime's brief reads the holders opportunistically, with an explicit unavailable warning. */
+export async function reservationsForBrief(
+  read?: () => Promise<Reservation[]>,
+  declared = false,
+): Promise<{ reservations: Reservation[]; reservationsWarning: string | null }> {
+  if (!read) return { reservations: [], reservationsWarning: declared ? "sign in with armada login" : null };
+  try {
+    return { reservations: await read(), reservationsWarning: null };
+  } catch {
+    return { reservations: [], reservationsWarning: "Armada could not read reservations" };
+  }
 }

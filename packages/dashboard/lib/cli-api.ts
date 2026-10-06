@@ -80,7 +80,7 @@ export interface CliAccounts {
   settings: AuthSettings;
 }
 
-import { ownerPulse, safeWebhookFetch } from "./owner-push";
+import { ownerPulse, safeWebhookFetch, sendOwnerDigest } from "./owner-push";
 
 export interface CliApiDeps {
   ownerFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -710,7 +710,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
     );
   let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
-  if ((op === "request" || op === "inbox") && caller.kind === "organization") {
+  if (((op === "request" || op === "inbox") && caller.kind === "organization") || op === "overlap" || op === "report") {
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
@@ -722,6 +722,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
       handBackSnapshot = {
         repository: project.repository,
+        config: snapshot.config,
         issues: snapshot.sources.program.issues,
         prs: snapshot.sources.forge?.prs ?? [],
         flight: { ...snapshot.sources, after: snapshot.startedAt.toISOString() },
@@ -737,6 +738,23 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       snapshot: handBackSnapshot,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
+      sendDigest: async (slug, digest, language, at) => {
+        const vault = deps.vault?.();
+        if (vault?.kind !== "on") return false;
+        return sendOwnerDigest(
+          a.client,
+          {
+            organization: organization.id,
+            now: at,
+            vault: vault.key,
+            fetch: deps.ownerFetch ?? safeWebhookFetch,
+            baseUrl: a.settings.baseUrl,
+          },
+          slug,
+          digest,
+          language,
+        );
+      },
     },
   );
   // Include 304 inbox polls: time passing can reveal a stopped coordinator.

@@ -3,7 +3,15 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { machinePaths, NPM_REGISTRY_URL, readWatchState, updateWatchState } from "@armada/core";
-import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
+import {
+  ARMADA_URL,
+  DEMO_TOML,
+  FakeLinear,
+  type FakeVault,
+  fakeArmada,
+  NOW,
+  recordedFetch,
+} from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
 
@@ -198,11 +206,12 @@ describe("armada brief", () => {
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     expect(prompt).toContain(
-      `\nnpm install -g @the-vibe-company/armada@${version}\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page --profile opus\narmada heartbeat --every 5m --ticket DEMO-13 --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --parent "$PPID" --background\n`,
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada skill armada-worker\narmada claim DEMO-13 --runtime conductor --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --branch feature/demo-13-show-a-sign-in-page --profile opus\narmada heartbeat --every 5m --ticket DEMO-13 --handle "$CONDUCTOR_WORKSPACE_ID/$CONDUCTOR_SESSION_ID" --parent "$PPID" --background\n`,
     );
     expect(prompt).toContain("git branch -m feature/demo-13-show-a-sign-in-page");
+    expect(prompt).toContain("After installing Armada, read your skill with `armada skill armada-worker`");
     expect(prompt).toContain("## Ticket\n\n> ## In short\n>\n> A page with an email field.\n");
-    expect(text).not.toContain("Warnings:");
+    expect(text).toContain("Comparison incomplete");
     // The hand-back is the ready-to-merge comment, not the newer "Merged, thanks."
     expect(prompt).not.toContain("Merged, thanks.");
     expect(prompt).toContain(
@@ -228,7 +237,7 @@ describe("armada brief", () => {
       'Plans are pre-approved for DEMO-13 (armada.toml [policy] plans = "pre-approved"): post your plan with `armada report implementing --plan-file -` and go on.\n',
     );
     expect(c.out()).toEndWith(`\n## Project conventions\n\n${conventions}`);
-    expect(c.err()).toBe("");
+    expect(c.err()).toContain("Comparison incomplete");
 
     // A missing file is a warning, and the brief goes out without the section.
     const m = briefIo(SECRETS, BRIEF_RESPONSE, {}, { "/work/widgets/armada.toml": toml });
@@ -350,6 +359,9 @@ describe("armada brief", () => {
     expect(prompt).toContain(
       "\narmada claim DEMO-13 --runtime claude-code --handle demo-13 --branch feature/demo-13-show-a-sign-in-page --profile local --reason 'short ticket'\narmada heartbeat --every 5m --ticket DEMO-13 --handle demo-13 --parent \"$PPID\"\n",
     );
+    expect(prompt).toContain(
+      `\nnpm install -g @the-vibe-company/armada@${version}\narmada skill armada-worker\narmada claim DEMO-13`,
+    );
     expect(prompt).toContain("run_in_background: true");
     expect(prompt).toContain("Your worktree starts on a branch Claude Code named");
     // The coordinator's ARMADA_TICKET reaches the subagent too: every command names the ticket.
@@ -377,12 +389,12 @@ describe("armada brief", () => {
     blocker.state = { name: "Canceled", type: "canceled" };
     const canceled = briefIo(SECRETS, response);
     expect(await run(["brief", "DEMO-13"], canceled.io)).toBe(0);
-    expect(canceled.out()).not.toContain("Warnings:");
+    expect(canceled.out()).not.toContain("is blocked by");
 
     blocker.state = { name: "In Progress", type: "started" };
     const open = briefIo(SECRETS, response);
     expect(await run(["brief", "DEMO-13"], open.io)).toBe(0);
-    expect(open.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-10 (In Progress)\n");
+    expect(open.out()).toContain("DEMO-13 is blocked by DEMO-10 (In Progress)");
   });
 
   test("relations and comments longer than one page are read to the end", async () => {
@@ -418,7 +430,7 @@ describe("armada brief", () => {
       ["MoreBriefComments", { id: "DEMO-12", after: "k1" }],
     ]);
     expect(b.out()).toContain("The last email lives in `recent.ts`.");
-    expect(b.out()).toContain("Warnings:\n  - DEMO-13 is blocked by DEMO-12 (In Progress)\n");
+    expect(b.out()).toContain("DEMO-13 is blocked by DEMO-12 (In Progress)");
   });
 
   test("a key only in the credentials file is marked to load into the shell, and never shown", async () => {
@@ -489,6 +501,56 @@ describe("armada brief with a launch token", () => {
       url.startsWith(ARMADA_URL) ? armada.fetch(url, init) : (linear?.(url, init) ?? fetch(url));
     return { ...b, armada };
   }
+
+  test("pre-approval writes the configured label only for a prompt and names the reason", async () => {
+    for (const flags of [[], ["--json"], ["--prompt"]]) {
+      const b = await signedIn();
+      const linear = new FakeLinear();
+      linear.add("DEMO-13");
+      b.io.linearWriter = () => linear;
+      expect(await run(["brief", "DEMO-13", "--pre-approve", "--reason", "small follow-up", ...flags], b.io)).toBe(0);
+      if (flags.includes("--prompt")) {
+        expect(linear.get("DEMO-13").labels.map((l) => l.name)).toContain("plan-approved");
+        expect(b.out()).toContain(
+          "Plans are pre-approved for DEMO-13 (the ticket's label plan-approved (added at launch: small follow-up))",
+        );
+        expect(b.out()).toContain("armada report implementing --plan-file -");
+        expect(b.armada.launches.size).toBe(1);
+      } else {
+        expect(linear.writes).toEqual([]);
+        expect(b.armada.launches.size).toBe(0);
+        expect(b.out()).toContain("Would add plan-approved to DEMO-13 at launch: small follow-up");
+        if (!flags.length) expect(b.out()).toContain("--pre-approve --reason 'small follow-up' --prompt");
+      }
+    }
+  });
+
+  test("pre-approval refuses needs-approval, missing labels and missing reasons without writes or a token", async () => {
+    for (const failure of ["approval", "missing-label", "missing-reason", "blank-reason", "truncated"]) {
+      const b = await signedIn();
+      const linear = new FakeLinear();
+      linear.add("DEMO-13", {
+        labels: failure === "approval" ? [{ id: "needs", name: "needs-plan-approval", group: null }] : [],
+        labelsTruncated: failure === "truncated",
+      });
+      if (failure === "missing-label") linear.labelByName = async () => null;
+      b.io.linearWriter = () => linear;
+      const reason =
+        failure === "missing-reason" ? [] : ["--reason", failure === "blank-reason" ? " " : "small follow-up"];
+      expect(await run(["brief", "DEMO-13", "--prompt", "--pre-approve", ...reason], b.io)).not.toBe(0);
+      expect(linear.writes).toEqual([]);
+      expect(b.armada.launches.size).toBe(0);
+      expect(b.err()).toContain(
+        failure === "approval"
+          ? "remove needs-plan-approval first"
+          : failure === "missing-label"
+            ? "armada doctor"
+            : failure === "truncated"
+              ? "labels"
+              : "--reason",
+      );
+    }
+  });
 
   test("an undecided or invalid semantic brief never mints a token, even when signed in", async () => {
     const toml = TOML.replace("[conductor.profiles.codex]", '[conductor.profiles.codex]\nwhen = "back end: CLI"');
@@ -596,6 +658,71 @@ describe("armada brief with a launch token", () => {
     expect(plain.out()).toContain("Launch:      a one-time token is made when you print the prompt (--prompt)\n");
     expect(plain.out()).not.toContain("--launch-token");
   });
+});
+
+test("briefs describe declared shared keys and show the project's current holders", async () => {
+  const toml = `${TOML}\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n`;
+  const b = briefIo(
+    { ...SECRETS, ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: "armada_key_CANARY_reservations" },
+    BRIEF_RESPONSE,
+    {},
+    { "/work/widgets/armada.toml": toml },
+  );
+  const api = fakeArmada({ keys: { armada_key_CANARY_reservations: "reservations" } });
+  await api.store.reserve({
+    project: "widgets",
+    ticket: "DEMO-11",
+    key: "db-migration",
+    next: true,
+    floor: 22,
+    at: NOW,
+  });
+  const rest = b.io.fetch;
+  if (!rest) throw new Error("missing fetch fixture");
+  b.io.fetch = (url, init) => (url.startsWith(ARMADA_URL) ? api.fetch(url, init) : rest(url, init));
+  expect(await run(["brief", "DEMO-13", "--json"], b.io)).toBe(0);
+  const brief = JSON.parse(b.out());
+  expect(brief.prompt).toContain("## Shared resources");
+  expect(brief.prompt).toContain("db-migration: the next schema version");
+  expect(brief.prompt).toContain("db-migration = 23: DEMO-11");
+  expect(brief.sharedResources.holders[0].ticket).toBe("DEMO-11");
+  const offline = briefIo(SECRETS, BRIEF_RESPONSE, {}, { "/work/widgets/armada.toml": toml });
+  expect(await run(["brief", "DEMO-13", "--prompt"], offline.io)).toBe(0);
+  expect(offline.out()).toContain("Current holders unavailable: sign in with armada login");
+});
+
+test("a brief uses Armada's stored file inventory and declared paths, truncating PR files at 15", async () => {
+  const { loadBrief, parseConfig } = await import("@armada/core");
+  const b = briefIo();
+  const files = Array.from({ length: 18 }, (_, i) => `src/file-${i}.ts`);
+  const brief = await loadBrief(parseConfig(TOML), {
+    ticket: "DEMO-13",
+    linearApiKey: "synthetic",
+    profile: "opus",
+    version,
+    env: {},
+    fetch: b.io.fetch,
+    now: () => NOW,
+    overlap: async (input) => {
+      expect(input).toEqual({ ticket: "DEMO-13", paths: [] });
+      return {
+        incomplete: false,
+        overlaps: [],
+        workers: [
+          { ticket: "DEMO-18", pr: 9, files, filesComplete: false, plan: ["skills/**"] },
+          { ticket: "DEMO-16", pr: null, files: [], filesComplete: true, plan: [] },
+          { ticket: "DEMO-11", pr: 7, files: ["src/account.ts"], filesComplete: true, plan: ["src/**"] },
+        ],
+      };
+    },
+  });
+  if (!("prompt" in brief)) throw new Error("no brief");
+  expect(brief.prompt).toContain("`src/file-14.ts`, +3 more");
+  expect(brief.prompt).not.toContain("`src/file-15.ts`");
+  expect(brief.prompt).toContain("Plan paths: `skills/**`");
+  expect(brief.prompt).toContain("Comparison incomplete");
+  expect(brief.prompt).toContain("no files yet");
+  expect(brief.prompt).toContain("Before you change one of these files, say so in a report and ask the coordinator.");
 });
 
 test("the initial brief ticket read retries temporary failures and preserves nonempty output", async () => {
