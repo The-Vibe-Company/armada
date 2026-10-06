@@ -19,6 +19,7 @@ import {
   buildStatus,
   CONFIG_DEFAULTS,
   type CoordinatorPresence,
+  type DeployRecord,
   type FeedCursor,
   type FeedEntry,
   type FleetInsights,
@@ -31,6 +32,7 @@ import {
   type Job,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
+  type MergeHold,
   type OwnerValidation,
   type PendingLaunch,
   type ProjectConfigReading,
@@ -298,6 +300,10 @@ interface LiveProject {
   /** The open long jobs, and those of the tickets in flight ended lately. */
   jobs: Job[];
   inbox: InboxItem[];
+  /** The open merge pauses (THE-1094). */
+  holds: MergeHold[];
+  /** The last observation of each deploy target (THE-1101). */
+  deploys: DeployRecord[];
   coordinatorSeenAt: string | null;
   /** The CLI version the coordinator ran at its last inbox read; null when unknown. */
   coordinatorCliVersion: string | null;
@@ -349,22 +355,36 @@ async function readLive(
   limit = VALIDATION_LIMITS.images,
   snapshot?: Snapshot,
 ): Promise<LiveProject> {
-  const [events, history, handles, launches, jobs, inbox, coordinators, inboxReads, sessions, validations] =
-    await Promise.all([
-      Promise.all([
-        store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
-        tickets.length ? store.latestEvents(project, { since: new Date(0), tickets }) : Promise.resolve({}),
-      ]).then(([recent, held]) => ({ ...recent, ...held })),
-      store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
-      store.openRuntimeHandles(project),
-      store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
-      store.shownJobs(project, tickets, new Date(now.getTime() - ENDED_JOBS_SHOWN_MS)),
-      store.openInboxItems({ project, recipient: "coordinator" }),
-      store.coordinatorRoles(project),
-      store.inboxReads(project, now),
-      store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
-      readValidations(store, project, now, limit),
-    ]);
+  const [
+    events,
+    history,
+    handles,
+    launches,
+    jobs,
+    inbox,
+    holds,
+    deploys,
+    coordinators,
+    inboxReads,
+    sessions,
+    validations,
+  ] = await Promise.all([
+    Promise.all([
+      store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+      tickets.length ? store.latestEvents(project, { since: new Date(0), tickets }) : Promise.resolve({}),
+    ]).then(([recent, held]) => ({ ...recent, ...held })),
+    store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
+    store.openRuntimeHandles(project),
+    store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
+    store.shownJobs(project, tickets, new Date(now.getTime() - ENDED_JOBS_SHOWN_MS)),
+    store.openInboxItems({ project, recipient: "coordinator" }),
+    store.openHolds(project),
+    store.latestDeploys(project),
+    store.coordinatorRoles(project),
+    store.inboxReads(project, now),
+    store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+    readValidations(store, project, now, limit),
+  ]);
   if (
     snapshot &&
     (await reconcileHandles(
@@ -396,6 +416,8 @@ async function readLive(
     launches,
     jobs,
     inbox,
+    holds,
+    deploys,
     coordinatorSeenAt: coordinator?.seenAt ?? null,
     coordinatorCliVersion: coordinator?.cliVersion ?? null,
     coordinator,
@@ -676,6 +698,8 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
       live: l
         ? {
             inbox: l.inbox,
+            holds: l.holds,
+            deploys: l.deploys,
             coordinatorSeenAt: l.coordinatorSeenAt,
             coordinatorCliVersion: l.coordinatorCliVersion,
             coordinator: l.coordinator,
@@ -689,6 +713,7 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
           }
         : null,
       profiles: snap.config.conductor.profiles,
+      deployTargets: snap.config.deploy?.targets.map((t) => t.name) ?? null,
       history: { comments: snap.sources.program.comments, events: l?.history ?? [] },
     };
   });
