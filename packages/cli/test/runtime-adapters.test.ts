@@ -524,3 +524,36 @@ test("Claude Code refuses every adapter operation with the manual guide and exec
   expect(f.output.join("")).toContain("armada-runtime-claude-code");
   expect(f.calls).toEqual([]);
 });
+
+test.each(["provenance", "wait"])("ended archive refuses new workspace sharing during %s", async (when) => {
+  const f = await fixture();
+  await f.store.releaseRuntimeHandle(config.project.slug, "DEMO-7", NOW);
+  const h = await f.fleet.runtimeHandle("DEMO-7");
+  if (!h) throw new Error("missing ended fixture claim");
+  const ended = claimRef(h);
+  const share = async () => {
+    await f.store.saveRuntimeHandle({
+      project: config.project.slug,
+      ticket: "DEMO-8",
+      runtime: "Conductor",
+      handle: "ws-1/ses-other",
+      branch: "feature/demo-8",
+      at: f.clock.now(),
+    });
+    f.set({ state: "idle" });
+  };
+  if (when === "provenance") f.set({ state: "idle", beforeRead: share });
+  else
+    f.io.sleep = async (ms) => {
+      await f.clock.sleep(ms);
+      await share();
+    };
+  expect(
+    await codeOf(
+      guarded(f.fleet, ended, "ended", () =>
+        f.adapter.archive(ended, { reason: "merged", whenWorking: "wait", waitMs: 600_000 }),
+      ),
+    ),
+  ).toBe("busy");
+  expect(f.calls.some((call) => call.args.includes("archive") || call.args.includes("cancel"))).toBe(false);
+});
