@@ -720,6 +720,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       : subagent
         ? "You run with the coordinator's environment and keys. Never print, commit or log their values."
         : `The coordinator set ${b.environment.map((v) => `\`${v.name}\``).join(", ")} in this workspace. Never print, commit or log their values.`,
+    "Never print environment variables, process lists with their arguments (ps -ef/aux, /proc/*/environ) or credential files: your tool output is your transcript.",
   );
   // The project's own text, as is: it speaks to every worker of the project.
   if (b.sharedResources.declared.length || b.sharedResources.holders.length || b.sharedResources.warning) {

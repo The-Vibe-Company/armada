@@ -377,6 +377,10 @@ describe("armada brief", () => {
       expect(await run(["brief", "DEMO-13", ...flags], b.io)).toBe(0);
       const all = b.out() + b.err();
       for (const secret of Object.values(SECRETS)) expect(all).not.toContain(secret);
+      if (!flags.includes("--json"))
+        expect(all).toContain(
+          "Never print environment variables, process lists with their arguments (ps -ef/aux, /proc/*/environ) or credential files: your tool output is your transcript.",
+        );
       // The key still reaches Linear, only in the request header.
       expect(b.calls.every((c) => c.authorization === SECRETS.LINEAR_API_KEY)).toBe(true);
     }
