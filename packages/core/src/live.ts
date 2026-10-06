@@ -249,6 +249,7 @@ export type InboxKind =
   | "plan"
   | "request"
   | "hand-back"
+  | "linear-pending"
   | "note"
   | "decision"
   | RequestKind;
@@ -527,6 +528,8 @@ export interface FleetStore {
   putPlan(item: Item): Promise<void>;
   /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
   putHandBack(item: Item): Promise<void>;
+  /** Adds or refreshes the coordinator’s unfinished Linear work for a merged pull request. */
+  putChore(item: Item & ChoreRecord): Promise<void>;
   /** Unresolved items of a project for one recipient, optionally for one ticket, oldest first. */
   openInboxItems(q: { project: string; recipient: InboxRecipient; ticket?: string }): Promise<InboxItem[]>;
   getInboxItem(project: string, id: number): Promise<StoredInboxItem | null>;
@@ -856,6 +859,13 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
     }
   }
   return `${n} open question${n === 1 ? "" : "s"}${plans ? ` and ${plans} plan${plans === 1 ? "" : "s"}` : ""} of ${ticket} resolved.`;
+}
+
+export interface ChoreRecord {
+  ticket: string;
+  kind: "linear-pending";
+  pr: number;
+  body: string;
 }
 
 export interface MergeRecord {
@@ -1675,6 +1685,7 @@ export interface Fleet {
   /** Resolves one open item (a declined launch); false when it was already resolved. */
   resolve(r: { id: number; resolution: string }): Promise<boolean>;
   merge(m: MergeRecord): Promise<MergeRecorded>;
+  chore(c: ChoreRecord): Promise<void>;
   /** Asks the owner to validate (THE-885); `url` is the approval link on the dashboard. */
   validate(v: ValidationRecord): Promise<{ validation: Validation; url: string }>;
   /** A ticket's or a pull request's validations, newest first. */
