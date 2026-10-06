@@ -10,8 +10,10 @@ import {
   type LinearRequestOptions,
   type MoreOf,
   normalizeComment,
+  type ParentAutoClose,
   parsePullRequestUrl,
   type RawComment,
+  readParentAutoClose,
   readRest,
 } from "./linear.ts";
 import type { Comment, LabelPhase, PullRequest, StatusType } from "./types.ts";
@@ -42,6 +44,8 @@ export interface Ticket {
   statusType: StatusType;
   stateId: string;
   teamId: string;
+  /** Fresh ancestry used for post-close spec completion. */
+  parentId: string | null;
   assigneeId: string | null;
   labels: TicketLabel[];
   agentPhase: LabelPhase | null;
@@ -85,6 +89,9 @@ export interface LinearWriter {
   /** The user the API key belongs to. */
   viewer(): Promise<{ id: string; name: string }>;
   readTicket(id: string): Promise<Ticket | null>;
+  parentAutoClose(id: string): Promise<ParentAutoClose>;
+  /** Every direct child, including archived issues; incomplete reads throw. */
+  readChildren(uuids: string[]): Promise<SpecChild[]>;
   /** Labels of a group that a ticket of `teamId` may carry (team labels first, then workspace labels). */
   groupLabels(group: string, teamId: string): Promise<TicketLabel[]>;
   /** A label the ticket's team may carry; its team label wins over a workspace label. */
@@ -95,6 +102,22 @@ export interface LinearWriter {
   comment(uuid: string, body: string): Promise<{ id: string }>;
   deleteComment(id: string): Promise<void>;
   linkUrl(uuid: string, url: string, title: string): Promise<void>;
+}
+
+export interface SpecChild {
+  id: string;
+  uuid: string;
+  title: string;
+  url: string;
+  statusType: StatusType;
+}
+
+interface RawSpecChild {
+  id: string;
+  identifier: string;
+  title: string;
+  url: string;
+  state: { type: StatusType };
 }
 
 // ------------------------------------------------------------------ GraphQL
@@ -111,6 +134,7 @@ const TICKET_QUERY = /* GraphQL */ `
     issue(id: $id) {
       id identifier title url branchName description
       state { id type }
+      parent { identifier }
       team { id states(first: 50) { nodes { id name type position } } }
       assignee { id }
       labels(first: 50) { ${PAGE} nodes { ${LABEL} } }
@@ -162,6 +186,7 @@ interface RawTicket {
   branchName: string | null;
   description: string | null;
   state: { id: string; type: string };
+  parent?: { identifier: string } | null;
   team: { id: string; states: { nodes: { id: string; name: string; type: string; position: number }[] } };
   assignee: { id: string } | null;
   labels: Connection<{ id: string; name: string; parent: { name: string } | null }>;
@@ -190,6 +215,7 @@ export function normalizeTicket(raw: RawTicket, groups: LabelGroups, warnings: s
     statusType: raw.state.type as StatusType,
     stateId: raw.state.id,
     teamId: raw.team.id,
+    parentId: raw.parent?.identifier ?? null,
     assigneeId: raw.assignee?.id ?? null,
     labels,
     ...agentLabels(labels, groups),
@@ -254,6 +280,40 @@ async function postOnce(opts: LinearWriterOptions, uuid: string, body: string): 
 
 export function createLinearWriter(opts: LinearWriterOptions): LinearWriter {
   return {
+    parentAutoClose: (id) => readParentAutoClose(opts, id),
+    async readChildren(uuids) {
+      const children: SpecChild[] = [];
+      const cursors = new Set<string>();
+      let after: string | null = null;
+      for (let page = 0; page < 100; page++) {
+        const data: { issues: Connection<RawSpecChild> } = await gql(
+          { ...opts, retry: true },
+          `query SpecChildren($parents: [ID!]!, $after: String) {
+          issues(first: 100, after: $after, includeArchived: true, filter: { parent: { id: { in: $parents } } }) {
+            ${PAGE} nodes { id identifier title url state { type } }
+          }
+        }`,
+          { parents: uuids, after },
+        );
+        children.push(
+          ...data.issues.nodes.map((child) => ({
+            id: child.identifier,
+            uuid: child.id,
+            title: child.title,
+            url: child.url,
+            statusType: child.state.type,
+          })),
+        );
+        const info = data.issues.pageInfo;
+        if (!info) throw new LinearError("Linear did not return child pagination");
+        if (!info.hasNextPage) return children;
+        if (!info.endCursor || cursors.has(info.endCursor))
+          throw new LinearError("Linear did not advance child pagination");
+        cursors.add(info.endCursor);
+        after = info.endCursor;
+      }
+      throw new LinearError("Linear children exceed the completion read limit");
+    },
     async viewer() {
       return (await gql<{ viewer: { id: string; name: string } }>({ ...opts, retry: true }, VIEWER_QUERY, {})).viewer;
     },

@@ -7,6 +7,7 @@
 // dashboard's Validations page, opened from one link; Linear keeps the record.
 
 import { transitionProblem } from "./phases.ts";
+import { closeFinishedSpec } from "./spec-close.ts";
 import {
   decidedLine,
   lastValidation,
@@ -189,6 +190,8 @@ export async function closeValidated(
       .join("\n\n"),
   );
   const warnings = [...ticket.warnings];
+  const spec = await closeFinishedSpec(ctx, ticket);
+  warnings.push(...spec.warnings);
   try {
     await fleet.done({ ticket: ticket.id, message: summary });
   } catch (err) {
@@ -199,6 +202,7 @@ export async function closeValidated(
     url: ticket.url,
     lines: [
       `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent and ready labels removed; ${summary}.`,
+      ...spec.lines,
       "Building it is a separate ticket: cut it, blocked by this one.",
     ],
     warnings,

@@ -272,6 +272,7 @@ export const STATES: WorkflowState[] = [
  * catalogs above, comments stamped by an injected clock. Records every write.
  */
 export class FakeLinear implements LinearWriter {
+  autoCloseParentIssues: boolean | null = false;
   readonly tickets = new Map<string, Ticket>();
   readonly writes: string[] = [];
   readonly creates: IssueCreate[] = [];
@@ -293,6 +294,7 @@ export class FakeLinear implements LinearWriter {
       statusType: "backlog",
       stateId: "st-backlog",
       teamId: "team-1",
+      parentId: null,
       assigneeId: null,
       labels: [],
       agentPhase: null,
@@ -328,6 +330,23 @@ export class FakeLinear implements LinearWriter {
 
   async viewer() {
     return { id: "user-owner", name: "Owner" };
+  }
+
+  async parentAutoClose(_id: string) {
+    return { team: "Example", enabled: this.autoCloseParentIssues };
+  }
+
+  async readChildren(uuids: string[]) {
+    const parents = new Set(uuids.map((uuid) => this.get(uuid).id));
+    return [...this.tickets.values()]
+      .filter((ticket) => ticket.parentId !== null && parents.has(ticket.parentId))
+      .map((ticket) => ({
+        id: ticket.id,
+        uuid: ticket.uuid,
+        title: ticket.title,
+        url: ticket.url,
+        statusType: ticket.statusType,
+      }));
   }
 
   async readTicket(id: string) {
@@ -467,10 +486,15 @@ export function fakeLinearLabels(labels: FakeLabel[] = []) {
     if (url !== LINEAR_ENDPOINT) throw new Error(`unexpected URL ${url}`);
     const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
     const vars = body.variables as {
+      id?: string;
       root?: string;
       filter?: { or: { name: { eqIgnoreCase: string } }[] };
       input?: { name: string; teamId?: string; parentId?: string; isGroup?: boolean };
     };
+    if (/query ParentAutoClose/.test(body.query))
+      return Response.json({
+        data: { issue: vars.id?.startsWith("DEMO-") ? { team: { ...DEMO_TEAM, autoCloseParentIssues: true } } : null },
+      });
     if (/mutation CreateLabel/.test(body.query) && vars.input) {
       const input = vars.input;
       created.push(input);

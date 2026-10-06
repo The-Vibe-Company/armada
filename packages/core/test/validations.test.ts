@@ -189,7 +189,8 @@ describe("armada done", () => {
   test("closes a design ticket once the owner approved it: the design on the ticket, Done, the session ended", async () => {
     const live = tempFleet();
     const { linear, ctx } = setup(live);
-    linear.add("DEMO-7", { statusType: "started", stateId: "st-progress" });
+    linear.add("DEMO-2", { title: "Spec 1 — Design", parentId: config.tracker.programRoot });
+    linear.add("DEMO-7", { statusType: "started", stateId: "st-progress", parentId: "DEMO-2" });
     const close = () =>
       closeValidated(ctx, { ticket: "DEMO-7", attachmentUrl: (id) => `https://armada.example.test/a/${id}` });
     expect(await refusal(close())).toBe("DEMO-7 has no validation the owner approved");
@@ -219,6 +220,7 @@ describe("armada done", () => {
     const out = await close();
     const t = linear.get("DEMO-7");
     expect(t.statusType).toBe("completed");
+    expect(linear.get("DEMO-2").statusType).toBe("completed");
     expect(t.comments[0]?.status).toEqual({
       phase: "merged",
       summary: "done without a pull request: validation #1 approved by Ada at 2026-03-04 10:00 UTC",

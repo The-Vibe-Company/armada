@@ -23,6 +23,47 @@ function graphql(answers: Record<string, unknown>) {
 }
 
 describe("Linear write adapter", () => {
+  test("completion child reads include archives, paginate and reject incomplete pages", async () => {
+    const sent: { query: string; variables: Record<string, unknown> }[] = [];
+    let stuck = false;
+    const writer = createLinearWriter({
+      apiKey: "synthetic-key",
+      labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
+      fetch: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        sent.push(body);
+        const second = !!body.variables.after;
+        return Response.json({
+          data: {
+            issues: {
+              nodes: [
+                {
+                  id: `uuid-${second ? 8 : 7}`,
+                  identifier: `DEMO-${second ? 8 : 7}`,
+                  title: "Synthetic work",
+                  url: "https://linear.app/acme/issue/DEMO-7",
+                  state: { type: second ? "canceled" : "completed" },
+                },
+              ],
+              pageInfo: { hasNextPage: !second || stuck, endCursor: "cursor-1" },
+            },
+          },
+        });
+      },
+    });
+    expect((await writer.readChildren(["uuid-spec"])).map((child) => child.statusType)).toEqual([
+      "completed",
+      "canceled",
+    ]);
+    expect(sent[0]?.query).toContain("includeArchived: true");
+    expect(sent.map((body) => body.variables)).toEqual([
+      { parents: ["uuid-spec"], after: null },
+      { parents: ["uuid-spec"], after: "cursor-1" },
+    ]);
+    stuck = true;
+    expect(writer.readChildren(["uuid-spec"])).rejects.toThrow("did not advance child pagination");
+  });
+
   test("looks up an ungrouped label by name in the ticket's team, then the workspace", async () => {
     const nodes = [
       { id: "shared", name: "plan-approved", parent: null, team: null },
@@ -119,6 +160,7 @@ describe("Linear write adapter", () => {
             branchName: "feature/demo-7-send-a-sign-in-link",
             description: null,
             state: { id: "st-2", type: "started" },
+            parent: { identifier: "DEMO-2" },
             team: {
               id: "team-1",
               states: {
@@ -156,6 +198,7 @@ describe("Linear write adapter", () => {
       uuid: "uuid-7",
       statusType: "started",
       teamId: "team-1",
+      parentId: "DEMO-2",
       agentPhase: "implementing",
       agentRuntime: "Codex",
       states: [{ name: "Todo" }, { name: "In Progress" }],

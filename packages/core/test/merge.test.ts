@@ -203,6 +203,82 @@ const refusal = (p: Promise<unknown>) =>
     },
   );
 
+describe("closing a finished spec after a merge", () => {
+  for (const remaining of [null, "backlog", "unstarted", "started", "canceled"] as const) {
+    test(`fresh descendants: remaining child ${remaining ?? "absent"}`, async () => {
+      const { ctx, linear } = setup();
+      linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+      linear.get("DEMO-7").parentId = "DEMO-2";
+      if (remaining) linear.add("DEMO-8", { parentId: "DEMO-2", statusType: remaining });
+      const out = await mergePullRequest(ctx, { pr: 9 });
+      expect(out.merged).toBe(true);
+      const closed = remaining === null || remaining === "canceled";
+      expect(linear.get("DEMO-2").statusType).toBe(closed ? "completed" : "backlog");
+      expect(linear.bodies.some((body) => body.includes("Spec completed") && body.includes("DEMO-7"))).toBe(closed);
+    });
+  }
+
+  test("native parent auto-close owns closure and comments", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    linear.autoCloseParentIssues = true;
+    await mergePullRequest(ctx, { pr: 9 });
+    expect(linear.writes.some((line) => /^(update|comment) DEMO-2 /.test(line))).toBe(false);
+  });
+
+  test("nested open descendants keep the spec open, including under closed parents", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    linear.add("DEMO-8", { parentId: "DEMO-2", statusType: "completed" });
+    linear.add("DEMO-9", { parentId: "DEMO-8", statusType: "unstarted" });
+    await mergePullRequest(ctx, { pr: 9 });
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    linear.get("DEMO-9").statusType = "canceled";
+    await finishMerge(ctx, { pr: 9 });
+    expect(linear.get("DEMO-2").statusType).toBe("completed");
+    expect(linear.bodies.at(-1)).toContain("DEMO-9");
+    const writes = linear.writes.length;
+    await finishMerge(ctx, { pr: 9 });
+    expect(linear.writes.length).toBe(writes);
+  });
+
+  test("a failed descendant read only warns after GitHub and the ticket are closed", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    linear.readChildren = async () => {
+      throw new Error("Linear unavailable");
+    };
+    const out = await mergePullRequest(ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.linearPending).toBe(false);
+    expect(linear.get("DEMO-7").statusType).toBe("completed");
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    expect(out.warnings.join("\n")).toContain("Could not close spec");
+  });
+
+  test("finish retries a failed spec update without duplicating its shipped summary", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    const update = linear.updateTicket.bind(linear);
+    linear.updateTicket = async (uuid, change) => {
+      if (uuid === "uuid-DEMO-2") throw new Error("spec update failed");
+      await update(uuid, change);
+    };
+    const merged = await mergePullRequest(ctx, { pr: 9 });
+    expect(merged.merged).toBe(true);
+    expect(merged.warnings.join("\n")).toContain("spec update failed");
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    linear.updateTicket = update;
+    await finishMerge(ctx, { pr: 9 });
+    expect(linear.get("DEMO-2").statusType).toBe("completed");
+    expect(linear.bodies.filter((body) => body.startsWith("Spec completed"))).toHaveLength(1);
+  });
+});
+
 describe("the checklist refuses, naming the rule", () => {
   type S = ReturnType<typeof setup>;
   const cases: [string, (s: S) => void, string][] = [

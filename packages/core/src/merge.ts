@@ -25,6 +25,7 @@ export { MERGE_LEASE } from "./live.ts";
 
 import type { QueueInput } from "./merge-queue.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
+import { closeFinishedSpec } from "./spec-close.ts";
 import type { FrontierTicket } from "./status.ts";
 import type { MainHealth } from "./types.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
@@ -1523,6 +1524,9 @@ async function after(
       const fresh = await ctx.linear.readTicket(ticket.id);
       if (!fresh) throw new Error(`ticket ${ticket.id} not found in Linear`);
       lines.push(...(await closeTicket(ctx, fresh, merged, c, unlocked, override)));
+      const spec = await closeFinishedSpec(ctx, fresh);
+      lines.push(...spec.lines);
+      c.warnings.push(...spec.warnings);
     } catch (err) {
       linearPending = true;
       c.warnings.push(
@@ -1675,6 +1679,9 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
     ticket = await readTicketFor(ctx, pull, input);
     if (!ticket) throw new Error(`#${input.pr} names no ticket`);
     lines.push(...(await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit)));
+    const spec = await closeFinishedSpec(ctx, ticket);
+    lines.push(...spec.lines);
+    warnings.push(...spec.warnings);
     linearPending = false;
     const resolved = await mergeLive(ctx, warnings, "resolve pending Linear work", async (fleet) => {
       const items = await fleet.ticketItems(ticket?.id ?? "");

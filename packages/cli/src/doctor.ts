@@ -29,6 +29,7 @@ import {
   projectOf,
   RETIRED_VARIABLES,
   readLabels,
+  readParentAutoClose,
   repositoryOfRemote,
   STORED_KEYS,
 } from "@armada/core";
@@ -171,6 +172,50 @@ async function labelChecks(io: Io, config: ArmadaConfig | null, credentials: Cre
         level: "warning",
         message: `Linear labels not checked: ${err instanceof Error ? err.message : String(err)}`,
         fix: "run doctor again once Linear answers",
+      },
+    ];
+  }
+}
+
+async function parentAutoCloseChecks(io: Io, config: ArmadaConfig | null, credentials: Credentials): Promise<Check[]> {
+  if (!config) return [];
+  const id = "parent-auto-close";
+  const fix =
+    "in Linear, Settings > Team > Workflow > Parent auto-close: enable it to let Linear close parents; Armada never changes team settings";
+  if (!credentials.linearApiKey)
+    return [
+      {
+        id,
+        level: "warning",
+        message: "Linear Parent auto-close not checked: no Linear key",
+        fix: "armada login, then run doctor again",
+      },
+    ];
+  try {
+    const setting = await readParentAutoClose(
+      { apiKey: credentials.linearApiKey, ...httpOptions(io) },
+      config.tracker.programRoot,
+    );
+    return [
+      {
+        id,
+        level: setting.enabled ? "ok" : "warning",
+        message:
+          setting.enabled === true
+            ? `${setting.team}: Parent auto-close is on; Linear closes parents when all sub-issues are closed`
+            : setting.enabled === false
+              ? `${setting.team}: Parent auto-close is off; Armada closes finished specs after merge or done`
+              : `${setting.team}: Linear did not return the Parent auto-close setting`,
+        fix: setting.enabled ? null : fix,
+      },
+    ];
+  } catch {
+    return [
+      {
+        id,
+        level: "warning",
+        message: "Linear Parent auto-close not checked: Linear did not return the team's workflow setting",
+        fix: `run doctor again once Linear answers; ${fix}`,
       },
     ];
   }
@@ -447,6 +492,7 @@ export async function buildDoctor(
         ]
       : []),
     ...(await labelChecks(io, config, credentials)),
+    ...(await parentAutoCloseChecks(io, config, credentials)),
     ...(await remoteChecks({ ...io, cwd: root }, config, credentials)),
     ...(await branchRuleChecks(io, config, credentials)),
     ...(await conductorChecks(io, config)),
