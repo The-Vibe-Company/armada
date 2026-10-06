@@ -66,6 +66,7 @@ describe("armada.toml", () => {
         mergeApproval: null,
         validations: [],
       },
+      reservations: [],
       brief: { extra: null },
       secrets: { names: [] },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
@@ -445,4 +446,15 @@ test("owner validation sample policy defaults to four and accepts at most eight"
   expect(parseConfig(`${base}[policy]\nvalidation_samples = 8`).policy.validationSamples).toBe(8);
   for (const value of [0, 9, 4.5])
     expect(() => parseConfig(`${base}[policy]\nvalidation_samples = ${value}`)).toThrow("policy.validation_samples");
+});
+
+test("declared reservation keys are optional, descriptive and unique", () => {
+  const declaration = '\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n';
+  expect(parseConfig(DEMO_TOML + declaration).reservations).toEqual([
+    { key: "db-migration", what: "the next schema version", numbered: true },
+  ]);
+  expect(problemsOf(DEMO_TOML + declaration + declaration).join(" ")).toContain("repeats db-migration");
+  expect(problemsOf(DEMO_TOML + declaration.replace("numbered = true", 'numbered = "yes"')).join(" ")).toContain(
+    'numbered" must be true or false',
+  );
 });
