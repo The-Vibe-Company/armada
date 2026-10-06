@@ -282,7 +282,7 @@ describe("report", () => {
     shipping(red.linear);
     const before = red.linear.writes.length;
     expect(await refusal(reportPhase(red.ctx, { ticket: "DEMO-7", phase: "ready-to-merge", pr: "9", sha: HEAD }))).toBe(
-      'DEMO-7: hand-back refused:\n  - required check "test" is failure\nNext: fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done',
+      'DEMO-7: hand-back refused:\n  - required check "test" is failure\nNext: armada ci why 9; fix the points above, then armada report ready-to-merge --ticket DEMO-7 --pr 9 --sha <head sha>; report shipping meanwhile if the work is not done',
     );
     expect(red.linear.writes.length).toBe(before);
 
