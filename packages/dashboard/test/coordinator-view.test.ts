@@ -244,6 +244,7 @@ describe("the sessions' coordinators (THE-1112)", () => {
     state,
     seenAt: at(0),
     tickets,
+    updateAvailable: false,
   });
   const rows = [
     row("WID-1", { coordinator: "front" }),

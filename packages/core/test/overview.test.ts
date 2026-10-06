@@ -279,12 +279,12 @@ describe("fleet overview", () => {
   });
 
   test("each named coordinator with its state and tickets in flight, and an owner no role lists", () => {
-    const role = (name: string, seenAt: string) => ({
+    const role = (name: string, seenAt: string, cliVersion: string | null = null) => ({
       name,
       harness: null,
       handle: null,
       model: null,
-      cliVersion: null,
+      cliVersion,
       startedAt: seenAt,
       seenAt,
       inboxSeenAt: null,
@@ -302,17 +302,18 @@ describe("fleet overview", () => {
           {
             inbox: [],
             coordinatorSeenAt: at("09:58"),
-            coordinators: [role("front", at("09:58")), role("default", at("09:00"))],
+            coordinators: [role("front", at("09:58"), "0.2.4"), role("default", at("09:00"), "0.2.1")],
           },
         ),
       ],
       live: { state: "ok", error: null },
       now: NOW,
+      latestCli: "0.2.4",
     });
-    expect(o.projects[0]?.coordinators?.map((c) => [c.name, c.state, c.seenAt, c.tickets])).toEqual([
-      ["back", "unknown", null, ["W-3"]],
-      ["default", "idle", at("09:00"), ["W-2"]],
-      ["front", "active", at("09:58"), ["W-1"]],
+    expect(o.projects[0]?.coordinators?.map((c) => [c.name, c.state, c.seenAt, c.tickets, c.updateAvailable])).toEqual([
+      ["back", "unknown", null, ["W-3"], false],
+      ["default", "idle", at("09:00"), ["W-2"], true],
+      ["front", "active", at("09:58"), ["W-1"], false],
     ]);
   });
 

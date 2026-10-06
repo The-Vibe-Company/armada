@@ -170,6 +170,8 @@ export interface ProjectCoordinator extends Partial<Omit<CoordinatorPresence, "s
   state: CoordinatorState;
   seenAt: string | null;
   tickets: string[];
+  /** A newer CLI is released than the one it ran last. */
+  updateAvailable: boolean;
 }
 
 export interface ProjectOverview {
@@ -470,17 +472,22 @@ export function buildOverview(input: {
     const threshold = (p.report?.silentAfterMinutes ?? 15) * MIN;
     const stateAt = (at: string | null): CoordinatorState =>
       at === null ? "unknown" : now - Date.parse(at) <= threshold ? "active" : "idle";
+    const outdated = (version: string | null | undefined) =>
+      !!version && newerRelease(version, input.latestCli) !== null;
     const state = stateAt(seenAt);
     const roles = (p.live?.coordinators ?? []).map((r) => ({ ...r, name: r.name ?? "default" }));
     const owners = [...new Set(tickets.flatMap((t) => (t.coordinator ? [t.coordinator] : [])))];
     const coordinators: ProjectCoordinator[] = [
       ...roles,
-      ...owners.filter((name) => !roles.some((r) => r.name === name)).map((name) => ({ name, seenAt: null })),
+      ...owners
+        .filter((name) => !roles.some((r) => r.name === name))
+        .map((name) => ({ name, seenAt: null, cliVersion: null })),
     ]
       .map((c) => ({
         ...c,
         state: stateAt(c.seenAt),
         tickets: tickets.filter((t) => t.coordinator === c.name).map((t) => t.id),
+        updateAvailable: outdated(c.cliVersion),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
     timeline.coordinators.push({
@@ -513,7 +520,7 @@ export function buildOverview(input: {
         state,
         seenAt,
         cliVersion,
-        updateAvailable: cliVersion !== null && newerRelease(cliVersion, input.latestCli) !== null,
+        updateAvailable: outdated(cliVersion),
       },
       coordinators,
       inFlight: tickets.length,

@@ -156,7 +156,12 @@ export function Overview({
   const items = useMemo(() => filterItems(all, { project, owner }), [all, project, owner]);
   // The projects that name their coordinators show each row's owner, and the owners' chips.
   const named = useMemo(() => new Set(projects.filter((p) => showsOwners(p, all)).map((p) => p.slug)), [projects, all]);
-  const owners = useMemo(() => (named.size ? ownerCounts(all.filter((i) => named.has(i.project))) : []), [all, named]);
+  // Counted as the filter keeps them; an owner in the address keeps its chip, so the filter never hides.
+  const owners = useMemo(() => {
+    if (!named.size && !owner) return [];
+    const counts = ownerCounts(all);
+    return owner && !counts.some((o) => o.name === owner) ? [...counts, { name: owner, count: 0 }] : counts;
+  }, [all, named, owner]);
   const groups = useMemo(() => groupItems(items, view.group, projects), [items, view.group, projects]);
   const head = overviewHeadline(all, projects.length);
   const summaries = useMemo(() => projectSummaries(projects, all), [projects, all]);

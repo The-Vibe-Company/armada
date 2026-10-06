@@ -202,8 +202,7 @@ function Coordinator({
   coordinator: c,
   role,
 }: {
-  coordinator: Omit<ProjectOverview["coordinator"], "cliVersion" | "updateAvailable"> &
-    Partial<Pick<ProjectOverview["coordinator"], "updateAvailable">>;
+  coordinator: Omit<ProjectOverview["coordinator"], "cliVersion">;
   role?: ProjectCoordinator;
 }) {
   const { t, zone } = useShell();
