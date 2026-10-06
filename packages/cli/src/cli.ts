@@ -132,6 +132,8 @@ const COMMAND_HELP: Record<string, string> = {
                     and whether this terminal is signed in to Armada. Local herdr profiles
                     check tools and harness sign-in; offers official installs with y/N.
                     No terminal, CI and --json only print fixes and never install.
+                    --deep signs a throwaway commit object with a 10 s limit; no refs move.
+                    Default signing checks predict prompts from config without signing.
                     For harness first-run questions, the owner runs armada setup local
 `,
   upgrade: `  upgrade           Install the newest Armada npm serves, verify armada --version,
@@ -552,6 +554,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "deep",
   "ready",
   "when-unblocked",
   "send",
@@ -584,6 +587,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  doctor: ["deep"],
   lint: ["ready"],
   job: ["ticket", "ref", "state"],
   peek: ["actions"],
@@ -1068,7 +1072,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     }
     if (args.command === "doctor") {
       noExtra(args.rest);
-      return await doctor(io, args.json, version);
+      return await doctor(io, args.json, version, args.options.deep === "true");
     }
     if (args.command === "upgrade") {
       noExtra(args.rest);
