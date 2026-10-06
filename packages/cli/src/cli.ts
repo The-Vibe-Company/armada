@@ -170,11 +170,14 @@ const COMMAND_HELP: Record<string, string> = {
                     Coordinator: record a delivered note; an open plan is resolved
 `,
   merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
-        [--reason <why>] [--ask-owner --reason <why>] [--no-archive]
+        [--reason <why>] [--ask-owner --reason <why>] [--no-archive] [--no-notify]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
-                    lock, close the ticket and list the workers to tell. Never deletes
+                    lock, close the ticket and notify affected workers with open PRs.
+                    Shared files and [merge] notify_paths decide who receives a note;
+                    handed-back workers stay quiet. --no-notify prints the manual list.
+                    Never deletes
                     the branch. After GitHub confirms the merge, archives the worker's
                     Armada workspace; --no-archive leaves it open. Cleanup failures print
                     an armada stop command and do not fail the merge.
@@ -417,6 +420,7 @@ const FLAG_OPTIONS = [
   "no-lock",
   "no-ticket",
   "no-archive",
+  "no-notify",
   "prompt",
   "profile-line",
   "wait",
@@ -443,7 +447,18 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
-  merge: ["ticket", "no-ticket", "no-archive", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
+  merge: [
+    "ticket",
+    "no-ticket",
+    "no-archive",
+    "no-notify",
+    "dry-run",
+    "no-lock",
+    "wait",
+    "timeout",
+    "reason",
+    "ask-owner",
+  ],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],

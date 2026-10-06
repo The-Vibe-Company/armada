@@ -12,8 +12,10 @@ import {
   type MergeOutcome,
   parseConfig,
   type RawIssue,
+  type RawPull,
   resolveCredentials,
 } from "@armada/core";
+import githubPulls from "../../core/test/fixtures/github-pulls.json";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
   ARMADA_URL,
@@ -37,6 +39,220 @@ afterEach(async () => {
 const SQUASH = "5555555555555555555555555555555555555555";
 const BRANCH = "feature/demo-18-expire-idle-sessions";
 const KEY = "armada_key_CANARY_coordinator";
+
+test.each([false, true])(
+  "--no-notify preserves the manual list even with unavailable live state (%s)",
+  async (liveDown) => {
+    const f = await fixture();
+    f.net.liveDown = liveDown;
+    expect(await run(["merge", "9", "--no-notify"], f.io)).toBe(0);
+    expect(f.out()).toContain("Tell these workers in flight what landed on main");
+    expect(f.out()).toContain("DEMO-11  implementing  Claude Code · ws-11");
+    expect(f.out()).not.toContain("not affected");
+    expect(f.armada.calls.some((c) => c.path === "fleet/answer")).toBe(false);
+  },
+);
+
+test.each([
+  "overlap",
+  "herdr",
+  "unknown-outcome",
+  "shared",
+  "unsupported",
+  "failed",
+  "replaced",
+  "no-notify",
+  "files-unknown",
+  "truncated-prs",
+  "old-server",
+  "live-hand-back",
+  "live-outage",
+  "both-outages",
+  "no-pr",
+  "handed-back",
+  "before-archive",
+])("merge notes select recipients and deliver before archive (%s)", async (scenario) => {
+  const f = await fixture();
+  const herdrTree = join(f.io.cwd, "..", "herdr-worker");
+  const herdrHandle = JSON.stringify({ workspace: "ws-worker", pane: "pane-worker", agent: "worker" });
+  if (scenario === "herdr") f.git("worktree", "add", "-b", "feature/demo-11-worker", herdrTree, "main");
+  const pulls = structuredClone(githubPulls.data.repository.open.nodes) as RawPull[];
+  for (const p of pulls) {
+    if (p.number === 7 || (scenario === "shared" && p.number === 8)) {
+      p.files = { nodes: [{ path: "src/lists.ts", additions: 1, deletions: 1 }], pageInfo: { hasNextPage: false } };
+    }
+  }
+  f.net.workerPulls = scenario === "no-pr" ? pulls.filter((p) => p.number !== 7) : pulls;
+  if (scenario === "files-unknown") f.net.forgeDown = true;
+  if (scenario === "truncated-prs") f.net.truncatedPrs = true;
+  if (scenario === "old-server") f.net.oldServer = true;
+  if (scenario === "live-outage") f.net.liveDown = true;
+  if (scenario === "both-outages") {
+    f.net.liveDown = true;
+    f.net.forgeDown = true;
+  }
+  if (scenario === "live-hand-back")
+    await f.store.recordEvent({
+      project: "widgets",
+      ticket: "DEMO-11",
+      kind: "report",
+      phase: "ready-to-merge",
+      message: "handed back after the tracker read",
+      at: new Date(NOW.getTime() + 1000),
+    });
+  if (scenario === "handed-back") {
+    const original = f.io.fetch as Fetch;
+    f.io.fetch = async (url, init) => {
+      const response = await original(url, init);
+      if (!url.startsWith("https://api.linear.app/")) return response;
+      const body = (await response.json()) as { data: { issues?: { nodes: RawIssue[] } } };
+      for (const issue of body.data.issues?.nodes ?? [])
+        if (issue.identifier === "DEMO-11" && issue.labels) {
+          issue.labels.nodes = issue.labels.nodes.filter((l) => !["implementing", "shipping"].includes(l.name));
+          issue.labels.nodes.push({ name: "ready-to-merge", parent: { name: "Agent phase" } });
+        }
+      return Response.json(body);
+    };
+  }
+  for (const ticket of scenario === "shared" ? ["DEMO-11", "DEMO-16"] : ["DEMO-11"]) {
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket,
+      runtime: scenario === "unsupported" ? "Claude Code" : scenario === "herdr" ? "herdr" : "Conductor",
+      handle: scenario === "herdr" ? herdrHandle : "ws-worker/ses-worker",
+      branch: scenario === "herdr" ? "feature/demo-11-worker" : null,
+      at: NOW,
+    });
+  }
+  if (scenario === "before-archive")
+    await f.store.saveRuntimeHandle({
+      project: "widgets",
+      ticket: "DEMO-18",
+      runtime: "Conductor",
+      handle: "ws-merged/ses-merged",
+      branch: BRANCH,
+      at: NOW,
+    });
+  const native: { args: string[]; input?: string }[] = [];
+  const exec = f.io.exec as Exec;
+  f.io.exec = async (command, args, options) => {
+    if (command === "herdr") {
+      native.push({ args, input: options.input });
+      const result =
+        args[0] === "workspace"
+          ? {
+              workspace: {
+                workspace_id: "ws-worker",
+                worktree: {
+                  is_linked_worktree: true,
+                  repo_root: f.io.cwd,
+                  checkout_path: herdrTree,
+                },
+              },
+            }
+          : { agent: { name: "worker", pane_id: "pane-worker", workspace_id: "ws-worker", agent_status: "idle" } };
+      return { code: 0, stdout: JSON.stringify({ ok: true, result }), stderr: "" };
+    }
+    if (command !== "conductor") return exec(command, args, options);
+    native.push({ args, input: options.input });
+    if (scenario === "failed") return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
+    if (scenario === "unknown-outcome" && args[1] === "message")
+      return { code: 4, stdout: "", stderr: "lost reply after native write" };
+    if (scenario === "replaced")
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-11",
+        runtime: "Conductor",
+        handle: "ws-new/ses-new",
+        branch: null,
+        at: new Date(NOW.getTime() + 1000),
+      });
+    const mergedWorker = args.at(-1) === "ses-merged" || args.at(-1) === "ws-merged";
+    const body =
+      args[1] === "session"
+        ? {
+            sessionId: mergedWorker ? "ses-merged" : "ses-worker",
+            workspaceId: mergedWorker ? "ws-merged" : "ws-worker",
+            status: "idle",
+          }
+        : args[1] === "workspace"
+          ? args[2] === "archive"
+            ? { status: "archived" }
+            : { workspaceId: mergedWorker ? "ws-merged" : "ws-worker", status: "ready" }
+          : { messageId: args.at(-1), state: "sent" };
+    if (args[1] === "message") expect(f.merged()).toBe(true);
+    return { code: 0, stdout: JSON.stringify(body), stderr: "" };
+  };
+  expect(await run(["merge", "9", "--json", ...(scenario === "no-notify" ? ["--no-notify"] : [])], f.io)).toBe(0);
+  const o = JSON.parse(f.out());
+  const messages = () => native.filter((c) => c.args[1] === "message" || c.args[1] === "prompt");
+  const delivers = ["overlap", "herdr", "shared", "before-archive"].includes(scenario);
+  expect(messages()).toHaveLength(delivers || scenario === "unknown-outcome" ? 1 : 0);
+  if (delivers) {
+    expect(o.notified.map((n: { ticket: string; delivered: boolean }) => [n.ticket, n.delivered])).toEqual(
+      scenario === "shared"
+        ? [
+            ["DEMO-11", true],
+            ["DEMO-16", true],
+          ]
+        : [["DEMO-11", true]],
+    );
+    const message = scenario === "herdr" ? messages()[0]?.args[3] : messages()[0]?.input;
+    expect(message).toContain('main moved: PR #9 "feat(lists): share a list by link" (DEMO-18) merged as 5555555.');
+    expect(message).toContain("your PR #7 (DEMO-11) also changes: src/lists.ts");
+    expect(message).toContain("shareList");
+    expect(message).toContain("git fetch origin && git merge origin/main, then run the checks again");
+    const notes = f.store.items.filter((i) => i.kind === "note");
+    expect(notes).toHaveLength(scenario === "shared" ? 2 : 1);
+    expect(notes.every((n) => n.resolvedAt === NOW.toISOString())).toBe(true);
+    expect(f.linear.bodies).toHaveLength(1);
+    if (scenario === "before-archive") {
+      expect(o.archive.archived).toBe(true);
+      expect(native.findIndex((c) => c.args[1] === "message")).toBeLessThan(
+        native.findIndex((c) => c.args[2] === "archive"),
+      );
+    }
+    if (["overlap", "herdr"].includes(scenario)) {
+      // Armada's durable receipt prevents native calls and duplicate notes on retries, regardless of runtime.
+      const retry = await afterMerge(
+        f.io,
+        parseConfig(DEMO_TOML),
+        resolveCredentials({ env: f.io.env }),
+        { ...o, hints: ["A refreshed hint"] },
+        { noArchive: true },
+      );
+      expect(retry.notified[0]?.delivered).toBe(true);
+      expect(messages()).toHaveLength(1);
+      expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(1);
+    }
+  } else if (["unsupported", "failed", "replaced", "old-server", "unknown-outcome"].includes(scenario)) {
+    expect(o.notified[0]).toMatchObject({ ticket: "DEMO-11", delivered: false });
+    expect(o.notified[0].text).toContain("git merge origin/main");
+    expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(0);
+    if (scenario === "unknown-outcome") {
+      const retry = await afterMerge(f.io, parseConfig(DEMO_TOML), resolveCredentials({ env: f.io.env }), o, {
+        noArchive: true,
+      });
+      expect(retry.notified[0]?.detail).toContain("unknown outcome");
+      expect(messages()).toHaveLength(1);
+    }
+  } else expect(o.notified).toEqual([]);
+  if (["handed-back", "live-hand-back"].includes(scenario))
+    expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "already handed back" });
+  if (scenario === "no-pr") expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "no pull request yet" });
+  if (["files-unknown", "truncated-prs", "both-outages"].includes(scenario))
+    expect(o.notAffected.every((w: { why: string }) => w.why === "files unknown")).toBe(true);
+  if (scenario === "live-outage") {
+    expect(o.workersListed).toBe(true);
+    expect(o.workers.map((w: { ticket: string }) => w.ticket)).toContain("DEMO-11");
+    expect(o.notAffected.every((w: { why: string }) => w.why === "worker state unknown")).toBe(true);
+    expect(o.noticeFallback).toBe("worker state unknown");
+  }
+  if (!["shared", "files-unknown", "truncated-prs", "live-outage", "both-outages"].includes(scenario))
+    expect(o.notAffected).toContainEqual({ ticket: "DEMO-16", why: "not affected" });
+  expect(f.err() + f.out()).not.toContain("CANARY");
+  expect(f.err() + f.out()).not.toContain("private runtime output");
+});
 
 /** A coordinator's terminal, signed in to the fake Armada with an organization API key unless `signedIn` is false. */
 async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boolean; unblocks?: boolean } = {}) {
@@ -162,10 +378,22 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
   });
   const store = memoryFleet();
   const armada = fakeArmada({ keys: { [KEY]: "coordinator" }, store });
-  const net = { armadaDown: false, confirmMerge: true };
+  const net = {
+    armadaDown: false,
+    confirmMerge: true,
+    forgeDown: false,
+    truncatedPrs: false,
+    oldServer: false,
+    liveDown: false,
+    workerPulls: null as RawPull[] | null,
+  };
   const fetch: Fetch = async (url, init) => {
     if (url.startsWith(`${ARMADA_URL}/`)) {
       if (net.armadaDown) throw new TypeError("fetch failed");
+      if (net.liveDown && merged && /fleet\/(events\/state|runtime\/handles)$/.test(url))
+        throw new TypeError("live state unavailable");
+      if (net.oldServer && /fleet\/(merge-notice\/prepare|answer\/generated)$/.test(url))
+        return Response.json({ error: "no fleet operation", next: "update Armada" }, { status: 404 });
       return armada.fetch(url, init);
     }
     if (url === "https://api.github.com/repos/acme/widgets/pulls/9") return new Response(`${diff}\n`);
@@ -182,6 +410,15 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
       return Response.json(body);
     }
     const { query, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, string> };
+    if (/query Pulls/.test(query)) {
+      if (net.forgeDown) throw new TypeError("GitHub is unavailable");
+      const body = (await (await linearProgram.fetch(url, init)).json()) as {
+        data: { repository: { open: { nodes: RawPull[]; pageInfo: { hasNextPage: boolean } } } };
+      };
+      body.data.repository.open.pageInfo = { hasNextPage: net.truncatedPrs };
+      if (net.workerPulls) body.data.repository.open.nodes = net.workerPulls;
+      return Response.json(body);
+    }
     if (/query Compare/.test(query)) {
       const compare =
         variables.head === base
@@ -217,6 +454,10 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
             mergedAt: merged ? "2026-03-04T10:00:00Z" : null,
             mergeCommit: merged && net.confirmMerge ? { oid: SQUASH } : null,
             reviewThreads: { totalCount: 1, nodes: [{ isResolved: true }] },
+            files: {
+              nodes: ["src/lists.ts", "src/menu.ts"].map((path) => ({ path, additions: 1, deletions: 1 })),
+              pageInfo: { hasNextPage: false },
+            },
             commits: {
               nodes: [
                 {
@@ -378,9 +619,8 @@ https://github.com/acme/widgets/pull/9
 https://linear.app/acme/issue/DEMO-18
 Hints for you to judge (not blocking):
   - \`shareList\`, removed from src/lists.ts, still appears on main in src/share.ts
-Tell these workers in flight what landed on main (bring it in, shared files, new checks):
-  DEMO-16  shipping  runtime unknown  Reset a forgotten password
-  DEMO-11  implementing  Claude Code · ws-11  Send a sign-in link by email
+  DEMO-16: not affected.
+  DEMO-11: not affected.
 2 workers in flight (DEMO-11, DEMO-16) — keep watching: armada watch
 No runtime guide is installed for Claude Code, so Armada has nothing to archive for DEMO-18 (Claude Code · ws-18): a local session or subagent ends with its task; stop it yourself if it still runs.
 `);
@@ -396,6 +636,8 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
     "fleet/inbox/ticket",
     "fleet/lease/renew",
     "fleet/merge",
+    "fleet/events/state",
+    "fleet/runtime/handles",
     "fleet/lease/release",
     "workers/end",
   ]);
@@ -717,7 +959,7 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
     const result = await afterMerge(f.io, parseConfig(DEMO_TOML), resolveCredentials({ env: f.io.env }), outcome, {
       keepOpen: scenario === "keep-open",
     });
-    expect(result?.archived ?? false).toBe(false);
+    expect(result.archive?.archived ?? false).toBe(false);
     expect(f.armada.calls).toEqual([]);
     expect(f.err()).not.toContain("must not reach");
     if (scenario === "claim-comment" || scenario === "wrong-ticket")

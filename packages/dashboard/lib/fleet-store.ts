@@ -1077,6 +1077,46 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  prepareMergeNotice: async (project, key, at) => {
+    const inserted = await db.query(
+      `INSERT INTO merge_notices (project, delivery_key, attempted_at) VALUES ($1, $2, $3)
+       ON CONFLICT (project, delivery_key) DO NOTHING RETURNING delivery_key`,
+      [project, key, at],
+    );
+    if (inserted.rows.length) return "reserved";
+    const previous = await db.query("SELECT delivered_at FROM merge_notices WHERE project = $1 AND delivery_key = $2", [
+      project,
+      key,
+    ]);
+    return previous.rows[0]?.delivered_at ? "delivered" : "attempted";
+  },
+  recordMergeNotice: (q) =>
+    transaction(db, async (tx) => {
+      const receipt = (
+        await tx.query<{ recorded_tickets: string[] }>(
+          "SELECT recorded_tickets FROM merge_notices WHERE project = $1 AND delivery_key = $2 FOR UPDATE",
+          [q.project, q.key],
+        )
+      ).rows[0];
+      if (!receipt) throw new Error("merge notice was not reserved");
+      if (receipt.recorded_tickets.includes(q.ticket)) return "Generated note already recorded.";
+      const id = await addInboxItem(tx, {
+        project: q.project,
+        ticket: q.ticket,
+        kind: "note",
+        recipient: "worker",
+        author: "coordinator",
+        body: q.text,
+        at: q.at,
+      });
+      await resolveInboxItem(tx, { project: q.project, id, resolution: "delivered through the runtime", at: q.at });
+      await tx.query(
+        `UPDATE merge_notices SET delivered_at = COALESCE(delivered_at, $4),
+        recorded_tickets = array_append(recorded_tickets, $3) WHERE project = $1 AND delivery_key = $2`,
+        [q.project, q.key, q.ticket, q.at],
+      );
+      return `Note #${id} recorded.`;
+    }),
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),

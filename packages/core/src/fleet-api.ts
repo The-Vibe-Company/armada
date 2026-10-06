@@ -79,6 +79,8 @@ export const FLEET_OPS = [
   "inbox/ticket",
   "inbox/resolve",
   "answer",
+  "answer/generated",
+  "merge-notice/prepare",
   "merge",
   "validations",
   "done",
@@ -445,7 +447,25 @@ export async function serveFleet(
             resolution: text(b, "resolution", BODY_MAX),
             at,
           });
+        case "merge-notice/prepare":
+          return store.prepareMergeNotice(slug, text(b, "key", LINE_MAX), at);
+        case "answer/generated":
+          if (!bool(b, "note") || b.item !== null) throw new Invalid("generated notes require note and no item");
+          return recordAnswer(
+            store,
+            slug,
+            {
+              text: text(b, "text", BODY_MAX),
+              note: true,
+              generated: true,
+              deliveryKey: text(b, "deliveryKey", LINE_MAX),
+              ticket: ticketOf(b),
+              item: null,
+            },
+            at,
+          );
         case "answer":
+          if (b.generated) throw new Invalid("generated notes use answer/generated");
           return recordAnswer(
             store,
             slug,
@@ -659,7 +679,8 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     inbox: (q: InboxQuery) => call<InboxRead | null>("inbox", q),
     inboxItem: (id) => call<StoredInboxItem | null>("inbox/item", { id }),
     ticketItems: (ticket) => call<InboxItem[]>("inbox/ticket", { ticket }),
-    answer: (a: AnswerRecord) => call<string>("answer", a),
+    prepareMergeNotice: (key) => call<"reserved" | "attempted" | "delivered">("merge-notice/prepare", { key }),
+    answer: (a: AnswerRecord) => call<string>(a.generated ? "answer/generated" : "answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
     merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),

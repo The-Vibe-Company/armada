@@ -267,6 +267,10 @@ type Item = { project: string; ticket: string; author: string | null; body: stri
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
 export interface FleetStore {
+  /** Reserves a merge notice before runtime I/O; an unknown outcome is never retried automatically. */
+  prepareMergeNotice(project: string, key: string, at: Date): Promise<"reserved" | "attempted" | "delivered">;
+  /** Records one resolved generated note atomically with its delivery receipt, once per ticket. */
+  recordMergeNotice(input: { project: string; key: string; ticket: string; text: string; at: Date }): Promise<string>;
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
@@ -575,6 +579,9 @@ export async function recordRelease(
 }
 
 export interface AnswerRecord {
+  /** Generated merge notices do not decide or resolve a worker's pending plan. */
+  generated?: boolean;
+  deliveryKey?: string;
   /** The answer, or the note. */
   text: string;
   /** An unsolicited coordinator message rather than an answer. */
@@ -592,6 +599,11 @@ export interface AnswerRecord {
  */
 export async function recordAnswer(store: FleetStore, project: string, a: AnswerRecord, at: Date): Promise<string> {
   const { text } = a;
+  if (a.generated) {
+    if (!a.note || !a.ticket || a.item !== null || !a.deliveryKey)
+      throw new Error("a generated note needs a ticket and reserved delivery key");
+    return store.recordMergeNotice({ project, key: a.deliveryKey, ticket: a.ticket, text, at });
+  }
   if (a.note) {
     if (a.ticket) await store.resolvePlans({ project, ticket: a.ticket, resolution: text, at });
     const id = await store.addInboxItem({
@@ -1236,6 +1248,7 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  prepareMergeNotice(key: string): Promise<"reserved" | "attempted" | "delivered">;
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";

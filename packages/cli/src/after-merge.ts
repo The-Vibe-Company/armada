@@ -1,7 +1,16 @@
 // Cleanup runs only after GitHub confirmed the pinned merge and Armada ended its worker generation.
 import { dirname, resolve } from "node:path";
-import { type ArmadaConfig, type Credentials, type MergeOutcome, runtimeNameOf, shellWord } from "@armada/core";
+import {
+  type ArmadaConfig,
+  type Credentials,
+  deliveryKey,
+  type MergeOutcome,
+  runtimeNameOf,
+  shellWord,
+  type WorkerNotice,
+} from "@armada/core";
 import type { Io } from "./io.ts";
+import { deliverToRuntime } from "./runtime.ts";
 import { archiveClaimKey, claimRef, guarded, redactRuntimeText, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle } from "./watch.ts";
 import { liveFleet } from "./worker.ts";
@@ -13,8 +22,153 @@ export interface ArchiveResult {
   detail: string;
 }
 
+export interface WorkerNotification {
+  ticket: string;
+  delivered: boolean;
+  detail: string;
+  /** Kept for manual delivery when the runtime is unavailable or unsupported. */
+  text: string;
+}
+
+export interface AfterMergeResult {
+  notified: WorkerNotification[];
+  notAffected: { ticket: string; why: string }[];
+  archive: ArchiveResult | null;
+}
+
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+const shownFiles = (files: string[]) =>
+  `${files.slice(0, 4).map(oneLine).join(", ")}${files.length > 4 ? ` (and ${files.length - 4} more)` : ""}`;
+
+/** Fixed text; the key and recipient never depend on a model. Shared sessions receive one message. */
+function noticeText(o: MergeOutcome, workers: WorkerNotice[]): string {
+  const lines = [
+    `${o.pr.base} moved: PR #${o.pr.number} "${oneLine(o.pr.title).slice(0, 200)}"${o.ticket ? ` (${o.ticket.id})` : ""} merged as ${o.pr.mergeCommit?.slice(0, 7)}.`,
+  ];
+  for (const w of workers) {
+    lines.push(
+      w.sharedFiles.length
+        ? `It changes files your PR #${w.pr.number} (${w.ticket}) also changes: ${shownFiles(w.sharedFiles)}.`
+        : `Your PR #${w.pr.number} (${w.ticket}) may be affected: ${oneLine(w.why).slice(0, 500)}.`,
+    );
+  }
+  if (o.hints.length)
+    lines.push(
+      `Merge hints: ${o.hints
+        .slice(0, 3)
+        .map((h) => oneLine(h).slice(0, 500))
+        .join("; ")}.`,
+    );
+  lines.push(
+    `Before your next push: git fetch origin && git merge ${shellWord(`origin/${o.pr.base}`)}, then run the checks again.`,
+  );
+  return lines.join("\n");
+}
+
+async function notifyWorkers(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  outcome: MergeOutcome,
+): Promise<WorkerNotification[]> {
+  if (!outcome.merged || !outcome.pr.mergeCommit || !outcome.filesKnown || outcome.noticeFallback) return [];
+  const { fleet } = liveFleet(io, config, credentials);
+  const groups = new Map<string, WorkerNotice[]>();
+  for (const w of [...(outcome.notices ?? [])].sort((a, b) => a.ticket.localeCompare(b.ticket))) {
+    const key = w.handle ? `${runtimeNameOf(w.runtime) ?? w.runtime}:${w.handle}` : w.ticket;
+    groups.set(key, [...(groups.get(key) ?? []), w]);
+  }
+  const notified: WorkerNotification[] = [];
+  for (const workers of groups.values()) {
+    const w = workers[0];
+    if (!w) continue;
+    const text = noticeText(outcome, workers);
+    let delivered = false;
+    let detail = "deliver manually with the runtime guide";
+    const runtime = runtimeNameOf(w.runtime);
+    if (runtime && runtime !== "claude-code") {
+      try {
+        if (!fleet) throw new Error("Armada is unavailable");
+        if (outcome.workers.some((other) => other.phase === "ready-to-merge" && other.handle === w.handle))
+          throw new Error("another handed-back ticket uses this session");
+        for (const worker of workers) {
+          if (
+            !worker.claim ||
+            worker.claim.ticket !== worker.ticket ||
+            worker.claim.handle !== worker.handle ||
+            worker.claim.releasedAt
+          )
+            throw new Error(`Armada did not return ${worker.ticket}'s active claim`);
+          await guarded(fleet, claimRef(worker.claim), "active", async () => {});
+        }
+        const [events, active] = await Promise.all([fleet.latestEvents(), fleet.runtimeHandles()]);
+        if (active.some((h) => h.handle === w.handle && events[h.ticket]?.phase === "ready-to-merge"))
+          throw new Error("the worker has handed back");
+        const key = deliveryKey({
+          project: config.project.slug,
+          ticket: `${runtime}:${w.handle}`,
+          claimedAt: null,
+          launchId: null,
+          item: null,
+          kind: "note",
+          text: outcome.pr.mergeCommit,
+        });
+        const receipt = await fleet.prepareMergeNotice(key);
+        if (receipt !== "reserved" && receipt !== "delivered")
+          throw new Error(
+            "an earlier delivery attempt has an unknown outcome; inspect the session before manual delivery",
+          );
+        delivered =
+          receipt === "delivered" ||
+          !!(await deliverToRuntime(io, fleet, w.ticket, text, w.claim, config, { kind: "note", key }));
+        if (!delivered) throw new Error("the runtime does not support delivery");
+        detail = receipt === "delivered" ? "already delivered" : "delivered";
+        try {
+          for (const worker of workers) {
+            if (!worker.claim) continue;
+            await guarded(fleet, claimRef(worker.claim), "active", () =>
+              fleet.answer({ note: true, generated: true, deliveryKey: key, ticket: worker.ticket, text, item: null }),
+            );
+          }
+        } catch {
+          detail = "delivered; Armada could not record the note";
+          io.stderr(
+            `armada: warning: #${outcome.pr.number} is merged and its note was delivered to ${workers.map((w) => w.ticket).join(", ")}, but Armada could not record it\n`,
+          );
+        }
+      } catch (error) {
+        detail = `${oneLine(redactRuntimeText(error instanceof Error ? error.message : String(error)))}; deliver manually with the runtime guide`;
+        io.stderr(
+          `armada: warning: #${outcome.pr.number} is merged, but its note for ${workers.map((w) => w.ticket).join(", ")} was not delivered (${detail})\n`,
+        );
+      }
+    }
+    notified.push(...workers.map((worker) => ({ ticket: worker.ticket, delivered, detail, text })));
+  }
+  return notified;
+}
+
 /** Shared by merge callers; notifications must finish before this potentially slow step. */
 export async function afterMerge(
+  io: Io,
+  config: ArmadaConfig,
+  credentials: Credentials,
+  outcome: MergeOutcome,
+  opts: {
+    noArchive?: boolean;
+    noNotify?: boolean;
+    keepOpen?: boolean;
+    configPath?: string;
+    onNotified?: (results: WorkerNotification[]) => void;
+  },
+): Promise<AfterMergeResult> {
+  const notified = opts.noNotify ? [] : await notifyWorkers(io, config, credentials, outcome);
+  opts.onNotified?.(notified);
+  const archive = await archiveWorker(io, config, credentials, outcome, opts);
+  return { notified, notAffected: outcome.notAffected ?? [], archive };
+}
+
+async function archiveWorker(
   io: Io,
   config: ArmadaConfig,
   credentials: Credentials,

@@ -26,6 +26,36 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
+  test("generated merge notes are resolved records and leave pending plans and questions open", async () => {
+    const { fleet, store } = tempFleet();
+    const plan = await store.addInboxItem({
+      project: "widgets",
+      ticket: "DEMO-7",
+      kind: "plan",
+      recipient: "coordinator",
+      author: null,
+      body: "Review this plan",
+      at: NOW,
+    });
+    await fleet.ask({ ticket: "DEMO-7", body: "Which design?" });
+    expect(await fleet.prepareMergeNotice("merge-9")).toBe("reserved");
+    expect(await fleet.prepareMergeNotice("merge-9")).toBe("attempted");
+    const note = {
+      ticket: "DEMO-7",
+      note: true,
+      item: null,
+      text: "main moved: PR #9",
+      generated: true,
+      deliveryKey: "merge-9",
+    };
+    await fleet.answer(note);
+    await fleet.answer(note);
+    expect(await fleet.prepareMergeNotice("merge-9")).toBe("delivered");
+    expect((await store.getInboxItem("widgets", plan))?.resolvedAt).toBeNull();
+    expect((await fleet.ticketItems("DEMO-7")).map((i) => i.kind)).toEqual(["plan", "question"]);
+    expect(store.items.find((i) => i.kind === "note")?.resolvedAt).toBe(NOW.toISOString());
+    expect(store.items.filter((i) => i.kind === "note")).toHaveLength(1);
+  });
   test("release validates guards and always checks a worker caller's session identity", async () => {
     const { fleet, store } = tempFleet();
     await store.saveRuntimeHandle({
@@ -89,6 +119,16 @@ describe("the fleet through Armada", () => {
       () => fleet.inboxItem(1),
       () => fleet.pendingLaunches(),
       () => fleet.answer({ text: "yes", note: false, ticket: "DEMO-7", item: 1 }),
+      () => fleet.prepareMergeNotice("merge-9"),
+      () =>
+        fleet.answer({
+          text: "main moved",
+          note: true,
+          generated: true,
+          deliveryKey: "merge-9",
+          ticket: "DEMO-7",
+          item: null,
+        }),
       () => fleet.acquireLease({ name: "merge", holder: "w", ttlMs: 60_000 }),
       () => fleet.register(),
     ])

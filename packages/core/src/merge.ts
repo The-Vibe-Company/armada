@@ -4,6 +4,8 @@
 // Order: take the per-project merge lease, check everything, merge pinned to
 // the handed-back SHA, read MERGED back, then close the ticket. With --wait the
 // pull request is first brought up to date and waited for, without the lease.
+
+import picomatch from "picomatch";
 import type { ArmadaConfig } from "./config.ts";
 import { mainHealthLine, type UnblockedTickets } from "./fleet.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
@@ -76,6 +78,7 @@ export interface TicketInFlight {
   title: string;
   phase: string;
   runtime: string | null;
+  pr?: { number: number; files: string[] | null; filesComplete: boolean } | null;
 }
 
 export interface MergeUnblocked {
@@ -103,7 +106,12 @@ export interface MergeContext {
   /** True when this terminal is signed in to Armada: the merge lock is then required, and Armada being down refuses the merge. */
   lockRequired: boolean;
   /** One post-close reading for workers in flight and the closed ticket's dependents. Null names no closed ticket. */
-  afterRead: (ticket: string | null) => Promise<{ inFlight: TicketInFlight[]; unblocked: MergeUnblocked | null }>;
+  afterRead: (ticket: string | null) => Promise<{
+    inFlight: TicketInFlight[];
+    unblocked: MergeUnblocked | null;
+    filesKnown?: boolean;
+    noticeFallback?: string;
+  }>;
   /** Identifies this coordinator in the merge lease. */
   holder: string;
   now: () => Date;
@@ -144,6 +152,51 @@ export interface WorkerToTell {
   runtime: string | null;
   /** Runtime session, when the fleet's live data knows it. */
   handle: string | null;
+  pr?: TicketInFlight["pr"];
+  /** Frozen active generation; only Armada's stored claim authorizes delivery. */
+  claim?: RuntimeHandle | null;
+}
+
+export interface WorkerNotice extends WorkerToTell {
+  pr: NonNullable<TicketInFlight["pr"]>;
+  sharedFiles: string[];
+  why: string;
+}
+
+/** Selecting recipients never performs I/O or wakes a completed worker. */
+export function workersToTell(
+  merged: { files: string[] | null; filesComplete: boolean },
+  workers: WorkerToTell[],
+  notifyPaths: readonly string[],
+): { tell: WorkerNotice[]; skipped: { ticket: string; why: string }[] } {
+  const tell: WorkerNotice[] = [];
+  const skipped: { ticket: string; why: string }[] = [];
+  const files = new Set(merged.files ?? []);
+  const matches = picomatch([...notifyPaths], { dot: true });
+  const globalFiles = [...files].filter((f) => matches(f));
+  for (const worker of workers) {
+    if (worker.phase === "ready-to-merge") {
+      skipped.push({ ticket: worker.ticket, why: "already handed back" });
+      continue;
+    }
+    if (!worker.pr) {
+      skipped.push({ ticket: worker.ticket, why: "no pull request yet" });
+      continue;
+    }
+    const sharedFiles = [...new Set(worker.pr.files ?? [])].filter((f) => files.has(f)).sort();
+    const why = !merged.filesComplete
+      ? "merged PR files incomplete"
+      : globalFiles.length
+        ? `notify_paths: ${globalFiles.join(", ")}`
+        : sharedFiles.length
+          ? "shared files"
+          : !worker.pr.filesComplete
+            ? "worker PR files incomplete"
+            : null;
+    if (why) tell.push({ ...worker, pr: worker.pr, sharedFiles, why });
+    else skipped.push({ ticket: worker.ticket, why: "not affected" });
+  }
+  return { tell, skipped };
 }
 
 export interface MergeOutcome {
@@ -159,6 +212,12 @@ export interface MergeOutcome {
   workers: WorkerToTell[];
   /** False when the workers in flight could not be listed (or for a dry run): `workers` is then not the whole fleet. */
   workersListed: boolean;
+  /** False after a failed GitHub reading: keep the manual list and never automatically deliver. */
+  filesKnown?: boolean;
+  /** Why automatic notices are unsafe; the snapshot-derived manual worker list is retained. */
+  noticeFallback?: string;
+  notices?: WorkerNotice[];
+  notAffected?: { ticket: string; why: string }[];
   /** Dependents of the ticket just closed; null for a dry run, no-ticket merge or failed reading. */
   unblocked: MergeUnblocked | null;
   /** Cleanup evidence captured by Armada after the confirmed merge. Claim comments are hints only. */
@@ -1321,10 +1380,16 @@ async function after(
 
   let workers: WorkerToTell[] = [];
   let listed = false;
+  let filesKnown = false;
+  let noticeFallback: string | undefined;
   let unblocked: MergeUnblocked | null = null;
   try {
-    const handles = new Map<string, RuntimeHandle>((live$?.open ?? []).map((h) => [h.ticket, h]));
+    const open =
+      live$?.open ?? (await live(ctx, c.warnings, "read worker claims", (fleet) => fleet.runtimeHandles())) ?? [];
+    const handles = new Map<string, RuntimeHandle>(open.filter((h) => !h.releasedAt).map((h) => [h.ticket, h]));
     const reading = await ctx.afterRead(ticket?.id ?? null);
+    filesKnown = reading.filesKnown === true;
+    noticeFallback = reading.noticeFallback ?? (filesKnown ? undefined : "files unknown");
     unblocked = ticket ? reading.unblocked : null;
     workers = reading.inFlight
       .filter((t) => t.id !== ticket?.id)
@@ -1332,8 +1397,10 @@ async function after(
         ticket: t.id,
         title: t.title,
         phase: t.phase,
-        runtime: t.runtime ?? handles.get(t.id)?.runtime ?? null,
+        runtime: handles.get(t.id)?.runtime ?? t.runtime ?? null,
         handle: handles.get(t.id)?.handle ?? null,
+        pr: t.pr ?? null,
+        claim: handles.get(t.id) ?? null,
       }));
     listed = true;
   } catch (err) {
@@ -1341,7 +1408,16 @@ async function after(
       `could not list the workers in flight${ticket ? " and unblocked tickets" : ""} (${err instanceof Error ? err.message : String(err)}); run armada status`,
     );
   }
-  if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed };
+  const selected =
+    filesKnown && !noticeFallback
+      ? workersToTell(
+          { files: merged.files?.map((f) => f.path) ?? null, filesComplete: merged.filesComplete === true },
+          workers,
+          ctx.config.merge.notifyPaths,
+        )
+      : { tell: [], skipped: workers.map((w) => ({ ticket: w.ticket, why: noticeFallback ?? "files unknown" })) };
+  const notifications = { filesKnown, noticeFallback, notices: selected.tell, notAffected: selected.skipped };
+  if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed, ...notifications };
 
   const claim = activeClaimComments(ticket.comments)[0]?.claim;
   const runtime = live$?.handle?.runtime ?? ticket.agentRuntime ?? claim?.runtime ?? null;
@@ -1360,7 +1436,7 @@ async function after(
     claim: live$?.handle ?? null,
     open: live$?.open ?? [],
   };
-  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed, unblocked };
+  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed, unblocked, ...notifications };
 }
 
 function outcome(

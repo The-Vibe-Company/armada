@@ -55,6 +55,7 @@ export function memoryFleet(): FleetStore & {
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
   const paths = new Map<string, string[]>();
+  const notices = new Map<string, { delivered: boolean; tickets: Set<string> }>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
@@ -125,6 +126,37 @@ export function memoryFleet(): FleetStore & {
     presence,
     launches,
     validations,
+    async prepareMergeNotice(project, deliveryKey) {
+      const k = key(project, deliveryKey);
+      const previous = notices.get(k);
+      if (previous) return previous.delivered ? "delivered" : "attempted";
+      notices.set(k, { delivered: false, tickets: new Set() });
+      return "reserved";
+    },
+    async recordMergeNotice(q) {
+      const receipt = notices.get(key(q.project, q.key));
+      if (!receipt) throw new Error("merge notice was not reserved");
+      if (receipt.tickets.has(q.ticket)) return "Generated note already recorded.";
+      const id = insert({
+        project: q.project,
+        ticket: q.ticket,
+        kind: "note",
+        recipient: "worker",
+        author: "coordinator",
+        body: q.text,
+        createdAt: q.at.toISOString(),
+        requestQuestion: null,
+        requestProfile: null,
+      });
+      resolve(
+        items.filter((i) => i.id === id),
+        "delivered through the runtime",
+        q.at,
+      );
+      receipt.delivered = true;
+      receipt.tickets.add(q.ticket);
+      return `Note #${id} recorded.`;
+    },
 
     async ensureProject(p, at) {
       if (projects.has(p.slug)) return;

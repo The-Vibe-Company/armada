@@ -42,6 +42,10 @@ export interface ArmadaConfig {
     repository: string;
   };
   ci: CiConfig;
+  merge: {
+    /** Repository path globs whose merges concern every working pull request. */
+    notifyPaths: string[];
+  };
   gates: {
     /**
      * CI checks that must be green on the head of a pull request before a
@@ -187,6 +191,7 @@ export interface HerdrProfile {
 }
 
 export const CONFIG_DEFAULTS = {
+  notifyPaths: [".github/workflows/**"],
   language: "en",
   readyLabel: "ready-for-agent",
   parkedLabel: "parked",
@@ -296,6 +301,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const gates = raw.gates === undefined ? {} : raw.gates;
   if (!isTable(gates)) problems.push(`"gates" must be a table`);
   const gatesT = isTable(gates) ? gates : {};
+  const merge = raw.merge === undefined ? {} : raw.merge;
+  if (!isTable(merge)) problems.push(`"merge" must be a table`);
+  const mergeT = isTable(merge) ? merge : {};
   const brief = raw.brief === undefined ? {} : raw.brief;
   if (!isTable(brief)) problems.push(`"brief" must be a table`);
   const briefT = isTable(brief) ? brief : {};
@@ -324,6 +332,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["github", github, ["repository"]],
     ["ci", ciT, ["failure_patterns"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
+    ["merge", mergeT, ["notify_paths"]],
     [
       "policy",
       policyT,
@@ -648,6 +657,14 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
   }
 
+  let notifyPaths: string[] = [...CONFIG_DEFAULTS.notifyPaths];
+  if (mergeT.notify_paths !== undefined) {
+    const v = mergeT.notify_paths;
+    if (Array.isArray(v) && v.every((p) => typeof p === "string" && p.trim() && !p.includes("\u0000")))
+      notifyPaths = [...new Set(v.map((p: string) => p.trim()))];
+    else problems.push(`"merge.notify_paths" must be a list of path globs`);
+  }
+
   let specTitles: SpecTitleStyle = "N";
   if (tracker.spec_titles !== undefined) {
     if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
@@ -679,6 +696,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     },
     ci: { failurePatterns },
     gates: { requiredChecks, localCommands },
+    merge: { notifyPaths },
     policy: {
       silentAfterMinutes,
       quietAfterMinutes,
@@ -736,6 +754,10 @@ repository = ${q(p.repository)}
 
 [gates]
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
+
+[merge]
+# Files that concern every working PR, in addition to overlapping files (default: CI workflows).
+# notify_paths = [".github/workflows/**", "package.json", "migrations/**"]
 
 [policy]
 silence_minutes = 15     # a worker with no heartbeat for longer than this shows as silent

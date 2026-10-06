@@ -131,7 +131,7 @@ export async function deliverToRuntime(
   text: string,
   expected?: RuntimeHandle | null,
   config?: ArmadaConfig,
-  message: { item?: number | null; kind?: "answer" | "note" | "login" } = {},
+  message: { item?: number | null; kind?: "answer" | "note" | "login"; key?: string } = {},
 ): Promise<boolean> {
   const h = await fleet.runtimeHandle(ticket);
   if (!h || runtimeNameOf(h.runtime) === "claude-code" || !runtimeNameOf(h.runtime)) return false;
@@ -144,15 +144,17 @@ export async function deliverToRuntime(
     adapter.deliver(target, {
       text,
       kind: message.kind ?? "answer",
-      key: deliveryKey({
-        project: expected.project,
-        ticket,
-        claimedAt: target.claimedAt,
-        launchId: target.launchId,
-        item: message.item ?? null,
-        kind: message.kind ?? "answer",
-        text,
-      }),
+      key:
+        message.key ??
+        deliveryKey({
+          project: expected.project,
+          ticket,
+          claimedAt: target.claimedAt,
+          launchId: target.launchId,
+          item: message.item ?? null,
+          kind: message.kind ?? "answer",
+          text,
+        }),
     }),
   );
   return true;
