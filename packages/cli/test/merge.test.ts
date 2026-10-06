@@ -210,9 +210,9 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
       data: {
         repository: {
           pullRequest: {
-            number: 9,
+            number: Number(variables.number ?? 9),
             title: "feat(lists): share a list by link",
-            url: "https://github.com/acme/widgets/pull/9",
+            url: `https://github.com/acme/widgets/pull/${variables.number ?? 9}`,
             state: merged && net.confirmMerge ? "MERGED" : "OPEN",
             isDraft: false,
             mergeable: "MERGEABLE",
@@ -613,6 +613,68 @@ test.each([{ options: [] }, { options: ["--no-archive"] }])(
     expect(f.out()).not.toContain("armada_launch_");
   },
 );
+test("when-green persists intent without merging, deduplicates, lists on a new invocation and removes", async () => {
+  const f = await fixture();
+  f.pr.state = "BEHIND";
+  f.pr.check = { status: "IN_PROGRESS", conclusion: null };
+  expect(await run(["merge", "--when-green", "9", "--reason", "Reviewed"], f.io)).toBe(0);
+  expect(f.out()).toContain("queued #9 (1st)");
+  expect(f.out()).toContain("Next: armada merge --drain (in the background)");
+  expect(f.merged()).toBe(false);
+  expect(f.ghCalls).toEqual([]);
+  expect(await run(["merge", "--when-green", "9"], f.io)).toBe(0);
+  expect(f.out()).toContain("#9 is already queued.");
+  const out: string[] = [];
+  const freshIo = { ...f.io, stdout: (s: string) => out.push(s) };
+  expect(await run(["merge", "queue", "--json"], freshIo)).toBe(0);
+  expect(JSON.parse(out.join("")).entries).toMatchObject([
+    { pr: 9, state: "queued", reason: "Reviewed", headSha: f.head },
+  ]);
+  expect(await run(["merge", "queue", "remove", "9"], f.io)).toBe(0);
+  expect(f.out()).toContain("Removed #9");
+  expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("removed");
+  expect(await run(["merge", "queue", "remove", "https://github.com/acme/widgets/pull/2147483648"], f.io)).toBe(2);
+  expect(f.err()).toContain("pull request number must be between");
+  expect(await run(["merge", "--when-green", "9", "--no-archive"], f.io)).toBe(2);
+});
+
+test("when-green queues multiple no-ticket PRs in argument order and preserves flags", async () => {
+  const f = await fixture();
+  expect(
+    await run(
+      [
+        "merge",
+        "--when-green",
+        "12",
+        "15",
+        "--no-ticket",
+        "--keep-open",
+        "--through-hold",
+        "Fix main",
+        "--reason",
+        "Release",
+      ],
+      f.io,
+    ),
+  ).toBe(0);
+  expect(f.out()).toContain("queued #12 (1st)");
+  expect(f.out()).toContain("queued #15 (2nd)");
+  expect(
+    (await f.store.queueList("widgets", { since: NOW })).map((e) => [
+      e.pr,
+      e.noTicket,
+      e.keepOpen,
+      e.throughHold,
+      e.reason,
+    ]),
+  ).toEqual([
+    [12, true, true, "Fix main", "Release"],
+    [15, true, true, "Fix main", "Release"],
+  ]);
+  expect(f.merged()).toBe(false);
+  expect(f.ghCalls).toEqual([]);
+});
+
 // The real adapter talks to a fake native runtime: no Conductor commands or wall-clock waits.
 test.each([
   "confirmed",

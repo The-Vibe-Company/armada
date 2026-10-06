@@ -52,6 +52,7 @@ import {
   type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
+import type { QueueAdded, QueueEntry, QueueNext } from "./merge-queue.ts";
 import { buildModel } from "./model.ts";
 import { type OverlapReading, pathsProblem } from "./overlap.ts";
 import { isLabelPhase } from "./phases.ts";
@@ -107,6 +108,11 @@ export const FLEET_OPS = [
   "merge",
   "validations",
   "done",
+  "queue/add",
+  "queue/list",
+  "queue/next",
+  "queue/finish",
+  "queue/remove",
   "lease/acquire",
   "lease/renew",
   "lease/release",
@@ -199,6 +205,13 @@ function shaOf(b: Body, key: string): string | null {
   const v = optText(b, key, 64);
   if (v !== null && !SHA.test(v)) throw new Invalid(`${key} must be a commit SHA`);
   return v;
+}
+
+function dateOf(b: Body, key: string): string {
+  const value = text(b, key, 64);
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value) || !Number.isFinite(Date.parse(value)))
+    throw new Invalid(`${key} must be an ISO timestamp`);
+  return new Date(value).toISOString();
 }
 
 const BODY_MAX = 100_000;
@@ -678,6 +691,57 @@ export async function serveFleet(
           });
         case "done":
           return recordDone(store, slug, { ticket: ticketOf(b), message: text(b, "message", BODY_MAX) }, at);
+        case "queue/add": {
+          const noTicket = bool(b, "noTicket");
+          const ticket = b.ticket == null ? null : ticketOf(b);
+          if (noTicket !== (ticket === null)) throw new Invalid("ticket and noTicket disagree");
+          const headSha = shaOf(b, "headSha");
+          if (!headSha || !/^[0-9a-f]{40}$/.test(headSha)) throw new Invalid("headSha must be a full 40-character SHA");
+          const pr = idOf(b, "pr");
+          if (pr > 2147483647) throw new Invalid("pr is too large");
+          return store.queueAdd({
+            project: slug,
+            at,
+            pr,
+            ticket,
+            noTicket,
+            keepOpen: bool(b, "keepOpen"),
+            throughHold: optText(b, "throughHold", BODY_MAX),
+            reason: optText(b, "reason", BODY_MAX),
+            headSha,
+            queuedBy: caller.kind === "organization" ? (caller.author ?? text(b, "queuedBy", LINE_MAX)) : "coordinator",
+          });
+        }
+        case "queue/list":
+          return store.queueList(slug, {
+            since: b.since == null ? new Date(at.getTime() - 86400_000) : new Date(dateOf(b, "since")),
+          });
+        case "queue/next":
+          return store.queueNext({ project: slug, holder: text(b, "holder", LINE_MAX), at });
+        case "queue/finish": {
+          const outcome = b.outcome;
+          if (outcome !== "merged" && outcome !== "refused" && outcome !== "retry")
+            throw new Invalid("outcome must be merged, refused or retry");
+          const mergeCommit = shaOf(b, "mergeCommit");
+          if (mergeCommit && !/^[0-9a-f]{40}$/.test(mergeCommit)) throw new Invalid("mergeCommit must be a full SHA");
+          const notBefore = b.notBefore == null ? null : dateOf(b, "notBefore");
+          if (outcome !== "retry" && notBefore !== null) throw new Invalid("notBefore applies to retry");
+          return store.queueFinish({
+            project: slug,
+            at,
+            id: idOf(b, "id"),
+            holder: text(b, "holder", LINE_MAX),
+            outcome,
+            detail: optText(b, "detail", BODY_MAX),
+            mergeCommit,
+            notBefore,
+          });
+        }
+        case "queue/remove": {
+          const pr = idOf(b, "pr");
+          if (pr > 2147483647) throw new Invalid("pr is too large");
+          return store.queueRemove({ project: slug, pr, at });
+        }
         case "lease/acquire":
         case "lease/renew": {
           const ttl = b.ttlMs;
@@ -848,6 +912,11 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),
+    queueAdd: (e) => call<QueueAdded>("queue/add", e),
+    queueList: (q = {}) => call<QueueEntry[]>("queue/list", q),
+    queueNext: (q) => call<QueueNext>("queue/next", q),
+    queueFinish: (q) => call<boolean>("queue/finish", q),
+    queueRemove: (q) => call<boolean>("queue/remove", q),
     acquireLease: (l) => call<LeaseResult>("lease/acquire", l),
     renewLease: (l) => call<boolean>("lease/renew", l),
     releaseLease: (l) => call<null>("lease/release", l).then(() => undefined),
