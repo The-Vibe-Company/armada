@@ -434,6 +434,7 @@ export async function serveFleet(
                 deps.config?.tracker.parkedLabel,
                 !!i.ticket && !!held?.has(i.ticket),
                 caller.kind === "organization" ? (caller.launchAuthor ?? caller.author) : null,
+                !!i.request?.profile && deps.config?.conductor.profiles[i.request.profile]?.runtime === "claude-code",
               ),
             );
         }

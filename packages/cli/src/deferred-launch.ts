@@ -52,10 +52,7 @@ export async function launchDeferredAfterMerge(
         ticket: request.ticket,
         request: request.id,
         status: "manual",
-        command:
-          profile?.runtime === "claude-code"
-            ? `${request.command.replace(/^armada launch /, "armada brief ")} --prompt`
-            : request.command,
+        command: request.command,
       });
       continue;
     }

@@ -739,6 +739,9 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       handBackSnapshot = {
         repository: project.repository,
         parkedLabel: snapshot.config.tracker.parkedLabel,
+        guidedProfiles: Object.entries(snapshot.config.conductor.profiles)
+          .filter(([, profile]) => profile.runtime === "claude-code")
+          .map(([name]) => name),
         issues: snapshot.sources.program.issues,
         prs: snapshot.sources.forge?.prs ?? [],
         flight: { ...snapshot.sources, after: snapshot.startedAt.toISOString() },

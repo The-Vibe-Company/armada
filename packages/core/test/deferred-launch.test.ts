@@ -175,3 +175,39 @@ test("deferred requests refuse held work and the inbox withholds it after blocke
     ).toBe(false);
   }
 });
+
+test("guided deferred profiles advertise usable commands in summaries and external-close wakes", async () => {
+  const store = memoryFleet();
+  const guidedConfig = {
+    ...config,
+    conductor: {
+      ...config.conductor,
+      profiles: {
+        ...config.conductor.profiles,
+        codex: { ...config.conductor.profiles.codex!, runtime: "claude-code" as const },
+      },
+    },
+  };
+  const reading = { ...snapshot(), guidedProfiles: ["codex"] };
+  const saved = await requestDeferredLaunch(store, {
+    config: guidedConfig,
+    snapshot: reading,
+    ticket: "DEMO-9",
+    profile: "codex",
+    author: "Ada",
+    now: NOW,
+  });
+  expect(saved.command).toContain("armada brief DEMO-9 --profile codex --reason");
+  expect(saved.command).toEndWith(" --prompt");
+  const result = await serveFleet(
+    store,
+    { project: DEMO_PROJECT, op: "launch-requests", caller: { kind: "organization", author: "Ada" }, input: {} },
+    { config: guidedConfig, snapshot: reading, now: () => NOW },
+  );
+  expect(result.body.result).toMatchObject([{ command: saved.command }]);
+  const blocker = reading.flight?.program.issues.find((i) => i.id === "DEMO-7");
+  if (!blocker) throw new Error("missing blocker");
+  blocker.statusType = "completed";
+  const items = await readInbox(store, { project: "widgets", snapshot: reading, now: NOW, silentAfterMinutes: 15 });
+  expect(items).toMatchObject([{ id: saved.id, body: expect.stringContaining(saved.command) }]);
+});

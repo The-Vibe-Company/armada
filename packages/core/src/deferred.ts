@@ -17,8 +17,8 @@ export interface DeferredLaunch {
   owned: boolean;
 }
 
-export const deferredCommand = (ticket: string, profile: string | null) =>
-  `armada launch ${shellWord(ticket)}${profile ? ` --profile ${shellWord(profile)} --reason ${shellWord("deferred launch requested by the coordinator")}` : ""}`;
+export const deferredCommand = (ticket: string, profile: string | null, guided = false) =>
+  `armada ${guided ? "brief" : "launch"} ${shellWord(ticket)}${profile ? ` --profile ${shellWord(profile)} --reason ${shellWord("deferred launch requested by the coordinator")}` : ""}${guided ? " --prompt" : ""}`;
 
 /** Match authenticated identities independently of mutable display names. */
 function sameAuthor(stored: string | null, current?: string | null): boolean {
@@ -51,6 +51,7 @@ export function deferredLaunchState(
   parkedLabel: string | undefined,
   held: boolean,
   author?: string | null,
+  guided = false,
 ): DeferredLaunch {
   const ticket = item.ticket ?? "";
   const issue = model?.program.find((i) => i.id === ticket);
@@ -76,13 +77,13 @@ export function deferredLaunchState(
     profile: item.request?.profile ?? null,
     blockers,
     reason,
-    command: deferredCommand(ticket, item.request?.profile ?? null),
+    command: deferredCommand(ticket, item.request?.profile ?? null, guided),
     owned: sameAuthor(item.author, author),
   };
 }
 
-export function deferredWakeBody(item: InboxItem, model: Model): string {
+export function deferredWakeBody(item: InboxItem, model: Model, command: string): string {
   const issue = model.byId.get(item.ticket ?? "");
   const closed = issue?.blockedBy.filter((b) => isClosed(model.byId.get(b.id) ?? b)).map((b) => b.id) ?? [];
-  return `${item.ticket} is unblocked${closed.length ? ` (${closed.join(", ")} done)` : ""}: launch it now: ${deferredCommand(item.ticket ?? "", item.request?.profile ?? null)}`;
+  return `${item.ticket} is unblocked${closed.length ? ` (${closed.join(", ")} done)` : ""}: launch it now: ${command}`;
 }

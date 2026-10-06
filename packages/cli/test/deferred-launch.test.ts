@@ -152,7 +152,7 @@ test("post-merge launches only ready requests owned by this coordinator with sto
       },
     },
   };
-  requests[0]!.command = "armada launch DEMO-9 --profile backend --reason 'saved reason'";
+  requests[0]!.command = "armada brief DEMO-9 --profile backend --reason 'saved reason' --prompt";
   const guided = await launchDeferredAfterMerge(outcome, guidedConfig, fleet, launch);
   expect(guided[0]).toMatchObject({
     status: "manual",

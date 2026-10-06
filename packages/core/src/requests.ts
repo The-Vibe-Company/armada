@@ -344,7 +344,14 @@ export async function requestDeferredLaunch(
   };
   const events = await db.latestEvents(config.project.slug, { tickets: [ticket] });
   const heldTickets = deferredHeld(model, snapshot.flight, input.now, held ? [held] : [], events);
-  const state = deferredLaunchState(item, model, config.tracker.parkedLabel, heldTickets.has(ticket), author);
+  const state = deferredLaunchState(
+    item,
+    model,
+    config.tracker.parkedLabel,
+    heldTickets.has(ticket),
+    author,
+    !!profile && config.conductor.profiles[profile]?.runtime === "claude-code",
+  );
   if (!state.blockers?.length && issue && state.reason === null)
     throw new RequestRefusal("not-ready", `${ticket} is not blocked; run ${state.command}`);
   if (!state.blockers?.length || state.reason !== `waits on ${state.blockers.join(", ")}`)

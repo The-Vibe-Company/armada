@@ -812,6 +812,8 @@ export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> 
 export interface HandBackSnapshot {
   repository: string;
   parkedLabel?: string;
+  /** Guided profiles from the same trusted stored configuration. */
+  guidedProfiles?: readonly string[];
   issues: readonly Pick<Issue, "id" | "statusType">[];
   prs: readonly Pick<PullRequest, "repo" | "number" | "state">[];
   /** Full stored reading for the same in-flight derivation as status. */
@@ -949,8 +951,15 @@ async function readInboxAndFlight(
       : null;
   items = items.flatMap((item) => {
     if (item.kind !== "launch-request" || !item.request?.deferred) return [item];
-    const state = deferredLaunchState(item, model, o.snapshot?.parkedLabel, !!item.ticket && !!held?.has(item.ticket));
-    return state.reason || !model ? [] : [{ ...item, body: deferredWakeBody(item, model) }];
+    const state = deferredLaunchState(
+      item,
+      model,
+      o.snapshot?.parkedLabel,
+      !!item.ticket && !!held?.has(item.ticket),
+      null,
+      !!item.request?.profile && !!o.snapshot?.guidedProfiles?.includes(item.request.profile),
+    );
+    return state.reason || !model ? [] : [{ ...item, body: deferredWakeBody(item, model, state.command) }];
   });
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
