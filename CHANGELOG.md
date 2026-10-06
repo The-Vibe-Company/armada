@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.2.57](https://github.com/The-Vibe-Company/armada/compare/v0.2.56...v0.2.57) (2026-10-06)
+
+
+### Features
+
+* **cli:** check worker Git access after claim ([#255](https://github.com/The-Vibe-Company/armada/issues/255)) ([051b211](https://github.com/The-Vibe-Company/armada/commit/051b211af5010e77f7d41d6459e220487629cc1d))
+* **cli:** deliver answers and notes to Conductor workers ([#218](https://github.com/The-Vibe-Company/armada/issues/218)) ([b133480](https://github.com/The-Vibe-Company/armada/commit/b1334802cf4bdcc60cd28e5970065ca98fe3cb5f))
+* **cli:** drain queued pull requests one at a time ([#256](https://github.com/The-Vibe-Company/armada/issues/256)) ([ac7b4fb](https://github.com/The-Vibe-Company/armada/commit/ac7b4fb4370fdfbbbe506c06185266f065f540e6))
+* **cli:** notify only workers affected by a merge ([#229](https://github.com/The-Vibe-Company/armada/issues/229)) ([30ea818](https://github.com/The-Vibe-Company/armada/commit/30ea8181d844c6444a7f2f8b9976fe63d2117ae6))
+* **cli:** relaunch a ticket's worker in one command ([#227](https://github.com/The-Vibe-Company/armada/issues/227)) ([c92ce4b](https://github.com/The-Vibe-Company/armada/commit/c92ce4bba0d02637e69b87e7cc3b557c9d2d66d8))
+* **cli:** require live acceptance checks before hand-back ([#240](https://github.com/The-Vibe-Company/armada/issues/240)) ([8a1e3ad](https://github.com/The-Vibe-Company/armada/commit/8a1e3ad3a97f308a8402121f917a73caec0c5900))
+* **core:** close finished specs after ticket closure ([#251](https://github.com/The-Vibe-Company/armada/issues/251)) ([582aaf2](https://github.com/The-Vibe-Company/armada/commit/582aaf2cca99c354192b42dc676ae5c0effb5824))
+* **core:** notify coordinators when merges unblock work ([#244](https://github.com/The-Vibe-Company/armada/issues/244)) ([422e4d8](https://github.com/The-Vibe-Company/armada/commit/422e4d8c0eee9893bc269fd587f8471acd38f8fc))
+* **core:** pause merges when main turns red ([#265](https://github.com/The-Vibe-Company/armada/issues/265)) ([a0db234](https://github.com/The-Vibe-Company/armada/commit/a0db234d6025c03334a0d274f5b54d8945f32c83))
+* **dashboard:** decide validations from the keyboard ([#253](https://github.com/The-Vibe-Company/armada/issues/253)) ([a2457ee](https://github.com/The-Vibe-Company/armada/commit/a2457eeea2c21f04504cfe8adb48acebe19ace96))
+* **dashboard:** show paused merges and deploy state ([#248](https://github.com/The-Vibe-Company/armada/issues/248)) ([9cd474b](https://github.com/The-Vibe-Company/armada/commit/9cd474b0443cc75ef77f1acc7d414f28176e0435))
+* **dashboard:** show the merge queue and wake the coordinator when it is stuck ([#263](https://github.com/The-Vibe-Company/armada/issues/263)) ([cc2e567](https://github.com/The-Vibe-Company/armada/commit/cc2e56780cd8749eb8ef2b18fdf922e1878b0e60))
+* **doctor:** check unattended commit signing ([#247](https://github.com/The-Vibe-Company/armada/issues/247)) ([dd012c8](https://github.com/The-Vibe-Company/armada/commit/dd012c807ff2d777c45d0d53b6377502b83a16ef))
+* **jobs:** warn when long jobs go silent or end ([#246](https://github.com/The-Vibe-Company/armada/issues/246)) ([c0a4bd2](https://github.com/The-Vibe-Company/armada/commit/c0a4bd23ee73d1d213c3f5bfa926e96653857000))
+* **merge:** keep tickets open between pull requests ([#242](https://github.com/The-Vibe-Company/armada/issues/242)) ([0596e69](https://github.com/The-Vibe-Company/armada/commit/0596e69b085840ef680e5345a9a1ca3a02d9c8a6))
+* **secrets:** request missing worker secrets by owner link ([#249](https://github.com/The-Vibe-Company/armada/issues/249)) ([8ce4fb4](https://github.com/The-Vibe-Company/armada/commit/8ce4fb4629c39057689b417c62449be584d69ba1))
+* **setup:** help projects adopt optional Armada features ([#257](https://github.com/The-Vibe-Company/armada/issues/257)) ([ba464b1](https://github.com/The-Vibe-Company/armada/commit/ba464b15d8165e8d44680b29e6315e2831dcf109))
+
+
+### Bug Fixes
+
+* **ci:** declare dashboard Chrome startup flake (THE-1185) ([#267](https://github.com/The-Vibe-Company/armada/issues/267)) ([90a13b7](https://github.com/The-Vibe-Company/armada/commit/90a13b7a900df2be0e32815f399905038ae460ea))
+* **cli:** capture Conductor responses without pipe truncation ([#261](https://github.com/The-Vibe-Company/armada/issues/261)) ([4235354](https://github.com/The-Vibe-Company/armada/commit/4235354cb185509a02207a3225f962de98ceca97))
+* **core:** keep spec closure failures out of Linear pending ([#254](https://github.com/The-Vibe-Company/armada/issues/254)) ([ba99dce](https://github.com/The-Vibe-Company/armada/commit/ba99dce736039e88de94b482ad96b318c2f8e1d4))
+* **core:** raise silence alarms only for active worker claims ([#245](https://github.com/The-Vibe-Company/armada/issues/245)) ([f0dad5c](https://github.com/The-Vibe-Company/armada/commit/f0dad5c27f8ef1889451b17d5d0cf1a405a2750a))
+* **jobs:** keep worker results out of the coordinator inbox ([#260](https://github.com/The-Vibe-Company/armada/issues/260)) ([4f2ebeb](https://github.com/The-Vibe-Company/armada/commit/4f2ebeb1b11bebb9db1d7d9791e90519fd1b7fe4))
+* **tests:** apply audited consolidations and repair keeper proofs (THE-1146) ([#262](https://github.com/The-Vibe-Company/armada/issues/262)) ([fa87d96](https://github.com/The-Vibe-Company/armada/commit/fa87d968caf7bc839a829ba33a2769e660b57c48))
+* **workers:** proceed through shared-file overlaps without asking ([#234](https://github.com/The-Vibe-Company/armada/issues/234)) ([ae859a5](https://github.com/The-Vibe-Company/armada/commit/ae859a5a9231909f84682db6c3784657715ea98b))
+
 ## [0.2.56](https://github.com/The-Vibe-Company/armada/compare/v0.2.55...v0.2.56) (2026-10-06)
 
 
