@@ -71,7 +71,9 @@ export async function closeFinishedSpec(
       .filter(Boolean)
       .join("\n\n");
     const key = createHash("sha256").update(summary).digest("hex").slice(0, 16);
-    const marker = `Spec completed — all descendants are completed or canceled. Summary ${key}.`;
+    const marker = `Spec completion — all descendants are completed or canceled. Summary ${key}.`;
+    if (spec.commentsTruncated)
+      throw new Error("Linear did not return every spec comment; summary retry cannot be checked");
     if (!spec.comments.some((comment) => comment.excerpt.startsWith(marker)))
       await ctx.linear.comment(spec.uuid, `${marker}\n\n${summary}`);
     await ctx.linear.updateTicket(spec.uuid, { stateId: done.id });

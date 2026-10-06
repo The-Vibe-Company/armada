@@ -196,16 +196,16 @@ async function parentAutoCloseChecks(io: Io, config: ArmadaConfig | null, creden
       { apiKey: credentials.linearApiKey, ...httpOptions(io) },
       config.tracker.programRoot,
     );
+    let message = `${setting.team}: Linear did not return the Parent auto-close setting`;
+    if (setting.enabled === true)
+      message = `${setting.team}: Parent auto-close is on; Linear closes parents when all sub-issues are closed`;
+    else if (setting.enabled === false)
+      message = `${setting.team}: Parent auto-close is off; Armada closes finished specs after merge or done`;
     return [
       {
         id,
         level: setting.enabled ? "ok" : "warning",
-        message:
-          setting.enabled === true
-            ? `${setting.team}: Parent auto-close is on; Linear closes parents when all sub-issues are closed`
-            : setting.enabled === false
-              ? `${setting.team}: Parent auto-close is off; Armada closes finished specs after merge or done`
-              : `${setting.team}: Linear did not return the Parent auto-close setting`,
+        message,
         fix: setting.enabled ? null : fix,
       },
     ];

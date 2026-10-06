@@ -61,7 +61,7 @@ describe("Linear write adapter", () => {
       { parents: ["uuid-spec"], after: "cursor-1" },
     ]);
     stuck = true;
-    expect(writer.readChildren(["uuid-spec"])).rejects.toThrow("did not advance child pagination");
+    await expect(writer.readChildren(["uuid-spec"])).rejects.toThrow("did not advance child pagination");
   });
 
   test("looks up an ungrouped label by name in the ticket's team, then the workspace", async () => {

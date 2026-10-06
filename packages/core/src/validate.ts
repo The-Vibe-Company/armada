@@ -6,6 +6,7 @@
 // approved, with no pull request (a design ticket). Each item lands on the
 // dashboard's Validations page, opened from one link; Linear keeps the record.
 
+import { parseStatusLine } from "./linear.ts";
 import { transitionProblem } from "./phases.ts";
 import { closeFinishedSpec } from "./spec-close.ts";
 import {
@@ -144,7 +145,10 @@ export async function closeValidated(
   input: { ticket: string; attachmentUrl: (id: string) => string },
 ): Promise<Outcome & { validation: Validation }> {
   const { config, linear } = ctx;
-  const ticket = await readOpenTicket(ctx, input.ticket);
+  const ticket = await linear.readTicket(input.ticket);
+  if (!ticket) throw new Refusal(`ticket ${input.ticket} not found in Linear`, "armada status");
+  if (ticket.statusType === "canceled")
+    throw new Refusal(`${ticket.id} is canceled; there is nothing to close`, "armada status");
   const { fleet, warning } = await ctx.fleet();
   if (!fleet)
     throw new Refusal(
@@ -163,6 +167,35 @@ export async function closeValidated(
         : `armada validate ${ticket.id} "<what to check>"`,
     );
   const decided = decidedLine(v.decision);
+  const summary = `done without a pull request: validation #${v.id} ${decided}`;
+  const recordedSummary = parseStatusLine(`Agent status: merged — ${summary}`)?.summary;
+  // A completed ticket can retry only its already-recorded validation closure.
+  // Do not relabel it, post another closure, or release another runtime claim.
+  if (ticket.statusType === "completed") {
+    if (
+      ticket.commentsTruncated ||
+      !ticket.comments.some(
+        (comment) => comment.status?.phase === "merged" && comment.status.summary === recordedSummary,
+      )
+    )
+      throw new Refusal(
+        `${ticket.id} has no readable closure record for validation #${v.id}`,
+        "retry once Linear answers, or inspect the ticket's closure",
+      );
+    const spec = await closeFinishedSpec(ctx, ticket);
+    return {
+      ticket: ticket.id,
+      url: ticket.url,
+      validation: v,
+      inbox: null,
+      lines: [
+        `${ticket.id}: already completed by validation #${v.id}; retried spec bookkeeping.`,
+        ...spec.lines,
+        ...(spec.warnings.length ? [`Next: armada done ${ticket.id}`] : []),
+      ],
+      warnings: [...ticket.warnings, ...spec.warnings],
+    };
+  }
   const groups = config.tracker.labels;
   const done = firstState(ticket.states, "completed");
   await linear.updateTicket(ticket.uuid, {
@@ -174,7 +207,6 @@ export async function closeValidated(
     ],
   });
   const attachments = v.attachments.map((id) => `- ${input.attachmentUrl(id)}`);
-  const summary = `done without a pull request: validation #${v.id} ${decided}`;
   await linear.comment(
     ticket.uuid,
     [
@@ -203,6 +235,7 @@ export async function closeValidated(
     lines: [
       `${ticket.id}: ${done ? `moved to ${done.name}` : "state unchanged"}, agent and ready labels removed; ${summary}.`,
       ...spec.lines,
+      ...(spec.warnings.length ? [`Next: armada done ${ticket.id}`] : []),
       "Building it is a separate ticket: cut it, blocked by this one.",
     ],
     warnings,

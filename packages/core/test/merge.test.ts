@@ -214,7 +214,7 @@ describe("closing a finished spec after a merge", () => {
       expect(out.merged).toBe(true);
       const closed = remaining === null || remaining === "canceled";
       expect(linear.get("DEMO-2").statusType).toBe(closed ? "completed" : "backlog");
-      expect(linear.bodies.some((body) => body.includes("Spec completed") && body.includes("DEMO-7"))).toBe(closed);
+      expect(linear.bodies.some((body) => body.includes("Spec completion") && body.includes("DEMO-7"))).toBe(closed);
     });
   }
 
@@ -253,14 +253,15 @@ describe("closing a finished spec after a merge", () => {
     };
     const out = await mergePullRequest(ctx, { pr: 9 });
     expect(out.merged).toBe(true);
-    expect(out.linearPending).toBe(false);
+    expect(out.linearPending).toBe(true);
     expect(linear.get("DEMO-7").statusType).toBe("completed");
     expect(linear.get("DEMO-2").statusType).toBe("backlog");
     expect(out.warnings.join("\n")).toContain("Could not close spec");
   });
 
   test("finish retries a failed spec update without duplicating its shipped summary", async () => {
-    const { ctx, linear } = setup();
+    const live = tempFleet();
+    const { ctx, linear } = setup({ live });
     linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: ctx.config.tracker.programRoot });
     linear.get("DEMO-7").parentId = "DEMO-2";
     const update = linear.updateTicket.bind(linear);
@@ -270,12 +271,33 @@ describe("closing a finished spec after a merge", () => {
     };
     const merged = await mergePullRequest(ctx, { pr: 9 });
     expect(merged.merged).toBe(true);
+    expect(merged.linearPending).toBe(true);
+    expect(merged.lines).toContain("Next: armada merge --finish 9");
+    expect(live.store.items.some((item) => item.kind === "linear-pending" && !item.resolvedAt)).toBe(true);
     expect(merged.warnings.join("\n")).toContain("spec update failed");
     expect(linear.get("DEMO-2").statusType).toBe("backlog");
     linear.updateTicket = update;
-    await finishMerge(ctx, { pr: 9 });
+    const finished = await finishMerge(ctx, { pr: 9 });
+    expect(finished.linearPending).toBe(false);
+    expect(live.store.items.some((item) => item.kind === "linear-pending" && !item.resolvedAt)).toBe(false);
     expect(linear.get("DEMO-2").statusType).toBe("completed");
-    expect(linear.bodies.filter((body) => body.startsWith("Spec completed"))).toHaveLength(1);
+    expect(linear.bodies.filter((body) => body.startsWith("Spec completion"))).toHaveLength(1);
+  });
+
+  test("incomplete comments cannot duplicate a spec summary or close the spec", async () => {
+    const { ctx, linear } = setup();
+    linear.add("DEMO-2", {
+      title: "Spec 1 — Lists",
+      parentId: ctx.config.tracker.programRoot,
+      commentsTruncated: true,
+    });
+    linear.get("DEMO-7").parentId = "DEMO-2";
+    const out = await mergePullRequest(ctx, { pr: 9 });
+    expect(out.merged).toBe(true);
+    expect(out.linearPending).toBe(true);
+    expect(out.warnings.join("\n")).toContain("every spec comment");
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    expect(linear.writes.some((write) => /^(update|comment) DEMO-2 /.test(write))).toBe(false);
   });
 });
 

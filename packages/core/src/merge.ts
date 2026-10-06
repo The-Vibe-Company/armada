@@ -1525,8 +1525,8 @@ async function after(
       if (!fresh) throw new Error(`ticket ${ticket.id} not found in Linear`);
       lines.push(...(await closeTicket(ctx, fresh, merged, c, unlocked, override)));
       const spec = await closeFinishedSpec(ctx, fresh);
+      if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
       lines.push(...spec.lines);
-      c.warnings.push(...spec.warnings);
     } catch (err) {
       linearPending = true;
       c.warnings.push(
@@ -1680,8 +1680,8 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
     if (!ticket) throw new Error(`#${input.pr} names no ticket`);
     lines.push(...(await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit)));
     const spec = await closeFinishedSpec(ctx, ticket);
+    if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
     lines.push(...spec.lines);
-    warnings.push(...spec.warnings);
     linearPending = false;
     const resolved = await mergeLive(ctx, warnings, "resolve pending Linear work", async (fleet) => {
       const items = await fleet.ticketItems(ticket?.id ?? "");
