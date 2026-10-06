@@ -169,6 +169,8 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
     coordinator: coordinatorHandle(io),
     facts: detectCoordinator(io),
     silentAfterMinutes: config.policy.silentAfterMinutes,
+    launchGraceMinutes: config.policy.launchGraceMinutes,
+    ciWaitMinutes: config.policy.ciWaitMinutes,
     quietAfterMinutes: config.policy.quietAfterMinutes,
     notStartedMinutes: config.policy.notStartedMinutes,
     now: io.now ?? (() => new Date()),
@@ -178,10 +180,13 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
   });
   const inFlight =
     name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
-  await remember(io, report.project, shown(io, report.items, inFlight));
+  const openJobs =
+    name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
+  await remember(io, report.project, shown(io, report.items, inFlight, openJobs));
   const next = await rearmFor(io, report.project, {
     inFlight,
     open: report.items.length,
+    openJobs,
     act: report.items.length > 0,
   });
   const runtimes = (await fleet.runtimeHandles().catch(() => []))

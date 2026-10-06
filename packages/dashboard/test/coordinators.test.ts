@@ -222,7 +222,9 @@ test("first claim reads the pending handover owner after acquiring the project l
   const lock = statements.findIndex((sql) => sql === "SELECT slug FROM projects WHERE slug = $1 FOR UPDATE");
   const write = statements.findIndex((sql) => sql.includes("INSERT INTO runtime_handles"));
   expect(lock).toBeGreaterThan(0);
-  expect(write).toBe(lock + 1);
+  expect(write).toBeGreaterThan(lock);
+  // Session revalidation may run between the lock and claim write, inside this transaction.
+  expect(statements.slice(lock, write)).not.toContain("COMMIT");
   expect(statements[lock - 1]).toBe("BEGIN");
   expect(statements[write + 1]).toBe("COMMIT");
 });

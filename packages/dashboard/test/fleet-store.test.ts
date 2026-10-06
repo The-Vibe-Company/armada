@@ -116,6 +116,11 @@ describe("live data", () => {
     const ids: number[] = [];
     for (const kind of ["plan", "question", "answer-request"] as const)
       ids.push(await addInboxItem(db, { ...common, kind }));
+    await putHandBack(db, { project, ticket, author: "worker-new", body: "PR #97", at: at(6) });
+    await putHandBack(db, { project, ticket, author: "worker-old", body: "PR #96", at: at(6) });
+    expect(
+      (await openInboxItems(db, { project, recipient: "coordinator", ticket })).find((i) => i.kind === "hand-back"),
+    ).toMatchObject({ author: "worker-new", body: "PR #97" });
     const before = await lastEventTimes(db, project);
     for (const guard of [
       { handle: "ws/s", claimedAt: at(0).toISOString() },
@@ -134,6 +139,35 @@ describe("live data", () => {
       ).toHaveLength(3);
       expect(await lastEventTimes(db, project)).toEqual(before);
     }
+    // Failure late in cleanup rolls back the handle, paths and inbox together.
+    await store.saveTicketPaths(project, ticket, ["src/replacement.ts"], at(6));
+    const failing: Database = {
+      query: db.query.bind(db),
+      end: async () => {},
+      connect: async () => {
+        const connection = await db.connect();
+        return {
+          release: connection.release.bind(connection),
+          query: async (sql, params) => {
+            if (sql.startsWith("INSERT INTO events")) throw new Error("synthetic cleanup failure");
+            return connection.query(sql, params);
+          },
+        };
+      },
+    };
+    await expect(
+      recordRelease(
+        fleetStore(failing),
+        project,
+        { ticket, reason: "done", handle: "ws/s", claimedAt: at(5).toISOString() },
+        at(7),
+      ),
+    ).rejects.toThrow("cleanup failure");
+    expect((await getRuntimeHandle(db, project, ticket))?.releasedAt).toBeNull();
+    expect((await store.ticketPaths(project))[ticket]).toEqual(["src/replacement.ts"]);
+    expect(
+      (await openInboxItems(db, { project, recipient: "coordinator", ticket })).filter((i) => ids.includes(i.id)),
+    ).toHaveLength(3);
     expect(
       await recordRelease(
         store,
@@ -931,4 +965,62 @@ test("a higher reserved version does not hide a later merge-hold migration", asy
   } finally {
     await database.end();
   }
+});
+
+test("concurrent terminal job observations atomically store one coordinator notice with last progress", async () => {
+  const project = { slug: "job-notices", name: "Jobs", repository: "acme/jobs", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  for (const state of ["succeeded", "failed", "stopped", "lost"] as const) {
+    const job = await store.startJob({
+      project: project.slug,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: at(0),
+    });
+    await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      progress: "40/120",
+      at: at(0),
+    });
+    await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      progress: "40/120",
+      at: at(0),
+    });
+    const stale = await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "failed",
+      progress: "old result",
+      expectedRevision: 1,
+      at: at(2),
+    });
+    expect(stale?.state).toBe("running");
+    expect(stale?.progress).toBe("40/120");
+    const input = { project: project.slug, ticket: job.ticket, id: job.id, state, at: at(2) };
+    const outcomes = await Promise.all([store.observeJob(input), fleetStore(db).observeJob(input)]);
+    expect(outcomes[0]).toEqual(outcomes[1]);
+    expect(outcomes[0]?.progress).toBe("40/120");
+    await store.observeJob({ ...input, state: "running", at: at(3) });
+  }
+  const items = await store.openInboxItems({ project: project.slug, recipient: "coordinator" });
+  expect(items).toHaveLength(4);
+  expect(items.map((i) => i.kind)).toEqual(["job", "job", "job", "job"]);
+  for (const item of items) {
+    expect(item.ticket).toBe("DEMO-7");
+    expect(item.body).toContain("eval");
+    expect(item.body).toContain("40/120");
+    expect(item.createdAt).toBe(at(2).toISOString());
+  }
+  expect(items.map((i) => i.body).join("\n")).toContain("succeeded");
+  expect(items.map((i) => i.body).join("\n")).toContain("lost");
 });

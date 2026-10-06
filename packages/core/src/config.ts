@@ -4,6 +4,7 @@ import { parse, TomlError } from "smol-toml";
 import { failurePattern } from "./ci.ts";
 import { JOB_NAME } from "./jobs.ts";
 import { LINT_DEFAULTS, type LintRules } from "./lint.ts";
+import { pathsProblem } from "./overlap.ts";
 
 export interface JobConfig {
   start: string;
@@ -32,7 +33,16 @@ export const CONFIG_FILE = "armada.toml";
 
 export type SpecTitleStyle = "N" | "N/M";
 
+export interface AcceptanceRule {
+  name: string;
+  command: string;
+  paths: string[] | null;
+  timeoutMinutes: number;
+  maxRuns: number;
+}
+
 export interface ArmadaConfig {
+  acceptance: AcceptanceRule[];
   jobs: Record<string, JobConfig>;
   project: {
     name: string;
@@ -66,6 +76,8 @@ export interface ArmadaConfig {
     repository: string;
   };
   deploy?: { targets: DeployTarget[] };
+  /** Signing policy for newly created Herdr worktrees; cloud environments keep their own policy. */
+  git: { sign: "inherit" | "off" };
   ci: CiConfig;
   gates: {
     /**
@@ -83,6 +95,8 @@ export interface ArmadaConfig {
   policy: {
     /** A working agent with no heartbeat for longer than this shows as silent; old clients use reports. */
     silentAfterMinutes: number;
+    launchGraceMinutes: number;
+    ciWaitMinutes: number;
     quietAfterMinutes: number;
     /** An open item older than this in the coordinator's inbox shows "waiting for the coordinator" on the dashboard. */
     coordinatorMinutes: number;
@@ -215,6 +229,7 @@ export interface HerdrProfile {
 }
 
 export const CONFIG_DEFAULTS = {
+  gitSign: "inherit",
   language: "en",
   readyLabel: "ready-for-agent",
   parkedLabel: "parked",
@@ -222,6 +237,8 @@ export const CONFIG_DEFAULTS = {
   runtimeGroup: "Agent runtime",
   runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
   silentAfterMinutes: 15,
+  launchGraceMinutes: 15,
+  ciWaitMinutes: 45,
   quietAfterMinutes: 45,
   coordinatorMinutes: 10,
   notStartedMinutes: 10,
@@ -343,6 +360,11 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   const lint: LintRules = { inShort, inShortParts, titleMax, severity: lintRaw === undefined ? "warning" : "error" };
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
+  const git = raw.git ?? {};
+  if (!isTable(git)) problems.push('"git" must be a table');
+  const gitT = isTable(git) ? git : {};
+  const sign = gitT.sign ?? CONFIG_DEFAULTS.gitSign;
+  if (sign !== "inherit" && sign !== "off") problems.push('"git.sign" must be "inherit" or "off"');
   const ci = raw.ci ?? {};
   if (!isTable(ci)) problems.push(`"ci" must be a table`);
   const ciT = isTable(ci) ? ci : {};
@@ -376,6 +398,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker.lint", lintT, ["in_short", "in_short_parts", "title_max"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
+    ["git", gitT, ["sign"]],
     ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     [
@@ -383,6 +406,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       policyT,
       [
         "silence_minutes",
+        "launch_grace_minutes",
+        "ci_wait_minutes",
         "quiet_minutes",
         "silent_after_minutes",
         "coordinator_minutes",
@@ -572,6 +597,40 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(herdrProfiles).some((profile) => profile.when)
   )
     problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
+  const acceptance: AcceptanceRule[] = [];
+  if (raw.acceptance !== undefined && !Array.isArray(raw.acceptance))
+    problems.push('"acceptance" must be an array of tables');
+  for (const [i, row] of (Array.isArray(raw.acceptance) ? raw.acceptance : []).entries()) {
+    const path = `acceptance.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    known.push([path, row, ["name", "command", "paths", "timeout_minutes", "max_runs"]]);
+    const name = str(row, path, "name");
+    if ([...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127) || name.length > 200)
+      problems.push(`"${path}.name" must be a single line of at most 200 characters`);
+    if (acceptance.some((r) => r.name === name)) problems.push(`"${path}.name" repeats ${name}`);
+    const limit = (key: string, fallback: number, max = Number.MAX_SAFE_INTEGER) => {
+      const v = row[key] ?? fallback;
+      if (typeof v === "number" && Number.isSafeInteger(v) && v > 0 && v <= max) return v;
+      problems.push(`"${path}.${key}" must be a positive integer at most ${max}`);
+      return fallback;
+    };
+    const paths = row.paths === undefined ? null : row.paths;
+    if (paths !== null) {
+      const problem = pathsProblem(paths);
+      if (problem || (Array.isArray(paths) && !paths.length))
+        problems.push(`"${path}.paths": ${problem ?? "must not be empty"}`);
+    }
+    acceptance.push({
+      name,
+      command: str(row, path, "command"),
+      paths: Array.isArray(paths) ? paths : null,
+      timeoutMinutes: limit("timeout_minutes", 15, 120),
+      maxRuns: limit("max_runs", 3),
+    });
+  }
   const deployRaw = raw.deploy ?? {};
   if (!isTable(deployRaw)) problems.push('"deploy" must be a table');
   const deployT = isTable(deployRaw) ? deployRaw : {};
@@ -670,6 +729,15 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     if (typeof v === "number" && Number.isFinite(v) && v > 0) silentAfterMinutes = v;
     else problems.push(`"policy.${silenceKey}" must be a positive number`);
   }
+  const allowance = (key: string, fallback: number, zero = false): number => {
+    const value = policyT[key];
+    if (value === undefined) return fallback;
+    if (typeof value === "number" && Number.isFinite(value) && (zero ? value >= 0 : value > 0)) return value;
+    problems.push(`"policy.${key}" must be a ${zero ? "nonnegative" : "positive"} number`);
+    return fallback;
+  };
+  const launchGraceMinutes = allowance("launch_grace_minutes", silentAfterMinutes, true);
+  const ciWaitMinutes = allowance("ci_wait_minutes", CONFIG_DEFAULTS.ciWaitMinutes);
   let coordinatorMinutes: number = CONFIG_DEFAULTS.coordinatorMinutes;
   let quietAfterMinutes: number = CONFIG_DEFAULTS.quietAfterMinutes;
   if (policyT.quiet_minutes !== undefined) {
@@ -832,6 +900,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     reservations.push({ key, what, numbered: row.numbered === true });
   }
   const config: ArmadaConfig = {
+    acceptance,
     jobs,
     project: {
       name: str(project, "project", "name"),
@@ -857,10 +926,13 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
     ...(raw.deploy === undefined ? {} : { deploy: { targets: deployTargets } }),
+    git: { sign: sign === "off" ? "off" : "inherit" },
     ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,
+      launchGraceMinutes,
+      ciWaitMinutes,
       quietAfterMinutes,
       coordinatorMinutes,
       notStartedMinutes,
@@ -925,6 +997,8 @@ repository = ${q(p.repository)}
 # smoke = "curl -fsS https://example.test/health"
 # timeout_minutes = 20  # 1–120; smoke shares this deadline
 # pause_on_failure = true
+[git]
+sign = "inherit"        # "off" disables commit signing only in new Herdr worktrees, when branch rules allow it
 
 # A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
 # with \`armada ci why <pr> --rerun\`; unknown failures are refused.
@@ -937,7 +1011,9 @@ repository = ${q(p.repository)}
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
 
 [policy]
-silence_minutes = 15     # a worker with no heartbeat for longer than this shows as silent
+silence_minutes = 15     # silence since the newest report, heartbeat or answer
+launch_grace_minutes = 15 # extra allowance before the first report or heartbeat; defaults to silence_minutes
+ci_wait_minutes = 45     # shipping --stage ci has this silence allowance
 quiet_minutes = 45       # alive but without a report: a coordinator-only note
 coordinator_minutes = 10 # an inbox item open longer than this shows "waiting for the coordinator"
 # not_started_minutes = 10 # a launched worker that has not claimed after this long shows as not started
@@ -957,6 +1033,14 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # when = "a design ticket: a mockup, a visual direction or the look of a new screen"
 # then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
 
+# Live checks run in the worker checkout at the PR head before hand-back.
+# [[acceptance]]
+# name = "production build"
+# command = "docker build -f deploy/Dockerfile ." # secrets: use "armada run -- ..."
+# paths = ["deploy/**", "Dockerfile", "package.json"] # omit for every PR; *, ** and ?
+# timeout_minutes = 15                          # positive integer, maximum 120
+# max_runs = 3                                  # per check and ticket; coordinator grants more
+
 # Long runs go through \`armada job\` on a runner that survives the terminal.
 # Commands run with sh -c here, with ARMADA_JOB_ID, ARMADA_JOB_REF,
 # ARMADA_TICKET and ARMADA_PROJECT set. No provider is required.
@@ -964,8 +1048,10 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # start = "./scripts/start-eval.sh"   # returns within 2 min; last stdout line is the runner reference
 # status = "./scripts/job-status.sh" # last line: running|succeeded|failed [progress, e.g. 37/120 cases]
 # stop = "./scripts/stop-eval.sh"     # exit 0 means stopped
-# silence_minutes = 15
+# silence_minutes = 15              # inbox alarm without news; watch polls at half this interval
 # max_hours = 12                     # overdue, never auto-stopped
+# Remote runner: set ARMADA_API_KEY as its secret (organization API key), armada login --api-key.
+# Push news: armada job beat "$ARMADA_JOB_ID" --progress "40/120" [--state succeeded|failed].
 # Declare the shared resources workers reserve through Armada (optional).
 # [[reservations]]
 # key = "db-migration"

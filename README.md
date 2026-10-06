@@ -60,6 +60,7 @@ armada skills update                  # update pointers and vendored skills on y
 - this terminal is signed in to Armada, and to which organization: without a sign-in, `armada brief` gives workers no launch token, so each would need the keys in its environment;
 - this CLI is as recent as that Armada expects (signed in only): every answer of the Armada API names the oldest CLI that reads it right and the latest one, and a CLI older than the oldest prints one line on any command, `Armada <version> is older than this server expects: npm install -g @the-vibe-company/armada@<latest>`;
 - no key is left in the credentials file that Armada now gives this terminal (`armada auth logout` removes them, the sign-in stays);
+- commit signing: known password-manager signers and GUI pinentry warn when signing may wait for a person. `armada doctor --deep` explicitly tests a signed throwaway commit object with a 10-second limit and moves no refs; the default check never signs. GitHub-required signatures are an error when signing is disabled locally or `[git] sign = "off"`;
 - the Linear label groups `Agent phase` and `Agent runtime` exist with every value (needs a Linear key, from Armada or `LINEAR_API_KEY`);
 - with Conductor profiles in `armada.toml`, the `conductor` command is found: on PATH, or inside the macOS app at `/Applications/Conductor.app/Contents/Resources/bin/conductor`, with the fix that puts it on PATH.
 
@@ -155,6 +156,8 @@ Label routing follows the same rules as the Conductor profiles (`[[herdr.routing
 ```sh
 armada launch ABC-12 --runtime herdr --profile backend --reason "back end work"
 ```
+
+`[git] sign = "inherit"` (the default) keeps signing configuration in new Herdr worktrees. Use `sign = "off"` only when branch rules allow unsigned commits: launch enables `extensions.worktreeConfig` and writes `commit.gpgsign = false` in the new worktree only. Repositories with common `core.worktree`, `core.bare = true` or `core.sparseCheckout = true` need those settings migrated to per-worktree config first; launch reports the fix instead of changing their meaning. If an included config still enables signing after the worktree override, launch stops before starting the worker and names the fix. Conductor Cloud workspaces keep their environment’s own signing configuration.
 
 `armada doctor` checks what the local profiles need: herdr (0.9.1 or newer), each harness CLI, the Claude and Codex sign-ins, and every OpenCode or DeepSeek profile's exact model against `opencode models`. On a terminal it offers the official installs and a numbered model pick, each only with your consent; `--json` and CI only print the fixes. Armada never runs a sign-in and never handles a provider key. The runbook's [Launch a persistent local worker](docs/runbook.md#launch-a-persistent-local-worker) has the rest: routing and model choice, messaging the worker, and safe archival with `armada stop`.
 
@@ -637,6 +640,40 @@ numbered = true
 ```
 
 Declarations are optional documentation; undeclared keys can also be reserved. Reservations require Armada: if it is unavailable, ask the coordinator before choosing a value. After a lost response, check `armada reserve --list` before retrying, since the reservation may already have succeeded.
+
+### Live acceptance before hand-back
+
+Declare real build or preview checks in `armada.toml`. Each worker brief lists the
+commands and limits; `armada report ready-to-merge` requires a Linear pass on the
+exact PR head for every applicable check.
+
+```toml
+[[acceptance]]
+name = "production build"
+command = "docker build -f deploy/Dockerfile ."
+paths = ["deploy/**", "Dockerfile", "package.json"]
+timeout_minutes = 20
+max_runs = 3
+```
+
+Omit `paths` to check every PR. Patterns support `*`, `**` and `?`; paths match
+GitHub's changed files. An incomplete file reading or a rename whose original
+path is unavailable applies every rule. The
+default timeout is 15 minutes (maximum 120) and the default cap is three runs per
+check and ticket. For commands needing project secrets, use `armada run -- …`.
+
+Bring main in, commit and push, then run `armada acceptance run` in the clean
+checkout (`--name "production build"` selects one check; `--ticket <id>` selects
+the ticket). HEAD must equal the linked PR head. Fix every error before handing
+back. Failed, timed-out and interrupted attempts count; a changed head needs a
+new pass. At the cap, ask the coordinator, who can grant more with
+`armada acceptance allow <ticket> --runs 2 --reason "<why>"`. Results and run
+counts live in Linear. A local per-ticket lock prevents overlapping runs on the
+worker's machine, even across checkouts. Diagnostics are masked with released
+project secret values; if those values cannot be read, failure output is withheld.
+Live fleet reports remain optional when Armada is
+down. The merge checklist shows the evidence without adding a merge refusal,
+so bringing main in with `merge --wait` preserves the worker's proven hand-back.
 
 ### Check deploys after each merge
 

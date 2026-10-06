@@ -624,6 +624,7 @@ const en = {
       conflict: (pr: number) => `Conflict with main on #${pr}`,
       silent: (d: string) => `Silent for ${d}`,
       stopped: "Stopped: its session is idle and it did not hand back",
+      stoppedCi: "Its turn ended while waiting for CI. Message it to watch the checks or hand back.",
       blocked: (text: string | null) => (text ? `Blocked: ${text}` : "Blocked"),
       plan: "Plan to approve",
       merge: (pr: number | null, ci: string) =>
@@ -1617,6 +1618,8 @@ const fr: Strings = {
       conflict: (pr) => `Conflit avec main sur #${pr}`,
       silent: (d) => `Silencieux depuis ${d}`,
       stopped: "Arrêté : sa session est inactive et il n’a pas rendu son travail",
+      stoppedCi:
+        "Son tour s’est terminé en attendant la CI. Envoyez-lui un message pour suivre les vérifications ou rendre son travail.",
       blocked: (text) => (text ? `Bloqué : ${text}` : "Bloqué"),
       plan: "Plan à approuver",
       merge: (pr, ci) => ["Merge à approuver", pr ? `#${pr}${ci ? ` ${ci}` : ""}` : ""].filter(Boolean).join(" · "),

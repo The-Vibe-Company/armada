@@ -18,6 +18,7 @@ import {
   skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { acceptance } from "./acceptance.ts";
 import { apiOf, heard } from "./api.ts";
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
@@ -89,11 +90,18 @@ const COMMAND_HELP: Record<string, string> = {
                     or HTTPS links. Prints a dashboard URL for each attachment.
                     --for keeps a free reference for an owner validation item
 `,
+  acceptance: `  acceptance run [--name <name>] [--ticket <id>]
+                    Run applicable [[acceptance]] checks on a clean PR head, with bounded
+                    time and runs. Results live in Linear; required before hand-back.
+  acceptance allow <ticket> --runs <n> --reason <why>
+                    Coordinator only: grant more runs per check on this ticket.
+`,
   job: `  job start <name> [--ticket <id>]
   job status [<id>]
   job stop <id>
   job list [--ticket <id>]
   job recover <id> [--ref <reference>] [--state <state>]
+  job beat <id> [--progress <text>] [--state running|succeeded|failed|stopped|lost]
                     Track long jobs on the project's own runner through [jobs.<name>].
                     start reserves an id, dispatches within 2 minutes and saves the runner
                     reference. status polls open jobs; list reads stored progress only.
@@ -132,6 +140,8 @@ const COMMAND_HELP: Record<string, string> = {
                     and whether this terminal is signed in to Armada. Local herdr profiles
                     check tools and harness sign-in; offers official installs with y/N.
                     No terminal, CI and --json only print fixes and never install.
+                    --deep signs a throwaway commit object with a 10 s limit; no refs move.
+                    Default signing checks predict prompts from config without signing.
                     For harness first-run questions, the owner runs armada setup local
 `,
   upgrade: `  upgrade           Install the newest Armada npm serves, verify armada --version,
@@ -371,6 +381,7 @@ const COMMAND_HELP: Record<string, string> = {
 
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set([
+  "acceptance",
   "job",
   "report",
   "release",
@@ -383,6 +394,7 @@ const TICKET_OPTION = new Set([
   "unreserve",
 ]);
 const CONFIG_OPTION = new Set([
+  "acceptance",
   "lint",
   "job",
   "peek",
@@ -501,7 +513,9 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "runs",
   "finish",
+  "progress",
   "ref",
   "state",
   "actions",
@@ -561,6 +575,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "deep",
   "ready",
   "when-unblocked",
   "send",
@@ -593,8 +608,10 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  acceptance: ["ticket", "name", "runs", "reason"],
+  doctor: ["deep"],
   lint: ["ready"],
-  job: ["ticket", "ref", "state"],
+  job: ["ticket", "ref", "state", "progress"],
   peek: ["actions"],
   deploy: ["sha", "target"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
@@ -653,7 +670,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
 };
 
 /** The worker commands a worker session signs in, on its own ticket. */
-const WORKER_COMMANDS = new Set(["claim", "report", "release", "ask", "validate"]);
+const WORKER_COMMANDS = new Set(["acceptance", "claim", "report", "release", "ask", "validate"]);
 
 export function parseArgs(argv: string[]): Args {
   const args: Args = {
@@ -901,7 +918,15 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         worker: {
           command: "job",
           project: config.project.slug,
-          ticket: (stored) => currentTicket(io, config, args.options.ticket, stored),
+          ticket: (stored) => {
+            try {
+              return currentTicket(io, config, args.options.ticket, stored);
+            } catch (error) {
+              if (args.rest[0] !== "start" && !args.options.ticket && !io.env.ARMADA_TICKET && !stored.length)
+                return null;
+              throw error;
+            }
+          },
         },
       });
       return await jobCommand(io, config, credentials, args, path);
@@ -958,9 +983,20 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, { armada: false });
       return await digest(io, config, credentials, args);
     }
-    const worker = { hold, claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
-      args.command
-    ];
+    const worker = {
+      acceptance,
+      hold,
+      claim,
+      report,
+      release,
+      ask,
+      inbox,
+      answer,
+      stop,
+      validate,
+      "ask-owner": askOwner,
+      done,
+    }[args.command];
     if (worker) {
       const { path, text } = await findConfig(io, args.config, args.command, args.project);
       const config = parseConfig(text, path);
@@ -970,11 +1006,11 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         WORKER_COMMANDS.has(command) && !(command === "validate" && namedTicket(args.rest, args.options));
       const scope = workerScope
         ? {
-            command,
+            command: command === "acceptance" ? "report" : command,
             project: config.project.slug,
             ticket: (stored: string[]) =>
-              command === "claim"
-                ? (args.rest[0]?.toUpperCase() ?? null)
+              command === "claim" || (command === "acceptance" && args.rest[0] === "allow")
+                ? ((command === "claim" ? args.rest[0] : args.rest[1])?.toUpperCase() ?? null)
                 : currentTicket(io, config, args.options.ticket, stored),
           }
         : undefined;
@@ -1078,7 +1114,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     }
     if (args.command === "doctor") {
       noExtra(args.rest);
-      return await doctor(io, args.json, version);
+      return await doctor(io, args.json, version, args.options.deep === "true");
     }
     if (args.command === "upgrade") {
       noExtra(args.rest);

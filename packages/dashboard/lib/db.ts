@@ -929,6 +929,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE UNIQUE INDEX inbox_one_open_chore ON inbox_items (project, ticket, kind) WHERE resolved_at IS NULL AND kind = 'linear-pending'",
     ],
   },
+  {
+    version: 38,
+    statements: ["ALTER TABLE jobs ADD COLUMN revision bigint NOT NULL DEFAULT 0"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

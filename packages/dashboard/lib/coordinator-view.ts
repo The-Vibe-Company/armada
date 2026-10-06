@@ -50,7 +50,7 @@ export type Reason =
   | { kind: "ci"; pr: number }
   | { kind: "conflict"; pr: number }
   | { kind: "silent"; since: string | null }
-  | { kind: "stopped" }
+  | { kind: "stopped"; ci?: boolean }
   /** Blocked with no open question: the worker's last line. */
   | { kind: "blocked"; text: string | null }
   | { kind: "plan" }
@@ -128,7 +128,11 @@ export function sessionState(
           : { kind: "validation", text: firstLine(v.what) };
     return { group: "you", reason };
   }
-  if (row.flags.includes("stopped")) return { group: "blocked", reason: { kind: "stopped" } };
+  if (row.flags.includes("stopped"))
+    return {
+      group: "blocked",
+      reason: { kind: "stopped", ...(row.phase === "shipping" && row.shippingStage === "ci" ? { ci: true } : {}) },
+    };
   if (row.phase === "awaiting-approval") return { group: "you", reason: { kind: "plan" } };
   if (row.phase === "awaiting-validation") return { group: "you", reason: { kind: "awaiting-validation" } };
   if (row.runtimeState === "failed" || row.runtimeState === "gone")

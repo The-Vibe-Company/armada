@@ -460,13 +460,17 @@ export async function serveFleet(
             throw new Invalid("runner reference is already recorded and cannot change");
           const eta = optText(b, "eta", 40);
           if (eta !== null && !Number.isFinite(Date.parse(eta))) throw new Invalid("eta must be a timestamp");
+          const expectedRevision = b.expectedRevision === undefined ? undefined : countOrNull(b, "expectedRevision");
+          if (b.expectedRevision !== undefined && expectedRevision === null)
+            throw new Invalid("expectedRevision must be a nonnegative integer");
           return store.observeJob({
+            ...(expectedRevision == null ? {} : { expectedRevision }),
             project: slug,
             id,
             ticket,
             state: b.state as Exclude<JobState, "starting">,
             ...(ref === undefined ? {} : { ref }),
-            progress: optText(b, "progress", JOB_PROGRESS_MAX),
+            ...(b.progress === undefined ? {} : { progress: optText(b, "progress", JOB_PROGRESS_MAX) }),
             eta: eta === null ? null : new Date(eta).toISOString(),
             at,
           });
@@ -544,6 +548,7 @@ export async function serveFleet(
             {
               ticket: ticketOf(b),
               phase: phaseOf(b, "phase") as LabelPhase,
+              workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
               shippingStage: shippingStageOf(b),
               previous: phaseOf(b, "previous", true),
               ...(b.paths !== undefined ? { paths: pathsOf(b) } : {}),
@@ -838,6 +843,8 @@ export async function serveFleet(
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
               silentAfterMinutes: silent,
               quietAfterMinutes: positiveMinutes(b, "quietAfterMinutes"),
+              launchGraceMinutes: positiveMinutes(b, "launchGraceMinutes", true),
+              ciWaitMinutes: positiveMinutes(b, "ciWaitMinutes"),
               ...(notStarted !== undefined ? { notStartedMinutes: notStarted } : {}),
               etag: optText(b, "etag", 64),
             },
@@ -1232,10 +1239,10 @@ function coordinatorFacts(input: Record<string, unknown>): CoordinatorFacts {
   };
 }
 
-function positiveMinutes(input: Body, key: string): number | undefined {
+function positiveMinutes(input: Body, key: string, zero = false): number | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+  if (typeof value !== "number" || !Number.isFinite(value) || (zero ? value < 0 : value <= 0))
     throw new Invalid(`${key} must be a positive number of minutes`);
   return value;
 }

@@ -64,12 +64,14 @@ export async function askCoordinator(ctx: WorkerContext, input: AskInput): Promi
 
 export interface InboxReport {
   ownedInFlight?: string[];
+  ownedOpenJobs?: number[];
   project: string;
   generatedAt: string;
   /** Oldest first. */
   items: InboxEntry[];
   /** Tickets a worker holds, the coordinator's own excluded; null when Armada did not say. */
   inFlight: string[] | null;
+  openJobs?: number[];
   /** Set by --wait: how long it waited at most, and whether it stopped on the timeout. */
   wait: { timeoutSeconds: number; timedOut: boolean } | null;
   /** Problems that did not stop the read, such as a presence that could not be recorded. */
@@ -84,6 +86,8 @@ export interface InboxOptions {
   coordinator?: string | null;
   /** `policy.silence_minutes`. */
   silentAfterMinutes: number;
+  launchGraceMinutes?: number;
+  ciWaitMinutes?: number;
   quietAfterMinutes?: number;
   /** `policy.not_started_minutes`. */
   notStartedMinutes?: number;
@@ -112,6 +116,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     coordinatorName: o.coordinatorName,
     scope: o.scope,
     silentAfterMinutes: o.silentAfterMinutes,
+    launchGraceMinutes: o.launchGraceMinutes,
+    ciWaitMinutes: o.ciWaitMinutes,
     quietAfterMinutes: o.quietAfterMinutes,
     ...(o.facts ? { facts: o.facts } : {}),
     ...(o.notStartedMinutes !== undefined ? { notStartedMinutes: o.notStartedMinutes } : {}),
@@ -122,6 +128,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
   let items = first.items;
   let inFlight = first.inFlight ?? null;
   let ownedInFlight = first.ownedInFlight;
+  let openJobs = first.openJobs ?? [];
+  let ownedOpenJobs = first.ownedOpenJobs;
   let etag = first.etag;
   const report = (timedOut: boolean | null): InboxReport => ({
     project: o.project,
@@ -129,6 +137,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     items,
     inFlight,
     ...(ownedInFlight ? { ownedInFlight } : {}),
+    ...(openJobs.length ? { openJobs } : {}),
+    ...(ownedOpenJobs ? { ownedOpenJobs } : {}),
     wait: o.wait && timedOut !== null ? { timeoutSeconds: Math.round(o.wait.timeoutMs / 1000), timedOut } : null,
     warnings: [...new Set(warnings)],
   });
@@ -144,6 +154,8 @@ export async function checkInbox(fleet: Fleet, o: InboxOptions): Promise<InboxRe
     items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
     inFlight = read.inFlight ?? null;
     ownedInFlight = read.ownedInFlight;
+    openJobs = read.openJobs ?? [];
+    ownedOpenJobs = read.ownedOpenJobs;
     etag = read.etag;
     warnings.push(...read.warnings);
     if (items.some((e) => e.new)) return report(false);
@@ -171,6 +183,7 @@ function statusComment(phase: AgentPhase, word: "answer" | "note", text: string,
 }
 
 const ANSWERABLE: InboxKind[] = [
+  "job",
   "question",
   "plan",
   "request",
@@ -272,7 +285,10 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
 
   if (item?.kind === "launch-request") return declineLaunch(ctx, item, text, warnings);
   // The owner's requests and decisions (THE-885) are carried out, then recorded; nothing is posted on the ticket.
-  if (item && ["merge-request", "release-request", "plan-changes", "decision", "linear-pending"].includes(item.kind)) {
+  if (
+    item &&
+    ["job", "merge-request", "release-request", "plan-changes", "decision", "linear-pending"].includes(item.kind)
+  ) {
     const recorded = await live(ctx, warnings, "resolve the dashboard request", (fleet) =>
       fleet.answer({ text, note: false, ticket: item.ticket, item: item.id }),
     );

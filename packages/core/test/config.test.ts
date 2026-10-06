@@ -35,6 +35,7 @@ describe("armada.toml", () => {
   });
   test("a minimal file gets the protocol defaults", () => {
     expect(parseConfig(DEMO_TOML)).toEqual({
+      acceptance: [],
       jobs: {},
       project: { name: "Widgets", slug: "widgets" },
       tracker: {
@@ -55,6 +56,7 @@ describe("armada.toml", () => {
           runtimes: ["Claude Code", "Codex", "Conductor", "Herdr"],
         },
       },
+      git: { sign: "inherit" },
       github: { repository: "acme/widgets" },
       ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
@@ -64,6 +66,8 @@ describe("armada.toml", () => {
         attachmentsProjectMb: 200,
         attachmentsRetentionDays: 30,
         silentAfterMinutes: 15,
+        launchGraceMinutes: 15,
+        ciWaitMinutes: 45,
         quietAfterMinutes: 45,
         coordinatorMinutes: 10,
         notStartedMinutes: 10,
@@ -466,6 +470,30 @@ test("declared reservation keys are optional, descriptive and unique", () => {
   );
 });
 
+test("acceptance defaults, limits, names and paths are validated", () => {
+  const text = `${DEMO_TOML}\n[[acceptance]]\nname = "production build"\ncommand = "build"\n`;
+  expect(parseConfig(text).acceptance).toEqual([
+    { name: "production build", command: "build", paths: null, timeoutMinutes: 15, maxRuns: 3 },
+  ]);
+  expect(parseConfig(`${text}paths = ["deploy/**"]\ntimeout_minutes = 120\nmax_runs = 5`).acceptance[0]).toMatchObject({
+    paths: ["deploy/**"],
+    timeoutMinutes: 120,
+    maxRuns: 5,
+  });
+  for (const extra of [
+    "max_runs = 0",
+    "max_runs = 1.5",
+    "timeout_minutes = 121",
+    "timeout_minutes = -1",
+    'paths = ["../secret"]',
+    'paths = "deploy/**"',
+    "paths = []",
+    'unknown = "value"',
+    '[[acceptance]]\nname = "production build"\ncommand = "other"',
+  ])
+    expect(() => parseConfig(`${text}${extra}`)).toThrow();
+});
+
 test("tracker lint is opt-in with configurable defaults and rejects invalid rules", () => {
   expect(parseConfig(`${DEMO_TOML}\n[tracker.lint]`).tracker.lint.severity).toBe("error");
   expect(
@@ -481,4 +509,30 @@ test("tracker lint is opt-in with configurable defaults and rejects invalid rule
   ])
     expect(problemsOf(`${DEMO_TOML}\n[tracker.lint]\n${field}`).join(" ")).toContain("tracker.lint");
   expect(problemsOf(DEMO_TOML.replace("[tracker]", "[tracker]\nlint = false")).join(" ")).toContain("tracker.lint");
+});
+
+test("silence allowances inherit the configured silence and validate explicit CI and grace values", () => {
+  const source = `${DEMO_TOML}\n[policy]\nsilence_minutes = 20`;
+  expect(parseConfig(source).policy).toMatchObject({
+    silentAfterMinutes: 20,
+    launchGraceMinutes: 20,
+    ciWaitMinutes: 45,
+  });
+  expect(
+    parseConfig(source.replace("[policy]", "[policy]\nlaunch_grace_minutes = 0\nci_wait_minutes = 70")).policy,
+  ).toMatchObject({ launchGraceMinutes: 0, ciWaitMinutes: 70 });
+  for (const setting of ["launch_grace_minutes = -1", "ci_wait_minutes = 0", 'ci_wait_minutes = "later"'])
+    expect(() => parseConfig(source.replace("[policy]", `[policy]\n${setting}`))).toThrow();
+});
+
+test("git signing defaults to inherit, accepts off, rejects invalid values and typos", () => {
+  expect(parseConfig(DEMO_TOML).git.sign).toBe("inherit");
+  for (const sign of ["inherit", "off"] as const)
+    expect(parseConfig(`${DEMO_TOML}\n[git]\nsign = "${sign}"\n`).git.sign).toBe(sign);
+  for (const value of ['"on"', "false", "1", '""'])
+    expect(problemsOf(`${DEMO_TOML}\n[git]\nsign = ${value}\n`).join(" ")).toContain("git.sign");
+  expect(problemsOf(`${DEMO_TOML}\n[git]\nsignn = "off"\n`)).toContain('unknown key "git.signn"');
+  expect(
+    configTemplate({ name: "Widgets", slug: "widgets", programRoot: "DEMO-1", repository: "acme/widgets" }),
+  ).toContain('sign = "inherit"');
 });
