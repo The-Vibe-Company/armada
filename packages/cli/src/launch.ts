@@ -25,6 +25,7 @@ import {
   herdrHarnessLabel,
   inFlight,
   LINEAR_KEY,
+  type OverlapReading,
   type ProfileChoice,
   ProfileError,
   parseConfig,
@@ -264,8 +265,15 @@ export async function launchWorker(
     if (!dry) throw new UsageError(message);
     gaps.push(message);
   }
+  let overlap: OverlapReading | undefined;
+  try {
+    overlap = await fleet.overlap({ ticket: ticketId, paths: [] });
+  } catch {
+    warnings.push("Comparison incomplete: in-flight PR files could not be read from Armada.");
+  }
   const briefInput = {
     ...sharedResources,
+    overlap,
     config,
     ticket,
     program,
@@ -281,6 +289,8 @@ export async function launchWorker(
   };
   // Build once before a token exists so brief errors cannot strand a token.
   const preview = buildBrief({ ...briefInput, ...(local ? { herdr: { choice: local, handle: "preview" } } : {}) });
+  warnings.push(...preview.warnings.filter((warning) => warning.startsWith("Comparison incomplete")));
+  if (!dry) for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
   const spec: LaunchSpec = {
     ticket: ticketId,
     title: ticket.title,

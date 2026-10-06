@@ -767,6 +767,16 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
     version: 26,
     statements: [
+      `CREATE TABLE ticket_paths (
+      project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+      ticket text NOT NULL, paths text[] NOT NULL, declared_at timestamptz NOT NULL,
+      PRIMARY KEY (project, ticket)
+    )`,
+    ],
+  },
+  {
+    version: 27,
+    statements: [
       `CREATE TABLE reservations (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         project text NOT NULL REFERENCES projects(slug), key text NOT NULL, value text NOT NULL,

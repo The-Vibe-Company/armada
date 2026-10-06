@@ -175,6 +175,7 @@ test("a claim arriving after an absent merge snapshot keeps its runtime, profile
           value: "new",
           at: claimed,
         });
+        await store.saveTicketPaths("merge-replacement", "WID-2", ["src/new.ts"], claimed);
       },
     },
     "merge-replacement",
@@ -190,7 +191,63 @@ test("a claim arriving after an absent merge snapshot keeps its runtime, profile
   expect(result.handle).toBeNull();
   expect(result.open).toEqual([expect.objectContaining({ handle: "new/session", releasedAt: null })]);
   expect((await store.getWorkerProfile("merge-replacement", "WID-2"))?.name).toBe("test");
+  expect(await store.ticketPaths("merge-replacement")).toEqual({ "WID-2": ["src/new.ts"] });
   expect(await store.reservations("merge-replacement")).toEqual([
     expect.objectContaining({ ticket: "WID-2", value: "new", merged: false, endedAt: null }),
+  ]);
+});
+
+test("a replacement after merge release keeps its newly declared paths and reservations", async () => {
+  const store = await project("after-merge-release");
+  await store.saveRuntimeHandle({
+    project: "after-merge-release",
+    ticket: "WID-2",
+    runtime: "Conductor",
+    handle: "old/session",
+    branch: null,
+    at,
+  });
+  await store.reserve({ project: "after-merge-release", ticket: "WID-2", key: "fixture", value: "old", at });
+  const claimed = new Date(at.getTime() + 2);
+  const result = await recordMerge(
+    {
+      ...store,
+      releaseRuntimeHandle: async (...args) => {
+        const released = await store.releaseRuntimeHandle(...args);
+        await store.saveRuntimeHandle({
+          project: "after-merge-release",
+          ticket: "WID-2",
+          runtime: "Conductor",
+          handle: "new/session",
+          branch: null,
+          at: claimed,
+        });
+        await store.saveTicketPaths("after-merge-release", "WID-2", ["src/new.ts"], claimed);
+        await store.reserve({
+          project: "after-merge-release",
+          ticket: "WID-2",
+          key: "fixture",
+          value: "new",
+          at: claimed,
+        });
+        return released;
+      },
+    },
+    "after-merge-release",
+    {
+      ticket: "WID-2",
+      number: 3,
+      url: "https://github.com/acme/widgets/pull/3",
+      mergeCommit: "merged",
+      headSha: "head",
+    },
+    new Date(at.getTime() + 1),
+  );
+  expect(result.handle?.handle).toBe("old/session");
+  expect(result.open).toEqual([expect.objectContaining({ handle: "new/session", releasedAt: null })]);
+  expect(await store.ticketPaths("after-merge-release")).toEqual({ "WID-2": ["src/new.ts"] });
+  expect(await store.reservations("after-merge-release")).toEqual([
+    expect.objectContaining({ value: "old", merged: true }),
+    expect.objectContaining({ value: "new", merged: false, endedAt: null }),
   ]);
 });

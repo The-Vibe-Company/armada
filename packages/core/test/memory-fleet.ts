@@ -55,6 +55,7 @@ export function memoryFleet(): FleetStore & {
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
+  const paths = new Map<string, string[]>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
   const leases = new Map<string, Lease>();
@@ -95,10 +96,25 @@ export function memoryFleet(): FleetStore & {
     const { resolvedAt: _a, resolution: _b, ...rest } = stored(r);
     return rest;
   };
-  const handleOf = (h: HandleRow): RuntimeHandle => ({
-    ...h,
-    profile: profiles.get(key(h.project, h.ticket))?.name ?? null,
-  });
+  const handleOf = (h: HandleRow): RuntimeHandle => {
+    const lastAnsweredAt = items
+      .filter(
+        (i) =>
+          i.project === h.project &&
+          i.ticket === h.ticket &&
+          ["question", "plan", "decision"].includes(i.kind) &&
+          i.resolvedAt &&
+          i.resolvedAt >= h.claimedAt,
+      )
+      .map((i) => i.resolvedAt)
+      .sort()
+      .at(-1);
+    return {
+      ...h,
+      profile: profiles.get(key(h.project, h.ticket))?.name ?? null,
+      ...(lastAnsweredAt ? { lastAnsweredAt } : {}),
+    };
+  };
   const insert = (r: Omit<ItemRow, "id" | "resolvedAt" | "resolution">) => {
     const id = items.length + 1;
     items.push({ ...r, id, resolvedAt: null, resolution: null });
@@ -178,6 +194,28 @@ export function memoryFleet(): FleetStore & {
       return [...projects.values()].sort((a, b) => a.slug.localeCompare(b.slug));
     },
 
+    async saveTicketPaths(project, ticket, declared) {
+      paths.set(key(project, ticket), [...declared]);
+    },
+    async ticketPaths(project) {
+      return Object.fromEntries(
+        [...paths].filter(([k]) => k.startsWith(`${project}\n`)).map(([k, v]) => [k.slice(project.length + 1), [...v]]),
+      );
+    },
+    async deleteTicketPaths(project, ticket, guard) {
+      const h = handles.get(key(project, ticket));
+      if (guard?.absent && h) return;
+      if (
+        guard &&
+        !guard.absent &&
+        (!h ||
+          (guard.handle && h.handle !== guard.handle) ||
+          (guard.claimedAt && h.claimedAt !== new Date(guard.claimedAt).toISOString()) ||
+          (guard.workerSessionId && h.workerSessionId && h.workerSessionId !== guard.workerSessionId))
+      )
+        return;
+      paths.delete(key(project, ticket));
+    },
     async recordEvent(e) {
       events.push({ ...e, id: events.length + 1, at: e.at.toISOString() });
       if (e.kind === "report") {
@@ -384,7 +422,19 @@ export function memoryFleet(): FleetStore & {
         h.claimedAt !== input.claimedAt
       )
         return false;
-      if (!h.releasedAt) await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
+      if (!h.releasedAt) {
+        await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
+        await this.recordEvent({
+          project: input.project,
+          ticket: input.ticket,
+          kind: "release",
+          phase: "released",
+          runtime: h.runtime,
+          handle: h.handle,
+          message: "Runtime workspace archived",
+          at: input.at,
+        });
+      }
       return true;
     },
     async heartbeatTimes(project) {
@@ -517,8 +567,9 @@ export function memoryFleet(): FleetStore & {
       });
     },
     async putPlan(i) {
-      if (open(i.project, i.ticket, "plan")) return;
-      await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
+      const was = open(i.project, i.ticket, "plan");
+      if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString() });
+      else await this.addInboxItem({ ...i, kind: "plan", recipient: "coordinator" });
     },
     async putHandBack(i) {
       const was = open(i.project, i.ticket, "hand-back");

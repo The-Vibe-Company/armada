@@ -65,6 +65,8 @@ export function reasonText(t: Strings, r: Reason, now: number): string {
       return o.ci(r.pr);
     case "conflict":
       return o.conflict(r.pr);
+    case "stopped":
+      return o.stopped;
     case "silent":
       return o.silent(t.duration(r.since ? Math.max(0, now - Date.parse(r.since)) : 0));
     case "blocked":
