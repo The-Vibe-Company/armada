@@ -17,6 +17,7 @@ import {
 } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { type Io, run } from "../src/cli.ts";
+import type { Exec } from "../src/io.ts";
 import { detectCoordinator } from "../src/presence.ts";
 
 const dirs: string[] = [];
@@ -73,6 +74,129 @@ function worker(
 }
 
 describe("armada claim, report and release", () => {
+  test("claim preflight keeps a refused branch claimed and reports the Git reason to the coordinator", async () => {
+    const w = worker(SIGNED_IN);
+    w.linear.add("DEMO-7");
+    const branch = "feature/demo-7-do-the-thing";
+    const secret = "opaque-project-canary";
+    w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", secret]]));
+    const calls: Parameters<Exec>[] = [];
+    w.io.exec = async (command, args, options) => {
+      calls.push([command, args, options]);
+      if (args[0] === "push")
+        return {
+          code: 1,
+          stdout: "",
+          stderr: `remote: Write access to repository not granted.\nhelper: ${secret}\nfatal: unable to access https://user:password@github.com/acme/widgets.git\n`,
+        };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    expect(
+      await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1/s-1", "--branch", branch], w.io),
+    ).toBe(0);
+    expect(w.linear.get("DEMO-7").labels.some((l) => l.name === "blocked")).toBe(true);
+    expect(w.store.events.map((e) => e.kind)).toEqual(["claim", "report"]);
+    const held = await w.store.getRuntimeHandle("widgets", "DEMO-7");
+    expect(held).toMatchObject({ handle: "ws-1/s-1", branch, releasedAt: null });
+    expect(w.armada.calls.find((c) => c.path === "fleet/report")?.body).toMatchObject({
+      input: {
+        ticket: "DEMO-7",
+        phase: "blocked",
+        message: expect.stringContaining(`cannot push ${branch}: remote: Write access to repository not granted.`),
+      },
+    });
+    expect(w.out()).toContain("phase blocked");
+    expect(w.linear.bodies.join("\n") + w.out() + w.err()).not.toContain("password");
+    expect(
+      w.out() + w.err() + w.linear.bodies.join("\n") + JSON.stringify(w.armada.calls.map((c) => c.body)),
+    ).not.toContain(secret);
+    w.reset();
+    expect(await run(["inbox"], w.io)).toBe(0);
+    expect(w.out()).not.toContain(secret);
+    expect(w.out()).toContain(`cannot push ${branch}: remote: Write access to repository not granted.`);
+    expect(calls.map(([command, args]) => [command, args])).toEqual([
+      ["git", ["ls-remote", "origin", "HEAD"]],
+      ["git", ["push", "--dry-run", "origin", `HEAD:refs/heads/${branch}`]],
+    ]);
+    for (const [, , options] of calls) {
+      expect(options.env?.GIT_TERMINAL_PROMPT).toBe("0");
+      expect(options.timeoutMs).toBe(10_000);
+      expect(options.processGroup).toBe(true);
+    }
+    const before = calls.length;
+    expect(await run(["claim", "DEMO-7", "--runtime", "conductor", "--handle", "other/session"], w.io)).toBe(1);
+    expect(calls.length).toBe(before);
+    w.reset();
+    expect(
+      await run(
+        ["claim", "DEMO-7", "--runtime", "conductor", "--handle", "ws-1/s-1", "--branch", "feature/demo-7-renamed"],
+        w.io,
+      ),
+    ).toBe(0);
+    expect(calls.at(-1)?.[1]).toEqual(["push", "--dry-run", "origin", `HEAD:refs/heads/${branch}`]);
+    expect((await w.store.getRuntimeHandle("widgets", "DEMO-7"))?.branch).toBe(branch);
+  });
+
+  test("claim preflight is quiet on success and blocks on read, timeout or interactive signing failures", async () => {
+    for (const failure of ["none", "read", "timeout", "signing", "config"] as const) {
+      const w = worker(SIGNED_IN);
+      w.linear.add("DEMO-7");
+      if (failure === "none") w.io.cwd = "/elsewhere";
+      let configReads = 0;
+      w.io.exec = async (_command, args, options) => {
+        expect(options.cwd).toBe("/work/widgets");
+        expect(options.env?.GIT_TERMINAL_PROMPT).toBe("0");
+        if (args[0] === "config") {
+          configReads++;
+          expect(options.timeoutMs).toBe(1_000);
+          if (failure === "config") return { code: 128, stdout: "", stderr: "bad config" };
+          const key = args.at(-1);
+          const value =
+            failure === "signing"
+              ? { "commit.gpgsign": "true", "gpg.format": "ssh", "gpg.ssh.program": "/app/op-ssh-sign" }[key ?? ""]
+              : undefined;
+          return { code: value ? 0 : 1, stdout: value ?? "", stderr: "" };
+        }
+        if (failure === "read" && args[0] === "ls-remote")
+          return { code: 128, stdout: "", stderr: "fatal: repository not found" };
+        if (failure === "timeout" && args[0] === "push") return { code: 0, stdout: "", stderr: "", timedOut: true };
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      expect(
+        await run(
+          [
+            "claim",
+            "DEMO-7",
+            "--runtime",
+            "conductor",
+            "--handle",
+            "ws-1/s-1",
+            ...(failure === "none" ? ["--json", "--config", "/work/widgets/armada.toml"] : []),
+          ],
+          w.io,
+        ),
+      ).toBe(0);
+      expect(w.out()).not.toContain("claimedBranch");
+      const phase = failure === "none" ? "planning" : "blocked";
+      expect(w.linear.get("DEMO-7").labels.some((l) => l.name === phase)).toBe(true);
+      if (failure === "none") {
+        expect(w.store.events.map((e) => e.kind)).toEqual(["claim"]);
+        expect(w.err()).toBe("");
+        expect(w.out()).not.toContain("preflight");
+      } else {
+        const reason = {
+          read: "cannot fetch origin: fatal: repository not found",
+          timeout: "cannot push feature/demo-7-do-the-thing: timed out after 10 seconds",
+          signing: "cannot commit without a person: signing uses op-ssh-sign",
+          config: "cannot check commit signing: effective Git configuration could not be read",
+        }[failure];
+        expect(w.linear.bodies.at(-1)).toContain(reason);
+        expect((await w.store.latestEvents("widgets"))["DEMO-7"]?.phase).toBe("blocked");
+      }
+      if (failure === "none" || failure === "signing") expect(configReads).toBeGreaterThan(0);
+    }
+  });
+
   test("coordinator release pins its claim and spares a worker launched afterward", async () => {
     const clock = fakeClock(NOW);
     const w = worker(SIGNED_IN, { clock });
@@ -261,15 +385,21 @@ describe("armada claim, report and release", () => {
   });
 
   test("a ready-to-merge report without a message option stays valid", async () => {
-    const w = worker();
+    const w = worker(SIGNED_IN);
+    w.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
     w.linear.add("DEMO-7", {
       labels: [{ id: "phase-shipping", name: "shipping", group: "Agent phase" }],
     });
     w.net.rest = async () =>
       Response.json(pullResponse({ number: 9, headSha: HEAD, checks: [{ name: "test", conclusion: "SUCCESS" }] }));
-    expect(await run(["report", "ready-to-merge", "--pr", "9", "--sha", HEAD], w.io)).toBe(0);
+    expect(
+      await run(
+        ["report", "ready-to-merge", "--pr", "9", "--sha", HEAD, "--more-prs", "next synthetic-project-secret"],
+        w.io,
+      ),
+    ).toBe(0);
     expect(w.linear.bodies).toEqual([
-      `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported`,
+      `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipping path unreported; more PRs: next «secret CUSTOM_KEY»`,
     ]);
   });
 

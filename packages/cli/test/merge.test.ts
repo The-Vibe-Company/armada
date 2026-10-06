@@ -55,6 +55,7 @@ test.each([false, true])(
 
 test.each([
   "overlap",
+  "partial",
   "herdr",
   "unknown-outcome",
   "shared",
@@ -81,6 +82,12 @@ test.each([
   "before-archive",
 ])("merge notes select recipients and deliver before archive (%s)", async (scenario) => {
   const f = await fixture();
+  if (scenario === "partial")
+    f.linear.post(
+      "DEMO-18",
+      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part`,
+      "2026-03-04T09:50:00Z",
+    );
   const reservedKeys: string[] = [];
   const reserveNotice = f.store.prepareMergeNotice;
   f.store.prepareMergeNotice = async (project, key, at) => {
@@ -259,8 +266,17 @@ test.each([
   };
   expect(await run(["merge", "9", "--json", ...(scenario === "no-notify" ? ["--no-notify"] : [])], f.io)).toBe(0);
   const o = JSON.parse(f.out());
+  if (scenario === "partial") {
+    expect(o.keepOpen).toBe(true);
+    expect(o.archive).toBeNull();
+    expect(o.unblocked).toBeNull();
+    expect(o.notices.some((w: { ticket: string }) => w.ticket === "DEMO-18")).toBe(false);
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(false);
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
+    expect(o.lines.join("\n")).toContain("Continue with: the dashboard part");
+  }
   const messages = () => native.filter((c) => c.args[1] === "message" || c.args[1] === "prompt");
-  const delivers = ["overlap", "herdr", "shared", "before-archive", "fresh-own-transfer"].includes(scenario);
+  const delivers = ["overlap", "partial", "herdr", "shared", "before-archive", "fresh-own-transfer"].includes(scenario);
   expect(messages()).toHaveLength(delivers || scenario === "unknown-outcome" ? 1 : 0);
   if (delivers) {
     expect(o.notified.map((n: { ticket: string; delivered: boolean }) => [n.ticket, n.delivered])).toEqual(
@@ -1039,13 +1055,14 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--no-notify"], f.io)).toBe(2);
 });
 
-test.each(["plain", "json", "completion-outage"])(
+test.each(["plain", "json", "completion-outage", "keep-open"])(
   "drain uses ordinary cleanup and truthful output (%s)",
   async (scenario) => {
     const json = scenario !== "plain";
+    const keepOpen = scenario === "keep-open";
     const completionOutage = scenario === "completion-outage";
     const f = await fixture();
-    expect(await run(["merge", "--when-green", "9"], f.io)).toBe(0);
+    expect(await run(["merge", "--when-green", "9", ...(keepOpen ? ["--keep-open"] : [])], f.io)).toBe(0);
     const out: string[] = [];
     const fetch = f.io.fetch!;
     const io: Io = {
@@ -1062,8 +1079,13 @@ test.each(["plain", "json", "completion-outage"])(
       state: completionOutage ? "merging" : "merged",
       ...(!completionOutage ? { mergeCommit: SQUASH } : {}),
     });
-    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(true);
-    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).not.toBeNull();
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(!keepOpen);
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt === null).toBe(keepOpen);
+    if (keepOpen) {
+      expect(f.linear.get("DEMO-18").statusType).toBe("started");
+      expect((await f.linear.readTicket("DEMO-18"))?.agentPhase).toBe("implementing");
+      expect(out.join("")).toContain("continuation");
+    }
     if (json) {
       const objects = out
         .join("")
@@ -1099,18 +1121,7 @@ test("when-green queues multiple no-ticket PRs in argument order and preserves f
   const f = await fixture();
   expect(
     await run(
-      [
-        "merge",
-        "--when-green",
-        "12",
-        "15",
-        "--no-ticket",
-        "--keep-open",
-        "--through-hold",
-        "Fix main",
-        "--reason",
-        "Release",
-      ],
+      ["merge", "--when-green", "12", "15", "--no-ticket", "--through-hold", "Fix main", "--reason", "Release"],
       f.io,
     ),
   ).toBe(0);
@@ -1125,8 +1136,8 @@ test("when-green queues multiple no-ticket PRs in argument order and preserves f
       e.reason,
     ]),
   ).toEqual([
-    [12, true, true, "Fix main", "Release"],
-    [15, true, true, "Fix main", "Release"],
+    [12, true, false, "Fix main", "Release"],
+    [15, true, false, "Fix main", "Release"],
   ]);
   expect(f.merged()).toBe(false);
   expect(f.ghCalls).toEqual([]);
@@ -1339,6 +1350,123 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
   },
 );
 
+test.each([
+  "delivered",
+  "manual",
+  "failed",
+  "replaced",
+  "linear-pending",
+  "linear-pending-special-secret",
+  "queue-recovery",
+  "queue-unknown",
+])("a partial merge retains its worker and continues safely (%s)", async (mode) => {
+  const f = await fixture();
+  const queued = mode.startsWith("queue-");
+  const pending = mode.startsWith("linear-pending");
+  const secret = mode === "linear-pending-special-secret" ? 'synthetic"project\\secret' : "synthetic-project-secret";
+  f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", secret]]));
+  f.linear.post(
+    "DEMO-18",
+    `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part ${secret}`,
+    "2026-03-04T09:50:00Z",
+  );
+  if (pending)
+    f.linear.updateTicket = async () => {
+      throw new Error("Linear unavailable");
+    };
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-18",
+    runtime: mode === "manual" ? "Claude Code" : "Conductor",
+    handle: "ws-18/ses-18",
+    branch: BRANCH,
+    at: NOW,
+  });
+  const exec = f.io.exec as Exec;
+  const calls: string[][] = [];
+  const inputs: (string | undefined)[] = [];
+  f.io.exec = async (command, args, options) => {
+    if (command !== "conductor") return exec(command, args, options);
+    calls.push(args);
+    if (args[1] === "message" && args[2] === "create") {
+      inputs.push(options?.input);
+      expect(f.merged()).toBe(true);
+      expect(options?.input).toContain(`git fetch origin && git switch -c ${BRANCH}-2 origin/main`);
+      if (mode === "failed" || mode === "queue-unknown")
+        return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
+      return { code: 0, stdout: JSON.stringify({ messageId: "message-1", state: "queued" }), stderr: "" };
+    }
+    if (mode === "replaced")
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-18",
+        runtime: "Conductor",
+        handle: "ws-new/ses-new",
+        branch: BRANCH,
+        at: new Date(NOW.getTime() + 1000),
+      });
+    return {
+      code: 0,
+      stdout: JSON.stringify(
+        args[1] === "session"
+          ? { sessionId: "ses-18", workspaceId: "ws-18", status: "idle" }
+          : { workspaceId: "ws-18", status: "ready" },
+      ),
+      stderr: "",
+    };
+  };
+  const fetch = f.io.fetch!;
+  if (queued) {
+    expect(await run(["merge", "--when-green", "9"], { ...f.io, stdout: () => {} })).toBe(0);
+    f.io.fetch = async (url, init) =>
+      url.endsWith("/fleet/queue/finish")
+        ? Response.json({ error: "Armada did not answer" }, { status: 503 })
+        : fetch(url, init);
+  }
+  expect(await run(queued ? ["merge", "--drain", "--json"] : ["merge", "9", "--json"], f.io)).toBe(queued ? 1 : 0);
+  const out = JSON.parse(queued ? f.out().split("\n")[0]! : f.out());
+  if (queued) {
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("merging");
+    f.io.fetch = fetch;
+    expect(await run(["merge", "--drain", "--json"], f.io)).toBe(0);
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("merged");
+  }
+  expect(out.keepOpen).toBe(true);
+  expect(out.archive).toBeNull();
+  expect(out.unblocked).toBeNull();
+  expect(f.linear.get("DEMO-18").statusType).toBe("started");
+  expect(f.armada.calls.map((c) => c.path)).not.toContain("workers/end");
+  expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
+  expect(calls.some((args) => args[2] === "archive")).toBe(false);
+  expect(inputs.length).toBe(mode === "delivered" || mode === "failed" || queued || pending ? 1 : 0);
+  expect(out.lines.join("\n")).toContain(
+    mode === "delivered" || mode === "queue-recovery" || pending ? "continuation delivered" : "Deliver to DEMO-18",
+  );
+  expect(f.out() + f.err()).not.toContain("CANARY");
+  expect(inputs.join("\n") + f.out() + f.err() + f.linear.bodies.join("\n")).not.toContain(secret);
+  expect(JSON.stringify(out.continuation)).toContain("«secret CUSTOM_KEY»");
+  if (pending) {
+    const chore = (await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
+      (i) => i.kind === "linear-pending",
+    );
+    expect(chore?.body).toContain("«secret CUSTOM_KEY»");
+    expect(chore?.body).not.toContain(secret);
+  }
+});
+
+test("owner approval requests reject lifecycle overrides they cannot persist", async () => {
+  const f = await fixture();
+  for (const flag of ["--keep-open", "--close"])
+    expect(await run(["merge", "9", "--ask-owner", "--reason", "Owner should check", flag], f.io)).toBe(2);
+  expect(f.err()).toContain("--ask-owner only asks the owner");
+  expect(await run(["merge", "9", "--when-green", "--close"], f.io)).toBe(2);
+  expect(await run(["merge", "9", "--keep-open", "--close"], f.io)).toBe(2);
+  expect(await run(["merge", "9", "--no-ticket", "--keep-open"], f.io)).toBe(2);
+  expect(f.merged()).toBe(false);
+  expect(f.ghCalls).toEqual([]);
+  expect(f.linear.writes).toEqual([]);
+});
+
 test("Linear failure after merge ends with a pending result, and --finish is idempotent", async () => {
   const f = await fixture();
   const update = f.linear.updateTicket.bind(f.linear);
@@ -1421,39 +1549,41 @@ test("GitHub's confirmed merge at a different head is reported merged with pendi
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
 });
 
-test.each([false, true])(
-  "confirmed merge ends worker sessions before deploy watchers, even with Linear pending (%s)",
-  async (linearPending) => {
-    const f = await fixture();
-    const update = f.linear.updateTicket.bind(f.linear);
-    if (linearPending)
-      f.linear.updateTicket = async () => {
-        throw new Error("Linear unavailable");
-      };
-    const read = f.io.readFile;
-    f.io.readFile = async (path) => {
-      const contents = await read(path);
-      return path.endsWith("armada.toml") && contents
-        ? `${contents}\n[[deploy.target]]\nname = "api"\nbranch = "main"\nlive_sha_command = "version"\n`
-        : contents;
+test.each([
+  { linearPending: false, keepOpen: false },
+  { linearPending: true, keepOpen: false },
+  { linearPending: false, keepOpen: true },
+  { linearPending: true, keepOpen: true },
+])("confirmed merge preserves worker intent before deploy watchers (%j)", async ({ linearPending, keepOpen }) => {
+  const f = await fixture();
+  const update = f.linear.updateTicket.bind(f.linear);
+  if (linearPending)
+    f.linear.updateTicket = async () => {
+      throw new Error("Linear unavailable");
     };
-    let launched: string[] = [];
-    let launches = 0;
-    f.io.startBackground = async (args) => {
-      launches++;
-      expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(true);
-      launched = args;
-      return true;
-    };
-    expect(await run(["merge", "9"], f.io)).toBe(0);
-    expect(launched.slice(0, 6)).toEqual(["deploy", "watch", "--sha", SQUASH, "--target", "api"]);
-    expect(f.out()).toContain(`Watching the deploy of ${SQUASH} to api`);
-    if (linearPending) {
-      expect(f.out().trim().split("\n").at(-1)).toBe("Result: merged #9, Linear pending (armada merge --finish 9)");
-      f.linear.updateTicket = update;
-      expect(await run(["merge", "--finish", "9"], f.io)).toBe(0);
-      expect(await run(["merge", "--finish", "9"], f.io)).toBe(0);
-    }
-    expect(launches).toBe(1);
-  },
-);
+  const read = f.io.readFile;
+  f.io.readFile = async (path) => {
+    const contents = await read(path);
+    return path.endsWith("armada.toml") && contents
+      ? `${contents}\n[[deploy.target]]\nname = "api"\nbranch = "main"\nlive_sha_command = "version"\n`
+      : contents;
+  };
+  let launched: string[] = [];
+  let launches = 0;
+  f.io.startBackground = async (args) => {
+    launches++;
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(!keepOpen);
+    launched = args;
+    return true;
+  };
+  expect(await run(["merge", "9", ...(keepOpen ? ["--keep-open"] : [])], f.io), f.err()).toBe(0);
+  expect(launched.slice(0, 6)).toEqual(["deploy", "watch", "--sha", SQUASH, "--target", "api"]);
+  expect(f.out()).toContain(`Watching the deploy of ${SQUASH} to api`);
+  if (linearPending) {
+    expect(f.out().trim().split("\n").at(-1)).toBe("Result: merged #9, Linear pending (armada merge --finish 9)");
+    f.linear.updateTicket = update;
+    expect(await run(["merge", "--finish", "9"], f.io)).toBe(0);
+    expect(await run(["merge", "--finish", "9"], f.io)).toBe(0);
+  }
+  expect(launches).toBe(1);
+});

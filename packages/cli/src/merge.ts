@@ -14,6 +14,7 @@ import {
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
+  deliveryKey,
   deployLine,
   drainMergeQueue,
   fetchCommit,
@@ -48,6 +49,8 @@ import type { DeferredLaunchResult } from "./deferred-launch.ts";
 import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
+import { deliverToRuntime } from "./runtime.ts";
+import { claimRef, guarded, redactRuntimeText } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
@@ -292,7 +295,6 @@ export async function merge(
     if (draining && (a.rest.length || Object.keys(a.options).some((k) => !["drain", "timeout"].includes(k))))
       throw new UsageError("--drain takes only --timeout and --json; merge decisions belong to each queued entry");
     const enqueue = !!a.options["when-green"];
-    if (!enqueue && a.options["keep-open"]) throw new UsageError("--keep-open applies to --when-green");
     if (
       enqueue &&
       ["wait", "timeout", "dry-run", "no-lock", "ask-owner", "no-archive", "no-notify"].some(
@@ -302,6 +304,10 @@ export async function merge(
       throw new UsageError(
         "--when-green queues intent: --wait, --timeout, --dry-run, --no-lock, --ask-owner, --no-archive and --no-notify cannot go with it",
       );
+    if (enqueue && a.options.close) throw new UsageError("--close applies to immediate merges, not --when-green");
+    if (a.options.close && a.options["keep-open"]) throw new UsageError("--keep-open and --close cannot go together");
+    if (a.options["no-ticket"] && (a.options.close || a.options["keep-open"]))
+      throw new UsageError("--no-ticket and ticket lifecycle flags cannot go together");
     if (enqueue && a.options.ticket && a.rest.length !== 1)
       throw new UsageError("--ticket applies to one pull request");
     if (a.options["through-hold"] !== undefined && !a.options["through-hold"]?.trim())
@@ -316,7 +322,16 @@ export async function merge(
     if (noTicket && a.options.ticket) throw new UsageError("--no-ticket and --ticket cannot go together");
     const wait = !!a.options.wait;
     const askOwner = a.options["ask-owner"] === "true";
-    if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"] || a.options["through-hold"]))
+    if (
+      askOwner &&
+      (wait ||
+        a.options["dry-run"] ||
+        noTicket ||
+        a.options["no-lock"] ||
+        a.options["through-hold"] ||
+        a.options["keep-open"] ||
+        a.options.close)
+    )
       throw new UsageError("--ask-owner only asks the owner: it goes with --reason (and --ticket), nothing else");
     if (askOwner && !a.options.reason?.trim())
       throw new UsageError(
@@ -383,7 +398,13 @@ export async function merge(
       repo: gitRepo(exec, repoDir),
       // Signed in, the merge lock is required: two coordinators merge one after the other.
       lockRequired: !!credentials.armadaSignIn,
-      fleet: async () => live,
+      fleet: async () => {
+        const fleet = live.fleet;
+        return {
+          ...live,
+          fleet: fleet ? { ...fleet, chore: (input) => fleet.chore({ ...input, body: mask.text(input.body) }) } : null,
+        };
+      },
       coordinatorName: await coordinatorName(io, config.project.slug),
       afterRecord: (ticket) => endWorkerSessions(io, config, credentials, ticket, "merged", a.json),
       afterRead: async (ticket) => {
@@ -534,8 +555,69 @@ export async function merge(
         io.stderr("armada: warning: could not read deploy state; armada deploy status\n");
       }
     }
-    const deliver = async (o: MergeOutcome, keepOpen = false): Promise<number> => {
+    const deliver = async (o: MergeOutcome): Promise<number> => {
       confirmed = o;
+      if (o.keepOpen) {
+        o.lines = o.lines.map(mask.text);
+        if (o.continuation) o.continuation.message = mask.text(o.continuation.message);
+      }
+      if (o.merged && o.keepOpen && o.continuation && o.ticket) {
+        const continuation = o.continuation;
+        let delivered = false;
+        try {
+          if (live.fleet && continuation.claim) {
+            const fleet = live.fleet;
+            const ref = claimRef(continuation.claim);
+            const key = deliveryKey({
+              project: config.project.slug,
+              ticket: o.ticket.id,
+              claimedAt: ref.claimedAt,
+              launchId: ref.launchId,
+              item: null,
+              kind: "note",
+              text: `merge continuation ${o.pr.mergeCommit}`,
+            });
+            const receipt = await fleet.prepareMergeNotice(key);
+            if (receipt !== "reserved" && receipt !== "delivered")
+              throw new Error(
+                "an earlier continuation has an unknown outcome; inspect the session before manual delivery",
+              );
+            delivered =
+              receipt === "delivered" ||
+              !!(await deliverToRuntime(
+                { ...io, cwd: repoDir },
+                fleet,
+                o.ticket.id,
+                continuation.message,
+                continuation.claim,
+                config,
+                { kind: "note", key },
+              ));
+            if (delivered && receipt !== "delivered")
+              await guarded(fleet, ref, "active", () =>
+                fleet.answer({
+                  note: true,
+                  generated: true,
+                  deliveryKey: key,
+                  ticket: ref.ticket,
+                  text: continuation.message,
+                  item: null,
+                }),
+              );
+          }
+        } catch (error) {
+          // Native writes of unknown outcome are never retried.
+          o.warnings.push(
+            `could not confirm continuation delivery to ${o.ticket.id} (${mask.text(redactRuntimeText(error instanceof Error ? error.message : String(error)))}); inspect its session before manual delivery`,
+          );
+        }
+        o.lines.push(
+          delivered
+            ? `${o.ticket.id}: continuation delivered to the active worker.`
+            : `Deliver to ${o.ticket.id}: ${continuation.message}`,
+        );
+      }
+
       let deploys: Awaited<ReturnType<typeof startDeploys>> = [];
       let deferredLaunches: DeferredLaunchResult[] = [];
       let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
@@ -551,7 +633,7 @@ export async function merge(
               .map((w) => w.ticket)
               .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
           : o.merged && known
-            ? known.filter((t) => t !== o.ticket?.id)
+            ? known.filter((t) => o.keepOpen || t !== o.ticket?.id)
             : known;
         if (inFlight)
           for (const launch of deferredLaunches)
@@ -564,7 +646,7 @@ export async function merge(
           } catch {
             // Retain the previous watch set if pending requests cannot be refreshed.
             for (const ticket of known ?? [])
-              if (ticket !== o.ticket?.id && !inFlight.includes(ticket)) inFlight.push(ticket);
+              if ((o.keepOpen || ticket !== o.ticket?.id) && !inFlight.includes(ticket)) inFlight.push(ticket);
             o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
           }
         }
@@ -582,7 +664,7 @@ export async function merge(
             });
             inFlight = owned?.inFlight ?? null;
           } catch {
-            inFlight = known ? known.filter((ticket) => !o.merged || ticket !== o.ticket?.id) : null;
+            inFlight = known ? known.filter((ticket) => !o.merged || o.keepOpen || ticket !== o.ticket?.id) : null;
             o.warnings.push("could not refresh owned workers for the re-arm line; retained the previous tickets");
           }
         }
@@ -607,7 +689,7 @@ export async function merge(
               if (a.json) return;
               for (const w of results) io.stdout(`${w.ticket}: ${w.detail}.\n${w.delivered ? "" : `${w.text}\n`}`);
             },
-            keepOpen,
+            keepOpen: !!o.keepOpen,
             onDeferredLaunch: notify,
           });
       if (a.json)
@@ -631,8 +713,8 @@ export async function merge(
             const timer = setInterval(tick, ms);
             return () => clearInterval(timer);
           }),
-        afterMerge: async (outcome, entry) => {
-          await deliver(outcome, entry.keepOpen);
+        afterMerge: async (outcome) => {
+          await deliver(outcome);
         },
         onFinished: () => {
           confirmed = null;
@@ -658,6 +740,8 @@ export async function merge(
           pr: number,
           ticket: a.options.ticket ?? null,
           noTicket,
+          keepOpen: !!a.options["keep-open"],
+          close: !!a.options.close,
           wait: wait ? { timeoutMs } : null,
           dryRun: !!a.options["dry-run"],
           noLock: !!a.options["no-lock"],

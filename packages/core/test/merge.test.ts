@@ -1497,41 +1497,53 @@ describe("Linear outage merge recovery", () => {
   const handBack = (live: ReturnType<typeof tempFleet>, body = `PR #9, head ${HEAD}, CI green`) =>
     live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body, at: NOW });
 
-  test("checks an exact open Armada hand-back when Linear is down, then records the merge before any Linear write", async () => {
-    const live = tempFleet();
-    const s = setup({ live });
-    await handBack(live);
-    await live.store.saveRuntimeHandle({
-      project: "widgets",
-      ticket: "DEMO-7",
-      runtime: "Conductor",
-      handle: "ws-1/s-1",
-      branch: null,
-      at: NOW,
-    });
-    let linearReads = 0;
-    s.linear.readTicket = createLinearWriter({
-      apiKey: "synthetic-key",
-      labels: s.ctx.config.tracker.labels,
-      fetch: async () => {
-        linearReads++;
-        return new Response("Service unavailable", { status: 503 });
-      },
-      sleep: async () => {},
-      random: () => 0.5,
-    }).readTicket;
-    const out = await mergePullRequest(s.ctx, { pr: 9 });
-    expect(linearReads).toBe(9);
-    expect(out.merged).toBe(true);
-    expect(out.linearPending).toBe(true);
-    expect(out.lines).toContain("Linear did not answer; the hand-back was checked on Armada");
-    expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
-    expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
-    const items = await live.fleet.ticketItems("DEMO-7");
-    expect((await live.store.getInboxItem("widgets", 1))?.resolvedAt).toBe(NOW.toISOString());
-    expect(items.find((i) => i.kind === "linear-pending")?.body).toContain("Finish Linear for #9");
-    expect(s.linear.writes).toEqual([]);
-  });
+  test.each(["final", "partial", "close"])(
+    "checks an exact Armada hand-back during Linear outage (%s)",
+    async (mode) => {
+      const live = tempFleet();
+      const s = setup({ live });
+      await handBack(live, `PR #9, head ${HEAD}, CI green${mode === "final" ? "" : "; more PRs: the dashboard part"}`);
+      const read = s.linear.readTicket.bind(s.linear);
+      await live.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-7",
+        runtime: "Conductor",
+        handle: "ws-1/s-1",
+        branch: null,
+        at: NOW,
+      });
+      let linearReads = 0;
+      s.linear.readTicket = createLinearWriter({
+        apiKey: "synthetic-key",
+        labels: s.ctx.config.tracker.labels,
+        fetch: async () => {
+          linearReads++;
+          return new Response("Service unavailable", { status: 503 });
+        },
+        sleep: async () => {},
+        random: () => 0.5,
+      }).readTicket;
+      const out = await mergePullRequest(s.ctx, { pr: 9, close: mode === "close" });
+      expect(linearReads).toBe(9);
+      expect(out.merged).toBe(true);
+      expect(out.linearPending).toBe(true);
+      expect(out.lines).toContain("Linear did not answer; the hand-back was checked on Armada");
+      expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+      expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(
+        mode === "partial" ? null : NOW.toISOString(),
+      );
+      const items = await live.fleet.ticketItems("DEMO-7");
+      expect((await live.store.getInboxItem("widgets", 1))?.resolvedAt).toBe(NOW.toISOString());
+      expect(items.find((i) => i.kind === "linear-pending")?.body).toContain("Finish Linear for #9");
+      expect(s.linear.writes).toEqual([]);
+      s.linear.readTicket = read;
+      expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
+      expect(s.linear.get("DEMO-7").statusType).toBe(mode === "partial" ? "started" : "completed");
+      const writes = [...s.linear.writes];
+      await finishMerge(s.ctx, { pr: 9 });
+      expect(s.linear.writes).toEqual(writes);
+    },
+  );
 
   test("queue intent uses the same exact Armada hand-back during a Linear outage", async () => {
     const live = tempFleet();
@@ -1575,42 +1587,94 @@ describe("Linear outage merge recovery", () => {
     expect(s.forge.merges).toEqual([]);
   });
 
-  test("post-merge Linear failure leaves a released claim and a visible chore; finish twice writes once", async () => {
-    const live = tempFleet();
-    const s = setup({ live });
-    await handBack(live);
-    await live.store.saveRuntimeHandle({
-      project: "widgets",
-      ticket: "DEMO-7",
-      runtime: "Conductor",
-      handle: "ws-1/s-1",
-      branch: null,
-      at: NOW,
-    });
-    let sessionEnded = false;
-    s.ctx.afterRecord = async () => {
-      sessionEnded = true;
-    };
-    const update = s.linear.updateTicket.bind(s.linear);
-    s.linear.updateTicket = async () => {
-      expect(sessionEnded).toBe(true);
-      expect(live.store.events.some((e) => e.kind === "merge")).toBe(true);
-      expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
-      throw down();
-    };
-    const out = await mergePullRequest(s.ctx, { pr: 9 });
-    expect(out.merged).toBe(true);
-    expect(out.linearPending).toBe(true);
-    expect((await live.fleet.ticketItems("DEMO-7")).filter((i) => i.kind === "linear-pending")).toHaveLength(1);
-    s.linear.updateTicket = update;
-    expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
-    const writes = [...s.linear.writes];
-    await finishMerge(s.ctx, { pr: 9 });
-    expect(s.linear.writes).toEqual(writes);
-    expect(s.linear.bodies.filter((b) => b.startsWith("Agent status: merged — PR #9"))).toHaveLength(1);
-    expect(await live.fleet.ticketItems("DEMO-7")).toEqual([]);
-    expect(s.forge.merges).toHaveLength(1);
-  });
+  test.each(["final", "partial", "partial-with-final-pr", "partial-resolve-failure"])(
+    "post-merge Linear failure preserves intent; finish twice writes once (%s)",
+    async (mode) => {
+      const keepOpen = mode !== "final";
+      let resolutionFails = false;
+      const live = tempFleet({
+        fail: (op) => (resolutionFails && op === "inbox/resolve" ? new Error("Armada unavailable") : null),
+      });
+      const s = setup({ live });
+      s.linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: s.ctx.config.tracker.programRoot });
+      s.linear.get("DEMO-7").parentId = "DEMO-2";
+      const readChildren = s.linear.readChildren.bind(s.linear);
+      if (keepOpen)
+        s.linear.readChildren = async () => {
+          throw new Error("partial repair must not run spec closure");
+        };
+      await handBack(live);
+      await live.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-7",
+        runtime: "Conductor",
+        handle: "ws-1/s-1",
+        branch: null,
+        at: NOW,
+      });
+      let sessionEnded = false;
+      s.ctx.afterRecord = async () => {
+        sessionEnded = true;
+      };
+      const update = s.linear.updateTicket.bind(s.linear);
+      s.linear.updateTicket = async () => {
+        expect(sessionEnded).toBe(!keepOpen);
+        expect(live.store.events.some((e) => e.kind === (keepOpen ? "report" : "merge"))).toBe(true);
+        expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(
+          keepOpen ? null : NOW.toISOString(),
+        );
+        throw down();
+      };
+      const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen });
+      expect(out.merged).toBe(true);
+      expect(out.linearPending).toBe(true);
+      expect((await live.fleet.ticketItems("DEMO-7")).filter((i) => i.kind === "linear-pending")).toHaveLength(1);
+      s.linear.updateTicket = update;
+      if (mode === "partial-with-final-pr") {
+        const first = structuredClone(s.forge.pr);
+        s.linear.get("DEMO-7").labels = [label("rt-conductor"), label("phase-ready-to-merge")];
+        s.linear.post(
+          "DEMO-7",
+          `Agent status: ready-to-merge — PR #10, head ${HEAD}, CI green`,
+          "2026-03-04T10:30:00Z",
+        );
+        s.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
+        await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #10", at: NOW });
+        s.linear.readChildren = readChildren;
+        await mergePullRequest(s.ctx, { pr: 10 });
+        s.forge.pr = first;
+        const writes = [...s.linear.writes];
+        expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
+        expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+        expect(s.linear.get("DEMO-2").statusType).toBe("completed");
+        expect(s.linear.writes).toEqual(writes);
+        expect(await live.fleet.ticketItems("DEMO-7")).toEqual([]);
+        return;
+      }
+      resolutionFails = mode === "partial-resolve-failure";
+      const repaired = await finishMerge(s.ctx, { pr: 9 });
+      expect(repaired.linearPending).toBe(false);
+      expect(s.linear.get("DEMO-2").statusType).toBe(keepOpen ? "backlog" : "completed");
+      expect(repaired.armadaPending).toBe(resolutionFails);
+      resolutionFails = false;
+      const writes = [...s.linear.writes];
+      await finishMerge(s.ctx, { pr: 9 });
+      expect(s.linear.writes).toEqual(writes);
+      expect(
+        s.linear.bodies.filter((b) => b.startsWith(`Agent status: ${keepOpen ? "implementing" : "merged"} — PR #9`)),
+      ).toHaveLength(1);
+      expect(await live.fleet.ticketItems("DEMO-7")).toEqual([]);
+      expect(s.forge.merges).toHaveLength(1);
+      expect(s.linear.get("DEMO-7").statusType).toBe(keepOpen ? "started" : "completed");
+      if (keepOpen) {
+        s.linear.get("DEMO-7").statusType = "completed";
+        s.linear.get("DEMO-7").stateId = "st-done";
+        await finishMerge(s.ctx, { pr: 9 });
+        expect(s.linear.writes).toEqual(writes);
+        expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+      }
+    },
+  );
 
   test("finish rejects an open PR without a lease, and finishes a manually merged PR", async () => {
     const s = setup();
@@ -1750,6 +1814,134 @@ test("queuing preserves the merge judgement and pending owner decision without a
   expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9, reason: "Reviewed" }))).toContain("owner requested changes");
 });
 
+describe("a ticket in several pull requests", () => {
+  test.each(["hand-back", "refreshed-hand-back", "keep-open", "close"])(
+    "%s retains the worker only for a partial merge",
+    async (mode) => {
+      const live = tempFleet();
+      const s = setup({ live });
+      s.linear.add("DEMO-2", { title: "Spec 1 — Lists", parentId: s.ctx.config.tracker.programRoot });
+      s.linear.get("DEMO-7").parentId = "DEMO-2";
+      if (mode === "hand-back" || mode === "close")
+        s.linear.post(
+          "DEMO-7",
+          `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; shipped with ship-pr-dev, acceptance: production build ok; more PRs: the dashboard part`,
+          "2026-03-04T09:30:00Z",
+        );
+      await live.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-7",
+        runtime: "Conductor",
+        handle: "ws-1/s-1",
+        branch: "feature/demo-7-do-the-thing",
+        at: NOW,
+      });
+      await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #9", at: NOW });
+      await live.store.addInboxItem({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "question",
+        recipient: "coordinator",
+        author: null,
+        body: "A remaining question",
+        at: NOW,
+      });
+      if (mode === "refreshed-hand-back")
+        s.forge.onCompare = async () => {
+          s.forge.onCompare = null;
+          s.linear.post(
+            "DEMO-7",
+            `Agent status: ready-to-merge — PR #9, head ${HEAD}, CI green; more PRs: the dashboard part`,
+            "2026-03-04T09:45:00Z",
+          );
+        };
+      if (mode === "keep-open") s.forge.pr.headRef = "feature/demo-7";
+      await live.store.recordEvent({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "report",
+        phase: mode === "keep-open" ? "implementing" : "ready-to-merge",
+        message: "PR #9 ready",
+        prUrl: s.forge.pr.url,
+        headSha: HEAD,
+        at: NOW,
+      });
+      const closed = mode === "close";
+      const readChildren = s.linear.readChildren.bind(s.linear);
+      if (!closed)
+        s.linear.readChildren = async () => {
+          throw new Error("partial merges must not run spec closure");
+        };
+      // Linear's GitHub automation can complete the issue after the first repair.
+      s.ctx.sleep = async (ms) => {
+        s.sleeps.push(ms);
+        s.linear.get("DEMO-7").statusType = "completed";
+        s.linear.get("DEMO-7").stateId = "st-done";
+      };
+      const readFor: (string | null)[] = [];
+      const afterRead = s.ctx.afterRead;
+      s.ctx.afterRead = async (ticket) => {
+        readFor.push(ticket);
+        return afterRead(ticket);
+      };
+      const out = await mergePullRequest(s.ctx, { pr: 9, keepOpen: mode === "keep-open", close: closed });
+      expect(out.linearPending).toBeFalsy();
+      expect(s.linear.get("DEMO-2").statusType).toBe(closed ? "completed" : "backlog");
+      expect(s.forge.merges).toEqual([{ number: 9, sha: HEAD }]);
+      expect(s.linear.get("DEMO-7").statusType).toBe(closed ? "completed" : "started");
+      expect(s.linear.get("DEMO-7").labels.map((l) => l.name)).toEqual(closed ? [] : ["Conductor", "implementing"]);
+      expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(
+        closed ? NOW.toISOString() : null,
+      );
+      const items = await live.store.openInboxItems({ project: "widgets", recipient: "coordinator" });
+      expect(items.map((i) => i.kind)).toEqual(closed ? [] : ["question"]);
+      expect(live.store.events.map((e) => [e.kind, e.phase])).toEqual([
+        ["report", mode === "keep-open" ? "implementing" : "ready-to-merge"],
+        [closed ? "merge" : "report", closed ? "merged" : "implementing"],
+      ]);
+      const merges = await live.store.latestEvents("widgets", { kinds: ["merge"] });
+      expect(Object.keys(merges)).toEqual(closed ? ["DEMO-7"] : []);
+      if (closed) expect(merges["DEMO-7"]).toMatchObject({ runtime: "coordinator", handle: "default" });
+      expect(readFor).toEqual([closed ? "DEMO-7" : null]);
+      if (!closed) {
+        expect(out.archive).toBeNull();
+        expect(out.keepOpen).toBe(true);
+        expect(out.continuation?.message).toContain(
+          `git fetch origin && git switch -c ${mode === "keep-open" ? "feature/demo-7-2" : "feature/demo-7-do-the-thing-2"} origin/main`,
+        );
+        expect(out.continuation?.claim?.releasedAt).toBeNull();
+        expect(s.linear.get("DEMO-7").comments[0]?.status?.summary).toContain("next:");
+        // A fresh hand-back without more PRs completes the same ticket.
+        s.linear.get("DEMO-7").labels = [label("rt-conductor"), label("phase-ready-to-merge")];
+        s.linear.post(
+          "DEMO-7",
+          `Agent status: ready-to-merge — PR #10, head ${HEAD}, CI green`,
+          "2026-03-04T10:30:00Z",
+        );
+        s.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
+        await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #10", at: NOW });
+        s.linear.readChildren = readChildren;
+        const final = await mergePullRequest(s.ctx, { pr: 10 });
+        expect(final.keepOpen).toBeFalsy();
+        expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+        expect(s.linear.get("DEMO-2").statusType).toBe("completed");
+        expect((await live.store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBe(NOW.toISOString());
+        expect(live.store.events.map((e) => e.kind)).toEqual(["report", "report", "merge"]);
+      }
+    },
+  );
+  test.each([
+    { keepOpen: true, close: true },
+    { keepOpen: true, noTicket: true },
+    { close: true, noTicket: true },
+  ])("refuses conflicting intent %j before writing", async (intent) => {
+    const s = setup();
+    expect(await refusal(mergePullRequest(s.ctx, { pr: 9, ...intent }))).toContain("cannot go together");
+    expect(s.forge.merges).toEqual([]);
+    expect(s.linear.writes).toEqual([]);
+  });
+});
+
 test("acceptance information keeps the confirmed hand-back usable during a Linear outage", async () => {
   const live = tempFleet();
   const { ctx, linear } = setup({
@@ -1854,9 +2046,9 @@ test("a hold override survives Linear failure and unreadable audit until finish 
 
 test("after merge selects declared deploy targets by base branch, including no-ticket merges", async () => {
   const text = `${GATES}\n[[deploy.target]]\nname = "api"\ngithub_environment = "production"\n[[deploy.target]]\nname = "docs"\nbranch = "docs"\nlive_sha_command = "version"\n`;
-  for (const noTicket of [false, true]) {
+  for (const input of [{}, { noTicket: true, reason: "deploy test" }, { keepOpen: true }]) {
     const s = setup({ toml: text });
-    const outcome = await mergePullRequest(s.ctx, { pr: 9, noTicket, ...(noTicket ? { reason: "deploy test" } : {}) });
+    const outcome = await mergePullRequest(s.ctx, { pr: 9, ...input });
     expect(outcome.deploy).toEqual({ targets: ["api"] });
     expect(outcome.pr.mergeCommit).toBe(SQUASH);
   }
@@ -1875,6 +2067,9 @@ test.each([
   "override",
   "recovery",
   "recovered-ticket",
+  "keep-open",
+  "handback-part",
+  "partial-recovery",
   "queued-head",
   "head-mismatch",
   "cleanup-recovery",
@@ -1895,10 +2090,15 @@ test.each([
     }),
   );
   let active = forges.get(12)!;
-  const ticketed = ["recovered-ticket", "queued-head", "head-mismatch"].includes(scenario);
+  const partial = ["keep-open", "handback-part", "partial-recovery"].includes(scenario);
+  const ticketed = partial || ["recovered-ticket", "queued-head", "head-mismatch"].includes(scenario);
   if (ticketed) {
     active.pr.headRef = "feature/demo-7-do-the-thing";
-    s.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #12, head ${HEAD}, CI green`, "2026-03-04T09:30:00Z");
+    s.linear.post(
+      "DEMO-7",
+      `Agent status: ready-to-merge — PR #12, head ${HEAD}, CI green${["handback-part", "partial-recovery"].includes(scenario) ? "; more PRs: wire the second part" : ""}`,
+      "2026-03-04T09:30:00Z",
+    );
   }
   if (scenario === "queued-head") {
     active.pr.headSha = BASE;
@@ -2007,7 +2207,7 @@ test.each([
       pr,
       ticket: pr === 12 && ticketed ? "DEMO-7" : null,
       noTicket: !(pr === 12 && ticketed),
-      keepOpen: false,
+      keepOpen: scenario === "keep-open" && pr === 12,
       headSha: HEAD,
       queuedBy: "a",
       reason: null,
@@ -2038,7 +2238,13 @@ test.each([
       afterMerge: async (outcome) => {
         expect(outcome.merged).toBe(true);
         if (ticketed && outcome.pr.number === 12) expect(outcome.ticket?.id).toBe("DEMO-7");
-        if (scenario === "cleanup-recovery" && !cleanupFailed) {
+        if (partial && outcome.pr.number === 12) {
+          expect(outcome.keepOpen).toBe(true);
+          expect(outcome.archive).toBeNull();
+          expect(s.linear.get("DEMO-7").statusType).toBe("started");
+          expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe("implementing");
+        }
+        if (["cleanup-recovery", "partial-recovery"].includes(scenario) && !cleanupFailed) {
           cleanupFailed = true;
           throw new Error("session lost during cleanup");
         }
@@ -2066,9 +2272,11 @@ test.each([
     expect(delivered).toEqual([]);
     return;
   }
-  if (scenario === "cleanup-recovery") {
+  if (["cleanup-recovery", "partial-recovery"].includes(scenario)) {
     await expect(drain()).rejects.toThrow("session lost during cleanup");
     expect(await live.fleet.queueList()).toMatchObject([{ state: "merging", attempts: 0 }, { state: "queued" }]);
+    if (scenario === "partial-recovery")
+      s.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #18, head ${BASE}, CI green`, "2026-03-04T10:00:00Z");
   }
   await drain();
   expect(delivered).toEqual(["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? [15] : [12, 15]);

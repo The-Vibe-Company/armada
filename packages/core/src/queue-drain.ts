@@ -93,6 +93,7 @@ export async function drainMergeQueue(
           pr: entry.pr,
           ticket: entry.ticket,
           noTicket: entry.noTicket,
+          keepOpen: entry.keepOpen,
           throughHold: entry.throughHold ?? undefined,
           reason: entry.reason,
           queue: true,

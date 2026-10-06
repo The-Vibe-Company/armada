@@ -78,6 +78,8 @@ export interface Outcome {
   inbox: InboxItem[] | null;
   /** The ticket read back after the write (claim and report); null when it was not read. */
   state?: TicketState | null;
+  /** Branch actually retained by a successful claim, for the worker’s local preflight. */
+  claimedBranch?: string | null;
   /** Snapshot used to guard a coordinator release and bound session termination. */
   releasedClaim?: RuntimeHandle | null;
 }
@@ -265,7 +267,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       ? `armada claim ${ticket.id} --runtime "<one of: ${runtimeLabels.map((l) => l.name).join(", ")}>" --handle ${input.handle}`
       : DOCTOR_LABELS,
   );
-  const branch = input.branch ?? ticket.branchName;
+  const requestedBranch = input.branch ?? ticket.branchName;
   const warnings = [...ticket.warnings];
   const lines: string[] = [];
   let profile: ProfileChoice | null = null;
@@ -281,6 +283,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const held = activeClaimComments(ticket.comments);
   const holder = held[0]?.claim;
   const resuming = !!holder && holder.session === input.handle;
+  const branch = resuming ? (holder?.branch ?? requestedBranch) : requestedBranch;
   if (!resuming) {
     // Only the coordinator releases another worker's ticket: this worker picks another one.
     const another = "armada status, to pick another ticket ready to start";
@@ -380,7 +383,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
     lines.push(`Launch request ${ids} from ${who} resolved.`);
   }
   const state = await readBack(ctx, ticket.id, warnings);
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null, state };
+  return {
+    ticket: ticket.id,
+    url: ticket.url,
+    lines,
+    warnings,
+    inbox: null,
+    state,
+    claimedBranch: branch,
+  };
 }
 
 // ------------------------------------------------------------------ report
@@ -401,6 +412,8 @@ export interface ReportInput {
   sha?: string | null;
   /** ship-pr-dev, or fallback: <reason>. Optional for older workers. */
   shippedWith?: string | null;
+  /** What remains after this pull request; ready-to-merge only, on one line. */
+  morePrs?: string | null;
   /** Shipping only: independent code review, then CI. */
   stage?: string | null;
 }
@@ -461,6 +474,12 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
       "--stage is for shipping: use review or ci",
       'armada report shipping --stage review|ci --message "<progress>"',
     );
+  const more = input.morePrs?.trim();
+  if (input.morePrs != null && (input.phase !== "ready-to-merge" || !more || /[\r\n]/.test(input.morePrs)))
+    throw new Refusal(
+      "--more-prs is for ready-to-merge: describe what remains on one nonempty line",
+      'armada report ready-to-merge --pr <number> --sha <full sha> --more-prs "<what remains>"',
+    );
   const ticket = await readOpenTicket(ctx, input.ticket);
   const problem = transitionProblem(ticket.agentPhase, input.phase);
   if (problem)
@@ -486,6 +505,11 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
     throw new Refusal(
       "--shipped-with is for ready-to-merge: use ship-pr-dev or fallback: <nonempty reason>, on one line",
       'armada report ready-to-merge --pr <number> --sha <full sha> --shipped-with "ship-pr-dev"',
+    );
+  if (shippedWith?.includes("; more PRs:"))
+    throw new Refusal(
+      "--shipped-with cannot contain the reserved ; more PRs: marker; use --more-prs for remaining work",
+      'armada report ready-to-merge --shipped-with "fallback: <reason without the reserved marker>"',
     );
   const shippingPath =
     shippedWith === "ship-pr-dev"
@@ -554,7 +578,7 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
         `${ticket.id}: hand-back refused:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
         `${pr?.checks?.some((c) => c.state === "failure") ? `armada ci why ${pr.number}; ` : ""}fix the points above, then armada report ready-to-merge --ticket ${ticket.id} --pr ${pr?.number ?? "<number>"} --sha <head sha>; report shipping meanwhile if the work is not done`,
       );
-    summary = `PR #${pr?.number}, head ${sha}, CI green; ${shippingPath}${applicable.length ? `, acceptance: ${applicable.map((r) => `${r.name} ok`).join(", ")}` : ""}`;
+    summary = `PR #${pr?.number}, head ${sha}, CI green; ${shippingPath}${applicable.length ? `, acceptance: ${applicable.map((r) => `${r.name} ok`).join(", ")}` : ""}${more ? `; more PRs: ${more}` : ""}`;
     body = message;
   } else {
     if (!message && !plan)
