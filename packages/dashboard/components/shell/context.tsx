@@ -36,6 +36,7 @@ const isBusy = (o: FleetOverview) =>
 
 /** The signed-in person and their organizations, as the sidebar shows them. */
 export interface Account {
+  canSetSecrets?: boolean;
   name: string;
   email: string;
   organization: { id: string; name: string };

@@ -461,6 +461,15 @@ export async function setSecret(
   vault: VaultKey,
   input: SecretTarget & { value: string; actor: Actor; now: Date },
 ): Promise<void> {
+  await transaction(client, (tx) => setSecretInTransaction(tx, vault, input));
+}
+
+/** The vault write and audit event inside an existing transaction. */
+export async function setSecretInTransaction(
+  tx: Queryable,
+  vault: VaultKey,
+  input: Parameters<typeof setSecret>[2],
+): Promise<void> {
   const refusal = targetRefusal(input);
   if (refusal) throw new Error(refusal);
   const slot = {
@@ -470,32 +479,30 @@ export async function setSecret(
     name: input.name,
   };
   const at = input.now;
-  await transaction(client, async (tx) => {
-    await tx.query(
-      `INSERT INTO "armada_secret" ("organizationId", "project", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
+  await tx.query(
+    `INSERT INTO "armada_secret" ("organizationId", "project", "userId", "name", "sealed", "setById", "setByLabel", "createdAt", "updatedAt")
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
        ON CONFLICT ("organizationId", "project", "userId", "name") DO UPDATE SET
          "sealed" = excluded."sealed", "setById" = excluded."setById",
          "setByLabel" = excluded."setByLabel", "updatedAt" = excluded."updatedAt"`,
-      [
-        slot.organization,
-        slot.project,
-        slot.user,
-        slot.name,
-        sealSecret(vault, slot, input.value),
-        input.actor.id,
-        input.actor.label,
-        at,
-      ],
-    );
-    await recordEvent(tx, input.organization, {
-      at: at.toISOString(),
-      action: "set",
-      project: slot.project,
-      keys: [input.name],
-      actor: input.actor,
-      detail: scopeWords(input),
-    });
+    [
+      slot.organization,
+      slot.project,
+      slot.user,
+      slot.name,
+      sealSecret(vault, slot, input.value),
+      input.actor.id,
+      input.actor.label,
+      at,
+    ],
+  );
+  await recordEvent(tx, input.organization, {
+    at: at.toISOString(),
+    action: "set",
+    project: slot.project,
+    keys: [input.name],
+    actor: input.actor,
+    detail: scopeWords(input),
   });
 }
 

@@ -9,7 +9,7 @@
 import type { ValidationRule } from "./config.ts";
 import type { ChangedFile, CiState } from "./types.ts";
 
-export const VALIDATION_KINDS = ["merge", "validation", "question"] as const;
+export const VALIDATION_KINDS = ["merge", "validation", "question", "secret"] as const;
 export type ValidationKind = (typeof VALIDATION_KINDS)[number];
 
 /** The pull request a merge approval holds, as GitHub showed it when the coordinator asked. */
@@ -57,6 +57,8 @@ export interface ValidationSamples {
 }
 
 export interface NewValidation extends ValidationSamples {
+  /** A secret request names a worker secret, never its value. */
+  secretName?: string | null;
   project: string;
   ticket: string;
   kind: ValidationKind;
@@ -79,6 +81,18 @@ export interface Validation extends Omit<NewValidation, "at"> {
   createdAt: string;
   decision: ValidationDecision | null;
 }
+
+export interface SecretRequestInput {
+  ticket: string;
+  name: string;
+  reason: string;
+}
+
+export type SecretRequestResult = { state: "already-set" } | { state: "requested"; validation: Validation };
+
+export type SecretRequestAnswer =
+  | { state: "already-set" }
+  | { state: "requested"; validation: Validation; url: string };
 
 export const VALIDATION_LIMITS = {
   what: 4000,

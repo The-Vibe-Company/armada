@@ -14,6 +14,7 @@ export async function closeFinishedSpec(
   ticket: Ticket,
 ): Promise<{ lines: string[]; warnings: string[] }> {
   let spec: Ticket | null = null;
+  const warnings: string[] = [];
   try {
     const root = ctx.config.tracker.programRoot;
     const seen = new Set([ticket.id]);
@@ -30,9 +31,15 @@ export async function closeFinishedSpec(
       parent = ancestor.parentId;
     }
     if (!spec || isClosed(spec)) return { lines: [], warnings: [] };
-    const native = await ctx.linear.parentAutoClose(spec.id);
-    if (native.enabled === true) return { lines: [], warnings: [] };
-    if (native.enabled === null) throw new Error("Linear did not return the team's Parent auto-close setting");
+    try {
+      const native = await ctx.linear.parentAutoClose(spec.id);
+      if (native.enabled === true) return { lines: [], warnings: [] };
+      if (native.enabled === null) throw new Error("Linear did not return the setting");
+    } catch (err) {
+      warnings.push(
+        `Could not read Parent auto-close for spec ${spec.id} (${err instanceof Error ? err.message : String(err)}); checking fresh descendants instead.`,
+      );
+    }
 
     const descendants: SpecChild[] = [];
     let parents = [spec.uuid];
@@ -50,9 +57,9 @@ export async function closeFinishedSpec(
       }
       parents = next;
     }
-    if (!descendants.length || descendants.some((child) => !isClosed(child))) return { lines: [], warnings: [] };
+    if (!descendants.length || descendants.some((child) => !isClosed(child))) return { lines: [], warnings };
     // The triggering ticket must still belong to this freshly read tree.
-    if (!descendants.some((child) => child.id === ticket.id)) return { lines: [], warnings: [] };
+    if (!descendants.some((child) => child.id === ticket.id)) return { lines: [], warnings };
     const done = firstState(spec.states, "completed");
     if (!done) throw new Error(`${spec.id} has no completed workflow state`);
     const list = (status: "completed" | "canceled") =>
@@ -79,12 +86,13 @@ export async function closeFinishedSpec(
     await ctx.linear.updateTicket(spec.uuid, { stateId: done.id });
     return {
       lines: [`${spec.id}: all ${descendants.length} descendants closed; moved to ${done.name}, summary posted.`],
-      warnings: [],
+      warnings,
     };
   } catch (err) {
     return {
       lines: [],
       warnings: [
+        ...warnings,
         `Could not close spec${spec ? ` ${spec.id}` : ` for ${ticket.id}`} (${err instanceof Error ? err.message : String(err)})`,
       ],
     };

@@ -1441,6 +1441,26 @@ export function memoryFleet(): FleetStore & {
       return expired;
     },
 
+    async requestSecret(input) {
+      const open = validations.find(
+        (v) => v.project === input.project && v.kind === "secret" && v.secretName === input.name && !v.decision,
+      );
+      if (open) return { state: "requested", validation: copy(open) };
+      const validation = await this.addValidation({
+        project: input.project,
+        ticket: input.ticket,
+        kind: "secret",
+        secretName: input.name,
+        what: `Set ${input.name}`,
+        reason: input.reason,
+        choices: null,
+        pr: null,
+        attachments: [],
+        author: input.author,
+        at: input.at,
+      });
+      return { state: "requested", validation };
+    },
     async addValidation(v) {
       const at = v.at.toISOString();
       for (const was of validations)

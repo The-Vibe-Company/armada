@@ -1873,7 +1873,7 @@ async function after(
       );
       if (!keepOpen) {
         const spec = await closeFinishedSpec(ctx, fresh);
-        if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
+        c.warnings.push(...spec.warnings);
         lines.push(...spec.lines);
       }
     } catch (err) {
@@ -2115,7 +2115,7 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
       );
     if (more === null) {
       const spec = await closeFinishedSpec(ctx, ticket);
-      if (spec.warnings.length) throw new Error(spec.warnings.join("; "));
+      warnings.push(...spec.warnings);
       lines.push(...spec.lines);
     }
     linearPending = false;
