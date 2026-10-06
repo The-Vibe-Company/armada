@@ -27,6 +27,7 @@ import {
   type InboxItem,
   type InboxReadEvent,
   type InsightRange,
+  isClosed,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
   type OwnerValidation,
@@ -319,10 +320,18 @@ async function readValidations(store: LiveStore, project: string, now: Date) {
   );
 }
 
-async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
+async function readLive(
+  store: LiveStore,
+  project: string,
+  now: Date,
+  tickets: readonly string[] = [],
+): Promise<LiveProject> {
   const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions, validations] = await Promise.all(
     [
-      store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+      Promise.all([
+        store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
+        tickets.length ? store.latestEvents(project, { since: new Date(0), tickets }) : Promise.resolve({}),
+      ]).then(([recent, held]) => ({ ...recent, ...held })),
       store.recentEvents(project, new Date(now.getTime() - HISTORY_MS)),
       store.openRuntimeHandles(project),
       store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
@@ -447,9 +456,16 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
   if (!found) return null;
   const { store, snap } = found;
   const l = store
-    ? await withTimeout(readLive(store, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading live data").catch(
-        () => null,
-      )
+    ? await withTimeout(
+        readLive(
+          store,
+          slug,
+          opts.now(),
+          snap.sources.program.issues.filter((i) => !isClosed(i)).map((i) => i.id),
+        ),
+        opts.liveTimeoutMs ?? 4000,
+        "reading live data",
+      ).catch(() => null)
     : null;
   return { store: l ? store : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
 }
@@ -549,7 +565,13 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
     try {
       const slugs = entries.flatMap((e) => liveSlug(e.p, e.entry?.snapshot) ?? []);
       const rows = await withTimeout(
-        Promise.all(slugs.map(async (slug) => [slug, await readLive(store, slug, opts.now())] as const)),
+        Promise.all(
+          slugs.map(async (slug) => {
+            const snap = entries.find((e) => liveSlug(e.p, e.entry?.snapshot) === slug)?.entry?.snapshot;
+            const tickets = snap?.sources.program.issues.filter((i) => !isClosed(i)).map((i) => i.id) ?? [];
+            return [slug, await readLive(store, slug, opts.now(), tickets)] as const;
+          }),
+        ),
         opts.liveTimeoutMs ?? 4000,
         "reading live data",
       );

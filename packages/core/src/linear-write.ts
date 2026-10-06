@@ -208,6 +208,7 @@ function ensure(ok: boolean | undefined, what: string) {
 
 /** Reconcile an ambiguous comment failure before another physical post. */
 async function postOnce(opts: LinearWriterOptions, uuid: string, body: string): Promise<{ id: string }> {
+  const startedAt = (opts.now ?? (() => new Date()))().getTime();
   let posts = 0;
   const doFetch = opts.fetch ?? fetch;
   const guardedFetch: NonNullable<LinearRequestOptions["fetch"]> = async (url, init) => {
@@ -221,8 +222,13 @@ async function postOnce(opts: LinearWriterOptions, uuid: string, body: string): 
       const comments = data.issue.comments;
       const warnings: string[] = [];
       await readRest(opts, uuid, MORE_COMMENTS, comments, warnings);
-      const existing = comments.nodes.find((comment) => comment.body === body);
+      const matching = comments.nodes.filter((comment) => comment.body === body);
+      const existing = matching.find((comment) => Date.parse(comment.createdAt) >= startedAt);
       if (existing) return Response.json({ data: { commentCreate: { success: true, comment: { id: existing.id } } } });
+      // An older identical report is not evidence of this post. Fail closed
+      // rather than acknowledge stale progress or duplicate a clock-skewed post.
+      if (matching.length)
+        throw new LinearError("Linear could not confirm this new comment; an older identical one exists");
       if (comments.pageInfo?.hasNextPage || warnings.length)
         throw new LinearError("Linear could not check every comment; try again after it answers");
     }

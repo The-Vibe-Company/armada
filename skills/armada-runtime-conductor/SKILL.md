@@ -45,6 +45,10 @@ The output is `{"messageId": …, "state": "sent"}`. Exit code 0 means Conductor
 
 ## Status
 
+Armada reads Conductor's session and workspace state itself before inbox and status reads when the heartbeat is older than half `policy.silence_minutes`, refreshing stored observations at most every five minutes. Fresh `working` readings defer silence until twice that threshold, then the alert says the session is still working. Fresh `idle` readings in active phases produce `stopped` after five minutes without a report or answer; waiting phases stay quiet. An archived workspace ends its exact claim and dashboard session. Without a usable Conductor CLI, Armada keeps its usual silence rule; stored readings expire after `policy.silence_minutes`.
+
+The coordinator reads the transcript to decide how to resume a stopped worker. For a manual check:
+
 ```sh
 conductor --json session status <sessionId>
 ```
