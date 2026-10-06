@@ -117,7 +117,8 @@ describe("worker heartbeats", () => {
     const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
     const query = (minutes: number) =>
       readInbox(store, { project: "widgets", now: at(minutes), silentAfterMinutes: 15, quietAfterMinutes: 45 });
-    expect((await query(16)).map((item) => item.kind)).toEqual(["silent"]);
+    expect(await query(16)).toEqual([]); // No first activity yet: initial claim grace.
+    expect((await query(31)).map((item) => item.kind)).toEqual(["silent"]);
     expect(
       await store.recordHeartbeat({
         project: "widgets",

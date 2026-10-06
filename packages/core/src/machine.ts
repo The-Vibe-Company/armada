@@ -460,6 +460,7 @@ export async function takeWatchLock(
   identity?: WatchIdentity,
   mode?: "follow",
   name = "default",
+  samePidIsStale = true,
 ): Promise<{ taken: true } | { taken: false; pid: number }> {
   const { lock } = watchFiles(paths, project, name);
   await mkdir(dirname(lock), { recursive: true, mode: 0o700 });
@@ -479,7 +480,7 @@ export async function takeWatchLock(
         if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
       }
       const held = await readWatchLock(paths, project, name);
-      if (held !== null && held !== pid && alive(held)) return { taken: false, pid: held };
+      if (held !== null && (held !== pid || !samePidIsStale) && alive(held)) return { taken: false, pid: held };
       // Stale: its watch is gone. Removed only if no other watch took it over meanwhile.
       if ((await readWatchLock(paths, project, name)) === held) await rm(lock, { force: true });
     }

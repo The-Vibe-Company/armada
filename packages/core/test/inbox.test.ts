@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { parseConfig } from "../src/config.ts";
 import { answerItem, askCoordinator, checkInbox } from "../src/inbox.ts";
-import { entryKey, type FleetStore, type HandBackSnapshot, readInbox, serveInbox } from "../src/live.ts";
+import {
+  entryKey,
+  type FleetStore,
+  type HandBackSnapshot,
+  readInbox,
+  reconcileHandles,
+  recordReport,
+  serveInbox,
+} from "../src/live.ts";
+
 import { buildStatus } from "../src/status.ts";
 import type { ProgramData } from "../src/types.ts";
 import { watchInbox } from "../src/watch.ts";
@@ -196,6 +205,23 @@ test("a stored merge unblocks another coordinator's pending work once, until lau
   expect((await read("front")).filter((e) => e.kind === "unblocked").map(entryKey)).toEqual([
     "unblocked:DEMO-8@DEMO-7",
   ]);
+  // A reopened blocker claim newer than the closed snapshot must prevent a stale wake.
+  program.fetchedAt = new Date(NOW.getTime() + 60_000).toISOString();
+  if (!snapshot.flight) throw new Error("missing flight snapshot");
+  snapshot.flight.after = program.fetchedAt;
+  const reclaimedAt = new Date(NOW.getTime() + 2 * 60_000);
+  await db.saveRuntimeHandle({
+    project: P,
+    ticket: lastBlocker.id,
+    coordinator: "default",
+    runtime: "Conductor",
+    handle: "ws/reopened-blocker",
+    branch: null,
+    at: reclaimedAt,
+  });
+  await db.recordEvent({ project: P, ticket: lastBlocker.id, kind: "claim", phase: "planning", at: reclaimedAt });
+  expect((await read("front", new Date(NOW.getTime() + 3 * 60_000))).filter((e) => e.kind === "unblocked")).toEqual([]);
+  expect((await db.getRuntimeHandle(P, lastBlocker.id))?.releasedAt).toBeNull();
 });
 
 test("mine resolves ticket ownership before filtering entries, flight and ETags", async () => {
@@ -212,7 +238,7 @@ test("mine resolves ticket ownership before filtering entries, flight and ETags"
       runtime: "conductor",
       handle: `ws/${ticket}`,
       branch: null,
-      at: at(30),
+      at: at(40),
     });
     await store.putHandBack({ project: P, ticket, coordinator: "other", author: null, body: "PR #7", at: NOW });
   }
@@ -541,7 +567,7 @@ describe("the coordinator's inbox", () => {
     expect(read?.items.some((entry) => ["DEMO-2", "DEMO-3", "DEMO-5", "DEMO-6"].includes(entry.ticket ?? ""))).toBe(
       false,
     );
-    expect((await db.getRuntimeHandle(P, "DEMO-2"))?.releasedAt).toBeNull();
+    expect((await db.getRuntimeHandle(P, "DEMO-2"))?.releasedAt).toBe(NOW.toISOString());
     expect(await serveInbox(db, P, { ...query, etag: read?.etag ?? null }, NOW, null, snapshot)).toBeNull();
     const own = await serveInbox(db, P, { ...query, coordinator: "ws/DEMO-4" }, NOW, null, snapshot);
     expect(own?.inFlight).toEqual(["DEMO-7", "DEMO-8", "DEMO-9"]);
@@ -930,6 +956,268 @@ describe("the coordinator's inbox", () => {
     const got = await checkInbox(live.fleet, { project: P, silentAfterMinutes: 15, now: () => NOW });
     expect([got.items, got.wait, live.calls]).toEqual([[], null, ["inbox"]]);
   });
+});
+
+describe("silence allowances and repeated alarms", () => {
+  test("claim grace, activity resets, CI allowance and doubling levels share stable inbox keys", async () => {
+    for (const row of [
+      { age: 10, report: false, kind: null },
+      { age: 29, report: false, kind: null },
+      { age: 31, report: false, kind: "silent", level: 0 },
+      { age: 16, report: true, kind: "silent", level: 0 },
+      { age: 31, report: true, kind: "silent", level: 1 },
+      { age: 61, report: true, kind: "silent", level: 2 },
+      { age: 44, report: true, ci: true, state: "working", kind: null },
+      { age: 46, report: true, ci: true, state: "working", kind: "silent", level: 0 },
+      { age: 6, report: true, ci: true, state: "idle", kind: "stopped" },
+      { age: 31, report: false, heartbeat: true, kind: null },
+      { age: 16, report: false, heartbeat: "claim", kind: "silent", level: 0 },
+    ] as const) {
+      const db = memoryFleet();
+      await db.saveRuntimeHandle({
+        project: P,
+        ticket: "DEMO-70",
+        runtime: "Conductor",
+        handle: "ws/s",
+        branch: null,
+        at: at(row.age),
+      });
+      if (row.report)
+        await db.recordEvent({
+          project: P,
+          ticket: "DEMO-70",
+          kind: "report",
+          phase: "ci" in row ? "shipping" : "implementing",
+          shippingStage: "ci" in row ? "ci" : null,
+          at: at(row.age),
+        });
+      if ("state" in row && row.state)
+        await db.observeRuntime({
+          project: P,
+          ticket: "DEMO-70",
+          handle: "ws/s",
+          claimedAt: at(row.age).toISOString(),
+          state: row.state,
+          at: NOW,
+        });
+      if ("heartbeat" in row)
+        await db.recordHeartbeat({
+          project: P,
+          ticket: "DEMO-70",
+          handle: "ws/s",
+          at: at(row.heartbeat === "claim" ? row.age : 1),
+        });
+      const q = { coordinator: null, silentAfterMinutes: 15, etag: null };
+      const read = await serveInbox(db, P, q, NOW);
+      if (!read) throw new Error("first inbox read missing");
+      expect(read.items[0]?.kind ?? null).toBe(row.kind);
+      if ("level" in row) {
+        const item = read.items[0];
+        if (!item) throw new Error("silent entry missing");
+        expect(entryKey(item)).toBe(`silent:DEMO-70:${row.level}`);
+      }
+      if (row.kind === "stopped") expect(read?.items[0]?.body).toContain("its turn ended while waiting for CI");
+      expect(await serveInbox(db, P, { ...q, etag: read.etag }, new Date(NOW.getTime() + 60_000))).toBeNull();
+    }
+  });
+
+  test("fresh closed and externally merged readings release only the claim they describe", async () => {
+    const db = memoryFleet();
+    for (const ticket of ["DEMO-71", "DEMO-72", "DEMO-73", "DEMO-74"])
+      await db.saveRuntimeHandle({
+        project: P,
+        ticket,
+        runtime: "Conductor",
+        handle: `ws/${ticket}`,
+        branch: null,
+        at: at(ticket === "DEMO-74" ? 1 : 40),
+      });
+    await db.putHandBack({ project: P, ticket: "DEMO-73", author: "ws/DEMO-73", body: "PR #73, head abc", at: at(30) });
+    const program: ProgramData = {
+      rootId: "DEMO-0",
+      fetchedAt: at(5).toISOString(),
+      comments: [],
+      warnings: [],
+      issues: [
+        issue("DEMO-0"),
+        issue("DEMO-71", { parentId: "DEMO-0", statusType: "completed" }),
+        issue("DEMO-72", { parentId: "DEMO-0", statusType: "canceled" }),
+        issue("DEMO-73", { parentId: "DEMO-0", agentPhase: "ready-to-merge" }),
+        issue("DEMO-74", { parentId: "DEMO-0", statusType: "completed" }),
+      ],
+    };
+    const snapshot: HandBackSnapshot = {
+      repository: "acme/widgets",
+      issues: program.issues,
+      prs: [{ repo: "acme/widgets", number: 73, state: "merged" }],
+      flight: { program, forge: null, after: at(5).toISOString() },
+    };
+    const q = { coordinator: null, silentAfterMinutes: 15, etag: null };
+    await serveInbox(db, P, q, NOW, null, { ...snapshot, prs: [], flight: undefined });
+    expect((await db.openRuntimeHandles(P)).length).toBe(4);
+    const read = await serveInbox(db, P, q, NOW, null, snapshot);
+    expect((await db.openRuntimeHandles(P)).map((h) => h.ticket)).toEqual(["DEMO-74"]);
+    expect(read?.inFlight).not.toContain("DEMO-73");
+    expect(read?.items.some((i) => ["DEMO-71", "DEMO-72", "DEMO-73"].includes(i.ticket ?? ""))).toBe(false);
+    expect((await db.latestEvents(P))["DEMO-73"]?.message).toBe("PR #73 merged outside armada merge");
+  });
+});
+
+test("watch wakes again at each doubling of an unresolved silence", async () => {
+  const db = memoryFleet();
+  await db.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-80",
+    runtime: "Conductor",
+    handle: "ws/s",
+    branch: null,
+    at: at(16),
+  });
+  await db.recordEvent({ project: P, ticket: "DEMO-80", kind: "report", phase: "implementing", at: at(16) });
+  const clock = fakeClock(NOW);
+  const fleet = { inbox: (q: Parameters<typeof serveInbox>[2]) => serveInbox(db, P, q, clock.now()) } as Parameters<
+    typeof watchInbox
+  >[0];
+  const seen: string[] = [];
+  for (const level of [0, 1, 2]) {
+    const report = await watchInbox(fleet, {
+      project: P,
+      coordinator: null,
+      silentAfterMinutes: 15,
+      seen,
+      now: clock.now,
+      sleep: clock.sleep,
+      pollMs: 60_000,
+    });
+    expect(report.outcome).toBe("items");
+    const entry = report.items.find((i) => i.new);
+    if (!entry) throw new Error("new silence missing");
+    expect(entryKey(entry)).toBe(`silent:DEMO-80:${level}`);
+    seen.push(entryKey(entry));
+  }
+});
+
+test("retained old Linear and merged PR evidence cannot release a replacement generation", async () => {
+  const db = memoryFleet();
+  for (const ticket of ["DEMO-91", "DEMO-92"])
+    await db.saveRuntimeHandle({
+      project: P,
+      ticket,
+      runtime: "Conductor",
+      handle: `ws/${ticket}`,
+      branch: null,
+      at: at(20),
+    });
+  const program: ProgramData = {
+    rootId: "DEMO-0",
+    fetchedAt: at(15).toISOString(),
+    readStartedAt: at(40).toISOString(),
+    comments: [],
+    warnings: [],
+    issues: [
+      issue("DEMO-0"),
+      issue("DEMO-91", { parentId: "DEMO-0", statusType: "completed" }),
+      issue("DEMO-92", {
+        parentId: "DEMO-0",
+        agentPhase: "shipping",
+        prs: [
+          {
+            repo: "acme/widgets",
+            number: 92,
+            state: "merged",
+            title: "Old PR",
+            url: "https://github.com/acme/widgets/pull/92",
+            mergedAt: at(30).toISOString(),
+          },
+        ],
+      }),
+    ],
+  };
+  const snapshot: HandBackSnapshot = {
+    repository: "acme/widgets",
+    issues: program.issues,
+    prs: [{ repo: "acme/widgets", number: 92, state: "merged" }],
+    flight: { program, forge: null, after: at(10).toISOString() },
+  };
+  const read = await serveInbox(db, P, { coordinator: null, silentAfterMinutes: 15, etag: null }, NOW, null, snapshot);
+  expect((await db.openRuntimeHandles(P)).map((h) => h.ticket)).toEqual(["DEMO-91", "DEMO-92"]);
+  expect(read?.inFlight).toContain("DEMO-91");
+  // The legacy retained program has a finish time older than the forge-only refresh too.
+  delete program.readStartedAt;
+  await serveInbox(db, P, { coordinator: null, silentAfterMinutes: 15, etag: null }, NOW, null, snapshot);
+  expect((await db.openRuntimeHandles(P)).length).toBe(2);
+});
+
+test("a late hand-back from an older worker cannot end its replacement", async () => {
+  const db = memoryFleet();
+  await db.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-94",
+    runtime: "conductor",
+    handle: "ws/s",
+    branch: null,
+    workerSessionId: "replacement",
+    at: at(20),
+  });
+  const report = {
+    ticket: "DEMO-94",
+    phase: "ready-to-merge" as const,
+    previous: "shipping" as const,
+    summary: "PR #94, head abc",
+    message: "",
+    prUrl: null,
+    headSha: null,
+    workerSessionId: "older",
+  };
+  await expect(recordReport(db, P, report, at(10))).rejects.toThrow("no longer holds");
+  // An old request that already passed its check still carries its authenticated author.
+  await db.putHandBack({ project: P, ticket: report.ticket, author: "older", body: report.summary, at: at(10) });
+  await db.recordEvent({
+    project: P,
+    ticket: report.ticket,
+    kind: "report",
+    phase: report.phase,
+    message: report.summary,
+    at: at(10),
+  });
+  const program: ProgramData = {
+    rootId: "DEMO-0",
+    fetchedAt: NOW.toISOString(),
+    comments: [],
+    warnings: [],
+    issues: [issue("DEMO-0"), issue(report.ticket, { parentId: "DEMO-0" })],
+  };
+  const snapshot: HandBackSnapshot = {
+    repository: "acme/widgets",
+    issues: program.issues,
+    prs: [{ repo: "acme/widgets", number: 94, state: "merged" }],
+    flight: { program, forge: null, after: NOW.toISOString() },
+  };
+  const reconcile = async () =>
+    reconcileHandles(
+      db,
+      P,
+      await db.openRuntimeHandles(P),
+      snapshot,
+      NOW,
+      await db.openInboxItems({ project: P, recipient: "coordinator" }),
+      await db.latestEvents(P),
+    );
+  expect(await reconcile()).toBe(false);
+  expect((await db.openRuntimeHandles(P)).length).toBe(1);
+  await recordReport(db, P, { ...report, workerSessionId: "replacement" }, at(5));
+  // A reading begun before the claim must retain the signed hand-back for the next fresh read.
+  await serveInbox(db, P, { coordinator: null, silentAfterMinutes: 15, etag: null }, NOW, null, {
+    ...snapshot,
+    flight: { program, forge: null, after: at(25).toISOString() },
+  });
+  expect((await db.openInboxItems({ project: P, recipient: "coordinator" })).some((i) => i.kind === "hand-back")).toBe(
+    true,
+  );
+  expect((await db.openRuntimeHandles(P)).length).toBe(1);
+
+  expect(await reconcile()).toBe(true);
+  expect((await db.openRuntimeHandles(P)).length).toBe(0);
 });
 
 describe("job alarms", () => {
