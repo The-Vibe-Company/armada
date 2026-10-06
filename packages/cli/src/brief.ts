@@ -256,8 +256,8 @@ export async function brief(
       );
     }
     // The worker's prompt, as is: the re-arm line is for the coordinator.
-    io.stdout(b.prompt);
     for (const w of b.warnings) io.stderr(`armada: warning: ${w}\n`);
+    io.stdout(b.prompt);
     return 0;
   }
   const next = await rearmFor(io, project, { inFlight: known, open: null });

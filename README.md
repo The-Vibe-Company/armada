@@ -121,6 +121,23 @@ armada launch revoke ABC-12            # cancel the newest pending launch throug
 - Label rules win: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored) selects its profile. Otherwise, profiles with `when = "front end: dashboard pages, components, styles, design, UI copy"` or `when = "back end: CLI, core rules, API, database, migrations, tests, docs"` ask the coordinator to choose. `armada brief ABC-12` prints **Choose a profile**, the ticket's title and In short, and every profile's rule; it creates no launch token or watch entry. `--json` returns the choice information; `--prompt` refuses until a profile is chosen. Read the ticket and parent spec, choose the rule covering most files/work (explain mixed work), then run `armada brief ABC-12 --profile codex --reason "mostly CLI and core rules" --prompt`. Armada does not call a model to classify tickets. Projects without `when` keep their old `conductor.default_profile` or only-profile fallback.
 - `--profile` also overrides a label route. `--reason` is required for semantic choices and, when routing rules exist, overrides of the routed profile. Keep both flags on subsequent `--prompt` calls. The generated claim command carries the reason; the claim comment, `armada status` and dashboard agent Profile row show it. An unknown profile exits 2. The dashboard's ready-to-launch row shows a label-routed profile or "chosen by the coordinator"; Launch still sends an inbox request, not a runtime call.
 
+## Tracker conventions
+
+Run `armada lint --ready` before launching workers. It checks tickets on the frontier carrying the project's ready label and all open specs under the program root. `armada lint ABC-12 ABC-13` checks named tickets in the program; combining names with `--ready` checks their union. Each finding gives the problem and its fix; `--json` returns the same diagnostics.
+
+Tickets and specs should have an `## In short` section with **What changes**, **Why**, **Done when** and **Depends on** parts (a standalone heading or label, or followed by a colon or period). Titles describe an outcome in plain words, at most 60 characters: keep backticks, paths, file extensions, camelCase, snake_case and function parentheses in the technical detail. Spec titles accept both `Spec N — Name` and `Spec N/M — Name`; the length limit counts only the name. There is no starting-verb check, since it would misfire across languages.
+
+Without a lint table, these defaults produce warnings and exit 0. Add the table to enforce errors (exit 1), overriding only the rules your project needs:
+
+```toml
+[tracker.lint]
+in_short = "## In short"
+in_short_parts = ["What changes", "Why", "Done when", "Depends on"]
+title_max = 60
+```
+
+`armada brief` reports the same findings as warnings above its prompt and still produces it. With `--prompt`, warnings go to stderr before the prompt on stdout. Description reads for lint are batched in one flat Linear query per page; dashboards and polls never run them. A failed or incomplete read exits nonzero rather than claiming tickets passed.
+
 ## Run workers on your own machine
 
 Workers do not have to run in Conductor Cloud. With [herdr](https://herdr.dev) 0.9.1 or newer, the coordinator runs each worker on this machine, in its own git worktree and terminal, and the worker keeps going when the coordinator disconnects (the machine must stay awake). Four harnesses are supported: `claude`, `codex`, `opencode`, and `deepseek`, which runs a persistent OpenCode session with the DeepSeek model you configure. Add a local profile to the project's `armada.toml`:
