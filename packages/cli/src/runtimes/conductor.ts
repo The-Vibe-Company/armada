@@ -115,6 +115,13 @@ export class ConductorAdapter implements RuntimeAdapter {
       code === "auth" || code === "not-found" ? "conductor auth whoami" : "use the armada-runtime-conductor guide",
     );
   }
+  private invalidResponse(operation: string, mutation: boolean, json = false): RuntimeError {
+    return new RuntimeError(
+      `Conductor ${operation} returned ${json ? "invalid or truncated JSON" : "an invalid response"}${mutation ? "; inspect the session before retrying" : ""}`,
+      mutation ? "unknown-outcome" : "invalid",
+      "use the armada-runtime-conductor guide",
+    );
+  }
   private async exec(args: string[], input?: string, mutation = false, timeoutMs = 10_000): Promise<ExecResult> {
     if (!this.io.exec)
       throw new RuntimeError("Conductor CLI execution is unavailable on this machine", "unavailable", "armada doctor");
@@ -125,6 +132,8 @@ export class ConductorAdapter implements RuntimeAdapter {
         cwd: this.io.cwd,
         timeoutMs: mutation ? (args[0] === "workspace" && args[1] === "create" ? 120_000 : 60_000) : timeoutMs,
         maxOutputBytes: 2_000_000,
+        // Conductor 0.90.1 can exit before flushing large JSON to a pipe.
+        captureStdout: "file",
         input,
       });
     } catch (e) {
@@ -199,13 +208,15 @@ export class ConductorAdapter implements RuntimeAdapter {
     timeoutMs = 10_000,
   ): Promise<Record<string, unknown>> {
     const r = await this.exec(args, input, mutation, timeoutMs);
+    let decoded: unknown;
     try {
-      const value = object(JSON.parse(r.stdout));
-      if (!value) throw invalid();
-      return value;
+      decoded = JSON.parse(r.stdout);
     } catch {
-      throw mutation ? this.error("unknown-outcome") : invalid();
+      throw this.invalidResponse(args.slice(0, 2).join(" "), mutation, true);
     }
+    const value = object(decoded);
+    if (!value) throw this.invalidResponse(args.slice(0, 2).join(" "), mutation);
+    return value;
   }
   async preflight(input: PreflightInput): Promise<PreflightCheck[]> {
     const checks: PreflightCheck[] = [];
@@ -450,7 +461,8 @@ export class ConductorAdapter implements RuntimeAdapter {
           true,
         ),
     );
-    if (!id(result.messageId) || !["sent", "queued"].includes(String(result.state))) throw invalid();
+    if (!id(result.messageId) || !["sent", "queued"].includes(String(result.state)))
+      throw this.invalidResponse("message create", true);
     return { via: "conductor", messageId: result.messageId, queued: result.state === "queued" };
   }
   async observe(target: ClaimRef): Promise<RuntimeReading> {
@@ -661,7 +673,11 @@ export class ConductorAdapter implements RuntimeAdapter {
           true,
         ),
     );
-    if (result.status !== "archived") throw invalid();
+    if (result.status !== "archived")
+      throw this.invalidResponse(
+        options.reason === "relaunched" && !options.workspace ? "session archive" : "workspace archive",
+        true,
+      );
     return { archived: true, alreadyGone: false, path: null };
   }
 }
