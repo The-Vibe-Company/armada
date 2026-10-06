@@ -45,7 +45,7 @@ export interface ProjectRecord extends ProjectInput {
 }
 
 /** `inbox`: the coordinator read its inbox; it carries no ticket. */
-export type EventKind = "claim" | "report" | "heartbeat" | "release" | "merge" | "inbox";
+export type EventKind = "claim" | "report" | "heartbeat" | "release" | "merge" | "inbox" | "handover";
 
 /** Informational events a follow may request; heartbeats and inbox reads stay private to liveness. */
 export const FOLLOW_EVENT_KINDS = ["claim", "report", "release", "merge"] as const;
@@ -122,6 +122,7 @@ export interface RuntimeObservation {
 }
 
 export interface RuntimeHandle {
+  coordinator?: string | null;
   project: string;
   ticket: string;
   runtime: string;
@@ -180,6 +181,7 @@ export interface WorkerProfile {
 }
 
 export interface CoordinatorFacts {
+  name?: string;
   harness: "conductor-cloud" | "claude-code" | "codex" | "terminal";
   handle: string | null;
   model: string | null;
@@ -193,7 +195,14 @@ export interface CoordinatorPresence extends Omit<CoordinatorFacts, "harness"> {
   inboxSeenAt: string | null;
 }
 
+export interface CoordinatorRecord extends CoordinatorPresence {
+  name: string;
+  sessions: CoordinatorPresence[];
+  tickets: string[];
+}
+
 export interface CoordinatorSeen {
+  name?: string;
   project: string;
   handle?: string | null;
   cliVersion?: string | null;
@@ -236,6 +245,7 @@ export type InboxKind =
 export type InboxRecipient = "coordinator" | "worker";
 
 export interface InboxItem {
+  coordinator?: string | null;
   id: number;
   project: string;
   ticket: string | null;
@@ -261,6 +271,7 @@ export interface StoredInboxItem extends InboxItem {
 }
 
 export interface NewRequest {
+  coordinator?: string | null;
   project: string;
   ticket: string | null;
   kind: RequestKind;
@@ -328,6 +339,7 @@ export type LeaseResult = { acquired: true } | { acquired: false; held: Lease | 
  * claimed the ticket since: the newest launch of its ticket, not ended.
  */
 export interface PendingLaunch {
+  coordinator?: string | null;
   ticket: string;
   launchedAt: string;
   /** When the worker signed in with the launch token; null while it never did. */
@@ -356,7 +368,14 @@ export const followedLaunches = (launches: readonly PendingLaunch[], now: Date) 
 
 // ------------------------------------------------------------------ the store
 
-type Item = { project: string; ticket: string; author: string | null; body: string; at: Date };
+type Item = {
+  project: string;
+  ticket: string;
+  author: string | null;
+  coordinator?: string | null;
+  body: string;
+  at: Date;
+};
 
 /**
  * The fleet's live data, every project of every organization. Each project's
@@ -439,6 +458,9 @@ export interface FleetStore {
   recordCoordinatorSeen(seen: CoordinatorSeen): Promise<void>;
   lastCoordinatorSeen(project: string): Promise<string | null>;
   getCoordinatorPresence(project: string): Promise<CoordinatorPresence | null>;
+  listCoordinators(project: string): Promise<CoordinatorRecord[]>;
+  /** Transfers every ticket atomically; false when any ticket is missing or its owner differs from `from`. */
+  transferTickets(input: { project: string; tickets: string[]; to: string; from?: string; at: Date }): Promise<boolean>;
   inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
 
@@ -447,6 +469,7 @@ export interface FleetStore {
   getWorkerProfile(project: string, ticket: string): Promise<WorkerProfile | null>;
   /** Records the session now holding a ticket; a new claim replaces a released one. */
   saveRuntimeHandle(h: {
+    coordinator?: string | null;
     project: string;
     ticket: string;
     runtime: string;
@@ -536,7 +559,7 @@ export interface FleetStore {
    * releases the old claim first.
    */
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
-  expireUnusedLaunches(project: string, now: Date): Promise<PendingLaunch[]>;
+  expireUnusedLaunches(project: string, now: Date, coordinatorName?: string): Promise<PendingLaunch[]>;
 
   /**
    * Adds what the owner validates (THE-885). An open one it repeats (the same
@@ -563,6 +586,7 @@ export interface FleetStore {
 // ------------------------------------------------------------------ what each command records
 
 export interface ClaimRecord {
+  coordinator?: string | null;
   ticket: string;
   runtime: string;
   handle: string;
@@ -599,6 +623,7 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
     handle: c.handle,
     branch: c.branch,
     workerSessionId: c.workerSessionId,
+    coordinator: c.coordinator,
     at,
   });
   // A new claim replaces the profile of an earlier one; a resume keeps it.
@@ -678,19 +703,23 @@ export async function recordReport(
       project,
       ticket: r.ticket,
       author: handle && !handle.releasedAt ? handle.handle : null,
+      coordinator: handle && !handle.releasedAt ? (handle.coordinator ?? null) : null,
       body: [r.message, ...notes].join("\n\n"),
       at,
     });
   } else if (r.phase !== "awaiting-approval")
     await store.resolvePlans({ project, ticket: r.ticket, resolution: `worker reported ${r.phase}`, at });
-  if (r.phase === "ready-to-merge")
+  if (r.phase === "ready-to-merge") {
+    const held = await store.getRuntimeHandle(project, r.ticket);
     await store.putHandBack({
       project,
       ticket: r.ticket,
       author: null,
+      coordinator: held && !held.releasedAt ? (held.coordinator ?? null) : null,
       body: `Agent status: ${r.phase} — ${r.summary}`,
       at,
     });
+  }
   const inbox = await store.openInboxItems({ project, recipient: "worker", ticket: r.ticket });
   return reading ? { inbox, overlaps: reading.overlaps, incomplete: reading.incomplete } : inbox;
 }
@@ -709,6 +738,7 @@ export async function recordQuestion(
     kind: "question",
     recipient: "coordinator",
     author: held && !held.releasedAt ? held.handle : null,
+    coordinator: held && !held.releasedAt ? (held.coordinator ?? null) : null,
     body: q.body,
     at,
   });
@@ -733,6 +763,7 @@ export async function recordRelease(
 }
 
 export interface AnswerRecord {
+  coordinator?: string | null;
   /** The answer, or the note. */
   text: string;
   /** An unsolicited coordinator message rather than an answer. */
@@ -758,6 +789,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
       kind: "note",
       recipient: "worker",
       author: "coordinator",
+      coordinator: a.coordinator,
       body: text,
       at,
     });
@@ -802,6 +834,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
         kind: "question",
         recipient: "coordinator",
         author: held.handle,
+        coordinator: held.coordinator ?? null,
         body: "Herdr approval or question",
         at,
       });
@@ -934,6 +967,7 @@ const MIN = 60_000;
 export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "stopped" | "quiet" | "not-started" | "version";
 
 export interface InboxEntry {
+  owner?: string | null;
   /**
    * Inbox item id for `armada answer`; null for a silent worker (it clears
    * when the worker reports) or a worker not started (it clears on its claim).
@@ -1083,6 +1117,7 @@ async function reconcileHandBacks(
 }
 
 export interface InboxReadOptions {
+  coordinatorName?: string;
   snapshot?: HandBackSnapshot;
   project: string;
   /** The coordinator's own session, never reported silent. */
@@ -1141,9 +1176,20 @@ async function readInboxAndFlight(
   const [stored, handles, launches] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
     store.openRuntimeHandles(o.project),
-    store.pendingLaunches(o.project, new Date(now - LAUNCH_WINDOW_MS)),
+    store.pendingLaunches(o.project, new Date(0)),
   ]);
-  let items = await reconcileHandBacks(store, stored, o.snapshot, o.now);
+  const owners = new Map<string, string | null>();
+  for (const launch of launches) owners.set(launch.ticket, launch.coordinator ?? null);
+  for (const handle of handles) owners.set(handle.ticket, handle.coordinator ?? null);
+  const ownerOf = (ticket: string | null, fallback?: string | null) =>
+    ticket && owners.has(ticket) ? (owners.get(ticket) ?? null) : (fallback ?? null);
+  const visible = (owner: string | null) => !o.coordinatorName || owner === null || owner === o.coordinatorName;
+  let items = await reconcileHandBacks(
+    store,
+    stored.filter((item) => visible(ownerOf(item.ticket, item.coordinator))),
+    o.snapshot,
+    o.now,
+  );
   const flight = o.snapshot?.flight;
   const closed = new Set(o.snapshot?.issues.filter(isClosed).map((i) => i.id));
   const model = flight ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId) : null;
@@ -1205,6 +1251,7 @@ async function readInboxAndFlight(
   );
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
+    owner: ownerOf(i.ticket, i.coordinator),
     kind: i.kind,
     ticket: i.ticket,
     author: i.author,
@@ -1221,20 +1268,23 @@ async function readInboxAndFlight(
   // A claim may arrive before its newly created ticket reaches the stored reading.
   const known = new Set(flight?.program.issues.map((i) => i.id));
   const own = new Set(handles.filter((h) => o.coordinator && h.handle === o.coordinator).map((h) => h.ticket));
-  const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket)) : [];
+  const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket) && visible(ownerOf(ticket))) : [];
   for (const item of stored) {
     if (
       item.kind === "launch-request" &&
       item.request?.deferred &&
       item.ticket &&
       !closed.has(item.ticket) &&
+      !own.has(item.ticket) &&
+      visible(ownerOf(item.ticket, item.coordinator)) &&
       !inFlight.includes(item.ticket)
     )
       inFlight.push(item.ticket);
   }
   for (const h of handles) {
     const derived = held !== null && known.has(h.ticket);
-    if (own.has(h.ticket) || closed.has(h.ticket) || (derived && !held?.has(h.ticket))) continue;
+    if (!visible(ownerOf(h.ticket)) || own.has(h.ticket) || closed.has(h.ticket) || (derived && !held?.has(h.ticket)))
+      continue;
     const e = events[h.ticket];
     if (!derived && e && (e.kind === "release" || e.kind === "merge") && e.at >= h.claimedAt) continue;
     if (!derived) inFlight.push(h.ticket);
@@ -1248,6 +1298,7 @@ async function readInboxAndFlight(
         id: null,
         kind: "runtime-blocked",
         ticket: h.ticket,
+        owner: ownerOf(h.ticket),
         author: h.handle,
         body: `${h.runtime} worker is blocked on an approval or question; read its terminal with the runtime guide and answer with armada answer ${h.ticket}`,
         createdAt: observation.at,
@@ -1279,6 +1330,7 @@ async function readInboxAndFlight(
         id: null,
         kind: "stopped",
         ticket: h.ticket,
+        owner: ownerOf(h.ticket),
         author: h.handle,
         body: `stopped: its session is idle and it did not hand back (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); read its last reply with the runtime guide and resume or release it`,
         createdAt: observation?.since ?? observation?.at ?? last,
@@ -1293,6 +1345,7 @@ async function readInboxAndFlight(
       id: null,
       kind: silent ? "silent" : "quiet",
       ticket: h.ticket,
+      owner: ownerOf(h.ticket),
       author: h.handle,
       body: silent
         ? `no ${heartbeat ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${life.state === "working" && observation ? `, but its session is still working (observed ${observation.at.slice(11, 16)})` : ""}${owesReport && !heartbeat ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
@@ -1306,6 +1359,7 @@ async function readInboxAndFlight(
   const currentLaunches = launches.filter((l) => {
     const event = events[l.ticket];
     return (
+      visible(ownerOf(l.ticket)) &&
       !closed.has(l.ticket) &&
       !own.has(l.ticket) &&
       !(event && (event.kind === "release" || event.kind === "merge") && event.at >= l.launchedAt)
@@ -1319,6 +1373,7 @@ async function readInboxAndFlight(
       id: null,
       kind: "not-started",
       ticket: l.ticket,
+      owner: ownerOf(l.ticket),
       author: l.handle,
       body: notStartedBody(l, o.now),
       createdAt: l.launchedAt,
@@ -1331,6 +1386,7 @@ async function readInboxAndFlight(
 }
 
 export interface InboxQuery {
+  coordinatorName?: string;
   facts?: CoordinatorFacts;
   coordinator: string | null;
   silentAfterMinutes: number;
@@ -1367,10 +1423,15 @@ export interface InboxRead {
  * and which tickets are in flight.
  */
 export function inboxTag(
-  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body">[],
+  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner">[],
   inFlight: readonly string[] = [],
 ): string {
-  const keys = [...items.map(entryKey), ...inFlight.map((t) => `flight:${t}`)].sort().join("\n");
+  const keys = [
+    ...items.map((item) => `${entryKey(item)}:owner:${item.owner ?? "unowned"}`),
+    ...inFlight.map((t) => `flight:${t}`),
+  ]
+    .sort()
+    .join("\n");
   return `"${createHash("sha256").update(keys).digest("base64url").slice(0, 22)}"`;
 }
 
@@ -1389,11 +1450,12 @@ export async function serveInbox(
   snapshot?: HandBackSnapshot,
 ): Promise<InboxRead | null> {
   const warnings: string[] = [];
-  const expired = await store.expireUnusedLaunches(project, now);
+  const expired = await store.expireUnusedLaunches(project, now, q.coordinatorName);
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
   try {
     await store.recordCoordinatorSeen({
       project,
+      name: q.coordinatorName ?? "default",
       handle: q.coordinator,
       facts: q.facts,
       cliVersion,
@@ -1407,21 +1469,25 @@ export async function serveInbox(
     snapshot,
     project,
     coordinator: q.coordinator,
+    coordinatorName: q.coordinatorName,
     silentAfterMinutes: q.silentAfterMinutes,
     quietAfterMinutes: q.quietAfterMinutes,
     ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
     now,
   });
-  for (const launch of expired)
+  for (const launch of expired) {
+    if (q.coordinatorName && launch.coordinator != null && launch.coordinator !== q.coordinatorName) continue;
     items.push({
       id: null,
       kind: "not-started",
       ticket: launch.ticket,
+      owner: launch.coordinator ?? null,
       author: launch.handle,
       body: `not started (token expired): the unused launch of ${launch.ticket} at ${launch.launchedAt} has cleared; launch it again with armada brief ${launch.ticket} --prompt`,
       createdAt: launch.launchedAt,
       new: false,
     });
+  }
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   const etag = inboxTag(items, inFlight);
   return q.etag === etag ? null : { items, inFlight, etag, warnings };
@@ -1434,6 +1500,8 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  coordinators(): Promise<CoordinatorRecord[]>;
+  takeTickets(input: { tickets: string[]; from?: string }): Promise<boolean>;
   startJob(input: JobStart): Promise<Job>;
   listJobs(query: JobQuery): Promise<Job[]>;
   observeJob(input: JobObservation): Promise<Job | null>;

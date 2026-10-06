@@ -8,6 +8,7 @@ import {
   ensurePersonalConfig,
   machinePaths,
   parsePersonalConfig,
+  readCoordinatorName,
   readCredentialStore,
   readReleaseNotices,
   readWatchState,
@@ -18,6 +19,7 @@ import {
   updateCredentialStore,
   updateWatchState,
   watchFiles,
+  writeCoordinatorName,
 } from "../src/machine.ts";
 
 test("release reservations serialize commands, remember time, and recover a dead holder", async () => {
@@ -152,4 +154,29 @@ test("one watch per project: a live lock is refused, a stale one taken over, the
   expect((await stat(watchFiles(paths, "widgets").state)).mode & 0o777).toBe(0o600);
   await writeFile(watchFiles(paths, "widgets").state, "not json");
   expect(await readWatchState(paths, "widgets")).toBeNull();
+});
+
+test("named coordinators keep independent watch locks, state and checkout preferences", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no paths");
+  const alive = () => true;
+  expect(watchFiles(paths, "widgets", "default")).toEqual(watchFiles(paths, "widgets"));
+  expect(await takeWatchLock(paths, "widgets", 101, alive, undefined, undefined, "front")).toEqual({ taken: true });
+  expect(await takeWatchLock(paths, "widgets", 202, alive, undefined, undefined, "back")).toEqual({ taken: true });
+  expect(await takeWatchLock(paths, "widgets", 303, alive, undefined, undefined, "front")).toEqual({
+    taken: false,
+    pid: 101,
+  });
+  await updateWatchState(paths, "widgets", { seen: ["front-item"], root: "/work/widgets" }, "front");
+  await updateWatchState(paths, "widgets", { seen: ["back-item"] }, "back");
+  expect((await readWatchState(paths, "widgets", "front"))?.seen).toEqual(["front-item"]);
+  expect((await readWatchState(paths, "widgets", "back"))?.seen).toEqual(["back-item"]);
+  await releaseWatchLock(paths, "widgets", 101, undefined, "front");
+  expect(await runningWatch(paths, "widgets", alive, "back")).toBe(202);
+  expect(await runningWatch(paths, "widgets", alive, "front")).toBeNull();
+  await writeCoordinatorName(paths, "widgets", "/work/widgets", "front");
+  await writeCoordinatorName(paths, "widgets", "/work/other", "back");
+  expect(await readCoordinatorName(paths, "widgets", "/work/widgets")).toBe("front");
+  expect(await readCoordinatorName(paths, "widgets", "/work/other")).toBe("back");
+  expect(await readCoordinatorName(paths, "other", "/work/widgets")).toBeNull();
 });

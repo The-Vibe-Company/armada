@@ -54,7 +54,7 @@ export interface LaunchToken {
 /** The worker session a launch token was exchanged for. */
 export interface WorkerSession {
   token: string;
-  worker: { id: string; project: string; ticket: string; launchedBy: string };
+  worker: { id: string; project: string; ticket: string; launchedBy: string; coordinator?: string | null };
   organization: { id: string; name: string; slug: string };
   expiresAt: string;
 }
@@ -69,7 +69,7 @@ export interface ArmadaIdentity {
   organization: { id: string; name: string; slug: string; role: string | null } | null;
   apiKey: { id: string; name: string | null; start: string | null } | null;
   /** The ticket a worker session acts on, and who launched it; absent from older servers. */
-  worker?: { id: string; project: string; ticket: string; launchedBy: string } | null;
+  worker?: { id: string; project: string; ticket: string; launchedBy: string; coordinator?: string | null } | null;
   expiresAt: string | null;
 }
 
@@ -561,7 +561,10 @@ export function armadaApi(opts: ArmadaApiOptions) {
     },
 
     /** A one-time launch token for a worker on `ticket`, valid one hour; the launch message carries it. */
-    async launchToken(signIn: ArmadaSignIn, target: { project: string; ticket: string }): Promise<LaunchToken> {
+    async launchToken(
+      signIn: ArmadaSignIn,
+      target: { project: string; ticket: string; coordinator?: string | null },
+    ): Promise<LaunchToken> {
       const { status, body } = await call("POST", "launch-tokens", { signIn, body: target });
       if (status !== 200) throw refusal(status, body, status === 401 ? null : "Armada made no launch token");
       const w = body.worker as LaunchToken["worker"] | undefined;

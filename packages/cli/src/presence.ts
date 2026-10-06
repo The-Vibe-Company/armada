@@ -1,5 +1,6 @@
 import type { ArmadaConfig, CoordinatorFacts, Credentials } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { coordinatorName } from "./coordinator.ts";
 import type { Io } from "./io.ts";
 import { liveFleet } from "./worker.ts";
 
@@ -34,7 +35,7 @@ export async function recordPresence(io: Io, config: ArmadaConfig, credentials: 
   const { fleet, warning } = liveFleet(io, config, credentials);
   try {
     if (!fleet) throw new Error(warning ?? "Armada is unreachable");
-    await fleet.coordinator(detectCoordinator(io));
+    await fleet.coordinator({ ...detectCoordinator(io), name: await coordinatorName(io, config.project.slug) });
   } catch (error) {
     io.stderr(
       `armada: warning: could not record coordinator activity (${error instanceof Error ? error.message : String(error)})\n`,
