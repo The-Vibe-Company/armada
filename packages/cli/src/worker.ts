@@ -37,7 +37,7 @@ import { coordinatorName } from "./coordinator.ts";
 import { reportHerdr } from "./herdr.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { sessionHandle } from "./login.ts";
-import { outgoingRedactor } from "./redact.ts";
+import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { observeRuntimes } from "./runtime.ts";
 
 /**
@@ -246,14 +246,7 @@ export async function withContext(
   const mask = await outgoingRedactor(io, config, credentials);
   const redact = <T>(input: T): T => redactFreeText(input, mask.text);
   const ctx = context(io, config, credentials);
-  const writer = ctx.linear;
-  ctx.linear = new Proxy(writer, {
-    get(target, key) {
-      if (key === "comment") return (uuid: string, body: string) => target.comment(uuid, mask.text(body));
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
+  ctx.linear = redactLinearWriter(ctx.linear, mask.text);
   const outcome = await act(ctx, redact);
   if (outcome.state?.phase) {
     const profile = outcome.state.profile;

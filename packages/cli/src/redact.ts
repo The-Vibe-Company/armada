@@ -1,8 +1,18 @@
 // Prepare one redactor per command. Keys come only from resolved credentials
 // and a scoped release from Armada; no machine credential reads here.
-import { type ArmadaConfig, type Credentials, projectOf, redactor } from "@armada/core";
+import { type ArmadaConfig, type Credentials, type LinearWriter, projectOf, redactor } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { type Io, UsageError } from "./io.ts";
+
+export function redactLinearWriter(writer: LinearWriter, text: (body: string) => string): LinearWriter {
+  return new Proxy(writer, {
+    get(target, key) {
+      if (key === "comment") return (uuid: string, body: string) => target.comment(uuid, text(body));
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 export function credentialSecrets(credentials: Credentials): { name: string; value: string }[] {
   const signIn = credentials.armadaSignIn;
