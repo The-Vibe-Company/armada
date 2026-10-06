@@ -221,7 +221,8 @@ function QueueLine({ row: r }: { row: QueueRow }) {
   const { t, zone } = useShell();
   const q = t.projectPage.queue;
   const detail = [
-    r.ticket,
+    // The ticket is the title when the stored reading has no pull request title.
+    r.title ? r.ticket : null,
     q.by(r.queuedBy),
     r.notBefore ? q.retryAt(clockIn(r.notBefore, zone, t.overview.locale)) : null,
     r.waiting ? q.waiting(r.waiting) : r.detail,
