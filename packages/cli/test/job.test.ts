@@ -283,3 +283,38 @@ test("a remote API-key beat updates stored dashboard data with no runner command
   expect(await run(["job", "list", "--progress", "oops"], remote)).toBe(2);
   s.printed();
 });
+
+test("manual status cannot overwrite a pushed beat or terminalize it with a stale outcome", async () => {
+  const s = await setup();
+  expect(await run(["job", "start", "eval", "--ticket", "DEMO-7"], s.io)).toBe(0);
+  s.printed();
+  s.io.exec = async () => {
+    await s.api.store.observeJob({
+      project: "widgets",
+      ticket: "DEMO-7",
+      id: 1,
+      state: "running",
+      progress: "40/120",
+      at: NOW,
+    });
+    return { code: 0, stdout: "failed 10/120", stderr: "" };
+  };
+  expect(await run(["job", "status", "1"], s.io)).toBe(0);
+  expect(await s.api.store.getJob("widgets", 1)).toMatchObject({ state: "running", progress: "40/120" });
+  expect(await s.api.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([]);
+  expect(s.printed().out).toContain("40/120");
+  const fetch = s.io.fetch;
+  if (!fetch) throw new Error("missing fake API");
+  s.io.fetch = async (url, init) => {
+    const answer = await fetch(url, init);
+    if (!url.endsWith("fleet/job/list")) return answer;
+    const body = (await answer.json()) as { result: { revision?: number }[] };
+    for (const job of body.result) delete job.revision;
+    return Response.json(body);
+  };
+  s.io.exec = async () => {
+    throw new Error("old dashboard must not execute an unfenced probe");
+  };
+  expect(await run(["job", "status", "1"], s.io)).toBe(0);
+  expect(s.printed().err).toContain("updated dashboard");
+});

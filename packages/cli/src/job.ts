@@ -230,6 +230,11 @@ export async function jobCommand(
         observed.push(job);
         continue;
       }
+      if (sub === "status" && job.revision === undefined) {
+        io.stderr(`armada: warning: job ${job.id} status requires an updated dashboard; reading stored progress.\n`);
+        observed.push(job);
+        continue;
+      }
       const result = await execute(io, config, root, sub === "stop" ? def.stop : (def.status as string), job);
       if (result.code !== 0 || result.timedOut || result.outputExceeded)
         throw new Error(
@@ -239,7 +244,14 @@ export async function jobCommand(
         sub === "stop"
           ? { state: "stopped" as const, progress: "stopped by request", eta: null }
           : parseJobStatus(result.stdout, job.startedAt, now());
-      observed.push(await observe(fleet, job, { id: job.id, ticket: job.ticket, ...update }));
+      observed.push(
+        await observe(fleet, job, {
+          id: job.id,
+          ticket: job.ticket,
+          ...update,
+          ...(sub === "status" ? { expectedRevision: job.revision } : {}),
+        }),
+      );
     } catch (err) {
       code = 1;
       observed.push(job);
@@ -282,17 +294,27 @@ export function refreshingJobsFleet(
           const interval = def.silenceMinutes * 30_000;
           const last = Math.max(Date.parse(job.observedAt), Date.parse(attempts[job.id] ?? "") || 0);
           if (now.getTime() - last < interval) return false;
-          attempts[job.id] = now.toISOString();
-          attempted[job.id] = now.toISOString();
           return true;
         });
-        // Reserve every attempt before shell I/O; keep failed attempts across watch invocations.
-        if (paths)
-          await updateWatchState(paths, namespace, {
-            jobObserved: Object.fromEntries(
-              jobs.map((job) => [String(job.id), attempts[job.id]]).filter(([, at]) => at),
-            ),
+        // Prune old jobs; queued probes reserve again immediately before their own shell I/O.
+        const openIds = new Set(jobs.map((job) => String(job.id)));
+        for (const id of Object.keys(attempts))
+          if (!openIds.has(id)) {
+            delete attempts[id];
+            delete attempted[id];
+          }
+        if (paths) await updateWatchState(paths, namespace, { jobObserved: { ...attempts } });
+        let saving = Promise.resolve();
+        const recordAttempt = (job: Job) => {
+          const next = saving.then(async () => {
+            signal.throwIfAborted();
+            attempts[job.id] = (io.now?.() ?? new Date()).toISOString();
+            attempted[job.id] = attempts[job.id] as string;
+            if (paths) await updateWatchState(paths, namespace, { jobObserved: { ...attempts } });
           });
+          saving = next.catch(() => {});
+          return next;
+        };
         let index = 0;
         await Promise.all(
           Array.from({ length: Math.min(4, eligible.length) }, async () => {
@@ -302,6 +324,8 @@ export function refreshingJobsFleet(
               try {
                 const command = config.jobs[job.name]?.status;
                 if (!command) continue;
+                await recordAttempt(job);
+                signal.throwIfAborted();
                 const result = await execute(io, config, root, command, job, signal);
                 if (signal.aborted) return;
                 if (result.code !== 0 || result.timedOut || result.outputExceeded)

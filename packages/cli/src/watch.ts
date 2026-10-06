@@ -89,11 +89,11 @@ export async function rearmFor(
   project: string,
   o: { inFlight: string[] | null; open: number | null; openJobs?: number[]; act?: boolean },
 ): Promise<Rearm> {
-  const { running } = await watchOf(io, project);
+  const { state, running } = await watchOf(io, project);
   const paths = machinePaths(io.env);
   const mode =
     paths && running ? (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode : undefined;
-  return rearm({ ...o, running, mode });
+  return rearm({ ...o, openJobs: o.openJobs ?? state?.openJobs, running, mode });
 }
 
 const now = (io: Io) => (io.now ?? (() => new Date()))();
