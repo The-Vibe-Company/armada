@@ -135,6 +135,14 @@ async function fixture() {
   const api = fakeArmada({ keys: { armada_coordinator_key: "coordinator" }, store: registry });
   const exec: Exec = async (command, args, { cwd }) => {
     if (command === "gh") return gh.run(args);
+    if (command === "conductor")
+      return {
+        code: 0,
+        stdout: args.includes("list")
+          ? JSON.stringify({ data: [{ gitRemote: "https://github.com/acme/widgets.git" }], offset: 0, hasMore: false })
+          : "0.1.0\n",
+        stderr: "",
+      };
     // Keep git transport on the local bare repository while presenting its GitHub identity to doctor.
     if (command === "git" && args.join(" ") === "remote get-url origin")
       return { code: 0, stdout: "git@github.com:acme/widgets.git\n", stderr: "" };

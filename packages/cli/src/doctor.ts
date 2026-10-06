@@ -31,10 +31,8 @@ import {
   readLabels,
   readParentAutoClose,
   repositoryOfRemote,
-  type SigningConfig,
   type SigningSetup,
   STORED_KEYS,
-  signingSetup,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { describeSource, loadCredentials, type Machine } from "./auth.ts";
@@ -50,6 +48,7 @@ import {
 } from "./local-tools.ts";
 import { describeIdentity, hostOf } from "./login.ts";
 import { fsRepoView, gitRoot } from "./repo.ts";
+import { readSigning } from "./signing.ts";
 
 export interface DoctorReport {
   schemaVersion: 1;
@@ -276,73 +275,6 @@ async function branchRuleChecks(
 const SIGNING_FIX =
   'configure a signing key agents can use without a person; when repository branch rules allow unsigned commits, set [git] sign = "off" for new Herdr worktrees, or disable signing in agents’ worktrees';
 
-/** Predict from config only: no signatures or interactive prompts on a normal doctor run. */
-async function readSigning(io: Io, root: string): Promise<SigningSetup | null> {
-  if (!io.exec) return null;
-  const config: SigningConfig = {};
-  for (const key of [
-    "commit.gpgsign",
-    "gpg.format",
-    "gpg.ssh.program",
-    "gpg.x509.program",
-    "user.signingkey",
-  ] as const) {
-    const result = await io
-      .exec("git", ["config", ...(key === "commit.gpgsign" ? ["--bool"] : []), "--get", key], {
-        cwd: root,
-        timeoutMs: 10_000,
-        maxOutputBytes: 16_384,
-      })
-      .catch(() => null);
-    // Exit 1 means the key is unset, not that Git failed to read it.
-    if (!result || result.timedOut || result.outputExceeded || (result.code !== 0 && result.code !== 1)) return null;
-    if (result.code === 0) config[key] = result.stdout.trim();
-  }
-  // Git's legacy/canonical OpenPGP keys are aliases: the last encountered
-  // entry wins, including across scopes. Read them together in config order.
-  const programs = await io
-    .exec("git", ["config", "--null", "--get-regexp", "^gpg\\.(openpgp\\.)?program$"], {
-      cwd: root,
-      timeoutMs: 10_000,
-      maxOutputBytes: 16_384,
-    })
-    .catch(() => null);
-  if (!programs || programs.timedOut || programs.outputExceeded || (programs.code !== 0 && programs.code !== 1))
-    return null;
-  if (programs.code === 0) {
-    const entries = programs.stdout.split("\0").filter(Boolean);
-    const last = entries.at(-1);
-    if (last) config.openpgpProgram = last.slice(last.indexOf("\n") + 1).trim();
-  }
-  const setup = signingSetup(config);
-  if (setup.enabled && (setup.format === "openpgp" || setup.format === "x509")) {
-    const result = await io
-      .exec("gpgconf", ["--list-options", "gpg-agent"], {
-        cwd: root,
-        timeoutMs: 10_000,
-        maxOutputBytes: 65_536,
-        env: io.env,
-      })
-      .catch(() => null);
-    if (result?.code === 0 && !result.timedOut && !result.outputExceeded) {
-      // gpgconf fields: name:flags:level:description:type:alt-type:argname:default:argdef:value.
-      const fields = result.stdout
-        .split("\n")
-        .find((line) => line.startsWith("pinentry-program:"))
-        ?.split(":");
-      const value = fields?.[9] || fields?.[7];
-      if (value) {
-        try {
-          config.pinentryProgram = decodeURIComponent(value.replace(/^"/, ""));
-        } catch {
-          /* Unreadable pinentry cannot be classified. */
-        }
-      }
-    }
-  }
-  return signingSetup(config);
-}
-
 async function signingChecks(io: Io, root: string, signing: SigningSetup | null, deep: boolean): Promise<Check[]> {
   const checks: Check[] = [
     signing
@@ -477,6 +409,89 @@ async function conductorChecks(io: Io, config: ArmadaConfig | null): Promise<Che
       fix: CONDUCTOR_INSTALL_FIX,
     },
   ];
+}
+
+/** Match every accessible Conductor project; an incomplete lookup never means absent. */
+async function conductorProjectCheck(io: Io, config: ArmadaConfig | null): Promise<Check[]> {
+  if (!config || !Object.values(config.conductor.profiles).some((p) => p.runtime === "conductor")) return [];
+  const repository = config.github.repository;
+  const unavailable = (): Check[] => [
+    {
+      id: "conductor-project",
+      level: "warning",
+      message: "Conductor projects could not be checked",
+      fix: "sign in to Conductor, check `conductor --json project list`, then run doctor again",
+    },
+  ];
+  if (!io.exec) return unavailable();
+  let offset = 0;
+  const deadline = performance.now() + 10_000;
+  // A single lookup budget, with a page cap for adapters that repeat a page.
+  for (let page = 0; page < 10; page++) {
+    const timeoutMs = Math.floor(deadline - performance.now());
+    if (timeoutMs <= 0) return unavailable();
+    const result = await io
+      .exec(
+        "conductor",
+        ["--json", "project", "list", "--limit", "100", ...(offset ? ["--offset", String(offset)] : [])],
+        {
+          cwd: io.cwd,
+          timeoutMs,
+          maxOutputBytes: 262_144,
+          processGroup: true,
+        },
+      )
+      .catch(() => null);
+    if (result?.code !== 0 || result.timedOut || result.outputExceeded) return unavailable();
+    let body: unknown;
+    try {
+      body = JSON.parse(result.stdout);
+    } catch {
+      return unavailable();
+    }
+    if (
+      !body ||
+      typeof body !== "object" ||
+      !("data" in body) ||
+      !Array.isArray(body.data) ||
+      !("hasMore" in body) ||
+      typeof body.hasMore !== "boolean" ||
+      !("offset" in body) ||
+      typeof body.offset !== "number" ||
+      !Number.isSafeInteger(body.offset) ||
+      body.offset < 0
+    )
+      return unavailable();
+    for (const project of body.data) {
+      if (!project || typeof project !== "object") return unavailable();
+      // Project listings use repoUrl or the installed CLI’s gitRemote.
+      const url = project.repoUrl ?? project.gitRemote;
+      if (typeof url !== "string") return unavailable();
+      if (repositoryOfRemote(url) === repository.toLowerCase())
+        return [
+          {
+            id: "conductor-project",
+            level: "ok",
+            message: `a Conductor project lists ${repository}`,
+            fix: null,
+          },
+        ];
+    }
+    if (!body.hasMore)
+      return [
+        {
+          id: "conductor-project",
+          level: "warning",
+          message: `no Conductor project lists ${repository}`,
+          fix: `add https://github.com/${repository}.git as a project in Conductor before launching workers`,
+        },
+      ];
+    if (!body.data.length) return unavailable();
+    const next = body.offset + body.data.length;
+    if (!Number.isSafeInteger(next) || next <= offset) return unavailable();
+    offset = next;
+  }
+  return unavailable();
 }
 
 /** Read-only review setup checks. The bootstrap comes from the trusted CLI bundle. */
@@ -645,6 +660,7 @@ export async function buildDoctor(
     ...(await branchRuleChecks(io, config, credentials, signing)),
     ...(await signingChecks(io, root, signing, options.deep === true)),
     ...(await conductorChecks(io, config)),
+    ...(await conductorProjectCheck(io, config)),
     ...(config?.conductor.projectId || config?.conductor.baseBranch
       ? [
           {
