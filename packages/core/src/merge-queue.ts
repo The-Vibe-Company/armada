@@ -34,7 +34,8 @@ export type QueueNext = { entry: QueueEntry | null; holds: QueueHold[] } | { ref
 export interface QueueFinish {
   id: number;
   holder: string;
-  outcome: "merged" | "refused" | "retry";
+  /** Paused restores queued intent without counting a failed attempt. */
+  outcome: "merged" | "refused" | "retry" | "paused";
   detail: string | null;
   mergeCommit?: string | null;
   notBefore?: string | null;

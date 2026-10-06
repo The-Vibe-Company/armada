@@ -1036,8 +1036,8 @@ export async function serveFleet(
           return store.queueNext({ project: slug, holder: text(b, "holder", LINE_MAX), at });
         case "queue/finish": {
           const outcome = b.outcome;
-          if (outcome !== "merged" && outcome !== "refused" && outcome !== "retry")
-            throw new Invalid("outcome must be merged, refused or retry");
+          if (outcome !== "merged" && outcome !== "refused" && outcome !== "retry" && outcome !== "paused")
+            throw new Invalid("outcome must be merged, refused, retry or paused");
           const mergeCommit = shaOf(b, "mergeCommit");
           if (mergeCommit && !/^[0-9a-f]{40}$/.test(mergeCommit)) throw new Invalid("mergeCommit must be a full SHA");
           const notBefore = b.notBefore == null ? null : dateOf(b, "notBefore");

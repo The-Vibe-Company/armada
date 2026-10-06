@@ -1343,18 +1343,16 @@ export function memoryFleet(): FleetStore & {
       if (!held || held.holder !== q.holder || Date.parse(held.expiresAt) <= q.at.getTime())
         return { refused: true, held };
       const entries = queue
-        .filter(
-          (r) =>
-            r.project === q.project &&
-            (r.state === "merging" || (r.state === "queued" && (!r.notBefore || r.notBefore <= q.at.toISOString()))),
-        )
+        .filter((r) => r.project === q.project && queueOpen(r))
         .sort(
           (a, b) =>
             Number(b.state === "merging") - Number(a.state === "merging") ||
             a.queuedAt.localeCompare(b.queuedAt) ||
             a.id - b.id,
         );
-      const entry = entries[0];
+      const first = entries[0];
+      const entry =
+        first?.state === "queued" && first.notBefore && first.notBefore > q.at.toISOString() ? undefined : first;
       if (entry) {
         entry.state = "merging";
         entry.updatedAt = q.at.toISOString();
@@ -1367,13 +1365,13 @@ export function memoryFleet(): FleetStore & {
       const entry = queue.find((r) => r.project === q.project && r.id === q.id && r.state === "merging");
       if (!entry) return false;
       Object.assign(entry, {
-        state: q.outcome === "retry" ? "queued" : q.outcome,
+        state: q.outcome === "retry" || q.outcome === "paused" ? "queued" : q.outcome,
         detail: q.detail,
         updatedAt: q.at.toISOString(),
         attempts: entry.attempts + (q.outcome === "retry" ? 1 : 0),
         notBefore: q.outcome === "retry" ? (q.notBefore ?? null) : null,
         mergeCommit: q.mergeCommit ?? null,
-        finishedAt: q.outcome === "retry" ? null : q.at.toISOString(),
+        finishedAt: q.outcome === "retry" || q.outcome === "paused" ? null : q.at.toISOString(),
       });
       if (q.outcome === "refused")
         await this.addInboxItem({
