@@ -57,8 +57,8 @@ armada merge --drain
 
 - `--when-green <pr...>` records durable intent, in order, with each entry's `--reason`, `--no-ticket`, `--keep-open` or `--through-hold`. It refuses broken rules now and lets readiness (CI, a behind branch, an owner decision, a hold) wait. Queuing starts nothing.
 - `armada merge --drain` merges the queue one entry at a time, in the background in a persistent terminal. Each behind branch is updated on GitHub and its checks waited for on that exact head (`[merge] queue_retest = "ci"`, the default; `"local"` uses `[gates] local_commands` instead), so the next entry always starts on the fresh main. Each merge runs every after-merge step above.
-- An open hold pauses the drain and names it; an entry queued with `--through-hold` passes it. A refused rule removes that entry, leaves one `queue-refused` inbox item and goes on with the next: fix the cause and queue it again.
-- Temporary failures retry three times (after 1, 5 and 15 minutes). A killed drain resumes its entry, reading GitHub first so a merge is never done twice. One drain runs per project.
+- An open hold pauses the drain and names it; an entry queued with `--through-hold` passes it. At `--timeout <min per entry>` a paused drain exits and the entry returns to the queue without counting an attempt: clear the hold once recovery is checked, then run the drain again. The queue stays in order: a fix queued behind a paused entry waits its turn, so remove the earlier entry first when the fix must go ahead. A refused rule removes that entry, leaves one `queue-refused` inbox item and goes on with the next: fix the cause and queue it again.
+- Temporary failures retry three times (after 1, 5 and 15 minutes). A killed drain resumes its entry, reading GitHub first so a merge is never done twice. One drain runs per project; `--json` prints one object per line.
 - `armada merge queue` lists the queue and entries finished in the last day; `armada merge queue remove <pr>` removes one that has not started.
 
 ## The owner's merge rule: `--reason` and `--ask-owner`

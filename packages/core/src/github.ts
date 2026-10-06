@@ -17,6 +17,12 @@ export const GITHUB_GRAPHQL = "https://api.github.com/graphql";
 
 export class GithubError extends Error {
   override name = "GithubError";
+  constructor(
+    message: string,
+    readonly transient = false,
+  ) {
+    super(message);
+  }
 }
 
 /** Maps a check run (status + conclusion) or a commit status (state) onto a CI state. */
@@ -223,14 +229,14 @@ async function githubQuery<T>(
     },
     { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
-      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
+      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`, retryStatus(res.status));
       const json = (await res.json()) as { data?: T; errors?: { message: string }[] };
       if (json.errors?.length) throw new GithubError(`GitHub API: ${json.errors.map((e) => e.message).join("; ")}`);
       return json;
     },
   ).catch((err: unknown) => {
-    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
-    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`, retryStatus(err.status));
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`, err.transient);
     throw err;
   });
 }
@@ -354,7 +360,7 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
     },
     { ...opts, retry: true, retryStatus, service: "GitHub" },
     async (res) => {
-      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`);
+      if (!res.ok) throw new GithubError(`GitHub API HTTP ${res.status}`, retryStatus(res.status));
       const json = (await res.json()) as {
         data?: { repository: { object: { text?: string | null } | null } | null };
         errors?: { message: string }[];
@@ -364,8 +370,8 @@ export async function fetchDefaultBranchFile(opts: FetchFileOptions): Promise<st
       return json.data.repository.object?.text ?? null;
     },
   ).catch((err: unknown) => {
-    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
-    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`, retryStatus(err.status));
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`, err.transient);
     throw err;
   });
 }
@@ -480,8 +486,8 @@ export async function fetchPullDiff(opts: FetchForgeOptions & { number: number }
       return res.text();
     },
   ).catch((err: unknown) => {
-    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`);
-    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    if (err instanceof HttpStatusError) throw new GithubError(`GitHub API ${err.message}`, retryStatus(err.status));
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`, err.transient);
     throw err;
   });
 }
@@ -577,7 +583,7 @@ export async function fetchRepository(opts: FetchForgeOptions): Promise<{ fullNa
       return { fullName: body.full_name };
     },
   ).catch((err: unknown) => {
-    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`, err.transient);
     throw err;
   });
 }
