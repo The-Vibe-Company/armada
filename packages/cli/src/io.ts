@@ -54,6 +54,8 @@ export interface ProcessIdentity {
 
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
+  /** Schedule periodic work such as renewing a drain lease; returns cancellation. */
+  every?: (ms: number, tick: () => Promise<void>) => () => void;
   /** Root of the selected project checkout, set by config discovery. */
   coordinatorRoot?: string;
   /** Host platform; local runtime install offers support macOS and Linux. */

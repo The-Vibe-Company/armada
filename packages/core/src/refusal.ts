@@ -7,6 +7,8 @@ export class Refusal extends Error {
   constructor(
     message: string,
     readonly next: string,
+    readonly transient = false,
+    readonly paused = false,
   ) {
     super(message);
   }

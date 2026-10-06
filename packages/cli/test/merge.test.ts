@@ -1017,7 +1017,7 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--reason", "Reviewed"], f.io)).toBe(0);
   expect(f.out()).toContain("queued #9 (1st)");
   expect(f.out().trim().split("\n").at(-1)).toBe("Result: not merged (queued for merge; nothing was merged)");
-  expect(f.out()).toContain("Next: armada merge queue");
+  expect(f.out()).toContain("Next: armada merge --drain (run in the background)");
   expect(f.merged()).toBe(false);
   expect(f.ghCalls).toEqual([]);
   expect(await run(["merge", "--when-green", "9"], f.io)).toBe(0);
@@ -1038,6 +1038,62 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--no-archive"], f.io)).toBe(2);
   expect(await run(["merge", "--when-green", "9", "--no-notify"], f.io)).toBe(2);
 });
+
+test.each(["plain", "json", "completion-outage"])(
+  "drain uses ordinary cleanup and truthful output (%s)",
+  async (scenario) => {
+    const json = scenario !== "plain";
+    const completionOutage = scenario === "completion-outage";
+    const f = await fixture();
+    expect(await run(["merge", "--when-green", "9"], f.io)).toBe(0);
+    const out: string[] = [];
+    const fetch = f.io.fetch!;
+    const io: Io = {
+      ...f.io,
+      stdout: (line) => out.push(line),
+      fetch: async (url, init) =>
+        completionOutage && url.endsWith("/fleet/queue/finish")
+          ? Response.json({ error: "Armada did not answer" }, { status: 503 })
+          : fetch(url, init),
+    };
+    expect(await run(["merge", "--drain", ...(json ? ["--json"] : [])], io), f.err()).toBe(completionOutage ? 1 : 0);
+    expect(f.merged()).toBe(true);
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
+      state: completionOutage ? "merging" : "merged",
+      ...(!completionOutage ? { mergeCommit: SQUASH } : {}),
+    });
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(true);
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).not.toBeNull();
+    if (json) {
+      const objects = out
+        .join("")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(objects).toMatchObject(
+        completionOutage
+          ? [
+              { merged: true, result: "Result: merged #9" },
+              { merged: true, error: expect.any(String), result: "Result: merged #9" },
+            ]
+          : [{ merged: true, result: "Result: merged #9" }, { queue: "empty" }],
+      );
+    } else {
+      expect(out.join("")).toContain("Result: merged #9");
+      expect(out.join("")).toContain("queue empty");
+    }
+    if (completionOutage) {
+      io.fetch = fetch;
+      expect(await run(["merge", "--drain", "--json"], io), f.err()).toBe(0);
+      expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
+        state: "merged",
+        mergeCommit: SQUASH,
+      });
+    }
+    expect(await run(["merge", "--drain", "9"], f.io)).toBe(2);
+    expect(await run(["merge", "--drain", "--no-lock"], f.io)).toBe(2);
+  },
+);
 
 test("when-green queues multiple no-ticket PRs in argument order and preserves flags", async () => {
   const f = await fixture();
