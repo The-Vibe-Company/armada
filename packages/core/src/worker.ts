@@ -78,6 +78,8 @@ export interface Outcome {
   inbox: InboxItem[] | null;
   /** The ticket read back after the write (claim and report); null when it was not read. */
   state?: TicketState | null;
+  /** Branch actually retained by a successful claim, for the worker’s local preflight. */
+  claimedBranch?: string | null;
   /** Snapshot used to guard a coordinator release and bound session termination. */
   releasedClaim?: RuntimeHandle | null;
 }
@@ -265,7 +267,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
       ? `armada claim ${ticket.id} --runtime "<one of: ${runtimeLabels.map((l) => l.name).join(", ")}>" --handle ${input.handle}`
       : DOCTOR_LABELS,
   );
-  const branch = input.branch ?? ticket.branchName;
+  const requestedBranch = input.branch ?? ticket.branchName;
   const warnings = [...ticket.warnings];
   const lines: string[] = [];
   let profile: ProfileChoice | null = null;
@@ -281,6 +283,7 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
   const held = activeClaimComments(ticket.comments);
   const holder = held[0]?.claim;
   const resuming = !!holder && holder.session === input.handle;
+  const branch = resuming ? (holder?.branch ?? requestedBranch) : requestedBranch;
   if (!resuming) {
     // Only the coordinator releases another worker's ticket: this worker picks another one.
     const another = "armada status, to pick another ticket ready to start";
@@ -380,7 +383,15 @@ export async function claimTicket(ctx: WorkerContext, input: ClaimInput): Promis
     lines.push(`Launch request ${ids} from ${who} resolved.`);
   }
   const state = await readBack(ctx, ticket.id, warnings);
-  return { ticket: ticket.id, url: ticket.url, lines, warnings, inbox: null, state };
+  return {
+    ticket: ticket.id,
+    url: ticket.url,
+    lines,
+    warnings,
+    inbox: null,
+    state,
+    claimedBranch: branch,
+  };
 }
 
 // ------------------------------------------------------------------ report

@@ -386,6 +386,70 @@ effort = "high"
     expect((await t.doctor()).find((c) => c.id === "conductor-cli")?.message).toBe("conductor is on PATH");
   });
 
+  test("Conductor repository lookup matches URL forms across pages, distinguishes absent and unavailable, and skips other runtimes", async () => {
+    for (const scenario of [
+      "https",
+      "ssh",
+      "paged",
+      "normalized-offset",
+      "missing-offset",
+      "absent",
+      "invalid",
+      "unavailable",
+      "other-runtime",
+    ] as const) {
+      const pages: string[][] = [];
+      const exec: Exec = async (command, args, options) => {
+        if (command === "conductor" && args.includes("list")) {
+          pages.push(args);
+          expect(options.timeoutMs).toBeLessThanOrEqual(10_000);
+          if (scenario === "unavailable") throw new Error("CANARY credential URL");
+          if (scenario === "invalid") return { code: 0, stdout: "{}", stderr: "" };
+          const next = args.includes("--offset");
+          const paged = scenario === "paged" || scenario === "normalized-offset";
+          if (scenario === "missing-offset")
+            return { code: 0, stdout: JSON.stringify({ data: [], hasMore: false }), stderr: "" };
+          const rows =
+            scenario === "absent" || (paged && !next)
+              ? [{ repoUrl: "https://github.com/acme/other.git" }]
+              : scenario === "ssh"
+                ? [{ gitRemote: "git@github.com:ACME/widgets.git" }]
+                : [{ repoUrl: "https://github.com/Acme/Widgets.git/" }];
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              data: rows,
+              offset: scenario === "normalized-offset" ? (next ? 10 : 9) : next ? 1 : 0,
+              hasMore: paged && !next,
+            }),
+            stderr: "",
+          };
+        }
+        return { code: 1, stdout: "", stderr: "" };
+      };
+      const toml = scenario === "other-runtime" ? TOML.replace('agent = "claude"', 'runtime = "claude-code"') : TOML;
+      const t = await terminal({}, {}, null, { exec, toml });
+      const check = (await t.doctor(["conductor-project"])).at(0);
+      if (scenario === "other-runtime") {
+        expect(check).toBeUndefined();
+        expect(pages).toHaveLength(0);
+      } else {
+        expect(check?.level).toBe(
+          ["absent", "invalid", "missing-offset", "unavailable"].includes(scenario) ? "warning" : "ok",
+        );
+        if (scenario === "absent") expect(check?.message).toContain("no Conductor project lists acme/widgets");
+        if (scenario === "invalid" || scenario === "missing-offset" || scenario === "unavailable")
+          expect(check?.message).toContain("could not be checked");
+        if (scenario === "paged" || scenario === "normalized-offset") {
+          expect(pages).toHaveLength(2);
+          const args = pages[1] ?? [];
+          expect(args[args.indexOf("--offset") + 1]).toBe(scenario === "normalized-offset" ? "10" : "1");
+        }
+        expect(JSON.stringify(check)).not.toContain("CANARY");
+      }
+    }
+  });
+
   test("only inside the macOS app, the fix links it from a directory on PATH, else adds it to PATH", async () => {
     const home = "/Users/ada";
     const linked = await conductor([BUNDLED_CONDUCTOR], { HOME: home, PATH: `/usr/bin:${home}/.local/bin` });
