@@ -36,7 +36,7 @@ import {
   unblockedBy,
 } from "@armada/core";
 import { afterMerge } from "./after-merge.ts";
-import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
+import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
@@ -239,7 +239,7 @@ export async function merge(
   if (!exec) throw new UsageError("armada merge needs to run git and gh");
   const linearApiKey = credentials.linearApiKey;
   const repoDir = dirname(configPath);
-  const fetchOpt = io.fetch ? { fetch: io.fetch } : {};
+  const fetchOpt = httpOptions(io);
   const gh = { token, repository: config.github.repository, ...fetchOpt };
   const linearOpts = { apiKey: linearApiKey, labels: config.tracker.labels, ...fetchOpt };
   const now = io.now ?? (() => new Date());

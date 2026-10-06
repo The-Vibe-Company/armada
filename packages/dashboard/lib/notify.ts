@@ -5,10 +5,11 @@
 // phase change. Pure: the shell's Notifier keeps what it already notified,
 // reads the viewer's settings and shows each new item once, outside their
 // quiet hours. The live region says the same in the page (lib/announce.ts).
-import type { FleetOverview } from "@armada/core/read";
-import { paths } from "./fleet-view";
+import type { OwnerItem } from "@armada/core/read";
+
+export { type OwnerItem, ownerItems } from "@armada/core/read";
+
 import type { Strings } from "./i18n";
-import { coordinatorAlerts, pendingValidations } from "./overview-view";
 
 /** Browser notifications for what waits for the owner, and the hours they stay quiet (local time, `HH:MM`). */
 export interface NotifySettings {
@@ -37,41 +38,6 @@ export function notifyOf(v: unknown): NotifySettings | null {
   if (typeof from !== "string" || typeof to !== "string" || !CLOCK.test(from) || !CLOCK.test(to) || from === to)
     return null;
   return { on, quiet: { from, to } };
-}
-
-export interface OwnerItem {
-  /** Stable across polls and tabs: a notification is shown once per key. */
-  key: string;
-  kind: "validation" | "question" | "coordinator";
-  title: string;
-  /** Where the notification opens. */
-  href: string;
-  /** `coordinator`: how many items wait for it. */
-  waiting: number;
-}
-
-type Notifiable = Pick<FleetOverview, "projects" | "waiting"> & Partial<Pick<FleetOverview, "validations">>;
-
-/** What waits for the owner now, oldest first. */
-export function ownerItems(o: Notifiable): OwnerItem[] {
-  const items: OwnerItem[] = pendingValidations(o).map((v) => ({
-    key: `validation:${v.project}:${v.id}`,
-    kind: v.kind === "question" ? "question" : "validation",
-    title: v.title ? `${v.ticket} · ${v.title}` : `${v.ticket} · ${v.what}`,
-    href: paths.validation(v.id),
-    waiting: 0,
-  }));
-  const names = new Map(o.projects.map((p) => [p.slug, p.name]));
-  for (const c of coordinatorAlerts(o))
-    items.push({
-      // A coordinator that stops again after coming back is news again.
-      key: `coordinator:${c.project}:${c.seenAt ?? ""}`,
-      kind: "coordinator",
-      title: names.get(c.project) ?? c.project,
-      href: paths.project(c.project),
-      waiting: c.waiting,
-    });
-  return items;
 }
 
 const minutes = (clock: string) => Number(clock.slice(0, 2)) * 60 + Number(clock.slice(3, 5));

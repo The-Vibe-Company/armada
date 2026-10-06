@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Fetch } from "../src/linear.ts";
 import { createLinearWriter } from "../src/linear-write.ts";
+import { FakeLinear } from "./support.ts";
 
 /** Answers each GraphQL operation from `answers` and records what was sent. */
 function graphql(answers: Record<string, unknown>) {
@@ -62,7 +63,7 @@ describe("Linear write adapter", () => {
     await expect(timed.createIssue(input)).rejects.toThrow("no answer within 30 s");
     expect(calls).toBe(1);
   });
-  test("a timed-out query retries once; comment mutations are never replayed", async () => {
+  test("a timed-out query retries once; comments fail closed when reconciliation cannot be read", async () => {
     let calls = 0;
     const writer = createLinearWriter({
       apiKey: "synthetic-key",
@@ -75,8 +76,8 @@ describe("Linear write adapter", () => {
     });
     expect(await writer.viewer()).toEqual({ id: "person-1", name: "Olive" });
     expect(calls).toBe(2);
-    await expect(writer.comment("ticket-1", "Progress")).rejects.toThrow("no answer within 30 s");
-    expect(calls).toBe(3);
+    await expect(writer.comment("ticket-1", "Progress")).rejects.toThrow("no answer within 10 s");
+    expect(calls).toBe(5);
   });
 
   test("reads a ticket with its labels (phase names in any case), team workflow, claim and linked pull request", async () => {
@@ -236,4 +237,52 @@ describe("Linear write adapter", () => {
     ]);
     expect(await writer.readTicket("DEMO-404")).toBeNull();
   });
+});
+
+test("comment retries reconcile a lost response before posting again", async () => {
+  for (const recorded of [true, false]) {
+    const linear = new FakeLinear();
+    linear.add("DEMO-7", { uuid: "uuid-7" });
+    let posts = 0;
+    let checks = 0;
+    const writer = createLinearWriter({
+      apiKey: "synthetic-key",
+      labels: { phaseGroup: "Agent phase", runtimeGroup: "Agent runtime" },
+      sleep: async () => {},
+      random: () => 0.5,
+      fetch: async (_url, init) => {
+        const request = JSON.parse(String(init.body));
+        if (request.query.includes("mutation Comment")) {
+          posts++;
+          if (posts === 1) {
+            if (recorded) await linear.comment("uuid-7", "Progress");
+            throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+          }
+          return Response.json({
+            data: { commentCreate: { success: true, comment: await linear.comment("uuid-7", "Progress") } },
+          });
+        }
+        if (request.query.includes("query RecentComments")) {
+          checks++;
+          return Response.json({
+            data: {
+              issue: {
+                comments: {
+                  nodes: linear
+                    .get("DEMO-7")
+                    .comments.map((comment) => ({ ...comment, body: "Progress", user: { name: "Owner" } })),
+                  pageInfo: { hasNextPage: false },
+                },
+              },
+            },
+          });
+        }
+        throw new Error("unexpected query");
+      },
+    });
+    expect(await writer.comment("uuid-7", "Progress")).toEqual({ id: "c-0001" });
+    expect(posts).toBe(recorded ? 1 : 2);
+    expect(checks).toBe(1);
+    expect(linear.bodies).toEqual(["Progress"]);
+  }
 });

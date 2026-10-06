@@ -488,3 +488,31 @@ describe("armada status --all", () => {
     );
   });
 });
+
+test("Linear status retries print wait notices; exhausted reads still fail with an error and next step", async () => {
+  for (const recover of [true, false]) {
+    const { io, out, err } = fakeIo({ "/work/widgets/armada.toml": DEMO_TOML });
+    const recorded = recordedFetch();
+    const waits: number[] = [];
+    let calls = 0;
+    io.sleep = async (ms) => {
+      waits.push(ms);
+    };
+    io.fetch = async (url, init) => {
+      if (url === LINEAR_ENDPOINT && (++calls <= 2 || !recover)) return new Response("busy", { status: 503 });
+      return recorded.fetch(url, init);
+    };
+    expect(await run(["status", "--json"], io)).toBe(recover ? 0 : 1);
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toBeGreaterThanOrEqual(800);
+    expect(waits[0]).toBeLessThanOrEqual(1200);
+    expect(waits[1]).toBeGreaterThanOrEqual(2400);
+    expect(waits[1]).toBeLessThanOrEqual(3600);
+    expect(err().match(/armada: Linear answered 503; trying again/g)).toHaveLength(2);
+    if (recover) expect(JSON.parse(out()).project.slug).toBe("widgets");
+    else {
+      expect(out()).toBe("");
+      expect(err()).toContain("armada: Linear API HTTP 503\nNext:");
+    }
+  }
+});

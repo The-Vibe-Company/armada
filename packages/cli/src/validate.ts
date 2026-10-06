@@ -12,7 +12,7 @@ import {
   submitValidation,
 } from "@armada/core";
 import { attachItems } from "./attach.ts";
-import { type Io, UsageError } from "./io.ts";
+import { httpOptions, type Io, UsageError } from "./io.ts";
 import { currentTicket, endWorkerSessions, readMessage, type WorkerArgs, withContext } from "./worker.ts";
 
 const TICKET = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
@@ -31,7 +31,7 @@ export const attachList = (raw: string | undefined) =>
 async function ensurePhaseLabel(io: Io, config: ArmadaConfig, credentials: Credentials): Promise<void> {
   const apiKey = credentials.linearApiKey;
   if (!apiKey) return;
-  const opts = { apiKey, ...(io.fetch ? { fetch: io.fetch } : {}) };
+  const opts = { apiKey, ...httpOptions(io) };
   const state = await readLabels(config, opts);
   const groups = state.groups
     .filter((g) => g.name === config.tracker.labels.phaseGroup && g.id && g.missing.includes("awaiting-validation"))
