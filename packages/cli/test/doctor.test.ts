@@ -556,3 +556,167 @@ describe("armada doctor: repository identity", () => {
     expect(notices.join("")).not.toContain("CANARY");
   });
 });
+
+describe("armada doctor: commit signing", () => {
+  const signing = (
+    values: Record<string, string>,
+    deep = { code: 0, stdout: "a".repeat(40), stderr: "" },
+    pinentry = "",
+  ) => {
+    const calls: Parameters<Exec>[] = [];
+    const exec: Exec = async (command, args, options) => {
+      calls.push([command, args, options]);
+      if (command === "gpgconf") return { code: 0, stdout: pinentry, stderr: "" };
+      if (args[0] === "config") {
+        if (args.includes("--get-regexp")) {
+          const entries = Object.entries(values).filter(
+            ([key]) => key === "gpg.program" || key === "gpg.openpgp.program",
+          );
+          return {
+            code: entries.length ? 0 : 1,
+            stdout: entries.map(([key, value]) => `${key}\n${value}\0`).join(""),
+            stderr: "",
+          };
+        }
+        const key = args.at(-1) ?? "";
+        return key in values ? { code: 0, stdout: values[key] ?? "", stderr: "" } : { code: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "commit-tree") return deep;
+      return { code: 1, stdout: "", stderr: "" };
+    };
+    return { exec, calls };
+  };
+  test("default predicts interactive SSH signing without creating an object or exposing key", async () => {
+    const f = signing({
+      "commit.gpgsign": "true",
+      "gpg.format": "ssh",
+      "gpg.ssh.program": "/app/op-ssh-sign",
+      "user.signingkey": "CANARY_SIGNING_KEY",
+    });
+    const t = await terminal({}, {}, null, { toml: DEMO_TOML, exec: f.exec });
+    const checks = await t.doctor(["git-signing"]);
+    expect(checks).toMatchObject([
+      {
+        level: "warning",
+        message: expect.stringContaining("op-ssh-sign"),
+        fix: expect.stringContaining('sign = "off"'),
+      },
+    ]);
+    expect(JSON.stringify(checks)).not.toContain("CANARY_SIGNING_KEY");
+    expect(f.calls.some(([, args]) => args[0] === "commit-tree")).toBe(false);
+  });
+  test("reads the canonical signer for OpenPGP and X.509", async () => {
+    for (const format of ["openpgp", "x509"]) {
+      const f = signing({
+        "commit.gpgsign": "true",
+        "gpg.format": format,
+        [`gpg.${format}.program`]: "/app/pinentry-mac",
+      });
+      const t = await terminal({}, {}, null, { toml: DEMO_TOML, exec: f.exec });
+      expect(await t.doctor(["git-signing"])).toMatchObject([
+        { level: "warning", message: expect.stringContaining("pinentry-mac") },
+      ]);
+    }
+  });
+  test("OpenPGP aliases follow config order instead of canonical priority", async () => {
+    for (const entries of [
+      [
+        ["gpg.openpgp.program", "/app/pinentry-mac"],
+        ["gpg.program", "gpg"],
+      ],
+      [
+        ["gpg.program", "gpg"],
+        ["gpg.openpgp.program", "/app/pinentry-mac"],
+      ],
+    ]) {
+      const f = signing({ "commit.gpgsign": "true", ...Object.fromEntries(entries) });
+      const t = await terminal({}, {}, null, { toml: DEMO_TOML, exec: f.exec });
+      expect(await t.doctor(["git-signing"])).toMatchObject([
+        {
+          level: entries.at(-1)?.[1] === "gpg" ? "ok" : "warning",
+          message: expect.stringContaining(entries.at(-1)?.[1] ?? ""),
+        },
+      ]);
+    }
+  });
+  test("configured GUI pinentry warns using read-only gpgconf, without a signing probe", async () => {
+    const f = signing(
+      { "commit.gpgsign": "true" },
+      undefined,
+      'pinentry-program:0:1:PIN entry:1:1::"/bin/pinentry-curses::"/app/pinentry-mac\n',
+    );
+    const t = await terminal({}, {}, null, { toml: DEMO_TOML, exec: f.exec });
+    expect(await t.doctor(["git-signing"])).toMatchObject([
+      { level: "warning", message: expect.stringContaining("pinentry-mac") },
+    ]);
+    expect(f.calls.find(([command]) => command === "gpgconf")?.[1]).toEqual(["--list-options", "gpg-agent"]);
+  });
+  test("deep CLI probe signs without moving refs, bounds the process group, reports success/timeout/failure", async () => {
+    for (const result of [
+      { code: 0, stdout: "a".repeat(40), stderr: "" },
+      { code: 1, stdout: "", stderr: "CANARY", timedOut: true },
+      { code: 1, stdout: "", stderr: "CANARY" },
+    ]) {
+      const f = signing({ "commit.gpgsign": "false" }, result);
+      const t = await terminal({}, {}, null, { toml: DEMO_TOML, exec: f.exec });
+      const out: string[] = [];
+      const io: Io = {
+        cwd: t.home,
+        env: { XDG_CONFIG_HOME: t.home, PATH: "/test/bin" },
+        exec: f.exec,
+        readFile: async () => null,
+        ghToken: () => null,
+        stdout: (v) => out.push(v),
+        stderr: () => {},
+        sleep: async () => {},
+      };
+      await run(["doctor", "--deep", "--json"], io);
+      const report = JSON.parse(out.join(""));
+      const check = report.checks.find((c: Check) => c.id === "git-signing-deep");
+      expect(check.level).toBe(result.code === 0 ? "ok" : "error");
+      if ("timedOut" in result) expect(check.message).toContain("10 seconds");
+      expect(out.join("")).not.toContain("CANARY");
+      expect(f.calls.find(([, args]) => args[0] === "commit-tree")).toEqual([
+        "git",
+        ["commit-tree", "HEAD^{tree}", "-S", "-m", "armada-doctor"],
+        {
+          cwd: t.home,
+          timeoutMs: 10_000,
+          maxOutputBytes: 16_384,
+          processGroup: true,
+          env: { ...io.env, GIT_TERMINAL_PROMPT: "0" },
+        },
+      ]);
+    }
+  });
+  test("required signatures share the merge-rules read and error for disabled signing or Herdr off", async () => {
+    for (const [enabled, policy] of [
+      ["false", "inherit"],
+      ["true", "off"],
+      ["true", "inherit"],
+    ] as const) {
+      const f = signing({ "commit.gpgsign": enabled });
+      let reads = 0;
+      const t = await terminal({ GITHUB_TOKEN: "github_CANARY" }, {}, null, {
+        toml: `${DEMO_TOML}\n[git]\nsign = "${policy}"\n`,
+        exec: f.exec,
+        fetch: async (url) => {
+          if (url.includes("/rules/branches/")) {
+            reads++;
+            return Response.json([{ type: "required_signatures" }]);
+          }
+          if (url.endsWith("/protection")) return new Response("", { status: 404 });
+          return Response.json({
+            full_name: "acme/widgets",
+            default_branch: "trunk",
+            allow_squash_merge: true,
+            delete_branch_on_merge: false,
+          });
+        },
+      });
+      const checks = await t.doctor(["git-signing-rules"]);
+      expect(checks).toMatchObject([{ level: enabled === "true" && policy === "inherit" ? "ok" : "error" }]);
+      expect(reads).toBe(1);
+    }
+  });
+});
