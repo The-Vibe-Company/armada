@@ -2,9 +2,18 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordClaim } from "@armada/core";
+import { armadaApi, fleetClient, recordClaim } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
-import { ARMADA_URL, DEMO_TOML, FakeLinear, fakeArmada, LABELS, NOW, recordedFetch } from "../../core/test/support.ts";
+import {
+  ARMADA_URL,
+  DEMO_PROJECT,
+  DEMO_TOML,
+  FakeLinear,
+  fakeArmada,
+  LABELS,
+  NOW,
+  recordedFetch,
+} from "../../core/test/support.ts";
 import { run } from "../src/cli.ts";
 import type { Io } from "../src/io.ts";
 
@@ -467,6 +476,30 @@ test("a concurrent merge or lost relaunch lease prevents cancellation and releas
   expect(lost.text()).toContain("lease was lost");
   expect(lost.order).not.toContain("cancel");
   expect(lost.order).not.toContain("fleet/release");
+  for (const when of ["before", "during"] as const) {
+    const held = await fixture();
+    const open = () =>
+      held.store.openHold({ project: "widgets", kind: "manual", reason: "inspect main", author: null, at: NOW });
+    if (when === "before") await open();
+    else {
+      const exec = held.io.exec as NonNullable<Io["exec"]>;
+      held.io.exec = async (command, args, options) => {
+        const result = await exec(command, args, options);
+        if (args[2] === "cancel") await open();
+        return result;
+      };
+    }
+    held.set({ claimImmediately: true });
+    expect(await held.relaunch("--fresh"), held.text()).toBe(0);
+    expect((await held.store.getRuntimeHandle("widgets", "DEMO-13"))?.handle).toBe("ws-new/ses-new");
+    expect(await held.store.openHolds("widgets")).toHaveLength(1);
+    const fleet = fleetClient({
+      api: armadaApi({ url: ARMADA_URL, fetch: held.armada.fetch }),
+      signIn: { kind: "api-key", key: "armada_key_CANARY_test" },
+      project: DEMO_PROJECT,
+    });
+    await expect(fleet.acquireLease({ name: "merge", holder: "merger-after", ttlMs: 300000 })).rejects.toThrow("hold");
+  }
 });
 
 test("an unavailable local herdr pane cannot use the remote-machine exception to release a surviving checkout", async () => {

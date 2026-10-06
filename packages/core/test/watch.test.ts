@@ -654,3 +654,32 @@ test("follow includes a stopped session by default and when filtered, without re
     });
   }
 });
+
+test("follow shows initial and new holds until cleared, by default and when filtered", async () => {
+  for (const kinds of [undefined, ["hold"]] as const) {
+    const live = tempFleet();
+    const first = await live.fleet.openHold({ kind: "manual", reason: "initial pause" });
+    let step = 0;
+    let laterId = 0;
+    const lines = [];
+    for await (const line of followFleet(live.fleet, {
+      ...options(live).o,
+      ...(kinds ? { kinds } : {}),
+      until: new Date(NOW.getTime() + 180_000),
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (++step === 1) await live.fleet.clearHold({ id: first.id, reason: "verified first fix" });
+        if (step === 2) laterId = (await live.fleet.openHold({ kind: "manual", reason: "new pause" })).id;
+        if (step === 3) await live.fleet.clearHold({ id: laterId, reason: "verified next fix" });
+      },
+    }))
+      lines.push(line);
+    expect(lines.map((line) => [line.kind, line.new])).toEqual([
+      ["hold", false],
+      ["hold", true],
+    ]);
+    expect(lines[0]?.body).toContain(`initial pause (manual, hold #${first.id})`);
+    expect(lines[1]?.body).toContain(`new pause (manual, hold #${laterId})`);
+    expect(await live.fleet.holds()).toEqual([]);
+  }
+});

@@ -349,7 +349,9 @@ export async function relaunch(
     // The existing merge lock is project-wide; holding it also prevents a merge
     // starting between our preflight and release of its hand-back.
     const holder = `relaunch:${randomUUID()}`;
-    const lock = { name: MERGE_LEASE, holder, ttlMs: 5 * 60000 };
+    // A hold pauses merges, not worker replacement. This reason authorizes
+    // only the exclusion lock; relaunch never performs a merge action.
+    const lock = { name: MERGE_LEASE, holder, ttlMs: 5 * 60000, throughHold: `relaunch exclusion: ${reason}` };
     if (!(await fleet.acquireLease(lock)).acquired)
       throw new UsageError(
         `${ticket}: a merge is in progress; nothing was changed`,
