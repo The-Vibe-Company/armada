@@ -84,12 +84,13 @@ export async function queueNext(db: Database, q: { project: string; holder: stri
     // Recover an entry stranded by a lost session before starting another merge.
     const rs = await tx.query(
       `SELECT * FROM merge_queue WHERE project = $1
-      AND (state = 'merging' OR (state = 'queued' AND (not_before IS NULL OR not_before <= $2)))
+      AND state IN ('merging', 'queued')
       ORDER BY (state = 'merging') DESC, queued_at, id LIMIT 1 FOR UPDATE`,
-      [q.project, q.at],
+      [q.project],
     );
     const row = rs.rows[0];
-    if (!row) return { entry: null, holds: [] };
+    if (!row || (row.state === "queued" && row.not_before && Date.parse(isoAt(row.not_before)) > q.at.getTime()))
+      return { entry: null, holds: [] };
     const updated = await tx.query(
       "UPDATE merge_queue SET state = 'merging', updated_at = $2 WHERE id = $1 RETURNING *",
       [row.id, q.at],
@@ -110,13 +111,13 @@ export async function queueFinish(db: Database, q: QueueFinish & { project: stri
       [
         q.project,
         q.id,
-        q.outcome === "retry" ? "queued" : q.outcome,
+        q.outcome === "retry" || q.outcome === "paused" ? "queued" : q.outcome,
         q.detail,
         q.at,
         q.outcome === "retry" ? 1 : 0,
         q.outcome === "retry" ? (q.notBefore ?? null) : null,
         q.mergeCommit ?? null,
-        q.outcome === "retry" ? null : q.at,
+        q.outcome === "retry" || q.outcome === "paused" ? null : q.at,
       ],
     );
     const row = rs.rows[0];
