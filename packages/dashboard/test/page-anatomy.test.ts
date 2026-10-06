@@ -209,8 +209,13 @@ describe("globals.css", () => {
   describe("phone geometry", () => {
     let browser: Browser | undefined;
     let page: Page;
+    // The first Chrome launch on a fresh runner includes cold process startup.
+    // Keep Playwright's diagnostic deadline inside Bun's hook deadline.
     beforeAll(async () => {
-      browser = await chromium.launch({ channel: "chrome" });
+      browser = await chromium.launch({ channel: "chrome", timeout: 15_000 });
+    }, 20_000);
+    beforeAll(async () => {
+      if (!browser) throw new Error("browser setup did not complete");
       page = await browser.newPage({ viewport: { width: 375, height: 812 } });
     }, 10_000);
     afterAll(async () => {
