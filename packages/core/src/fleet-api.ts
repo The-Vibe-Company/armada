@@ -55,6 +55,7 @@ import {
   recordValidation,
   type StoredInboxItem,
   serveInbox,
+  ticketOwners,
   type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
@@ -62,6 +63,7 @@ import type { QueueAdded, QueueEntry, QueueNext } from "./merge-queue.ts";
 import { buildModel } from "./model.ts";
 import { type OverlapReading, pathsProblem } from "./overlap.ts";
 import { isLabelPhase } from "./phases.ts";
+import { redactFreeText, redactor } from "./redact.ts";
 import { RequestRefusal, requestDeferredLaunch, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
 import type { CiState, LabelPhase } from "./types.ts";
 import { isShippingStage } from "./types.ts";
@@ -188,6 +190,12 @@ function optText(b: Body, key: string, max: number): string | null {
   return v;
 }
 
+function scopeOf(b: Body): import("./live.ts").CoordinatorScope | undefined {
+  if (b.scope === undefined) return undefined;
+  if (b.scope !== "mine" && b.scope !== "all") throw new Invalid("scope must be mine or all");
+  return b.scope;
+}
+
 function coordinatorNameOf(b: Body, key = "coordinatorName", fallback = "default"): string {
   const name = b[key] === undefined ? fallback : b[key];
   if (typeof name !== "string" || !COORDINATOR.test(name)) throw new Invalid(`${key} must match ${COORDINATOR.source}`);
@@ -297,7 +305,30 @@ const refuse = (status: number, error: string, next: string): FleetAnswer => ({ 
 const NOT_MODIFIED = Symbol("not modified");
 const TRANSFER_REFUSED = Symbol("transfer refused");
 
+/** Writes carrying prose. Read-only polls never need the vault. */
+export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
+  "claim",
+  "report",
+  "ask",
+  "answer",
+  "release",
+  "validate",
+  "done",
+  "request",
+  "hold/open",
+  "hold/clear",
+  "inbox/resolve",
+  "merge",
+  "queue/add",
+  "queue/finish",
+  "job/observe",
+  "runtime/stop",
+  "reserve",
+]);
+
 export interface ServeFleetDeps {
+  /** Prepared by the host from this authorized project's secrets, once per request. */
+  redact?: (text: string) => string;
   sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
   /** Stored project facts, supplied by the host, never by the caller. */
   snapshot?: HandBackSnapshot;
@@ -328,7 +359,7 @@ export async function serveFleet(
   const { op, project, caller } = req;
   if (!isFleetOp(op))
     return refuse(404, `no fleet operation ${op}`, "update the CLI: npm install -g @the-vibe-company/armada");
-  const b = objectOf(req.input);
+  const b = redactFreeText(objectOf(req.input), deps.redact ?? redactor([]).text);
   const slug = project.slug;
   const at = deps.now();
   try {
@@ -633,7 +664,20 @@ export async function serveFleet(
               throw new Invalid("invalid page cursor");
             }
           }
+          const scope = scopeOf(b);
+          const owners =
+            scope === "mine"
+              ? ticketOwners(
+                  ...(await Promise.all([store.openRuntimeHandles(slug), store.pendingLaunches(slug, new Date(0))])),
+                )
+              : null;
+          const excludedTickets = owners
+            ? [...owners]
+                .filter(([, owner]) => owner !== null && owner !== (coordinatorName ?? "default"))
+                .map(([ticket]) => ticket)
+            : undefined;
           const events = await store.eventsSince(slug, {
+            excludedTickets,
             ...cursor,
             kinds: b.kinds,
             handoverOnly: b.handoverOnly,
@@ -748,6 +792,7 @@ export async function serveFleet(
             store,
             slug,
             {
+              scope: scopeOf(b),
               coordinator: optText(b, "coordinator", LINE_MAX),
               ...(b.coordinatorName === undefined ? {} : { coordinatorName: coordinatorName ?? "default" }),
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),

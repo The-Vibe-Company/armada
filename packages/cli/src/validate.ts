@@ -67,27 +67,30 @@ export async function validate(io: Io, config: ArmadaConfig, credentials: Creden
   const worker = !named && credentials.armadaSignIn?.kind === "worker";
   const items = attachList(a.options.attach);
   if (worker) await ensurePhaseLabel(io, config, credentials);
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    submitValidation(ctx, {
-      ticket,
-      kind: "validation",
-      what,
-      choices: parseChoices(a.options.choices),
-      attachments: [],
-      // Uploaded once every check passed: a refused submission leaves nothing behind.
-      upload: async () =>
-        items.length
-          ? (
-              await attachItems(io, config, credentials, {
-                ticket,
-                items,
-                ...(a.options.caption ? { caption: a.options.caption } : {}),
-                reference: "validation",
-              })
-            ).map((saved) => saved.attachment.id)
-          : [],
-      worker,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    submitValidation(
+      ctx,
+      redact({
+        ticket,
+        kind: "validation",
+        what,
+        choices: parseChoices(a.options.choices),
+        attachments: [],
+        // Uploaded once every check passed: a refused submission leaves nothing behind.
+        upload: async () =>
+          items.length
+            ? (
+                await attachItems(io, config, credentials, {
+                  ticket,
+                  items,
+                  ...(a.options.caption ? { caption: redact({ caption: a.options.caption }).caption } : {}),
+                  reference: "validation",
+                })
+              ).map((saved) => saved.attachment.id)
+            : [],
+        worker,
+      }),
+    ),
   );
 }
 
@@ -101,15 +104,18 @@ export async function askOwner(io: Io, config: ArmadaConfig, credentials: Creden
   if (!choices || choices.length < 2) throw new UsageError(`give the owner at least two choices: ${usage}`);
   if (credentials.armadaSignIn?.kind === "worker")
     throw new UsageError("a worker asks the coordinator (armada ask), who escalates to the owner");
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    submitValidation(ctx, {
-      ticket: ticket.toUpperCase(),
-      kind: "question",
-      what: question,
-      choices,
-      attachments: [],
-      worker: false,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    submitValidation(
+      ctx,
+      redact({
+        ticket: ticket.toUpperCase(),
+        kind: "question",
+        what: question,
+        choices,
+        attachments: [],
+        worker: false,
+      }),
+    ),
   );
 }
 

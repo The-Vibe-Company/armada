@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ArmadaApiError } from "../src/armada-api.ts";
 import { fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
+import { redactor } from "../src/redact.ts";
 import { memoryFleet } from "./memory-fleet.ts";
 import { DEMO_PROJECT, fakeClock, NOW, tempFleet } from "./support.ts";
 
@@ -26,6 +27,68 @@ const claim = (ticket: string) => ({
 });
 
 describe("the fleet through Armada", () => {
+  test("masks prose from older clients, using injected project values plus patterns", async () => {
+    const store = memoryFleet();
+    const mask = redactor([{ name: "CUSTOM_KEY", value: "synthetic-project-secret" }]);
+    const send = (op: string, input: unknown) =>
+      serveFleet(
+        store,
+        { op, project: DEMO_PROJECT, caller: { kind: "organization" }, input },
+        { now: () => NOW, redact: mask.text },
+      );
+    expect((await send("claim", claim("DEMO-7"))).status).toBe(200);
+    expect(
+      (
+        await send("report", {
+          ticket: "DEMO-7",
+          phase: "implementing",
+          previous: "planning",
+          summary: "synthetic-project-secret sk-synthetic-unknown",
+          message: "sk-synthetic-unknown",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await send("ask", { ticket: "DEMO-7", body: "synthetic-project-secret" })).status).toBe(200);
+    expect((await send("answer", { ticket: "DEMO-7", text: "synthetic-project-secret", note: true })).status).toBe(200);
+    expect(
+      (
+        await send("validate", {
+          ticket: "DEMO-7",
+          kind: "validation",
+          what: "synthetic-project-secret",
+          choices: ["synthetic-project-secret", "ok"],
+        })
+      ).status,
+    ).toBe(200);
+    const persisted = JSON.stringify({
+      events: store.events,
+      inbox: await store.openInboxItems({ project: "widgets", recipient: "coordinator" }),
+      validations: await store.listValidations({ project: "widgets" }),
+    });
+    expect(persisted).not.toContain("synthetic-project-secret");
+    expect(persisted).not.toContain("sk-synthetic-unknown");
+    expect(persisted).toContain("«secret CUSTOM_KEY»");
+    expect(persisted).toContain("«redacted»");
+    // Hosts without stored values still protect key formats.
+    expect(
+      (
+        await serveFleet(
+          store,
+          {
+            op: "ask",
+            project: DEMO_PROJECT,
+            caller: { kind: "organization" },
+            input: { ticket: "DEMO-7", body: "ghp_syntheticpattern" },
+          },
+          { now: () => NOW },
+        )
+      ).status,
+    ).toBe(200);
+    expect(JSON.stringify(await store.openInboxItems({ project: "widgets", recipient: "coordinator" }))).not.toContain(
+      "ghp_syntheticpattern",
+    );
+  });
+
   test("release validates guards and always checks a worker caller's session identity", async () => {
     const { fleet, store } = tempFleet();
     await store.saveRuntimeHandle({
@@ -388,10 +451,10 @@ describe("named coordinators", () => {
       ["DEMO-7", "front"],
       ["DEMO-9", null],
       ["DEMO-10", "front"],
-      [null, "front"],
+      [null, null],
     ]);
     expect(front.inFlight).toEqual(["DEMO-10", "DEMO-7", "DEMO-9"]);
-    expect((await inbox("back")).items.map((item) => item.ticket)).toEqual(["DEMO-8", "DEMO-9"]);
+    expect((await inbox("back")).items.map((item) => item.ticket)).toEqual(["DEMO-8", "DEMO-9", null]);
     expect((await inbox()).items).toHaveLength(5);
   });
 
@@ -433,6 +496,70 @@ describe("named coordinators", () => {
     const front = roles.find((role) => role.name === "front");
     expect(front?.sessions.map((session) => session.handle)).toEqual(["session-2", "session-1"]);
   });
+});
+
+test("scoped event reads exclude other owners before pagination, include unowned events and validate scope", async () => {
+  const store = memoryFleet();
+  for (const [ticket, coordinator] of [
+    ["DEMO-7", "default"],
+    ["DEMO-8", "front"],
+    ["DEMO-9", null],
+  ] as const) {
+    await store.saveRuntimeHandle({
+      project: "widgets",
+      ticket,
+      coordinator,
+      runtime: "conductor",
+      handle: `ws/${ticket}`,
+      branch: null,
+      at: NOW,
+    });
+    await store.recordEvent({ project: "widgets", ticket, kind: "report", phase: "ready-to-merge", at: NOW });
+  }
+  const request = {
+    op: "events/since",
+    project: DEMO_PROJECT,
+    caller: { kind: "organization" as const },
+    input: {
+      afterId: 0,
+      afterAt: NOW.toISOString(),
+      kinds: ["report"],
+      coordinatorName: "front",
+      scope: "mine",
+      limit: 1,
+    },
+  };
+  const first = await serveFleet(store, request, { now: () => NOW });
+  const page = first.body.result as import("../src/live.ts").EventsRead;
+  expect(page.events.map((event) => event.ticket)).toEqual(["DEMO-8"]);
+  const next = await serveFleet(
+    store,
+    { ...request, input: { ...request.input, afterId: page.events[0]?.id } },
+    { now: () => NOW },
+  );
+  expect((next.body.result as import("../src/live.ts").EventsRead).events.map((event) => event.ticket)).toEqual([
+    "DEMO-9",
+  ]);
+  const all = await serveFleet(
+    store,
+    { ...request, input: { ...request.input, scope: "all", limit: 200 } },
+    { now: () => NOW },
+  );
+  expect((all.body.result as import("../src/live.ts").EventsRead).events).toHaveLength(3);
+  for (const op of ["events/since", "inbox"])
+    expect(
+      (
+        await serveFleet(
+          store,
+          {
+            ...request,
+            op,
+            input: { ...request.input, coordinator: null, etag: null, silentAfterMinutes: 15, scope: "invalid" },
+          },
+          { now: () => NOW },
+        )
+      ).status,
+    ).toBe(400);
 });
 
 test("fleet client resolves the coordinator preference for each request", async () => {

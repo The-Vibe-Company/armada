@@ -22,6 +22,7 @@ import {
   type PendingLaunch,
   ProfileError,
   projectOf,
+  redactFreeText,
   releaseTicket,
   reportPhase,
   ticketFromBranch,
@@ -36,6 +37,7 @@ import { coordinatorName } from "./coordinator.ts";
 import { reportHerdr } from "./herdr.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { sessionHandle } from "./login.ts";
+import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { observeRuntimes } from "./runtime.ts";
 
 /**
@@ -239,15 +241,19 @@ export async function withContext(
   config: ArmadaConfig,
   credentials: Credentials,
   json: boolean,
-  act: (ctx: WorkerContext) => Promise<Outcome>,
+  act: (ctx: WorkerContext, redact: <T>(input: T) => T) => Promise<Outcome>,
 ): Promise<number> {
-  const outcome = await act(context(io, config, credentials));
+  const mask = await outgoingRedactor(io, config, credentials);
+  const redact = <T>(input: T): T => redactFreeText(input, mask.text);
+  const ctx = context(io, config, credentials);
+  ctx.linear = redactLinearWriter(ctx.linear, mask.text);
+  const outcome = await act(ctx, redact);
   if (outcome.state?.phase) {
     const profile = outcome.state.profile;
     const agent = profile ? config.herdr.profiles[profile]?.harness : null;
     await reportHerdr(io, outcome.state.phase, agent ?? "armada");
   }
-  print(io, outcome, json);
+  print(io, redact(outcome), json);
   return 0;
 }
 
@@ -283,16 +289,19 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
       if (err instanceof ValidationChoiceError) throw new UsageError(err.message, err.next);
       throw err;
     }
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    claimTicket(ctx, {
-      ticket: ticket.toUpperCase(),
-      runtime,
-      handle,
-      ...(a.options.branch ? { branch: a.options.branch } : {}),
-      profile,
-      reason,
-      validation,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    claimTicket(
+      ctx,
+      redact({
+        ticket: ticket.toUpperCase(),
+        runtime,
+        handle,
+        ...(a.options.branch ? { branch: a.options.branch } : {}),
+        profile,
+        reason,
+        validation,
+      }),
+    ),
   );
 }
 
@@ -310,19 +319,22 @@ export async function report(io: Io, config: ArmadaConfig, credentials: Credenti
       "--message is required: what you did or what you are doing (first line = summary), or --plan-file with your plan",
     );
   const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
-  return withContext(io, config, credentials, a.json, (ctx) =>
-    reportPhase(ctx, {
-      ticket,
-      phase,
-      stage: a.options.stage ?? null,
-      message,
-      plan,
-      ...(a.options.paths !== undefined ? { paths: a.options.paths.split(/[,\n]/).map((p) => p.trim()) } : {}),
-      pr: a.options.pr ?? null,
-      sha: a.options.sha ?? null,
-      shippedWith: a.options["shipped-with"] ?? null,
-      morePrs: a.options["more-prs"] ?? null,
-    }),
+  return withContext(io, config, credentials, a.json, (ctx, redact) =>
+    reportPhase(
+      ctx,
+      redact({
+        ticket,
+        phase,
+        stage: a.options.stage ?? null,
+        message,
+        plan,
+        ...(a.options.paths !== undefined ? { paths: a.options.paths.split(/[,\n]/).map((p) => p.trim()) } : {}),
+        pr: a.options.pr ?? null,
+        sha: a.options.sha ?? null,
+        shippedWith: a.options["shipped-with"] ?? null,
+        morePrs: a.options["more-prs"] ?? null,
+      }),
+    ),
   );
 }
 
@@ -332,8 +344,8 @@ export async function release(io: Io, config: ArmadaConfig, credentials: Credent
   if (!reason) throw new UsageError("--reason is required: why the ticket is given back");
   const ticket = currentTicket(io, config, a.options.ticket, credentials.workerTickets);
   let claimedAt: string | null = null;
-  const code = await withContext(io, config, credentials, a.json, async (ctx) => {
-    const outcome = await releaseTicket(ctx, { ticket, reason });
+  const code = await withContext(io, config, credentials, a.json, async (ctx, redact) => {
+    const outcome = await releaseTicket(ctx, redact({ ticket, reason }));
     claimedAt = outcome.releasedClaim?.claimedAt ?? null;
     return outcome;
   });

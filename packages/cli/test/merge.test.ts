@@ -168,7 +168,7 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
   const armada = fakeArmada({
     keys: { [KEY]: "coordinator" },
     store,
-    ...(unblocks ? { vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW } } : {}),
+    vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW },
   });
   const net = { armadaDown: false, confirmMerge: true };
   const fetch: Fetch = async (url, init) => {
@@ -358,6 +358,25 @@ test.each([false, true])("merge lists unblocked tickets and routed launch hints 
   }
 });
 
+test("a coordinator's merge approval reason is masked before API and Linear comments", async () => {
+  const f = await fixture();
+  f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+  expect(
+    await run(
+      ["merge", "9", "--ask-owner", "--reason", "inspect synthetic-project-secret and sk-synthetic-unknown"],
+      f.io,
+    ),
+  ).toBe(0);
+  const sent = JSON.stringify(f.armada.calls.filter((c) => c.path.startsWith("fleet/"))) + f.linear.bodies.join("\n");
+  expect(sent).not.toContain("synthetic-project-secret");
+  expect(sent).not.toContain("sk-synthetic-unknown");
+  expect(sent).toContain("«secret CUSTOM_KEY»");
+  expect(sent).toContain("«redacted»");
+  expect(f.err()).toContain("masked CUSTOM_KEY");
+  expect(f.err()).toContain("masked a value matching a key pattern");
+  expect(f.merged()).toBe(false);
+});
+
 test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "configuration only"] }])(
   "a merge that closes no ticket lists nothing (%s)",
   async ({ options }) => {
@@ -366,6 +385,37 @@ test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "c
     expect(JSON.parse(f.out()).unblocked).toBeNull();
   },
 );
+
+test("a named merge re-arms only its owned workers and pending launches", async () => {
+  const f = await fixture();
+  f.io.env.ARMADA_COORDINATOR = "front";
+  expect(await f.store.transferTickets({ project: "widgets", tickets: ["DEMO-11"], to: "front", at: NOW })).toBe(true);
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-16",
+    coordinator: "default",
+    runtime: "conductor",
+    handle: "ws/other",
+    branch: null,
+    at: NOW,
+  });
+  for (const [ticket, coordinator] of [
+    ["DEMO-20", "default"],
+    ["DEMO-21", "front"],
+  ] as const)
+    f.store.launches.push({
+      project: "widgets",
+      ticket,
+      coordinator,
+      launchedAt: NOW.toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+      endedAt: null,
+    });
+  expect(await run(["merge", "9", "--json"], f.io)).toBe(0);
+  expect(JSON.parse(f.out()).watch.inFlight).toEqual(["DEMO-11", "DEMO-21"]);
+});
 
 test("armada merge test-merges a head behind main, merges it pinned to its SHA and says who to tell", async () => {
   const f = await fixture();
@@ -399,6 +449,7 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
   // Under the merge lock on Armada, given back afterwards; the merge recorded and the worker's session ended.
   expect(f.armada.calls.map((c) => c.path)).toEqual([
     "fleet/coordinator",
+    "secrets/release",
     "fleet/lease/acquire",
     "fleet/holds",
     "fleet/validations",
@@ -877,9 +928,10 @@ test.each(["delivered", "manual", "failed", "replaced"])(
   "a partial merge retains its worker and continues safely (%s)",
   async (mode) => {
     const f = await fixture();
+    f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
     f.linear.post(
       "DEMO-18",
-      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part`,
+      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part synthetic-project-secret`,
       "2026-03-04T09:50:00Z",
     );
     await f.store.saveRuntimeHandle({
@@ -934,6 +986,10 @@ test.each(["delivered", "manual", "failed", "replaced"])(
     expect(inputs.length).toBe(mode === "delivered" || mode === "failed" ? 1 : 0);
     expect(out.lines.join("\n")).toContain(mode === "delivered" ? "continuation delivered" : "Deliver to DEMO-18");
     expect(f.out() + f.err()).not.toContain("CANARY");
+    expect(inputs.join("\n") + f.out() + f.err() + f.linear.bodies.join("\n")).not.toContain(
+      "synthetic-project-secret",
+    );
+    expect(JSON.stringify(out.continuation)).toContain("«secret CUSTOM_KEY»");
   },
 );
 
