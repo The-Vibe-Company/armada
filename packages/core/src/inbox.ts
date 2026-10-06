@@ -194,6 +194,7 @@ const ANSWERABLE: InboxKind[] = [
   "plan-changes",
   "decision",
   "linear-pending",
+  "queue-refused",
 ];
 
 /**
@@ -287,7 +288,9 @@ export async function answerItem(ctx: WorkerContext, input: AnswerInput): Promis
   // The owner's requests and decisions (THE-885) are carried out, then recorded; nothing is posted on the ticket.
   if (
     item &&
-    ["job", "merge-request", "release-request", "plan-changes", "decision", "linear-pending"].includes(item.kind)
+    ["job", "merge-request", "release-request", "plan-changes", "decision", "linear-pending", "queue-refused"].includes(
+      item.kind,
+    )
   ) {
     const recorded = await live(ctx, warnings, "resolve the dashboard request", (fleet) =>
       fleet.answer({ text, note: false, ticket: item.ticket, item: item.id }),

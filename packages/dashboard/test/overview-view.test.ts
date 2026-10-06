@@ -218,6 +218,17 @@ describe("decisions", () => {
     expect(sentRequest(asked, wait("approval", "WID-9", 1, { item: 3 }), null)).toBeNull();
     expect(sentRequest(asked, wait("hand-back", "WID-6", 1), 44)?.body).toBe("sent");
     expect(sentRequest(asked, wait("hand-back", "WID-7", 1), 50)).toBeNull();
+    // A Merge press the queue took (THE-1103) shows as queued, by whoever pressed it.
+    const entry = { id: 9, ticket: "WID-7", detail: null, notBefore: null, queuedAt: at(2), updatedAt: at(2) };
+    const queued = {
+      projects: [project("widgets", { queue: [{ ...entry, pr: 50, state: "queued", queuedBy: "Ada" }] })],
+    };
+    expect(sentRequest(queued, wait("hand-back", "WID-7", 1), 50)).toEqual({
+      body: "PR #50",
+      author: "Ada",
+      at: at(2),
+      queued: true,
+    });
   });
 
   test("a long plan is cut on a word", () => {

@@ -153,7 +153,7 @@ const query = (over: Partial<FeedQuery> = {}): FeedQuery => ({
 const kinds = (list: FeedEntry[]) => list.map((e) => `${e.kind}${e.detail ? `:${e.detail}` : ""} ${e.ticket ?? "-"}`);
 
 describe("feedPage", () => {
-  test("pending Linear work is visible as a coordinator follow-up", async () => {
+  test("pending Linear work and refused merges are visible as coordinator follow-ups", async () => {
     const project = "linear-follow-up";
     await upsertProject(
       db,
@@ -169,7 +169,23 @@ describe("feedPage", () => {
       body: "Finish Linear for #12",
       at: at(60),
     });
+    // A refused queue entry (THE-1103) is the coordinator's to follow up too.
+    await addInboxItem(db, {
+      project,
+      ticket: "WID-9",
+      kind: "queue-refused",
+      recipient: "coordinator",
+      author: "Synthetic Coordinator",
+      body: "PR #12 refused: CI failed",
+      at: at(61),
+    });
     expect(await feedPage(db, query({ projects: [project] }))).toMatchObject([
+      {
+        kind: "request",
+        detail: "queue-refused",
+        actor: { kind: "coordinator", name: "Synthetic Coordinator" },
+        text: "PR #12 refused: CI failed",
+      },
       {
         kind: "request",
         detail: "linear-pending",

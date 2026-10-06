@@ -6,6 +6,8 @@ import {
   type QueueFinish,
   type QueueInput,
   type QueueNext,
+  type QueueProgress,
+  queueRefusedPrefix,
 } from "@armada/core/read";
 import { type Database, iso, isoAt, type Queryable, type Row, transaction } from "./db";
 import { addInboxItem, getLease } from "./fleet-store";
@@ -51,6 +53,13 @@ export async function queueAdd(db: Database, e: QueueInput & { project: string; 
       return { existing: entryOf(existing) };
     }
     const id = Number(rs.rows[0].id);
+    // Queued again: the refusal the coordinator was told of is settled.
+    await tx.query(
+      `UPDATE inbox_items SET resolved_at = $3, resolution = $4
+      WHERE project = $1 AND recipient = 'coordinator' AND resolved_at IS NULL
+      AND kind = 'queue-refused' AND starts_with(body, $2)`,
+      [e.project, queueRefusedPrefix(e.pr), e.at, `resolved: PR #${e.pr} queued again`],
+    );
     const count = await tx.query(
       `SELECT count(*) AS position FROM merge_queue WHERE project = $1 AND ${OPEN}
       AND (queued_at, id) <= ($2, $3)`,
@@ -129,10 +138,22 @@ export async function queueFinish(db: Database, q: QueueFinish & { project: stri
         kind: "queue-refused",
         recipient: "coordinator",
         author: q.holder,
-        body: `PR #${row.pr} refused: ${q.detail ?? "merge refused"}`,
+        body: `${queueRefusedPrefix(Number(row.pr))} ${q.detail ?? "merge refused"}`,
         at: q.at,
       });
     return true;
+  });
+}
+/** The drain's current step on its merging entry; only the lease's holder writes it. */
+export async function queueProgress(db: Database, q: QueueProgress & { project: string; at: Date }): Promise<boolean> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext('merge-queue'))", [q.project]);
+    if (!(await heldLease(tx, q)).ours) return false;
+    const rs = await tx.query(
+      "UPDATE merge_queue SET detail = $3, updated_at = $4 WHERE project = $1 AND id = $2 AND state = 'merging'",
+      [q.project, q.id, q.detail, q.at],
+    );
+    return rs.rowCount > 0;
   });
 }
 export async function queueRemove(db: Database, q: { project: string; pr: number; at: Date }): Promise<boolean> {

@@ -1350,3 +1350,38 @@ test("watch sees a terminal notice when the job ends during the inbox read", asy
   expect(report.inFlight).toEqual([]);
   expect(report.openJobs).toBeUndefined();
 });
+
+test("a queue nobody drains wakes the coordinator once; a refusal clears when queued again", async () => {
+  const db = memoryFleet();
+  const sha = "a".repeat(40);
+  const entry = { ticket: "DEMO-2", noTicket: false, keepOpen: false, throughHold: null, reason: null, headSha: sha };
+  await db.queueAdd({ ...entry, project: P, pr: 12, queuedBy: "owner", at: at(5) });
+  await db.queueAdd({ ...entry, project: P, pr: 15, ticket: "DEMO-3", queuedBy: "owner", at: at(3) });
+  const stalled = (await inbox(db)).filter((e) => e.kind === "queue-stalled");
+  expect(stalled).toMatchObject([
+    {
+      id: null,
+      body: `2 pull requests queued (#12, #15) and nothing drains them since ${at(3).toISOString().slice(11, 16)} UTC: armada merge --drain`,
+    },
+  ]);
+  expect(stalled.map(entryKey)).toEqual(["queue-stalled:1"]);
+  // A drain holding the lease is draining, however long its checks take.
+  const lease = { project: P, name: "merge-queue", holder: "coordinator-a", ttlMs: 600_000, at: at(1) };
+  await db.acquireLease(lease);
+  expect((await inbox(db)).some((e) => e.kind === "queue-stalled")).toBe(false);
+  const next = await db.queueNext({ project: P, holder: "coordinator-a", at: at(1) });
+  if ("refused" in next || !next.entry) throw new Error("expected the first entry");
+  await db.queueFinish({
+    project: P,
+    id: next.entry.id,
+    holder: "coordinator-a",
+    outcome: "refused",
+    detail: "CI failed",
+    at: at(1),
+  });
+  await db.releaseLease(lease);
+  // Within two minutes of the last change, a lost drain is not yet a stall.
+  expect((await inbox(db)).map((e) => [e.kind, e.body])).toEqual([["queue-refused", "PR #12 refused: CI failed"]]);
+  await db.queueAdd({ ...entry, project: P, pr: 12, queuedBy: "owner", at: NOW });
+  expect((await inbox(db)).map((e) => e.kind)).toEqual([]);
+});

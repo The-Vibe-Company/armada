@@ -82,6 +82,8 @@ export async function landingTranscript(now = RECORDED_AT): Promise<TerminalComm
     openRuntimeHandles: async () => handles,
     pendingLaunches: async () => [],
     listJobs: async () => [],
+    queueList: async () => [],
+    getLease: async () => null,
     latestEvents: async () => events,
     lastAnsweredAt: async () => ({}),
   } as unknown as FleetStore;

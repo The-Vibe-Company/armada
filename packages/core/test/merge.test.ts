@@ -2322,7 +2322,11 @@ test.each([
               await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 }),
             ).toMatchObject({ acquired: false });
           }
-          expect((await live.fleet.queueList())[0]?.state).toBe("merging");
+          // The dashboard shows the drain's step on the entry it merges.
+          expect((await live.fleet.queueList())[0]).toMatchObject({
+            state: "merging",
+            detail: expect.stringMatching(/^Merging #12 at [0-9a-f]{40}$/),
+          });
         }
         delivered.push(outcome.pr.number);
         order.push(`after ${outcome.pr.number}`);

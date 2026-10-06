@@ -60,19 +60,28 @@ export interface SentRequest {
   body: string;
   author: string | null;
   at: string;
+  /** A Merge press the queue took (THE-1103), not a request to the coordinator. */
+  queued?: boolean;
 }
 
 /**
  * What the owner already asked about a decision, as the server holds it: the
- * answer to a question or plan, amendments to a plan, the merge of a hand-back.
+ * answer to a question or plan, amendments to a plan, the merge of a hand-back
+ * (queued, or asked of the coordinator).
  */
 export function sentRequest(o: Pick<FleetOverview, "projects">, w: WaitingItem, pr: number | null): SentRequest | null {
   if (w.answer) return { body: w.answer.body, author: w.answer.author, at: w.answer.at };
-  const requests = o.projects.find((p) => p.slug === w.project)?.requests ?? [];
+  const project = o.projects.find((p) => p.slug === w.project);
+  // Kept apart from lib/queue-view: the Validations page's bundle reads this module.
+  const entry =
+    w.kind === "hand-back" && pr !== null
+      ? project?.queue?.find((e) => e.pr === pr && (e.state === "queued" || e.state === "merging"))
+      : undefined;
+  if (entry) return { body: `PR #${pr}`, author: entry.queuedBy, at: entry.queuedAt, queued: true };
   const match = (r: InboxItem) =>
     w.kind === "approval"
       ? r.kind === "plan-changes" && w.item !== null && r.request?.question === w.item
       : w.kind === "hand-back" && r.kind === "merge-request" && pr !== null && r.request?.pr === pr;
-  const r = requests.find(match);
+  const r = project?.requests.find(match);
   return r ? { body: r.body, author: r.author, at: r.createdAt } : null;
 }
