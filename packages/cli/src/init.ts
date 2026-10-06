@@ -24,7 +24,7 @@ import {
   slugify,
 } from "@armada/core";
 import { authLogin, loadCredentials } from "./auth.ts";
-import { type Exec, type Io, missingKey, UsageError } from "./io.ts";
+import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { merge } from "./merge.ts";
 import { applyPlan, CommandError, fsRepoView, gitRoot, requireExec, sh } from "./repo.ts";
@@ -243,7 +243,7 @@ export async function init(io: Io, opts: InitOptions): Promise<number> {
       );
 
     // 1. Tracker labels.
-    const linear = { apiKey: linearApiKey, ...(io.fetch ? { fetch: io.fetch } : {}) };
+    const linear = { apiKey: linearApiKey, ...httpOptions(io) };
     const created = await createMissingLabels(await readLabels(config, linear), linear);
     log(created.length ? `Created Linear labels: ${created.join(", ")}` : "Linear labels: all present");
 

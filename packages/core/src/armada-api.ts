@@ -7,7 +7,7 @@
 // one address the CLI knows (`resolveCredentials` picks it). The adapter takes
 // an injected `fetch`; no error it raises quotes a token or a key.
 import type { Attachment } from "./attachments.ts";
-import { HttpRequestError, httpRequest } from "./http.ts";
+import { HttpRequestError, type HttpRequestOptions, HttpStatusError, httpRequest, retryStatus } from "./http.ts";
 import type { Fetch } from "./linear.ts";
 import type { RuntimeName } from "./runtime.ts";
 
@@ -256,7 +256,7 @@ export function apiBaseUrl(value: string): URL {
   return url;
 }
 
-export interface ArmadaApiOptions {
+export interface ArmadaApiOptions extends HttpRequestOptions {
   url: string;
   fetch?: Fetch;
   timeoutMs?: number;
@@ -291,7 +291,13 @@ export function armadaApi(opts: ArmadaApiOptions) {
         headers,
         ...(init.body ? { body: JSON.stringify(init.body) } : {}),
       },
-      { fetch: opts.fetch, timeoutMs: limit, retry: init.retry ?? method === "GET" },
+      {
+        ...opts,
+        timeoutMs: limit,
+        retry: init.retry ?? method === "GET",
+        retryStatus: (status) => retryStatus(status) && (path !== "credentials" || status !== 429),
+        service: "Armada",
+      },
       async (res) => {
         // Whatever it answered, an older CLI than the server expects cannot trust its reading of it.
         const minimum = res.headers.get(CLI_MINIMUM_HEADER);
@@ -319,6 +325,13 @@ export function armadaApi(opts: ArmadaApiOptions) {
         return { status: res.status, body: body as Record<string, unknown> };
       },
     ).catch((err: unknown) => {
+      if (err instanceof HttpStatusError)
+        throw new ArmadaApiError(
+          `Armada (${host}) ${err.message}`,
+          "the same command after the rate limit expires",
+          false,
+          err.status,
+        );
       if (err instanceof HttpRequestError)
         throw new ArmadaApiError(
           `Armada (${host}) unreachable: ${err.message} (${method} ${path})`,
@@ -453,6 +466,7 @@ export function armadaApi(opts: ArmadaApiOptions) {
           "inbox/item",
           "inbox/ticket",
           "validations",
+          "reservations",
         ].includes(op),
       });
       if (status === 304) return null;
