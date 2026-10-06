@@ -626,3 +626,30 @@ test("a kill during historical baseline seeding resumes the seed without replayi
   });
   expect((await restarted.next()).done).toBe(true);
 });
+
+test("follow includes a stopped session by default and when filtered, without repeating it", async () => {
+  for (const kinds of [undefined, ["stopped"]] as const) {
+    const live = tempFleet();
+    await holding(live, "DEMO-2");
+    await live.fleet.observeRuntime({
+      ticket: "DEMO-2",
+      handle: "ws/DEMO-2",
+      claimedAt: NOW.toISOString(),
+      state: "idle",
+    });
+    live.clock.advance(5 * 60_000 + 1);
+    const lines = [];
+    for await (const line of followFleet(live.fleet, {
+      ...options(live).o,
+      ...(kinds ? { kinds } : {}),
+      until: new Date(live.clock.now().getTime() + 45_000),
+    }))
+      lines.push(line);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      kind: "stopped",
+      ticket: "DEMO-2",
+      body: expect.stringContaining("its session is idle and it did not hand back"),
+    });
+  }
+});

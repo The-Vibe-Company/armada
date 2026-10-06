@@ -205,6 +205,7 @@ export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
   "plan-changes",
   "runtime-blocked",
   "silent",
+  "stopped",
   "quiet",
   "not-started",
   "version",
