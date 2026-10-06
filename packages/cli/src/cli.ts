@@ -22,6 +22,7 @@ import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { ciWhy } from "./ci.ts";
+import { coordinatorCommand } from "./coordinator.ts";
 import { digest } from "./digest.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
@@ -55,6 +56,12 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  coordinator: `  coordinator use <name>
+  coordinator list
+  coordinator take <ticket...> [--from <name>]
+                    Select a named role for this checkout, list roles and their sessions,
+                    or take tickets from a coordinator. ARMADA_COORDINATOR overrides use.
+`,
   reserve: `  reserve <key> [--value <v> | --next [--floor <n>]] [--note <text>] [--ticket <id>]
   reserve --list    Show shared resources held or permanently used after merge.
                     Requires Armada; ask the coordinator if it is unavailable.
@@ -194,16 +201,16 @@ const COMMAND_HELP: Record<string, string> = {
                     until something needs you (a question, plan, request, hand-back or silent
                     worker you have not seen), prints it and exits; exits "nothing to watch"
                     when no worker is in flight and nothing is open. An Armada
-                    outage does not end it: it keeps asking. One per project on
+                    outage does not end it: it keeps asking. One per named coordinator on
                     this machine. Needs a sign-in to Armada
   watch --follow    Stream lines without exiting on new items; --json prints NDJSON.
                     --since <cursor> resumes events; defaults to this machine's cursor.
                     --tickets A-1,B-2 and --kinds question,hand-back filter the stream.
                     --kinds all also prints claims, reports, releases and merges.
-                    --all follows the whole project (the default).
+                    --all retains project events; inbox lines use the selected coordinator.
                     --mine needs "Show each coordinator only its own work" (not yet available).
                     --for <minutes> ends either watch cleanly with a resume command.
-  watch --stop      Stop only this project's verified watch and release its lock. Local,
+  watch --stop [--name <name>]      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
   peek: `  peek <ticket> [--actions <n>] [--json]
@@ -360,6 +367,7 @@ const CONFIG_OPTION = new Set([
   "ci",
   "digest",
   "attach",
+  "coordinator",
   "status",
   "spec",
   "secrets",
@@ -424,7 +432,8 @@ Files:
     credentials        KEY=value lines, mode 0600, written by \`armada auth login\` and
                        \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
     config.toml        personal defaults: language, [dashboard] url, [api] url
-    watch/<project>.*  the project's watch: its lock, what you were shown, who is in flight
+    coordinators.json  coordinator role per project and checkout
+    watch/<project>[@<name>].*  the coordinator's watch: its lock, what you were shown, who is in flight
     releases.json      daily release notices in status/inbox, with version and time.
                        Only required CLI/setup upgrades interrupt armada watch
 `;
@@ -515,6 +524,7 @@ const VALUE_OPTIONS = [
   "validation-reason",
   "through-hold",
   "notes",
+  "from",
   "after",
   "since",
   "lang",
@@ -564,7 +574,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
-  watch: ["stop", "follow", "since", "tickets", "kinds", "mine", "for"],
+  watch: ["stop", "name", "follow", "since", "tickets", "kinds", "mine", "for"],
+  coordinator: ["from"],
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
@@ -693,12 +704,16 @@ export async function findConfig(
         `${path} does not exist`,
         `armada ${command} --config <file>, with the path of an ${CONFIG_FILE}`,
       );
+    io.coordinatorRoot = dirname(path);
     return { path, text };
   }
   for (let dir = resolve(io.cwd); ; dir = dirname(dir)) {
     const path = join(dir, CONFIG_FILE);
     const text = await io.readFile(path);
-    if (text !== null) return { path, text };
+    if (text !== null) {
+      io.coordinatorRoot = dirname(path);
+      return { path, text };
+    }
     if (dirname(dir) === dir) break;
   }
   throw new UsageError(
@@ -908,6 +923,13 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       if (command === "inbox") await recordPresence(io, config, credentials);
       return await worker(command === "stop" ? { ...io, cwd: dirname(path) } : io, config, credentials, args);
     }
+    if (args.command === "coordinator") {
+      const { text } = await findConfig(io, args.config, "coordinator", args.project);
+      const config = parseConfig(text);
+      const credentials =
+        args.rest[0] === "use" ? null : (await loadCredentials(io, { project: config.project.slug })).credentials;
+      return await coordinatorCommand(io, config, credentials, args);
+    }
     if (args.command === "peek") {
       const { path, text } = await findConfig(io, args.config, "peek", args.project);
       const config = parseConfig(text, path);
@@ -934,8 +956,9 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const config = parseConfig(text, path);
       if (args.options.stop === "true") {
         if (args.rest.length) throw new UsageError(`unexpected argument ${args.rest[0]}`);
-        return await stopWatch(io, config.project.slug, args.json);
+        return await stopWatch(io, config.project.slug, args.json, args.options.name);
       }
+      if (args.options.name) throw new UsageError("--name goes with watch --stop");
       const { credentials } = await loadCredentials(io, { armada: false, project: config.project.slug });
       await recordPresence(io, config, credentials);
       return await watch(io, config, credentials, args, path);

@@ -502,6 +502,25 @@ describe("armada brief with a launch token", () => {
     return { ...b, armada };
   }
 
+  test("brief passes the named coordinator into plain and pre-approved launch tokens", async () => {
+    for (const preApproved of [false, true]) {
+      const b = await signedIn();
+      b.io.env.ARMADA_COORDINATOR = "front";
+      const linear = new FakeLinear();
+      linear.add("DEMO-13");
+      b.io.linearWriter = () => linear;
+      const approval = preApproved ? ["--pre-approve", "--reason", "small follow-up"] : [];
+      expect(await run(["brief", "DEMO-13", "--prompt", ...approval], b.io)).toBe(0);
+      expect(b.armada.calls.find((call) => call.path === "launch-tokens")?.body).toMatchObject({
+        project: "widgets",
+        ticket: "DEMO-13",
+        coordinator: "front",
+      });
+      expect([...b.armada.launches.values()][0]?.coordinator).toBe("front");
+      expect(linear.get("DEMO-13").labels.some((label) => label.name === "plan-approved")).toBe(preApproved);
+    }
+  });
+
   test("pre-approval writes the configured label only for a prompt and names the reason", async () => {
     for (const flags of [[], ["--json"], ["--prompt"]]) {
       const b = await signedIn();
