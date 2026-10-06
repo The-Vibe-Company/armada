@@ -13,6 +13,7 @@ import {
   type MergeContext,
   type MergeForge,
   mergePullRequest,
+  prepareQueueEntry,
   type TestMergeResult,
   withLease,
 } from "../src/merge.ts";
@@ -1224,6 +1225,20 @@ describe("Linear outage merge recovery", () => {
     expect(s.linear.writes).toEqual([]);
   });
 
+  test("queue intent uses the same exact Armada hand-back during a Linear outage", async () => {
+    const live = tempFleet();
+    const s = setup({ live });
+    await handBack(live);
+    s.linear.readTicket = async () => {
+      throw down();
+    };
+    s.forge.pr.checks = [{ name: "test", state: "pending" }];
+    const entry = await prepareQueueEntry(s.ctx, { pr: 9 });
+    expect(entry).toMatchObject({ pr: 9, ticket: "DEMO-7", headSha: HEAD });
+    expect(s.forge.merges).toEqual([]);
+    expect(s.linear.writes).toEqual([]);
+  });
+
   test.each([
     `PR #8, head ${HEAD}`,
     `PR #9, head ${BASE}`,
@@ -1377,4 +1392,52 @@ test("finish repairs partial Linear writes and leaves chores open until all step
   expect(s.linear.writes.filter((w) => w.startsWith("update"))).toHaveLength(1);
   expect(s.linear.writes.filter((w) => w.startsWith("link"))).toHaveLength(1);
   expect(s.linear.bodies).toHaveLength(1);
+});
+
+test("queue intent accepts readiness waits but refuses broken rules and records the hand-back", async () => {
+  const live = tempFleet();
+  const s = setup({ live });
+  s.forge.pr.mergeStateStatus = "BEHIND";
+  s.forge.pr.checks = [{ name: "test", state: "pending" }];
+  s.forge.comparison!.behindBy = 3;
+  const queued = await prepareQueueEntry(s.ctx, { pr: 9, reason: "Reviewed", keepOpen: true, throughHold: "Fix main" });
+  expect(queued).toEqual({
+    pr: 9,
+    ticket: "DEMO-7",
+    noTicket: false,
+    headSha: HEAD,
+    reason: "Reviewed",
+    keepOpen: true,
+    throughHold: "Fix main",
+    queuedBy: "coordinator-a",
+  });
+  expect(s.forge.merges).toEqual([]);
+  expect(s.forge.updates).toEqual([]);
+  expect(s.repo.testMerges).toEqual([]);
+  const comparison = s.forge.comparison;
+  s.forge.comparison = null;
+  expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9 }))).toContain("GitHub could not compare");
+  s.forge.comparison = comparison;
+  s.forge.pr.checks = [{ name: "test", state: "failure" }];
+  expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9 }))).toContain("test");
+  s.forge.pr.checks = [{ name: "test", state: "pending" }];
+  s.linear.get("DEMO-7").comments = [];
+  expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9 }))).toContain('no "Agent status: ready-to-merge" comment');
+});
+
+test("queuing preserves the merge judgement and pending owner decision without accepting requested changes", async () => {
+  const live = tempFleet();
+  const s = setup({ live, toml: `${GATES}\n[policy]\nmerge_approval = "Owner sees changes"\n` });
+  expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9 }))).toContain("requires --reason");
+  await askOwnerToMerge(s.ctx, { pr: 9, reason: "Owner checks this" });
+  expect(await prepareQueueEntry(s.ctx, { pr: 9, reason: "Reviewed" })).toMatchObject({ reason: "Reviewed" });
+  await requestDecision(live.store, {
+    project: "widgets",
+    id: 1,
+    action: "changes",
+    note: "Fix it",
+    author: "Owner",
+    now: NOW,
+  });
+  expect(await refusal(prepareQueueEntry(s.ctx, { pr: 9, reason: "Reviewed" }))).toContain("owner requested changes");
 });

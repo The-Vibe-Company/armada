@@ -18,6 +18,7 @@ import type {
   WorkerProfile,
 } from "../src/live.ts";
 import { FOLLOW_EVENT_KINDS, unusedLaunchExpired } from "../src/live.ts";
+import { MERGE_QUEUE_LEASE, type QueueEntry, queueOpen } from "../src/merge-queue.ts";
 import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
 
@@ -53,6 +54,7 @@ export function memoryFleet(): FleetStore & {
   launches: LaunchRow[];
   validations: Validation[];
 } {
+  const queue: QueueEntry[] = [];
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
@@ -738,6 +740,99 @@ export function memoryFleet(): FleetStore & {
       return resolve(plans, q.resolution, q.at);
     },
 
+    async queueAdd(e) {
+      const existing = queue.find((r) => r.project === e.project && r.pr === e.pr && queueOpen(r));
+      if (existing) return { existing: structuredClone(existing) };
+      const { at, ...input } = e;
+      const entry: QueueEntry = {
+        ...input,
+        id: queue.length + 1,
+        state: "queued",
+        detail: null,
+        attempts: 0,
+        notBefore: null,
+        queuedAt: at.toISOString(),
+        updatedAt: at.toISOString(),
+        mergeCommit: null,
+        finishedAt: null,
+      };
+      queue.push(entry);
+      return {
+        id: entry.id,
+        position: queue.filter(
+          (r) =>
+            r.project === e.project &&
+            queueOpen(r) &&
+            (r.queuedAt < entry.queuedAt || (r.queuedAt === entry.queuedAt && r.id <= entry.id)),
+        ).length,
+      };
+    },
+    async queueList(project, { since }) {
+      return structuredClone(
+        queue
+          .filter(
+            (r) => r.project === project && (queueOpen(r) || (r.finishedAt && r.finishedAt >= since.toISOString())),
+          )
+          .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.id - b.id),
+      );
+    },
+    async queueNext(q) {
+      const held = leases.get(key(q.project, MERGE_QUEUE_LEASE)) ?? null;
+      if (!held || held.holder !== q.holder || Date.parse(held.expiresAt) <= q.at.getTime())
+        return { refused: true, held };
+      const entries = queue
+        .filter(
+          (r) =>
+            r.project === q.project &&
+            (r.state === "merging" || (r.state === "queued" && (!r.notBefore || r.notBefore <= q.at.toISOString()))),
+        )
+        .sort(
+          (a, b) =>
+            Number(b.state === "merging") - Number(a.state === "merging") ||
+            a.queuedAt.localeCompare(b.queuedAt) ||
+            a.id - b.id,
+        );
+      const entry = entries[0];
+      if (entry) {
+        entry.state = "merging";
+        entry.updatedAt = q.at.toISOString();
+      }
+      return { entry: entry ? structuredClone(entry) : null, holds: [] };
+    },
+    async queueFinish(q) {
+      const held = leases.get(key(q.project, MERGE_QUEUE_LEASE));
+      if (!held || held.holder !== q.holder || Date.parse(held.expiresAt) <= q.at.getTime()) return false;
+      const entry = queue.find((r) => r.project === q.project && r.id === q.id && r.state === "merging");
+      if (!entry) return false;
+      Object.assign(entry, {
+        state: q.outcome === "retry" ? "queued" : q.outcome,
+        detail: q.detail,
+        updatedAt: q.at.toISOString(),
+        attempts: entry.attempts + (q.outcome === "retry" ? 1 : 0),
+        notBefore: q.outcome === "retry" ? (q.notBefore ?? null) : null,
+        mergeCommit: q.mergeCommit ?? null,
+        finishedAt: q.outcome === "retry" ? null : q.at.toISOString(),
+      });
+      if (q.outcome === "refused")
+        await this.addInboxItem({
+          project: q.project,
+          ticket: entry.ticket,
+          kind: "queue-refused",
+          recipient: "coordinator",
+          author: q.holder,
+          body: `PR #${entry.pr} refused: ${q.detail ?? "merge refused"}`,
+          at: q.at,
+        });
+      return true;
+    },
+    async queueRemove(q) {
+      const entry = queue.find((r) => r.project === q.project && r.pr === q.pr && r.state === "queued");
+      if (!entry) return false;
+      entry.state = "removed";
+      entry.updatedAt = q.at.toISOString();
+      entry.finishedAt = q.at.toISOString();
+      return true;
+    },
     async acquireLease(l) {
       const k = key(l.project, l.name);
       const held = leases.get(k);

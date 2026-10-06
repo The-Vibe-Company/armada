@@ -15,6 +15,7 @@ import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } 
 export { freshRuntimeState } from "./fleet.ts";
 
 import { attachPullRequests } from "./github.ts";
+import type { QueueAdded, QueueEntry, QueueFinish, QueueInput, QueueNext } from "./merge-queue.ts";
 import { buildModel, isClosed } from "./model.ts";
 import { type OverlapReading, type OverlapWorker, overlapLines, overlaps } from "./overlap.ts";
 import { planRule } from "./phases.ts";
@@ -221,6 +222,7 @@ export interface SessionRecord extends RuntimeHandle {
  * (merges, or relays it to the worker) and then resolves.
  */
 export type InboxKind =
+  | "queue-refused"
   | "question"
   | "plan"
   | "request"
@@ -451,6 +453,12 @@ export interface FleetStore {
   resolveAnswerRequests(q: { project: string; question: number; resolution: string; at: Date }): Promise<number>;
   /** Resolves a ticket's open plan and the answer-requests waiting on it; returns how many plans. */
   resolvePlans(input: { project: string; ticket: string; resolution: string; at: Date }): Promise<number>;
+
+  queueAdd(e: QueueInput & { project: string; at: Date }): Promise<QueueAdded>;
+  queueList(project: string, opts: { since: Date }): Promise<QueueEntry[]>;
+  queueNext(q: { project: string; holder: string; at: Date }): Promise<QueueNext>;
+  queueFinish(q: QueueFinish & { project: string; at: Date }): Promise<boolean>;
+  queueRemove(q: { project: string; pr: number; at: Date }): Promise<boolean>;
 
   /** Takes a lease when it is free, expired or already ours (which renews it); atomic. */
   acquireLease(l: { project: string; name: string; holder: string; ttlMs: number; at: Date }): Promise<LeaseResult>;
@@ -1405,6 +1413,11 @@ export interface Fleet {
   validations(q: { ticket?: string; pr?: number }): Promise<Validation[]>;
   /** Records a ticket done without a pull request after the owner's approval (`armada done`). */
   done(d: { ticket: string; message: string }): Promise<MergeRecorded>;
+  queueAdd(e: QueueInput): Promise<QueueAdded>;
+  queueList(q?: { since?: string }): Promise<QueueEntry[]>;
+  queueNext(q: { holder: string }): Promise<QueueNext>;
+  queueFinish(q: QueueFinish): Promise<boolean>;
+  queueRemove(q: { pr: number }): Promise<boolean>;
   acquireLease(l: { name: string; holder: string; ttlMs: number }): Promise<LeaseResult>;
   renewLease(l: { name: string; holder: string; ttlMs: number }): Promise<boolean>;
   releaseLease(l: { name: string; holder: string }): Promise<void>;
