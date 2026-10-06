@@ -352,26 +352,43 @@ test("archive failure keeps the replacement alive, while keep-old and dry-run ha
   expect(await warning.relaunch("--fresh")).toBe(0);
   expect(warning.text()).toContain("replacement is running");
   expect((await warning.store.getRuntimeHandle("widgets", "DEMO-13"))?.handle).toBe("ws-new/ses-new");
-  const reused = await fixture();
-  reused.set({ claimImmediately: true });
-  const originalFetch = reused.io.fetch;
-  reused.io.fetch = async (url, init) => {
-    if (!originalFetch) throw new Error("missing fake API");
-    const response = await originalFetch(url, init);
-    if (url.endsWith("/launch-tokens/bind"))
-      await reused.store.saveRuntimeHandle({
-        project: "widgets",
-        ticket: "DEMO-14",
-        runtime: "conductor",
-        handle: oldHandle,
-        branch: "feature/demo-14",
-        at: NOW,
-      });
-    return response;
-  };
-  expect(await reused.relaunch()).toBe(0);
-  expect(reused.order).not.toContain("archive:ses-old");
-  expect((await reused.store.getRuntimeHandle("widgets", "DEMO-14"))?.releasedAt).toBeNull();
+  for (const state of ["active", "pending"] as const) {
+    const reused = await fixture();
+    reused.set({ claimImmediately: state === "active" });
+    const originalFetch = reused.io.fetch;
+    reused.io.fetch = async (url, init) => {
+      if (!originalFetch) throw new Error("missing fake API");
+      const response = await originalFetch(url, init);
+      if (url.endsWith("/launch-tokens/bind")) {
+        if (state === "active")
+          await reused.store.saveRuntimeHandle({
+            project: "widgets",
+            ticket: "DEMO-14",
+            runtime: "conductor",
+            handle: oldHandle,
+            branch: "feature/demo-14",
+            at: NOW,
+          });
+        else
+          reused.store.launches.push({
+            project: "widgets",
+            ticket: "DEMO-14",
+            id: "wk-shared",
+            runtime: "conductor",
+            handle: oldHandle,
+            launchedAt: NOW.toISOString(),
+            tokenUsedAt: null,
+            endedAt: null,
+          });
+      }
+      return response;
+    };
+    expect(await reused.relaunch()).toBe(0);
+    expect(reused.order).not.toContain("archive:ses-old");
+    expect(reused.text()).toContain("Next: armada status");
+    if (state === "active") expect((await reused.store.getRuntimeHandle("widgets", "DEMO-14"))?.releasedAt).toBeNull();
+    else expect(reused.store.launches.find((l) => l.id === "wk-shared")?.endedAt).toBeNull();
+  }
   const kept = await fixture();
   expect(await kept.relaunch("--keep-old")).toBe(0);
   expect(kept.order.some((x) => x.startsWith("archive:"))).toBe(false);

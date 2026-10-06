@@ -192,6 +192,14 @@ function same(a: ClaimRef, b: ClaimRef): boolean {
 }
 async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "ended", allowHistorical = false) {
   const h = await fleet.runtimeHandle(expected.ticket);
+  if (allowHistorical && rule === "ended") {
+    const [handles, pending] = await Promise.all([fleet.runtimeHandles(), fleet.pendingLaunches()]);
+    if (
+      handles.some((open) => open.handle === expected.handle) ||
+      pending.some((open) => open.handle === expected.handle)
+    )
+      throw new RuntimeError("another worker uses the old session; retained it", "busy", "armada inbox");
+  }
   // The replacement may claim before cleanup. Only an exact ended historical
   // generation can authorize touching the old session, never an active reuse.
   if ((allowHistorical && rule === "ended" && (!h || !same(claimRef(h), expected))) || expected.claimedAt === null) {
@@ -201,14 +209,6 @@ async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "en
     const ref = await fleet.runtimeReference(expected);
     if (!ref || !same(ref, expected) || (rule === "active" ? !!ref.releasedAt : !ref.releasedAt))
       throw stale(expected.ticket);
-    if (rule === "ended") {
-      const [handles, pending] = await Promise.all([fleet.runtimeHandles(), fleet.pendingLaunches()]);
-      if (
-        handles.some((open) => open.handle === expected.handle) ||
-        pending.some((open) => open.handle === expected.handle)
-      )
-        throw new RuntimeError("another worker uses the old session; retained it", "busy", "armada inbox");
-    }
     return;
   }
   if (

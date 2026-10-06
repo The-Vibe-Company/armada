@@ -275,7 +275,7 @@ export async function relaunch(
           worker.handle === old.handle ||
           (old.runtime === "conductor" && mode === "fresh" && worker.handle.split("/")[0] === old.handle.split("/")[0])
         )
-          throw new UsageError("replacement shares the old runtime target; retained it");
+          throw new RuntimeError("replacement shares the old runtime target; retained it", "busy", "armada status");
         const result = await guarded(
           fleet,
           old,
@@ -290,11 +290,13 @@ export async function relaunch(
           { allowHistorical: true },
         );
         archived = result.archived || result.alreadyGone;
-      } catch {
+      } catch (error) {
         const hint =
-          old.runtime === "conductor"
-            ? `conductor ${mode === "in-place" ? "session" : "workspace"} archive ${old.handle.split("/")[mode === "in-place" ? 1 : 0]}`
-            : "use the armada-runtime-herdr guide to close the old pane";
+          error instanceof RuntimeError && ["busy", "stale", "mismatch"].includes(error.code)
+            ? "armada status"
+            : old.runtime === "conductor"
+              ? `conductor ${mode === "in-place" ? "session" : "workspace"} archive ${old.handle.split("/")[mode === "in-place" ? 1 : 0]}`
+              : "use the armada-runtime-herdr guide to close the old pane";
         io.stderr(
           `armada: the replacement is running; old worker ${old.handle} could not be archived. Next: ${hint}\n`,
         );
