@@ -604,6 +604,10 @@ const en = {
       idle: (d: string) => `coordinator idle ${d}`,
       unknown: "coordinator not seen yet",
     },
+    /** A named coordinator on its project's card (THE-1112): its name and when it was last seen. */
+    roleSeen: (name: string, ago: string | null) => (ago ? `${name} · ${ago}` : `${name} · not seen`),
+    /** Before a session's coordinator, the owner chips' label. */
+    ownerLabel: "Coordinator",
     filterLabel: "Project",
     all: "All",
     groupBy: "Group by",
@@ -784,6 +788,7 @@ const en = {
     session: "Session",
     model: "Model",
     claimed: "Claimed at",
+    owner: (name: string) => `coordinator ${name}`,
     openSession: "Open the session",
     release: "Release the ticket",
     since: (phase: string, d: string) => `${phase} for ${d}`,
@@ -1073,6 +1078,8 @@ const en = {
       none: "No CI yet",
     } satisfies Record<PrState, string>,
     coordinator: "Coordinator",
+    coordinatorNamed: (name: string) => `Coordinator · ${name}`,
+    sessions: "Sessions",
     updateAvailable: "Update available · armada upgrade",
     coordinatorState: {
       active: (ago: string) => `Active · seen ${ago}`,
@@ -1585,6 +1592,8 @@ const fr: Strings = {
       idle: (d) => `coordinateur inactif ${d}`,
       unknown: "coordinateur jamais vu",
     },
+    roleSeen: (name, ago) => (ago ? `${name} · ${ago}` : `${name} · jamais vu`),
+    ownerLabel: "Coordinateur",
     filterLabel: "Projet",
     all: "Tous",
     groupBy: "Grouper par",
@@ -1749,6 +1758,7 @@ const fr: Strings = {
     session: "Session",
     model: "Modèle",
     claimed: "Pris à",
+    owner: (name: string) => `coordinateur ${name}`,
     openSession: "Ouvrir la session",
     release: "Libérer le ticket",
     since: (phase: string, d: string) => `${phase} depuis ${d}`,
@@ -2027,6 +2037,8 @@ const fr: Strings = {
       none: "Pas encore de CI",
     },
     coordinator: "Coordinateur",
+    coordinatorNamed: (name: string) => `Coordinateur · ${name}`,
+    sessions: "Sessions",
     updateAvailable: "Mise à jour · armada upgrade",
     coordinatorState: {
       active: (ago: string) => `Actif · vu ${ago}`,
