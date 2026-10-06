@@ -9,7 +9,7 @@ Herdr and Conductor workers use Armada’s integrated runtime interface; Claude 
 - Always pass `--json` and read fields with `jq`. Exit codes: 0 ok, 1 runtime error, 2 usage error, 3 authentication, 4 server error.
 - On exit code 3, `conductor auth whoami` checks the token the CLI uses (it exits 0 when the token works). Do not rely on `conductor auth status`: it only looks for a macOS Keychain entry and fails on Linux ("Keychain storage is only supported on macOS"). In a Conductor Cloud workspace the CLI reads `CONDUCTOR_API_KEY` from the environment and needs no login; on a Mac, `conductor auth login` stores a token in the Keychain.
 - A worker is one workspace with one session. Its Armada handle is `<workspaceId>/<sessionId>`; the worker's claim comment carries it, so `armada status` and the ticket always lead back to the session.
-- A worker needs no key in its workspace: the prompt of `armada brief` carries a one-time launch token, and the worker's first command exchanges it for a session limited to its ticket, through which Armada gives each command its keys. The token works once, within the hour, so a copy left in a transcript is useless once used.
+- A worker needs no key in its workspace: the prompt of `armada brief` carries a one-time launch token, and the worker's first authenticated command exchanges it for a session limited to its ticket, through which Armada gives each command its keys. The token works once, within the hour, so a copy left in a transcript is useless once used.
 - Native launch requires an Armada sign-in (`armada login`). Armada passes the brief through stdin and never prints its token; do not pass keys through Conductor’s `--env`.
 
 ## Launch

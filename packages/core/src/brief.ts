@@ -3,7 +3,7 @@
 // runtime guide skill does, with what this returns. No secret value is ever
 // part of a brief: environment variables are named, never read into it. The
 // one exception is a one-time launch token (THE-841), made by Armada for a
-// signed-in coordinator: the worker's first command exchanges it for a
+// signed-in coordinator: the worker's first authenticated command exchanges it for a
 // session limited to its ticket, so its runtime needs no key at all. It works
 // once, within the hour, which makes a copy left in a transcript useless.
 import type { ArmadaConfig, ConductorProfile, PlanPolicy, ProfileRuntime } from "./config.ts";
@@ -124,7 +124,7 @@ export interface Brief {
   claimCommand: string;
   /** Actual local runtime handle, supplied after herdr creates the worktree. */
   handle?: string;
-  /** `armada login --launch-token <token>`, the worker's first command, and when the token expires; null without one. */
+  /** `armada login --launch-token <token>`, the worker's first authenticated command, and when the token expires; null without one. */
   launch: { command: string; expiresAt: string } | null;
   /** Why there is no launch token, when there is none. */
   noLaunch: string | null;
@@ -552,7 +552,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
   const out: string[] = [
     `# ${t.id} — ${t.title}`,
     "",
-    `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. Follow the \`armada-worker\` skill (\`${WORKER_SKILL_PATH}\`) and the repository's \`AGENTS.md\`. Never merge.`,
+    `You are an Armada worker. You own exactly one ticket, ${t.id} (${t.url}), and turn it into one green pull request on ${b.repository.name}. After installing Armada, read your skill with \`armada skill armada-worker\` and follow its output and the repository's \`AGENTS.md\`. Never merge.`,
     "",
     ...(subagent
       ? [
@@ -566,12 +566,13 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     "",
     ...(subagent
       ? [
-          "Run install, login and claim first. Immediately after claim, run the final heartbeat line as a separate Bash tool call with `run_in_background: true`; keep that Bash owned by this subagent.",
+          "Run install, read the worker skill, login and claim first. Immediately after claim, run the final heartbeat line as a separate Bash tool call with `run_in_background: true`; keep that Bash owned by this subagent.",
           "",
         ]
       : []),
     "```sh",
     b.install,
+    "armada skill armada-worker",
     ...(b.launch ? [b.launch.command] : []),
     b.claimCommand,
     `armada heartbeat --every 5m --ticket ${t.id} --handle ${b.handle ? shellWord(b.handle) : subagent ? subagentName(t.id) : CONDUCTOR_HANDLE} --parent "$PPID"${subagent ? "" : " --background"}`,
@@ -585,7 +586,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     ...(b.launch
       ? [
           "",
-          `\`armada login --launch-token\` signs this workspace in to Armada as the worker of ${t.id}, with a one-time token valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC. Run it first, once.`,
+          `\`armada login --launch-token\` signs this workspace in to Armada as the worker of ${t.id}, with a one-time token valid until ${b.launch.expiresAt.slice(0, 16).replace("T", " ")} UTC. Run it once before claim.`,
         ]
       : []),
     "",

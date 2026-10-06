@@ -38,7 +38,7 @@ import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
 import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
-import { updateSkills } from "./skills.ts";
+import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, stopWatch, watch } from "./watch.ts";
@@ -96,6 +96,10 @@ const COMMAND_HELP: Record<string, string> = {
                     .claude/settings.json (yes without a terminal); --no-stop-hook skips it
                     Reuses armada/setup across versions and closes legacy armada/init-* PRs.
                     --merge waits for the normal merge checks and merges only setup paths
+`,
+  skill: `  skill <name> [<file>]
+                    Print instructions from this Armada version (default SKILL.md).
+                    No checkout, sign-in or network needed; linked files use their relative path
 `,
   skills: `  skills update     Update all bundled skills, links and skills-lock.json in the current
                     checkout, and ignore shipping artifacts. No sign-in required; review
@@ -790,6 +794,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       noExtra(args.rest);
       return await doctor(io, args.json, version);
     }
+    if (args.command === "skill") return printSkill(io, args.rest);
     if (args.command === "skills") {
       if (args.rest.length !== 1 || args.rest[0] !== "update") throw new UsageError("skills needs a command: update");
       return await updateSkills(io, version, args.json);
