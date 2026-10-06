@@ -8,11 +8,12 @@ import type { MergePull } from "./github.ts";
 import { herdrChoice } from "./herdr-profile.ts";
 import { parsePullRequestUrl, sameName } from "./linear.ts";
 import type { LinearWriter, Ticket, TicketLabel, WorkflowState } from "./linear-write.ts";
-import type { Fleet, InboxItem, RuntimeHandle } from "./live.ts";
+import type { Fleet, InboxItem, PendingLaunch, RuntimeHandle } from "./live.ts";
 import { overlapLines, pathsProblem } from "./overlap.ts";
 import { handBackProblems, planRule, transitionProblem } from "./phases.ts";
 import { Refusal } from "./refusal.ts";
 import { chooseProfile, type ProfileChoice, ProfileError } from "./routing.ts";
+import type { Delivery } from "./runtime.ts";
 import type { Comment, LabelPhase, PullRequest } from "./types.ts";
 import { isShippingStage } from "./types.ts";
 import { type ValidationChoice, validationClaimLine } from "./validations.ts";
@@ -39,13 +40,19 @@ export interface WorkerContext {
   readPull: ((number: number) => Promise<PullRequest | null>) | null;
   /** Optional review-thread read; failures warn without weakening the head and CI gate. */
   readReviewThreads?: ((number: number) => Promise<MergePull["reviewThreads"] | null>) | null;
-  /** Optional coordinator runtime delivery; true when the answer reached a local worker. */
-  deliverAnswer?: (
-    ticket: string,
-    text: string,
-    runtime?: string | null,
-    claim?: RuntimeHandle | null,
-  ) => Promise<boolean>;
+  /** Automatic delivery is determined by the runtime adapter's capability. */
+  deliversTo?: (runtime: string) => boolean;
+  /** Rechecks the frozen target before recording a successfully delivered message. */
+  checkAnswerTarget?: (input: { claim: RuntimeHandle | null; launch: PendingLaunch | null }) => Promise<void>;
+  /** Optional coordinator runtime delivery, after validation and before recording. */
+  deliverAnswer?: (input: {
+    ticket: string;
+    text: string;
+    claim: RuntimeHandle | null;
+    launch?: PendingLaunch | null;
+    item: number | null;
+    kind: "answer" | "note";
+  }) => Promise<Delivery | null>;
   now: () => Date;
 }
 

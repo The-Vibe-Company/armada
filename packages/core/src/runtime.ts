@@ -25,6 +25,13 @@ export interface ClaimRef {
   /** Herdr provenance: the branch recorded by the claim. */
   branch?: string | null;
 }
+/** Receipt of a message accepted by a runtime. */
+export interface Delivery {
+  via: string;
+  messageId: string | null;
+  queued: boolean;
+}
+
 export type RuntimeErrorCode =
   | "unsupported"
   | "not-found"

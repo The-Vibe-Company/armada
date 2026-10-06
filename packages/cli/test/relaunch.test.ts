@@ -476,6 +476,26 @@ test("a bound launch that never claimed is revoked by its exact id before replac
     tokenUsedAt: null,
     endedAt: null,
   });
+  const apiFleet = fleetClient({
+    api: armadaApi({ url: ARMADA_URL, fetch: f.io.fetch }),
+    signIn: { kind: "api-key", key: "armada_key_CANARY_test" },
+    project: DEMO_PROJECT,
+  });
+  // Pending launches have no recorded branch. The real API projection must
+  // still authorize this exact launch, including ended-generation cleanup.
+  expect(
+    (
+      await apiFleet.runtimeReference({
+        ticket: "DEMO-13",
+        runtime: "conductor",
+        handle: oldHandle,
+        claimedAt: null,
+        launchId: "wk-old",
+        releasedAt: null,
+        branch,
+      })
+    )?.branch,
+  ).toBeUndefined();
   f.set({ claimImmediately: true });
   const result = await f.relaunch("--fresh");
   expect(result, f.text()).toBe(0);

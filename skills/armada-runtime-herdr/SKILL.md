@@ -21,7 +21,7 @@ armada answer ABC-12 "<answer to a live harness approval or question>"
 armada answer --note ABC-12 --message-file /tmp/abc-12-message.md
 ```
 
-For herdr, Armada verifies the saved pane, delivers literal text plus Enter and then records the answer on the ticket and in the inbox. Read an approval UI before deciding what input it expects; the answer may be a short choice such as `y`. Delivery errors leave the question open and write no successful answer. Inspect the pane before retrying after a timeout: the terminal may already have received the input. There is no separate delivery step. Successful delivery confirms submission, not that the worker has completed a turn. For other runtimes, follow their guide and deliver before recording with Armada.
+For herdr, Armada verifies the saved pane, delivers literal text plus Enter and then records the answer on the ticket and in the inbox. Read an approval UI before deciding what input it expects; the answer may be a short choice such as `y`. Delivery errors leave the question open and write no successful answer. Inspect the pane before retrying after a timeout: the terminal may already have received the input. There is no separate delivery step. Successful delivery confirms submission, not that the worker has completed a turn. Conductor also receives answers and notes automatically. For Claude Code, follow its guide and deliver before recording with Armada.
 
 ## Status
 

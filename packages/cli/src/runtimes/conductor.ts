@@ -402,7 +402,12 @@ export class ConductorAdapter implements RuntimeAdapter {
       target,
       async () => {
         await this.session(target);
-        if ((await this.workspace(h.workspace)).status === "archived") throw this.error("gone");
+        if ((await this.workspace(h.workspace)).status === "archived")
+          throw new RuntimeError(
+            "the Conductor workspace is archived; no answer was delivered",
+            "gone",
+            `relaunch: armada relaunch ${target.ticket}`,
+          );
       },
       () =>
         this.call(
