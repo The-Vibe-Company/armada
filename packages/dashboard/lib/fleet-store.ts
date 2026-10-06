@@ -65,6 +65,7 @@ import {
   deployFailed,
   holdBody,
   isShippingStage,
+  jobEndedBody,
   OBSERVABLE_RUNTIMES,
   REQUEST_KINDS,
   TIMELINE_HOURS,
@@ -1335,6 +1336,7 @@ export async function expireUnusedLaunches(
 // ------------------------------------------------------------------ long jobs
 
 const jobOf = (r: Row): Job => ({
+  revision: Number(r.revision),
   id: Number(r.id),
   project: String(r.project),
   ticket: String(r.ticket),
@@ -1866,31 +1868,50 @@ export const fleetStore = (db: Database): FleetStore => ({
   },
   getJob: (project, id) => getJob(db, project, id),
   listJobs: (project, q) => listJobs(db, project, q),
-  async observeJob(input) {
-    const rs = await db.query(
-      `UPDATE jobs SET state = $4,
+  observeJob: (input) =>
+    transaction(db, async (tx) => {
+      const rs = await tx.query(
+        `UPDATE jobs SET state = $4, revision = revision + 1,
        ref = CASE WHEN ref IS NULL AND $5::boolean THEN $6 ELSE ref END,
-       progress = $7, eta = CASE WHEN $4 = 'running' THEN $8::timestamptz ELSE NULL END,
+       progress = CASE WHEN $10::boolean THEN $7 ELSE progress END,
+       eta = CASE WHEN $4 = 'running' THEN $8::timestamptz ELSE NULL END,
        observed_at = $9, finished_at = CASE WHEN $4 = 'running' THEN NULL ELSE $9 END
        WHERE project = $1 AND id = $2 AND ticket = $3 AND state IN ('starting','running') AND observed_at <= $9
        AND (NOT $5::boolean OR ref IS NULL OR ref = $6)
+       AND ($11::bigint IS NULL OR revision = $11::bigint)
        RETURNING *`,
-      [
-        input.project,
-        input.id,
-        input.ticket,
-        input.state,
-        input.ref !== undefined,
-        input.ref ?? null,
-        input.progress ?? null,
-        input.eta ?? null,
-        input.at,
-      ],
-    );
-    if (rs.rows[0]) return jobOf(rs.rows[0]);
-    const job = await getJob(db, input.project, input.id);
-    return job?.ticket === input.ticket ? job : null;
-  },
+        [
+          input.project,
+          input.id,
+          input.ticket,
+          input.state,
+          input.ref !== undefined,
+          input.ref ?? null,
+          input.progress ?? null,
+          input.eta ?? null,
+          input.at,
+          input.progress !== undefined,
+          input.expectedRevision ?? null,
+        ],
+      );
+      if (rs.rows[0]) {
+        const job = jobOf(rs.rows[0]);
+        if (job.finishedAt)
+          await addInboxItem(tx, {
+            project: job.project,
+            ticket: job.ticket,
+            kind: "job",
+            recipient: "coordinator",
+            author: null,
+            body: jobEndedBody(job),
+            at: input.at,
+          });
+        return job;
+      }
+      const job = await getJob(tx, input.project, input.id);
+      return job?.ticket === input.ticket ? job : null;
+    }),
+
   openHold: (input) => openHold(db, input),
   clearHold: (input) => clearHold(db, input),
   openHolds: (project) => openHolds(db, project),

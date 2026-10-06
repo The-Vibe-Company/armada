@@ -930,6 +930,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    version: 38,
+    statements: ["ALTER TABLE jobs ADD COLUMN revision bigint NOT NULL DEFAULT 0"],
+  },
+  {
     // THE-1084: reserve notification delivery and record each ticket once.
     version: 39,
     statements: [

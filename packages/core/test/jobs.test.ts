@@ -136,3 +136,26 @@ test("an overdue job stays visible when its ticket is Done; status only reads st
   });
   expect((await store.getJob("widgets", job.id))?.state).toBe("running");
 });
+
+test("job observations preserve omitted progress and reject slow probes superseded by runner news", async () => {
+  const { fakeClock } = await import("./support.ts");
+  const clock = fakeClock();
+  const live = tempFleet({ clock });
+  const job = await live.fleet.startJob({ ticket: "DEMO-7", name: "eval" });
+  const probeRevision = job.revision;
+  await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state: "running", progress: "40/120" });
+  const stale = await live.fleet.observeJob({
+    ticket: job.ticket,
+    id: job.id,
+    state: "failed",
+    progress: "old",
+    expectedRevision: probeRevision,
+  });
+  expect(stale?.state).toBe("running");
+  expect(stale?.progress).toBe("40/120");
+  expect(await live.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toEqual([]);
+  expect((await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state: "running" }))?.progress).toBe("40/120");
+  expect(
+    (await live.fleet.observeJob({ ticket: job.ticket, id: job.id, state: "running", progress: null }))?.progress,
+  ).toBeNull();
+});

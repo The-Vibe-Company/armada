@@ -83,9 +83,9 @@ test.each([
   const f = await fixture();
   const reservedKeys: string[] = [];
   const reserveNotice = f.store.prepareMergeNotice;
-  f.store.prepareMergeNotice = async (project, key) => {
+  f.store.prepareMergeNotice = async (project, key, at) => {
     reservedKeys.push(key);
-    return reserveNotice(project, key);
+    return reserveNotice(project, key, at);
   };
   const herdrTree = join(f.io.cwd, "..", "herdr-worker");
   const herdrHandle = JSON.stringify({ workspace: "ws-worker", pane: "pane-worker", agent: "worker" });

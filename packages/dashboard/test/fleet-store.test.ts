@@ -969,3 +969,61 @@ test("a higher reserved version does not hide a later merge-hold migration", asy
     await database.end();
   }
 });
+
+test("concurrent terminal job observations atomically store one coordinator notice with last progress", async () => {
+  const project = { slug: "job-notices", name: "Jobs", repository: "acme/jobs", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  for (const state of ["succeeded", "failed", "stopped", "lost"] as const) {
+    const job = await store.startJob({
+      project: project.slug,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: at(0),
+    });
+    await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      progress: "40/120",
+      at: at(0),
+    });
+    await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      progress: "40/120",
+      at: at(0),
+    });
+    const stale = await store.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "failed",
+      progress: "old result",
+      expectedRevision: 1,
+      at: at(2),
+    });
+    expect(stale?.state).toBe("running");
+    expect(stale?.progress).toBe("40/120");
+    const input = { project: project.slug, ticket: job.ticket, id: job.id, state, at: at(2) };
+    const outcomes = await Promise.all([store.observeJob(input), fleetStore(db).observeJob(input)]);
+    expect(outcomes[0]).toEqual(outcomes[1]);
+    expect(outcomes[0]?.progress).toBe("40/120");
+    await store.observeJob({ ...input, state: "running", at: at(3) });
+  }
+  const items = await store.openInboxItems({ project: project.slug, recipient: "coordinator" });
+  expect(items).toHaveLength(4);
+  expect(items.map((i) => i.kind)).toEqual(["job", "job", "job", "job"]);
+  for (const item of items) {
+    expect(item.ticket).toBe("DEMO-7");
+    expect(item.body).toContain("eval");
+    expect(item.body).toContain("40/120");
+    expect(item.createdAt).toBe(at(2).toISOString());
+  }
+  expect(items.map((i) => i.body).join("\n")).toContain("succeeded");
+  expect(items.map((i) => i.body).join("\n")).toContain("lost");
+});

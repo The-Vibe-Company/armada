@@ -38,6 +38,7 @@ import { version } from "../package.json" with { type: "json" };
 import { coordinatorName, validCoordinator } from "./coordinator.ts";
 import { renderEntries } from "./inbox.ts";
 import { type Io, UsageError, type WatchSignal } from "./io.ts";
+import { refreshingJobsFleet } from "./job.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
 import { pendingRelease } from "./release.ts";
@@ -86,20 +87,26 @@ export async function watchOf(io: Io, project: string): Promise<{ state: WatchSt
 export async function rearmFor(
   io: Io,
   project: string,
-  o: { inFlight: string[] | null; open: number | null; act?: boolean },
+  o: { inFlight: string[] | null; open: number | null; openJobs?: number[]; act?: boolean },
 ): Promise<Rearm> {
-  const { running } = await watchOf(io, project);
+  const { state, running } = await watchOf(io, project);
   const paths = machinePaths(io.env);
   const mode =
     paths && running ? (await readWatchLockInfo(paths, project, await coordinatorName(io, project)))?.mode : undefined;
-  return rearm({ ...o, running, mode });
+  return rearm({ ...o, openJobs: o.openJobs ?? state?.openJobs, running, mode });
 }
 
 const now = (io: Io) => (io.now ?? (() => new Date()))();
 
 /** What a read showed the coordinator: it does not wake a watch again, and the hook knows who is in flight. */
-export const shown = (io: Io, items: InboxEntry[], inFlight: string[] | null): Partial<WatchState> => ({
+export const shown = (
+  io: Io,
+  items: InboxEntry[],
+  inFlight: string[] | null,
+  openJobs: number[] = [],
+): Partial<WatchState> => ({
   seen: items.map(entryKey),
+  openJobs,
   ...(inFlight ? { inFlight, readAt: now(io).toISOString() } : {}),
   stopped: null,
 });
@@ -344,6 +351,13 @@ async function watchUntil(
           controller.abort(new Error("watch duration ended"));
         },
       );
+    const watchingFleet = refreshingJobsFleet(
+      watchingIo,
+      observingFleet(watchingIo, fleet, config),
+      config,
+      dirname(configPath),
+      controller.signal,
+    );
     const common: FollowOptions = {
       until,
       project,
@@ -372,7 +386,9 @@ async function watchUntil(
       onRead: async (read) => {
         const inFlight =
           name === "default" ? read.inFlight : (read.ownedInFlight ?? (scope === "mine" ? read.inFlight : null));
-        if (inFlight) await remember(io, project, { inFlight, readAt: now(io).toISOString() });
+        const openJobs =
+          name === "default" ? read.openJobs : (read.ownedOpenJobs ?? (scope === "mine" ? read.openJobs : []));
+        if (inFlight) await remember(io, project, { inFlight, openJobs, readAt: now(io).toISOString() });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
       release: pendingRelease(watchingIo, version, before?.seen ?? [], fsRepoView(dirname(configPath))),
@@ -388,7 +404,7 @@ async function watchUntil(
       io.stderr(
         `following ${project} as coordinator ${name} (${coordinatorHandle(io) ?? "terminal"}) from ${cursor}; stop: armada watch --stop --name ${name} --project ${project}\n`,
       );
-      for await (const line of followFleet(observingFleet(watchingIo, fleet, config), {
+      for await (const line of followFleet(watchingFleet, {
         ...common,
         cursor,
         freshStart,
@@ -412,18 +428,20 @@ async function watchUntil(
       if (timedOut) resume();
       return 0;
     }
-    const report = await watchInbox(observingFleet(watchingIo, fleet, config), common);
+    const report = await watchInbox(watchingFleet, common);
     if (report.outcome === "timeout") {
       resume();
       return 0;
     }
     const inFlight =
       name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
-    await remember(io, project, shown(io, report.items, inFlight));
+    const openJobs =
+      name === "default" ? report.openJobs : (report.ownedOpenJobs ?? (scope === "mine" ? report.openJobs : undefined));
+    await remember(io, project, shown(io, report.items, inFlight, openJobs));
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter((e) => e.kind !== "version").length;
-    const next = rearm({ inFlight, open, running: null, act: true });
+    const next = rearm({ inFlight, openJobs, open, running: null, act: true });
     if (json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
     else {
       const out =
