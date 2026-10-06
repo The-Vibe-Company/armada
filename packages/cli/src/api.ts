@@ -5,6 +5,7 @@
 import { armadaApi, type ServerCli } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
 import type { Io } from "./io.ts";
+import { httpOptions } from "./io.ts";
 
 /** What a run heard: the server's CLI versions. */
 export interface Heard {
@@ -30,5 +31,5 @@ export const apiOf = (io: Io, url: string, cliVersion: string = version) =>
     onServerCli: (server) => {
       heard(io).server = server;
     },
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
   });
