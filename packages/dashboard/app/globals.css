@@ -3033,6 +3033,15 @@ a.pj-title:hover {
   .pj-pr {
     grid-template-columns: 48px minmax(0, 1fr) auto;
   }
+  .pj-deploy {
+    grid-template-columns: minmax(0, 1fr) auto;
+    height: auto;
+    min-height: 38px;
+    padding: 6px 0;
+  }
+  .pj-deploy > .pj-id {
+    display: none;
+  }
 }
 
 /* The organization: a hint beside one action, then rows of four columns

@@ -593,7 +593,8 @@ const en = {
     /** An open merge pause (THE-1105): its reason, then its kind, id and age. */
     pause: {
       title: (reason: string) => `Merges paused: ${reason}`,
-      detail: (kind: string, id: number, ago: string) => `${kind} · hold #${id} · opened ${ago}`,
+      detail: (kind: string, id: number) => `${kind} · hold #${id}`,
+      opened: (ago: string) => `opened ${ago}`,
       kinds: { manual: "manual", deploy: "deploy", "main-red": "main red" } satisfies Record<HoldKind, string>,
     },
     /** A project's deploy targets and their last state (THE-1105). */
@@ -1600,7 +1601,8 @@ const fr: Strings = {
       ].join(" · "),
     pause: {
       title: (reason) => `Merges en pause : ${reason}`,
-      detail: (kind, id, ago) => `${kind} · pause n° ${id} · ouverte ${ago}`,
+      detail: (kind, id) => `${kind} · pause n° ${id}`,
+      opened: (ago) => `ouverte ${ago}`,
       kinds: { manual: "manuelle", deploy: "déploiement", "main-red": "main rouge" },
     },
     deploys: {

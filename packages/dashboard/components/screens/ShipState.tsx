@@ -42,7 +42,9 @@ export function HoldAlerts({ projects, named = false }: { projects: readonly Pro
       tone={h.kind === "manual" ? "warn" : "critical"}
       title={named ? `${h.projectName}: ${p.title(h.reason)}` : p.title(h.reason)}
     >
-      {p.detail(p.kinds[h.kind], h.id, t.ago(h.ageMs))}
+      {p.detail(p.kinds[h.kind], h.id)} ·{" "}
+      {/* The age ticks every minute: kept out of the alert's live region so the pause is not read again each time. */}
+      <span aria-live="off">{p.opened(t.ago(h.ageMs))}</span>
     </Alert>
   ));
 }

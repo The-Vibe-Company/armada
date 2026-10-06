@@ -350,6 +350,8 @@ live_sha_command = "echo synthetic"
     await w.settle();
     const first = await loadOverview(w.opts);
     expect(first.rows.map((r) => [r.id, r.phase, r.phaseSource])).toEqual([["WID-2", "implementing", "label"]]);
+    // No `[deploy]` in its armada.toml: no deploy targets to show (THE-1105).
+    expect(first.projects[0]?.deploys).toBeUndefined();
 
     await recordEvent(db, {
       project: "widgets",
