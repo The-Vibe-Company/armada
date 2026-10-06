@@ -1813,7 +1813,17 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
         )
         ?.status?.summary.match(/; next: (.+)$/)?.[1];
     if (priorPartial) more = priorPartial;
-    if (!priorPartial)
+    const completedLater =
+      more !== null &&
+      ticket.statusType === "completed" &&
+      others(ticket, ctx.config.tracker.labels.phaseGroup, null).length === 0 &&
+      ticket.comments.some(
+        (comment) =>
+          comment.status?.phase === "merged" &&
+          comment.status.summary.match(/^PR #(\d+)\b/)?.[1] !== String(pull.number),
+      );
+    if (completedLater) lines.push(`PR #${pull.number}: partial Linear repair superseded by a later completed PR.`);
+    if (!priorPartial && !completedLater)
       lines.push(
         ...(more !== null
           ? await keepTicketOpen(ctx, ticket, pull, { updatedFrom: null, decided: null }, more, false, audit)

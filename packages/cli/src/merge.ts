@@ -387,12 +387,13 @@ export async function merge(
       repo: gitRepo(exec, repoDir),
       // Signed in, the merge lock is required: two coordinators merge one after the other.
       lockRequired: !!credentials.armadaSignIn,
-      fleet: async () => ({
-        ...live,
-        fleet: live.fleet
-          ? { ...live.fleet, chore: (input) => live.fleet!.chore({ ...input, body: mask.text(input.body) }) }
-          : null,
-      }),
+      fleet: async () => {
+        const fleet = live.fleet;
+        return {
+          ...live,
+          fleet: fleet ? { ...fleet, chore: (input) => fleet.chore({ ...input, body: mask.text(input.body) }) } : null,
+        };
+      },
       afterRecord: (ticket) => endWorkerSessions(io, config, credentials, ticket, "merged", a.json),
       afterRead: async (ticket) => {
         const sources = await readStatusSources(config, { linearApiKey, githubToken: null, ...fetchOpt, now });

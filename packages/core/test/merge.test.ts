@@ -1411,9 +1411,10 @@ describe("Linear outage merge recovery", () => {
     expect(s.forge.merges).toEqual([]);
   });
 
-  test.each([false, true])(
-    "post-merge Linear failure preserves intent; finish twice writes once (partial:%s)",
-    async (keepOpen) => {
+  test.each(["final", "partial", "partial-with-final-pr"])(
+    "post-merge Linear failure preserves intent; finish twice writes once (%s)",
+    async (mode) => {
+      const keepOpen = mode !== "final";
       const live = tempFleet();
       const s = setup({ live });
       await handBack(live);
@@ -1443,6 +1444,25 @@ describe("Linear outage merge recovery", () => {
       expect(out.linearPending).toBe(true);
       expect((await live.fleet.ticketItems("DEMO-7")).filter((i) => i.kind === "linear-pending")).toHaveLength(1);
       s.linear.updateTicket = update;
+      if (mode === "partial-with-final-pr") {
+        const first = structuredClone(s.forge.pr);
+        s.linear.get("DEMO-7").labels = [label("rt-conductor"), label("phase-ready-to-merge")];
+        s.linear.post(
+          "DEMO-7",
+          `Agent status: ready-to-merge — PR #10, head ${HEAD}, CI green`,
+          "2026-03-04T10:30:00Z",
+        );
+        s.forge.pr = pull({ number: 10, url: "https://github.com/acme/widgets/pull/10" });
+        await live.store.putHandBack({ project: "widgets", ticket: "DEMO-7", author: null, body: "PR #10", at: NOW });
+        await mergePullRequest(s.ctx, { pr: 10 });
+        s.forge.pr = first;
+        const writes = [...s.linear.writes];
+        expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
+        expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+        expect(s.linear.writes).toEqual(writes);
+        expect(await live.fleet.ticketItems("DEMO-7")).toEqual([]);
+        return;
+      }
       expect((await finishMerge(s.ctx, { pr: 9 })).linearPending).toBe(false);
       const writes = [...s.linear.writes];
       await finishMerge(s.ctx, { pr: 9 });
