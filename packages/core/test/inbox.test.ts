@@ -10,6 +10,7 @@ import {
   recordReport,
   serveInbox,
 } from "../src/live.ts";
+
 import { buildStatus } from "../src/status.ts";
 import type { ProgramData } from "../src/types.ts";
 import { watchInbox } from "../src/watch.ts";
@@ -52,6 +53,176 @@ const refusal = (p: Promise<unknown>) =>
   );
 
 const inbox = (db: FleetStore) => readInbox(db, { project: P, silentAfterMinutes: 15, now: NOW });
+
+test("a stored merge unblocks another coordinator's pending work once, until launch or 24 hours", async () => {
+  const live = tempFleet();
+  const db = live.store;
+  const blocker = issue("DEMO-2", { parentId: "DEMO-1" });
+  const dependent = (id: string, over = {}) =>
+    issue(id, {
+      parentId: "DEMO-1",
+      labels: [config.tracker.readyLabel],
+      blockedBy: [{ id: blocker.id, statusType: "backlog" }],
+      ...over,
+    });
+  const program: ProgramData = {
+    rootId: "DEMO-1",
+    fetchedAt: at(30).toISOString(),
+    comments: [],
+    warnings: [],
+    issues: [
+      issue("DEMO-1"),
+      blocker,
+      dependent("DEMO-3"),
+      // The existing ready list includes frontier tickets without a ready label.
+      dependent("DEMO-4", { labels: [] }),
+      dependent("DEMO-5", { labels: [config.tracker.parkedLabel] }),
+      dependent("DEMO-6", {
+        blockedBy: [
+          { id: blocker.id, statusType: "backlog" },
+          { id: "OUT-1", statusType: "backlog" },
+        ],
+      }),
+    ],
+  };
+  const snapshot: HandBackSnapshot = {
+    repository: config.github.repository,
+    config,
+    issues: program.issues,
+    prs: [],
+    flight: { program, forge: null, after: program.fetchedAt },
+  };
+  await db.addRequest({
+    project: P,
+    ticket: "DEMO-3",
+    kind: "launch-request",
+    coordinator: "front",
+    author: "owner",
+    body: "Launch when ready",
+    deferred: true,
+    question: null,
+    profile: null,
+    at: at(20),
+  });
+  await live.fleet.merge({
+    ticket: blocker.id,
+    number: 2,
+    url: "https://github.com/acme/widgets/pull/2",
+    mergeCommit: "a".repeat(40),
+    headSha: "b".repeat(40),
+  });
+  // A later report must not hide the merge, and stale snapshots must not wake the watch.
+  await db.recordEvent({ project: P, ticket: blocker.id, kind: "report", phase: "shipping", at: NOW });
+  const read = (name: string, now = NOW) =>
+    readInbox(db, {
+      project: P,
+      coordinatorName: name,
+      snapshot,
+      silentAfterMinutes: 15,
+      now,
+    });
+  expect(await read("front")).toEqual([]);
+  blocker.statusType = "completed";
+  const unblocked = (await read("front")).filter((e) => e.kind === "unblocked");
+  expect(unblocked.map((e) => [e.ticket, e.owner, e.body, entryKey(e)])).toEqual([
+    ["DEMO-3", "front", "DEMO-3 unblocked by DEMO-2 (merged by default)", "unblocked:DEMO-3@DEMO-2"],
+    ["DEMO-4", null, "DEMO-4 unblocked by DEMO-2 (merged by default)", "unblocked:DEMO-4@DEMO-2"],
+  ]);
+  expect((await read("default")).filter((e) => e.kind === "unblocked").map((e) => e.ticket)).toEqual(["DEMO-4"]);
+  const clock = fakeClock();
+  const fleet = {
+    ...live.fleet,
+    inbox: (q: Parameters<typeof live.fleet.inbox>[0]) => serveInbox(db, P, q, clock.now(), null, snapshot),
+  };
+  const options = {
+    project: P,
+    coordinatorName: "front",
+    coordinator: null,
+    silentAfterMinutes: 15,
+    now: clock.now,
+    sleep: clock.sleep,
+    seen: [] as string[],
+  };
+  const first = await watchInbox(fleet, options);
+  expect(first.outcome).toBe("items");
+  expect(first.items.filter((e) => e.kind === "unblocked" && e.new).map(entryKey)).toEqual(unblocked.map(entryKey));
+  expect(
+    (await watchInbox(fleet, { ...options, seen: first.items.map(entryKey), until: new Date(NOW.getTime() + 60_000) }))
+      .outcome,
+  ).toBe("timeout");
+  expect(
+    (await read("front", new Date(NOW.getTime() + 24 * 60 * 60_000))).filter((e) => e.kind === "unblocked"),
+  ).toEqual([]);
+  await db.saveRuntimeHandle({
+    project: P,
+    ticket: "DEMO-3",
+    coordinator: "front",
+    runtime: "Conductor",
+    handle: "ws/front",
+    branch: null,
+    at: NOW,
+  });
+  await db.recordEvent({ project: P, ticket: "DEMO-3", kind: "claim", at: NOW });
+  expect((await read("front")).filter((e) => e.kind === "unblocked").map((e) => e.ticket)).toEqual(["DEMO-4"]);
+  await db.releaseRuntimeHandle(P, "DEMO-3", NOW);
+  await db.recordEvent({ project: P, ticket: "DEMO-3", kind: "release", at: NOW });
+  expect((await read("front")).filter((e) => e.kind === "unblocked").map((e) => e.ticket)).toEqual(["DEMO-4"]);
+  db.launches.push({
+    project: P,
+    ticket: "DEMO-4",
+    coordinator: "front",
+    launchedAt: NOW.toISOString(),
+    tokenUsedAt: null,
+    tokenExpiresAt: new Date(NOW.getTime() + 60 * 60_000).toISOString(),
+    runtime: "Conductor",
+    handle: "ws/unclaimed",
+    endedAt: null,
+  });
+  expect((await read("front")).filter((e) => e.kind === "unblocked")).toEqual([]);
+  // Revocation/expiry does not resurrect an already-cleared merge notification.
+  const launch = db.launches[0];
+  if (!launch) throw new Error("missing launch");
+  launch.endedAt = NOW.toISOString();
+  expect((await read("front")).filter((e) => e.kind === "unblocked")).toEqual([]);
+  const firstBlocker = issue("DEMO-9", { parentId: "DEMO-1", statusType: "completed" });
+  const lastBlocker = issue("DEMO-7", { parentId: "DEMO-1", statusType: "completed" });
+  const tied = dependent("DEMO-8", {
+    blockedBy: [
+      { id: firstBlocker.id, statusType: "completed" },
+      { id: lastBlocker.id, statusType: "completed" },
+    ],
+  });
+  program.issues.push(firstBlocker, lastBlocker, tied);
+  // The clock is identical; event order, rather than ticket order, selects the last blocker.
+  for (const ticket of [firstBlocker.id, lastBlocker.id])
+    await live.fleet.merge({
+      ticket,
+      number: 3,
+      url: `https://github.com/acme/widgets/pull/${ticket}`,
+      mergeCommit: "c".repeat(40),
+      headSha: "d".repeat(40),
+    });
+  expect((await read("front")).filter((e) => e.kind === "unblocked").map(entryKey)).toEqual([
+    "unblocked:DEMO-8@DEMO-7",
+  ]);
+  // A reopened blocker claim newer than the closed snapshot must prevent a stale wake.
+  program.fetchedAt = new Date(NOW.getTime() + 60_000).toISOString();
+  if (!snapshot.flight) throw new Error("missing flight snapshot");
+  snapshot.flight.after = program.fetchedAt;
+  const reclaimedAt = new Date(NOW.getTime() + 2 * 60_000);
+  await db.saveRuntimeHandle({
+    project: P,
+    ticket: lastBlocker.id,
+    coordinator: "default",
+    runtime: "Conductor",
+    handle: "ws/reopened-blocker",
+    branch: null,
+    at: reclaimedAt,
+  });
+  await db.recordEvent({ project: P, ticket: lastBlocker.id, kind: "claim", phase: "planning", at: reclaimedAt });
+  expect((await read("front", new Date(NOW.getTime() + 3 * 60_000))).filter((e) => e.kind === "unblocked")).toEqual([]);
+  expect((await db.getRuntimeHandle(P, lastBlocker.id))?.releasedAt).toBeNull();
+});
 
 test("mine resolves ticket ownership before filtering entries, flight and ETags", async () => {
   const store = memoryFleet();

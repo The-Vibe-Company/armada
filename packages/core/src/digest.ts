@@ -88,6 +88,7 @@ export const DIGEST_STRINGS = {
     skipped: (slot: string) => `the ${slot} digest was skipped`,
     kinds: {
       merge: "merge to approve",
+      secret: "secret to set",
       validation: "work to validate",
       question: "question to answer",
       plan: "plan to approve",
@@ -122,6 +123,7 @@ export const DIGEST_STRINGS = {
     skipped: (slot: string) => `le résumé de ${slot} a été sauté`,
     kinds: {
       merge: "fusion à approuver",
+      secret: "secret à fournir",
       validation: "travail à valider",
       question: "question à traiter",
       plan: "plan à approuver",

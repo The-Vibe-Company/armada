@@ -933,6 +933,29 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     version: 38,
     statements: ["ALTER TABLE jobs ADD COLUMN revision bigint NOT NULL DEFAULT 0"],
   },
+  {
+    // THE-1084: reserve notification delivery and record each ticket once.
+    version: 39,
+    statements: [
+      `CREATE TABLE merge_notices (
+        project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        delivery_key text NOT NULL, attempted_at timestamptz NOT NULL,
+        delivered_at timestamptz, recorded_tickets text[] NOT NULL DEFAULT '{}',
+        PRIMARY KEY (project, delivery_key)
+      )`,
+    ],
+  },
+  {
+    // THE-1115: one open request per project secret; values stay in the vault.
+    version: 40,
+    statements: [
+      "ALTER TABLE validations DROP CONSTRAINT validations_kind_check",
+      "ALTER TABLE validations ADD CONSTRAINT validations_kind_check CHECK (kind IN ('merge', 'validation', 'question', 'secret'))",
+      "ALTER TABLE validations ADD COLUMN secret_name text",
+      "ALTER TABLE validations ADD CONSTRAINT validations_secret_name_check CHECK ((kind = 'secret') = (secret_name IS NOT NULL))",
+      "CREATE UNIQUE INDEX validations_open_secret ON validations (project, secret_name) WHERE kind = 'secret' AND decided_at IS NULL",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

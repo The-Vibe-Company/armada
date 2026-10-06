@@ -9,6 +9,7 @@
 
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
+import { secretNameRefusal } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
 import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
@@ -130,9 +131,12 @@ export const FLEET_OPS = [
   "inbox/ticket",
   "inbox/resolve",
   "answer",
+  "answer/generated",
+  "merge-notice/prepare",
   "merge",
   "chore",
   "validations",
+  "secrets/request",
   "done",
   "queue/add",
   "queue/list",
@@ -316,10 +320,12 @@ const TRANSFER_REFUSED = Symbol("transfer refused");
 
 /** Writes carrying prose. Read-only polls never need the vault. */
 export const FLEET_TEXT_OPERATIONS: ReadonlySet<string> = new Set([
+  "secrets/request",
   "claim",
   "report",
   "ask",
   "answer",
+  "answer/generated",
   "release",
   "validate",
   "done",
@@ -888,10 +894,29 @@ export async function serveFleet(
             at,
           });
         }
+        case "merge-notice/prepare":
+          return store.prepareMergeNotice(slug, text(b, "key", LINE_MAX), at);
+        case "answer/generated":
+          if (!bool(b, "note") || b.item !== null) throw new Invalid("generated notes require note and no item");
+          return recordAnswer(
+            store,
+            slug,
+            {
+              text: text(b, "text", BODY_MAX),
+              note: true,
+              generated: true,
+              coordinator: coordinatorName,
+              deliveryKey: text(b, "deliveryKey", LINE_MAX),
+              ticket: ticketOf(b),
+              item: null,
+            },
+            at,
+          );
         case "answer": {
           const item = b.item === null || b.item === undefined ? null : idOf(b, "item");
           if (item !== null && (await store.getInboxItem(slug, item))?.kind === "hold")
             throw new Invalid('a merge hold is resolved with armada hold clear <id> --reason "<why>"');
+          if (b.generated) throw new Invalid("generated notes use answer/generated");
           return recordAnswer(
             store,
             slug,
@@ -915,15 +940,33 @@ export async function serveFleet(
             store,
             slug,
             {
+              coordinator: coordinatorName ?? "default",
               ticket: ticketOf(b),
               number,
               url: text(b, "url", URL_MAX),
               mergeCommit: shaOf(b, "mergeCommit"),
               headSha,
               decision: optText(b, "decision", BODY_MAX),
+              keepOpen: b.keepOpen === undefined ? false : bool(b, "keepOpen"),
             },
             at,
           );
+        }
+        case "secrets/request": {
+          const name = text(b, "name", 128);
+          if (secretNameRefusal(name))
+            throw new Invalid("use a worker secret name in upper snake case, e.g. OPENAI_API_KEY");
+          const result = await store.requestSecret({
+            project: slug,
+            ticket: ticketOf(b),
+            name,
+            reason: text(b, "reason", VALIDATION_LIMITS.reason),
+            author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
+            at,
+          });
+          return result.state === "already-set"
+            ? result
+            : { ...result, url: approvalUrl(deps.appUrl ?? null, result.validation.id) };
         }
         case "chore": {
           if (b.kind !== "linear-pending") throw new Invalid("unknown chore kind");
@@ -1115,6 +1158,7 @@ function validationPrOf(v: unknown): ValidationPr | null {
 
 function validationOf(b: Body, images = VALIDATION_LIMITS.images): ValidationRecord {
   const kind = b.kind;
+  if (kind === "secret") throw new Invalid("secret requests use secrets/request");
   if (!VALIDATION_KINDS.includes(kind as ValidationKind))
     throw new Invalid("kind must be merge, validation or question");
   const L = VALIDATION_LIMITS;
@@ -1230,11 +1274,13 @@ export function fleetClient(o: {
     inbox: (q: InboxQuery) => call<InboxRead | null>("inbox", q),
     inboxItem: (id) => call<StoredInboxItem | null>("inbox/item", { id }),
     ticketItems: (ticket) => call<InboxItem[]>("inbox/ticket", { ticket }),
-    answer: (a: AnswerRecord) => call<string>("answer", a),
+    prepareMergeNotice: (key) => call<"reserved" | "attempted" | "delivered">("merge-notice/prepare", { key }),
+    answer: (a: AnswerRecord) => call<string>(a.generated ? "answer/generated" : "answer", a),
     resolve: (r) => call<boolean>("inbox/resolve", r),
-    merge: (m: MergeRecord) => call<MergeRecorded>("merge", m),
+    merge: (m: MergeRecord) => call<MergeRecorded>("merge", { ...m, keepOpen: !!m.keepOpen }),
     chore: (c: ChoreRecord) => call<null>("chore", c).then(() => undefined),
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
+    requestSecret: (v) => call("secrets/request", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),
     queueAdd: (e) => call<QueueAdded>("queue/add", e),

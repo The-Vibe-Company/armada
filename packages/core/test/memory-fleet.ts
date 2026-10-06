@@ -72,6 +72,7 @@ export function memoryFleet(): FleetStore & {
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
   const paths = new Map<string, string[]>();
+  const notices = new Map<string, { delivered: boolean; tickets: Set<string> }>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
   const deploys: DeployRow[] = [];
@@ -337,6 +338,38 @@ export function memoryFleet(): FleetStore & {
     presence,
     launches,
     validations,
+    async prepareMergeNotice(project, deliveryKey) {
+      const k = key(project, deliveryKey);
+      const previous = notices.get(k);
+      if (previous) return previous.delivered ? "delivered" : "attempted";
+      notices.set(k, { delivered: false, tickets: new Set() });
+      return "reserved";
+    },
+    async recordMergeNotice(q) {
+      const receipt = notices.get(key(q.project, q.key));
+      if (!receipt) throw new Error("merge notice was not reserved");
+      if (receipt.tickets.has(q.ticket)) return "Generated note already recorded.";
+      const id = insert({
+        project: q.project,
+        ticket: q.ticket,
+        kind: "note",
+        recipient: "worker",
+        author: "coordinator",
+        coordinator: q.coordinator,
+        body: q.text,
+        createdAt: q.at.toISOString(),
+        requestQuestion: null,
+        requestProfile: null,
+      });
+      resolve(
+        items.filter((i) => i.id === id),
+        "delivered through the runtime",
+        q.at,
+      );
+      receipt.delivered = true;
+      receipt.tickets.add(q.ticket);
+      return `Note #${id} recorded.`;
+    },
 
     async recordDeploy(input: DeployInputWithCoverage & { at: Date }) {
       const detail = deployDetail(input.detail);
@@ -713,6 +746,7 @@ export function memoryFleet(): FleetStore & {
           e.project !== project ||
           !e.ticket ||
           e.at < since ||
+          (opts.kinds && !opts.kinds.includes(e.kind)) ||
           (opts.tickets && !opts.tickets.includes(e.ticket))
         )
           continue;
@@ -723,6 +757,7 @@ export function memoryFleet(): FleetStore & {
         Object.entries(out).map(([t, e]) => [
           t,
           {
+            id: e.id,
             kind: e.kind,
             phase: e.phase ?? null,
             shippingStage: e.shippingStage ?? null,
@@ -1389,7 +1424,7 @@ export function memoryFleet(): FleetStore & {
       if (leases.get(k)?.holder === l.holder) leases.delete(k);
     },
 
-    async pendingLaunches(project, since) {
+    async pendingLaunches(project, since, opts = {}) {
       const held = (ticket: string) => {
         const h = handles.get(key(project, ticket));
         return !!h && !h.releasedAt;
@@ -1403,11 +1438,12 @@ export function memoryFleet(): FleetStore & {
       return [...newest.values()]
         .filter(
           (l) =>
-            !l.endedAt &&
-            !held(l.ticket) &&
-            !events.some(
-              (e) => e.project === project && e.ticket === l.ticket && e.kind === "claim" && e.at >= l.launchedAt,
-            ),
+            opts.history ||
+            (!l.endedAt &&
+              !held(l.ticket) &&
+              !events.some(
+                (e) => e.project === project && e.ticket === l.ticket && e.kind === "claim" && e.at >= l.launchedAt,
+              )),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
         .map(({ id, ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle, coordinator }) => ({
@@ -1441,6 +1477,26 @@ export function memoryFleet(): FleetStore & {
       return expired;
     },
 
+    async requestSecret(input) {
+      const open = validations.find(
+        (v) => v.project === input.project && v.kind === "secret" && v.secretName === input.name && !v.decision,
+      );
+      if (open) return { state: "requested", validation: copy(open) };
+      const validation = await this.addValidation({
+        project: input.project,
+        ticket: input.ticket,
+        kind: "secret",
+        secretName: input.name,
+        what: `Set ${input.name}`,
+        reason: input.reason,
+        choices: null,
+        pr: null,
+        attachments: [],
+        author: input.author,
+        at: input.at,
+      });
+      return { state: "requested", validation };
+    },
     async addValidation(v) {
       const at = v.at.toISOString();
       for (const was of validations)

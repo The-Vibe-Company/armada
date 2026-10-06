@@ -77,7 +77,9 @@ armada stop ABC-12
 
 ## Without Armada: manual message
 
-Use this only when Armada has no bound launch or claim, such as replacing a refused launch token. For registered workers, use `armada answer` so generation checks and retry deduplication apply.
+Use this when Armada has no bound launch or claim, such as replacing a refused launch token. For ordinary answers and notes to registered workers, use `armada answer` so generation checks and retry deduplication apply.
+
+A printed generated merge-note fallback is another use of this appendix. Check the current claim’s handle, coordinator and phase first; send only to the same active worker. Inspect any unknown delivery outcome and its session before sending, so an already accepted note is not delivered again. Deliver the printed text directly with the commands below. Generated merge notes stay out of the ordinary `armada answer --note` path, which posts to Linear and resolves an open plan; do not record a manual fallback through that command.
 
 ```sh
 printf '%s\n' "Plan approved. Go on." | conductor --json message create --session <sessionId> --message-file -

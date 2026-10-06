@@ -177,7 +177,7 @@ const COMMAND_HELP: Record<string, string> = {
                     rules the coordinator judged apply. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
-        [--plan <text> | --plan-file <path|->] [--paths <comma list>] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--stage review|ci]
+        [--plan <text> | --plan-file <path|->] [--paths <comma list>] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--more-prs "<what remains>"] [--stage review|ci]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge, awaiting-validation); the same phase again is a
                     status update; armada validate is how a worker enters awaiting-validation.
@@ -187,12 +187,14 @@ const COMMAND_HELP: Record<string, string> = {
                     ready-to-merge needs --sha (full 40 characters, the PR head) and green CI.
                     --stage is shipping only: review at independent review, ci after it passes.
                     --shipped-with names the shipping path in its hand-back and inbox.
+                    --more-prs is ready-to-merge only: keeps the ticket and worker alive
+                    after this PR lands, then continues with the remaining work.
                     Prints the ticket's state and what waits in this worker's inbox.
 `,
   release: `  release --reason <text>
                     Give the ticket back: agent labels removed, ticket moved back
 `,
-  ask: `  ask "<question>" [--options "<a> | <b>"] [--ticket <id>]
+  ask: `  ask "<question>" [--secret <NAME>] [--options "<a> | <b>"] [--ticket <id>]
                     Worker: ask the coordinator. The phase becomes blocked, the question
                     goes on the ticket and in the coordinator's inbox. Then stop and wait
                     for the answer in your session, and report the phase you resume
@@ -267,22 +269,28 @@ const COMMAND_HELP: Record<string, string> = {
                     --reason is required with [policy] merge_approval. --keep-open records
                     intent for the drain to keep the ticket open; --through-hold records
                     why a fix may pass the shared merge hold. Queuing does not drain.
-                    Next: armada merge --drain (in the background).
+                    Next: armada merge queue.
   merge queue [--json]
                     List open entries in order and entries finished in the last day.
   merge queue remove <pr>
                     Remove a queued entry; an entry currently merging cannot be removed.
                     To pause merges, use armada hold add "<why>".
   merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
-        [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive]
+        [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive] [--no-notify] [--keep-open | --close]
   merge --finish <pr> [--ticket <id>]
                     Complete Linear bookkeeping for a confirmed merge; no merge lock.
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
-                    lock, close the ticket and list the workers to tell. Never deletes
+                    lock, close the ticket and notify affected workers with open PRs.
+                    Shared files and [merge] notify_paths decide who receives a note;
+                    handed-back workers stay quiet. --no-notify prints the manual list.
+                    Never deletes
                     the branch. After GitHub confirms the merge, archives the worker's
-                    Armada workspace; --no-archive leaves it open. Cleanup failures print
+                    Armada workspace; --no-archive leaves it open. --more-prs in the
+                    hand-back keeps the ticket implementing and tells its worker to continue.
+                    --keep-open forces that behavior; --close closes despite --more-prs.
+                    Neither goes with --no-ticket, or with each other. Cleanup failures print
                     an armada stop command and do not fail the merge.
                     --dry-run only runs the checklist. Signed in to Armada,
                     refused while Armada is down; --no-lock skips the lock and hold check.
@@ -346,6 +354,9 @@ const COMMAND_HELP: Record<string, string> = {
 `,
   secrets: `  secrets           The project's secrets for workers: names, project or organization,
                     who set each and when; never a value. Needs a sign-in to Armada
+  secrets request <NAME> [--ticket <id>] --reason "<why>"
+                    Ask an owner/admin by approval link; values never go in chat.
+                    Without --ticket the request belongs to the project's program root.
   secrets set <NAME> [--org] [--value-stdin | --from-env <VAR>]
                     Coordinator (owner or admin): set one for this project, or with --org
                     for every project. The value comes from a hidden prompt, standard input
@@ -553,9 +564,11 @@ const VALUE_OPTIONS = [
   "sha",
   "target",
   "shipped-with",
+  "more-prs",
   "stage",
   "through-hold",
   "reason",
+  "secret",
   "program-root",
   "name",
   "slug",
@@ -606,7 +619,9 @@ const FLAG_OPTIONS = [
   "no-ticket",
   "when-green",
   "keep-open",
+  "close",
   "no-archive",
+  "no-notify",
   "prompt",
   "profile-line",
   "wait",
@@ -636,9 +651,21 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
-  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage", "paths"],
+  report: [
+    "ticket",
+    "message",
+    "message-file",
+    "plan",
+    "plan-file",
+    "pr",
+    "sha",
+    "shipped-with",
+    "more-prs",
+    "stage",
+    "paths",
+  ],
   release: ["ticket", "reason"],
-  ask: ["ticket", "options", "message", "message-file"],
+  ask: ["ticket", "options", "message", "message-file", "secret"],
   inbox: ["wait", "timeout", "mine"],
   status: ["mine"],
   watch: ["stop", "name", "follow", "since", "tickets", "kinds", "mine", "for"],
@@ -652,6 +679,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "ticket",
     "no-ticket",
     "no-archive",
+    "no-notify",
     "dry-run",
     "no-lock",
     "wait",
@@ -660,6 +688,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "ask-owner",
     "when-green",
     "keep-open",
+    "close",
     "through-hold",
   ],
   brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
@@ -693,7 +722,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file", "check", "excerpt", "details-file"],
   "ask-owner": ["choices", "check"],
   login: ["api-key", "launch-token", "api-url"],
-  secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
+  secrets: ["ticket", "reason", "org", "value-stdin", "from-env", "file", "only"],
   run: ["ticket", "only", "redact"],
 };
 
@@ -914,7 +943,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const config = parseConfig(text, path);
       // Fetching: the worker session of this ticket when the machine holds one, else this terminal's
       // sign-in. Setting is the coordinator's, never a worker session's, even on a machine that holds one.
-      const sets = args.command === "secrets" && ["set", "unset"].includes(args.rest[0] ?? "");
+      const sets = args.command === "secrets" && ["set", "unset", "request"].includes(args.rest[0] ?? "");
       const { credentials } = await loadCredentials(io, {
         armada: false,
         ...(sets

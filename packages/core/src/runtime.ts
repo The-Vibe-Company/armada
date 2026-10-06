@@ -14,8 +14,6 @@ export const OBSERVABLE_RUNTIMES: readonly RuntimeName[] = ["herdr", "conductor"
 
 /** A runtime action always names one worker generation. */
 export interface ClaimRef {
-  /** Authenticated launch ownership; metadata, never part of generation identity. */
-  coordinator?: string | null;
   ticket: string;
   runtime: RuntimeName;
   handle: string;
@@ -24,6 +22,10 @@ export interface ClaimRef {
   releasedAt: string | null;
   /** Herdr provenance: the branch recorded by the claim. */
   branch?: string | null;
+  /** Authenticated ownership metadata; delivery refuses a notice after transfer to another coordinator. */
+  coordinator?: string | null;
+  /** Merge notices must not wake a session after any of its tickets hands back. */
+  skipHandedBack?: boolean;
 }
 /** Receipt of a message accepted by a runtime. */
 export interface Delivery {

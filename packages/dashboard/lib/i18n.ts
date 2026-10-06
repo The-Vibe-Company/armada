@@ -6,6 +6,8 @@ import type {
   AgentPhase,
   CiState,
   CoordinatorState,
+  DeployState,
+  HoldKind,
   JobState,
   MainHealth,
   RequestKind,
@@ -588,6 +590,27 @@ const en = {
         `${n.ready} ready to merge`,
         `${n.merged} merged today`,
       ].join(" · "),
+    /** An open merge pause (THE-1105): its reason, then its kind, id and age. */
+    pause: {
+      title: (reason: string) => `Merges paused: ${reason}`,
+      detail: (kind: string, id: number) => `${kind} · hold #${id}`,
+      opened: (ago: string) => `opened ${ago}`,
+      kinds: { manual: "manual", deploy: "deploy", "main-red": "main red" } satisfies Record<HoldKind, string>,
+    },
+    /** A project's deploy targets and their last state (THE-1105). */
+    deploys: {
+      title: "Deploys",
+      states: {
+        waiting: "waiting",
+        live: "live",
+        healthy: "healthy",
+        "deploy-failed": "deploy failed",
+        "smoke-failed": "smoke failed",
+        timeout: "timed out",
+      } satisfies Record<DeployState, string>,
+      none: "no deploy yet",
+      quiet: (d: string) => `no news for ${d}`,
+    },
     card: {
       blocked: (n: number) => `${n} blocked`,
       you: (n: number) => `${n} for you`,
@@ -686,18 +709,29 @@ const en = {
     sentBy: (author: string | null, ago: string) => `by ${author ?? "you"}, ${ago}`,
   },
   validations: {
-    kinds: { merge: "Merge to approve", validation: "To validate", question: "Question" } satisfies Record<
-      ValidationKind,
-      string
-    >,
+    secret: {
+      form: "Set the requested secret",
+      manager: "An owner or admin sets it.",
+      hint: "Stored securely for this project. Never paste a key into chat.",
+      save: "Save secret",
+      saved: "Secret saved. The coordinator has been notified.",
+    },
+    kinds: {
+      merge: "Merge to approve",
+      validation: "To validate",
+      question: "Question",
+      secret: "Secret needed",
+    } satisfies Record<ValidationKind, string>,
     headline: (n: number) =>
       n === 0 ? "Nothing to decide" : n === 1 ? "1 decision waits for you" : `${n} decisions wait for you`,
     oldest: (d: string) => `The oldest has waited ${d}.`,
     caughtUp: "You're up to date.",
+    /** All those waiting, at the owner's median time per decision in a sitting (THE-1113). */
+    estimate: (d: string) => `About ${d} in all.`,
+    sentOne: (ticket: string) => `${ticket}: sent to the coordinator.`,
     pendingTitle: "To decide",
     decidedTitle: "Decided this week",
     noPending: "Nothing waits for you.",
-    choose: "Pick a validation on the left.",
     back: "Validations",
     whyYou: (reason: string) => `Why you: ${reason}`,
     facts: { pr: "Pull request", head: "Head", diff: "Diff", ci: "CI", preview: "Preview" },
@@ -735,6 +769,8 @@ const en = {
     checks: "Things to check",
     details: "More context",
     more: (n: number) => `+${n} more images on the ticket`,
+    /** The Validations page's keys (THE-1113). */
+    keys: { send: "⌘↵ sends the changes · Esc leaves the note" },
     screenshot: "Screenshot",
   },
   insights: {
@@ -1581,6 +1617,25 @@ const fr: Strings = {
         `${n.ready} prêt${n.ready > 1 ? "s" : ""} à merger`,
         `${n.merged} mergé${n.merged > 1 ? "s" : ""} aujourd'hui`,
       ].join(" · "),
+    pause: {
+      title: (reason) => `Merges en pause : ${reason}`,
+      detail: (kind, id) => `${kind} · pause n° ${id}`,
+      opened: (ago) => `ouverte ${ago}`,
+      kinds: { manual: "manuelle", deploy: "déploiement", "main-red": "main rouge" },
+    },
+    deploys: {
+      title: "Déploiements",
+      states: {
+        waiting: "en attente",
+        live: "en ligne",
+        healthy: "sain",
+        "deploy-failed": "déploiement échoué",
+        "smoke-failed": "smoke test échoué",
+        timeout: "délai dépassé",
+      },
+      none: "aucun déploiement",
+      quiet: (d) => `aucune nouvelle depuis ${d}`,
+    },
     card: {
       blocked: (n) => `${n} bloqué(s)`,
       you: (n) => `${n} pour toi`,
@@ -1670,14 +1725,22 @@ const fr: Strings = {
     sentBy: (author, ago) => `par ${author ?? "toi"}, ${ago}`,
   },
   validations: {
-    kinds: { merge: "Merge à approuver", validation: "À valider", question: "Question" },
+    secret: {
+      form: "Fournir le secret demandé",
+      manager: "Un propriétaire ou administrateur le renseigne.",
+      hint: "Stocké en sécurité pour ce projet. Ne colle jamais une clé dans le chat.",
+      save: "Enregistrer le secret",
+      saved: "Secret enregistré. Le coordinateur a été prévenu.",
+    },
+    kinds: { merge: "Merge à approuver", validation: "À valider", question: "Question", secret: "Secret à fournir" },
     headline: (n) => (n === 0 ? "Rien à décider" : n === 1 ? "1 décision t'attend" : `${n} décisions t'attendent`),
     oldest: (d) => `La plus ancienne attend depuis ${d}.`,
     caughtUp: "Tu es à jour.",
+    estimate: (d) => `Environ ${d} en tout.`,
+    sentOne: (ticket) => `${ticket} : transmis au coordinateur.`,
     pendingTitle: "À décider",
     decidedTitle: "Décidé cette semaine",
     noPending: "Rien ne t'attend.",
-    choose: "Choisis une validation à gauche.",
     back: "Validations",
     whyYou: (reason) => `Pourquoi toi : ${reason}`,
     facts: { pr: "Pull request", head: "Tête", diff: "Diff", ci: "CI", preview: "Preview" },
@@ -1714,6 +1777,7 @@ const fr: Strings = {
     checks: "Points à vérifier",
     details: "Plus de contexte",
     more: (n) => `+${n} images sur le ticket`,
+    keys: { send: "⌘↵ envoie les changements · Échap quitte la note" },
     screenshot: "Capture",
   },
   insights: {

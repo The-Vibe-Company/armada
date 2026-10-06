@@ -58,10 +58,15 @@ const cookiesOf = (res: Response) =>
     .join("; ");
 const as = (cookie: string) => new Headers({ cookie });
 
+// Cold PGlite startup has its own bounded budget, independent of authentication.
 beforeAll(async () => {
   console.info = (...a: unknown[]) => void logged.push(a.join(" "));
   console.warn = (...a: unknown[]) => void logged.push(a.join(" "));
   client = await tempDatabase();
+}, 10_000);
+
+// Authentication retains Bun's default bounded setup budget.
+beforeAll(async () => {
   const mode = accountsModeOf(ENV);
   if (mode.kind !== "accounts") throw new Error("test settings incomplete");
   auth = createAuth(mode.settings, { client, sender: { send: async (m) => void outbox.push(m) } });
@@ -630,6 +635,9 @@ describe("the fleet through the Armada API", () => {
     const revoked = await api.revokeLaunch(signIn, target);
     expect(revoked.ticket).toBe("WID-80");
     expect((await coordinator.pendingLaunches()).some((launch) => launch.ticket === "WID-80")).toBe(false);
+    const launchHistory = await fleetStore(client).pendingLaunches(WIDGETS.slug, start, { history: true });
+    expect(launchHistory.find((launch) => launch.ticket === "WID-80")?.launchedAt).toBe(new Date(clock).toISOString());
+    expect(await fleetStore(client).pendingLaunches(WIDGETS.slug, new Date(clock + 1), { history: true })).toEqual([]);
     expect(
       await refusal(api.whoami({ kind: "worker", token: session.token, project: WIDGETS.slug, ticket: "WID-80" })),
     ).toEqual([401, expect.stringContaining("cut off from Armada")]);
@@ -1082,4 +1090,64 @@ test("older callers' prose and captions are masked with scoped vault values befo
   } finally {
     await deleteSecret(client, target);
   }
+});
+
+test("secret requests use the authenticated fleet API, mask reasons and refuse workers and foreign organizations", async () => {
+  const signIn: ArmadaSignIn = { kind: "api-key", key: apiKey };
+  const projectOwner = (await client.query("SELECT organization_id FROM projects WHERE slug = $1", [WIDGETS.slug]))
+    .rows[0];
+  const vault = deps.vault?.();
+  if (vault?.kind !== "on") throw new Error("synthetic vault missing");
+  const canary = "synthetic-request-reason-secret";
+  await setSecret(client, vault.key, {
+    organization: String(projectOwner?.organization_id),
+    project: WIDGETS.slug,
+    user: null,
+    name: "REQUEST_CANARY",
+    value: canary,
+    actor: { kind: "person", id: "synthetic-owner", label: "Synthetic Owner" },
+    now: now(),
+  });
+  const request = await fleetOf(signIn).requestSecret({
+    name: "REQUEST_PROVIDER_KEY",
+    ticket: "WID-71",
+    reason: `Calls the API ${canary}`,
+  });
+  expect(request.state).toBe("requested");
+  if (request.state !== "requested") throw new Error("request missing");
+  expect(request.url).toBe(`${BASE}/approve/${request.validation.id}`);
+  expect(JSON.stringify(request)).not.toContain(canary);
+  expect(request.validation.reason).toContain("«secret REQUEST_CANARY»");
+  const repeated = await fleetOf(signIn).requestSecret({
+    name: "REQUEST_PROVIDER_KEY",
+    ticket: "WID-72",
+    reason: "Also calls the API",
+  });
+  expect(repeated).toEqual(request);
+  const already = await fleetOf(signIn).requestSecret({
+    name: "REQUEST_CANARY",
+    ticket: "WID-71",
+    reason: "Already stored",
+  });
+  expect(already).toEqual({ state: "already-set" });
+  expect(JSON.stringify(already)).not.toContain(canary);
+  const workerSignIn = await worker("WID-71");
+  expect(
+    (
+      await refusal(
+        fleetOf(workerSignIn).requestSecret({ name: "REQUEST_WORKER_KEY", ticket: "WID-71", reason: "Calls API" }),
+      )
+    )[0],
+  ).toBe(403);
+  expect(
+    (
+      await refusal(
+        fleetOf({ kind: "api-key", key: otherKey }).requestSecret({
+          name: "REQUEST_OTHER_KEY",
+          ticket: "WID-71",
+          reason: "Calls API",
+        }),
+      )
+    )[0],
+  ).toBe(403);
 });

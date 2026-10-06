@@ -4,6 +4,8 @@
 // Order: take the per-project merge lease, check everything, merge pinned to
 // the handed-back SHA, read MERGED back, record on Armada, then close the ticket. With --wait the
 // pull request is first brought up to date and waited for, without the lease.
+
+import picomatch from "picomatch";
 import { ArmadaApiError } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { mainHealthLine, type UnblockedTickets } from "./fleet.ts";
@@ -24,10 +26,12 @@ import { acceptancePasses, applicableAcceptance } from "./phases.ts";
 
 export { MERGE_LEASE } from "./live.ts";
 
+import { shellWord } from "./brief.ts";
 import type { QueueInput } from "./merge-queue.ts";
 import { checkIssues, FULL_SHA } from "./phases.ts";
+import { closeFinishedSpec } from "./spec-close.ts";
 import type { FrontierTicket } from "./status.ts";
-import type { MainHealth } from "./types.ts";
+import type { MainHealth, PullRequest } from "./types.ts";
 import { approvalUrl, decidedLine, type MergeApproval, mergeApproval, type Validation } from "./validations.ts";
 import { activeClaimComments, firstState, live, others, Refusal, ticketFromBranch } from "./worker.ts";
 
@@ -90,10 +94,12 @@ export interface LocalRepo {
 
 /** A ticket in flight, as `armada status` reads it. */
 export interface TicketInFlight {
+  coordinator?: string | null;
   id: string;
   title: string;
   phase: string;
   runtime: string | null;
+  pr?: { number: number; files: string[] | null; filesComplete: boolean } | null;
 }
 
 export interface MergeUnblocked {
@@ -109,6 +115,8 @@ export interface MergeUnblocked {
 }
 
 export interface MergeContext {
+  /** Only workers unowned or owned by this coordinator receive automatic notices. */
+  coordinatorName?: string;
   /** An already-read health result, when a caller has one. */
   mainHealth?: MainHealth | null;
   config: ArmadaConfig;
@@ -120,10 +128,15 @@ export interface MergeContext {
   fleet: () => Promise<{ fleet: Fleet | null; warning: string | null }>;
   /** True when this terminal is signed in to Armada: the merge lock is then required, and Armada being down refuses the merge. */
   lockRequired: boolean;
-  /** One post-close reading for workers in flight and the closed ticket's dependents. Null names no closed ticket. */
-  /** End worker sign-in sessions after confirmed Armada bookkeeping, before Linear cleanup. */
+  /** End worker sign-in sessions after final-merge Armada bookkeeping, before Linear cleanup. */
   afterRecord?: (ticket: string) => Promise<void>;
-  afterRead: (ticket: string | null) => Promise<{ inFlight: TicketInFlight[]; unblocked: MergeUnblocked | null }>;
+  /** One post-close reading; null names no closed ticket. */
+  afterRead: (ticket: string | null) => Promise<{
+    inFlight: TicketInFlight[];
+    unblocked: MergeUnblocked | null;
+    filesKnown?: boolean;
+    noticeFallback?: string;
+  }>;
   /** Identifies this coordinator in the merge lease. */
   holder: string;
   now: () => Date;
@@ -143,6 +156,10 @@ export interface MergeInput {
   ticket?: string | null;
   /** No hand-back or Linear writes. A program ticket-named branch requires `reason` to leave its ticket open. */
   noTicket?: boolean;
+  /** Keep the ticket and worker alive for another PR; the hand-back can also request it. */
+  keepOpen?: boolean;
+  /** Close despite more PRs in the hand-back. Mutually exclusive with keepOpen/noTicket. */
+  close?: boolean;
   /** Run the checklist only. */
   dryRun?: boolean;
   /** Merge without the merge lock, e.g. while Armada is down; recorded on the ticket. */
@@ -165,6 +182,70 @@ export interface WorkerToTell {
   runtime: string | null;
   /** Runtime session, when the fleet's live data knows it. */
   handle: string | null;
+  pr?: TicketInFlight["pr"];
+  /** Frozen active generation; only Armada's stored claim authorizes delivery. */
+  claim?: RuntimeHandle | null;
+  coordinator?: string | null;
+}
+
+export interface WorkerNotice extends WorkerToTell {
+  pr: NonNullable<TicketInFlight["pr"]>;
+  sharedFiles: string[];
+  why: string;
+}
+
+/** Path coverage used by both merged and working PR notice selection. */
+export function noticeFileCoverage(pr: Pick<PullRequest, "files" | "filesComplete">): {
+  files: string[] | null;
+  filesComplete: boolean;
+} {
+  return {
+    files: pr.files?.map((file) => file.path) ?? null,
+    // GitHub omits the original path of a rename; both overlap and notify globs
+    // must conservatively account for that unknown path before flattening files.
+    filesComplete: pr.filesComplete === true && !pr.files?.some((file) => file.changeType === "RENAMED"),
+  };
+}
+
+/** Selecting recipients never performs I/O or wakes a completed worker. */
+export function workersToTell(
+  merged: { files: string[] | null; filesComplete: boolean },
+  workers: WorkerToTell[],
+  notifyPaths: readonly string[],
+  coordinatorName?: string,
+): { tell: WorkerNotice[]; skipped: { ticket: string; why: string }[] } {
+  const tell: WorkerNotice[] = [];
+  const skipped: { ticket: string; why: string }[] = [];
+  const files = new Set(merged.files ?? []);
+  const matches = picomatch([...notifyPaths], { dot: true });
+  const globalFiles = [...files].filter((f) => matches(f));
+  for (const worker of workers) {
+    if (coordinatorName && worker.coordinator && worker.coordinator !== coordinatorName) {
+      skipped.push({ ticket: worker.ticket, why: `owned by coordinator ${worker.coordinator}` });
+      continue;
+    }
+    if (worker.phase === "ready-to-merge") {
+      skipped.push({ ticket: worker.ticket, why: "already handed back" });
+      continue;
+    }
+    if (!worker.pr) {
+      skipped.push({ ticket: worker.ticket, why: "no pull request yet" });
+      continue;
+    }
+    const sharedFiles = [...new Set(worker.pr.files ?? [])].filter((f) => files.has(f)).sort();
+    const why = !merged.filesComplete
+      ? "merged PR files incomplete"
+      : globalFiles.length
+        ? `notify_paths: ${globalFiles.join(", ")}`
+        : sharedFiles.length
+          ? "shared files"
+          : !worker.pr.filesComplete
+            ? "worker PR files incomplete"
+            : null;
+    if (why) tell.push({ ...worker, pr: worker.pr, sharedFiles, why });
+    else skipped.push({ ticket: worker.ticket, why: "not affected" });
+  }
+  return { tell, skipped };
 }
 
 export interface MergeOutcome {
@@ -184,6 +265,12 @@ export interface MergeOutcome {
   workers: WorkerToTell[];
   /** False when the workers in flight could not be listed (or for a dry run): `workers` is then not the whole fleet. */
   workersListed: boolean;
+  /** False after a failed GitHub reading: keep the manual list and never automatically deliver. */
+  filesKnown?: boolean;
+  /** Why automatic notices are unsafe; the snapshot-derived manual worker list is retained. */
+  noticeFallback?: string;
+  notices?: WorkerNotice[];
+  notAffected?: { ticket: string; why: string }[];
   /** Dependents of the ticket just closed; null for a dry run, no-ticket merge or failed reading. */
   unblocked: MergeUnblocked | null;
   /** Cleanup evidence captured by Armada after the confirmed merge. Claim comments are hints only. */
@@ -195,6 +282,10 @@ export interface MergeOutcome {
     claim: RuntimeHandle | null;
     open: RuntimeHandle[];
   } | null;
+  /** A confirmed partial merge retains its worker and ticket. */
+  keepOpen?: boolean;
+  /** Message to the same active worker generation, or for manual delivery. */
+  continuation?: { message: string; claim: RuntimeHandle | null } | null;
   warnings: string[];
 }
 
@@ -233,6 +324,7 @@ export interface HandBack {
   /** SHA as written by the worker (may be short or missing). */
   sha: string | null;
   at: string;
+  more: string | null;
 }
 
 /** The newest `Agent status: ready-to-merge — PR #<n>, head <sha>, …` comment of the ticket. */
@@ -245,7 +337,12 @@ export function findHandBack(ticket: Ticket): HandBack | null {
   if (!c?.status) return null;
   const pr = c.status.summary.match(/\bPR #(\d+)/i)?.[1];
   const sha = c.status.summary.match(/\bhead ([0-9a-f]+)\b/i)?.[1];
-  return { pr: pr ? Number(pr) : null, sha: sha?.toLowerCase() ?? null, at: c.createdAt };
+  return {
+    pr: pr ? Number(pr) : null,
+    sha: sha?.toLowerCase() ?? null,
+    at: c.createdAt,
+    more: c.status.summary.match(/; more PRs: (.+)$/)?.[1]?.trim() || null,
+  };
 }
 
 /** States in which GitHub merges the pull request as it is (HAS_HOOKS: mergeable, with pre-receive hooks). */
@@ -725,7 +822,16 @@ async function mergeTicketFor(ctx: MergeContext, pull: MergePull, input: MergeIn
         `Linear did not answer and Armada has no open hand-back for ${id}, PR #${pull.number} at head ${pull.headSha}; nothing was merged`,
         `armada merge ${pull.number} again once Linear answers or the worker hands back this head`,
       );
-    return { id, url: null, armadaHandBack: { pr: pull.number, sha, at: item.createdAt } };
+    return {
+      id,
+      url: null,
+      armadaHandBack: {
+        pr: pull.number,
+        sha,
+        at: item.createdAt,
+        more: item.body.match(/; more PRs: (.+)$/)?.[1]?.trim() || null,
+      },
+    };
   }
 }
 
@@ -950,6 +1056,8 @@ async function recheck(ctx: MergeContext, input: MergeInput, run: Run, c: Checke
       `#${pull.number} changed while it was checked; nothing was merged:\n${problems.map((p) => `  - ${p}`).join("\n")}${updatedNote(run, pull)}`,
       `armada merge ${pull.number} again`,
     );
+  // Use the fresh hand-back's continuation intent after long checks.
+  c.ticket = l.ticket;
 }
 
 /**
@@ -1023,10 +1131,11 @@ async function ownerDecision(
 }
 
 /** The merge checklist for durable intent: hard failures refuse, readiness waits survive. */
-export async function prepareQueueEntry(
-  ctx: MergeContext,
-  input: MergeInput & { keepOpen?: boolean },
-): Promise<QueueInput> {
+export async function prepareQueueEntry(ctx: MergeContext, input: MergeInput): Promise<QueueInput> {
+  checkMergeIntent(input);
+  // The current queue contract stores keepOpen only; a close override cannot be persisted.
+  if (input.close)
+    throw new Refusal("--close cannot go together with --when-green", `armada merge ${input.pr} --close`);
   if (ctx.config.policy.mergeApproval && !mergeReason(input))
     throw new Refusal(
       "queuing under [policy] merge_approval requires --reason",
@@ -1241,6 +1350,56 @@ export const runtimeGuide = (runtime: string | null) =>
         .replace(/^-|-$/g, "")}`
     : null;
 
+/** GitHub's Linear automation may complete the issue seconds after the merge. */
+async function keepTicketOpen(
+  ctx: MergeContext,
+  ticket: Ticket,
+  merged: MergePull,
+  c: Pick<Checked, "updatedFrom" | "decided">,
+  more: string,
+  unlocked: boolean,
+  override: string,
+) {
+  const groups = ctx.config.tracker.labels;
+  const implementing = (await ctx.linear.groupLabels(groups.phaseGroup, ticket.teamId)).find(
+    (l) => l.name === "implementing",
+  );
+  if (!implementing) throw new Error(`the ${groups.phaseGroup} group has no implementing label`);
+  const restore = async (fresh: Ticket) => {
+    if (
+      fresh.statusType !== "completed" &&
+      fresh.labels.some((l) => l.id === implementing.id) &&
+      !others(fresh, groups.phaseGroup, implementing.id).length
+    )
+      return;
+    const started = fresh.statusType === "completed" ? firstState(fresh.states, "started") : null;
+    await ctx.linear.updateTicket(fresh.uuid, {
+      ...(started ? { stateId: started.id } : {}),
+      addLabelIds: fresh.labels.some((l) => l.id === implementing.id) ? [] : [implementing.id],
+      removeLabelIds: others(fresh, groups.phaseGroup, implementing.id),
+    });
+  };
+  await restore((await ctx.linear.readTicket(ticket.id)) ?? ticket);
+  if (!ticket.prs.some((p) => p.url === merged.url))
+    await ctx.linear.linkUrl(ticket.uuid, merged.url, merged.title || `Pull request #${merged.number}`);
+  await ctx.sleep(CONFIRM_BACKOFF_MS.reduce((sum, ms) => sum + ms, 0));
+  const fresh = await ctx.linear.readTicket(ticket.id);
+  if (!fresh) throw new Error(`${ticket.id} could not be read after the partial merge`);
+  if (fresh.statusType === "completed" || fresh.agentPhase !== "implementing") await restore(fresh);
+  const mergedPrefix = `PR #${merged.number} merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}; next: `;
+  if (
+    !fresh.comments.some(
+      (comment) => comment.status?.phase === "implementing" && comment.status.summary.startsWith(mergedPrefix),
+    )
+  ) {
+    await ctx.linear.comment(
+      ticket.uuid,
+      `Agent status: implementing — PR #${merged.number} merged into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"}; next: ${more}${unlocked ? "; merged without lock (--no-lock)" : ""}${c.decided ? `; ${c.decided}` : ""}${override ? `; ${override}` : ""}`,
+    );
+  }
+  return [`${ticket.id}: kept open, phase implementing; PR #${merged.number} merged; next: ${more}.`];
+}
+
 /** Closes the ticket in Linear: Done, agent labels removed, PR linked, merged status posted. */
 async function closeTicket(
   ctx: MergeContext,
@@ -1332,6 +1491,13 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
   }
 }
 
+function checkMergeIntent(input: MergeInput) {
+  if (input.keepOpen && input.close)
+    throw new Refusal("--keep-open and --close cannot go together", `armada merge ${input.pr}`);
+  if (input.noTicket && (input.keepOpen || input.close))
+    throw new Refusal("--no-ticket and --keep-open/--close cannot go together", `armada merge ${input.pr}`);
+}
+
 /**
  * Merges a handed-back pull request: lease, checklist, merge pinned to the
  * handed-back SHA, MERGED read back, ticket closed, workers to tell listed.
@@ -1340,6 +1506,7 @@ async function waitUntilReady(ctx: MergeContext, input: MergeInput, run: Run, de
  * for, out of the lease, and the lease is given back whenever it needs time again.
  */
 export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Promise<MergeOutcome> {
+  checkMergeIntent(input);
   if (input.throughHold !== undefined && !input.throughHold.trim())
     throw new Refusal(
       "--through-hold needs a reason; nothing was merged",
@@ -1458,7 +1625,21 @@ async function locked(ctx: MergeContext, input: MergeInput, run: Run): Promise<M
       ...c.lines,
       `Merged #${merged.number} into ${merged.baseRef} as ${merged.mergeCommit ?? "unknown"} (head ${merged.headSha}).`,
     ];
-    return after(ctx, c, merged, lines, handBackId, !!input.noLock, override);
+    const more = c.ticket
+      ? (("armadaHandBack" in c.ticket ? c.ticket.armadaHandBack : findHandBack(c.ticket))?.more ?? null)
+      : null;
+    const keepOpen = !!c.ticket && !input.close && (!!input.keepOpen || more !== null);
+    return after(
+      ctx,
+      c,
+      merged,
+      lines,
+      handBackId,
+      keepOpen,
+      more ?? "the remaining work on this ticket",
+      !!input.noLock,
+      override,
+    );
   };
   if (input.noLock) {
     early.push(
@@ -1500,6 +1681,8 @@ async function after(
   merged: MergePull,
   lines: string[],
   handBackId: number | null,
+  keepOpen: boolean,
+  more: string,
   unlocked: boolean,
   override = "",
 ): Promise<MergeOutcome> {
@@ -1520,6 +1703,7 @@ async function after(
           mergeCommit: merged.mergeCommit,
           headSha: merged.headSha,
           decision: c.decided ?? null,
+          keepOpen,
         }),
       );
       if (live$) break;
@@ -1540,14 +1724,23 @@ async function after(
   let linearPending = false;
   if (ticket) {
     try {
-      await ctx.afterRecord?.(ticket.id);
+      if (!keepOpen) await ctx.afterRecord?.(ticket.id);
     } catch (err) {
       c.warnings.push(`Could not end worker sessions (${err instanceof Error ? err.message : String(err)})`);
     }
     try {
       const fresh = await ctx.linear.readTicket(ticket.id);
       if (!fresh) throw new Error(`ticket ${ticket.id} not found in Linear`);
-      lines.push(...(await closeTicket(ctx, fresh, merged, c, unlocked, override)));
+      lines.push(
+        ...(keepOpen
+          ? await keepTicketOpen(ctx, fresh, merged, c, more, unlocked, override)
+          : await closeTicket(ctx, fresh, merged, c, unlocked, override)),
+      );
+      if (!keepOpen) {
+        const spec = await closeFinishedSpec(ctx, fresh);
+        c.warnings.push(...spec.warnings);
+        lines.push(...spec.lines);
+      }
     } catch (err) {
       linearPending = true;
       c.warnings.push(
@@ -1558,7 +1751,7 @@ async function after(
           ticket: ticket.id,
           kind: "linear-pending",
           pr: merged.number,
-          body: pendingLinearBody(merged.number, override),
+          body: pendingLinearBody(merged.number, override, keepOpen ? more : null),
         }),
       );
       chorePending = chore === null;
@@ -1572,19 +1765,31 @@ async function after(
 
   let workers: WorkerToTell[] = [];
   let listed = false;
+  let filesKnown = false;
+  let noticeFallback: string | undefined;
   let unblocked: MergeUnblocked | null = null;
   try {
-    const handles = new Map<string, RuntimeHandle>((live$?.open ?? []).map((h) => [h.ticket, h]));
-    const reading = await ctx.afterRead(linearPending ? null : (ticket?.id ?? null));
-    unblocked = ticket && !linearPending ? reading.unblocked : null;
+    const reading = await ctx.afterRead(keepOpen || linearPending ? null : (ticket?.id ?? null));
+    // Ownership can change without replacing the worker generation. Read claims after status,
+    // rather than authorizing notices from recordMerge's earlier clean-up snapshot.
+    const open = await live(ctx, c.warnings, "read worker claims", (fleet) => fleet.runtimeHandles());
+    const handles = new Map<string, RuntimeHandle>((open ?? []).filter((h) => !h.releasedAt).map((h) => [h.ticket, h]));
+    const displayHandles = new Map<string, RuntimeHandle>((open ?? live$?.open ?? []).map((h) => [h.ticket, h]));
+    filesKnown = reading.filesKnown === true;
+    noticeFallback = reading.noticeFallback ?? (filesKnown ? undefined : "files unknown");
+    if (!open && live$ && !noticeFallback) noticeFallback = "worker state unknown";
+    unblocked = ticket && !keepOpen && !linearPending ? reading.unblocked : null;
     workers = reading.inFlight
-      .filter((t) => t.id !== ticket?.id)
+      .filter((t) => keepOpen || t.id !== ticket?.id)
       .map((t) => ({
         ticket: t.id,
         title: t.title,
-        phase: t.phase,
-        runtime: t.runtime ?? handles.get(t.id)?.runtime ?? null,
-        handle: handles.get(t.id)?.handle ?? null,
+        phase: keepOpen && t.id === ticket?.id ? "implementing" : t.phase,
+        runtime: displayHandles.get(t.id)?.runtime ?? t.runtime ?? null,
+        handle: displayHandles.get(t.id)?.handle ?? null,
+        pr: t.pr ?? null,
+        claim: handles.get(t.id) ?? null,
+        coordinator: handles.has(t.id) ? (handles.get(t.id)?.coordinator ?? null) : (t.coordinator ?? null),
       }));
     listed = true;
   } catch (err) {
@@ -1592,10 +1797,38 @@ async function after(
       `could not list the workers in flight${ticket ? " and unblocked tickets" : ""} (${err instanceof Error ? err.message : String(err)}); run armada status`,
     );
   }
-  if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed, deploy };
+  // The merged worker receives its next-part instruction rather than a peer's rebase notice.
+  const peers = workers.filter((w) => w.ticket !== ticket?.id);
+  const selected =
+    filesKnown && !noticeFallback
+      ? workersToTell(noticeFileCoverage(merged), peers, ctx.config.merge.notifyPaths, ctx.coordinatorName)
+      : { tell: [], skipped: peers.map((w) => ({ ticket: w.ticket, why: noticeFallback ?? "files unknown" })) };
+  const notifications = { filesKnown, noticeFallback, notices: selected.tell, notAffected: selected.skipped };
+  if (!ticket)
+    return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed, deploy, ...notifications };
 
   const linearTicket = "armadaHandBack" in ticket ? null : ticket;
   const claim = activeClaimComments(linearTicket?.comments ?? [])[0]?.claim;
+  if (keepOpen) {
+    const branch =
+      merged.headRef ||
+      live$?.handle?.branch ||
+      claim?.branch ||
+      linearTicket?.branchName ||
+      `feature/${ticket.id.toLowerCase()}`;
+    const nextBranch = `${branch}-2`;
+    const message = `PR #${merged.number} merged as ${merged.mergeCommit ?? "unknown"}. Continue with: ${more}. Start the next pull request from the updated ${merged.baseRef}: git fetch origin && git switch -c ${shellWord(nextBranch)} origin/${shellWord(merged.baseRef)}, then claim nothing: report implementing as you go.`;
+    return {
+      ...outcome(c, true, merged, lines, workers, null),
+      workersListed: listed,
+      keepOpen: true,
+      continuation: { message, claim: live$?.handle ?? null },
+      ...notifications,
+      deploy,
+      linearPending,
+      armadaPending: ctx.lockRequired && (!live$ || chorePending),
+    };
+  }
   const runtime = live$?.handle?.runtime ?? linearTicket?.agentRuntime ?? claim?.runtime ?? null;
   const expected = runtimeGuide(runtime);
   let guide: string | null = null;
@@ -1617,6 +1850,7 @@ async function after(
     workersListed: listed,
     unblocked,
     deploy,
+    ...notifications,
     linearPending,
     armadaPending: ctx.lockRequired && (!live$ || chorePending),
   };
@@ -1652,8 +1886,15 @@ function outcome(
   };
 }
 
-const pendingLinearBody = (pr: number, audit = "") =>
-  `Finish Linear for #${pr}: Done, labels removed, PR linked, merged status. Run: armada merge --finish ${pr}${audit ? `\nMerge audit: ${audit}` : ""}`;
+const pendingLinearBody = (pr: number, audit = "", more: string | null = null) =>
+  `Finish Linear for #${pr}: ${more === null ? "Done, labels removed, PR linked, merged status" : "implementing, worker retained, PR linked, next part"}. Run: armada merge --finish ${pr}${more === null ? "" : `\nPartial merge next: ${more}`}${audit ? `\nMerge audit: ${audit}` : ""}`;
+
+function pendingPartial(body: string): string | null {
+  const line = body.match(/\nPartial merge next: ([^\n]*)/)?.[1];
+  if (line === undefined) return null;
+  if (!line.trim()) throw new Error("invalid pending partial merge intent");
+  return line;
+}
 
 const linearChorePr = (body: string): number | null => {
   const n = body.split("\n", 1)[0]?.match(/^Finish Linear for #(\d+)\b/)?.[1];
@@ -1677,6 +1918,8 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
   let linearPending = true;
   let armadaPending = false;
   let audit = "";
+  let more: string | null = null;
+  let pending = false;
   let auditUnreadable = false;
   try {
     const { fleet } = await ctx.fleet().catch(() => ({ fleet: null }));
@@ -1692,14 +1935,51 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
         armadaPending = true;
         throw new Error("Armada's pending merge audit could not be read; retry --finish once Armada answers");
       }
-      audit =
-        items
-          .find((i) => i.kind === "linear-pending" && linearChorePr(i.body) === pull.number)
-          ?.body.match(/\nMerge audit: ([\s\S]*)$/)?.[1] ?? "";
+      const chore = items.find((i) => i.kind === "linear-pending" && linearChorePr(i.body) === pull.number);
+      pending = !!chore;
+      audit = chore?.body.match(/\nMerge audit: ([\s\S]*)$/)?.[1] ?? "";
+      try {
+        more = chore ? pendingPartial(chore.body) : null;
+      } catch (error) {
+        auditUnreadable = true;
+        armadaPending = true;
+        throw error;
+      }
     }
     ticket = await readTicketFor(ctx, pull, input);
     if (!ticket) throw new Error(`#${input.pr} names no ticket`);
-    lines.push(...(await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit)));
+    // A resolved partial repair is already complete. Never re-open a later completed ticket.
+    const priorPartial =
+      !pending &&
+      ticket.comments
+        .find(
+          (comment) =>
+            comment.status?.phase === "implementing" &&
+            comment.status.summary.startsWith(`PR #${pull.number} merged into `),
+        )
+        ?.status?.summary.match(/; next: (.+)$/)?.[1];
+    if (priorPartial) more = priorPartial;
+    const completedLater =
+      more !== null &&
+      ticket.statusType === "completed" &&
+      others(ticket, ctx.config.tracker.labels.phaseGroup, null).length === 0 &&
+      ticket.comments.some(
+        (comment) =>
+          comment.status?.phase === "merged" &&
+          comment.status.summary.match(/^PR #(\d+)\b/)?.[1] !== String(pull.number),
+      );
+    if (completedLater) lines.push(`PR #${pull.number}: partial Linear repair superseded by a later completed PR.`);
+    if (!priorPartial && !completedLater)
+      lines.push(
+        ...(more !== null
+          ? await keepTicketOpen(ctx, ticket, pull, { updatedFrom: null, decided: null }, more, false, audit)
+          : await closeTicket(ctx, ticket, pull, { updatedFrom: null, decided: null }, false, audit)),
+      );
+    if (more === null) {
+      const spec = await closeFinishedSpec(ctx, ticket);
+      warnings.push(...spec.warnings);
+      lines.push(...spec.lines);
+    }
     linearPending = false;
     const resolved = await mergeLive(ctx, warnings, "resolve pending Linear work", async (fleet) => {
       const items = await fleet.ticketItems(ticket?.id ?? "");
@@ -1719,7 +1999,7 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
           ticket: id,
           kind: "linear-pending",
           pr: pull.number,
-          body: pendingLinearBody(pull.number, audit),
+          body: pendingLinearBody(pull.number, audit, more),
         }),
       );
       armadaPending = ctx.lockRequired && chore === null;
@@ -1745,5 +2025,6 @@ export async function finishMerge(ctx: MergeContext, input: Pick<MergeInput, "pr
     warnings,
     linearPending,
     armadaPending,
+    keepOpen: more !== null,
   };
 }

@@ -289,6 +289,7 @@ export async function fetchForge(opts: FetchForgeOptions): Promise<ForgeData> {
     prs: [...repo.open.nodes, ...repo.closed.nodes].map((p) => normalizePull(p, opts.repository)),
     main: normalizeMain(repo.defaultBranchRef),
     mainComplete: repo.defaultBranchRef?.target.history?.pageInfo?.hasNextPage === false,
+    openPrsComplete: repo.open.pageInfo?.hasNextPage === false,
     warnings: [
       ...(repo.open.pageInfo?.hasNextPage
         ? ["more than 100 open pull requests; the least recently updated are ignored"]

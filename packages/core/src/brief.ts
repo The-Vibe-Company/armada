@@ -630,6 +630,7 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       : []),
     "",
     "If the claim is refused, stop and quote the refusal in your reply (usually another worker holds the ticket).",
+    "After claiming, Armada checks repository read access, a dry-run push of your branch and commit signing; if it reports blocked, keep the claim, stop and quote the reason to the coordinator.",
     "",
     "## Branch",
     "",

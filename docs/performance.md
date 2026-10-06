@@ -14,7 +14,7 @@ They live in `packages/dashboard/perf/budgets.json`.
 | Cumulative Layout Shift | 0, as Lighthouse shows it (three decimals) | the same pages |
 | Largest Contentful Paint | under 2.5 s on mobile | the same pages |
 | First-load JS per route, gzipped | its baseline plus 5% | every route of `next build` |
-| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on the overview (`/`, 250 rows), filter the overview by project, select a session in its preview pane (`/?view=preview`), switch an agent's tab between its summary and its files (both ways, on 350 history entries), decide a validation on a session's page (a merge or a question: the demo's `/agents/WID-18` and `THE-862`) |
+| Interactions, input to next paint | under 200 ms with the CPU 4× slower | the `large` demo world: open ⌘K on the overview (`/`, 250 rows), filter the overview by project, select a session in its preview pane (`/?view=preview`), switch an agent's tab between its summary and its files (both ways, on 350 history entries), decide a validation on a session's page (a merge or a question: the demo's `/agents/WID-18` and `THE-862`), then on the Validations page with the keys (C puts the focus in the note, A approves: the oldest one left without choices, THE-1113) |
 
 How they are measured:
 
@@ -32,7 +32,7 @@ bun run build
 bun run perf bundles                      # first-load JS per route against the baselines
 ARMADA_DEMO_DATABASE_URL=postgres://localhost/fleet bun run demo:seed fleet
 ARMADA_DEMO_DATABASE_URL=postgres://localhost/large bun run demo:seed large
-export ARMADA_DASHBOARD_PASSWORD=local-check
+export ARMADA_DASHBOARD_PASSWORD=local-check ARMADA_DASHBOARD_AUTHOR=local-check   # requests are signed by this name, as in CI
 ARMADA_DATABASE_URL=postgres://localhost/fleet ARMADA_DASHBOARD_DEMO=fleet bunx next start --port 4822 &
 ARMADA_DATABASE_URL=postgres://localhost/large ARMADA_DASHBOARD_DEMO=large bunx next start --port 4823 &
 bun run perf inp http://localhost:4823    # seed `large` again before another run: it answers a question

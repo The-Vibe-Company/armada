@@ -87,6 +87,42 @@ async function terminal(
   return { doctor, inbox, stderr, home, credentials: join(home, "armada", "credentials") };
 }
 
+describe("armada doctor: parent auto-close", () => {
+  for (const enabled of [true, false, null] as const) {
+    test(`reports the root team's setting: ${enabled}`, async () => {
+      const t = await terminal({ LINEAR_API_KEY: LINEAR }, {}, null, {
+        toml: DEMO_TOML,
+        fetch: async (_url, init) => {
+          const body = JSON.parse(String(init.body));
+          if (body.query?.includes("query ParentAutoClose")) {
+            expect(body.variables.id).toBe("DEMO-1");
+            return Response.json({ data: { issue: { team: { name: "Example", autoCloseParentIssues: enabled } } } });
+          }
+          return Response.json({ errors: [{ message: "not part of this test" }] });
+        },
+      });
+      const checks = await t.doctor(["parent-auto-close"]);
+      expect(checks).toHaveLength(1);
+      expect(checks[0]?.level).toBe(enabled ? "ok" : "warning");
+      expect(checks[0]?.message).toContain("Example");
+      if (enabled) expect(checks[0]?.fix).toBeNull();
+      else expect(checks[0]?.fix).toContain("Settings > Team > Workflow > Parent auto-close");
+    });
+  }
+  test("failed reads warn without exposing provider text", async () => {
+    const t = await terminal({ LINEAR_API_KEY: LINEAR }, {}, null, {
+      toml: DEMO_TOML,
+      fetch: async (_url, init) =>
+        Response.json({
+          errors: [{ message: String(init.body).includes("query ParentAutoClose") ? LINEAR : "unavailable" }],
+        }),
+    });
+    const checks = await t.doctor(["parent-auto-close"]);
+    expect(checks[0]?.level).toBe("warning");
+    expect(checks[0]?.message).toContain("not checked");
+  });
+});
+
 describe("armada doctor: GitHub merge rules", () => {
   const ids = [
     "merge-rules",
@@ -350,6 +386,75 @@ effort = "high"
     expect((await t.doctor()).find((c) => c.id === "conductor-cli")?.message).toBe("conductor is on PATH");
   });
 
+  test("Conductor repository lookup matches URL forms across pages, distinguishes absent and unavailable, and skips other runtimes", async () => {
+    for (const scenario of [
+      "https",
+      "ssh",
+      "paged",
+      "normalized-offset",
+      "missing-offset",
+      "absent",
+      "invalid",
+      "unavailable",
+      "other-runtime",
+    ] as const) {
+      const pages: string[][] = [];
+      const exec: Exec = async (command, args, options) => {
+        if (command === "conductor" && args.includes("list")) {
+          pages.push(args);
+          expect(options.timeoutMs).toBeLessThanOrEqual(10_000);
+          if (scenario === "unavailable") throw new Error("CANARY credential URL");
+          if (scenario === "invalid") return { code: 0, stdout: "{}", stderr: "" };
+          const next = args.includes("--offset");
+          const paged = scenario === "paged" || scenario === "normalized-offset";
+          if (scenario === "missing-offset")
+            return { code: 0, stdout: JSON.stringify({ data: [], hasMore: false }), stderr: "" };
+          const rows =
+            scenario === "absent" || (paged && !next)
+              ? [{ repoUrl: "https://github.com/acme/other.git" }]
+              : scenario === "ssh"
+                ? [{ gitRemote: "git@github.com:ACME/widgets.git" }]
+                : [{ repoUrl: "https://github.com/Acme/Widgets.git/" }];
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              data: rows,
+              offset: scenario === "normalized-offset" ? (next ? 10 : 9) : next ? 1 : 0,
+              hasMore: paged && !next,
+            }),
+            stderr: "",
+          };
+        }
+        return { code: 1, stdout: "", stderr: "" };
+      };
+      const toml =
+        scenario === "other-runtime"
+          ? TOML.replace('agent = "claude"', 'agent = "claude"\nruntime = "claude-code"')
+          : TOML;
+      const t = await terminal({}, {}, null, { exec, toml });
+      const checks = await t.doctor(["config", "conductor-project"]);
+      expect(checks.find((c) => c.id === "config")?.level).toBe("ok");
+      const check = checks.find((c) => c.id === "conductor-project");
+      if (scenario === "other-runtime") {
+        expect(check).toBeUndefined();
+        expect(pages).toHaveLength(0);
+      } else {
+        expect(check?.level).toBe(
+          ["absent", "invalid", "missing-offset", "unavailable"].includes(scenario) ? "warning" : "ok",
+        );
+        if (scenario === "absent") expect(check?.message).toContain("no Conductor project lists acme/widgets");
+        if (scenario === "invalid" || scenario === "missing-offset" || scenario === "unavailable")
+          expect(check?.message).toContain("could not be checked");
+        if (scenario === "paged" || scenario === "normalized-offset") {
+          expect(pages).toHaveLength(2);
+          const args = pages[1] ?? [];
+          expect(args[args.indexOf("--offset") + 1]).toBe(scenario === "normalized-offset" ? "10" : "1");
+        }
+        expect(JSON.stringify(check)).not.toContain("CANARY");
+      }
+    }
+  });
+
   test("only inside the macOS app, the fix links it from a directory on PATH, else adds it to PATH", async () => {
     const home = "/Users/ada";
     const linked = await conductor([BUNDLED_CONDUCTOR], { HOME: home, PATH: `/usr/bin:${home}/.local/bin` });
@@ -390,7 +495,7 @@ describe("armada doctor: the secrets the project expects", () => {
       level: "warning",
       message:
         "the project expects the secrets OPENAI_API_KEY, SENTRY_DSN, TEST_DATABASE_URL; not set in Armada: TEST_DATABASE_URL",
-      fix: "an owner or admin runs `armada secrets set <NAME>` for each (or sets it on the Keys page of Armada)",
+      fix: 'request each missing secret by link: armada secrets request TEST_DATABASE_URL --reason "<why it is needed>" (an owner or admin sets it); never ask for a value in chat',
     });
     await writeFile(join(t.home, "armada.toml"), toml(`["OPENAI_API_KEY", "SENTRY_DSN"]`));
     expect((await t.doctor()).find((c) => c.id === "secrets")?.level).toBe("ok");

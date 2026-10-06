@@ -83,11 +83,16 @@ async function cli(path: string, init: { body?: unknown; token?: string; key?: s
 const secrets = (op: string, by: { token?: string; key?: string }, body: Record<string, unknown>) =>
   cli(`secrets/${op}`, { ...by, body });
 
+// Cold PGlite startup has its own bounded budget, independent of authentication.
 beforeAll(async () => {
   console.info = (...a: unknown[]) => void logged.push(a.join(" "));
   console.warn = (...a: unknown[]) => void logged.push(a.join(" "));
   console.error = (...a: unknown[]) => void logged.push(a.join(" "));
   client = await tempDatabase();
+}, 10_000);
+
+// Authentication retains Bun's default bounded setup budget.
+beforeAll(async () => {
   const mode = accountsModeOf(ENV);
   if (mode.kind !== "accounts") throw new Error("test settings incomplete");
   auth = createAuth(mode.settings, { client, sender: { send: async (m) => void outbox.push(m) } });
