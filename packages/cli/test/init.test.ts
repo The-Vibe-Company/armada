@@ -165,9 +165,22 @@ async function fixture() {
     fetch: (url, init) =>
       url.startsWith(ARMADA_URL)
         ? api.fetch(url, init)
-        : url.startsWith("https://api.github.com/")
-          ? github.fetch(url, init)
-          : linear.fetch(url, init),
+        : url === "https://api.github.com/repos/acme/widgets"
+          ? Promise.resolve(
+              Response.json({
+                full_name: "acme/widgets",
+                default_branch: "main",
+                allow_squash_merge: true,
+                delete_branch_on_merge: false,
+              }),
+            )
+          : url.includes("/rules/branches/")
+            ? Promise.resolve(Response.json([]))
+            : url.endsWith("/protection")
+              ? Promise.resolve(new Response(null, { status: 404 }))
+              : url.startsWith("https://api.github.com/")
+                ? github.fetch(url, init)
+                : linear.fetch(url, init),
     exec,
   };
   /** Runs one command and returns its exit code with everything it printed. */
@@ -531,6 +544,7 @@ describe("armada doctor and armada init", () => {
     const after = await f.armada("doctor");
     expect(after.out).toContain('  ok       signed in to armada.example.test as the API key "coordinator" of Acme\n');
     expect(after.out).toContain("  ok       .claude/settings.json has Armada's stop hook");
+    expect(after.out).toContain("  ok       GitHub default branch main: squash merging is allowed");
     expect(after.out).toEndWith("Everything Armada needs is in place.\n");
     expect(after.code).toBe(0);
 

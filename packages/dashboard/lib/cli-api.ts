@@ -775,6 +775,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   let openPrs: number[] | undefined;
   let storedConfig: ArmadaConfig | undefined;
   if (
+    op === "validate" ||
     ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") ||
     op === "overlap" ||
     op === "report"
@@ -813,6 +814,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       openPrs,
       snapshot: handBackSnapshot,
       config: storedConfig,
+      validationSamples: storedConfig?.policy.validationSamples,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
       sendDigest: async (slug, digest, language, at) => {
