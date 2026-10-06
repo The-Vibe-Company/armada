@@ -189,7 +189,8 @@ describe("armada done", () => {
   test("closes a design ticket once the owner approved it: the design on the ticket, Done, the session ended", async () => {
     const live = tempFleet();
     const { linear, ctx } = setup(live);
-    linear.add("DEMO-7", { statusType: "started", stateId: "st-progress" });
+    linear.add("DEMO-2", { title: "Spec 1 — Design", parentId: config.tracker.programRoot });
+    linear.add("DEMO-7", { statusType: "started", stateId: "st-progress", parentId: "DEMO-2" });
     const close = () =>
       closeValidated(ctx, { ticket: "DEMO-7", attachmentUrl: (id) => `https://armada.example.test/a/${id}` });
     expect(await refusal(close())).toBe("DEMO-7 has no validation the owner approved");
@@ -213,15 +214,23 @@ describe("armada done", () => {
       id: validation?.id ?? 0,
       action: "approve",
       note: "B, with a softer shadow",
-      author: "Ada",
+      author: "Ada_Writer",
       now: NOW,
     });
+    const update = linear.updateTicket.bind(linear);
+    linear.updateTicket = async (uuid, change) => {
+      if (uuid === "uuid-DEMO-2") throw new Error("spec update failed");
+      await update(uuid, change);
+    };
     const out = await close();
     const t = linear.get("DEMO-7");
     expect(t.statusType).toBe("completed");
+    expect(linear.get("DEMO-2").statusType).toBe("backlog");
+    expect(out.warnings.join("\n")).toContain("spec update failed");
+    expect(out.lines).toContain("Next: armada done DEMO-7");
     expect(t.comments[0]?.status).toEqual({
       phase: "merged",
-      summary: "done without a pull request: validation #1 approved by Ada at 2026-03-04 10:00 UTC",
+      summary: "done without a pull request: validation #1 approved by AdaWriter at 2026-03-04 10:00 UTC",
     });
     expect(t.comments[0]?.excerpt).toContain("B, with a softer shadow");
     expect(t.comments[0]?.excerpt).toContain("Checks: - The action fits on a phone");
@@ -229,6 +238,13 @@ describe("armada done", () => {
     expect(t.comments[0]?.excerpt).toContain("Context: The full layout notes");
     expect(out.lines.at(-1)).toBe("Building it is a separate ticket: cut it, blocked by this one.");
     expect(live.store.events.at(-1)).toMatchObject({ ticket: "DEMO-7", kind: "merge", phase: "merged" });
+    const events = live.store.events.length;
+    const comments = t.comments.length;
+    linear.updateTicket = update;
+    await close();
+    expect(linear.get("DEMO-2").statusType).toBe("completed");
+    expect(linear.get("DEMO-7").comments.length).toBe(comments);
+    expect(live.store.events.length).toBe(events);
   });
 });
 
