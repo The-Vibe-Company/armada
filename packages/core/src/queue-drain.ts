@@ -23,7 +23,7 @@ const temporary = (err: unknown): boolean =>
   err instanceof ArmadaApiError
     ? !err.signedOut && !err.upgrade && (err.status === null || err.status === 429 || err.status >= 500)
     : err instanceof MergeStateError
-      ? !err.pull // Unknown outcome: retry starts with a GitHub state read, never a blind merge.
+      ? err.transient || !err.pull // Recovery starts with a state read, never a blind merge.
       : err instanceof Error && "transient" in err && err.transient === true;
 
 /** Strict FIFO, including retries. A paused or interrupted active entry survives for the next drain. */
@@ -34,7 +34,7 @@ export async function drainMergeQueue(
     timeoutMs?: number;
     /** Runtime scheduler; keeps the lease through long local checks and cleanup. */
     every: (ms: number, tick: () => Promise<void>) => () => void;
-    afterMerge: (outcome: MergeOutcome, entry: QueueEntry) => Promise<void>;
+    afterMerge: (outcome: MergeOutcome, entry: QueueEntry, tick: () => Promise<void>) => Promise<void>;
     onRefused?: (entry: QueueEntry, error: unknown) => void;
     onFinished?: (entry: QueueEntry) => void;
   },
@@ -60,7 +60,37 @@ export async function drainMergeQueue(
     }
     await tick();
   };
-  const run = { ...ctx, tick, sleep };
+  // Fence adapter calls too: cleanup can outlive the lease while awaiting a remote read.
+  // Rechecking after a call stops subsequent effects even when its caller catches errors.
+  const fenced = <T extends object>(target: T): T =>
+    new Proxy(target, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver);
+        if (typeof value !== "function") return value;
+        return async (...args: unknown[]) => {
+          await tick();
+          const result = await Reflect.apply(value, target, args);
+          await tick();
+          return result;
+        };
+      },
+    });
+  const run: MergeContext = {
+    ...ctx,
+    tick,
+    sleep,
+    linear: fenced(ctx.linear),
+    fleet: async () => {
+      await tick();
+      const live = await ctx.fleet();
+      return { ...live, fleet: live.fleet ? fenced(live.fleet) : null };
+    },
+    afterRecord: async (ticket) => {
+      await tick();
+      await ctx.afterRecord?.(ticket, tick);
+      await tick();
+    },
+  };
   const finish = async (entry: QueueEntry, result: Omit<QueueFinish, "id" | "holder">) => {
     await tick();
     if (!(await fleet.queueFinish({ ...result, id: entry.id, holder: ctx.holder }))) throw new TakenOver();
@@ -124,7 +154,8 @@ export async function drainMergeQueue(
         continue;
       }
       // Keep the active row recoverable until every idempotent after-merge step finishes.
-      await opts.afterMerge(outcome, entry);
+      await tick();
+      await opts.afterMerge(outcome, entry, tick);
       await finish(entry, { outcome: "merged", detail: null, mergeCommit: outcome.pr.mergeCommit });
       opts.onFinished?.(entry);
     }

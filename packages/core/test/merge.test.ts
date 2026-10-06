@@ -2074,6 +2074,8 @@ test.each([
   "head-mismatch",
   "cleanup-recovery",
   "long-cleanup",
+  "cleanup-takeover",
+  "recovery-linear-outage",
   "unknown-outcome",
   "takeover",
   "paused-timeout",
@@ -2091,7 +2093,11 @@ test.each([
   );
   let active = forges.get(12)!;
   const partial = ["keep-open", "handback-part", "partial-recovery"].includes(scenario);
-  const ticketed = partial || ["recovered-ticket", "queued-head", "head-mismatch"].includes(scenario);
+  const ticketed =
+    partial ||
+    ["recovered-ticket", "queued-head", "head-mismatch", "cleanup-takeover", "recovery-linear-outage"].includes(
+      scenario,
+    );
   if (ticketed) {
     active.pr.headRef = "feature/demo-7-do-the-thing";
     s.linear.post(
@@ -2223,6 +2229,21 @@ test.each([
       live.clock.advance(ms + 600_000);
       await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
     };
+  let cleanupReadLost = false;
+  let recoveryReadFailed = false;
+  const readTicket = s.linear.readTicket.bind(s.linear);
+  s.linear.readTicket = async (id) => {
+    if (scenario === "cleanup-takeover" && active.pr.state === "merged" && !cleanupReadLost) {
+      cleanupReadLost = true;
+      live.clock.advance(600_001);
+      await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
+    }
+    if (scenario === "recovery-linear-outage" && cleanupFailed && !recoveryReadFailed) {
+      recoveryReadFailed = true;
+      throw new LinearError("Linear HTTP 503 during recovery", true, true);
+    }
+    return readTicket(id);
+  };
   const delivered: number[] = [];
   let pulse: (() => Promise<void>) | null = null;
   let cleanupFailed = false;
@@ -2246,7 +2267,7 @@ test.each([
             scenario === "partial-recovery" && cleanupFailed ? "ready-to-merge" : "implementing",
           );
         }
-        if (["cleanup-recovery", "partial-recovery"].includes(scenario) && !cleanupFailed) {
+        if (["cleanup-recovery", "partial-recovery", "recovery-linear-outage"].includes(scenario) && !cleanupFailed) {
           cleanupFailed = true;
           throw new Error("session lost during cleanup");
         }
@@ -2264,17 +2285,22 @@ test.each([
         order.push(`after ${outcome.pr.number}`);
       },
     });
-  if (["takeover", "paused-timeout"].includes(scenario)) {
-    await expect(drain()).rejects.toThrow(scenario === "takeover" ? "taken over" : "main red since #170");
+  if (["takeover", "cleanup-takeover", "paused-timeout"].includes(scenario)) {
+    await expect(drain()).rejects.toThrow(scenario !== "paused-timeout" ? "taken over" : "main red since #170");
     expect(await live.fleet.queueList()).toMatchObject([
       { state: scenario === "paused-timeout" ? "queued" : "merging", attempts: 0 },
       { state: "queued" },
     ]);
     if (scenario === "paused-timeout") expect(await live.fleet.queueRemove({ pr: 12 })).toBe(true);
     expect(delivered).toEqual([]);
+    if (scenario === "cleanup-takeover") {
+      expect(s.linear.get("DEMO-7").statusType).toBe("started");
+      expect(s.linear.bodies.some((body) => body.startsWith("Agent status: merged"))).toBe(false);
+      expect(live.store.items.some((item) => item.kind === "linear-pending")).toBe(false);
+    }
     return;
   }
-  if (["cleanup-recovery", "partial-recovery"].includes(scenario)) {
+  if (["cleanup-recovery", "partial-recovery", "recovery-linear-outage"].includes(scenario)) {
     await expect(drain()).rejects.toThrow("session lost during cleanup");
     expect(await live.fleet.queueList()).toMatchObject([{ state: "merging", attempts: 0 }, { state: "queued" }]);
     if (scenario === "partial-recovery") {
@@ -2326,7 +2352,7 @@ test.each([
     expect(order.indexOf("after 12")).toBeLessThan(order.indexOf(`update 15 on ${SQUASH}`));
   }
   expect(entries[0]?.attempts).toBe(
-    ["outage", "unknown-outcome", "lineage-outage", "lock-renewal"].includes(scenario)
+    ["outage", "unknown-outcome", "lineage-outage", "lock-renewal", "recovery-linear-outage"].includes(scenario)
       ? 1
       : scenario === "exhausted"
         ? 3

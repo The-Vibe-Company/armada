@@ -115,7 +115,7 @@ export interface MergeUnblocked {
 }
 
 export interface MergeContext {
-  /** Renew the drain lease before a poll and before changing GitHub. */
+  /** Renew the drain lease before polls and adapter effects, including cleanup. */
   tick?: () => Promise<void>;
   /** Only workers unowned or owned by this coordinator receive automatic notices. */
   coordinatorName?: string;
@@ -131,7 +131,9 @@ export interface MergeContext {
   /** True when this terminal is signed in to Armada: the merge lock is then required, and Armada being down refuses the merge. */
   lockRequired: boolean;
   /** End worker sign-in sessions after final-merge Armada bookkeeping, before Linear cleanup. */
-  afterRecord?: (ticket: string) => Promise<void>;
+  afterRecord?: (ticket: string, tick?: () => Promise<void>) => Promise<void>;
+  /** Preserve the confirmed GitHub fact when later cleanup fails or loses its lease. */
+  onMerged?: (pull: MergePull, ticket: string | null) => void;
   /** One post-close reading; null names no closed ticket. */
   afterRead: (ticket: string | null) => Promise<{
     inFlight: TicketInFlight[];
@@ -1269,8 +1271,9 @@ export class MergeStateError extends Refusal {
     readonly number: number,
     readonly ticket: string | null,
     readonly pull: MergePull | null = null,
+    transient = false,
   ) {
-    super(message, next);
+    super(message, next, transient);
   }
 }
 
@@ -1572,6 +1575,10 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
     await ctx.tick?.();
     const pull = await readSettled(ctx, input.pr);
     if (pull.state === "merged") {
+      ctx.onMerged?.(
+        pull,
+        input.noTicket ? null : (input.ticket ?? ticketFromBranch(pull.headRef ?? "", ctx.config.tracker.programRoot)),
+      );
       if (input.queuedHead && input.queuedHead !== pull.headSha) {
         const lineage = await lineageOf(ctx, pull, input.queuedHead, run);
         if (lineage.why)
@@ -1583,7 +1590,21 @@ export async function mergePullRequest(ctx: MergeContext, input: MergeInput): Pr
             pull,
           );
       }
-      const ticket = await mergeTicketFor(ctx, pull, input);
+      let ticket: Ticket | null;
+      try {
+        // Cleanup is already authorized by the durable entry and confirmed merge.
+        // An old hand-back may have been resolved or superseded since it landed.
+        ticket = await readTicketFor(ctx, pull, input);
+      } catch (error) {
+        throw new MergeStateError(
+          `#${pull.number} is merged, but its ticket could not be read for recovery (${error instanceof Error ? error.message : String(error)})`,
+          `armada merge --drain once Linear answers`,
+          pull.number,
+          input.ticket ?? ticketFromBranch(pull.headRef ?? "", ctx.config.tracker.programRoot),
+          pull,
+          error instanceof LinearError && error.transient,
+        );
+      }
       const c: Checked = {
         recovered: true,
         pull,
@@ -1784,6 +1805,8 @@ async function after(
   unlocked: boolean,
   override = "",
 ): Promise<MergeOutcome> {
+  ctx.onMerged?.(merged, c.ticket?.id ?? null);
+  await ctx.tick?.();
   const targets = (ctx.config.deploy?.targets ?? [])
     .filter((t) => t.branch === null || t.branch === merged.baseRef)
     .map((t) => t.name);

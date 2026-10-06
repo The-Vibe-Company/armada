@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   type Fetch,
   GITHUB_GRAPHQL,
+  LinearError,
   type MergeOutcome,
   parseConfig,
   type RawIssue,
@@ -1066,12 +1067,12 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--no-notify"], f.io)).toBe(2);
 });
 
-test.each(["plain", "json", "completion-outage", "keep-open"])(
+test.each(["plain", "json", "completion-outage", "recovery-outage", "keep-open"])(
   "drain uses ordinary cleanup and truthful output (%s)",
   async (scenario) => {
     const json = scenario !== "plain";
     const keepOpen = scenario === "keep-open";
-    const completionOutage = scenario === "completion-outage";
+    const completionOutage = ["completion-outage", "recovery-outage"].includes(scenario);
     const f = await fixture();
     expect(await run(["merge", "--when-green", "9", ...(keepOpen ? ["--keep-open"] : [])], f.io)).toBe(0);
     const out: string[] = [];
@@ -1117,6 +1118,30 @@ test.each(["plain", "json", "completion-outage", "keep-open"])(
     }
     if (completionOutage) {
       io.fetch = fetch;
+      if (scenario === "recovery-outage") {
+        f.linear.readTicket = async () => {
+          throw new LinearError("Linear HTTP 503", true, true);
+        };
+        io.sleep = async () => {
+          throw new Error("drain interrupted during retry wait");
+        };
+        out.length = 0;
+        expect(await run(["merge", "--drain", "--json"], io), f.err()).toBe(1);
+        expect(
+          out
+            .join("")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line)),
+        ).toMatchObject([{ merged: true, error: expect.any(String) }]);
+        expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({ state: "queued", attempts: 1 });
+        expect(
+          (await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).some(
+            (item) => item.kind === "queue-refused",
+          ),
+        ).toBe(false);
+        return;
+      }
       expect(await run(["merge", "--drain", "--json"], io), f.err()).toBe(0);
       expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
         state: "merged",
@@ -1158,6 +1183,7 @@ test("when-green queues multiple no-ticket PRs in argument order and preserves f
 test.each([
   "confirmed",
   "confirmed-json",
+  "queue-lease-loss",
   "confirmed-external",
   "failed-external",
   "failed-json",
@@ -1176,7 +1202,8 @@ test.each([
 ])("merge archives only its confirmed, ended Armada worker (%s)", async (scenario) => {
   const f = await fixture();
   const handle = "ws-18/ses-18";
-  const json = scenario.endsWith("-json");
+  const queued = scenario === "queue-lease-loss";
+  const json = queued || scenario.endsWith("-json");
   const succeeds = ["confirmed", "confirmed-json", "confirmed-external", "unrecorded"].includes(scenario);
   const projectRoot = f.io.cwd;
   const configPath = join(projectRoot, "fleet config.toml");
@@ -1218,6 +1245,19 @@ test.each([
     if (command !== "conductor") return exec(command, args, options);
     expect(options?.cwd).toBe(projectRoot);
     calls.push(args);
+    if (queued) {
+      const lease = await f.store.getLease("widgets", "merge-queue");
+      if (lease && lease.holder !== "peer") {
+        await f.store.releaseLease({ project: "widgets", name: "merge-queue", holder: lease.holder });
+        await f.store.acquireLease({
+          project: "widgets",
+          name: "merge-queue",
+          holder: "peer",
+          ttlMs: 600_000,
+          at: NOW,
+        });
+      }
+    }
     if (scenario === "shared-later") {
       await f.store.saveRuntimeHandle({
         project: "widgets",
@@ -1263,14 +1303,26 @@ test.each([
         : scenario === "no-ticket"
           ? ["--no-ticket", "--reason", "config only"]
           : [];
-  expect(await run(["merge", "9", ...(json ? ["--json"] : []), ...flags], f.io)).toBe(
-    scenario === "unconfirmed" ? 1 : 0,
-  );
+  if (queued) expect(await run(["merge", "--when-green", "9"], { ...f.io, stdout: () => {} })).toBe(0);
+  expect(
+    await run(queued ? ["merge", "--drain", "--json"] : ["merge", "9", ...(json ? ["--json"] : []), ...flags], f.io),
+  ).toBe(scenario === "unconfirmed" || queued ? 1 : 0);
+  if (queued) {
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("merging");
+    expect((await f.store.getLease("widgets", "merge-queue"))?.holder).toBe("peer");
+    expect(
+      f
+        .out()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ merged: true })]));
+  }
   expect(calls.filter((args) => args[1] === "workspace" && args[2] === "archive")).toEqual(
     succeeds ? [["--json", "workspace", "archive", "ws-18"]] : [],
   );
   if (json)
-    expect(JSON.parse(f.out()).archive).toEqual({
+    expect(JSON.parse(queued ? f.out().split("\n")[0]! : f.out()).archive).toEqual({
       runtime: "Conductor",
       handle,
       archived: succeeds,

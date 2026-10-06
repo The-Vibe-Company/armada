@@ -54,6 +54,29 @@ import { claimRef, guarded, redactRuntimeText } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
 
+/** Queue ownership is rechecked at actual I/O boundaries, including native runtime cleanup. */
+function fencedIo(io: Io, tick: (() => Promise<void>) | undefined, exec: Exec): Io {
+  if (!tick) return io;
+  const before =
+    <A extends unknown[], R>(act: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      await tick();
+      const result = await act(...args);
+      await tick();
+      return result;
+    };
+  return {
+    ...io,
+    exec: before(exec),
+    fetch: before(io.fetch ?? ((url, init) => fetch(url, init))),
+    ...(io.sleep ? { sleep: before(io.sleep) } : {}),
+    ...(io.spawn ? { spawn: before(io.spawn) } : {}),
+    ...(io.detach ? { detach: before(io.detach) } : {}),
+    ...(io.startBackground ? { startBackground: before(io.startBackground) } : {}),
+    ...(io.writeFile ? { writeFile: before(io.writeFile) } : {}),
+  };
+}
+
 /** A GitHub 5xx or a network failure, as gh reports them. */
 const TRANSIENT =
   /\bHTTP 5\d\d\b|\b5\d\d (?:Bad Gateway|Service Unavailable|Gateway Time-?out|Internal Server Error)\b|Bad Gateway|Service Unavailable|Gateway Time-?out|ECONNRESET|ETIMEDOUT|connection reset|i\/o timeout|TLS handshake timeout/i;
@@ -406,7 +429,31 @@ export async function merge(
         };
       },
       coordinatorName: await coordinatorName(io, config.project.slug),
-      afterRecord: (ticket) => endWorkerSessions(io, config, credentials, ticket, "merged", a.json),
+      onMerged: (p, ticket) => {
+        confirmed = {
+          merged: true,
+          pr: {
+            number: p.number,
+            url: p.url,
+            title: p.title,
+            base: p.baseRef,
+            headSha: p.headSha,
+            mergeCommit: p.mergeCommit,
+          },
+          ticket: ticket ? { id: ticket, url: null } : null,
+          linearPending: !!ticket,
+          armadaPending: !!ticket && !!credentials.armadaSignIn,
+          lines: [],
+          hints: [],
+          workers: [],
+          workersListed: false,
+          unblocked: null,
+          archive: null,
+          warnings: [],
+        };
+      },
+      afterRecord: (ticket, tick) =>
+        endWorkerSessions(fencedIo(io, tick, exec), config, credentials, ticket, "merged", a.json),
       afterRead: async (ticket) => {
         const sources = await readStatusSources(config, { linearApiKey, githubToken: token, ...fetchOpt, now });
         const liveReading = live.fleet
@@ -555,8 +602,14 @@ export async function merge(
         io.stderr("armada: warning: could not read deploy state; armada deploy status\n");
       }
     }
-    const deliver = async (o: MergeOutcome): Promise<number> => {
+    const deliver = async (o: MergeOutcome, tick?: () => Promise<void>): Promise<number> => {
+      const cleanupIo = fencedIo(io, tick, exec);
+      return deliverWithIo(cleanupIo, o, tick);
+    };
+    const deliverWithIo = async (io: Io, o: MergeOutcome, tick?: () => Promise<void>): Promise<number> => {
+      const live = liveFleet(io, config, credentials);
       confirmed = o;
+      await tick?.();
       if (o.keepOpen) {
         o.lines = o.lines.map(mask.text);
         if (o.continuation) o.continuation.message = mask.text(o.continuation.message);
@@ -668,6 +721,7 @@ export async function merge(
             o.warnings.push("could not refresh owned workers for the re-arm line; retained the previous tickets");
           }
         }
+        await tick?.();
         if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
         next = await rearmFor(io, project, { inFlight, open: null });
         if (!a.json)
@@ -713,14 +767,16 @@ export async function merge(
             const timer = setInterval(tick, ms);
             return () => clearInterval(timer);
           }),
-        afterMerge: async (outcome) => {
-          await deliver(outcome);
+        afterMerge: async (outcome, _entry, tick) => {
+          await deliver(outcome, tick);
         },
         onFinished: () => {
           confirmed = null;
         },
         onRefused: (entry, err) => {
-          const merged = err instanceof MergeStateError && err.pull !== null;
+          const merged =
+            !!(confirmed?.merged && confirmed.pr.number === entry.pr) ||
+            (err instanceof MergeStateError && err.pull !== null);
           const result = merged
             ? `Result: merged #${entry.pr}${entry.ticket ? `, Armada and Linear pending (armada merge --finish ${entry.pr})` : ""}`
             : "Result: not merged (queue entry refused)";
