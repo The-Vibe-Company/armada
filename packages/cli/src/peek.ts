@@ -205,8 +205,7 @@ export async function peek(io: Io, config: ArmadaConfig, credentials: Credential
         }
     } catch (error) {
       if (!(error instanceof RuntimeError)) throw error;
-      unavailable =
-        error.code === "unsupported" ? `unsupported: ${error.next}` : "runtime not reachable from this machine";
+      unavailable = error.code === "unsupported" ? clean(`unsupported: ${error.next}`) : clean(error.message);
       if (cache)
         reading = {
           ...reading,
@@ -300,7 +299,8 @@ export function renderPeek(result: PeekResult, io: Io, now: Date): string {
   const r = result.runtime;
   const lines = [
     `${result.ticket} · ${result.report?.phase ?? "not claimed"} · ${result.report?.kind ?? "reported"} ${time(result.report?.at ?? null)}`,
-    `Runtime    ${r.name} · ${r.state === "gone" ? "archived" : r.state} since ${time(r.since)}${r.unavailable ? ` · ${r.unavailable} · observed ${time(r.observedAt)}` : ""}`,
+    `Runtime    ${r.name} · ${r.state === "gone" ? "archived" : r.state} since ${time(r.since)}${r.unavailable ? ` · observed ${time(r.observedAt)}` : ""}`,
+    ...(r.unavailable ? [`Unavailable ${r.unavailable}`] : []),
     ...(r.handle ? [`Session    ${r.handle}${r.link ? ` · ${r.link}` : ""}`] : []),
     `Alive      heartbeat ${age(result.heartbeatAt)} · ${result.claimedAt ? `claimed ${time(result.claimedAt)}` : `launched ${time(result.launchedAt)}`}${result.profile ? ` · profile ${result.profile}` : ""}`,
     `Report     ${result.report?.message ?? "none"}`,

@@ -4,9 +4,9 @@
 // waits for it to exit rather than leave it behind.
 
 import { spawn } from "node:child_process";
-import { closeSync, mkdirSync, openSync } from "node:fs";
-import { constants } from "node:os";
-import { dirname } from "node:path";
+import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
+import { constants, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Exec, Io, Spawn } from "./io.ts";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
@@ -82,17 +82,43 @@ export const startBackground: NonNullable<Io["startBackground"]> = (args, option
 /** Runs git or gh without a shell; optional input is piped without a shell. */
 export const createExec =
   (deps: { spawn?: typeof spawn; killGroup?: (pid: number) => void } = {}): Exec =>
-  (command, args, { cwd, timeoutMs, maxOutputBytes, input, env, processGroup, signal }) =>
+  (command, args, { cwd, timeoutMs, maxOutputBytes, captureStdout, input, env, processGroup, signal }) =>
     new Promise((done, fail) => {
       signal?.throwIfAborted();
       const grouped = processGroup === true && process.platform !== "win32";
-      const child = (deps.spawn ?? spawn)(command, args, {
-        cwd,
-        env,
-        detached: grouped,
-        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-      });
+      const limit = maxOutputBytes ?? (captureStdout === "file" ? 2_000_000 : Number.POSITIVE_INFINITY);
+      let directory: string | undefined;
+      let file: number | undefined;
+      const cleanupFile = () => {
+        if (file !== undefined) {
+          closeSync(file);
+          file = undefined;
+        }
+        if (directory) {
+          rmSync(directory, { recursive: true, force: true });
+          directory = undefined;
+        }
+      };
+      let child: ReturnType<typeof spawn>;
+      try {
+        if (captureStdout === "file") {
+          directory = mkdtempSync(join(tmpdir(), "armada-exec-"));
+          file = openSync(join(directory, "stdout"), "wx+", 0o600);
+        }
+        child = (deps.spawn ?? spawn)(command, args, {
+          cwd,
+          env,
+          detached: grouped,
+          stdio: [input === undefined ? "ignore" : "pipe", file ?? "pipe", "pipe"],
+        });
+      } catch (error) {
+        cleanupFile();
+        fail(error);
+        return;
+      }
+      let finished = false;
       const kill = () => {
+        if (finished) return;
         if (grouped && child.pid) {
           try {
             (deps.killGroup ?? ((pid) => process.kill(-pid, "SIGKILL")))(child.pid);
@@ -117,15 +143,22 @@ export const createExec =
       let stdout = "";
       let stderr = "";
       let bytes = 0;
+      let fileBytes = 0;
       let oversized = false;
-      const accept = (text: string) => {
-        bytes += Buffer.byteLength(text);
-        if (maxOutputBytes !== undefined && bytes > maxOutputBytes) {
+      const checkBound = () => {
+        fileBytes = file === undefined ? 0 : fstatSync(file).size;
+        if (!oversized && bytes + fileBytes > limit) {
           oversized = true;
           stdout = stderr = "";
           kill();
         }
         return !oversized;
+      };
+      // Monitor file growth during execution as well as checking its final size.
+      const monitor = file !== undefined ? setInterval(checkBound, 25) : null;
+      const accept = (text: string) => {
+        bytes += Buffer.byteLength(text);
+        return checkBound();
       };
       child.stdout?.setEncoding("utf8").on("data", (d: string) => {
         if (accept(d)) stdout += d;
@@ -134,13 +167,36 @@ export const createExec =
         if (accept(d)) stderr += d;
       });
       child.on("error", (err) => {
+        if (finished) return;
+        finished = true;
         if (timer) clearTimeout(timer);
+        if (monitor) clearInterval(monitor);
         signal?.removeEventListener("abort", abort);
+        cleanupFile();
         fail(err);
       });
       child.on("close", (code) => {
+        if (finished) return;
+        finished = true;
         if (timer) clearTimeout(timer);
+        if (monitor) clearInterval(monitor);
         signal?.removeEventListener("abort", abort);
-        done({ code: oversized ? 1 : (code ?? 1), stdout, stderr, timedOut, outputExceeded: oversized });
+        try {
+          if (checkBound() && file !== undefined) {
+            const buffer = Buffer.alloc(fileBytes);
+            let offset = 0;
+            while (offset < buffer.length) {
+              const read = readSync(file, buffer, offset, buffer.length - offset, offset);
+              if (!read) break;
+              offset += read;
+            }
+            stdout = buffer.subarray(0, offset).toString("utf8");
+          }
+          cleanupFile();
+          done({ code: oversized ? 1 : (code ?? 1), stdout, stderr, timedOut, outputExceeded: oversized });
+        } catch (error) {
+          cleanupFile();
+          fail(error);
+        }
       });
     });

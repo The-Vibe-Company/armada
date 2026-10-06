@@ -23,6 +23,8 @@ export type Exec = (
     cwd: string;
     timeoutMs?: number;
     maxOutputBytes?: number;
+    /** Private file capture for CLIs that exit before flushing piped stdout; removed after completion. */
+    captureStdout?: "file";
     input?: string;
     env?: Record<string, string | undefined>;
     processGroup?: boolean;

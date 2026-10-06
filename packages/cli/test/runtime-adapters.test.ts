@@ -1,7 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
+import type { ChildProcess, SpawnOptions, spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { writeSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import {
   deliveryKey,
   type Fleet,
@@ -22,6 +26,7 @@ import type { Io } from "../src/io.ts";
 import { observeRuntimes } from "../src/runtime.ts";
 import { claimRef, guarded, type LaunchSpec, runtimeFor } from "../src/runtimes/adapter.ts";
 import { HerdrAdapter } from "../src/runtimes/herdr.ts";
+import { createExec } from "../src/spawn.ts";
 
 const config = parseConfig(DEMO_TOML);
 const canary = "armada_launch_CANARY_secret";
@@ -135,7 +140,14 @@ async function fixture(runtime: RuntimeName = "conductor") {
           ...(!missingAcknowledgement ? { initialMessage: { messageId: "msg-first", state: "queued" } } : {}),
         });
       if (a[0] === "--version") return { code: 0, stdout: "0.90.1", stderr: "" };
-      if (a[0] === "auth") return json({ signedIn: true });
+      // Conductor 0.90.1 ignores --json here. Outside a workspace its table can
+      // contain invalid UTF-8, decoded by Node to the replacement character.
+      if (a[0] === "auth")
+        return {
+          code: 0,
+          stdout: `Email         worker@example.test\nUser ID       synthetic-user\nWorkspace ID  ${Buffer.from([0xff]).toString("utf8")}\n`,
+          stderr: "",
+        };
       if (a[0] === "model")
         return json({
           agents: [{ agent: "codex", models: ["synthetic-model"], efforts: ["high"], fastModeModels: [] }],
@@ -383,7 +395,7 @@ test("Conductor preflight, launch, transcript and failures keep secret text off 
     [3, "auth"],
     [4, "unavailable"],
     [2, "invalid"],
-    [1, "unavailable"],
+    [1, "not-found"],
   ] as const) {
     f.set({ failure: exit });
     expect(await codeOf(f.adapter.observe(f.target))).toBe(code);
@@ -391,6 +403,124 @@ test("Conductor preflight, launch, transcript and failures keep secret text off 
   f.set({ failure: 0, timedOut: true });
   expect(await codeOf(f.adapter.launch(spec))).toBe("unknown-outcome");
   expect(f.output.join("")).not.toContain(canary);
+});
+
+test("Conductor peek reads complete large transcripts when the CLI truncates piped stdout", async () => {
+  const f = await fixture();
+  const native = f.io.exec;
+  if (!native) throw new Error("missing fake exec");
+  f.io.exec = createExec({
+    spawn: ((command: string, args: string[], options: SpawnOptions) => {
+      const events = new EventEmitter();
+      const child = Object.assign(events, {
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+        kill: () => events.emit("close", null),
+      }) as unknown as ChildProcess;
+      void native(command, args, { cwd: f.io.cwd }).then((result) => {
+        let text = result.stdout;
+        if (args.slice(1, 3).join(" ") === "session message") {
+          const body = JSON.parse(text);
+          body.data.unshift({ id: "evt-large", content: { text: "x".repeat(220_000) } });
+          body.data.push({
+            id: "evt-command",
+            receivedAt: NOW.toISOString(),
+            content: {
+              rawPayload: {
+                event: {
+                  type: "item.completed",
+                  item: {
+                    type: "commandExecution",
+                    command: "git status --short",
+                    exitCode: 0,
+                  },
+                },
+              },
+            },
+          });
+          text = JSON.stringify(body);
+        }
+        const output = Array.isArray(options.stdio) ? options.stdio[1] : null;
+        if (typeof output === "number") writeSync(output, text);
+        else child.stdout?.emit("data", text.slice(0, 131_072));
+        events.emit("close", result.code);
+      });
+      return child;
+    }) as typeof spawn,
+  });
+  const peek = await f.adapter.peek(f.target, { actions: 1, cursor: null });
+  expect(peek).toMatchObject({ state: "working", since: NOW.toISOString() });
+  expect(peek.lastReply).toEqual({ at: NOW.toISOString(), text: "[redacted]" });
+  expect(peek.actions).toEqual([{ at: NOW.toISOString(), kind: "command", text: "git status --short", exit: 0 }]);
+  expect(peek.cursor).toBe("evt-command");
+});
+
+test.each(
+  (["peek", "deliver", "archive"] as const).flatMap((operation) =>
+    (["server", "truncated", "malformed"] as const)
+      .filter((failure) => failure !== "malformed" || operation !== "peek")
+      .map((failure) => [operation, failure] as const),
+  ),
+)("Conductor %s identifies a %s response without exposing its output", async (operation, failure) => {
+  const f = await fixture();
+  f.set({ state: "idle" });
+  expect((await f.adapter.observe(f.target)).state).toBe("idle");
+  let target = f.target;
+  if (operation === "archive") {
+    await f.store.releaseRuntimeHandle(config.project.slug, target.ticket, NOW);
+    const ended = await f.fleet.runtimeHandle(target.ticket);
+    if (!ended) throw new Error("missing ended claim");
+    target = claimRef(ended);
+    expect(target.releasedAt).toBe(NOW.toISOString());
+  }
+  const native = f.io.exec;
+  if (!native) throw new Error("missing fake exec");
+  const failedOperation =
+    operation === "peek"
+      ? failure === "truncated"
+        ? "session message"
+        : "workspace status"
+      : operation === "deliver"
+        ? "message create"
+        : "workspace archive";
+  let attempted = false;
+  f.io.exec = async (command, args, options) => {
+    if (args.slice(1, 3).join(" ") === failedOperation) {
+      attempted = true;
+      return {
+        code: failure === "server" ? 4 : 0,
+        stdout: failure === "malformed" ? JSON.stringify({ private: canary }) : `{"private":"${canary}`,
+        stderr: "private native error",
+      };
+    }
+    return native(command, args, options);
+  };
+  const action =
+    operation === "peek"
+      ? f.adapter.peek(target, { actions: 1, cursor: null })
+      : guarded<unknown>(f.fleet, target, operation === "archive" ? "ended" : "active", () =>
+          operation === "deliver"
+            ? f.adapter.deliver(target, { text: "resume", key: "msg-key", kind: "answer" })
+            : f.adapter.archive(target, { reason: "merged", whenWorking: "refuse", waitMs: 0 }),
+        );
+  try {
+    await action;
+    throw new Error("expected native failure");
+  } catch (error) {
+    if (!(error instanceof RuntimeError)) throw error;
+    expect(attempted).toBe(true);
+    expect(error.code).toBe(
+      failure === "server" ? "unavailable" : operation === "peek" ? "invalid" : "unknown-outcome",
+    );
+    if (failure !== "server") expect(error.retryable).toBe(false);
+    expect(error.message).toBe(
+      failure === "server"
+        ? `Conductor server error during ${failedOperation} (exit 4)`
+        : `Conductor ${failedOperation} returned ${failure === "malformed" ? "an invalid response" : "invalid or truncated JSON"}${operation === "peek" ? "" : "; inspect the session before retrying"}`,
+    );
+    expect(error.message + error.next).not.toMatch(/CANARY|private native error/);
+  }
 });
 
 test("Conductor refuses active archive, verifies workspace ownership, waits boundedly and stops only ended generations", async () => {
