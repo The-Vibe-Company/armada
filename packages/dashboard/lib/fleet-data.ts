@@ -44,6 +44,7 @@ import {
   type StatusSources,
   sinceSummary,
   TIMELINE_HOURS,
+  VALIDATION_LIMITS,
   type Validation,
 } from "@armada/core/read";
 import { type ActivityShow, SHOWS } from "./activity-view";
@@ -299,27 +300,42 @@ export const DECIDED_SHOWN_MS = 7 * 24 * 60 * 60_000;
 
 /**
  * The attachments a validation shows: those it names (of its own ticket, in
- * its order), else every attachment of its ticket, such as a pull request's
+ * its order), else a small sample of its newest images, such as a pull request's
  * screenshots.
  */
-export function galleryOf(v: Validation, attachments: readonly Attachment[]): Attachment[] {
-  const own = attachments.filter((a) => a.ticket === v.ticket);
-  if (!v.attachments.length) return own;
-  return v.attachments.flatMap((id) => own.filter((a) => a.id === id));
+export function galleryOf(
+  v: Validation,
+  attachments: readonly Attachment[],
+  limit = VALIDATION_LIMITS.images,
+): { gallery: Attachment[]; more: number } {
+  const own = attachments.filter((a) => a.project === v.project && a.ticket === v.ticket);
+  if (v.attachments.length) return { gallery: v.attachments.flatMap((id) => own.filter((a) => a.id === id)), more: 0 };
+  const images = own
+    .filter((a) => a.kind === "image")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  // Fallback images and explicit text excerpts share the same sample allowance.
+  const cap = Math.min(limit, Math.max(VALIDATION_LIMITS.samples, limit) - (v.excerpts?.length ?? 0));
+  return { gallery: images.slice(0, cap), more: Math.max(0, images.length - cap) };
 }
 
-async function readValidations(store: LiveStore, project: string, now: Date) {
+async function readValidations(store: LiveStore, project: string, now: Date, limit: number) {
   const validations = await store.listValidations({
     project,
     decidedSince: new Date(now.getTime() - DECIDED_SHOWN_MS),
   });
   const attachments = await store.ticketsAttachments(project, [...new Set(validations.map((v) => v.ticket))]);
-  return validations.map(
-    (v): OwnerValidation => ({ ...v, title: null, url: null, gallery: galleryOf(v, attachments) }),
-  );
+  return validations.map((v): OwnerValidation => {
+    const { gallery, more } = galleryOf(v, attachments, limit);
+    return { ...v, title: null, url: null, gallery, galleryMore: more };
+  });
 }
 
-async function readLive(store: LiveStore, project: string, now: Date): Promise<LiveProject> {
+async function readLive(
+  store: LiveStore,
+  project: string,
+  now: Date,
+  limit = VALIDATION_LIMITS.images,
+): Promise<LiveProject> {
   const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions, validations] = await Promise.all(
     [
       store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
@@ -330,7 +346,7 @@ async function readLive(store: LiveStore, project: string, now: Date): Promise<L
       store.getCoordinatorPresence(project),
       store.inboxReads(project, now),
       store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
-      readValidations(store, project, now),
+      readValidations(store, project, now, limit),
     ],
   );
   return {
@@ -447,9 +463,11 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
   if (!found) return null;
   const { store, snap } = found;
   const l = store
-    ? await withTimeout(readLive(store, slug, opts.now()), opts.liveTimeoutMs ?? 4000, "reading live data").catch(
-        () => null,
-      )
+    ? await withTimeout(
+        readLive(store, slug, opts.now(), snap.config.policy.validationSamples),
+        opts.liveTimeoutMs ?? 4000,
+        "reading live data",
+      ).catch(() => null)
     : null;
   return { store: l ? store : null, config: snap.config, report: statusOf(snap, l, opts.now()) };
 }
@@ -549,7 +567,21 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
     try {
       const slugs = entries.flatMap((e) => liveSlug(e.p, e.entry?.snapshot) ?? []);
       const rows = await withTimeout(
-        Promise.all(slugs.map(async (slug) => [slug, await readLive(store, slug, opts.now())] as const)),
+        Promise.all(
+          slugs.map(
+            async (slug) =>
+              [
+                slug,
+                await readLive(
+                  store,
+                  slug,
+                  opts.now(),
+                  entries.find((e) => liveSlug(e.p, e.entry?.snapshot) === slug)?.entry?.snapshot?.config.policy
+                    .validationSamples,
+                ),
+              ] as const,
+          ),
+        ),
         opts.liveTimeoutMs ?? 4000,
         "reading live data",
       );

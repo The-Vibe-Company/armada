@@ -52,6 +52,8 @@ import {
   type Validation,
   type ValidationKind,
   type ValidationPr,
+  type ValidationSamples,
+  validationSampleProblem,
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
@@ -225,6 +227,8 @@ export interface ServeFleetDeps {
   appUrl?: string | null;
   /** The caller's CLI version (`x-armada-cli-version`): the coordinator's presence keeps it. */
   cliVersion?: string | null;
+  /** Trusted project policy from the stored snapshot; never caller supplied. */
+  validationSamples?: number;
 }
 
 /** A CLI version as a release names it (0.2.4, 1.0.0-beta.1); anything else is not kept. */
@@ -465,7 +469,7 @@ export async function serveFleet(
           );
         }
         case "validate": {
-          const input = validationOf(b);
+          const input = validationOf(b, deps.validationSamples);
           if (caller.kind === "worker" && input.kind !== "validation")
             throw new Invalid("a worker session only asks the owner to validate its work (kind validation)");
           const validation = await recordValidation(
@@ -572,7 +576,7 @@ function validationPrOf(v: unknown): ValidationPr | null {
   };
 }
 
-function validationOf(b: Body): ValidationRecord {
+function validationOf(b: Body, images = VALIDATION_LIMITS.images): ValidationRecord {
   const kind = b.kind;
   if (!VALIDATION_KINDS.includes(kind as ValidationKind))
     throw new Invalid("kind must be merge, validation or question");
@@ -594,12 +598,20 @@ function validationOf(b: Body): ValidationRecord {
     !attachments.every((a) => typeof a === "string" && /^[\w-]{1,64}$/.test(a))
   )
     throw new Invalid(`attachments must be at most ${L.attachments} attachment ids`);
+  const what = text(b, "what", L.what);
+  const modern = b.checks !== undefined || b.excerpts !== undefined || b.details !== undefined;
+  const samples = modern ? { checks: b.checks ?? [], excerpts: b.excerpts ?? [], details: b.details ?? null } : {};
+  if (modern) {
+    const problem = validationSampleProblem({ what, ...samples }, attachments.length, images);
+    if (problem) throw new Invalid(problem);
+  }
   const pr = validationPrOf(b.pr);
   if (kind === "merge" && !pr) throw new Invalid("a merge approval names its pull request");
   return {
     ticket: ticketOf(b),
     kind: kind as ValidationKind,
-    what: text(b, "what", L.what),
+    what,
+    ...(samples as ValidationSamples),
     reason: optText(b, "reason", L.reason),
     choices: Array.isArray(choices) ? choices.map((c: string) => c.trim()) : null,
     pr,

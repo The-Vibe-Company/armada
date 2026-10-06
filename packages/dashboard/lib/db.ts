@@ -764,6 +764,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       `CREATE INDEX owner_pushes_unsent ON owner_pushes (channel, created_at) WHERE sent_at IS NULL`,
     ],
   },
+  {
+    version: 26,
+    statements: ["ALTER TABLE validations ADD COLUMN checks jsonb, ADD COLUMN excerpts jsonb, ADD COLUMN details text"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

@@ -710,7 +710,8 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
     );
   let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
-  if ((op === "request" || op === "inbox") && caller.kind === "organization") {
+  let validationSamples: number | undefined;
+  if (op === "validate" || ((op === "request" || op === "inbox") && caller.kind === "organization")) {
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
@@ -719,6 +720,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       snapshot.config.github.repository === project.repository &&
       snapshot.config.tracker.programRoot === project.programRoot
     ) {
+      validationSamples = snapshot.config.policy.validationSamples;
       openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
       handBackSnapshot = {
         repository: project.repository,
@@ -735,6 +737,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       now,
       openPrs,
       snapshot: handBackSnapshot,
+      validationSamples,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
     },

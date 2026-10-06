@@ -1091,7 +1091,7 @@ export const fleetStore = (db: Database): FleetStore => ({
 
 // ------------------------------------------------------------------ validations (THE-885)
 
-const VALIDATION_COLUMNS = `id, project, ticket, kind, what, reason, choices, pr, attachments, author, created_at,
+const VALIDATION_COLUMNS = `id, project, ticket, kind, what, reason, choices, pr, attachments, author, created_at, checks, excerpts, details,
   decided_at, outcome, answer, note, decided_by`;
 
 const json = <T>(v: unknown): T | null => (v == null ? null : typeof v === "string" ? (JSON.parse(v) as T) : (v as T));
@@ -1102,6 +1102,9 @@ export const validationRow = (r: Row): Validation => ({
   ticket: String(r.ticket),
   kind: String(r.kind) as ValidationKind,
   what: String(r.what),
+  ...(r.checks == null ? {} : { checks: json<string[]>(r.checks) ?? [] }),
+  ...(r.excerpts == null ? {} : { excerpts: json<NonNullable<Validation["excerpts"]>>(r.excerpts) ?? [] }),
+  details: text(r.details),
   reason: text(r.reason),
   choices: json<string[]>(r.choices),
   pr: json<Validation["pr"]>(r.pr),
@@ -1137,8 +1140,8 @@ export async function addValidation(db: Database, v: Parameters<FleetStore["addV
         [v.project, v.ticket, v.at],
       );
     const rs = await tx.query(
-      `INSERT INTO validations (project, ticket, kind, what, reason, choices, pr, pr_number, attachments, author, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10, $11) RETURNING ${VALIDATION_COLUMNS}`,
+      `INSERT INTO validations (project, ticket, kind, what, reason, choices, pr, pr_number, attachments, author, created_at, checks, excerpts, details)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9::jsonb, $10, $11, $12::jsonb, $13::jsonb, $14) RETURNING ${VALIDATION_COLUMNS}`,
       [
         v.project,
         v.ticket,
@@ -1151,6 +1154,9 @@ export async function addValidation(db: Database, v: Parameters<FleetStore["addV
         JSON.stringify(v.attachments),
         v.author,
         v.at,
+        v.checks ? JSON.stringify(v.checks) : null,
+        v.excerpts ? JSON.stringify(v.excerpts) : null,
+        v.details ?? null,
       ],
     );
     return validationRow(rs.rows[0] ?? {});

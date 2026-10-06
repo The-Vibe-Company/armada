@@ -63,6 +63,8 @@ export interface ArmadaConfig {
     preApprovedLabel: string;
     /** A ticket carrying this label waits for approval, whatever `plans` says; it wins over `preApprovedLabel`. */
     approvalLabel: string;
+    /** Image sample cap for owner validations, default four, at most eight. */
+    validationSamples?: number;
     attachmentsPerTicket: number;
     attachmentsProjectMb: number;
     attachmentsRetentionDays: number;
@@ -194,6 +196,7 @@ export const CONFIG_DEFAULTS = {
   plans: "approve",
   preApprovedLabel: "plan-approved",
   approvalLabel: "needs-plan-approval",
+  validationSamples: 4,
   attachmentsPerTicket: 20,
   attachmentsProjectMb: 200,
   attachmentsRetentionDays: 30,
@@ -329,6 +332,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "attachments_per_ticket",
         "attachments_project_mb",
         "attachments_retention_days",
+        "validation_samples",
         "merge_approval",
         "validation",
       ],
@@ -562,6 +566,8 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     problems.push(`"policy.${key}" must be a positive integer`);
     return fallback;
   };
+  const validationSamples = quota("validation_samples", CONFIG_DEFAULTS.validationSamples);
+  if (validationSamples > 8) problems.push('"policy.validation_samples" must be at most 8');
   const attachmentsPerTicket = quota("attachments_per_ticket", CONFIG_DEFAULTS.attachmentsPerTicket);
   const attachmentsProjectMb = quota("attachments_project_mb", CONFIG_DEFAULTS.attachmentsProjectMb);
   const attachmentsRetentionDays = quota("attachments_retention_days", CONFIG_DEFAULTS.attachmentsRetentionDays);
@@ -659,6 +665,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       plans,
       preApprovedLabel,
       approvalLabel,
+      validationSamples,
       attachmentsPerTicket,
       attachmentsProjectMb,
       attachmentsRetentionDays,

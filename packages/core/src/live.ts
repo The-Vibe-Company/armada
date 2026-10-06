@@ -688,7 +688,7 @@ export async function recordMerge(
   return { handle, resolved, open: await store.openRuntimeHandles(project) };
 }
 
-export interface ValidationRecord {
+export interface ValidationRecord extends Pick<NewValidation, "checks" | "excerpts" | "details"> {
   ticket: string;
   kind: NewValidation["kind"];
   what: string;
