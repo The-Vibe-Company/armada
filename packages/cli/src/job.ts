@@ -4,6 +4,7 @@ import {
   type ArmadaConfig,
   type Credentials,
   type Fleet,
+  JOB_PROGRESS_MAX,
   JOB_REF_MAX,
   JOB_STATES,
   type Job,
@@ -12,7 +13,13 @@ import {
   jobIsOpen,
   jobOverdue,
   lastJobLine,
+  machinePaths,
   parseJobStatus,
+  processAlive,
+  readWatchState,
+  releaseWatchLock,
+  takeWatchLock,
+  updateWatchState,
 } from "@armada/core";
 import { type ExecResult, type Io, UsageError } from "./io.ts";
 import { currentTicket, liveFleet } from "./worker.ts";
@@ -38,13 +45,14 @@ export function renderJob(job: Job, config: ArmadaConfig, now: Date): string {
   );
 }
 
-async function execute(io: Io, config: ArmadaConfig, root: string, command: string, job: Job) {
+async function execute(io: Io, config: ArmadaConfig, root: string, command: string, job: Job, signal?: AbortSignal) {
   if (!io.exec) throw new UsageError("job commands need shell execution on this machine");
   return io.exec("sh", ["-c", command], {
     cwd: root,
     timeoutMs: 120_000,
     maxOutputBytes: 64 * 1024,
     processGroup: true,
+    ...(signal ? { signal } : {}),
     env: {
       ...io.env,
       ARMADA_JOB_ID: String(job.id),
@@ -76,13 +84,18 @@ export async function jobCommand(
   configPath: string,
 ): Promise<number> {
   const [sub, value, ...extra] = args.rest;
-  if (!sub || !["start", "status", "stop", "list", "recover"].includes(sub))
-    throw new UsageError("job needs a command: start, status, stop, list or recover");
+  if (!sub || !["start", "status", "stop", "list", "recover", "beat"].includes(sub))
+    throw new UsageError("job needs a command: start, status, stop, list, recover or beat");
   if (extra.length || (sub === "list" && value)) throw new UsageError(`unexpected job ${sub} arguments`);
   if (args.options.ticket && sub !== "start" && sub !== "list")
     throw new UsageError(`--ticket does not apply to job ${sub}`);
-  if ((args.options.ref !== undefined || args.options.state !== undefined) && sub !== "recover")
-    throw new UsageError(`--ref and --state apply only to job recover`);
+  if (args.options.ref !== undefined && sub !== "recover") throw new UsageError("--ref applies only to job recover");
+  if (args.options.state !== undefined && sub !== "recover" && sub !== "beat")
+    throw new UsageError("--state applies only to job recover or beat");
+  if (args.options.progress !== undefined && sub !== "beat")
+    throw new UsageError("--progress applies only to job beat");
+  if (sub === "beat" && args.options.progress !== undefined && args.options.progress.length > JOB_PROGRESS_MAX)
+    throw new UsageError(`progress must be at most ${JOB_PROGRESS_MAX} characters`);
   const signIn = credentials.armadaSignIn;
   if (signIn?.kind === "worker" && signIn.project !== config.project.slug)
     throw new UsageError("this worker session belongs to another project");
@@ -145,7 +158,8 @@ export async function jobCommand(
     id = /^\d+$/.test(value) ? Number(value) : NaN;
     if (!Number.isSafeInteger(id) || id < 1) throw new UsageError("job id must be a positive integer");
   }
-  if ((sub === "stop" || sub === "recover") && id === undefined) throw new UsageError(`job ${sub} needs an id`);
+  if ((sub === "stop" || sub === "recover" || sub === "beat") && id === undefined)
+    throw new UsageError(`job ${sub} needs an id`);
   const jobs = await fleet.listJobs({
     ...(id === undefined ? {} : { id }),
     ...(sub === "status" && id === undefined ? { open: true } : {}),
@@ -154,6 +168,23 @@ export async function jobCommand(
   if (id !== undefined && !jobs.length) throw new UsageError(`job ${id} is not on this ticket and project`);
   if (sub === "list") {
     print(jobs);
+    return 0;
+  }
+  if (sub === "beat") {
+    const job = jobs[0] as Job;
+    const state = args.options.state ?? "running";
+    if (state === "starting" || !JOB_STATES.includes(state as JobState))
+      throw new UsageError("job beat state must be running|succeeded|failed|stopped|lost");
+    const saved = await fleet.observeJob({
+      id: job.id,
+      ticket: job.ticket,
+      state: state as Exclude<JobState, "starting">,
+      ...(args.options.progress === undefined ? {} : { progress: args.options.progress }),
+    });
+    if (!saved) throw new UsageError(`job ${job.id} is not on this ticket and project`);
+    if (saved.state !== state)
+      throw new UsageError(`job ${job.id} is already ${saved.state}; its outcome cannot change`);
+    print([saved]);
     return 0;
   }
   if (sub === "recover") {
@@ -217,4 +248,85 @@ export async function jobCommand(
   }
   print(observed);
   return code;
+}
+
+/** Coordinator-only polling; failed probes retain the last news and become silent at read time. */
+export function refreshingJobsFleet(
+  io: Io,
+  fleet: Fleet,
+  config: ArmadaConfig,
+  root: string,
+  signal: AbortSignal,
+): Fleet {
+  const paths = machinePaths(io.env);
+  const namespace = `${config.project.slug}.job-observe`;
+  const attempted: Record<string, string> = {};
+  return {
+    ...fleet,
+    inbox: async (query) => {
+      if (!io.exec) return fleet.inbox(query);
+      const jobs = await fleet.listJobs({ open: true });
+      let locked = false;
+      try {
+        if (paths) {
+          const lock = await takeWatchLock(paths, namespace, io.pid ?? process.pid, io.processAlive ?? processAlive);
+          if (!lock.taken) return await fleet.inbox(query);
+          locked = true;
+        }
+        const saved = paths ? await readWatchState(paths, namespace) : null;
+        const attempts = { ...attempted, ...saved?.jobObserved };
+        const now = io.now?.() ?? new Date();
+        const eligible = jobs.filter((job) => {
+          const def = config.jobs?.[job.name];
+          if (!job.ref || !def?.status || job.revision === undefined) return false;
+          const interval = def.silenceMinutes * 30_000;
+          const last = Math.max(Date.parse(job.observedAt), Date.parse(attempts[job.id] ?? "") || 0);
+          if (now.getTime() - last < interval) return false;
+          attempts[job.id] = now.toISOString();
+          attempted[job.id] = now.toISOString();
+          return true;
+        });
+        // Reserve every attempt before shell I/O; keep failed attempts across watch invocations.
+        if (paths)
+          await updateWatchState(paths, namespace, {
+            jobObserved: Object.fromEntries(
+              jobs.map((job) => [String(job.id), attempts[job.id]]).filter(([, at]) => at),
+            ),
+          });
+        let index = 0;
+        await Promise.all(
+          Array.from({ length: Math.min(4, eligible.length) }, async () => {
+            for (;;) {
+              const job = eligible[index++];
+              if (!job || signal.aborted) return;
+              try {
+                const command = config.jobs[job.name]?.status;
+                if (!command) continue;
+                const result = await execute(io, config, root, command, job, signal);
+                if (signal.aborted) return;
+                if (result.code !== 0 || result.timedOut || result.outputExceeded)
+                  throw new Error("status command failed");
+                const update = parseJobStatus(result.stdout, job.startedAt, io.now?.() ?? new Date());
+                await fleet.observeJob({
+                  id: job.id,
+                  ticket: job.ticket,
+                  expectedRevision: job.revision,
+                  ...update,
+                });
+              } catch {
+                // Neither command output nor provider errors are safe to print.
+                io.stderr(`armada: warning: job ${job.id} status probe failed; last observation retained.\n`);
+              }
+            }
+          }),
+        );
+      } catch {
+        // A failed throttle store must never flood the runner; continue reading its stored alarms.
+        io.stderr("armada: warning: job status polling unavailable; reading stored observations.\n");
+      } finally {
+        if (paths && locked) await releaseWatchLock(paths, namespace, io.pid ?? process.pid).catch(() => {});
+      }
+      return fleet.inbox(query);
+    },
+  };
 }

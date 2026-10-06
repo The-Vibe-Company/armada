@@ -683,3 +683,13 @@ test("follow shows initial and new holds until cleared, by default and when filt
     expect(await live.fleet.holds()).toEqual([]);
   }
 });
+
+test("external job liveness keeps worker ownership accurate in rearm and the stop hook", () => {
+  expect(rearm({ inFlight: [], openJobs: [12], open: 0, running: null }).line).toBe(
+    "1 open job (12) — keep watching: armada watch",
+  );
+  const state = { ...EMPTY_WATCH_STATE, root: "/synthetic", inFlight: [], openJobs: [12] };
+  const decision = stopHookDecision({ project: "widgets", root: "/synthetic", state, watching: null, env: {} });
+  expect(decision.block).toBe(true);
+  if (decision.block) expect(decision.reason).toContain("open job");
+});

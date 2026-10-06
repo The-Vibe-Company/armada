@@ -281,7 +281,7 @@ The CLI executes each with `sh -c` in the directory containing `armada.toml`. It
 
 The start command must dispatch to a runner that survives the terminal and return within two minutes. Its last nonblank stdout line is the runner's reference (run id or URL); a nonzero exit means not started. Armada reserves a `starting` record first so the command can attach the job id to its run. A successful dispatch becomes `running`; a failed dispatch becomes `failed`. A timeout or execution failure whose outcome is unknown becomes `lost`: inspect the runner before dispatching again. A command whose result cannot be recorded prints the job id and runner reference for recovery; it is never retried automatically.
 
-The status command's last nonblank line is `running`, `succeeded` or `failed`, optionally followed by progress text. `running 37/120 cases` produces an approximate completion time from the elapsed time and fraction. Unparseable output or a failed poll leaves the last observation intact. Omit `status` for a runner that will push its own observations (the push/alert command is a separate feature). Stop's exit code zero means stopped. Status and stop are also bounded to two minutes. The CLI captures output, displays only the runner reference and parsed progress, and never prints command stderr.
+The status command's last nonblank line is `running`, `succeeded` or `failed`, optionally followed by progress text. `running 37/120 cases` produces an approximate completion time from the elapsed time and fraction. Unparseable output or a failed poll leaves the last observation intact. Omit `status` for a runner that pushes its own observations. Stop's exit code zero means stopped. Status and stop are also bounded to two minutes. The CLI captures output, displays only the runner reference and parsed progress, and never prints command stderr.
 
 ```sh
 armada job start eval --ticket ABC-12
@@ -294,6 +294,20 @@ armada job stop 42
 armada job recover 42 --ref runner-123 --state running
 ```
 
-Workers default to their claimed ticket and can start, observe and read only that ticket's jobs. Other terminals use their organization sign-in. All commands accept `--json`; list/status output is an array of job records. `armada status` reads open jobs without running status commands and includes their latest progress, runner reference and ETA. An open job past `max_hours` is overdue, and a job whose Linear ticket is Done carries a note. Neither condition automatically stops it. `silence_minutes` configures the threshold for the subsequent job-alert feature; this feature does not send alerts.
+Workers default to their claimed ticket and can start, observe and read only that ticket's jobs. Other terminals use their organization sign-in. All commands accept `--json`; list/status output is an array of job records. `armada status` reads open jobs without running status commands and includes their latest progress, runner reference and ETA. An open job past `max_hours` is overdue, and a job whose Linear ticket is Done carries a note. Neither condition automatically stops it. A running job without news for longer than `silence_minutes` appears in `armada inbox` as `job-silent`. The server derives that alarm when the inbox is read, with no timer. A fresh observation clears it. The coordinator's `armada watch` runs configured status commands at most once per half the silence interval, retaining the last observation when a probe fails. Open jobs keep watch alive even after their ticket or worker ends; silence never stops them.
+
+The first observation of `succeeded`, `failed`, `stopped` or `lost` stores one `job` inbox notice naming the job, ticket, outcome and last progress. Watch wakes once for that notice; acknowledge it with `armada answer <item-id> "Runner outcome checked"`. Repeated final observations never create another notice.
+
+To push news from the runner, create an organization API key in Armada and set it as the runner's `ARMADA_API_KEY` secret. Give the runner a copy of the project's `armada.toml` (or pass `--config`) and the job id supplied to the start command. Set `ARMADA_API_URL` when using a different Armada deployment. The key has organization scope in V1; a job-scoped token is a later feature. Never put the key in code, command arguments or logs.
+
+```sh
+# ARMADA_API_KEY is provided by the runner's secret store:
+armada login --api-key
+armada job beat "$ARMADA_JOB_ID" --progress "40/120"
+# Send a terminal state when the run ends:
+armada job beat "$ARMADA_JOB_ID" --state succeeded --progress "120/120"
+```
+
+Beat calls the existing project-scoped observation API without executing a runner command or fetching Linear/GitHub keys. Its default state is `running`; `--state` also accepts `failed`, `stopped` and `lost`. Omit progress to retain the last reported value. News becomes visible on the dashboard's next Postgres read. A slow coordinator probe cannot overwrite a newer pushed observation: a monotonic job revision fences it, even when the observations have equal timestamps. Deploy the dashboard (migration 38) before updating the CLI.
 
 A successful start with no stdout reference is still recorded and shown with `no runner reference`; status and stop refuse to contact it. Find the existing run on the runner, then attach its reference with `armada job recover <id> --ref <reference>`. Recovery runs no shell command, keeps existing references fixed, and cannot change a terminal job's outcome. Use `--state failed`, `--state lost` or `--state stopped` to finalize a starting record after an observation outage when that outcome is known. Repair the runner's start command before dispatching another job. Closing a terminal never stops an already-dispatched runner.

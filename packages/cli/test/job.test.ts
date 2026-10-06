@@ -254,3 +254,32 @@ describe("armada job", () => {
     }
   });
 });
+
+test("a remote API-key beat updates stored dashboard data with no runner command or credential broker", async () => {
+  const s = await setup();
+  const job = await s.api.store.startJob({
+    project: "widgets",
+    ticket: "DEMO-7",
+    name: "eval",
+    startedBy: "runner",
+    at: NOW,
+  });
+  const remote = { ...s.io, exec: undefined, gitBranch: () => null };
+  expect(await run(["job", "beat", String(job.id), "--progress", "40/120", "--json"], remote)).toBe(0);
+  expect(JSON.parse(s.printed().out)[0]).toMatchObject({
+    state: "running",
+    progress: "40/120",
+    observedAt: NOW.toISOString(),
+  });
+  expect(await run(["job", "beat", String(job.id), "--state", "succeeded"], remote)).toBe(0);
+  expect(s.printed().out).toContain("40/120");
+  expect((await s.api.store.getJob("widgets", job.id))?.state).toBe("succeeded");
+  expect(s.execs).toHaveLength(0);
+  expect(s.api.calls.some((c) => c.path === "credentials")).toBe(false);
+  expect(await run(["job", "beat"], remote)).toBe(2);
+  s.printed();
+  expect(await run(["job", "beat", String(job.id), "--state", "starting"], remote)).toBe(2);
+  s.printed();
+  expect(await run(["job", "list", "--progress", "oops"], remote)).toBe(2);
+  s.printed();
+});

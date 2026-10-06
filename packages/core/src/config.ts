@@ -827,8 +827,10 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # start = "./scripts/start-eval.sh"   # returns within 2 min; last stdout line is the runner reference
 # status = "./scripts/job-status.sh" # last line: running|succeeded|failed [progress, e.g. 37/120 cases]
 # stop = "./scripts/stop-eval.sh"     # exit 0 means stopped
-# silence_minutes = 15
+# silence_minutes = 15              # inbox alarm without news; watch polls at half this interval
 # max_hours = 12                     # overdue, never auto-stopped
+# Remote runner: set ARMADA_API_KEY as its secret (organization API key), armada login --api-key.
+# Push news: armada job beat "$ARMADA_JOB_ID" --progress "40/120" [--state succeeded|failed].
 # Declare the shared resources workers reserve through Armada (optional).
 # [[reservations]]
 # key = "db-migration"

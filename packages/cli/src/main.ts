@@ -7,11 +7,10 @@ import { isatty } from "node:tty";
 import { run } from "./cli.ts";
 import { readCodexModels } from "./codex-models.ts";
 import { cliFetch } from "./http.ts";
-import type { Exec } from "./io.ts";
 import { UsageError } from "./io.ts";
 import { echo, emptyLine, feedLine } from "./line.ts";
 import { inspectProcess } from "./process.ts";
-import { spawnInherited, startBackground } from "./spawn.ts";
+import { createExec, spawnInherited, startBackground } from "./spawn.ts";
 
 function gitBranch(): string | null {
   try {
@@ -89,64 +88,7 @@ function openUrl(url: string): boolean {
   }
 }
 
-/** Runs git or gh without a shell; optional input is piped without a shell. */
-const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input, env, processGroup }) =>
-  new Promise((done, fail) => {
-    const grouped = processGroup === true && process.platform !== "win32";
-    const child = spawn(command, args, {
-      cwd,
-      env,
-      detached: grouped,
-      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    });
-    const kill = () => {
-      if (grouped && child.pid) {
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      } else child.kill("SIGKILL");
-    };
-    let timedOut = false;
-    const timer = timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          kill();
-        }, timeoutMs)
-      : null;
-    if (input !== undefined) {
-      child.stdin?.on("error", () => {}); // An early exit can close stdin before the prompt is written.
-      child.stdin?.end(input);
-    }
-    let stdout = "";
-    let stderr = "";
-    let bytes = 0;
-    let oversized = false;
-    const accept = (text: string) => {
-      bytes += Buffer.byteLength(text);
-      if (maxOutputBytes !== undefined && bytes > maxOutputBytes) {
-        oversized = true;
-        stdout = stderr = "";
-        kill();
-      }
-      return !oversized;
-    };
-    child.stdout?.setEncoding("utf8").on("data", (d: string) => {
-      if (accept(d)) stdout += d;
-    });
-    child.stderr?.setEncoding("utf8").on("data", (d: string) => {
-      if (accept(d)) stderr += d;
-    });
-    child.on("error", (err) => {
-      if (timer) clearTimeout(timer);
-      fail(err);
-    });
-    child.on("close", (code) => {
-      if (timer) clearTimeout(timer);
-      done({ code: oversized ? 1 : (code ?? 1), stdout, stderr, timedOut, outputExceeded: oversized });
-    });
-  });
+const exec = createExec();
 
 let stopped = false;
 if (process.argv.includes("heartbeat") && !process.argv.includes("--background"))

@@ -4,7 +4,7 @@ import { sinceSummary } from "../src/catchup.ts";
 // with its unique rules (one open plan, hand-back and launch request per
 // ticket, one open answer per question) and its atomic lease.
 
-import { type Job, jobIsOpen } from "../src/jobs.ts";
+import { type Job, jobEndedBody, jobIsOpen } from "../src/jobs.ts";
 import type {
   CoordinatorPresence,
   EventInput,
@@ -179,6 +179,7 @@ export function memoryFleet(): FleetStore & {
     async startJob(input) {
       const job: Job = {
         id: jobs.length + 1,
+        revision: 0,
         project: input.project,
         ticket: input.ticket,
         name: input.name,
@@ -215,15 +216,30 @@ export function memoryFleet(): FleetStore & {
       if (!job) return null;
       if (
         jobIsOpen(job) &&
+        (input.expectedRevision === undefined || input.expectedRevision === job.revision) &&
         input.at.getTime() >= Date.parse(job.observedAt) &&
         (input.ref === undefined || job.ref === null || input.ref === job.ref)
       ) {
         if (job.ref === null && input.ref !== undefined) job.ref = input.ref;
+        job.revision = (job.revision ?? 0) + 1;
         job.state = input.state;
-        job.progress = input.progress ?? null;
+        if (input.progress !== undefined) job.progress = input.progress;
         job.eta = input.state === "running" ? (input.eta ?? null) : null;
         job.observedAt = input.at.toISOString();
-        if (!jobIsOpen(job)) job.finishedAt = input.at.toISOString();
+        if (!jobIsOpen(job)) {
+          job.finishedAt = input.at.toISOString();
+          insert({
+            project: job.project,
+            ticket: job.ticket,
+            kind: "job",
+            recipient: "coordinator",
+            author: null,
+            body: jobEndedBody(job),
+            createdAt: input.at.toISOString(),
+            requestQuestion: null,
+            requestProfile: null,
+          });
+        }
       }
       return structuredClone(job);
     },

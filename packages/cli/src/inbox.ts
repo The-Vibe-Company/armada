@@ -150,10 +150,11 @@ export async function inbox(io: Io, config: ArmadaConfig, credentials: Credentia
       ? { wait: { timeoutMs, sleep: io.sleep ?? ((ms) => new Promise<void>((done) => setTimeout(done, ms))) } }
       : {}),
   });
-  await remember(io, report.project, shown(io, report.items, report.inFlight));
+  await remember(io, report.project, shown(io, report.items, report.inFlight, report.openJobs));
   const next = await rearmFor(io, report.project, {
     inFlight: report.inFlight,
     open: report.items.length,
+    openJobs: report.openJobs,
     act: report.items.length > 0,
   });
   const runtimes = (await fleet.runtimeHandles().catch(() => []))

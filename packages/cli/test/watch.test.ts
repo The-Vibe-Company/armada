@@ -389,6 +389,7 @@ describe("armada watch", () => {
     );
     expect(c.err()).toBe("");
     expect(await readWatchState(c.paths, P)).toEqual({
+      openJobs: [],
       root: COORDINATOR_ROOT,
       // A hand-back's key follows its text: handed back on a new head, it wakes the watch again.
       seen: [expect.stringMatching(/^#1@/)],
@@ -609,4 +610,105 @@ test("long watch deadlines are chunked below Node's timer limit and cancellable"
   expect(expired).toBe(1);
   stop();
   expect(next.cancelled).toBe(true);
+});
+
+test("plain and follow watch keep open jobs fresh, throttle across restarts, and let failed probes go silent", async () => {
+  for (const follow of [false, true]) {
+    const c = await coordinator();
+    const configText = `${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstatus = "probe"\nstop = "stop"\nsilence_minutes = 15`;
+    c.io.readFile = async (path) => (path === `${COORDINATOR_ROOT}/armada.toml` ? configText : null);
+    const job = await c.store.startJob({
+      project: P,
+      ticket: "DEMO-7",
+      name: "eval",
+      startedBy: "runner",
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    await c.store.observeJob({
+      project: P,
+      ticket: job.ticket,
+      id: job.id,
+      state: "running",
+      ref: "run-1",
+      progress: "1/120",
+      at: new Date(NOW.getTime() - 20 * 60000),
+    });
+    let probes = 0;
+    c.io.exec = async (command, args, opts) => {
+      expect(command).toBe("sh");
+      expect(args).toEqual(["-c", "probe"]);
+      expect(opts).toMatchObject({
+        cwd: COORDINATOR_ROOT,
+        env: { ARMADA_JOB_ID: String(job.id), ARMADA_JOB_REF: "run-1" },
+      });
+      probes++;
+      return { code: 0, stdout: "running 40/120", stderr: "private runner output" };
+    };
+    c.io.sleep = c.clock.sleep;
+    const flags = follow ? ["--follow"] : [];
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(1);
+    expect((await c.store.getJob(P, job.id))?.progress).toBe("40/120");
+    expect(c.out()).not.toContain("job-silent");
+    c.reset();
+    // A fresh invocation shares the machine throttle, including failed attempts.
+    c.clock.advance(7 * 60000);
+    c.io.exec = async () => {
+      probes++;
+      return { code: 1, stdout: "", stderr: "private runner output" };
+    };
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(2);
+    expect((await c.store.getJob(P, job.id))?.progress).toBe("40/120");
+    c.reset();
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(2);
+    c.reset();
+    c.clock.advance(8 * 60000);
+    expect(await run(["watch", ...flags, "--for", "1", "--json"], c.io)).toBe(0);
+    expect(probes).toBe(3);
+    expect(c.out()).toContain("job-silent");
+    expect(c.out() + c.err()).not.toContain("private runner output");
+  }
+});
+
+test("watch cancellation aborts a pending job status probe without a late observation or worker count", async () => {
+  const c = await coordinator();
+  c.io.readFile = async (path) =>
+    path === `${COORDINATOR_ROOT}/armada.toml`
+      ? `${DEMO_TOML}\n[jobs.eval]\nstart = "start"\nstatus = "probe"\nstop = "stop"`
+      : null;
+  const job = await c.store.startJob({
+    project: P,
+    ticket: "DEMO-7",
+    name: "eval",
+    startedBy: "runner",
+    at: new Date(NOW.getTime() - 20 * 60000),
+  });
+  await c.store.observeJob({
+    project: P,
+    ticket: job.ticket,
+    id: job.id,
+    state: "running",
+    ref: "run-1",
+    at: new Date(NOW.getTime() - 20 * 60000),
+  });
+  let stop: (() => void) | undefined;
+  c.io.onSignal = (handler) => {
+    stop = () => handler("SIGINT");
+    return () => {};
+  };
+  let aborted = false;
+  c.io.exec = async (_command, _args, opts) => {
+    expect(opts.signal).toBeDefined();
+    opts.signal?.addEventListener("abort", () => {
+      aborted = true;
+    });
+    stop?.();
+    return { code: 1, stdout: "", stderr: "" };
+  };
+  expect(await run(["watch", "--json"], c.io)).toBe(130);
+  expect(aborted).toBe(true);
+  expect((await c.store.getJob(P, job.id))?.state).toBe("running");
+  expect(await readWatchLock(c.paths, P)).toBeNull();
 });

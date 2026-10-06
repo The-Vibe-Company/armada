@@ -225,6 +225,7 @@ export interface SessionRecord extends RuntimeHandle {
  */
 export type InboxKind =
   | "hold"
+  | "job"
   | "queue-refused"
   | "question"
   | "plan"
@@ -931,7 +932,15 @@ const MIN = 60_000;
  * claimed (both read from the fleet, they clear on their own); `version`: a
  * newer Armada is out (`armada watch` only, never stored).
  */
-export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "stopped" | "quiet" | "not-started" | "version";
+export type InboxEntryKind =
+  | InboxKind
+  | "job-silent"
+  | "runtime-blocked"
+  | "silent"
+  | "stopped"
+  | "quiet"
+  | "not-started"
+  | "version";
 
 export interface InboxEntry {
   /**
@@ -940,6 +949,8 @@ export interface InboxEntry {
    */
   id: number | null;
   kind: InboxEntryKind;
+  /** Durable job id for a derived job-silent entry. */
+  jobId?: number;
   ticket: string | null;
   /** Runtime handle of the worker that asked, or of the silent or not started worker when known. */
   author: string | null;
@@ -967,19 +978,25 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
  * is new to the coordinator.
  */
 export const entryKey = (
-  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined; createdAt?: string },
+  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & {
+    version?: string | undefined;
+    createdAt?: string;
+    jobId?: number;
+  },
 ) =>
-  e.id !== null
-    ? REWRITTEN.includes(e.kind)
-      ? `#${e.id}@${digest(e.body)}`
-      : `#${e.id}`
-    : e.version
-      ? `version:${e.version}@${digest(e.body)}`
-      : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
-        ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-        : e.kind === "stopped"
-          ? `stopped:${e.ticket}@${e.createdAt}`
-          : `${e.kind}:${e.ticket}`;
+  e.kind === "job-silent"
+    ? `job-silent:${e.jobId}`
+    : e.id !== null
+      ? REWRITTEN.includes(e.kind)
+        ? `#${e.id}@${digest(e.body)}`
+        : `#${e.id}`
+      : e.version
+        ? `version:${e.version}@${digest(e.body)}`
+        : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+          ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+          : e.kind === "stopped"
+            ? `stopped:${e.ticket}@${e.createdAt}`
+            : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -1136,12 +1153,13 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
 async function readInboxAndFlight(
   store: FleetStore,
   o: InboxReadOptions,
-): Promise<{ items: InboxEntry[]; inFlight: string[] }> {
+): Promise<{ items: InboxEntry[]; inFlight: string[]; openJobs: number[] }> {
   const now = o.now.getTime();
-  const [stored, handles, launches] = await Promise.all([
+  const [stored, handles, launches, jobs] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
     store.openRuntimeHandles(o.project),
     store.pendingLaunches(o.project, new Date(now - LAUNCH_WINDOW_MS)),
+    store.listJobs(o.project, { open: true }),
   ]);
   let items = await reconcileHandBacks(store, stored, o.snapshot, o.now);
   const flight = o.snapshot?.flight;
@@ -1216,6 +1234,21 @@ async function readInboxAndFlight(
     new: false,
     ...(i.request ? { request: i.request } : {}),
   }));
+  for (const job of jobs) {
+    const silence = now - Date.parse(job.observedAt);
+    const limit = o.snapshot?.config?.jobs?.[job.name]?.silenceMinutes ?? 15;
+    if (job.state !== "running" || silence <= limit * MIN) continue;
+    entries.push({
+      id: null,
+      kind: "job-silent",
+      jobId: job.id,
+      ticket: job.ticket,
+      author: null,
+      body: `Job ${job.id} · ${job.name} · ${job.ticket}: no observation for ${Math.floor(silence / MIN)} min (limit ${limit} min). Last progress: ${job.progress ?? "no progress reported"}; check the runner with armada job status ${job.id}`,
+      createdAt: job.observedAt,
+      new: false,
+    });
+  }
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
   // A claim may arrive before its newly created ticket reaches the stored reading.
@@ -1326,7 +1359,8 @@ async function readInboxAndFlight(
     });
   return {
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
-    inFlight: inFlight.sort(),
+    inFlight: [...new Set(inFlight)].sort(),
+    openJobs: jobs.map((j) => j.id),
   };
 }
 
@@ -1355,6 +1389,8 @@ export interface InboxRead {
    * this field.
    */
   inFlight?: string[];
+  /** Open external jobs, separate from worker ownership. */
+  openJobs?: number[];
   /** Which entries and workers these are (`inboxTag`), for the next read's `etag`. */
   etag: string;
   /** Problems that did not stop the read, such as a presence that could not be recorded. */
@@ -1369,8 +1405,11 @@ export interface InboxRead {
 export function inboxTag(
   items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body">[],
   inFlight: readonly string[] = [],
+  openJobs: readonly number[] = [],
 ): string {
-  const keys = [...items.map(entryKey), ...inFlight.map((t) => `flight:${t}`)].sort().join("\n");
+  const keys = [...items.map(entryKey), ...inFlight.map((t) => `flight:${t}`), ...openJobs.map((id) => `job:${id}`)]
+    .sort()
+    .join("\n");
   return `"${createHash("sha256").update(keys).digest("base64url").slice(0, 22)}"`;
 }
 
@@ -1403,7 +1442,7 @@ export async function serveInbox(
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
-  const { items, inFlight } = await readInboxAndFlight(store, {
+  const { items, inFlight, openJobs } = await readInboxAndFlight(store, {
     snapshot,
     project,
     coordinator: q.coordinator,
@@ -1423,8 +1462,8 @@ export async function serveInbox(
       new: false,
     });
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
-  const etag = inboxTag(items, inFlight);
-  return q.etag === etag ? null : { items, inFlight, etag, warnings };
+  const etag = inboxTag(items, inFlight, openJobs);
+  return q.etag === etag ? null : { items, inFlight, ...(openJobs.length ? { openJobs } : {}), etag, warnings };
 }
 
 // ------------------------------------------------------------------ the CLI's side

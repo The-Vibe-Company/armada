@@ -26,6 +26,7 @@ export type Exec = (
     input?: string;
     env?: Record<string, string | undefined>;
     processGroup?: boolean;
+    signal?: AbortSignal;
   },
 ) => Promise<ExecResult>;
 

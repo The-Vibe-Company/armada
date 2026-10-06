@@ -54,6 +54,8 @@ export interface WatchState {
   freshStart?: boolean;
   /** Last attempted Conductor observation, per handle and generation (60 s throttle). */
   runtimeObserved?: Record<string, string>;
+  /** Last attempted job status probe; kept in a dedicated machine namespace. */
+  jobObserved?: Record<string, string>;
   /** Transcript cursors use a dedicated <project>.peek namespace, separate from fleet watch. */
   peek?: Record<string, string>;
   peekTail?: Record<string, PeekTail>;
@@ -61,6 +63,7 @@ export interface WatchState {
   seen: string[];
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */
   inFlight: string[] | null;
+  openJobs?: number[];
   /** When `inFlight` was read. */
   readAt: string | null;
   /** Why the last watch ended on a refusal (signed out, refused); null otherwise. */
@@ -97,7 +100,7 @@ export interface WatchOptions {
   now: () => Date;
   sleep: (ms: number) => Promise<void>;
   /** After every read that answered: the entries and tickets in flight, to keep in the watch state. */
-  onRead?: (read: { items: InboxEntry[]; inFlight: string[] | null }) => Promise<void>;
+  onRead?: (read: { items: InboxEntry[]; inFlight: string[] | null; openJobs?: number[] }) => Promise<void>;
   /** A failure the watch waits out. */
   onRetry?: (message: string) => void;
   /**
@@ -117,6 +120,7 @@ export interface WatchReport {
   items: InboxEntry[];
   /** Tickets a worker holds; null when Armada did not say. */
   inFlight: string[] | null;
+  openJobs?: number[];
   warnings: string[];
 }
 
@@ -159,6 +163,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
   let etag: string | null = null;
   let items: InboxEntry[] = [];
   let inFlight: string[] | null = null;
+  let openJobs: number[] = [];
   let failures = 0;
   const warnings = new Set<string>();
   const report = (outcome: WatchReport["outcome"]): WatchReport => ({
@@ -167,6 +172,7 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     outcome,
     items,
     inFlight,
+    ...(openJobs.length ? { openJobs } : {}),
     warnings: [...warnings],
   });
   for (;;) {
@@ -193,18 +199,19 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     if (read) {
       items = read.items.map((e) => ({ ...e, new: !known.has(entryKey(e)) }));
       inFlight = read.inFlight ?? null;
+      openJobs = read.openJobs ?? [];
       etag = read.etag;
       known = new Set(items.map(entryKey));
       for (const w of read.warnings) warnings.add(w);
-      await untilAborted(o.signal, () => o.onRead?.({ items, inFlight }));
+      await untilAborted(o.signal, () => o.onRead?.({ items, inFlight, openJobs }));
     }
     // Not urgent: a release comes after the questions, plans and hand-backs already open.
     const release = (await untilAborted(o.signal, () => o.release?.())) ?? null;
     if (release) items = [...items, { ...release, new: true }];
     if (items.some((e) => e.new)) return report("items");
-    if (read && inFlight !== null && !inFlight.length && !items.length) return report("nothing");
+    if (read && inFlight !== null && !inFlight.length && !openJobs.length && !items.length) return report("nothing");
     await untilAborted(o.signal, () =>
-      o.sleep(boundedWait(o, inFlight !== null && !inFlight.length ? idlePollMs : pollMs)),
+      o.sleep(boundedWait(o, inFlight !== null && !inFlight.length && !openJobs.length ? idlePollMs : pollMs)),
     );
   }
 }
@@ -215,6 +222,8 @@ function boundedWait(o: WatchOptions, ms: number): number {
 
 export const FOLLOW_INBOX_KINDS: readonly InboxEntryKind[] = [
   "hold",
+  "job",
+  "job-silent",
   "question",
   "plan",
   "hand-back",
@@ -277,6 +286,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
   );
   let etag: string | null = null;
   let inFlight: string[] | null = null;
+  let openJobs: number[] = [];
   let first = true;
   let idle = false;
   let failures = 0;
@@ -303,6 +313,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
       if (read) {
         etag = read.etag;
         inFlight = read.inFlight ?? null;
+        openJobs = read.openJobs ?? [];
         // Derived alarms are state: once absent, a later recurrence is new again.
         const openKeys = new Set(read.items.map(entryKey));
         let removed = false;
@@ -312,7 +323,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
             removed = true;
           }
         if (removed) await save();
-        await untilAborted(o.signal, () => o.onRead?.({ items: read.items, inFlight }));
+        await untilAborted(o.signal, () => o.onRead?.({ items: read.items, inFlight, openJobs }));
         for (const warning of read.warnings) o.onRetry?.(warning);
         for (const item of read.items) {
           const key = entryKey(item);
@@ -411,13 +422,18 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
       }
       first = false;
       failures = 0;
-      if (inFlight?.length === 0 && !idle) {
+      if (inFlight?.length === 0 && !openJobs.length && !idle) {
         o.onIdle?.();
         idle = true;
-      } else if (inFlight?.length) idle = false;
+      } else if (inFlight?.length || openJobs.length) idle = false;
       await untilAborted(o.signal, () =>
         o.sleep(
-          boundedWait(o, inFlight?.length === 0 ? (o.idlePollMs ?? WATCH_IDLE_POLL_MS) : (o.pollMs ?? WATCH_POLL_MS)),
+          boundedWait(
+            o,
+            inFlight?.length === 0 && !openJobs.length
+              ? (o.idlePollMs ?? WATCH_IDLE_POLL_MS)
+              : (o.pollMs ?? WATCH_POLL_MS),
+          ),
         ),
       );
     } catch (err) {
@@ -484,6 +500,7 @@ export function releaseEntry(
 export interface Rearm {
   /** Tickets a worker holds; null when unknown. */
   inFlight: string[] | null;
+  openJobs?: number[];
   /** Open entries in the coordinator's inbox; null when the command did not read them. */
   open: number | null;
   /** The pid of the `armada watch` running for the project on this machine, or null. */
@@ -500,6 +517,7 @@ const workers = (n: number) => `${n} worker${n === 1 ? "" : "s"} in flight`;
  */
 export function rearm(o: {
   inFlight: string[] | null;
+  openJobs?: number[];
   open: number | null;
   running: number | null;
   act?: boolean;
@@ -523,7 +541,15 @@ export function rearm(o: {
     line = `No worker in flight, ${o.open} item${o.open === 1 ? "" : "s"} open — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}`;
   else if (o.open === null) line = "No worker in flight — nothing to watch.";
   else line = "No worker in flight and nothing open — nothing to watch.";
-  return { inFlight: o.inFlight, open: o.open, running: o.running, line };
+  if (o.openJobs?.length)
+    line = `${o.openJobs.length} open job${o.openJobs.length === 1 ? "" : "s"} (${o.openJobs.join(", ")}) — ${watch ? `${then}${watch}.` : `${then}keep watching: armada watch`}${o.inFlight?.length ? ` · ${workers(o.inFlight.length)}` : ""}`;
+  return {
+    inFlight: o.inFlight,
+    ...(o.openJobs?.length ? { openJobs: o.openJobs } : {}),
+    open: o.open,
+    running: o.running,
+    line,
+  };
 }
 
 // ------------------------------------------------------------------ the stop hook
@@ -553,6 +579,11 @@ export function stopHookDecision(o: {
   if (s.root !== o.root) return { block: false, why: `the coordinator's checkout is ${s.root}, not this one` };
   if (o.watching !== null) return { block: false, why: `armada watch is running (pid ${o.watching})` };
   if (s.stopped) return { block: false, why: `the last watch was refused: ${s.stopped}` };
+  if (s.openJobs?.length)
+    return {
+      block: true,
+      reason: `${s.openJobs.length} open job${s.openJobs.length === 1 ? "" : "s"} on ${o.project} and no armada watch is running; start armada watch in the background so job alarms are heard. (${STOP_HOOK_VARIABLE}=off turns this hook off.)`,
+    };
   if (!s.inFlight?.length) return { block: false, why: "no worker in flight at the last read" };
   return {
     block: true,

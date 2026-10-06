@@ -28,6 +28,7 @@ import {
   type InboxReadEvent,
   type InsightRange,
   isClosed,
+  type Job,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
   type OwnerValidation,
@@ -279,6 +280,7 @@ function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: Snap
 }
 
 interface LiveProject {
+  jobs: Job[];
   coordinator: CoordinatorPresence | null;
   inboxReads: InboxReadEvent[];
   sessions: SessionRecord[];
@@ -326,8 +328,8 @@ async function readLive(
   now: Date,
   tickets: readonly string[] = [],
 ): Promise<LiveProject> {
-  const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions, validations] = await Promise.all(
-    [
+  const [events, history, handles, launches, inbox, coordinator, inboxReads, sessions, validations, jobs] =
+    await Promise.all([
       Promise.all([
         store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
         tickets.length ? store.latestEvents(project, { since: new Date(0), tickets }) : Promise.resolve({}),
@@ -340,9 +342,10 @@ async function readLive(
       store.inboxReads(project, now),
       store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
       readValidations(store, project, now),
-    ],
-  );
+      store.listJobs(project, { open: true }),
+    ]);
   return {
+    jobs,
     validations,
     events,
     history,
@@ -427,6 +430,7 @@ function statusOf(snap: Snapshot, l: LiveProject | null, now: Date): StatusRepor
             handles: Object.fromEntries(l.handles.map((h) => [h.ticket, h])),
           },
           launches: l.launches,
+          jobs: l.jobs,
         }
       : {}),
     now,

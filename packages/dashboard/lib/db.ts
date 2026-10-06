@@ -854,6 +854,10 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "CREATE INDEX jobs_ticket_idx ON jobs (project, ticket, id DESC)",
     ],
   },
+  {
+    version: 38,
+    statements: ["ALTER TABLE jobs ADD COLUMN revision bigint NOT NULL DEFAULT 0"],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;

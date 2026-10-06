@@ -4,7 +4,7 @@
 // waits for it to exit rather than leave it behind.
 import { spawn } from "node:child_process";
 import { constants } from "node:os";
-import type { Io, Spawn } from "./io.ts";
+import type { Exec, Io, Spawn } from "./io.ts";
 
 const SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
@@ -59,3 +59,69 @@ export const startBackground: NonNullable<Io["startBackground"]> = (args) =>
       finish(typeof message === "object" && message !== null && "ready" in message && message.ready === true),
     );
   });
+
+/** Runs git or gh without a shell; optional input is piped without a shell. */
+export const createExec =
+  (deps: { spawn?: typeof spawn; killGroup?: (pid: number) => void } = {}): Exec =>
+  (command, args, { cwd, timeoutMs, maxOutputBytes, input, env, processGroup, signal }) =>
+    new Promise((done, fail) => {
+      signal?.throwIfAborted();
+      const grouped = processGroup === true && process.platform !== "win32";
+      const child = (deps.spawn ?? spawn)(command, args, {
+        cwd,
+        env,
+        detached: grouped,
+        stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+      });
+      const kill = () => {
+        if (grouped && child.pid) {
+          try {
+            (deps.killGroup ?? ((pid) => process.kill(-pid, "SIGKILL")))(child.pid);
+          } catch {
+            child.kill("SIGKILL");
+          }
+        } else child.kill("SIGKILL");
+      };
+      const abort = () => kill();
+      signal?.addEventListener("abort", abort, { once: true });
+      let timedOut = false;
+      const timer = timeoutMs
+        ? setTimeout(() => {
+            timedOut = true;
+            kill();
+          }, timeoutMs)
+        : null;
+      if (input !== undefined) {
+        child.stdin?.on("error", () => {}); // An early exit can close stdin before the prompt is written.
+        child.stdin?.end(input);
+      }
+      let stdout = "";
+      let stderr = "";
+      let bytes = 0;
+      let oversized = false;
+      const accept = (text: string) => {
+        bytes += Buffer.byteLength(text);
+        if (maxOutputBytes !== undefined && bytes > maxOutputBytes) {
+          oversized = true;
+          stdout = stderr = "";
+          kill();
+        }
+        return !oversized;
+      };
+      child.stdout?.setEncoding("utf8").on("data", (d: string) => {
+        if (accept(d)) stdout += d;
+      });
+      child.stderr?.setEncoding("utf8").on("data", (d: string) => {
+        if (accept(d)) stderr += d;
+      });
+      child.on("error", (err) => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        fail(err);
+      });
+      child.on("close", (code) => {
+        if (timer) clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        done({ code: oversized ? 1 : (code ?? 1), stdout, stderr, timedOut, outputExceeded: oversized });
+      });
+    });

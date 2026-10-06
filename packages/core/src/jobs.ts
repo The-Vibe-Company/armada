@@ -9,6 +9,8 @@ export const jobIsOpen = (job: { state: JobState }) => job.state === "starting" 
 export interface Job {
   id: number;
   project: string;
+  /** Monotonic observation generation, independent of clock resolution. */
+  revision?: number;
   ticket: string;
   name: string;
   ref: string | null;
@@ -28,9 +30,12 @@ export interface JobStart {
 export interface JobObservation {
   id: number;
   ticket: string;
+  /** Status probes must not overwrite newer news pushed while they ran. */
+  expectedRevision?: number;
   state: Exclude<JobState, "starting">;
   /** A runner reference is set only by the first observation of a starting job. */
   ref?: string | null;
+  /** Omitted progress preserves the previous observation; null explicitly clears it. */
   progress?: string | null;
   eta?: string | null;
 }
@@ -83,4 +88,9 @@ export function parseJobStatus(
 
 export function jobOverdue(job: Job, maxHours: number | null | undefined, now: Date): boolean {
   return jobIsOpen(job) && maxHours != null && now.getTime() - Date.parse(job.startedAt) > maxHours * 3_600_000;
+}
+
+/** A terminal notice is stored once with the job transition. */
+export function jobEndedBody(job: Job): string {
+  return `Job ${job.id} · ${job.name} · ${job.ticket} · ${job.state}\nLast progress: ${job.progress ?? "no progress reported"}`;
 }
