@@ -97,11 +97,37 @@ test("Conductor observations and archive records cross the fleet API on Postgres
     expect((await call("runtime/observe", { ...input, state: "gone" }, at(5))).body).toEqual({ result: false });
     expect(await store.stopRuntime({ ...claim, claimedAt: input.claimedAt, at: at(5) })).toBe(false);
     expect((await store.getRuntimeHandle(project.slug, claim.ticket))?.releasedAt).toBeNull();
+    await store.addInboxItem({
+      project: project.slug,
+      ticket: claim.ticket,
+      kind: "question",
+      recipient: "coordinator",
+      author: claim.handle,
+      body: "Resume?",
+      at: at(4.5),
+    });
+    await store.resolveInboxItems({
+      project: project.slug,
+      ticket: claim.ticket,
+      kind: "question",
+      resolution: "Resume",
+      at: at(4.75),
+    });
+    expect((await store.openRuntimeHandles(project.slug))[0]?.lastAnsweredAt).toBe(at(4.75).toISOString());
+    expect((await store.getRuntimeHandle(project.slug, claim.ticket))?.lastAnsweredAt).toBe(at(4.75).toISOString());
     const current = { ...input, claimedAt: at(4).toISOString() };
     expect((await call("runtime/observe", { ...current, state: "gone" }, at(5))).status).toBe(200);
     expect((await store.getRuntimeHandle(project.slug, claim.ticket))?.runtimeState?.state).toBe("gone");
     expect((await call("runtime/stop", current, at(6))).status).toBe(200);
     expect((await store.getRuntimeHandle(project.slug, claim.ticket))?.releasedAt).toBe(at(6).toISOString());
+    expect((await store.listSessions(project.slug, { since: at(4) }))[0]?.releasedAt).toBe(at(6).toISOString());
+    expect((await store.latestEvents(project.slug))[claim.ticket]).toMatchObject({
+      kind: "release",
+      phase: "released",
+      at: at(6).toISOString(),
+    });
+    expect((await call("runtime/stop", current, at(7))).status).toBe(200);
+    expect((await store.latestEvents(project.slug))[claim.ticket]?.at).toBe(at(6).toISOString());
   } finally {
     await db.end();
   }

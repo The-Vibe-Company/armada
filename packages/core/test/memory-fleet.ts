@@ -87,10 +87,25 @@ export function memoryFleet(): FleetStore & {
     const { resolvedAt: _a, resolution: _b, ...rest } = stored(r);
     return rest;
   };
-  const handleOf = (h: HandleRow): RuntimeHandle => ({
-    ...h,
-    profile: profiles.get(key(h.project, h.ticket))?.name ?? null,
-  });
+  const handleOf = (h: HandleRow): RuntimeHandle => {
+    const lastAnsweredAt = items
+      .filter(
+        (i) =>
+          i.project === h.project &&
+          i.ticket === h.ticket &&
+          ["question", "plan", "decision"].includes(i.kind) &&
+          i.resolvedAt &&
+          i.resolvedAt >= h.claimedAt,
+      )
+      .map((i) => i.resolvedAt)
+      .sort()
+      .at(-1);
+    return {
+      ...h,
+      profile: profiles.get(key(h.project, h.ticket))?.name ?? null,
+      ...(lastAnsweredAt ? { lastAnsweredAt } : {}),
+    };
+  };
   const insert = (r: Omit<ItemRow, "id" | "resolvedAt" | "resolution">) => {
     const id = items.length + 1;
     items.push({ ...r, id, resolvedAt: null, resolution: null });
@@ -368,7 +383,19 @@ export function memoryFleet(): FleetStore & {
         h.claimedAt !== input.claimedAt
       )
         return false;
-      if (!h.releasedAt) await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
+      if (!h.releasedAt) {
+        await this.releaseRuntimeHandle(input.project, input.ticket, input.at);
+        await this.recordEvent({
+          project: input.project,
+          ticket: input.ticket,
+          kind: "release",
+          phase: "released",
+          runtime: h.runtime,
+          handle: h.handle,
+          message: "Runtime workspace archived",
+          at: input.at,
+        });
+      }
       return true;
     },
     async heartbeatTimes(project) {
