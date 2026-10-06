@@ -164,6 +164,65 @@ test("peek shows local runtime facts, redacted reply and commands and keeps its 
   expect(f.calls.every((call) => !call.includes("sql") && !call.includes("create"))).toBe(true);
 });
 
+test.each(["working", "idle"])(
+  "peek reads a live %s Conductor worker when the separate auth probe fails",
+  async (state) => {
+    const f = await fixture();
+    const native = f.io.exec;
+    if (!native) throw new Error("missing fake exec");
+    f.io.exec = async (cmd, args, options) => {
+      // The status/transcript endpoints remain accessible with this terminal's credentials.
+      if (args[1] === "auth") return { code: 4, stdout: "ghp_CANARY_peek", stderr: "private-value" };
+      const result = await native(cmd, args, options);
+      if (args[1] === "session" && args[2] === "status")
+        return { ...result, stdout: JSON.stringify({ ...JSON.parse(result.stdout), status: state }) };
+      return result;
+    };
+    expect(await run(["peek", "DEMO-7", "--json"], f.io)).toBe(0);
+    const result = JSON.parse(f.out.at(-1) ?? "{}");
+    expect(result.runtime.unavailable).toBeNull();
+    expect(result.runtime.state).toBe(state);
+    expect(result.runtime.since).toBe("2026-07-01T12:05:00.000Z");
+    expect(result.runtime.lastReply.text).toContain("Running tests");
+    expect(result.runtime.actions.map((a: { exit: number }) => a.exit)).toEqual([0, 1]);
+  },
+);
+
+test.each([
+  ["missing", "Conductor CLI is missing"],
+  ["auth", "Conductor is not signed in"],
+  ["mismatch", "Conductor session does not match the claimed workspace"],
+  ["workspace-mismatch", "Conductor workspace does not match the requested worker"],
+  ["timeout", "Conductor workspace status timed out after 5000 ms"],
+  ["server", "Conductor server error during workspace status (exit 4)"],
+] as const)("peek explains a Conductor %s failure without exposing native output", async (failure, message) => {
+  const f = await fixture();
+  const native = f.io.exec;
+  if (!native) throw new Error("missing fake exec");
+  f.io.exec = async (cmd, args, options) => {
+    if (failure === "missing") throw Object.assign(new Error("private-value"), { code: "ENOENT" });
+    if (args[1] === "workspace") {
+      if (failure === "workspace-mismatch")
+        return { code: 0, stdout: JSON.stringify({ workspaceId: "other", status: "ready" }), stderr: "" };
+      if (failure === "timeout") return { code: 1, stdout: "ghp_CANARY_peek", stderr: "private-value", timedOut: true };
+      if (failure === "auth" || failure === "server")
+        return { code: failure === "auth" ? 3 : 4, stdout: "ghp_CANARY_peek", stderr: "private-value" };
+    }
+    if (failure === "mismatch" && args[1] === "session" && args[2] === "status")
+      return {
+        code: 0,
+        stdout: JSON.stringify({ sessionId: "ses_9", workspaceId: "other", status: "working" }),
+        stderr: "",
+      };
+    return native(cmd, args, options);
+  };
+  expect(await run(["peek", "DEMO-7", "--json"], f.io)).toBe(0);
+  expect(JSON.parse(f.out.at(-1) ?? "{}").runtime.unavailable).toContain(message);
+  expect(await run(["peek", "DEMO-7"], f.io)).toBe(0);
+  expect(f.out.at(-1)).toContain(message);
+  expect([...f.out, ...f.err].join("")).not.toMatch(/CANARY_peek|private-value/);
+});
+
 test("peek reads a local herdr worker through the same command", async () => {
   const f = await fixture("Herdr");
   expect(await run(["peek", "DEMO-7", "--json"], f.io)).toBe(0);
@@ -228,7 +287,7 @@ test("an unreachable runtime preserves the stored observation and its age", asyn
     }),
   ).toBe(0);
   const result = JSON.parse(f.out.at(-1) ?? "{}");
-  expect(result.runtime.unavailable).toBe("runtime not reachable from this machine");
+  expect(result.runtime.unavailable).toContain("herdr runtime operation failed");
   expect(result.runtime.state).toBe("working");
   expect(result.runtime.observedAt).toBe("2026-07-01T12:14:00.000Z");
   expect(f.err.join("")).not.toContain("CANARY_peek");

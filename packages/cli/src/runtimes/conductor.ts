@@ -115,7 +115,9 @@ export class ConductorAdapter implements RuntimeAdapter {
     );
   }
   private async exec(args: string[], input?: string, mutation = false, timeoutMs = 10_000): Promise<ExecResult> {
-    if (!this.io.exec) throw this.error("unavailable");
+    if (!this.io.exec)
+      throw new RuntimeError("Conductor CLI execution is unavailable on this machine", "unavailable", "armada doctor");
+    const operation = args.slice(0, 2).join(" ");
     let r: ExecResult;
     try {
       r = await this.io.exec(this.binary, ["--json", ...args], {
@@ -135,9 +137,31 @@ export class ConductorAdapter implements RuntimeAdapter {
       }
       if ((e as NodeJS.ErrnoException).code === "ENOENT")
         throw new RuntimeError("Conductor CLI is missing", "unavailable", CONDUCTOR_INSTALL_FIX);
-      throw this.error(mutation ? "unknown-outcome" : "unavailable");
+      if (mutation) throw this.error("unknown-outcome");
+      throw new RuntimeError(
+        (e as NodeJS.ErrnoException).code === "EACCES"
+          ? "Conductor CLI cannot be executed: permission denied"
+          : `Conductor CLI could not execute ${operation}`,
+        "unavailable",
+        "armada doctor",
+      );
     }
-    if (r.timedOut) throw this.error(mutation ? "unknown-outcome" : "unavailable");
+    if (r.timedOut)
+      throw mutation
+        ? this.error("unknown-outcome")
+        : new RuntimeError(
+            `Conductor ${operation} timed out after ${timeoutMs} ms`,
+            "unavailable",
+            "retry once Conductor answers",
+          );
+    if (r.outputExceeded)
+      throw mutation
+        ? this.error("unknown-outcome")
+        : new RuntimeError(
+            `Conductor ${operation} exceeded the 2000000-byte output limit`,
+            "unavailable",
+            "use the armada-runtime-conductor guide",
+          );
     if (r.code !== 0) {
       const code =
         r.code === 3
@@ -156,6 +180,12 @@ export class ConductorAdapter implements RuntimeAdapter {
           "Conductor create failed without confirming whether a worker was created",
           code,
           "conductor model",
+        );
+      if (code === "unavailable" && !mutation)
+        throw new RuntimeError(
+          `Conductor ${r.code === 4 ? "server error" : "CLI failed"} during ${operation} (exit ${r.code})`,
+          code,
+          "use the armada-runtime-conductor guide",
         );
       throw this.error(code);
     }
@@ -384,7 +414,9 @@ export class ConductorAdapter implements RuntimeAdapter {
   }
   private async workspace(workspace: string, timeoutMs = 10_000) {
     const result = await this.call(["workspace", "status", workspace], undefined, false, timeoutMs);
-    if (result.workspaceId !== workspace || typeof result.status !== "string") throw invalid();
+    if (!id(result.workspaceId) || typeof result.status !== "string") throw invalid();
+    if (result.workspaceId !== workspace)
+      throw new RuntimeError("Conductor workspace does not match the requested worker", "mismatch", "armada status");
     return result;
   }
   async deliver(target: ClaimRef, message: OutgoingMessage): Promise<Delivery> {
@@ -414,7 +446,7 @@ export class ConductorAdapter implements RuntimeAdapter {
   }
   async observe(target: ClaimRef): Promise<RuntimeReading> {
     const h = this.parse(target.handle);
-    await this.exec(["auth", "whoami"], undefined, false, 5000);
+    // Status reads authenticate themselves. An unrelated identity probe must not hide a readable worker.
     // The workspace remains readable even when its archived session is no longer available.
     const ws = await this.workspace(h.workspace, 5000);
     if (ws.status === "archived") return { state: "gone", detail: "archived", since: timestamp(ws.updatedAt) };

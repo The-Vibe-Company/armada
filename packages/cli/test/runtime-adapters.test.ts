@@ -327,7 +327,7 @@ test("Conductor preflight, launch, transcript and failures keep secret text off 
     [3, "auth"],
     [4, "unavailable"],
     [2, "invalid"],
-    [1, "unavailable"],
+    [1, "not-found"],
   ] as const) {
     f.set({ failure: exit });
     expect(await codeOf(f.adapter.observe(f.target))).toBe(code);
