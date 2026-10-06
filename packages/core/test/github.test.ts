@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { fetchBranchRules, fetchForge, fetchMainHealth, ticketIdFromBranch } from "../src/github.ts";
-import { NOW, recordedFetch } from "./support.ts";
+import { fetchBranchRules, fetchForge, fetchMainHealth, fetchPullRequest, ticketIdFromBranch } from "../src/github.ts";
+import { NOW, pullResponse, recordedFetch } from "./support.ts";
 
 describe("fetchBranchRules", () => {
   const repo = { default_branch: "release/trunk", allow_squash_merge: true, delete_branch_on_merge: false };
@@ -283,4 +283,31 @@ test("reads default-branch history in the forge snapshot and focused health adap
   });
   const empty = recordedFetch({ github: { data: { repository: { defaultBranchRef: null } } } });
   expect(await fetchMainHealth({ ...opts, fetch: empty.fetch })).toBeNull();
+});
+
+test("the pull reader requests rename metadata so acceptance does not skip rename-outs", async () => {
+  const response = pullResponse({ number: 9, headSha: "0123456789abcdef0123456789abcdef01234567", checks: [] });
+  const raw = response.data.repository.pullRequest;
+  const recorded = recordedFetch({
+    github: {
+      data: {
+        repository: {
+          pullRequest: {
+            ...raw,
+            files: {
+              nodes: [{ path: "docs/Dockerfile", additions: 0, deletions: 0, changeType: "RENAMED" }],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        },
+      },
+    },
+  });
+  const pr = await fetchPullRequest({
+    token: "synthetic-token",
+    repository: "acme/widgets",
+    number: 9,
+    fetch: recorded.fetch,
+  });
+  expect(pr?.files?.[0]).toMatchObject({ path: "docs/Dockerfile", changeType: "RENAMED" });
 });
