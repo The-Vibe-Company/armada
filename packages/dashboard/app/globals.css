@@ -1894,6 +1894,10 @@ button.chip:hover {
   margin-left: auto;
   white-space: nowrap;
 }
+/* A project that names its coordinators: one per line's item, each with its own state (THE-1112). */
+.ov-project-roles .ov-project-coord {
+  margin-left: 0;
+}
 .ov-diamond {
   width: 6px;
   height: 6px;
@@ -2087,6 +2091,13 @@ button.chip:hover {
 }
 .ov-reason {
   font-size: 12px;
+}
+/* The session's coordinator, before its reason (THE-1112). */
+.ov-owner {
+  margin-right: 8px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-3);
 }
 .ov-proj {
   font-size: 12px;
@@ -2937,6 +2948,13 @@ a.pj-title:hover {
   background: var(--sunken);
   color: var(--text);
   font-size: 12.5px;
+}
+.pj-coords {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 260px;
+  gap: 12px;
+  min-width: 0;
 }
 .pj-coord {
   display: flex;

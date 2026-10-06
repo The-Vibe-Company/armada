@@ -419,6 +419,12 @@ export async function getCoordinatorPresence(db: Queryable, project: string): Pr
   return result.rows[0] ? coordinatorOf(result.rows[0]) : null;
 }
 
+/** Every named coordinator of a project, by name: what the dashboard shows of each (THE-1112). */
+export async function coordinatorRoles(db: Queryable, project: string): Promise<CoordinatorPresence[]> {
+  const result = await db.query("SELECT * FROM coordinators WHERE project = $1 ORDER BY name", [project]);
+  return result.rows.map(coordinatorOf);
+}
+
 export async function listCoordinators(db: Queryable, project: string): Promise<CoordinatorRecord[]> {
   const [roles, sessions, handles, launches] = await Promise.all([
     db.query("SELECT * FROM coordinators WHERE project = $1 ORDER BY name", [project]),
@@ -1853,7 +1859,7 @@ export interface LiveStore
       | "resolveInboxItems"
       | "recordEvent"
     > {
-  getCoordinatorPresence(project: string): Promise<CoordinatorPresence | null>;
+  coordinatorRoles(project: string): Promise<CoordinatorPresence[]>;
   inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
   listProjects(): Promise<ProjectRecord[]>;
@@ -1908,7 +1914,7 @@ export const liveStore = (db: Database): LiveStore => ({
   resolvePlans: (q) => resolvePlans(db, q),
   resolveInboxItems: (q) => resolveInboxItems(db, q),
   recordEvent: (e) => recordEvent(db, e),
-  getCoordinatorPresence: (project) => getCoordinatorPresence(db, project),
+  coordinatorRoles: (project) => coordinatorRoles(db, project),
   inboxReads: (project, now) => inboxReads(db, project, now),
   listSessions: (project, opts) => listSessions(db, project, opts),
   listProjects: () => listProjects(db),

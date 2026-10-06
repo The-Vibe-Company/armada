@@ -5,11 +5,12 @@
 // for the owner and what is ready, its program's progress; then its sessions
 // in flight grouped by state (the overview's rows), the tickets ready to
 // launch (a launch is a request to the coordinator), its open pull requests,
-// and its coordinator beside them. Renders from the overview the shell polls.
-import type { ProjectOverview, ReadyTicket } from "@armada/core/read";
+// and its coordinator beside them, or each of them when it names them
+// (THE-1112). Renders from the overview the shell polls.
+import type { ProjectCoordinator, ProjectOverview, ReadyTicket } from "@armada/core/read";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
-import { groupCounts, groupItems } from "@/lib/coordinator-view";
+import { groupCounts, groupItems, showsOwners } from "@/lib/coordinator-view";
 import { HARNESS_NAME } from "@/lib/fleet-view";
 import { coordinatorHarness, coordinatorLink, type PrState, progressPercent, prState } from "@/lib/project-view";
 import { Alert, LONG_LIST, Notice } from "../page";
@@ -38,6 +39,7 @@ export function ProjectScreen() {
   const items = useMemo(() => all.filter((i) => i.project === slug && i.group !== "merged"), [all, slug]);
   const groups = useMemo(() => groupItems(items, "state", project ? [project] : []), [items, project]);
   const names = useMemo(() => new Map(project ? [[project.slug, project.name]] : []), [project]);
+  const named = useMemo(() => new Set(project && showsOwners(project, items) ? [project.slug] : []), [project, items]);
   if (!project)
     return (
       <div className="pg">
@@ -97,7 +99,7 @@ export function ProjectScreen() {
       <div className="pj-body">
         <div className="pj-main">
           {groups.length ? (
-            <List groups={groups} names={names} boxed long={items.length > LONG_LIST} />
+            <List groups={groups} names={names} named={named} boxed long={items.length > LONG_LIST} />
           ) : (
             <p className="pj-empty">{t.shell.noAgents}</p>
           )}
@@ -146,7 +148,15 @@ export function ProjectScreen() {
             )}
           </section>
         </div>
-        <Coordinator project={project} />
+        {named.size ? (
+          <div className="pj-coords">
+            {(project.coordinators ?? []).map((c) => (
+              <Coordinator key={c.name} coordinator={c} role={c} />
+            ))}
+          </div>
+        ) : (
+          <Coordinator coordinator={project.coordinator} />
+        )}
       </div>
     </div>
   );
@@ -183,12 +193,21 @@ function ReadyRow({ ticket: r }: { ticket: ReadyTicket }) {
   );
 }
 
-/** The project's coordinator: what Armada knows of it, never a guess; "—" for what it does not. */
-function Coordinator({ project }: { project: ProjectOverview }) {
+/**
+ * A coordinator of the project: what Armada knows of it, never a guess; "—"
+ * for what it does not. `role` is one of the coordinators a project names,
+ * with its name and its sessions; without it, the one coordinator seen last.
+ */
+function Coordinator({
+  coordinator: c,
+  role,
+}: {
+  coordinator: Omit<ProjectOverview["coordinator"], "cliVersion">;
+  role?: ProjectCoordinator;
+}) {
   const { t, zone } = useShell();
   const now = useNow();
   const p = t.projectPage;
-  const c = project.coordinator;
   const harness = coordinatorHarness(c.harness ?? null);
   const color = COORDINATOR_COLOR[c.state];
   const since = (at: string) => Math.max(0, now - Date.parse(at));
@@ -215,12 +234,14 @@ function Coordinator({ project }: { project: ProjectOverview }) {
       v: c.startedAt ? p.onDutyAt(clock(c.startedAt), t.duration(since(c.startedAt))) : "—",
       mono: true,
     },
+    ...(role ? [{ k: p.sessions, v: String(role.tickets.length), mono: true }] : []),
   ];
+  const id = role ? `pj-coord-${role.name}` : "pj-coord";
   return (
-    <aside className="pj-coord" aria-labelledby="pj-coord">
-      <h2 className="pj-coord-h" id="pj-coord">
+    <aside className="pj-coord" aria-labelledby={id}>
+      <h2 className="pj-coord-h" id={id}>
         <span className="ov-diamond" style={{ color }} aria-hidden />
-        {p.coordinator}
+        {role ? p.coordinatorNamed(role.name) : p.coordinator}
       </h2>
       <p className="pj-coord-state" style={{ color }}>
         {state}

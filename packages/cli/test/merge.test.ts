@@ -168,7 +168,7 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
   const armada = fakeArmada({
     keys: { [KEY]: "coordinator" },
     store,
-    ...(unblocks ? { vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW } } : {}),
+    vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW },
   });
   const net = { armadaDown: false, confirmMerge: true };
   const fetch: Fetch = async (url, init) => {
@@ -358,6 +358,25 @@ test.each([false, true])("merge lists unblocked tickets and routed launch hints 
   }
 });
 
+test("a coordinator's merge approval reason is masked before API and Linear comments", async () => {
+  const f = await fixture();
+  f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", "synthetic-project-secret"]]));
+  expect(
+    await run(
+      ["merge", "9", "--ask-owner", "--reason", "inspect synthetic-project-secret and sk-synthetic-unknown"],
+      f.io,
+    ),
+  ).toBe(0);
+  const sent = JSON.stringify(f.armada.calls.filter((c) => c.path.startsWith("fleet/"))) + f.linear.bodies.join("\n");
+  expect(sent).not.toContain("synthetic-project-secret");
+  expect(sent).not.toContain("sk-synthetic-unknown");
+  expect(sent).toContain("«secret CUSTOM_KEY»");
+  expect(sent).toContain("«redacted»");
+  expect(f.err()).toContain("masked CUSTOM_KEY");
+  expect(f.err()).toContain("masked a value matching a key pattern");
+  expect(f.merged()).toBe(false);
+});
+
 test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "configuration only"] }])(
   "a merge that closes no ticket lists nothing (%s)",
   async ({ options }) => {
@@ -430,6 +449,7 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
   // Under the merge lock on Armada, given back afterwards; the merge recorded and the worker's session ended.
   expect(f.armada.calls.map((c) => c.path)).toEqual([
     "fleet/coordinator",
+    "secrets/release",
     "fleet/lease/acquire",
     "fleet/holds",
     "fleet/validations",

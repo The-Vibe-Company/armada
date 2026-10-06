@@ -283,7 +283,10 @@ function revalidate(p: ProjectRef, entry: SnapshotEntry | undefined, store: Snap
 }
 
 interface LiveProject {
+  /** The coordinator seen last. */
   coordinator: CoordinatorPresence | null;
+  /** Every named coordinator, by name (THE-1112). */
+  coordinators: CoordinatorPresence[];
   inboxReads: InboxReadEvent[];
   sessions: SessionRecord[];
   events: Record<string, LatestEvent>;
@@ -333,7 +336,7 @@ async function readLive(
   tickets: readonly string[] = [],
   snapshot?: Snapshot,
 ): Promise<LiveProject> {
-  const [events, history, handles, launches, jobs, inbox, coordinator, inboxReads, sessions, validations] =
+  const [events, history, handles, launches, jobs, inbox, coordinators, inboxReads, sessions, validations] =
     await Promise.all([
       Promise.all([
         store.latestEvents(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
@@ -344,7 +347,7 @@ async function readLive(
       store.pendingLaunches(project, new Date(now.getTime() - LAUNCH_WINDOW_MS)),
       store.shownJobs(project, tickets, new Date(now.getTime() - ENDED_JOBS_SHOWN_MS)),
       store.openInboxItems({ project, recipient: "coordinator" }),
-      store.getCoordinatorPresence(project),
+      store.coordinatorRoles(project),
       store.inboxReads(project, now),
       store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
       readValidations(store, project, now),
@@ -367,6 +370,11 @@ async function readLive(
     ))
   )
     return readLive(store, project, now, tickets);
+  // The one seen last, as `getCoordinatorPresence` picks it: newest, then by name.
+  const coordinator =
+    [...coordinators].sort(
+      (a, b) => b.seenAt.localeCompare(a.seenAt) || (a.name ?? "").localeCompare(b.name ?? ""),
+    )[0] ?? null;
   return {
     validations,
     events,
@@ -378,6 +386,7 @@ async function readLive(
     coordinatorSeenAt: coordinator?.seenAt ?? null,
     coordinatorCliVersion: coordinator?.cliVersion ?? null,
     coordinator,
+    coordinators,
     inboxReads,
     sessions,
   };
@@ -646,6 +655,7 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
             coordinatorSeenAt: l.coordinatorSeenAt,
             coordinatorCliVersion: l.coordinatorCliVersion,
             coordinator: l.coordinator,
+            coordinators: l.coordinators,
             inboxReads: l.inboxReads,
             sessions: l.sessions,
             validations: l.validations.map((v) => {

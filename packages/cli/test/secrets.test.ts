@@ -116,6 +116,52 @@ describe("armada run: one command with the project's secrets in its environment"
     expect(s.asked()).toEqual(["secrets/release worker"]);
   });
 
+  test("pipes split secrets and credential values on both channels, keeping the exit code", async () => {
+    const s = await setup({ as: "coordinator", env: { LINEAR_API_KEY: "synthetic-linear-value" } });
+    s.io.spawn = async (_command, _args, { output }) => {
+      expect(output).toBeDefined();
+      output?.stdout("key: sk-CANARY-");
+      output?.stdout("widgets-openai\n");
+      output?.stderr("synthetic-linear-");
+      output?.stderr(`value and ${API_KEY}\n`);
+      return 7;
+    };
+    expect(await run(["run", "--", "tool"], s.io)).toBe(7);
+    const printed = s.printed();
+    expect(printed.stdout).toBe("key: «secret OPENAI_API_KEY»\n");
+    expect(printed.stderr).toContain("«secret LINEAR_API_KEY» and «secret ARMADA_API_KEY»");
+    expect(printed.stderr).toContain("masked OPENAI_API_KEY");
+    expect(printed.stderr).not.toContain("synthetic-linear-value");
+  });
+
+  test("TTY output inherits with one warning, and --redact forces pipes", async () => {
+    const s = await setup({ as: "coordinator" });
+    s.io.stdoutIsTTY = true;
+    let piped = false;
+    s.io.spawn = async (_command, _args, { output }) => {
+      piped = output !== undefined;
+      return 0;
+    };
+    expect(await run(["run", "--", "tool"], s.io)).toBe(0);
+    expect(piped).toBe(false);
+    expect(s.printed().stderr).toContain("interactive output is not masked");
+    expect(await run(["run", "--redact", "--", "tool"], s.io)).toBe(0);
+    expect(piped).toBe(true);
+    expect(s.printed().stderr).toBe("");
+  });
+
+  test("the real pipe preserves split UTF-8 and drains both channels before returning", async () => {
+    const s = await setup({ as: "coordinator" });
+    s.io.spawn = spawnInherited;
+    const script = `const b=Buffer.from('é'); process.stdout.write(b.subarray(0,1));
+      setImmediate(()=>{process.stdout.write(b.subarray(1));process.stdout.write(process.env.OPENAI_API_KEY);
+      process.stderr.write(process.env.SENTRY_DSN);process.exitCode=9})`;
+    expect(await run(["run", "--", process.execPath, "-e", script], s.io)).toBe(9);
+    const printed = s.printed();
+    expect(printed.stdout).toBe("é«secret OPENAI_API_KEY»");
+    expect(printed.stderr).toContain("«secret SENTRY_DSN»");
+  });
+
   test("--only hands out the names asked for and says which are not set", async () => {
     const s = await setup({ as: "coordinator" });
     expect(await run(["run", "--only", "SENTRY_DSN,NOT_SET", "--", "make", "test"], s.io)).toBe(3);
