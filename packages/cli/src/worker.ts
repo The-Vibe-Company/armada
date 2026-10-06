@@ -77,6 +77,7 @@ export function statusLive(
       launches: () => Promise<PendingLaunch[]>;
       deferredLaunches: () => Promise<import("@armada/core").DeferredLaunch[]>;
       runtimeHandles: () => Promise<import("@armada/core").RuntimeHandle[]>;
+      holds: () => Promise<import("@armada/core").MergeHold[]>;
     }
   | undefined {
   const { fleet } = liveFleet(io, config, credentials);
@@ -87,6 +88,7 @@ export function statusLive(
         heartbeats: () => fleet.heartbeatTimes(),
         launches: () => fleet.pendingLaunches(),
         deferredLaunches: () => fleet.deferredLaunches(),
+        holds: () => fleet.holds(),
         runtimeHandles: () => observeRuntimes(io, fleet, config),
       }
     : undefined;

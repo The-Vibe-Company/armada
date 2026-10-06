@@ -271,8 +271,7 @@ export async function merge(
     return 0;
   }
   const enqueue = !!a.options["when-green"];
-  if (!enqueue && (a.options["keep-open"] || a.options["through-hold"]))
-    throw new UsageError("--keep-open and --through-hold apply to --when-green");
+  if (!enqueue && a.options["keep-open"]) throw new UsageError("--keep-open applies to --when-green");
   if (
     enqueue &&
     ["wait", "timeout", "dry-run", "no-lock", "ask-owner", "no-archive"].some((k) => a.options[k] !== undefined)
@@ -288,9 +287,11 @@ export async function merge(
   const number = prNumber(arg, config.github.repository);
   const noTicket = !!a.options["no-ticket"];
   if (noTicket && a.options.ticket) throw new UsageError("--no-ticket and --ticket cannot go together");
+  if (a.options["through-hold"] !== undefined && !a.options["through-hold"].trim())
+    throw new UsageError("--through-hold needs a reason");
   const wait = !!a.options.wait;
   const askOwner = a.options["ask-owner"] === "true";
-  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"]))
+  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"] || a.options["through-hold"]))
     throw new UsageError("--ask-owner only asks the owner: it goes with --reason (and --ticket), nothing else");
   if (askOwner && !a.options.reason?.trim())
     throw new UsageError(
@@ -323,10 +324,8 @@ export async function merge(
       },
       compare: (base, head) => fetchComparison({ ...gh, base, head }),
       diff: (n) => fetchPullDiff({ ...gh, number: n }),
-      merge: async (number, sha) => {
-        await guards?.beforeMerge?.(number, sha);
-        return ghMerge(exec, repoDir, config.github.repository)(number, sha);
-      },
+      beforeMerge: guards?.beforeMerge,
+      merge: ghMerge(exec, repoDir, config.github.repository),
       comment: async (number, body) => {
         const result = await ghAttempt(exec, repoDir, [
           "pr",
@@ -414,7 +413,7 @@ export async function merge(
         noTicket,
         reason: a.options.reason ?? null,
         keepOpen: !!a.options["keep-open"],
-        throughHold: a.options["through-hold"] ?? null,
+        throughHold: a.options["through-hold"],
       });
       const result = await fleet.queueAdd(entry);
       results.push({ pr, ...result });
@@ -455,6 +454,7 @@ export async function merge(
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
     reason: a.options.reason ?? null,
+    throughHold: a.options["through-hold"],
   });
   let deferredLaunches: DeferredLaunchResult[] = [];
   let next: Awaited<ReturnType<typeof rearmFor>> | null = null;

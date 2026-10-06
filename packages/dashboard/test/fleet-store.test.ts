@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { type NewRequest, recordClaim, recordRelease } from "@armada/core/read";
-import type { Database } from "../lib/db.ts";
+import { type Database, DB_MIGRATIONS, DB_SCHEMA_VERSION, migrateDatabase } from "../lib/db.ts";
 import {
   acquireLease,
   addInboxItem,
@@ -476,6 +476,64 @@ test("a deferred request survives storage, shares launch uniqueness and is resol
   expect(await store.openInboxItems({ project, recipient: "coordinator" })).toEqual([]);
 });
 
+test("merge holds deduplicate automatic pauses and atomically open and resolve their inbox items", async () => {
+  const database = await tempDatabase();
+  try {
+    const store = fleetStore(database);
+    await store.ensureProject(
+      { slug: "hold-test", name: "Hold test", repository: "acme/widgets", programRoot: "DEMO-1" },
+      at(0),
+    );
+    const input = {
+      project: "hold-test",
+      kind: "deploy" as const,
+      ref: "api",
+      reason: "smoke failed",
+      author: "Ada",
+      at: at(0),
+    };
+    const hold = await store.openHold(input);
+    expect((await store.openHold({ ...input, author: "Grace", at: at(1) })).id).toBe(hold.id);
+    const manual = await store.openHold({ ...input, kind: "manual", ref: null });
+    expect((await store.openHold({ ...input, kind: "manual", ref: null })).id).not.toBe(manual.id);
+    const inbox = await store.openInboxItems({ project: input.project, recipient: "coordinator" });
+    expect(inbox).toHaveLength(3);
+    expect(inbox[0]).toMatchObject({ kind: "hold", ticket: null, author: "Ada" });
+    expect(inbox[0]?.body).toContain(`hold #${hold.id}`);
+    expect(
+      await store.clearHold({ project: "elsewhere", id: hold.id, reason: "wrong project", author: "Grace", at: at(2) }),
+    ).toBeNull();
+    const cleared = await store.clearHold({
+      project: input.project,
+      id: hold.id,
+      reason: "verified",
+      author: "Grace",
+      at: at(2),
+    });
+    if (!cleared) throw new Error("expected the cleared hold");
+    expect(cleared).toMatchObject({
+      cleared: true,
+      hold: { clearedBy: "Grace", clearedAt: at(2).toISOString(), clearReason: "verified" },
+    });
+    expect(
+      await store.clearHold({ project: input.project, id: hold.id, reason: "repeat", author: "Ada", at: at(3) }),
+    ).toEqual({ ...cleared, cleared: false });
+    expect(
+      (await store.openInboxItems({ project: input.project, recipient: "coordinator" })).map((i) => i.body),
+    ).not.toContain(inbox[0]?.body);
+    expect(await store.openHolds("elsewhere")).toEqual([]);
+    expect((await store.openHold(input)).id).not.toBe(hold.id);
+    const count = (await store.openHolds(input.project)).length;
+    await database.query("ALTER TABLE inbox_items ADD CONSTRAINT reject_test_holds CHECK (kind <> 'hold') NOT VALID");
+    await expect(
+      store.openHold({ ...input, kind: "main-red", ref: "abcdef", reason: "tests failed" }),
+    ).rejects.toThrow();
+    expect(await store.openHolds(input.project)).toHaveLength(count);
+  } finally {
+    await database.end();
+  }
+});
+
 test("merge queue preserves intent, deduplicates concurrent adds and fences dequeue and finish with the lease", async () => {
   const project = "queue-test";
   const input = {
@@ -665,4 +723,27 @@ test("declared paths replace the old plan, stay scoped to a project and are clea
     at(4),
   );
   expect(await store.ticketPaths("paths-b")).toEqual({});
+});
+
+test("a higher reserved version does not hide a later merge-hold migration", async () => {
+  const database = await tempDatabase();
+  try {
+    const migration = DB_MIGRATIONS.find((m) => m.statements.some((s) => s.includes("CREATE TABLE merge_holds")));
+    if (!migration) throw new Error("missing hold migration");
+    await database.query("DROP TABLE merge_holds");
+    await database.query("DELETE FROM armada_migrations WHERE version = $1", [migration.version]);
+    // Another branch applied its higher reserved version first.
+    await database.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [
+      DB_SCHEMA_VERSION + 1,
+      at(0),
+    ]);
+    expect(await migrateDatabase(database, at(1))).toBe(DB_SCHEMA_VERSION);
+    expect((await database.query("SELECT to_regclass('merge_holds') AS name")).rows[0]?.name).not.toBeNull();
+    expect(
+      (await database.query("SELECT version FROM armada_migrations WHERE version = $1", [migration.version])).rows,
+    ).toEqual([{ version: migration.version }]);
+    expect(await migrateDatabase(database, at(2))).toBe(DB_SCHEMA_VERSION);
+  } finally {
+    await database.end();
+  }
 });

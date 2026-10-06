@@ -19,6 +19,7 @@ import {
   followedLaunches,
   freshRuntimeState,
   type LatestEvent,
+  type MergeHold,
   notStartedBody,
   notStartedLaunches,
   type PendingLaunch,
@@ -122,6 +123,7 @@ export interface NotStartedLaunch extends PendingLaunch {
 }
 
 export interface StatusReport {
+  holds?: MergeHold[];
   /** Default-branch CI; absent in older reports, null when unavailable. */
   main?: MainHealth | null;
   progress?: { done: number; total: number };
@@ -164,6 +166,8 @@ export interface BuildStatusInput {
   heartbeats?: Record<string, string>;
   /** Live events newer than the tracker read, and open runtime handles (the dashboard's live layer). */
   live?: LaneOptions["live"];
+  /** The shared standing merge pauses, when Armada was read. */
+  holds?: MergeHold[];
   /** Launches no claim followed, from Armada's live data. */
   launches?: PendingLaunch[];
   launchWhenUnblocked?: DeferredLaunch[];
@@ -178,6 +182,7 @@ function routeOf(config: ArmadaConfig, labels: string[]): FrontierTicket["route"
 }
 
 export function buildStatus({
+  holds,
   config,
   program,
   forge,
@@ -230,6 +235,7 @@ export function buildStatus({
   return {
     schemaVersion: STATUS_SCHEMA_VERSION,
     ...(launchWhenUnblocked ? { launchWhenUnblocked } : {}),
+    ...(holds ? { holds } : {}),
     main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
     progress: {
       done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
@@ -369,6 +375,7 @@ const byMergeTime = (a: PullRequest, b: PullRequest) =>
   (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
 export interface LoadStatusOptions extends HttpRetryOptions {
+  holds?: () => Promise<MergeHold[]>;
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
@@ -484,7 +491,15 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents, deferred] =
+  const holdsP: Promise<{ holds?: MergeHold[]; warning?: string }> = opts.holds
+    ? opts.holds().then(
+        (holds) => ({ holds }),
+        (err: unknown) => ({
+          warning: `Armada's merge holds could not be read (${err instanceof Error ? err.message : String(err)}); the merge pause is unknown`,
+        }),
+      )
+    : Promise.resolve({});
+  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents, holds, deferred] =
     await Promise.all([
       readStatusSources(config, opts),
       eventsP,
@@ -492,6 +507,7 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
       opts.heartbeats?.().catch(() => undefined),
       opts.runtimeHandles?.().catch(() => undefined),
       opts.latestEvents?.().catch(() => undefined),
+      holdsP,
       opts.deferredLaunches?.().then(
         (items) => ({ items }),
         (err: unknown) => ({
@@ -516,10 +532,12 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }
       : {}),
     ...(launches.launches ? { launches: launches.launches } : {}),
+    ...(holds.holds ? { holds: holds.holds } : {}),
     ...(deferred && "items" in deferred ? { launchWhenUnblocked: deferred.items } : {}),
     extraWarnings: [
       events.warning,
       launches.warning,
+      holds.warning,
       deferred && "warning" in deferred ? deferred.warning : undefined,
     ].filter((w): w is string => !!w),
     now: now(),
