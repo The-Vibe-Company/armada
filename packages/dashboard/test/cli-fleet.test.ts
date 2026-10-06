@@ -58,10 +58,15 @@ const cookiesOf = (res: Response) =>
     .join("; ");
 const as = (cookie: string) => new Headers({ cookie });
 
+// Cold PGlite startup has its own bounded budget, independent of authentication.
 beforeAll(async () => {
   console.info = (...a: unknown[]) => void logged.push(a.join(" "));
   console.warn = (...a: unknown[]) => void logged.push(a.join(" "));
   client = await tempDatabase();
+}, 10_000);
+
+// Authentication retains Bun's default bounded setup budget.
+beforeAll(async () => {
   const mode = accountsModeOf(ENV);
   if (mode.kind !== "accounts") throw new Error("test settings incomplete");
   auth = createAuth(mode.settings, { client, sender: { send: async (m) => void outbox.push(m) } });

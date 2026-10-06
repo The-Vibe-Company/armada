@@ -176,7 +176,7 @@ const COMMAND_HELP: Record<string, string> = {
                     rules the coordinator judged apply. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
-        [--plan <text> | --plan-file <path|->] [--paths <comma list>] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--stage review|ci]
+        [--plan <text> | --plan-file <path|->] [--paths <comma list>] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--more-prs "<what remains>"] [--stage review|ci]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge, awaiting-validation); the same phase again is a
                     status update; armada validate is how a worker enters awaiting-validation.
@@ -186,6 +186,8 @@ const COMMAND_HELP: Record<string, string> = {
                     ready-to-merge needs --sha (full 40 characters, the PR head) and green CI.
                     --stage is shipping only: review at independent review, ci after it passes.
                     --shipped-with names the shipping path in its hand-back and inbox.
+                    --more-prs is ready-to-merge only: keeps the ticket and worker alive
+                    after this PR lands, then continues with the remaining work.
                     Prints the ticket's state and what waits in this worker's inbox.
 `,
   release: `  release --reason <text>
@@ -273,7 +275,7 @@ const COMMAND_HELP: Record<string, string> = {
                     Remove a queued entry; an entry currently merging cannot be removed.
                     To pause merges, use armada hold add "<why>".
   merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
-        [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive] [--no-notify]
+        [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive] [--no-notify] [--keep-open | --close]
   merge --finish <pr> [--ticket <id>]
                     Complete Linear bookkeeping for a confirmed merge; no merge lock.
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
@@ -284,7 +286,10 @@ const COMMAND_HELP: Record<string, string> = {
                     handed-back workers stay quiet. --no-notify prints the manual list.
                     Never deletes
                     the branch. After GitHub confirms the merge, archives the worker's
-                    Armada workspace; --no-archive leaves it open. Cleanup failures print
+                    Armada workspace; --no-archive leaves it open. --more-prs in the
+                    hand-back keeps the ticket implementing and tells its worker to continue.
+                    --keep-open forces that behavior; --close closes despite --more-prs.
+                    Neither goes with --no-ticket, or with each other. Cleanup failures print
                     an armada stop command and do not fail the merge.
                     --dry-run only runs the checklist. Signed in to Armada,
                     refused while Armada is down; --no-lock skips the lock and hold check.
@@ -549,6 +554,7 @@ const VALUE_OPTIONS = [
   "sha",
   "target",
   "shipped-with",
+  "more-prs",
   "stage",
   "through-hold",
   "reason",
@@ -599,6 +605,7 @@ const FLAG_OPTIONS = [
   "no-ticket",
   "when-green",
   "keep-open",
+  "close",
   "no-archive",
   "no-notify",
   "prompt",
@@ -630,7 +637,19 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
-  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage", "paths"],
+  report: [
+    "ticket",
+    "message",
+    "message-file",
+    "plan",
+    "plan-file",
+    "pr",
+    "sha",
+    "shipped-with",
+    "more-prs",
+    "stage",
+    "paths",
+  ],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file", "secret"],
   inbox: ["wait", "timeout", "mine"],
@@ -655,6 +674,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "ask-owner",
     "when-green",
     "keep-open",
+    "close",
     "through-hold",
   ],
   brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
