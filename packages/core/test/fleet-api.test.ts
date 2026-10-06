@@ -274,6 +274,41 @@ test("queue operations round trip through Armada and remain coordinator-only", a
     ).toBe(400);
 });
 
+test("workers reserve, list project holders and unreserve only their own ticket; malformed allocations are refused", async () => {
+  const { fleet, store } = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7" } });
+  await store.reserve({ project: "widgets", ticket: "DEMO-8", key: "db-migration", next: true, floor: 22, at: NOW });
+  expect((await fleet.reserve({ ticket: "DEMO-7", key: "db-migration", next: true, floor: 22 })).reserved).toBe(true);
+  expect((await fleet.reservations("DEMO-7")).map((r) => r.ticket)).toEqual(["DEMO-8", "DEMO-7"]);
+  for (const op of ["reserve", "unreserve", "reservations"]) {
+    const answer = await serveFleet(
+      store,
+      {
+        op,
+        project: DEMO_PROJECT,
+        caller: { kind: "worker", ticket: "DEMO-7" },
+        input: { ticket: "DEMO-8", key: "db-migration" },
+      },
+      { now: () => NOW },
+    );
+    expect(answer.status).toBe(403);
+  }
+  for (const input of [{ next: true, value: "23" }, { floor: 22 }, { next: true, floor: -1 }, { value: 42 }]) {
+    const answer = await serveFleet(
+      store,
+      {
+        op: "reserve",
+        project: DEMO_PROJECT,
+        caller: { kind: "worker", ticket: "DEMO-7" },
+        input: { ticket: "DEMO-7", key: "db-migration", ...input },
+      },
+      { now: () => NOW },
+    );
+    expect(answer.status).toBe(400);
+  }
+  expect(await fleet.unreserve({ ticket: "DEMO-7", key: "db-migration" })).toBe(1);
+  expect((await fleet.reservations("DEMO-7")).map((r) => r.ticket)).toEqual(["DEMO-8"]);
+});
+
 test("events/since is a scoped safe read with bounded pages, filters, look-back and 304", async () => {
   const live = tempFleet();
   const query = { afterId: 0, afterAt: NOW.toISOString(), kinds: ["report"] as const, tickets: ["DEMO-2"], limit: 2 };

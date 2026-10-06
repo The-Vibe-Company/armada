@@ -36,6 +36,9 @@ import type {
   ProjectRecord,
   ReleaseGuard,
   RequestStore,
+  Reservation,
+  ReserveRecord,
+  ReserveResult,
   RuntimeHandle,
   RuntimeState,
   SessionRecord,
@@ -532,8 +535,11 @@ export async function releaseRuntimeHandle(
   ticket: string,
   at: Date,
   guard?: ReleaseGuard,
+  merged = false,
 ): Promise<boolean> {
   return transaction(db, async (tx) => {
+    // Reservations and ticket endings share this lock, including an empty reservation key.
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
     // Lock and compare the current claim before touching history or its profile.
     const held = (
       await tx.query(
@@ -541,21 +547,27 @@ export async function releaseRuntimeHandle(
         [project, ticket],
       )
     ).rows[0];
+    if (guard?.absent) {
+      if (held) return false;
+      // The project lock excludes new reservations until this cleanup ends.
+      // A claim inserted after the read is never touched by runtime/profile writes.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
     // A missing optional live row is not evidence of a replacement. An
     // explicit claim timestamp must still match; a matching released row
     // permits retrying after a Linear failure without touching a new claim.
     const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
     // With no row locked, never issue a ticket-wide mutation: a replacement
     // could insert its claim after this read.
-    if (guarded && !held) return !guard?.claimedAt;
-    if (
-      guarded &&
-      held &&
-      ((guard?.handle && held.handle !== guard.handle) ||
-        (guard?.claimedAt && isoAt(held.claimed_at) !== new Date(guard.claimedAt).toISOString()) ||
-        (guard?.workerSessionId && held.worker_session_id && held.worker_session_id !== guard.workerSessionId))
-    )
-      return false;
+    if (guarded && !held) {
+      if (guard?.claimedAt) return false;
+      // An optional claim write may have failed. End only reservations: their
+      // project lock prevents a replacement from reserving during this cleanup.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
+    if (guarded && held && !releaseGuardMatches(held, guard)) return false;
     await tx.query(
       "UPDATE fleet_sessions SET released_at = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND ($4::text IS NULL OR handle = $4) AND ($5::timestamptz IS NULL OR claimed_at = $5)",
       [
@@ -571,8 +583,20 @@ export async function releaseRuntimeHandle(
       [at, project, ticket],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [project, ticket]);
+    await endReservations(tx, project, ticket, at, merged);
     return true;
   });
+}
+
+function releaseGuardMatches(held: Record<string, unknown> | undefined, guard?: ReleaseGuard): boolean {
+  if (!guard) return true;
+  if (guard.absent) return !held;
+  if (!held) return false;
+  return !(
+    (guard.handle && held.handle !== guard.handle) ||
+    (guard.claimedAt && isoAt(held.claimed_at) !== new Date(guard.claimedAt).toISOString()) ||
+    (guard.workerSessionId && held.worker_session_id && held.worker_session_id !== guard.workerSessionId)
+  );
 }
 
 const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, h.runtime_state_sequence, p.profile
@@ -1124,15 +1148,21 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  reserve: (input) => reserve(db, input),
+  reservations: (project) => reservations(db, project),
+  unreserve: (input) => unreserve(db, input),
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
   saveTicketPaths: async (project, ticket, paths, at) => {
-    await db.query(
-      `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
-      ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
-      [project, ticket, paths, at],
-    );
+    await transaction(db, async (tx) => {
+      await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+      await tx.query(
+        `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
+        [project, ticket, paths, at],
+      );
+    });
   },
   ticketPaths: async (project) => {
     const result = await db.query<{ ticket: string; paths: string[] }>(
@@ -1141,8 +1171,20 @@ export const fleetStore = (db: Database): FleetStore => ({
     );
     return Object.fromEntries(result.rows.map((r) => [r.ticket, r.paths]));
   },
-  deleteTicketPaths: async (project, ticket) => {
-    await db.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
+  deleteTicketPaths: async (project, ticket, guard) => {
+    await transaction(db, async (tx) => {
+      await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+      if (guard) {
+        const held = (
+          await tx.query(
+            "SELECT handle, claimed_at, worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 FOR UPDATE",
+            [project, ticket],
+          )
+        ).rows[0];
+        if (!releaseGuardMatches(held, guard)) return;
+      }
+      await tx.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
+    });
   },
   recordEvent: (e) => recordEvent(db, e),
   recordHeartbeat: (input) => recordHeartbeat(db, input),
@@ -1160,7 +1202,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
   observeRuntime: (input) => observeRuntime(db, input),
   stopRuntime: (input) => stopRuntime(db, input),
-  releaseRuntimeHandle: (project, ticket, at, guard) => releaseRuntimeHandle(db, project, ticket, at, guard),
+  releaseRuntimeHandle: (project, ticket, at, guard, merged) =>
+    releaseRuntimeHandle(db, project, ticket, at, guard, merged),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addInboxItem: (item) => addInboxItem(db, item),
@@ -1479,3 +1522,88 @@ export const liveStore = (db: Database): LiveStore => ({
   catchupRecords: (project, window, silentAfterMinutes, now) =>
     catchupRecords(db, project, window, silentAfterMinutes, now),
 });
+
+// ------------------------------------------------------------------ shared resources
+
+const RESERVATION_COLUMNS = "id, project, key, value, ticket, note, reserved_at, ended_at, merged";
+const reservationRow = (r: Row): Reservation => ({
+  id: Number(r.id),
+  project: String(r.project),
+  key: String(r.key),
+  value: String(r.value),
+  ticket: String(r.ticket),
+  note: text(r.note),
+  reservedAt: isoAt(r.reserved_at),
+  endedAt: iso(r.ended_at),
+  merged: r.merged === true,
+});
+
+/** A project lock serializes allocation even when this key has no rows yet. */
+export async function reserve(
+  db: Database,
+  input: ReserveRecord & { project: string; at: Date },
+): Promise<ReserveResult> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    let value = input.value ?? "";
+    if (input.next) {
+      // Names and exclusive keys can coexist with numbers: cast only integer text.
+      const max = await tx.query(
+        `SELECT max(value::numeric) AS value FROM reservations
+         WHERE project = $1 AND key = $2 AND (ended_at IS NULL OR merged) AND value ~ '^[+-]?[0-9]+$'`,
+        [input.project, input.key],
+      );
+      const greatest = BigInt(String(max.rows[0]?.value ?? "0"));
+      const floor = BigInt(input.floor ?? 0);
+      value = ((greatest > floor ? greatest : floor) + 1n).toString();
+    }
+    const inserted = await tx.query(
+      `INSERT INTO reservations (project, key, value, ticket, note, reserved_at)
+       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (project, key, value) WHERE ended_at IS NULL OR merged
+       DO NOTHING RETURNING ${RESERVATION_COLUMNS}`,
+      [input.project, input.key, value, input.ticket, input.note ?? null, input.at],
+    );
+    if (inserted.rows[0]) return { reserved: true, reservation: reservationRow(inserted.rows[0]) };
+    const holder = await tx.query(
+      `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND key = $2 AND value = $3 AND (ended_at IS NULL OR merged)`,
+      [input.project, input.key, value],
+    );
+    if (!holder.rows[0]) throw new Error("reservation holder disappeared");
+    return { reserved: false, holder: reservationRow(holder.rows[0]) };
+  });
+}
+
+export async function reservations(db: Queryable, project: string): Promise<Reservation[]> {
+  const rs = await db.query(
+    `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND (ended_at IS NULL OR merged) ORDER BY key, reserved_at, id`,
+    [project],
+  );
+  return rs.rows.map(reservationRow);
+}
+
+export async function unreserve(
+  db: Database,
+  input: { project: string; ticket: string; key: string; at: Date },
+): Promise<number> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    const rs = await tx.query(
+      "UPDATE reservations SET ended_at = $4 WHERE project = $1 AND ticket = $2 AND key = $3 AND ended_at IS NULL AND NOT merged",
+      [input.project, input.ticket, input.key, input.at],
+    );
+    return rs.rowCount ?? 0;
+  });
+}
+
+async function endReservations(
+  db: Queryable,
+  project: string,
+  ticket: string,
+  at: Date,
+  merged: boolean,
+): Promise<void> {
+  await db.query(
+    "UPDATE reservations SET ended_at = $3, merged = $4 WHERE project = $1 AND ticket = $2 AND ended_at IS NULL",
+    [project, ticket, at, merged],
+  );
+}

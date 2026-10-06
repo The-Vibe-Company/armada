@@ -138,6 +138,8 @@ export interface RuntimeHandle {
 
 /** Optional identity of the claim being released; workers also carry their server session id. */
 export interface ReleaseGuard {
+  /** An absent merge claim: end reservations only, and refuse if a runtime row now exists. */
+  absent?: true;
   handle?: string | null;
   claimedAt?: string | null;
   workerSessionId?: string | null;
@@ -312,7 +314,35 @@ type Item = { project: string; ticket: string; author: string | null; body: stri
  * rows carry its slug and leases are scoped per project. The app implements
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
+/** A shared name or number, held by one ticket or permanently used by its merge. */
+export interface Reservation {
+  id: number;
+  project: string;
+  key: string;
+  value: string;
+  ticket: string;
+  note: string | null;
+  reservedAt: string;
+  endedAt: string | null;
+  merged: boolean;
+}
+
+export interface ReserveRecord {
+  ticket: string;
+  key: string;
+  value?: string;
+  next?: boolean;
+  floor?: number;
+  note?: string | null;
+}
+
+export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
+
 export interface FleetStore {
+  reserve(input: ReserveRecord & { project: string; at: Date }): Promise<ReserveResult>;
+  reservations(project: string): Promise<Reservation[]>;
+  unreserve(input: { project: string; ticket: string; key: string; at: Date }): Promise<number>;
+
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
@@ -321,7 +351,7 @@ export interface FleetStore {
 
   saveTicketPaths(project: string, ticket: string, paths: string[], at: Date): Promise<void>;
   ticketPaths(project: string): Promise<Record<string, string[]>>;
-  deleteTicketPaths(project: string, ticket: string): Promise<void>;
+  deleteTicketPaths(project: string, ticket: string, guard?: ReleaseGuard): Promise<void>;
 
   recordEvent(e: EventInput): Promise<void>;
   eventsSince(project: string, query: EventsSinceQuery): Promise<FleetEvent[]>;
@@ -357,7 +387,13 @@ export interface FleetStore {
     at: Date;
   }): Promise<void>;
   /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
-  releaseRuntimeHandle(project: string, ticket: string, at: Date, guard?: ReleaseGuard): Promise<boolean>;
+  releaseRuntimeHandle(
+    project: string,
+    ticket: string,
+    at: Date,
+    guard?: ReleaseGuard,
+    merged?: boolean,
+  ): Promise<boolean>;
   /** Sessions still holding a ticket of the project, by ticket id. */
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
@@ -758,14 +794,11 @@ export async function recordMerge(
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "decision", resolution: "merged", at });
-  const released = handle
-    ? await store.releaseRuntimeHandle(project, m.ticket, at, {
-        handle: handle.handle,
-        claimedAt: handle.claimedAt,
-        workerSessionId: handle.workerSessionId,
-      })
-    : false;
-  if (released || !handle) await store.deleteTicketPaths(project, m.ticket);
+  const guard: ReleaseGuard = handle
+    ? { handle: handle.handle, claimedAt: handle.claimedAt, workerSessionId: handle.workerSessionId }
+    : { absent: true };
+  const released = await store.releaseRuntimeHandle(project, m.ticket, at, guard, true);
+  if (released) await store.deleteTicketPaths(project, m.ticket, guard);
   return {
     handle: released && handle ? { ...handle, releasedAt: handle.releasedAt ?? at.toISOString() } : null,
     resolved,
@@ -1307,6 +1340,10 @@ export async function serveInbox(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  reserve(input: ReserveRecord): Promise<ReserveResult>;
+  reservations(ticket?: string): Promise<Reservation[]>;
+  unreserve(input: { ticket: string; key: string }): Promise<number>;
+
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";

@@ -775,8 +775,21 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
-    // THE-1098: merge intent survives a coordinator session.
     version: 27,
+    statements: [
+      `CREATE TABLE reservations (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug), key text NOT NULL, value text NOT NULL,
+        ticket text NOT NULL, note text, reserved_at timestamptz NOT NULL,
+        ended_at timestamptz, merged boolean NOT NULL DEFAULT false
+      )`,
+      "CREATE UNIQUE INDEX reservations_held ON reservations (project, key, value) WHERE ended_at IS NULL OR merged",
+      "CREATE INDEX reservations_ticket ON reservations (project, ticket) WHERE ended_at IS NULL",
+    ],
+  },
+  {
+    // THE-1098: merge intent survives a coordinator session.
+    version: 30,
     statements: [
       `CREATE TABLE merge_queue (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
