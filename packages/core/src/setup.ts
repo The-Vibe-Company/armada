@@ -595,3 +595,29 @@ export async function planSetup(view: RepoView, opts: PlanOptions): Promise<Setu
 }
 
 export const planIsEmpty = (p: SetupPlan) => !p.writes.length && !p.removes.length && !p.links.length;
+
+/** GitHub owner/name from HTTPS or SSH remotes; null for local or other-host remotes. */
+export function repositoryOfRemote(remote: string): string | null {
+  const text = remote.trim();
+  let path: string;
+  const scp = text.match(/^(?:[^@\s/:]+@)?github\.com:([^\s]+)$/i);
+  if (scp) path = scp[1] ?? "";
+  else {
+    try {
+      const url = new URL(text);
+      if (
+        !["https:", "ssh:"].includes(url.protocol) ||
+        url.hostname.toLowerCase() !== "github.com" ||
+        url.search ||
+        url.hash
+      )
+        return null;
+      path = url.pathname.replace(/^\//, "");
+    } catch {
+      return null;
+    }
+  }
+  path = path.replace(/\/$/, "").replace(/\.git$/i, "");
+  if (!/^[a-z0-9-]+\/[a-z0-9_.-]+$/i.test(path) || [".", ".."].includes(path.split("/")[1] ?? "")) return null;
+  return path.toLowerCase();
+}
