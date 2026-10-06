@@ -40,7 +40,8 @@ import { renderEntries } from "./inbox.ts";
 import { type Io, UsageError, type WatchSignal } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { detectCoordinator } from "./presence.ts";
-import { pendingRelease, rememberRelease } from "./release.ts";
+import { pendingRelease } from "./release.ts";
+import { fsRepoView } from "./repo.ts";
 import { observingFleet } from "./runtime.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
@@ -362,7 +363,7 @@ async function watchUntil(
         if (inFlight) await remember(io, project, { inFlight, readAt: now(io).toISOString() });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
-      release: pendingRelease(watchingIo, version, before?.seen ?? []),
+      release: pendingRelease(watchingIo, version, before?.seen ?? [], fsRepoView(dirname(configPath))),
     };
     if (options.follow) {
       const cursor = options.cursor ?? before?.cursor ?? eventCursor(0, now(io).toISOString());
@@ -394,8 +395,6 @@ async function watchUntil(
         );
         // Advance the explicit resume argument too, so a timed run never replays its start cursor.
         options.cursor = line.cursor;
-        if (line.kind === "version" && typeof line.id === "string")
-          await rememberRelease(io, line.id.slice("version:".length));
       }
       timedOut = !!until && now(io) >= until;
       if (timedOut) resume();
@@ -407,7 +406,6 @@ async function watchUntil(
       return 0;
     }
     await remember(io, project, shown(io, report.items, report.inFlight));
-    for (const e of report.items) if (e.kind === "version" && e.version) await rememberRelease(io, e.version);
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter((e) => e.kind !== "version").length;

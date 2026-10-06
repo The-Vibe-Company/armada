@@ -86,8 +86,7 @@ export interface WatchOptions {
   /** A failure the watch waits out. */
   onRetry?: (message: string) => void;
   /**
-   * A newer Armada release the coordinator was not told of yet (`releaseEntry`),
-   * asked after every read: it ends the watch, after every inbox entry.
+   * A required CLI/setup upgrade (`releaseEntry`), asked after every read.
    */
   release?: () => Promise<InboxEntry | null> | InboxEntry | null;
   pollMs?: number;
@@ -162,6 +161,13 @@ export async function watchInbox(fleet: Fleet, o: WatchOptions): Promise<WatchRe
     try {
       read = await untilAborted(o.signal, () => fleet.inbox({ ...query, etag }));
     } catch (err) {
+      if (err instanceof ArmadaApiError && err.upgrade) {
+        const release = await untilAborted(o.signal, () => o.release?.());
+        if (release) {
+          items = [...items, { ...release, new: true }];
+          return report("items");
+        }
+      }
       if (!transientFailure(err)) throw err;
       const wait = WATCH_BACKOFF_MS[Math.min(failures, WATCH_BACKOFF_MS.length - 1)] ?? pollMs;
       failures++;
@@ -312,7 +318,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
         }
       }
       const release = await untilAborted(o.signal, () => o.release?.());
-      if (release && !seen.has(entryKey(release)) && accepts(release.kind, release.ticket)) {
+      if (release && !seen.has(entryKey(release))) {
         yield {
           cursor,
           kind: release.kind,
@@ -325,6 +331,7 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
         };
         seen.add(entryKey(release));
         await save();
+        return;
       }
       if (eventKinds.length) {
         const boundary = parseEventCursor(cursor);
@@ -400,6 +407,24 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
         ),
       );
     } catch (err) {
+      if (err instanceof ArmadaApiError && err.upgrade) {
+        const release = await untilAborted(o.signal, () => o.release?.());
+        if (release) {
+          yield {
+            cursor,
+            kind: release.kind,
+            ticket: release.ticket,
+            id: entryKey(release),
+            owner: release.author,
+            at: release.createdAt,
+            body: release.body,
+            new: true,
+          };
+          seen.add(entryKey(release));
+          await save();
+          return;
+        }
+      }
       if (!transientFailure(err)) throw err;
       const wait = WATCH_BACKOFF_MS[Math.min(failures++, WATCH_BACKOFF_MS.length - 1)] ?? WATCH_POLL_MS;
       o.onRetry?.(`${(err as Error).message}; still following, next try in ${wait / 1000} s`);
@@ -412,7 +437,12 @@ export async function* followFleet(fleet: Fleet, o: FollowOptions): AsyncGenerat
  * The watch's entry for a newer Armada release: what is out, where its notes
  * are, and the steps, between rounds: workers in flight keep their version.
  */
-export function releaseEntry(running: string, latest: string, at: Date): InboxEntry {
+export function releaseEntry(
+  running: string,
+  latest: string,
+  at: Date,
+  options: { setupBehind: boolean; minimum: string | null } = { setupBehind: false, minimum: null },
+): InboxEntry {
   return {
     id: null,
     kind: "version",
@@ -420,10 +450,14 @@ export function releaseEntry(running: string, latest: string, at: Date): InboxEn
     author: null,
     version: latest,
     body: [
-      `Armada ${latest} is out (you run ${running}). Changes: ${releaseNotesUrl(latest)}`,
-      "Not urgent: finish what is in flight first, then, between rounds:",
-      `  1. ${installCommand(latest)}`,
-      "  2. armada init, then merge its pull request: armada merge <n> --no-ticket",
+      `Armada ${latest} required (you run ${running}). Changes: ${releaseNotesUrl(latest)}`,
+      ...(options.minimum ? [`The server requires Armada ${options.minimum} or newer.`] : []),
+      ...(options.setupBehind
+        ? [
+            "This project's Armada setup is behind: armada upgrade checks it, then runs armada init --merge only if still needed.",
+          ]
+        : []),
+      `Run armada upgrade (${installCommand(latest)} if upgrading by hand).`,
       "Workers in flight keep the version their brief pinned: tell them nothing unless the notes say otherwise.",
     ].join("\n"),
     createdAt: at.toISOString(),

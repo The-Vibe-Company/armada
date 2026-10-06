@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError } from "../src/config.ts";
 import {
+  addNoticedRelease,
   ensurePersonalConfig,
   machinePaths,
   parsePersonalConfig,
   readCoordinatorName,
   readCredentialStore,
+  readReleaseNotices,
   readWatchState,
   releaseWatchLock,
   runningWatch,
@@ -19,6 +21,36 @@ import {
   watchFiles,
   writeCoordinatorName,
 } from "../src/machine.ts";
+
+test("release reservations serialize commands, remember time, and recover a dead holder", async () => {
+  const paths = machinePaths({ XDG_CONFIG_HOME: await tempHome() });
+  if (!paths) throw new Error("no machine store");
+  const at = new Date("2026-01-01T00:00:00Z");
+  const intervalMs = 86_400_000;
+  expect(
+    (
+      await Promise.all([
+        addNoticedRelease(paths, "1.0.1", at, { intervalMs }),
+        addNoticedRelease(paths, "1.0.2", at, { intervalMs }),
+      ])
+    ).filter(Boolean),
+  ).toHaveLength(1);
+  expect(await readReleaseNotices(paths)).toHaveLength(1);
+  await writeFile(join(paths.dir, "releases.lock"), "9999\n");
+  expect(
+    await addNoticedRelease(paths, "1.0.3", new Date(at.getTime() + intervalMs), { intervalMs, alive: () => false }),
+  ).toBe(true);
+  expect((await readReleaseNotices(paths)).at(-1)).toEqual({ version: "1.0.3", at: "2026-01-02T00:00:00.000Z" });
+  await writeFile(join(paths.dir, "releases.lock"), "9999\n");
+  await writeFile(join(paths.dir, "releases.lock.cleanup"), "8888\n");
+  expect(
+    await addNoticedRelease(paths, "1.0.4", new Date(at.getTime() + 2 * intervalMs), {
+      intervalMs,
+      alive: () => false,
+    }),
+  ).toBe(false);
+  expect(await readFile(join(paths.dir, "releases.lock"), "utf8")).toBe("9999\n");
+});
 
 const dirs: string[] = [];
 const tempHome = async () => {
