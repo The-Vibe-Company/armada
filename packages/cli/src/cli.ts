@@ -32,6 +32,7 @@ import { init } from "./init.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { jobCommand } from "./job.ts";
 import { launch } from "./launch.ts";
+import { lint } from "./lint.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
@@ -89,6 +90,11 @@ const COMMAND_HELP: Record<string, string> = {
                     start reserves an id, dispatches within 2 minutes and saves the runner
                     reference. status polls open jobs; list reads stored progress only.
                     Workers can only access their own ticket's jobs. Needs Armada sign-in
+`,
+  lint: `  lint --ready [<ticket>…] | lint <ticket>…
+                    Check launchable ready tickets and open specs, or named program tickets.
+                    Prints each readability problem and its fix. Explicit [tracker.lint]
+                    rules are errors (exit 1); absent rules use warning-only defaults.
 `,
   heartbeat: `  heartbeat --every 5m --parent <agent-pid> [--background] [--ticket <id>] [--handle <id>]
                     Keep the current worker session alive through Armada only, with no
@@ -369,6 +375,7 @@ const TICKET_OPTION = new Set([
   "unreserve",
 ]);
 const CONFIG_OPTION = new Set([
+  "lint",
   "job",
   "peek",
   "reserve",
@@ -542,6 +549,7 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "ready",
   "when-unblocked",
   "send",
   "next",
@@ -574,6 +582,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  lint: ["ready"],
   job: ["ticket", "ref", "state"],
   peek: ["actions"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
@@ -1017,6 +1026,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       requireSpecCoordinator(local.credentials);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
       return await specCommand(io, config, credentials, args);
+    }
+    if (args.command === "lint") {
+      const { path, text } = await findConfig(io, args.config, "lint", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await lint(io, config, credentials, args);
     }
     if (args.command === "brief") {
       const { path, text } = await findConfig(io, args.config, "brief", args.project);

@@ -217,7 +217,7 @@ export async function relaunch(
         pr,
         runtime: prepared.runtimeName,
         profile: prepared.choice.name,
-        preflight: { ready: prepared.gaps.length === 0, gaps: prepared.gaps },
+        preflight: { ready: prepared.gaps.length === 0, gaps: prepared.gaps, warnings: prepared.warnings },
       };
       io.stdout(
         args.json
@@ -225,6 +225,7 @@ export async function relaunch(
           : `Relaunch plan for ${ticket}: ${mode}, ${prepared.spec.branch} at ${head ?? "base"}; old worker ${old.handle}.\n`,
       );
       if (!args.json && prepared.approval) io.stdout(`${prepared.approval.preview}\n`);
+      if (!args.json) for (const warning of prepared.warnings) io.stderr(`armada: warning: ${warning}\n`);
       return prepared.gaps.length ? 1 : 0;
     }
     await recheckMutation();

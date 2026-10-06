@@ -301,6 +301,8 @@ test("fresh relaunch cancels, releases and ends the old generation before launch
   ).toBe(false);
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-13"))?.handle).toBe("ws-new/ses-new");
   expect(f.text()).toContain("Relaunched DEMO-13");
+  expect(f.text()).toContain("DEMO-13: Missing ## In short section.");
+  expect(f.text()).not.toContain("launching again makes a second worker");
 });
 
 test("known launch failure names the released state and releases the lease", async () => {
@@ -417,6 +419,9 @@ test("archive failure keeps the replacement alive, while keep-old and dry-run ha
   const dry = await fixture();
   expect(await dry.relaunch("--dry-run", "--json")).toBe(0);
   expect(JSON.parse(dry.text())).toMatchObject({ dryRun: true, mode: "in-place", head });
+  expect(JSON.parse(dry.text()).preflight.warnings).toContain(
+    "DEMO-13: Missing ## In short section. Fix: Add ## In short with What changes, Why, Done when, Depends on.",
+  );
   expect(
     dry.order.some((x) => ["cancel", "create", "fleet/release", "launch-tokens"].includes(x) || x.includes("lease/")),
   ).toBe(false);

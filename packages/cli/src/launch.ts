@@ -319,7 +319,13 @@ export async function prepareLaunch(
   };
   // Build once before a token exists so brief errors cannot strand a token.
   const preview = buildBrief({ ...briefInput, ...(local ? { herdr: { choice: local, handle: "preview" } } : {}) });
-  warnings.push(...preview.warnings.filter((warning) => warning.startsWith("Comparison incomplete")));
+  warnings.push(
+    ...preview.warnings.filter(
+      (warning) =>
+        (warning.startsWith("Comparison incomplete") || warning.startsWith(`${ticketId}: `)) &&
+        !warnings.includes(warning),
+    ),
+  );
   if (!dry) for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
   const spec: LaunchSpec = {
     ticket: ticketId,
@@ -415,6 +421,7 @@ export function printLaunchPlan(p: PreparedLaunch) {
   );
   if (!args.json && p.approval) io.stdout(`${p.approval.preview}\n`);
   for (const gap of gaps) io.stderr(`armada: ${gap}\n`);
+  if (!args.json) for (const warning of warnings) io.stderr(`armada: warning: ${warning}\n`);
   return ready ? 0 : 1;
 }
 
