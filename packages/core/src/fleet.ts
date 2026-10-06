@@ -2,6 +2,7 @@
 // frontier of tickets ready to start, and pull requests waiting. Pure functions
 // over the model; tolerant of missing forge data and missing status lines.
 
+import { CONFIG_DEFAULTS } from "./config.ts";
 import type { RuntimeObservation } from "./live.ts";
 import { criticalIds, isClosed, isDone, isNotStarted, isStarted, type Model } from "./model.ts";
 import { checkIssues } from "./phases.ts";
@@ -122,13 +123,23 @@ export function workerLivenessAt(worker: Pick<Lane, "lastHeartbeat" | "lastRepor
 export function liveness(input: {
   now: Date;
   silentAfterMinutes: number;
+  launchGraceMinutes?: number;
+  ciWaitMinutes?: number;
   phase: string | null | undefined;
   lastReport: string;
   lastHeartbeat?: string | null;
   runtimeState?: RuntimeObservation | null;
   claimedAt?: string;
   owesReport?: boolean;
-}): { kind: "silent" | "stopped" | null; alive: string; silence: number; state: ReturnType<typeof freshRuntimeState> } {
+  shippingStage?: ShippingStage | null;
+  hasReported?: boolean;
+}): {
+  kind: "silent" | "stopped" | null;
+  alive: string;
+  silence: number;
+  level: number;
+  state: ReturnType<typeof freshRuntimeState>;
+} {
   const alive = workerLivenessAt({
     lastReport: input.lastReport,
     lastHeartbeat: input.lastHeartbeat,
@@ -136,15 +147,29 @@ export function liveness(input: {
   });
   const silence = input.now.getTime() - Date.parse(alive);
   const state = freshRuntimeState(input.runtimeState, input.now, input.silentAfterMinutes, input.claimedAt);
+  const firstWindow =
+    !!input.claimedAt &&
+    !input.hasReported &&
+    !(input.lastHeartbeat && input.lastHeartbeat >= input.claimedAt) &&
+    alive <= input.claimedAt;
+  const ci = input.phase === "shipping" && input.shippingStage === "ci";
+  const threshold =
+    Math.max(
+      ci
+        ? (input.ciWaitMinutes ?? CONFIG_DEFAULTS.ciWaitMinutes)
+        : input.silentAfterMinutes * (state === "working" ? 2 : 1),
+      firstWindow ? input.silentAfterMinutes + (input.launchGraceMinutes ?? input.silentAfterMinutes) : 0,
+    ) * MIN;
+  const level = Math.max(0, Math.floor(Math.log2(silence / threshold)));
   let kind: "silent" | "stopped" | null = null;
   if (!(NEEDS_HUMAN.includes(input.phase as AgentPhase) && !input.owesReport) && input.phase !== "merged") {
     if (state === "idle") {
       if (input.now.getTime() - Date.parse(input.lastReport) > 5 * MIN) kind = "stopped";
-    } else if (state !== "blocked" && silence > input.silentAfterMinutes * MIN * (state === "working" ? 2 : 1)) {
+    } else if (state !== "blocked" && silence > threshold) {
       kind = "silent";
     }
   }
-  return { kind, alive, silence, state };
+  return { kind, alive, silence, level, state };
 }
 
 /** Legacy workers: checks on the PR head mean CI, including completed checks. */
@@ -174,6 +199,10 @@ export interface LiveEvent {
 export interface LaneOptions {
   now: number;
   silentAfterMinutes: number;
+  launchGraceMinutes?: number;
+  ciWaitMinutes?: number;
+  /** Identity from the stored Linear reading, when available. */
+  coordinatorViewer?: { id: string; name: string } | null;
   /** Newest live event per ticket id, when the live data was read. */
   lastEvents?: Record<string, string>;
   heartbeats?: Record<string, string>;
@@ -302,14 +331,30 @@ export function buildLane(m: Model, allComments: Comment[], issue: Issue, opts: 
   const life = liveness({
     now: new Date(opts.now),
     silentAfterMinutes: opts.silentAfterMinutes,
+    launchGraceMinutes: opts.launchGraceMinutes,
+    ciWaitMinutes: opts.ciWaitMinutes,
+    shippingStage,
+    hasReported:
+      !!comments.find((c) => c.status && !c.claim && (!claimedAt || c.createdAt >= claimedAt)) ||
+      (event?.kind === "report" && (!claimedAt || event.at >= claimedAt)),
     phase,
     lastReport: owesReport ? answer : reported,
     owesReport,
     lastHeartbeat,
     runtimeState: opts.live?.handles?.[issue.id]?.runtimeState,
-    claimedAt: opts.live?.handles?.[issue.id]?.claimedAt,
+    claimedAt,
   });
-  if (life.kind) flags.push(life.kind);
+  const handle = opts.live?.handles?.[issue.id];
+  const statuses = comments.filter((c) => c.status);
+  const coordinatorOnly =
+    !!opts.coordinatorViewer &&
+    !claims.length &&
+    (!handle || !!handle.releasedAt) &&
+    statuses.length > 0 &&
+    statuses.every((c) =>
+      c.authorId ? c.authorId === opts.coordinatorViewer?.id : c.author === opts.coordinatorViewer?.name,
+    );
+  if (life.kind && !coordinatorOnly && !handle?.releasedAt) flags.push(life.kind);
   if (pr?.state === "open" && pr.ci === "failure") flags.push("ci-failing");
   if (pr?.state === "open" && pr.mergeable === "CONFLICTING") flags.push("conflict");
   const runtimes = new Set(claims.map((c) => c.runtime).filter(Boolean));
@@ -388,7 +433,11 @@ export function inFlight(m: Model, comments: Comment[], opts: LaneOptions): Lane
     return open || !!i.agentPhase || isStarted(i);
   };
   return m.program
-    .filter((i) => m.isLeaf(i) && !isClosed(i) && held(i))
+    .filter((i) => {
+      const h = opts.live?.handles?.[i.id];
+      const newerClaim = !!h && !h.releasedAt && !!h.claimedAt && !!opts.live && h.claimedAt > opts.live.after;
+      return m.isLeaf(i) && (!isClosed(i) || newerClaim) && held(i);
+    })
     .map((i) => buildLane(m, comments, i, opts))
     .sort(
       (a, b) =>

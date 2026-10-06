@@ -104,6 +104,7 @@ export interface AgentClaim {
 }
 
 export interface Comment {
+  authorId?: string | null;
   id: string;
   issueId: string;
   author: string | null;
@@ -120,6 +121,9 @@ export interface Comment {
 
 /** Everything read from the tracker for one program. */
 export interface ProgramData {
+  /** When this Linear read began; unchanged programs retain it on forge-only refreshes. */
+  readStartedAt?: string;
+  viewer?: { id: string; name: string } | null;
   rootId: string;
   fetchedAt: string;
   /** Root and every descendant, any depth. */
