@@ -10,6 +10,7 @@
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { attachPullRequests } from "./github.ts";
 import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
@@ -96,6 +97,8 @@ export const WORKER_FLEET_OPS = [
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "deploy/record",
+  "deploy/state",
   "holds",
   "hold/open",
   "hold/clear",
@@ -387,6 +390,36 @@ export async function serveFleet(
           );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "deploy/record": {
+          const sha = shaOf(b, "sha");
+          if (!sha || !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full 40-character SHA");
+          if (!DEPLOY_STATES.includes(b.state as DeployState)) throw new Invalid("unknown deploy state");
+          const liveSha = shaOf(b, "liveSha");
+          if (liveSha && !/^[0-9a-f]{40}$/.test(liveSha)) throw new Invalid("liveSha must be a full SHA");
+          if (
+            b.coveredShas !== undefined &&
+            (!Array.isArray(b.coveredShas) ||
+              b.coveredShas.length > 100 ||
+              b.coveredShas.some((sha) => typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)))
+          )
+            throw new Invalid("coveredShas must contain at most 100 full SHAs");
+          return store.recordDeploy({
+            coveredShas: b.coveredShas as string[] | undefined,
+            project: slug,
+            at,
+            target: text(b, "target", 200).trim(),
+            sha,
+            state: b.state as DeployState,
+            detail: deployDetail(optText(b, "detail", BODY_MAX) ?? ""),
+            pauseOnFailure: bool(b, "pauseOnFailure"),
+            liveSha,
+          });
+        }
+        case "deploy/state": {
+          const target = optText(b, "target", 200);
+          const sha = shaOf(b, "sha");
+          return store.deployState(slug, { ...(target ? { target } : {}), ...(sha ? { sha } : {}) });
+        }
         case "job/start": {
           const name = text(b, "name", 64);
           if (!JOB_NAME.test(name) || name === "__proto__") throw new Invalid("name must be a configured job name");
@@ -1099,6 +1132,9 @@ export function fleetClient(o: {
     )) as T;
   };
   return {
+    recordDeploy: (input) => call("deploy/record", input),
+    deployState: (input = {}) => call("deploy/state", input),
+
     coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
     takeTickets: (input) => call<boolean>("coordinators/take", input),
     startJob: (input) => call<Job>("job/start", input),

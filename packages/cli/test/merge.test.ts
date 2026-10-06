@@ -1002,3 +1002,26 @@ test("owner approval requests reject lifecycle overrides they cannot persist", a
   expect(f.ghCalls).toEqual([]);
   expect(f.linear.writes).toEqual([]);
 });
+
+test.each([false, true])(
+  "confirmed merge starts matching deploy watchers with the expected worker lifecycle (keep-open: %s)",
+  async (keepOpen) => {
+    const f = await fixture();
+    const read = f.io.readFile;
+    f.io.readFile = async (path) => {
+      const contents = await read(path);
+      return path.endsWith("armada.toml") && contents
+        ? `${contents}\n[[deploy.target]]\nname = "api"\nbranch = "main"\nlive_sha_command = "version"\n`
+        : contents;
+    };
+    let launched: string[] = [];
+    f.io.startBackground = async (args) => {
+      expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(!keepOpen);
+      launched = args;
+      return true;
+    };
+    expect(await run(["merge", "9", ...(keepOpen ? ["--keep-open"] : [])], f.io)).toBe(0);
+    expect(launched.slice(0, 6)).toEqual(["deploy", "watch", "--sha", SQUASH, "--target", "api"]);
+    expect(f.out()).toContain(`Watching the deploy of ${SQUASH} to api`);
+  },
+);

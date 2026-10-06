@@ -61,6 +61,8 @@ gh pr merge <n> --squash --match-head-commit <full-sha>
 
 ## After
 
+With `[[deploy.target]]` declared, `armada merge` starts a detached deploy watcher per matching target after ending worker sessions. It prints `Watching the deploy of <sha> to <target>` and returns. If it prints `armada deploy watch …` as the next step, run that command in a persistent terminal. `armada deploy status` shows target states and deploy holds; status and the next merge flag watchers with no recent news. A deployment failure, smoke failure or timeout puts one item in your inbox and pauses merges by default. Merge the fix with `--through-hold "<what this repairs>"`; the next healthy deploy clears covered deploy failures automatically. Do not clear the hold first. Manual holds and other targets remain independent. No deploy target: existing merge behavior is unchanged.
+
 1. The ticket is Done, its `Agent phase` and `Agent runtime` labels removed, the pull request linked.
 2. Tell every in-flight worker what the merge changes for them: a shared file, a migration, a new check, code they must now reuse or delete.
 3. `armada merge` archives the merged worker's workspace after GitHub confirms the merge. Never archive before it prints "Merged". If cleanup fails, the merge still succeeds and prints the exact `armada stop <ticket>` command to finish it. `--no-archive` leaves the workspace open; shared workspaces and the coordinator's own workspace are retained.
