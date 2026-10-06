@@ -17,7 +17,7 @@ import {
   skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
-import { apiOf } from "./api.ts";
+import { apiOf, heard } from "./api.ts";
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
@@ -33,6 +33,7 @@ import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
+import { peek, requirePeekCoordinator } from "./peek.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
@@ -194,6 +195,11 @@ const COMMAND_HELP: Record<string, string> = {
   watch --stop      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
+  peek: `  peek <ticket> [--actions <n>] [--json]
+                    Coordinator: read the worker's runtime, reply, last commands (default 5,
+                    up to 100), report, heartbeat, PR checks and open inbox in local TZ.
+                    Includes bound launches before claim; runtime is never changed
+`,
   stop: `  stop <ticket> [--merged-pr <url>] [--claim-key <key>]
                     Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed.
                     Merge recovery prints --merged-pr and --claim-key to protect replacement workers;
@@ -257,6 +263,9 @@ const COMMAND_HELP: Record<string, string> = {
                     stdout prints its workspace, session and link, never the token.
                     Herdr creates a persistent local worktree; --harness must match its profile.
                     --dry-run prints settings and preflight and creates nothing.
+  launch <ticket> --when-unblocked [--profile <name>] [--after <blocker>]
+                    Remember a launch until all Linear blockers close. --after asserts an
+                    existing blocker; it never adds a dependency. Status shows the request.
   launch revoke <ticket>
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
@@ -332,6 +341,7 @@ const TICKET_OPTION = new Set([
   "unreserve",
 ]);
 const CONFIG_OPTION = new Set([
+  "peek",
   "reserve",
   "unreserve",
   "ci",
@@ -360,6 +370,7 @@ const CONFIG_OPTION = new Set([
   "upgrade",
 ]);
 const JSON_OPTION = new Set([
+  "peek",
   "skills",
   ...[...CONFIG_OPTION].filter((c) => c !== "run" && c !== "attach" && c !== "upgrade"),
   "doctor",
@@ -439,6 +450,7 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "actions",
   "value",
   "floor",
   "since",
@@ -484,11 +496,13 @@ const VALUE_OPTIONS = [
   "validation-reason",
   "through-hold",
   "notes",
+  "after",
   "since",
   "lang",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "when-unblocked",
   "send",
   "next",
   "list",
@@ -517,6 +531,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  peek: ["actions"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
   unreserve: ["ticket"],
   ci: ["sha", "branch"],
@@ -559,6 +574,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "validation-reason",
     "dry-run",
     "notes",
+    "when-unblocked",
+    "after",
   ],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
@@ -857,6 +874,27 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, scope ? { worker: scope } : { project: config.project.slug });
       if (command === "inbox") await recordPresence(io, config, credentials);
       return await worker(command === "stop" ? { ...io, cwd: dirname(path) } : io, config, credentials, args);
+    }
+    if (args.command === "peek") {
+      const { path, text } = await findConfig(io, args.config, "peek", args.project);
+      const config = parseConfig(text, path);
+      const selectedIo = { ...io, cwd: dirname(path) };
+      const local = await loadCredentials(selectedIo, {
+        armada: false,
+        worker: {
+          command: "peek",
+          project: config.project.slug,
+          ticket: (stored) => currentTicket(selectedIo, config, undefined, stored),
+        },
+      });
+      requirePeekCoordinator(local.credentials);
+      // Peek needs fleet sign-in and optional local GitHub credentials, never a Linear key.
+      try {
+        return await peek(selectedIo, config, local.credentials, args);
+      } finally {
+        const server = heard(selectedIo).server;
+        if (server) heard(io).server = server;
+      }
     }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch", args.project);

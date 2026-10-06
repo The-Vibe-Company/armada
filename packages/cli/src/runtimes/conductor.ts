@@ -81,12 +81,18 @@ export class ConductorAdapter implements RuntimeAdapter {
     archive: true,
   };
   private binary = "conductor";
-  constructor(private readonly io: Io) {}
+  constructor(
+    private readonly io: Io,
+    private readonly secretValues: readonly string[] = [],
+  ) {}
   parse(handle: string): { workspace: string; session: string } {
     const parts = handle.split("/");
     if (parts.length !== 2 || !id(parts[0]) || !id(parts[1]))
       throw new RuntimeError("invalid Conductor handle; expected workspace/session ids", "invalid", "armada status");
     return { workspace: parts[0], session: parts[1] };
+  }
+  private redact(text: string): string {
+    return redactRuntimeText(text, this.secretValues);
   }
   private error(code: RuntimeErrorCode): RuntimeError {
     const sentences: Record<RuntimeErrorCode, string> = {
@@ -428,6 +434,10 @@ export class ConductorAdapter implements RuntimeAdapter {
     let lastReply: Peek["lastReply"] = null;
     let cursor = options.cursor;
     let hasMore = false;
+    let knownFormat = false;
+    let unknownReply: Peek["lastReply"] = null;
+    const tools = new Map<string, Peek["actions"][number]>();
+    const actionResults: NonNullable<Peek["actionResults"]> = [];
     for (let page = 0; page < 20; page++) {
       const r = await this.call([
         "session",
@@ -437,7 +447,7 @@ export class ConductorAdapter implements RuntimeAdapter {
         "--limit",
         "100",
       ]);
-      if (!Array.isArray(r.data) || typeof r.hasMore !== "boolean") throw invalid();
+      if (!Array.isArray(r.data) || r.data.length > 100 || typeof r.hasMore !== "boolean") throw invalid();
       const old = cursor;
       for (const value of r.data) {
         const event = object(value);
@@ -445,9 +455,50 @@ export class ConductorAdapter implements RuntimeAdapter {
         cursor = event.id;
         const at = timestamp(event.receivedAt);
         const raw = object(object(event.content)?.rawPayload);
+        const content = object(event.content);
+        if (typeof content?.text === "string") unknownReply = { at, text: this.redact(content.text) };
         if (!raw) continue;
-        if (raw.type === "result" && typeof raw.result === "string")
-          lastReply = { at, text: redactRuntimeText(raw.result) };
+        if (typeof raw.text === "string") unknownReply = { at, text: this.redact(raw.text) };
+        const messageContent = object(raw.message)?.content;
+        const messageText =
+          typeof messageContent === "string"
+            ? messageContent
+            : Array.isArray(messageContent)
+              ? messageContent
+                  .map(object)
+                  .filter((block) => block?.type === "text" && typeof block.text === "string")
+                  .map((block) => String(block?.text))
+                  .join("\n")
+              : "";
+        if (messageText) {
+          const reply = { at, text: this.redact(messageText) };
+          unknownReply = reply;
+          if (raw.type === "assistant") lastReply = reply;
+        }
+        if (
+          ["result", "assistant", "user"].includes(String(raw.type)) ||
+          String(object(raw.event)?.type).startsWith("item.")
+        )
+          knownFormat = true;
+        if (raw.type === "user") {
+          const content = object(raw.message)?.content;
+          if (Array.isArray(content))
+            for (const value of content) {
+              const result = object(value);
+              const action = typeof result?.tool_use_id === "string" ? tools.get(result.tool_use_id) : null;
+              if (result?.type === "tool_result" && id(result.tool_use_id)) {
+                const code =
+                  typeof result.content === "string"
+                    ? result.content.match(/(?:Exit code|exit code|exited with code)[: ]+(\d+)/)?.[1]
+                    : null;
+                const exit = code ? Number(code) : result.is_error === true ? 1 : null;
+                if (action) action.exit = exit;
+                actionResults.push({ id: result.tool_use_id, exit });
+                if (actionResults.length > options.actions) actionResults.shift();
+              }
+            }
+        }
+        if (raw.type === "result" && typeof raw.result === "string") lastReply = { at, text: this.redact(raw.result) };
         if (raw.type === "assistant") {
           const content = object(raw.message)?.content;
           if (Array.isArray(content))
@@ -455,11 +506,15 @@ export class ConductorAdapter implements RuntimeAdapter {
               const tool = object(value);
               if (tool?.type === "tool_use") {
                 const command = object(tool.input)?.command;
-                actions.push({
+                const action: Peek["actions"][number] = {
+                  ...(id(tool.id) ? { id: tool.id } : {}),
                   at,
                   kind: typeof command === "string" ? "command" : "tool",
-                  text: redactRuntimeText(typeof command === "string" ? command : String(tool.name ?? "tool")),
-                });
+                  text: this.redact(typeof command === "string" ? command : String(tool.name ?? "tool")),
+                  exit: null,
+                };
+                actions.push(action);
+                if (typeof tool.id === "string") tools.set(tool.id, action);
               }
             }
         }
@@ -467,17 +522,16 @@ export class ConductorAdapter implements RuntimeAdapter {
         const item = object(codex?.item);
         if (codex?.type !== "item.completed" || !item) continue;
         if (item.type === "agentMessage" && typeof item.text === "string") {
-          if (item.phase === "final_answer") lastReply = { at, text: redactRuntimeText(item.text) };
-          else actions.push({ at, kind: "message", text: redactRuntimeText(item.text) });
+          lastReply = { at, text: this.redact(item.text) };
         } else if (item.type === "commandExecution" && typeof item.command === "string")
           actions.push({
             at,
             kind: "command",
-            text: redactRuntimeText(item.command),
+            text: this.redact(item.command),
             exit: typeof item.exitCode === "number" ? item.exitCode : null,
           });
         else if (item.type === "mcpToolCall")
-          actions.push({ at, kind: "tool", text: redactRuntimeText(`${item.server ?? ""} ${item.tool ?? ""}`.trim()) });
+          actions.push({ at, kind: "tool", text: this.redact(`${item.server ?? ""} ${item.tool ?? ""}`.trim()) });
         if (actions.length > options.actions) actions.splice(0, actions.length - options.actions);
       }
       if (actions.length > options.actions) actions.splice(0, actions.length - options.actions);
@@ -485,7 +539,16 @@ export class ConductorAdapter implements RuntimeAdapter {
       if (!hasMore) break;
       if (!cursor || old === cursor) throw invalid();
     }
-    return { ...reading, link: null, lastReply, actions, cursor, truncated: hasMore };
+    return {
+      ...reading,
+      detail: !knownFormat && unknownReply ? `${reading.detail} · unknown agent format` : reading.detail,
+      link: `conductor://workspace?id=${h.workspace}`,
+      lastReply: lastReply ?? (!knownFormat ? unknownReply : null),
+      actions: knownFormat ? actions : [],
+      actionResults,
+      cursor,
+      truncated: hasMore,
+    };
   }
   private waitBound(ms: number) {
     if (!Number.isFinite(ms) || ms < 0 || ms > 600_000) throw invalid();
