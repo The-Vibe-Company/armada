@@ -24,7 +24,7 @@ import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { launch } from "./launch.ts";
 import { setupLocal } from "./local-setup.ts";
 import { login, logout, whoami } from "./login.ts";
@@ -157,8 +157,10 @@ const COMMAND_HELP: Record<string, string> = {
   watch --stop      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
-  stop: `  stop <ticket>
-                    Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed
+  stop: `  stop <ticket> [--merged-pr <url>] [--claim-key <key>]
+                    Archive a Conductor workspace after release or merge. Herdr worktrees must be clean and fully pushed.
+                    Merge recovery prints --merged-pr and --claim-key to protect replacement workers;
+                    copy the complete command. Ordinary stop retains its existing behavior.
 `,
   answer: `  answer <item|ticket> "<answer>"
                     Coordinator: deliver to a herdr worker and record the answer. For other
@@ -169,12 +171,15 @@ const COMMAND_HELP: Record<string, string> = {
                     Coordinator: record a delivered note; an open plan is resolved
 `,
   merge: `  merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
-        [--reason <why>] [--ask-owner --reason <why>]
+        [--reason <why>] [--ask-owner --reason <why>] [--no-archive]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
                     lock, close the ticket and list the workers to tell. Never deletes
-                    the branch. --dry-run only runs the checklist. Signed in to Armada,
+                    the branch. After GitHub confirms the merge, archives the worker's
+                    Armada workspace; --no-archive leaves it open. Cleanup failures print
+                    an armada stop command and do not fail the merge.
+                    --dry-run only runs the checklist. Signed in to Armada,
                     refused while Armada is down; --no-lock then merges without the lock.
                     --wait (--timeout in minutes, default 30): a head behind its base is
                     updated on GitHub (a merge commit, no force-push) and its checks waited
@@ -367,6 +372,8 @@ const VALUE_OPTIONS = [
   "since",
   "tickets",
   "kinds",
+  "merged-pr",
+  "claim-key",
   "at",
   "every",
   "parent",
@@ -413,6 +420,7 @@ const FLAG_OPTIONS = [
   "dry-run",
   "no-lock",
   "no-ticket",
+  "no-archive",
   "prompt",
   "profile-line",
   "wait",
@@ -435,9 +443,10 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
   watch: ["stop", "follow", "since", "tickets", "kinds", "mine", "for"],
+  stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
-  merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
+  merge: ["ticket", "no-ticket", "no-archive", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
@@ -549,7 +558,7 @@ async function status(io: Io, args: Args): Promise<number> {
     linearApiKey,
     githubToken,
     ...(live ?? {}),
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
     ...(io.now ? { now: io.now } : {}),
   });
   const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
@@ -684,7 +693,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         : undefined;
       const { credentials } = await loadCredentials(io, scope ? { worker: scope } : { project: config.project.slug });
       if (command === "inbox") await recordPresence(io, config, credentials);
-      return await worker(io, config, credentials, args);
+      return await worker(command === "stop" ? { ...io, cwd: dirname(path) } : io, config, credentials, args);
     }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch", args.project);

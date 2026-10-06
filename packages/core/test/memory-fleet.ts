@@ -349,7 +349,7 @@ export function memoryFleet(): FleetStore & {
       if (
         !h ||
         !OBSERVABLE_RUNTIMES.includes(runtimeNameOf(h.runtime) as "herdr" | "conductor") ||
-        h.releasedAt ||
+        (h.releasedAt && input.state !== "gone") ||
         h.handle !== input.handle ||
         h.claimedAt !== input.claimedAt ||
         (h.runtimeState && h.runtimeState.at > input.at.toISOString())
