@@ -91,6 +91,7 @@ export interface Issue {
 }
 
 export interface AgentClaim {
+  coordinator?: string | null;
   runtime: string | null;
   session: string | null;
   branch: string | null;

@@ -12,13 +12,21 @@ export interface ExecResult {
   stderr: string;
   /** The child exceeded its bound; mutating runtimes may have applied the request. */
   timedOut?: boolean;
+  outputExceeded?: boolean;
 }
 
 /** Runs a program (git, gh) without a shell and returns its exit code and output. */
 export type Exec = (
   command: string,
   args: string[],
-  options: { cwd: string; timeoutMs?: number; maxOutputBytes?: number; input?: string },
+  options: {
+    cwd: string;
+    timeoutMs?: number;
+    maxOutputBytes?: number;
+    input?: string;
+    env?: Record<string, string | undefined>;
+    processGroup?: boolean;
+  },
 ) => Promise<ExecResult>;
 
 /**
@@ -40,11 +48,15 @@ export interface ProcessIdentity {
 
 /** Every side effect a command may have, injected so commands can be tested. */
 export interface Io {
+  /** Root of the selected project checkout, set by config discovery. */
+  coordinatorRoot?: string;
   /** Host platform; local runtime install offers support macOS and Linux. */
   platform?: NodeJS.Platform;
   machineName?: string;
   ttyName?: string | null;
   cwd: string;
+  /** Output terminal width; absent for redirected output (80 columns). */
+  terminalWidth?: number;
   env: Record<string, string | undefined>;
   readFile: (path: string) => Promise<string | null>;
   /** Installed Codex model/list catalog for the current sign-in; null if unavailable. */

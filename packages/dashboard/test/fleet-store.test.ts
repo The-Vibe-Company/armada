@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type NewRequest, recordRelease } from "@armada/core/read";
-import type { Database } from "../lib/db.ts";
+import { type NewRequest, recordClaim, recordRelease } from "@armada/core/read";
+import { type Database, DB_MIGRATIONS, DB_SCHEMA_VERSION, migrateDatabase } from "../lib/db.ts";
 import {
   acquireLease,
   addInboxItem,
@@ -32,6 +32,7 @@ import {
   resolvePlans,
   saveRuntimeHandle,
   saveWorkerProfile,
+  shownJobs,
   upsertProject,
 } from "../lib/fleet-store.ts";
 import { addOrganizations, tempDatabase } from "./support.ts";
@@ -336,6 +337,7 @@ describe("live data", () => {
     await saveRuntimeHandle(db, { ...claim, at: at(4) });
     expect(await openRuntimeHandles(db, P)).toEqual([
       {
+        coordinator: null,
         project: P,
         ticket: "WID-2",
         runtime: "Conductor",
@@ -471,6 +473,326 @@ describe("leases", () => {
   });
 });
 
+test("long jobs persist across store instances, are project scoped and never revive after stopping", async () => {
+  const project = { slug: "job-project", name: "Runner", repository: "acme/runner", programRoot: "DEMO-1" };
+  const store = fleetStore(db);
+  await store.ensureProject(project, at(0));
+  const job = await store.startJob({
+    project: project.slug,
+    ticket: "DEMO-7",
+    name: "eval",
+    startedBy: "worker-1",
+    at: at(0),
+  });
+  expect(job).toMatchObject({ state: "starting", ref: null, startedAt: at(0).toISOString(), finishedAt: null });
+  const next = fleetStore(db);
+  await next.observeJob({ project: project.slug, ticket: job.ticket, id: job.id, state: "running", at: at(0) });
+  const running = await next.observeJob({
+    project: project.slug,
+    ticket: job.ticket,
+    id: job.id,
+    ref: "run-1",
+    state: "running",
+    progress: "37/120 cases",
+    eta: at(120).toISOString(),
+    at: at(1),
+  });
+  expect(running).toMatchObject({
+    ref: "run-1",
+    state: "running",
+    progress: "37/120 cases",
+    eta: at(120).toISOString(),
+    observedAt: at(1).toISOString(),
+  });
+  expect(await store.listJobs(project.slug, { open: true })).toEqual(running ? [running] : []);
+  expect(await next.listJobs("other-project", {})).toEqual([]);
+  expect(await next.getJob("other-project", job.id)).toBeNull();
+  expect(
+    await next.observeJob({ project: project.slug, ticket: "DEMO-8", id: job.id, state: "stopped", at: at(2) }),
+  ).toBeNull();
+  expect(
+    (
+      await next.observeJob({
+        project: project.slug,
+        ticket: job.ticket,
+        id: job.id,
+        state: "running",
+        progress: "old",
+        at: at(0),
+      })
+    )?.progress,
+  ).toBe("37/120 cases");
+  expect(
+    await next.observeJob({
+      project: project.slug,
+      ticket: job.ticket,
+      id: job.id,
+      state: "failed",
+      ref: "replacement",
+      at: at(2),
+    }),
+  ).toEqual(running);
+  const stopped = await next.observeJob({
+    project: project.slug,
+    ticket: job.ticket,
+    id: job.id,
+    state: "stopped",
+    at: at(2),
+  });
+  expect(stopped).toMatchObject({ state: "stopped", ref: "run-1", eta: null, finishedAt: at(2).toISOString() });
+  expect(
+    (
+      await next.observeJob({
+        project: project.slug,
+        ticket: job.ticket,
+        id: job.id,
+        state: "running",
+        ref: "forged",
+        at: at(3),
+      })
+    )?.state,
+  ).toBe("stopped");
+  expect(await next.listJobs(project.slug, { open: true })).toEqual([]);
+  expect(await next.listJobs(project.slug, { ticket: job.ticket, id: job.id })).toEqual(stopped ? [stopped] : []);
+
+  // The dashboard shows every open job, and the ended jobs of the tickets it shows since a time (THE-1128).
+  const open = await store.startJob({
+    project: project.slug,
+    ticket: "DEMO-9",
+    name: "eval",
+    startedBy: null,
+    at: at(3),
+  });
+  expect(await shownJobs(db, project.slug, [job.ticket], at(2))).toEqual(stopped ? [open, stopped] : []);
+  expect(await shownJobs(db, project.slug, [job.ticket], at(3))).toEqual([open]);
+  expect(await shownJobs(db, project.slug, [], at(0))).toEqual([open]);
+  expect(await shownJobs(db, "other-project", [job.ticket], at(0))).toEqual([]);
+  // An open job comes before newer ended ones, so the limit never cuts it.
+  const rerun = await store.startJob({
+    project: project.slug,
+    ticket: job.ticket,
+    name: "eval",
+    startedBy: null,
+    at: at(4),
+  });
+  const failed = await store.observeJob({
+    project: project.slug,
+    ticket: job.ticket,
+    id: rerun.id,
+    state: "failed",
+    at: at(5),
+  });
+  expect(await shownJobs(db, project.slug, [job.ticket], at(2))).toEqual(
+    failed && stopped ? [open, failed, stopped] : [],
+  );
+});
+
+test("a deferred request survives storage, shares launch uniqueness and is resolved by the worker claim", async () => {
+  const project = "deferred-requests";
+  await upsertProject(
+    db,
+    { slug: project, name: "Deferred", repository: "acme/deferred", programRoot: "WID-1" },
+    at(0),
+  );
+  const store = fleetStore(db);
+  const request = {
+    project,
+    ticket: "WID-9",
+    kind: "launch-request" as const,
+    author: "Ada",
+    body: "Wait for blockers",
+    question: null,
+    profile: "backend",
+    deferred: true,
+    at: at(0),
+  };
+  const id = await store.addRequest(request);
+  expect(id).not.toBeNull();
+  expect(await store.addRequest({ ...request, deferred: false })).toBeNull();
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toMatchObject([
+    { id, request: { deferred: true, profile: "backend" } },
+  ]);
+  await recordClaim(
+    store,
+    project,
+    {
+      ticket: "WID-9",
+      runtime: "Conductor",
+      handle: "ws/9",
+      branch: null,
+      phase: null,
+      resuming: false,
+      profile: null,
+    },
+    at(1),
+  );
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toEqual([]);
+});
+
+test("merge holds deduplicate automatic pauses and atomically open and resolve their inbox items", async () => {
+  const database = await tempDatabase();
+  try {
+    const store = fleetStore(database);
+    await store.ensureProject(
+      { slug: "hold-test", name: "Hold test", repository: "acme/widgets", programRoot: "DEMO-1" },
+      at(0),
+    );
+    const input = {
+      project: "hold-test",
+      kind: "deploy" as const,
+      ref: "api",
+      reason: "smoke failed",
+      author: "Ada",
+      at: at(0),
+    };
+    const hold = await store.openHold(input);
+    expect((await store.openHold({ ...input, author: "Grace", at: at(1) })).id).toBe(hold.id);
+    const manual = await store.openHold({ ...input, kind: "manual", ref: null });
+    expect((await store.openHold({ ...input, kind: "manual", ref: null })).id).not.toBe(manual.id);
+    const inbox = await store.openInboxItems({ project: input.project, recipient: "coordinator" });
+    expect(inbox).toHaveLength(3);
+    expect(inbox[0]).toMatchObject({ kind: "hold", ticket: null, author: "Ada" });
+    expect(inbox[0]?.body).toContain(`hold #${hold.id}`);
+    expect(
+      await store.clearHold({ project: "elsewhere", id: hold.id, reason: "wrong project", author: "Grace", at: at(2) }),
+    ).toBeNull();
+    const cleared = await store.clearHold({
+      project: input.project,
+      id: hold.id,
+      reason: "verified",
+      author: "Grace",
+      at: at(2),
+    });
+    if (!cleared) throw new Error("expected the cleared hold");
+    expect(cleared).toMatchObject({
+      cleared: true,
+      hold: { clearedBy: "Grace", clearedAt: at(2).toISOString(), clearReason: "verified" },
+    });
+    expect(
+      await store.clearHold({ project: input.project, id: hold.id, reason: "repeat", author: "Ada", at: at(3) }),
+    ).toEqual({ ...cleared, cleared: false });
+    expect(
+      (await store.openInboxItems({ project: input.project, recipient: "coordinator" })).map((i) => i.body),
+    ).not.toContain(inbox[0]?.body);
+    expect(await store.openHolds("elsewhere")).toEqual([]);
+    expect((await store.openHold(input)).id).not.toBe(hold.id);
+    const count = (await store.openHolds(input.project)).length;
+    await database.query("ALTER TABLE inbox_items ADD CONSTRAINT reject_test_holds CHECK (kind <> 'hold') NOT VALID");
+    await expect(
+      store.openHold({ ...input, kind: "main-red", ref: "abcdef", reason: "tests failed" }),
+    ).rejects.toThrow();
+    expect(await store.openHolds(input.project)).toHaveLength(count);
+  } finally {
+    await database.end();
+  }
+});
+
+test("merge queue preserves intent, deduplicates concurrent adds and fences dequeue and finish with the lease", async () => {
+  const project = "queue-test";
+  const input = {
+    project,
+    pr: 12,
+    ticket: "WID-12",
+    noTicket: false,
+    keepOpen: false,
+    throughHold: null,
+    reason: "Reviewed",
+    headSha: "a".repeat(40),
+    queuedBy: "coordinator-a",
+    at: at(0),
+  };
+  const store = fleetStore(db);
+  const adds = await Promise.all([store.queueAdd(input), store.queueAdd(input)]);
+  expect(adds.filter((e) => "existing" in e)).toHaveLength(1);
+  const first = (await fleetStore(db).queueList(project, { since: at(0) }))[0]!;
+  expect(first).toMatchObject({ pr: 12, reason: "Reviewed", state: "queued", headSha: input.headSha });
+  expect(await store.queueAdd({ ...input, pr: 15 })).toMatchObject({ position: 2 });
+  expect(await store.queueNext({ project, holder: "a", at: at(1) })).toEqual({ refused: true, held: null });
+  expect(await store.acquireLease({ project, name: "merge-queue", holder: "a", ttlMs: 60_000, at: at(1) })).toEqual({
+    acquired: true,
+  });
+  const secondHolder = await store.acquireLease({
+    project,
+    name: "merge-queue",
+    holder: "b",
+    ttlMs: 60_000,
+    at: at(1),
+  });
+  expect(secondHolder).toMatchObject({ acquired: false, held: { holder: "a" } });
+  expect(await store.queueNext({ project, holder: "b", at: at(1) })).toMatchObject({
+    refused: true,
+    held: { holder: "a" },
+  });
+  expect(await store.queueNext({ project, holder: "a", at: at(1) })).toMatchObject({
+    entry: { id: first.id, state: "merging" },
+    holds: [],
+  });
+  expect(await store.queueRemove({ project, pr: 12, at: at(1) })).toBe(false);
+  expect(
+    await store.queueFinish({ project, id: first.id, holder: "b", outcome: "merged", detail: null, at: at(1) }),
+  ).toBe(false);
+  // A lost session's successor resumes its unfinished entry before taking another.
+  await store.acquireLease({ project, name: "merge-queue", holder: "b", ttlMs: 60_000, at: at(3) });
+  expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: { id: first.id } });
+  expect(
+    await store.queueFinish({ project, id: first.id, holder: "a", outcome: "merged", detail: null, at: at(3) }),
+  ).toBe(false);
+  expect(
+    await store.queueFinish({
+      project,
+      id: first.id,
+      holder: "b",
+      outcome: "retry",
+      detail: "CI running",
+      notBefore: at(5).toISOString(),
+      at: at(3),
+    }),
+  ).toBe(true);
+  expect((await store.queueList(project, { since: at(0) }))[0]).toMatchObject({
+    state: "queued",
+    attempts: 1,
+    detail: "CI running",
+  });
+  expect(await store.queueNext({ project, holder: "b", at: at(3) })).toMatchObject({ entry: { pr: 15 } });
+  const second = (await store.queueList(project, { since: at(0) }))[1]!;
+  expect(
+    await store.queueFinish({
+      project: "other",
+      id: second.id,
+      holder: "b",
+      outcome: "refused",
+      detail: "head moved",
+      at: at(3),
+    }),
+  ).toBe(false);
+  expect(
+    await store.queueFinish({
+      project,
+      id: second.id,
+      holder: "b",
+      outcome: "refused",
+      detail: "head moved",
+      at: at(3),
+    }),
+  ).toBe(true);
+  expect(
+    await store.queueFinish({
+      project,
+      id: second.id,
+      holder: "b",
+      outcome: "refused",
+      detail: "head moved",
+      at: at(3),
+    }),
+  ).toBe(false);
+  expect(await store.openInboxItems({ project, recipient: "coordinator" })).toMatchObject([
+    { kind: "queue-refused", ticket: "WID-12", body: expect.stringContaining("head moved") },
+  ]);
+  expect(await store.queueRemove({ project, pr: 12, at: at(3) })).toBe(true);
+  expect(await store.queueList(project, { since: at(4) })).toEqual([]);
+  expect(await store.queueAdd({ ...input, at: at(4) })).toMatchObject({ position: 1 });
+});
+
 test("events/since uses the project, kinds and tickets, pages ties and reads late commits once", async () => {
   const project = "follow-stream";
   await upsertProject(db, { slug: project, name: "Follow", repository: "acme/follow", programRoot: "WID-1" }, at(0));
@@ -503,6 +825,8 @@ test("events/since uses the project, kinds and tickets, pages ties and reads lat
   expect(await eventsSince(db, project, { ...boundary, seenIds: [...boundary.seenIds, lateEvent.id] })).toEqual([]);
   expect(await eventsSince(db, project, { ...q, tickets: ["WID-3"] })).toEqual([]);
   expect(await eventsSince(db, "unknown-project", q)).toEqual([]);
+  expect(await eventsSince(db, project, { ...q, excludedTickets: ["WID-2"] })).toEqual([]);
+  expect(await eventsSince(db, project, { ...boundary, excludedTickets: ["WID-2"] })).toEqual([]);
 });
 
 test("events/since selects handover reports before pagination", async () => {
@@ -554,4 +878,27 @@ test("declared paths replace the old plan, stay scoped to a project and are clea
     at(4),
   );
   expect(await store.ticketPaths("paths-b")).toEqual({});
+});
+
+test("a higher reserved version does not hide a later merge-hold migration", async () => {
+  const database = await tempDatabase();
+  try {
+    const migration = DB_MIGRATIONS.find((m) => m.statements.some((s) => s.includes("CREATE TABLE merge_holds")));
+    if (!migration) throw new Error("missing hold migration");
+    await database.query("DROP TABLE merge_holds");
+    await database.query("DELETE FROM armada_migrations WHERE version = $1", [migration.version]);
+    // Another branch applied its higher reserved version first.
+    await database.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [
+      DB_SCHEMA_VERSION + 1,
+      at(0),
+    ]);
+    expect(await migrateDatabase(database, at(1))).toBe(DB_SCHEMA_VERSION);
+    expect((await database.query("SELECT to_regclass('merge_holds') AS name")).rows[0]?.name).not.toBeNull();
+    expect(
+      (await database.query("SELECT version FROM armada_migrations WHERE version = $1", [migration.version])).rows,
+    ).toEqual([{ version: migration.version }]);
+    expect(await migrateDatabase(database, at(2))).toBe(DB_SCHEMA_VERSION);
+  } finally {
+    await database.end();
+  }
 });

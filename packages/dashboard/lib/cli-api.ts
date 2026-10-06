@@ -20,6 +20,7 @@ import {
   CLI_LATEST_HEADER,
   CLI_MINIMUM_HEADER,
   CLI_VERSION_HEADER,
+  COORDINATOR,
   compareVersions,
   type FleetCaller,
   type HandBackSnapshot,
@@ -80,7 +81,7 @@ export interface CliAccounts {
   settings: AuthSettings;
 }
 
-import { ownerPulse, safeWebhookFetch } from "./owner-push";
+import { ownerPulse, safeWebhookFetch, sendOwnerDigest } from "./owner-push";
 
 export interface CliApiDeps {
   ownerFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -106,7 +107,7 @@ export interface CliIdentity {
   /** The key's name and first characters, for an API key. */
   apiKey: { id: string; name: string | null; start: string | null } | null;
   /** The ticket a worker session acts on, and who launched it. */
-  worker: { id: string; project: string; ticket: string; launchedBy: string } | null;
+  worker: { id: string; project: string; ticket: string; launchedBy: string; coordinator?: string | null } | null;
   expiresAt: string | null;
 }
 
@@ -212,7 +213,13 @@ async function identify(
       user: null,
       organization,
       apiKey: null,
-      worker: { id: w.id, project: w.project, ticket: w.ticket, launchedBy: w.launchedBy.label },
+      worker: {
+        id: w.id,
+        project: w.project,
+        ticket: w.ticket,
+        launchedBy: w.launchedBy.label,
+        coordinator: w.coordinator ?? null,
+      },
       expiresAt: w.sessionExpiresAt,
       launch: w,
     };
@@ -384,11 +391,15 @@ async function launch(a: CliAccounts, request: Request, deps: CliApiDeps, now: D
       "a launch token needs the project slug and the ticket id",
       "armada brief <ticket>, in the project's repository",
     );
+  const coordinator = body.coordinator === undefined ? "default" : body.coordinator;
+  if (typeof coordinator !== "string" || !COORDINATOR.test(coordinator))
+    return refuse(400, "invalid coordinator name", "use 1 to 32 lowercase letters, digits or hyphens");
   const { worker, token } = await createLaunch(a.client, {
     organization: holder.organization.id,
     project: body.project,
     ticket: body.ticket,
     launcher: { kind: identity.via, id: holder.actor.id, label: holder.actor.label },
+    coordinator,
     now,
   });
   console.info(
@@ -463,7 +474,13 @@ async function exchange(a: CliAccounts, request: Request, now: Date): Promise<Re
     {
       schemaVersion: 1,
       token: r.token,
-      worker: { id: w.id, project: w.project, ticket: w.ticket, launchedBy: w.launchedBy.label },
+      worker: {
+        id: w.id,
+        project: w.project,
+        ticket: w.ticket,
+        launchedBy: w.launchedBy.label,
+        coordinator: w.coordinator ?? null,
+      },
       organization: { id: organization.id, name: organization.name, slug: organization.slug },
       expiresAt: w.sessionExpiresAt,
     },
@@ -689,7 +706,21 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
   const project = parseProject(body.project);
   if (!project)
     return refuse(400, "a fleet request names its project: slug, name, repository and program root", UPDATE_CLI);
-  let caller: FleetCaller = { kind: "organization", author: identity.user?.name ?? null };
+  // Stable authenticated identity prevents two people (or keys) with the same name
+  // from executing each other's deferred launches. Keep it in the existing author field.
+  const authorKey = identity.user
+    ? `user:${identity.user.id}`
+    : identity.apiKey
+      ? `api-key:${identity.apiKey.id}`
+      : null;
+  const authorSuffix = authorKey ? ` [${authorKey}]` : "";
+  const launchAuthor = authorKey
+    ? `${(identity.user?.name ?? identity.apiKey?.name ?? "Coordinator")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, Math.max(0, 80 - authorSuffix.length))}${authorSuffix}`
+    : null;
+  let caller: FleetCaller = { kind: "organization", author: identity.user?.name ?? null, launchAuthor };
   if (identity.via === "worker") {
     const w = identity.launch;
     if (!w) return workerRefusal(null);
@@ -699,7 +730,7 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
         `this worker session is for the project ${w.project}, not ${project.slug}`,
         "the coordinator does it",
       );
-    caller = { kind: "worker", ticket: w.ticket, sessionId: w.id };
+    caller = { kind: "worker", ticket: w.ticket, sessionId: w.id, coordinator: w.coordinator ?? null };
   }
   const home = async () => (await firstOrganization(a.client))?.id ?? null;
   if (!(await holdProject(a.client, project, organization.id, home, now())))
@@ -710,7 +741,12 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
     );
   let handBackSnapshot: HandBackSnapshot | undefined;
   let openPrs: number[] | undefined;
-  if (((op === "request" || op === "inbox") && caller.kind === "organization") || op === "overlap" || op === "report") {
+  let storedConfig: ArmadaConfig | undefined;
+  if (
+    ((op === "request" || op === "inbox" || op === "launch-requests") && caller.kind === "organization") ||
+    op === "overlap" ||
+    op === "report"
+  ) {
     const snapshot = (await dbSnapshots(a.client, memorySnapshots()).entries([project.slug])).get(
       project.slug,
     )?.snapshot;
@@ -719,9 +755,14 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       snapshot.config.github.repository === project.repository &&
       snapshot.config.tracker.programRoot === project.programRoot
     ) {
+      storedConfig = snapshot.config;
       openPrs = snapshot.sources.forge?.prs.filter((pr) => pr.state === "open").map((pr) => pr.number);
       handBackSnapshot = {
         repository: project.repository,
+        parkedLabel: snapshot.config.tracker.parkedLabel,
+        guidedProfiles: Object.entries(snapshot.config.conductor.profiles)
+          .filter(([, profile]) => profile.runtime === "claude-code")
+          .map(([name]) => name),
         config: snapshot.config,
         issues: snapshot.sources.program.issues,
         prs: snapshot.sources.forge?.prs ?? [],
@@ -736,8 +777,26 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       now,
       openPrs,
       snapshot: handBackSnapshot,
+      config: storedConfig,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
+      sendDigest: async (slug, digest, language, at) => {
+        const vault = deps.vault?.();
+        if (vault?.kind !== "on") return false;
+        return sendOwnerDigest(
+          a.client,
+          {
+            organization: organization.id,
+            now: at,
+            vault: vault.key,
+            fetch: deps.ownerFetch ?? safeWebhookFetch,
+            baseUrl: a.settings.baseUrl,
+          },
+          slug,
+          digest,
+          language,
+        );
+      },
     },
   );
   // Include 304 inbox polls: time passing can reveal a stopped coordinator.

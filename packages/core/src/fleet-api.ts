@@ -6,11 +6,18 @@
 // own ticket. Every request names the whole project (slug, name, repository,
 // root): the app registers it on first contact, for the caller's organization.
 // No error quotes a token.
+
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
+import type { ArmadaConfig } from "./config.ts";
+import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { buildDigest, type Digest, renderDigest } from "./digest.ts";
+import { attachPullRequests } from "./github.ts";
+import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
 import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
   type ClaimRecord,
+  type CoordinatorRecord,
   type EventsRead,
   eventCursor,
   type Fleet,
@@ -18,12 +25,15 @@ import {
   FOLLOW_EVENT_KINDS,
   followedLaunches,
   type HandBackSnapshot,
+  holdsNext,
+  holdsPaused,
   type InboxItem,
   type InboxQuery,
   type InboxRead,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
   type LeaseResult,
+  MERGE_LEASE,
   type MergeRecord,
   type MergeRecorded,
   type PendingLaunch,
@@ -31,6 +41,7 @@ import {
   parseEventCursor,
   type ReportRecord,
   type ReportResult,
+  type Reservation,
   RUNTIME_STATES,
   type RuntimeState,
   readOverlap,
@@ -44,12 +55,15 @@ import {
   recordValidation,
   type StoredInboxItem,
   serveInbox,
+  ticketOwners,
   type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
+import type { QueueAdded, QueueEntry, QueueNext } from "./merge-queue.ts";
+import { buildModel } from "./model.ts";
 import { type OverlapReading, pathsProblem } from "./overlap.ts";
 import { isLabelPhase } from "./phases.ts";
-import { RequestRefusal, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
+import { RequestRefusal, requestDeferredLaunch, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
 import type { CiState, LabelPhase } from "./types.ts";
 import { isShippingStage } from "./types.ts";
 import {
@@ -62,13 +76,35 @@ import {
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
-export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat", "validate", "overlap"] as const;
+export const WORKER_FLEET_OPS = [
+  "claim",
+  "report",
+  "ask",
+  "release",
+  "heartbeat",
+  "validate",
+  "overlap",
+  "job/start",
+  "job/observe",
+  "job/list",
+  "reserve",
+  "reservations",
+  "unreserve",
+] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "holds",
+  "hold/open",
+  "hold/clear",
+
+  "digest",
+  "digest/send",
   "register",
   "coordinator",
+  "coordinators",
+  "coordinators/take",
   "request",
   "events/latest",
   "events/state",
@@ -79,6 +115,7 @@ export const FLEET_OPS = [
   "runtime/observe",
   "runtime/stop",
   "launches",
+  "launch-requests",
   "inbox",
   "inbox/item",
   "inbox/ticket",
@@ -89,6 +126,11 @@ export const FLEET_OPS = [
   "merge",
   "validations",
   "done",
+  "queue/add",
+  "queue/list",
+  "queue/next",
+  "queue/finish",
+  "queue/remove",
   "lease/acquire",
   "lease/renew",
   "lease/release",
@@ -100,13 +142,15 @@ export const LEASE_TTL_MAX_MS = 60 * 60_000;
 
 /** Who calls: a terminal of the project's organization, or a worker session bound to one ticket. */
 export type FleetCaller =
-  | { kind: "organization"; author?: string | null }
-  | { kind: "worker"; ticket: string; sessionId?: string };
+  | { kind: "organization"; author?: string | null; launchAuthor?: string | null }
+  | { kind: "worker"; ticket: string; sessionId?: string; coordinator?: string | null };
 
 export interface FleetAnswer {
   status: number;
   body: Record<string, unknown>;
 }
+
+export const COORDINATOR = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 const TICKET = /^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/;
 // The project as armada.toml allows it (`config.ts`), within lengths no real project reaches.
@@ -117,6 +161,15 @@ const SHA = /^[0-9a-f]{7,64}$/;
 
 /** A request the server will not run as sent. */
 class Invalid extends Error {}
+class JobScopeError extends Error {}
+class Held extends Error {
+  constructor(
+    message: string,
+    readonly next: string,
+  ) {
+    super(message);
+  }
+}
 
 type Body = Record<string, unknown>;
 
@@ -136,6 +189,18 @@ function optText(b: Body, key: string, max: number): string | null {
   if (typeof v !== "string") throw new Invalid(`${key} must be text`);
   if (v.length > max) throw new Invalid(`${key} has at most ${max} characters`);
   return v;
+}
+
+function scopeOf(b: Body): import("./live.ts").CoordinatorScope | undefined {
+  if (b.scope === undefined) return undefined;
+  if (b.scope !== "mine" && b.scope !== "all") throw new Invalid("scope must be mine or all");
+  return b.scope;
+}
+
+function coordinatorNameOf(b: Body, key = "coordinatorName", fallback = "default"): string {
+  const name = b[key] === undefined ? fallback : b[key];
+  if (typeof name !== "string" || !COORDINATOR.test(name)) throw new Invalid(`${key} must match ${COORDINATOR.source}`);
+  return name;
 }
 
 function pathsOf(b: Body): string[] {
@@ -181,6 +246,13 @@ function shaOf(b: Body, key: string): string | null {
   const v = optText(b, key, 64);
   if (v !== null && !SHA.test(v)) throw new Invalid(`${key} must be a commit SHA`);
   return v;
+}
+
+function dateOf(b: Body, key: string): string {
+  const value = text(b, key, 64);
+  if (!/^\d{4}-\d{2}-\d{2}T/.test(value) || !Number.isFinite(Date.parse(value)))
+    throw new Invalid(`${key} must be an ISO timestamp`);
+  return new Date(value).toISOString();
 }
 
 const BODY_MAX = 100_000;
@@ -232,10 +304,13 @@ const refuse = (status: number, error: string, next: string): FleetAnswer => ({ 
 
 /** An inbox read whose entries did not change: answered 304, with no body. */
 const NOT_MODIFIED = Symbol("not modified");
+const TRANSFER_REFUSED = Symbol("transfer refused");
 
 export interface ServeFleetDeps {
+  sendDigest?: (project: string, digest: Digest, language: "en" | "fr", now: Date) => Promise<boolean>;
   /** Stored project facts, supplied by the host, never by the caller. */
   snapshot?: HandBackSnapshot;
+  config?: ArmadaConfig;
   now: () => Date;
   /** The dashboard's address, for the approval links (THE-885); a relative link without it. */
   appUrl?: string | null;
@@ -267,16 +342,120 @@ export async function serveFleet(
   const at = deps.now();
   try {
     if (caller.kind === "worker") {
-      const ticket = isWorkerFleetOp(op) ? ticketOf(b) : null;
+      const ticket = op === "job/list" && b.ticket == null ? caller.ticket : isWorkerFleetOp(op) ? ticketOf(b) : null;
       if (ticket !== caller.ticket)
         return refuse(
           403,
-          `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
+          ["reserve", "reservations", "unreserve"].includes(op)
+            ? `a worker session only reserves resources for its own ticket (${caller.ticket}), not ${ticket}`
+            : `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
           "the coordinator does it",
         );
     }
+    const coordinatorName =
+      caller.kind === "worker"
+        ? (caller.coordinator ?? null)
+        : coordinatorNameOf(
+            b,
+            b.coordinatorName === undefined && op !== "inbox" && b.coordinator !== undefined
+              ? "coordinator"
+              : op === "coordinator" && b.coordinatorName === undefined && b.name !== undefined
+                ? "name"
+                : "coordinatorName",
+          );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "job/start": {
+          const name = text(b, "name", 64);
+          if (!JOB_NAME.test(name) || name === "__proto__") throw new Invalid("name must be a configured job name");
+          return store.startJob({
+            project: slug,
+            ticket: ticketOf(b),
+            name,
+            startedBy: caller.kind === "worker" ? (caller.sessionId ?? caller.ticket) : (caller.author ?? null),
+            at,
+          });
+        }
+        case "job/list":
+          return store.listJobs(slug, {
+            ...(b.ticket == null
+              ? caller.kind === "worker"
+                ? { ticket: caller.ticket }
+                : {}
+              : { ticket: ticketOf(b) }),
+            ...(b.open === undefined ? {} : { open: bool(b, "open") }),
+            ...(b.id === undefined ? {} : { id: idOf(b, "id") }),
+          });
+        case "job/observe": {
+          const id = idOf(b, "id");
+          const ticket = ticketOf(b);
+          const job = await store.getJob(slug, id);
+          if (!job || job.ticket !== ticket) throw new JobScopeError();
+          if (!JOB_STATES.includes(b.state as JobState) || b.state === "starting")
+            throw new Invalid("unknown job observation state");
+          const ref = b.ref === undefined ? undefined : optText(b, "ref", JOB_REF_MAX);
+          if (ref !== undefined && job.ref !== null && ref !== job.ref)
+            throw new Invalid("runner reference is already recorded and cannot change");
+          const eta = optText(b, "eta", 40);
+          if (eta !== null && !Number.isFinite(Date.parse(eta))) throw new Invalid("eta must be a timestamp");
+          return store.observeJob({
+            project: slug,
+            id,
+            ticket,
+            state: b.state as Exclude<JobState, "starting">,
+            ...(ref === undefined ? {} : { ref }),
+            progress: optText(b, "progress", JOB_PROGRESS_MAX),
+            eta: eta === null ? null : new Date(eta).toISOString(),
+            at,
+          });
+        }
+        case "digest":
+        case "digest/send": {
+          const since = optText(b, "since", 40);
+          if (since !== null && (!Number.isFinite(Date.parse(since)) || Date.parse(since) > at.getTime()))
+            throw new Invalid("since must be a timestamp no later than now");
+          if (b.language !== undefined && b.language !== "en" && b.language !== "fr")
+            throw new Invalid("language must be en or fr");
+          if (op === "digest/send" && !deps.sendDigest)
+            throw new Invalid("No notification channel available; configure Organization > Notifications");
+          const records = await store.digestRecords(slug, since, at);
+          const digest = buildDigest(records.input);
+          const language = (b.language ?? records.language) as "en" | "fr";
+          const text = renderDigest(digest, { language, format: "plain", appUrl: deps.appUrl ?? "http://localhost" });
+          const sent = op === "digest/send" ? ((await deps.sendDigest?.(slug, digest, language, at)) ?? false) : false;
+          if (op === "digest/send" && !sent)
+            throw new Invalid("Digest not delivered; check Organization > Notifications");
+          return { digest, text, sent };
+        }
+        case "reservations":
+          return store.reservations(slug);
+        case "reserve": {
+          const next = b.next === undefined ? false : bool(b, "next");
+          if (b.value !== undefined && (typeof b.value !== "string" || b.value.length > LINE_MAX))
+            throw new Invalid("value must be text of at most 500 characters");
+          if (next && b.value !== undefined) throw new Invalid("use next or value, not both");
+          if (
+            b.floor !== undefined &&
+            (!next ||
+              typeof b.floor !== "number" ||
+              !Number.isSafeInteger(b.floor) ||
+              b.floor < 0 ||
+              b.floor >= Number.MAX_SAFE_INTEGER)
+          )
+            throw new Invalid("floor requires next and must be a nonnegative safe integer below the maximum");
+          return store.reserve({
+            project: slug,
+            ticket: ticketOf(b),
+            key: text(b, "key", LINE_MAX),
+            ...(b.value === undefined ? {} : { value: b.value as string }),
+            next,
+            ...(b.floor === undefined ? {} : { floor: b.floor as number }),
+            note: optText(b, "note", BODY_MAX),
+            at,
+          });
+        }
+        case "unreserve":
+          return store.unreserve({ project: slug, ticket: ticketOf(b), key: text(b, "key", LINE_MAX), at });
         case "claim":
           return recordClaim(
             store,
@@ -290,6 +469,7 @@ export async function serveFleet(
               resuming: bool(b, "resuming"),
               profile: profileOf(b.profile),
               workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
+              coordinator: coordinatorName,
             },
             at,
           );
@@ -332,19 +512,84 @@ export async function serveFleet(
             at,
           );
         }
+        case "holds":
+          return store.openHolds(slug);
+        case "hold/open": {
+          if (!["manual", "deploy", "main-red"].includes(String(b.kind)))
+            throw new Invalid("kind must be manual, deploy or main-red");
+          const kind = b.kind as import("./live.ts").HoldKind;
+          const ref = kind === "manual" ? null : text(b, "ref", LINE_MAX).trim();
+          return store.openHold({
+            project: slug,
+            kind,
+            ref,
+            reason: text(b, "reason", BODY_MAX).trim(),
+            author: caller.kind === "organization" ? (caller.author ?? null) : null,
+            at,
+          });
+        }
+        case "hold/clear":
+          return store.clearHold({
+            project: slug,
+            id: idOf(b, "id"),
+            reason: text(b, "reason", BODY_MAX).trim(),
+            author: caller.kind === "organization" ? (caller.author ?? null) : null,
+            at,
+          });
         case "register":
           return store.upsertProject(
             { ...project, owner: caller.kind === "organization" ? (caller.author ?? null) : null },
             at,
           );
         case "coordinator":
-          return store.recordCoordinatorSeen({ project: slug, facts: coordinatorFacts(b), inboxRead: false, at });
+          return store.recordCoordinatorSeen({
+            project: slug,
+            name: coordinatorName ?? "default",
+            facts: { ...coordinatorFacts(b), name: coordinatorName ?? "default" },
+            inboxRead: false,
+            at,
+          });
+        case "coordinators":
+          return store.listCoordinators(slug);
+        case "coordinators/take": {
+          if (!Array.isArray(b.tickets) || b.tickets.length < 1 || b.tickets.length > 100)
+            throw new Invalid("tickets must contain 1 to 100 ticket ids");
+          const tickets = [...new Set(b.tickets.map((ticket) => ticketOf({ ticket })))];
+          const from = b.from === undefined ? undefined : coordinatorNameOf(b, "from");
+          const taken = await store.transferTickets({
+            project: slug,
+            tickets,
+            to: coordinatorName ?? "default",
+            from,
+            at,
+          });
+          if (!taken) return TRANSFER_REFUSED;
+          return true;
+        }
         case "request": {
           const common = {
             project: slug,
+            coordinator: coordinatorName,
             author: caller.kind === "organization" ? (caller.author ?? "coordinator") : "",
             now: at,
           };
+          if (b.kind === "launch-when-unblocked") {
+            if (!deps.config || !deps.snapshot?.flight)
+              throw new RequestRefusal(
+                "not-ready",
+                "no stored reading of the project yet; open its dashboard and retry",
+              );
+            return requestDeferredLaunch(store, {
+              config: deps.config,
+              snapshot: deps.snapshot,
+              ticket: ticketOf(b),
+              profile: optText(b, "profile", LINE_MAX),
+              after: b.after == null ? null : ticketOf(b, "after"),
+              author: caller.kind === "organization" ? (caller.launchAuthor ?? caller.author ?? "") : "",
+              coordinator: coordinatorName,
+              now: at,
+            });
+          }
           if (b.kind === "merge-request")
             return requestMerge(store, { ...common, pr: idOf(b, "pr"), openPrs: deps.openPrs ?? [] });
           if (b.kind === "release-request") return requestRelease(store, { ...common, ticket: ticketOf(b) });
@@ -397,7 +642,20 @@ export async function serveFleet(
               throw new Invalid("invalid page cursor");
             }
           }
+          const scope = scopeOf(b);
+          const owners =
+            scope === "mine"
+              ? ticketOwners(
+                  ...(await Promise.all([store.openRuntimeHandles(slug), store.pendingLaunches(slug, new Date(0))])),
+                )
+              : null;
+          const excludedTickets = owners
+            ? [...owners]
+                .filter(([, owner]) => owner !== null && owner !== (coordinatorName ?? "default"))
+                .map(([ticket]) => ticket)
+            : undefined;
           const events = await store.eventsSince(slug, {
+            excludedTickets,
             ...cursor,
             kinds: b.kinds,
             handoverOnly: b.handoverOnly,
@@ -471,6 +729,31 @@ export async function serveFleet(
             agent: profile?.agent ?? null,
           };
         }
+        case "launch-requests": {
+          const [items, handles, events] = await Promise.all([
+            store.openInboxItems({ project: slug, recipient: "coordinator" }),
+            store.openRuntimeHandles(slug),
+            store.latestEvents(slug),
+          ]);
+          const flight = deps.snapshot?.flight;
+          const model = flight
+            ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId)
+            : null;
+          const held = model && flight ? deferredHeld(model, flight, at, handles, events) : null;
+          return items
+            .filter((i) => i.kind === "launch-request" && i.request?.deferred)
+            .filter((i) => b.coordinatorName === undefined || !i.coordinator || i.coordinator === coordinatorName)
+            .map((i) =>
+              deferredLaunchState(
+                i,
+                model,
+                deps.config?.tracker.parkedLabel,
+                !!i.ticket && !!held?.has(i.ticket),
+                caller.kind === "organization" ? (caller.launchAuthor ?? caller.author) : null,
+                !!i.request?.profile && deps.config?.conductor.profiles[i.request.profile]?.runtime === "claude-code",
+              ),
+            );
+        }
         case "launches":
           return followedLaunches(await store.pendingLaunches(slug, new Date(at.getTime() - LAUNCH_WINDOW_MS)), at);
         case "inbox": {
@@ -487,7 +770,9 @@ export async function serveFleet(
             store,
             slug,
             {
+              scope: scopeOf(b),
               coordinator: optText(b, "coordinator", LINE_MAX),
+              ...(b.coordinatorName === undefined ? {} : { coordinatorName: coordinatorName ?? "default" }),
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
               silentAfterMinutes: silent,
               quietAfterMinutes: positiveMinutes(b, "quietAfterMinutes"),
@@ -504,13 +789,17 @@ export async function serveFleet(
           return store.getInboxItem(slug, idOf(b, "id"));
         case "inbox/ticket":
           return store.openInboxItems({ project: slug, recipient: "coordinator", ticket: ticketOf(b) });
-        case "inbox/resolve":
+        case "inbox/resolve": {
+          const id = idOf(b, "id");
+          if ((await store.getInboxItem(slug, id))?.kind === "hold")
+            throw new Invalid('a merge hold is resolved with armada hold clear <id> --reason "<why>"');
           return store.resolveInboxItem({
             project: slug,
             id: idOf(b, "id"),
             resolution: text(b, "resolution", BODY_MAX),
             at,
           });
+        }
         case "merge-notice/prepare":
           return store.prepareMergeNotice(slug, text(b, "key", LINE_MAX), at);
         case "answer/generated":
@@ -522,25 +811,31 @@ export async function serveFleet(
               text: text(b, "text", BODY_MAX),
               note: true,
               generated: true,
+              coordinator: coordinatorName,
               deliveryKey: text(b, "deliveryKey", LINE_MAX),
               ticket: ticketOf(b),
               item: null,
             },
             at,
           );
-        case "answer":
+        case "answer": {
+          const item = b.item === null || b.item === undefined ? null : idOf(b, "item");
+          if (item !== null && (await store.getInboxItem(slug, item))?.kind === "hold")
+            throw new Invalid('a merge hold is resolved with armada hold clear <id> --reason "<why>"');
           if (b.generated) throw new Invalid("generated notes use answer/generated");
           return recordAnswer(
             store,
             slug,
             {
+              coordinator: coordinatorName,
               text: text(b, "text", BODY_MAX),
               note: bool(b, "note"),
               ticket: b.ticket === null || b.ticket === undefined ? null : ticketOf(b),
-              item: b.item === null || b.item === undefined ? null : idOf(b, "item"),
+              item,
             },
             at,
           );
+        }
         case "merge": {
           const number = b.number;
           if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 1)
@@ -587,6 +882,57 @@ export async function serveFleet(
           });
         case "done":
           return recordDone(store, slug, { ticket: ticketOf(b), message: text(b, "message", BODY_MAX) }, at);
+        case "queue/add": {
+          const noTicket = bool(b, "noTicket");
+          const ticket = b.ticket == null ? null : ticketOf(b);
+          if (noTicket !== (ticket === null)) throw new Invalid("ticket and noTicket disagree");
+          const headSha = shaOf(b, "headSha");
+          if (!headSha || !/^[0-9a-f]{40}$/.test(headSha)) throw new Invalid("headSha must be a full 40-character SHA");
+          const pr = idOf(b, "pr");
+          if (pr > 2147483647) throw new Invalid("pr is too large");
+          return store.queueAdd({
+            project: slug,
+            at,
+            pr,
+            ticket,
+            noTicket,
+            keepOpen: bool(b, "keepOpen"),
+            throughHold: optText(b, "throughHold", BODY_MAX),
+            reason: optText(b, "reason", BODY_MAX),
+            headSha,
+            queuedBy: caller.kind === "organization" ? (caller.author ?? text(b, "queuedBy", LINE_MAX)) : "coordinator",
+          });
+        }
+        case "queue/list":
+          return store.queueList(slug, {
+            since: b.since == null ? new Date(at.getTime() - 86400_000) : new Date(dateOf(b, "since")),
+          });
+        case "queue/next":
+          return store.queueNext({ project: slug, holder: text(b, "holder", LINE_MAX), at });
+        case "queue/finish": {
+          const outcome = b.outcome;
+          if (outcome !== "merged" && outcome !== "refused" && outcome !== "retry")
+            throw new Invalid("outcome must be merged, refused or retry");
+          const mergeCommit = shaOf(b, "mergeCommit");
+          if (mergeCommit && !/^[0-9a-f]{40}$/.test(mergeCommit)) throw new Invalid("mergeCommit must be a full SHA");
+          const notBefore = b.notBefore == null ? null : dateOf(b, "notBefore");
+          if (outcome !== "retry" && notBefore !== null) throw new Invalid("notBefore applies to retry");
+          return store.queueFinish({
+            project: slug,
+            at,
+            id: idOf(b, "id"),
+            holder: text(b, "holder", LINE_MAX),
+            outcome,
+            detail: optText(b, "detail", BODY_MAX),
+            mergeCommit,
+            notBefore,
+          });
+        }
+        case "queue/remove": {
+          const pr = idOf(b, "pr");
+          if (pr > 2147483647) throw new Invalid("pr is too large");
+          return store.queueRemove({ project: slug, pr, at });
+        }
         case "lease/acquire":
         case "lease/renew": {
           const ttl = b.ttlMs;
@@ -599,15 +945,31 @@ export async function serveFleet(
             ttlMs: ttl,
             at,
           };
+          const throughHold = optText(b, "throughHold", BODY_MAX);
+          if (throughHold !== null && !throughHold.trim()) throw new Invalid("throughHold needs a reason");
+          // Older supported CLIs do not read holds. The server stops their lease too,
+          // without cutting off unrelated worker commands via a global version bump.
+          if (lease.name === MERGE_LEASE && !throughHold) {
+            const holds = await store.openHolds(slug);
+            if (holds.length) throw new Held(`${holdsPaused(holds, at)}. ${holdsNext(holds)}`, holdsNext(holds));
+          }
           return op === "lease/acquire" ? store.acquireLease(lease) : store.renewLease(lease);
         }
         case "lease/release":
           return store.releaseLease({ project: slug, name: text(b, "name", 64), holder: text(b, "holder", LINE_MAX) });
       }
     })();
+    if (result === TRANSFER_REFUSED)
+      return refuse(
+        409,
+        "tickets were not transferred: a ticket is missing or its owner changed",
+        "armada coordinator list, then retry with the current --from",
+      );
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
+    if (err instanceof JobScopeError) return refuse(403, "job is not on this ticket and project", "armada job list");
+    if (err instanceof Held) return refuse(409, err.message, err.next);
     if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
     if (err instanceof Invalid)
       return refuse(400, `fleet ${op}: ${err.message}`, "update the CLI: npm install -g @the-vibe-company/armada");
@@ -714,12 +1076,42 @@ const CALL_TIMEOUT_MS = 15_000;
  * refusal or failure is an `ArmadaApiError`; worker commands turn it into a
  * warning, since Linear is the record.
  */
-export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSignIn; project: ProjectInput }): Fleet {
-  const call = async <T>(op: FleetOp, input: object): Promise<T> =>
-    (await o.api.fleet(o.signIn, op, { project: o.project, input }, CALL_TIMEOUT_MS)) as T;
+export function fleetClient(o: {
+  api: Pick<ArmadaApi, "fleet">;
+  signIn: ArmadaSignIn;
+  project: ProjectInput;
+  coordinatorName?: string | (() => Promise<string>);
+}): Fleet {
+  const call = async <T>(op: FleetOp, input: object): Promise<T> => {
+    const coordinatorName = typeof o.coordinatorName === "function" ? await o.coordinatorName() : o.coordinatorName;
+    return (await o.api.fleet(
+      o.signIn,
+      op,
+      {
+        project: o.project,
+        input: { ...input, ...(coordinatorName === undefined ? {} : { coordinatorName }) },
+      },
+      CALL_TIMEOUT_MS,
+    )) as T;
+  };
   return {
+    coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
+    takeTickets: (input) => call<boolean>("coordinators/take", input),
+    startJob: (input) => call<Job>("job/start", input),
+    listJobs: (query) => call<Job[]>("job/list", query),
+    observeJob: (input) => call<Job | null>("job/observe", input),
+    digest: (input) => call("digest", input),
+    sendDigest: (input) => call("digest/send", input),
+    reserve: (input) => call("reserve", input),
+    reservations: (ticket) => call<Reservation[]>("reservations", ticket ? { ticket } : {}),
+    unreserve: (input) => call("unreserve", input),
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
+    deferLaunch: (input) => call<DeferredLaunch>("request", { ...input, kind: "launch-when-unblocked" }),
+    deferredLaunches: () => call<DeferredLaunch[]>("launch-requests", {}),
+    holds: () => call("holds", {}),
+    openHold: (input) => call("hold/open", input),
+    clearHold: (input) => call("hold/clear", input),
     register: () => call<null>("register", {}).then(() => undefined),
     eventsSince: (q) => call<EventsRead | null>("events/since", q),
     latestEvents: () => call<Record<string, LatestEvent>>("events/state", {}),
@@ -751,6 +1143,11 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     validate: (v) => call<{ validation: Validation; url: string }>("validate", v),
     validations: (q) => call<Validation[]>("validations", q),
     done: (d) => call<MergeRecorded>("done", d),
+    queueAdd: (e) => call<QueueAdded>("queue/add", e),
+    queueList: (q = {}) => call<QueueEntry[]>("queue/list", q),
+    queueNext: (q) => call<QueueNext>("queue/next", q),
+    queueFinish: (q) => call<boolean>("queue/finish", q),
+    queueRemove: (q) => call<boolean>("queue/remove", q),
     acquireLease: (l) => call<LeaseResult>("lease/acquire", l),
     renewLease: (l) => call<boolean>("lease/renew", l),
     releaseLease: (l) => call<null>("lease/release", l).then(() => undefined),

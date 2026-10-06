@@ -61,6 +61,11 @@ test.each([
   "unsupported",
   "failed",
   "replaced",
+  "fresh-owner-transfer",
+  "fresh-own-transfer",
+  "shared-other-owner",
+  "boundary-owner-transfer",
+  "late-owner-transfer",
   "no-notify",
   "files-unknown",
   "truncated-prs",
@@ -78,7 +83,7 @@ test.each([
   if (scenario === "herdr") f.git("worktree", "add", "-b", "feature/demo-11-worker", herdrTree, "main");
   const pulls = structuredClone(githubPulls.data.repository.open.nodes) as RawPull[];
   for (const p of pulls) {
-    if (p.number === 7 || (scenario === "shared" && p.number === 8)) {
+    if (p.number === 7 || (["shared", "shared-other-owner"].includes(scenario) && p.number === 8)) {
       p.files = { nodes: [{ path: "src/lists.ts", additions: 1, deletions: 1 }], pageInfo: { hasNextPage: false } };
     }
   }
@@ -114,7 +119,7 @@ test.each([
       return Response.json(body);
     };
   }
-  for (const ticket of scenario === "shared" ? ["DEMO-11", "DEMO-16"] : ["DEMO-11"]) {
+  for (const ticket of ["shared", "shared-other-owner"].includes(scenario) ? ["DEMO-11", "DEMO-16"] : ["DEMO-11"]) {
     await f.store.saveRuntimeHandle({
       project: "widgets",
       ticket,
@@ -123,6 +128,41 @@ test.each([
       branch: scenario === "herdr" ? "feature/demo-11-worker" : null,
       at: NOW,
     });
+  }
+  const transfer = async () => {
+    expect(
+      await f.store.transferTickets({
+        project: "widgets",
+        tickets: ["DEMO-11"],
+        to: scenario === "fresh-own-transfer" ? "default" : "release",
+        ...(scenario === "fresh-own-transfer" ? { from: "release" } : {}),
+        at: NOW,
+      }),
+    ).toBe(true);
+  };
+  if (scenario === "fresh-own-transfer" || scenario === "shared-other-owner")
+    expect(
+      await f.store.transferTickets({
+        project: "widgets",
+        tickets: [scenario === "fresh-own-transfer" ? "DEMO-11" : "DEMO-16"],
+        to: "release",
+        at: NOW,
+      }),
+    ).toBe(true);
+  if (["fresh-owner-transfer", "fresh-own-transfer", "boundary-owner-transfer"].includes(scenario)) {
+    const original = f.io.fetch as Fetch;
+    let reads = 0;
+    f.io.fetch = async (url, init) => {
+      if (f.merged() && url.endsWith("/fleet/runtime/handles")) {
+        reads++;
+        if (scenario === "boundary-owner-transfer" && reads === 3) await transfer();
+        const response = await original(url, init);
+        // Keep the status snapshot stale; the following claim read must win.
+        if (["fresh-owner-transfer", "fresh-own-transfer"].includes(scenario) && reads === 1) await transfer();
+        return response;
+      }
+      return original(url, init);
+    };
   }
   if (scenario === "before-archive")
     await f.store.saveRuntimeHandle({
@@ -155,6 +195,7 @@ test.each([
     }
     if (command !== "conductor") return exec(command, args, options);
     native.push({ args, input: options.input });
+    if (scenario === "late-owner-transfer" && args[1] === "session") await transfer();
     if (scenario === "failed") return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
     if (scenario === "unknown-outcome" && args[1] === "message")
       return { code: 4, stdout: "", stderr: "lost reply after native write" };
@@ -186,7 +227,7 @@ test.each([
   expect(await run(["merge", "9", "--json", ...(scenario === "no-notify" ? ["--no-notify"] : [])], f.io)).toBe(0);
   const o = JSON.parse(f.out());
   const messages = () => native.filter((c) => c.args[1] === "message" || c.args[1] === "prompt");
-  const delivers = ["overlap", "herdr", "shared", "before-archive"].includes(scenario);
+  const delivers = ["overlap", "herdr", "shared", "before-archive", "fresh-own-transfer"].includes(scenario);
   expect(messages()).toHaveLength(delivers || scenario === "unknown-outcome" ? 1 : 0);
   if (delivers) {
     expect(o.notified.map((n: { ticket: string; delivered: boolean }) => [n.ticket, n.delivered])).toEqual(
@@ -237,6 +278,14 @@ test.each([
       expect(messages()).toHaveLength(1);
     }
   } else expect(o.notified).toEqual([]);
+  if (
+    ["fresh-owner-transfer", "boundary-owner-transfer", "late-owner-transfer", "shared-other-owner"].includes(scenario)
+  ) {
+    expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "owned by coordinator release" });
+    if (scenario !== "late-owner-transfer")
+      expect(f.armada.calls.some((c) => c.path === "fleet/merge-notice/prepare")).toBe(false);
+    expect(f.store.items.filter((i) => i.kind === "note")).toHaveLength(0);
+  }
   if (["handed-back", "live-hand-back"].includes(scenario))
     expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "already handed back" });
   if (scenario === "no-pr") expect(o.notAffected).toContainEqual({ ticket: "DEMO-11", why: "no pull request yet" });
@@ -248,7 +297,11 @@ test.each([
     expect(o.notAffected.every((w: { why: string }) => w.why === "worker state unknown")).toBe(true);
     expect(o.noticeFallback).toBe("worker state unknown");
   }
-  if (!["shared", "files-unknown", "truncated-prs", "live-outage", "both-outages"].includes(scenario))
+  if (
+    !["shared", "shared-other-owner", "files-unknown", "truncated-prs", "live-outage", "both-outages"].includes(
+      scenario,
+    )
+  )
     expect(o.notAffected).toContainEqual({ ticket: "DEMO-16", why: "not affected" });
   expect(f.err() + f.out()).not.toContain("CANARY");
   expect(f.err() + f.out()).not.toContain("private runtime output");
@@ -373,11 +426,19 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
               },
             });
           }
+          // The native follow-up launcher reads the program again before minting a token.
+          recorded.Root.push(...structuredClone(recorded.Root));
+          recorded.Children.push(...structuredClone(recorded.Children));
+          recorded.Comments.push(...structuredClone(recorded.Comments));
         }
       : undefined,
   });
   const store = memoryFleet();
-  const armada = fakeArmada({ keys: { [KEY]: "coordinator" }, store });
+  const armada = fakeArmada({
+    keys: { [KEY]: "coordinator" },
+    store,
+    ...(unblocks ? { vault: { linear: { apiKey: "lin_test", scope: "own" as const }, now: () => NOW } } : {}),
+  });
   const net = {
     armadaDown: false,
     confirmMerge: true,
@@ -402,8 +463,8 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
       if (!unblocks) return response;
       // The post-close read sees the writer's state, while relation states can still be old.
       expect(linear.get("DEMO-18").statusType).toBe(merged ? "completed" : "started");
-      const body = (await response.json()) as { data: { issues?: { nodes: RawIssue[] } } };
-      for (const i of body.data.issues?.nodes ?? [])
+      const body = (await response.json()) as { data?: { issues?: { nodes: RawIssue[] } } };
+      for (const i of body.data?.issues?.nodes ?? [])
         if (i.identifier === "DEMO-18" && i.state) {
           i.state.type = linear.get("DEMO-18").statusType;
         }
@@ -439,9 +500,9 @@ async function fixture({ signedIn = true, unblocks = false }: { signedIn?: boole
       data: {
         repository: {
           pullRequest: {
-            number: 9,
+            number: Number(variables.number ?? 9),
             title: "feat(lists): share a list by link",
-            url: "https://github.com/acme/widgets/pull/9",
+            url: `https://github.com/acme/widgets/pull/${variables.number ?? 9}`,
             state: merged && net.confirmMerge ? "MERGED" : "OPEN",
             isDraft: false,
             mergeable: "MERGEABLE",
@@ -600,6 +661,37 @@ test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "c
   },
 );
 
+test("a named merge re-arms only its owned workers and pending launches", async () => {
+  const f = await fixture();
+  f.io.env.ARMADA_COORDINATOR = "front";
+  expect(await f.store.transferTickets({ project: "widgets", tickets: ["DEMO-11"], to: "front", at: NOW })).toBe(true);
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-16",
+    coordinator: "default",
+    runtime: "conductor",
+    handle: "ws/other",
+    branch: null,
+    at: NOW,
+  });
+  for (const [ticket, coordinator] of [
+    ["DEMO-20", "default"],
+    ["DEMO-21", "front"],
+  ] as const)
+    f.store.launches.push({
+      project: "widgets",
+      ticket,
+      coordinator,
+      launchedAt: NOW.toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+      endedAt: null,
+    });
+  expect(await run(["merge", "9", "--json"], f.io)).toBe(0);
+  expect(JSON.parse(f.out()).watch.inFlight).toEqual(["DEMO-11", "DEMO-21"]);
+});
+
 test("armada merge test-merges a head behind main, merges it pinned to its SHA and says who to tell", async () => {
   const f = await fixture();
   expect(await run(["merge", "9"], f.io)).toBe(0);
@@ -632,13 +724,17 @@ No runtime guide is installed for Claude Code, so Armada has nothing to archive 
   expect(f.armada.calls.map((c) => c.path)).toEqual([
     "fleet/coordinator",
     "fleet/lease/acquire",
+    "fleet/holds",
     "fleet/validations",
     "fleet/inbox/ticket",
+    "fleet/holds",
     "fleet/lease/renew",
     "fleet/merge",
     "fleet/events/state",
     "fleet/runtime/handles",
+    "fleet/runtime/handles",
     "fleet/lease/release",
+    "fleet/launch-requests",
     "workers/end",
   ]);
   expect(f.store.leases.size).toBe(0);
@@ -658,7 +754,7 @@ test("signed in, Armada down refuses the merge; --no-lock merges anyway and says
   expect(await run(["merge", "9", "--no-lock"], f.io)).toBe(0);
   expect(f.merged()).toBe(true);
   expect(f.err()).toContain(
-    "armada: warning: merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now\n",
+    "armada: warning: merged without the merge lock (--no-lock), merge holds were not checked: make sure no other coordinator merges in widgets now\n",
   );
   expect(f.err()).toMatch(/armada: warning: Armada: could not record the merge \(.+\); Linear is up to date\n/);
   expect(f.linear.bodies.at(-1)).toContain(", merged without lock (--no-lock)");
@@ -758,6 +854,155 @@ test("CLI accepts --no-ticket --reason and posts its audit comment without endin
   expect(f.store.events.filter((e) => e.kind === "merge")).toEqual([]);
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
   expect(f.store.leases.size).toBe(0);
+});
+
+test.each([{ options: [] }, { options: ["--no-archive"] }])(
+  "a confirmed merge launches its owned deferred follow-up through the shared Conductor launcher in the same run (%s)",
+  async ({ options }) => {
+    const f = await fixture({ unblocks: true });
+    const originalFetch = f.io.fetch;
+    const originalExec = f.io.exec;
+    if (!originalFetch || !originalExec) throw new Error("missing adapters");
+    f.io.env.XDG_CONFIG_HOME = join(f.io.cwd, ".config");
+    f.io.fetch = async (url, init) => {
+      if (url.endsWith("/fleet/launch-requests"))
+        return Response.json({
+          result: [
+            {
+              id: 3,
+              ticket: "DEMO-19",
+              profile: "backend",
+              author: "Ada",
+              owned: true,
+              blockers: ["DEMO-18"],
+              reason: "waits on DEMO-18",
+              command: "armada launch DEMO-19 --profile backend",
+            },
+            {
+              id: 4,
+              ticket: "DEMO-20",
+              profile: "backend",
+              author: "Other",
+              owned: false,
+              blockers: ["DEMO-21"],
+              reason: "waits on DEMO-21",
+              command: "armada launch DEMO-20 --profile backend",
+            },
+          ],
+        });
+      if (url === "https://api.linear.app/graphql" && /query Brief\(/.test(String(init.body)))
+        return Response.json({
+          data: {
+            issue: {
+              identifier: "DEMO-19",
+              title: "Follow-up DEMO-19",
+              url: "https://linear.app/acme/issue/DEMO-19",
+              branchName: "feature/demo-19",
+              description: "Build the follow-up",
+              state: { name: "Backlog", type: "backlog" },
+              labels: { nodes: [{ name: "ready-for-agent" }], pageInfo: { hasNextPage: false } },
+              parent: { identifier: "DEMO-2", title: "Spec 1 — Widgets", url: "https://linear.app/acme/issue/DEMO-2" },
+              comments: { nodes: [], pageInfo: { hasNextPage: false } },
+              inverseRelations: { nodes: [], pageInfo: { hasNextPage: false } },
+            },
+          },
+        });
+      return originalFetch(url, init);
+    };
+    const created: string[] = [];
+    f.io.exec = async (command, args, options) => {
+      if (command !== "conductor") return originalExec(command, args, options);
+      const a = args.slice(1);
+      if (a[0] === "--version") return { code: 0, stdout: "0.90.1", stderr: "" };
+      if (a[0] === "auth") return { code: 0, stdout: "", stderr: "" };
+      const result =
+        a[0] === "model"
+          ? { agents: [{ agent: "codex", models: ["example-model"], efforts: ["high"], fastModeModels: [] }] }
+          : {
+              workspaceId: "ws-follow",
+              sessionId: "s-follow",
+              deepLink: "conductor://workspace?id=ws-follow&session=s-follow",
+              initialMessage: { messageId: "msg-1", state: "queued" },
+            };
+      if (a[0] === "workspace" && a[1] === "create") {
+        expect(f.merged()).toBe(true);
+        expect(f.linear.get("DEMO-18").statusType).toBe("completed");
+        expect(options.input).toContain("armada claim DEMO-19");
+        created.push("DEMO-19");
+      }
+      return { code: 0, stdout: JSON.stringify(result), stderr: "" };
+    };
+    expect(await run(["merge", "9", "--json", ...options], f.io)).toBe(0);
+    expect(f.err()).not.toContain("was not launched");
+    expect(created).toEqual(["DEMO-19"]);
+    expect(JSON.parse(f.out()).deferredLaunches).toMatchObject([
+      { ticket: "DEMO-19", status: "launched", output: expect.stringContaining("Launched DEMO-19") },
+    ]);
+    expect(JSON.parse(f.out()).watch.inFlight).toContain("DEMO-20");
+    expect(f.out()).not.toContain("armada_launch_");
+  },
+);
+test("when-green persists intent without merging, deduplicates, lists on a new invocation and removes", async () => {
+  const f = await fixture();
+  f.pr.state = "BEHIND";
+  f.pr.check = { status: "IN_PROGRESS", conclusion: null };
+  expect(await run(["merge", "--when-green", "9", "--reason", "Reviewed"], f.io)).toBe(0);
+  expect(f.out()).toContain("queued #9 (1st)");
+  expect(f.out()).toContain("Next: armada merge queue");
+  expect(f.merged()).toBe(false);
+  expect(f.ghCalls).toEqual([]);
+  expect(await run(["merge", "--when-green", "9"], f.io)).toBe(0);
+  expect(f.out()).toContain("#9 is already queued.");
+  const out: string[] = [];
+  const freshIo = { ...f.io, stdout: (s: string) => out.push(s) };
+  expect(await run(["merge", "queue", "--json"], freshIo)).toBe(0);
+  expect(JSON.parse(out.join("")).entries).toMatchObject([
+    { pr: 9, state: "queued", reason: "Reviewed", headSha: f.head },
+  ]);
+  expect(await run(["merge", "queue", "remove", "9"], f.io)).toBe(0);
+  expect(f.out()).toContain("Removed #9");
+  expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("removed");
+  expect(await run(["merge", "queue", "remove", "https://github.com/acme/widgets/pull/2147483648"], f.io)).toBe(2);
+  expect(f.err()).toContain("pull request number must be between");
+  expect(await run(["merge", "--when-green", "9", "--no-archive"], f.io)).toBe(2);
+  expect(await run(["merge", "--when-green", "9", "--no-notify"], f.io)).toBe(2);
+});
+
+test("when-green queues multiple no-ticket PRs in argument order and preserves flags", async () => {
+  const f = await fixture();
+  expect(
+    await run(
+      [
+        "merge",
+        "--when-green",
+        "12",
+        "15",
+        "--no-ticket",
+        "--keep-open",
+        "--through-hold",
+        "Fix main",
+        "--reason",
+        "Release",
+      ],
+      f.io,
+    ),
+  ).toBe(0);
+  expect(f.out()).toContain("queued #12 (1st)");
+  expect(f.out()).toContain("queued #15 (2nd)");
+  expect(
+    (await f.store.queueList("widgets", { since: NOW })).map((e) => [
+      e.pr,
+      e.noTicket,
+      e.keepOpen,
+      e.throughHold,
+      e.reason,
+    ]),
+  ).toEqual([
+    [12, true, true, "Fix main", "Release"],
+    [15, true, true, "Fix main", "Release"],
+  ]);
+  expect(f.merged()).toBe(false);
+  expect(f.ghCalls).toEqual([]);
 });
 
 // The real adapter talks to a fake native runtime: no Conductor commands or wall-clock waits.

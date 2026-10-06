@@ -9,11 +9,15 @@
 // record.
 import { createHash } from "node:crypto";
 import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
+import { type DeferredLaunch, deferredLaunchState, deferredWakeBody } from "./deferred.ts";
+import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
 
 export { freshRuntimeState } from "./fleet.ts";
 
 import { attachPullRequests } from "./github.ts";
+import type { Job, JobObservation, JobQuery, JobStart } from "./jobs.ts";
+import type { QueueAdded, QueueEntry, QueueFinish, QueueInput, QueueNext } from "./merge-queue.ts";
 import { buildModel, isClosed } from "./model.ts";
 import { type OverlapReading, type OverlapWorker, overlapLines, overlaps } from "./overlap.ts";
 import { planRule } from "./phases.ts";
@@ -41,7 +45,7 @@ export interface ProjectRecord extends ProjectInput {
 }
 
 /** `inbox`: the coordinator read its inbox; it carries no ticket. */
-export type EventKind = "claim" | "report" | "heartbeat" | "release" | "merge" | "inbox";
+export type EventKind = "claim" | "report" | "heartbeat" | "release" | "merge" | "inbox" | "handover";
 
 /** Informational events a follow may request; heartbeats and inbox reads stay private to liveness. */
 export const FOLLOW_EVENT_KINDS = ["claim", "report", "release", "merge"] as const;
@@ -52,7 +56,13 @@ export interface FleetEvent extends LatestEvent {
   kind: FollowEventKind;
   headSha: string | null;
 }
+export type CoordinatorScope = "mine" | "all";
+
 export interface EventsSinceQuery {
+  scope?: CoordinatorScope;
+  coordinatorName?: string;
+  /** Internal server filter, applied before pagination. */
+  excludedTickets?: readonly string[];
   afterId: number;
   afterAt: string;
   kinds: readonly FollowEventKind[];
@@ -118,6 +128,7 @@ export interface RuntimeObservation {
 }
 
 export interface RuntimeHandle {
+  coordinator?: string | null;
   project: string;
   ticket: string;
   runtime: string;
@@ -137,6 +148,8 @@ export interface RuntimeHandle {
 
 /** Optional identity of the claim being released; workers also carry their server session id. */
 export interface ReleaseGuard {
+  /** An absent merge claim: end reservations only, and refuse if a runtime row now exists. */
+  absent?: true;
   handle?: string | null;
   claimedAt?: string | null;
   workerSessionId?: string | null;
@@ -174,6 +187,7 @@ export interface WorkerProfile {
 }
 
 export interface CoordinatorFacts {
+  name?: string;
   harness: "conductor-cloud" | "claude-code" | "codex" | "terminal";
   handle: string | null;
   model: string | null;
@@ -187,7 +201,14 @@ export interface CoordinatorPresence extends Omit<CoordinatorFacts, "harness"> {
   inboxSeenAt: string | null;
 }
 
+export interface CoordinatorRecord extends CoordinatorPresence {
+  name: string;
+  sessions: CoordinatorPresence[];
+  tickets: string[];
+}
+
 export interface CoordinatorSeen {
+  name?: string;
   project: string;
   handle?: string | null;
   cliVersion?: string | null;
@@ -217,10 +238,20 @@ export interface SessionRecord extends RuntimeHandle {
  * decision on a validation (THE-885), which the coordinator carries out
  * (merges, or relays it to the worker) and then resolves.
  */
-export type InboxKind = "question" | "plan" | "request" | "hand-back" | "note" | "decision" | RequestKind;
+export type InboxKind =
+  | "hold"
+  | "queue-refused"
+  | "question"
+  | "plan"
+  | "request"
+  | "hand-back"
+  | "note"
+  | "decision"
+  | RequestKind;
 export type InboxRecipient = "coordinator" | "worker";
 
 export interface InboxItem {
+  coordinator?: string | null;
   id: number;
   project: string;
   ticket: string | null;
@@ -230,7 +261,13 @@ export interface InboxItem {
   body: string;
   createdAt: string;
   /** Set on dashboard requests: the question or plan an answer-request answers, the profile a launch-request asks for. */
-  request?: { question: number | null; profile: string | null; pr?: number | null; validation?: number | null };
+  request?: {
+    question: number | null;
+    profile: string | null;
+    pr?: number | null;
+    validation?: number | null;
+    deferred?: boolean;
+  };
 }
 
 /** An inbox item with its resolution: when it was resolved, and the answer or reason. */
@@ -240,6 +277,7 @@ export interface StoredInboxItem extends InboxItem {
 }
 
 export interface NewRequest {
+  coordinator?: string | null;
   project: string;
   ticket: string | null;
   kind: RequestKind;
@@ -250,8 +288,47 @@ export interface NewRequest {
   /** launch-request: the profile asked for. */
   profile: string | null;
   pr?: number | null;
+  deferred?: boolean;
   at: Date;
 }
+
+export const MERGE_LEASE = "merge";
+
+export const HOLD_KINDS = ["manual", "deploy", "main-red"] as const;
+export type HoldKind = (typeof HOLD_KINDS)[number];
+
+/** A standing merge pause: clearing it is an explicit, recorded decision. */
+export interface MergeHold {
+  id: number;
+  project: string;
+  kind: HoldKind;
+  ref: string | null;
+  reason: string;
+  openedBy: string | null;
+  openedAt: string;
+  clearedAt: string | null;
+  clearedBy: string | null;
+  clearReason: string | null;
+}
+export interface OpenHold {
+  kind: HoldKind;
+  ref?: string | null;
+  reason: string;
+}
+export interface ClearHoldResult {
+  hold: MergeHold;
+  cleared: boolean;
+}
+
+/** The stored inbox item names the hold id, which is distinct from its inbox id. */
+export const holdBody = (hold: MergeHold) =>
+  `Merges paused: ${hold.reason} (${hold.kind}, hold #${hold.id}). Resume: armada hold clear ${hold.id} --reason "<why>"; merge a fix with --through-hold "<why>".`;
+
+/** Used by both the merge command and server lease gate, including older coordinators. */
+export const holdsPaused = (holds: readonly MergeHold[], now: Date) =>
+  `merges paused: ${holds.map((h) => `${h.kind}: ${h.reason} (hold #${h.id}, ${Math.max(0, Math.floor((now.getTime() - Date.parse(h.openedAt)) / 60_000))} min old)`).join("; ")}; nothing was merged`;
+export const holdsNext = (holds: readonly MergeHold[], pr: number | string = "<pr>") =>
+  `armada hold clear ${holds[0]?.id} --reason "<why>" to resume, or armada merge ${pr} --through-hold "<why this fixes the pause>"`;
 
 export interface Lease {
   project: string;
@@ -268,6 +345,7 @@ export type LeaseResult = { acquired: true } | { acquired: false; held: Lease | 
  * claimed the ticket since: the newest launch of its ticket, not ended.
  */
 export interface PendingLaunch {
+  coordinator?: string | null;
   ticket: string;
   launchedAt: string;
   /** When the worker signed in with the launch token; null while it never did. */
@@ -296,18 +374,80 @@ export const followedLaunches = (launches: readonly PendingLaunch[], now: Date) 
 
 // ------------------------------------------------------------------ the store
 
-type Item = { project: string; ticket: string; author: string | null; body: string; at: Date };
+type Item = {
+  project: string;
+  ticket: string;
+  author: string | null;
+  coordinator?: string | null;
+  body: string;
+  at: Date;
+};
 
 /**
  * The fleet's live data, every project of every organization. Each project's
  * rows carry its slug and leases are scoped per project. The app implements
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
+/** A shared name or number, held by one ticket or permanently used by its merge. */
+export interface Reservation {
+  id: number;
+  project: string;
+  key: string;
+  value: string;
+  ticket: string;
+  note: string | null;
+  reservedAt: string;
+  endedAt: string | null;
+  merged: boolean;
+}
+
+export interface ReserveRecord {
+  ticket: string;
+  key: string;
+  value?: string;
+  next?: boolean;
+  floor?: number;
+  note?: string | null;
+}
+
+export type ReserveResult = { reserved: true; reservation: Reservation } | { reserved: false; holder: Reservation };
+
 export interface FleetStore {
   /** Reserves a merge notice before runtime I/O; an unknown outcome is never retried automatically. */
   prepareMergeNotice(project: string, key: string, at: Date): Promise<"reserved" | "attempted" | "delivered">;
   /** Records one resolved generated note atomically with its delivery receipt, once per ticket. */
-  recordMergeNotice(input: { project: string; key: string; ticket: string; text: string; at: Date }): Promise<string>;
+  recordMergeNotice(input: {
+    project: string;
+    key: string;
+    ticket: string;
+    text: string;
+    coordinator?: string | null;
+    at: Date;
+  }): Promise<string>;
+  startJob(input: JobStart & { project: string; startedBy: string | null; at: Date }): Promise<Job>;
+  getJob(project: string, id: number): Promise<Job | null>;
+  listJobs(project: string, query: JobQuery): Promise<Job[]>;
+  /** Only open jobs change; terminal jobs cannot be revived by a delayed observation. */
+  observeJob(input: JobObservation & { project: string; at: Date }): Promise<Job | null>;
+  openHold(input: OpenHold & { project: string; author: string | null; at: Date }): Promise<MergeHold>;
+  clearHold(input: {
+    project: string;
+    id: number;
+    reason: string;
+    author: string | null;
+    at: Date;
+  }): Promise<ClearHoldResult | null>;
+  openHolds(project: string): Promise<MergeHold[]>;
+
+  digestRecords(
+    project: string,
+    since: string | null,
+    now: Date,
+  ): Promise<{ input: DigestInput; language: "en" | "fr" }>;
+  reserve(input: ReserveRecord & { project: string; at: Date }): Promise<ReserveResult>;
+  reservations(project: string): Promise<Reservation[]>;
+  unreserve(input: { project: string; ticket: string; key: string; at: Date }): Promise<number>;
+
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
@@ -316,7 +456,7 @@ export interface FleetStore {
 
   saveTicketPaths(project: string, ticket: string, paths: string[], at: Date): Promise<void>;
   ticketPaths(project: string): Promise<Record<string, string[]>>;
-  deleteTicketPaths(project: string, ticket: string): Promise<void>;
+  deleteTicketPaths(project: string, ticket: string, guard?: ReleaseGuard): Promise<void>;
 
   recordEvent(e: EventInput): Promise<void>;
   eventsSince(project: string, query: EventsSinceQuery): Promise<FleetEvent[]>;
@@ -335,6 +475,9 @@ export interface FleetStore {
   recordCoordinatorSeen(seen: CoordinatorSeen): Promise<void>;
   lastCoordinatorSeen(project: string): Promise<string | null>;
   getCoordinatorPresence(project: string): Promise<CoordinatorPresence | null>;
+  listCoordinators(project: string): Promise<CoordinatorRecord[]>;
+  /** Transfers every ticket atomically; false when any ticket is missing or its owner differs from `from`. */
+  transferTickets(input: { project: string; tickets: string[]; to: string; from?: string; at: Date }): Promise<boolean>;
   inboxReads(project: string, now: Date): Promise<InboxReadEvent[]>;
   listSessions(project: string, opts: { since: Date }): Promise<SessionRecord[]>;
 
@@ -343,6 +486,7 @@ export interface FleetStore {
   getWorkerProfile(project: string, ticket: string): Promise<WorkerProfile | null>;
   /** Records the session now holding a ticket; a new claim replaces a released one. */
   saveRuntimeHandle(h: {
+    coordinator?: string | null;
     project: string;
     ticket: string;
     runtime: string;
@@ -352,7 +496,13 @@ export interface FleetStore {
     at: Date;
   }): Promise<void>;
   /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
-  releaseRuntimeHandle(project: string, ticket: string, at: Date, guard?: ReleaseGuard): Promise<boolean>;
+  releaseRuntimeHandle(
+    project: string,
+    ticket: string,
+    at: Date,
+    guard?: ReleaseGuard,
+    merged?: boolean,
+  ): Promise<boolean>;
   /** Sessions still holding a ticket of the project, by ticket id. */
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
@@ -404,6 +554,12 @@ export interface FleetStore {
   /** Resolves a ticket's open plan and the answer-requests waiting on it; returns how many plans. */
   resolvePlans(input: { project: string; ticket: string; resolution: string; at: Date }): Promise<number>;
 
+  queueAdd(e: QueueInput & { project: string; at: Date }): Promise<QueueAdded>;
+  queueList(project: string, opts: { since: Date }): Promise<QueueEntry[]>;
+  queueNext(q: { project: string; holder: string; at: Date }): Promise<QueueNext>;
+  queueFinish(q: QueueFinish & { project: string; at: Date }): Promise<boolean>;
+  queueRemove(q: { project: string; pr: number; at: Date }): Promise<boolean>;
+
   /** Takes a lease when it is free, expired or already ours (which renews it); atomic. */
   acquireLease(l: { project: string; name: string; holder: string; ttlMs: number; at: Date }): Promise<LeaseResult>;
   getLease(project: string, name: string): Promise<Lease | null>;
@@ -420,7 +576,7 @@ export interface FleetStore {
    * releases the old claim first.
    */
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
-  expireUnusedLaunches(project: string, now: Date): Promise<PendingLaunch[]>;
+  expireUnusedLaunches(project: string, now: Date, coordinatorName?: string): Promise<PendingLaunch[]>;
 
   /**
    * Adds what the owner validates (THE-885). An open one it repeats (the same
@@ -447,6 +603,7 @@ export interface FleetStore {
 // ------------------------------------------------------------------ what each command records
 
 export interface ClaimRecord {
+  coordinator?: string | null;
   ticket: string;
   runtime: string;
   handle: string;
@@ -483,6 +640,7 @@ export async function recordClaim(store: FleetStore, project: string, c: ClaimRe
     handle: c.handle,
     branch: c.branch,
     workerSessionId: c.workerSessionId,
+    coordinator: c.coordinator,
     at,
   });
   // A new claim replaces the profile of an earlier one; a resume keeps it.
@@ -562,19 +720,23 @@ export async function recordReport(
       project,
       ticket: r.ticket,
       author: handle && !handle.releasedAt ? handle.handle : null,
+      coordinator: handle && !handle.releasedAt ? (handle.coordinator ?? null) : null,
       body: [r.message, ...notes].join("\n\n"),
       at,
     });
   } else if (r.phase !== "awaiting-approval")
     await store.resolvePlans({ project, ticket: r.ticket, resolution: `worker reported ${r.phase}`, at });
-  if (r.phase === "ready-to-merge")
+  if (r.phase === "ready-to-merge") {
+    const held = await store.getRuntimeHandle(project, r.ticket);
     await store.putHandBack({
       project,
       ticket: r.ticket,
       author: null,
+      coordinator: held && !held.releasedAt ? (held.coordinator ?? null) : null,
       body: `Agent status: ${r.phase} — ${r.summary}`,
       at,
     });
+  }
   const inbox = await store.openInboxItems({ project, recipient: "worker", ticket: r.ticket });
   return reading ? { inbox, overlaps: reading.overlaps, incomplete: reading.incomplete } : inbox;
 }
@@ -593,6 +755,7 @@ export async function recordQuestion(
     kind: "question",
     recipient: "coordinator",
     author: held && !held.releasedAt ? held.handle : null,
+    coordinator: held && !held.releasedAt ? (held.coordinator ?? null) : null,
     body: q.body,
     at,
   });
@@ -620,6 +783,7 @@ export interface AnswerRecord {
   /** Generated merge notices do not decide or resolve a worker's pending plan. */
   generated?: boolean;
   deliveryKey?: string;
+  coordinator?: string | null;
   /** The answer, or the note. */
   text: string;
   /** An unsolicited coordinator message rather than an answer. */
@@ -640,7 +804,14 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
   if (a.generated) {
     if (!a.note || !a.ticket || a.item !== null || !a.deliveryKey)
       throw new Error("a generated note needs a ticket and reserved delivery key");
-    return store.recordMergeNotice({ project, key: a.deliveryKey, ticket: a.ticket, text, at });
+    return store.recordMergeNotice({
+      project,
+      key: a.deliveryKey,
+      ticket: a.ticket,
+      text,
+      coordinator: a.coordinator,
+      at,
+    });
   }
   if (a.note) {
     if (a.ticket) await store.resolvePlans({ project, ticket: a.ticket, resolution: text, at });
@@ -650,6 +821,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
       kind: "note",
       recipient: "worker",
       author: "coordinator",
+      coordinator: a.coordinator,
       body: text,
       at,
     });
@@ -694,6 +866,7 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
         kind: "question",
         recipient: "coordinator",
         author: held.handle,
+        coordinator: held.coordinator ?? null,
         body: "Herdr approval or question",
         at,
       });
@@ -755,14 +928,11 @@ export async function recordMerge(
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "decision", resolution: "merged", at });
-  const released = handle
-    ? await store.releaseRuntimeHandle(project, m.ticket, at, {
-        handle: handle.handle,
-        claimedAt: handle.claimedAt,
-        workerSessionId: handle.workerSessionId,
-      })
-    : false;
-  if (released || !handle) await store.deleteTicketPaths(project, m.ticket);
+  const guard: ReleaseGuard = handle
+    ? { handle: handle.handle, claimedAt: handle.claimedAt, workerSessionId: handle.workerSessionId }
+    : { absent: true };
+  const released = await store.releaseRuntimeHandle(project, m.ticket, at, guard, true);
+  if (released) await store.deleteTicketPaths(project, m.ticket, guard);
   return {
     handle: released && handle ? { ...handle, releasedAt: handle.releasedAt ?? at.toISOString() } : null,
     resolved,
@@ -829,6 +999,7 @@ const MIN = 60_000;
 export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "stopped" | "quiet" | "not-started" | "version";
 
 export interface InboxEntry {
+  owner?: string | null;
   /**
    * Inbox item id for `armada answer`; null for a silent worker (it clears
    * when the worker reports) or a worker not started (it clears on its claim).
@@ -856,7 +1027,7 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
 
 /**
  * How an entry is told apart between two reads: `#12`, `silent:<ticket>`,
- * `not-started:<ticket>` or `version:<version>`. A hand-back or a plan
+ * `not-started:<ticket>` or `version:<version>@<digest>`. A hand-back or a plan
  * rewritten in place keeps its id, so its key carries a digest of its text
  * too (a hand-back's names its head SHA): handed back again on a new head, it
  * is new to the coordinator.
@@ -869,7 +1040,7 @@ export const entryKey = (
       ? `#${e.id}@${digest(e.body)}`
       : `#${e.id}`
     : e.version
-      ? `version:${e.version}`
+      ? `version:${e.version}@${digest(e.body)}`
       : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
         ? `not-started:${e.ticket}:expired@${digest(e.body)}`
         : e.kind === "stopped"
@@ -879,6 +1050,9 @@ export const entryKey = (
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
   repository: string;
+  parkedLabel?: string;
+  /** Guided profiles from the same trusted stored configuration. */
+  guidedProfiles?: readonly string[];
   issues: readonly (Pick<Issue, "id" | "statusType"> & Partial<Pick<Issue, "labels">>)[];
   /** Stored policy for annotating legacy workers' plan items, without a tracker read. */
   config?: ArmadaConfig;
@@ -974,7 +1148,21 @@ async function reconcileHandBacks(
   return open;
 }
 
+/** Open sessions win (including unowned ones), then the newest pending launch. */
+export function ticketOwners(
+  handles: readonly Pick<RuntimeHandle, "ticket" | "coordinator">[],
+  launches: readonly Pick<PendingLaunch, "ticket" | "coordinator" | "launchedAt">[],
+): Map<string, string | null> {
+  const owners = new Map<string, string | null>();
+  for (const launch of [...launches].sort((a, b) => a.launchedAt.localeCompare(b.launchedAt)))
+    owners.set(launch.ticket, launch.coordinator ?? null);
+  for (const handle of handles) owners.set(handle.ticket, handle.coordinator ?? null);
+  return owners;
+}
+
 export interface InboxReadOptions {
+  scope?: CoordinatorScope;
+  coordinatorName?: string;
   snapshot?: HandBackSnapshot;
   project: string;
   /** The coordinator's own session, never reported silent. */
@@ -1028,14 +1216,31 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
 async function readInboxAndFlight(
   store: FleetStore,
   o: InboxReadOptions,
-): Promise<{ items: InboxEntry[]; inFlight: string[] }> {
+): Promise<{ items: InboxEntry[]; inFlight: string[]; ownedInFlight: string[] }> {
   const now = o.now.getTime();
   const [stored, handles, launches] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
     store.openRuntimeHandles(o.project),
-    store.pendingLaunches(o.project, new Date(now - LAUNCH_WINDOW_MS)),
+    store.pendingLaunches(o.project, new Date(0)),
   ]);
-  const items = await reconcileHandBacks(store, stored, o.snapshot, o.now);
+  const owners = ticketOwners(handles, launches);
+  const name = o.coordinatorName ?? "default";
+  // Absent scope retains the old named-client behavior. New CLIs always
+  // send an explicit scope, so a name alone does not imply filtering.
+  const scoped = o.scope === "mine" || (o.scope === undefined && !!o.coordinatorName);
+  const ownerOf = (ticket: string | null, fallback?: string | null) =>
+    ticket && owners.has(ticket) ? (owners.get(ticket) ?? null) : (fallback ?? null);
+  const ownerOfItem = (item: InboxItem) =>
+    !item.ticket && (item.kind === "merge-request" || item.kind === "release-request")
+      ? null
+      : ownerOf(item.ticket, item.coordinator);
+  const visible = (owner: string | null) => !scoped || owner === null || owner === name;
+  let items = await reconcileHandBacks(
+    store,
+    stored.filter((item) => visible(ownerOfItem(item))),
+    o.snapshot,
+    o.now,
+  );
   const flight = o.snapshot?.flight;
   const closed = new Set(o.snapshot?.issues.filter(isClosed).map((i) => i.id));
   const model = flight ? buildModel(attachPullRequests(flight.program, flight.forge), flight.program.rootId) : null;
@@ -1060,6 +1265,28 @@ async function readInboxAndFlight(
       ? store.lastAnsweredAt(o.project, { since, tickets: answerTickets })
       : Promise.resolve({} as Record<string, string>),
   ]);
+  const held =
+    flight && model
+      ? new Set(
+          statusInFlight(model, flight.program.comments, {
+            now,
+            silentAfterMinutes: o.silentAfterMinutes,
+            live: { after: flight.after, events, handles: Object.fromEntries(handles.map((h) => [h.ticket, h])) },
+          }).map((lane) => lane.issue.id),
+        )
+      : null;
+  items = items.flatMap((item) => {
+    if (item.kind !== "launch-request" || !item.request?.deferred) return [item];
+    const state = deferredLaunchState(
+      item,
+      model,
+      o.snapshot?.parkedLabel,
+      !!item.ticket && !!held?.has(item.ticket),
+      null,
+      !!item.request?.profile && !!o.snapshot?.guidedProfiles?.includes(item.request.profile),
+    );
+    return state.reason || !model ? [] : [{ ...item, body: deferredWakeBody(item, model, state.command) }];
+  });
   const planConfig = o.snapshot?.config;
   const preApproved = new Set(
     planConfig
@@ -1075,6 +1302,7 @@ async function readInboxAndFlight(
   );
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
+    owner: ownerOfItem(i),
     kind: i.kind,
     ticket: i.ticket,
     author: i.author,
@@ -1088,23 +1316,28 @@ async function readInboxAndFlight(
   }));
   const asking = new Set(items.filter((i) => i.kind === "question").map((i) => i.ticket));
   const planning = new Set(items.filter((i) => i.kind === "plan").map((i) => i.ticket));
-  const held =
-    flight && model
-      ? new Set(
-          statusInFlight(model, flight.program.comments, {
-            now,
-            silentAfterMinutes: o.silentAfterMinutes,
-            live: { after: flight.after, events, handles: Object.fromEntries(handles.map((h) => [h.ticket, h])) },
-          }).map((lane) => lane.issue.id),
-        )
-      : null;
   // A claim may arrive before its newly created ticket reaches the stored reading.
   const known = new Set(flight?.program.issues.map((i) => i.id));
   const own = new Set(handles.filter((h) => o.coordinator && h.handle === o.coordinator).map((h) => h.ticket));
-  const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket)) : [];
+  const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket) && visible(ownerOf(ticket))) : [];
+  const flightOwners = new Map(owners);
+  for (const item of stored) {
+    if (
+      item.kind === "launch-request" &&
+      item.request?.deferred &&
+      item.ticket &&
+      !closed.has(item.ticket) &&
+      !own.has(item.ticket) &&
+      visible(ownerOf(item.ticket, item.coordinator))
+    ) {
+      if (!inFlight.includes(item.ticket)) inFlight.push(item.ticket);
+      if (!owners.has(item.ticket) && item.coordinator === name) flightOwners.set(item.ticket, name);
+    }
+  }
   for (const h of handles) {
     const derived = held !== null && known.has(h.ticket);
-    if (own.has(h.ticket) || closed.has(h.ticket) || (derived && !held?.has(h.ticket))) continue;
+    if (!visible(ownerOf(h.ticket)) || own.has(h.ticket) || closed.has(h.ticket) || (derived && !held?.has(h.ticket)))
+      continue;
     const e = events[h.ticket];
     if (!derived && e && (e.kind === "release" || e.kind === "merge") && e.at >= h.claimedAt) continue;
     if (!derived) inFlight.push(h.ticket);
@@ -1118,6 +1351,7 @@ async function readInboxAndFlight(
         id: null,
         kind: "runtime-blocked",
         ticket: h.ticket,
+        owner: ownerOf(h.ticket),
         author: h.handle,
         body: `${h.runtime} worker is blocked on an approval or question; read its terminal with the runtime guide and answer with armada answer ${h.ticket}`,
         createdAt: observation.at,
@@ -1149,6 +1383,7 @@ async function readInboxAndFlight(
         id: null,
         kind: "stopped",
         ticket: h.ticket,
+        owner: ownerOf(h.ticket),
         author: h.handle,
         body: `stopped: its session is idle and it did not hand back (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); read its last reply with the runtime guide and resume or release it`,
         createdAt: observation?.since ?? observation?.at ?? last,
@@ -1163,6 +1398,7 @@ async function readInboxAndFlight(
       id: null,
       kind: silent ? "silent" : "quiet",
       ticket: h.ticket,
+      owner: ownerOf(h.ticket),
       author: h.handle,
       body: silent
         ? `no ${heartbeat ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${life.state === "working" && observation ? `, but its session is still working (observed ${observation.at.slice(11, 16)})` : ""}${owesReport && !heartbeat ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
@@ -1176,6 +1412,7 @@ async function readInboxAndFlight(
   const currentLaunches = launches.filter((l) => {
     const event = events[l.ticket];
     return (
+      visible(ownerOf(l.ticket)) &&
       !closed.has(l.ticket) &&
       !own.has(l.ticket) &&
       !(event && (event.kind === "release" || event.kind === "merge") && event.at >= l.launchedAt)
@@ -1189,6 +1426,7 @@ async function readInboxAndFlight(
       id: null,
       kind: "not-started",
       ticket: l.ticket,
+      owner: ownerOf(l.ticket),
       author: l.handle,
       body: notStartedBody(l, o.now),
       createdAt: l.launchedAt,
@@ -1196,11 +1434,14 @@ async function readInboxAndFlight(
     });
   return {
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
-    inFlight: inFlight.sort(),
+    inFlight: [...new Set(inFlight)].filter((ticket) => o.scope !== "mine" || flightOwners.get(ticket) === name).sort(),
+    ownedInFlight: [...new Set(inFlight)].filter((ticket) => flightOwners.get(ticket) === name).sort(),
   };
 }
 
 export interface InboxQuery {
+  scope?: CoordinatorScope;
+  coordinatorName?: string;
   facts?: CoordinatorFacts;
   coordinator: string | null;
   silentAfterMinutes: number;
@@ -1216,6 +1457,8 @@ export interface InboxQuery {
 }
 
 export interface InboxRead {
+  /** Owned workers only, for a named coordinator's re-arm line even with all scope. */
+  ownedInFlight?: string[];
   /** Oldest first. */
   items: InboxEntry[];
   /**
@@ -1237,10 +1480,17 @@ export interface InboxRead {
  * and which tickets are in flight.
  */
 export function inboxTag(
-  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body">[],
+  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner">[],
   inFlight: readonly string[] = [],
+  ownedInFlight: readonly string[] = [],
 ): string {
-  const keys = [...items.map(entryKey), ...inFlight.map((t) => `flight:${t}`)].sort().join("\n");
+  const keys = [
+    ...items.map((item) => `${entryKey(item)}:owner:${item.owner ?? "unowned"}`),
+    ...inFlight.map((t) => `flight:${t}`),
+    ...ownedInFlight.map((t) => `owned-flight:${t}`),
+  ]
+    .sort()
+    .join("\n");
   return `"${createHash("sha256").update(keys).digest("base64url").slice(0, 22)}"`;
 }
 
@@ -1259,11 +1509,13 @@ export async function serveInbox(
   snapshot?: HandBackSnapshot,
 ): Promise<InboxRead | null> {
   const warnings: string[] = [];
-  const expired = await store.expireUnusedLaunches(project, now);
+  const scoped = q.scope === "mine" || (q.scope === undefined && !!q.coordinatorName);
+  const expired = await store.expireUnusedLaunches(project, now, scoped ? (q.coordinatorName ?? "default") : undefined);
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
   try {
     await store.recordCoordinatorSeen({
       project,
+      name: q.coordinatorName ?? "default",
       handle: q.coordinator,
       facts: q.facts,
       cliVersion,
@@ -1273,28 +1525,42 @@ export async function serveInbox(
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
-  const { items, inFlight } = await readInboxAndFlight(store, {
+  const { items, inFlight, ownedInFlight } = await readInboxAndFlight(store, {
+    scope: q.scope,
     snapshot,
     project,
     coordinator: q.coordinator,
+    coordinatorName: q.coordinatorName,
     silentAfterMinutes: q.silentAfterMinutes,
     quietAfterMinutes: q.quietAfterMinutes,
     ...(q.notStartedMinutes !== undefined ? { notStartedMinutes: q.notStartedMinutes } : {}),
     now,
   });
-  for (const launch of expired)
+  for (const launch of expired) {
+    if (scoped && launch.coordinator != null && launch.coordinator !== (q.coordinatorName ?? "default")) continue;
     items.push({
       id: null,
       kind: "not-started",
       ticket: launch.ticket,
+      owner: launch.coordinator ?? null,
       author: launch.handle,
       body: `not started (token expired): the unused launch of ${launch.ticket} at ${launch.launchedAt} has cleared; launch it again with armada brief ${launch.ticket} --prompt`,
       createdAt: launch.launchedAt,
       new: false,
     });
+  }
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
-  const etag = inboxTag(items, inFlight);
-  return q.etag === etag ? null : { items, inFlight, etag, warnings };
+  const includesOwned = q.scope !== undefined && !!q.coordinatorName && q.coordinatorName !== "default";
+  const etag = inboxTag(items, inFlight, includesOwned ? ownedInFlight : []);
+  return q.etag === etag
+    ? null
+    : {
+        items,
+        inFlight,
+        etag,
+        warnings,
+        ...(includesOwned ? { ownedInFlight } : {}),
+      };
 }
 
 // ------------------------------------------------------------------ the CLI's side
@@ -1305,6 +1571,21 @@ export async function serveInbox(
  */
 export interface Fleet {
   prepareMergeNotice(key: string): Promise<"reserved" | "attempted" | "delivered">;
+  coordinators(): Promise<CoordinatorRecord[]>;
+  takeTickets(input: { tickets: string[]; from?: string }): Promise<boolean>;
+  startJob(input: JobStart): Promise<Job>;
+  listJobs(query: JobQuery): Promise<Job[]>;
+  observeJob(input: JobObservation): Promise<Job | null>;
+  holds(): Promise<MergeHold[]>;
+  openHold(input: OpenHold): Promise<MergeHold>;
+  clearHold(input: { id: number; reason: string }): Promise<ClearHoldResult | null>;
+
+  digest(request: DigestRequest): Promise<DigestResult>;
+  sendDigest(request: DigestRequest): Promise<DigestResult>;
+  reserve(input: ReserveRecord): Promise<ReserveResult>;
+  reservations(ticket?: string): Promise<Reservation[]>;
+  unreserve(input: { ticket: string; key: string }): Promise<number>;
+
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";
@@ -1313,6 +1594,8 @@ export interface Fleet {
     question?: number;
     text?: string;
   }): Promise<number>;
+  deferLaunch(input: { ticket: string; profile: string | null; after?: string | null }): Promise<DeferredLaunch>;
+  deferredLaunches(): Promise<DeferredLaunch[]>;
   /** Registers the project, or updates its name, repository and root (`armada init`). */
   register(): Promise<void>;
   /** Time of the newest event of every ticket (`armada status`). */
@@ -1355,7 +1638,12 @@ export interface Fleet {
   validations(q: { ticket?: string; pr?: number }): Promise<Validation[]>;
   /** Records a ticket done without a pull request after the owner's approval (`armada done`). */
   done(d: { ticket: string; message: string }): Promise<MergeRecorded>;
-  acquireLease(l: { name: string; holder: string; ttlMs: number }): Promise<LeaseResult>;
-  renewLease(l: { name: string; holder: string; ttlMs: number }): Promise<boolean>;
+  queueAdd(e: QueueInput): Promise<QueueAdded>;
+  queueList(q?: { since?: string }): Promise<QueueEntry[]>;
+  queueNext(q: { holder: string }): Promise<QueueNext>;
+  queueFinish(q: QueueFinish): Promise<boolean>;
+  queueRemove(q: { pr: number }): Promise<boolean>;
+  acquireLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<LeaseResult>;
+  renewLease(l: { name: string; holder: string; ttlMs: number; throughHold?: string }): Promise<boolean>;
   releaseLease(l: { name: string; holder: string }): Promise<void>;
 }

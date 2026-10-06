@@ -777,6 +777,119 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
     version: 27,
     statements: [
+      `CREATE TABLE reservations (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug), key text NOT NULL, value text NOT NULL,
+        ticket text NOT NULL, note text, reserved_at timestamptz NOT NULL,
+        ended_at timestamptz, merged boolean NOT NULL DEFAULT false
+      )`,
+      "CREATE UNIQUE INDEX reservations_held ON reservations (project, key, value) WHERE ended_at IS NULL OR merged",
+      "CREATE INDEX reservations_ticket ON reservations (project, ticket) WHERE ended_at IS NULL",
+    ],
+  },
+  {
+    version: 28,
+    statements: [
+      `ALTER TABLE owner_channels ADD COLUMN digest_checked_at timestamptz`,
+      `UPDATE owner_channels SET digest = '{"times":["09:00","13:00","18:00"],"days":[1,2,3,4,5],"skipQuiet":false}'::jsonb,
+        digest_checked_at = created_at`,
+      `CREATE INDEX owner_pushes_digests ON owner_pushes (channel, created_at DESC)
+        WHERE key LIKE 'digest:%' OR key LIKE 'digest-manual:%'`,
+    ],
+  },
+  {
+    // THE-1098: merge intent survives a coordinator session.
+    version: 30,
+    statements: [
+      `CREATE TABLE merge_queue (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL, pr integer NOT NULL, ticket text,
+        no_ticket boolean NOT NULL DEFAULT false, keep_open boolean NOT NULL DEFAULT false,
+        through_hold text, reason text, head_sha text,
+        state text NOT NULL CHECK (state IN ('queued','merging','merged','refused','removed')),
+        detail text, attempts integer NOT NULL DEFAULT 0, not_before timestamptz,
+        queued_by text NOT NULL, queued_at timestamptz NOT NULL, updated_at timestamptz NOT NULL,
+        merge_commit text, finished_at timestamptz
+      )`,
+      "CREATE UNIQUE INDEX merge_queue_one_open ON merge_queue (project, pr) WHERE state IN ('queued','merging')",
+      "CREATE INDEX merge_queue_open ON merge_queue (project, state, queued_at, id)",
+      "CREATE INDEX merge_queue_finished ON merge_queue (project, finished_at) WHERE finished_at IS NOT NULL",
+    ],
+  },
+  {
+    // THE-1109: named coordinator roles, their sessions and launch ownership.
+    version: 31,
+    statements: [
+      `CREATE TABLE coordinators (
+        project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        name text NOT NULL CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,31}$'),
+        created_at timestamptz NOT NULL, created_by text,
+        handle text, harness text, model text, cli_version text,
+        started_at timestamptz NOT NULL, seen_at timestamptz NOT NULL, inbox_seen_at timestamptz,
+        PRIMARY KEY (project, name)
+      )`,
+      `INSERT INTO coordinators (project, name, created_at, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at)
+       SELECT project, 'default', COALESCE(started_at, seen_at), handle, harness, model, cli_version,
+              COALESCE(started_at, seen_at), seen_at, inbox_seen_at FROM coordinator_presence`,
+      `CREATE TABLE coordinator_sessions (
+        project text NOT NULL, name text NOT NULL, handle text NOT NULL,
+        harness text, model text, cli_version text, started_at timestamptz NOT NULL,
+        seen_at timestamptz NOT NULL, inbox_seen_at timestamptz,
+        PRIMARY KEY (project, name, handle),
+        FOREIGN KEY (project, name) REFERENCES coordinators(project, name) ON DELETE CASCADE
+      )`,
+      `INSERT INTO coordinator_sessions (project, name, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at)
+       SELECT project, name, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at FROM coordinators WHERE handle IS NOT NULL`,
+      "ALTER TABLE runtime_handles ADD COLUMN coordinator text",
+      "ALTER TABLE fleet_sessions ADD COLUMN coordinator text",
+      'ALTER TABLE "armada_worker" ADD COLUMN "coordinator" text',
+      "ALTER TABLE inbox_items ADD COLUMN coordinator text",
+      "CREATE INDEX runtime_handles_coordinator ON runtime_handles (project, coordinator) WHERE released_at IS NULL",
+      'CREATE INDEX armada_worker_coordinator ON "armada_worker" ("project", "coordinator", "createdAt") WHERE "endedAt" IS NULL',
+    ],
+  },
+  {
+    // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
+    version: 32,
+    statements: [
+      `CREATE TABLE merge_holds (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug),
+        kind text NOT NULL CHECK (kind IN ('manual', 'deploy', 'main-red')),
+        ref text,
+        reason text NOT NULL,
+        opened_by text,
+        opened_at timestamptz NOT NULL,
+        cleared_at timestamptz,
+        cleared_by text,
+        clear_reason text,
+        inbox_id bigint REFERENCES inbox_items(id)
+      )`,
+      "CREATE UNIQUE INDEX merge_holds_one_open ON merge_holds(project, kind, ref) WHERE cleared_at IS NULL",
+      "CREATE INDEX merge_holds_open ON merge_holds(project, cleared_at)",
+    ],
+  },
+  { version: 33, statements: ["ALTER TABLE inbox_items ADD COLUMN request_deferred boolean NOT NULL DEFAULT false"] },
+  {
+    // THE-1125: durable references to jobs dispatched on a project's own runner.
+    version: 36,
+    statements: [
+      `CREATE TABLE jobs (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug),
+        ticket text NOT NULL, name text NOT NULL, ref text,
+        state text NOT NULL CHECK (state IN ('starting','running','succeeded','failed','stopped','lost')),
+        progress text, eta timestamptz, started_by text,
+        started_at timestamptz NOT NULL, observed_at timestamptz NOT NULL, finished_at timestamptz
+      )`,
+      "CREATE INDEX jobs_open_idx ON jobs (project, state, id DESC) WHERE state IN ('starting','running')",
+      "CREATE INDEX jobs_ticket_idx ON jobs (project, ticket, id DESC)",
+    ],
+  },
+  {
+    // THE-1084: reserve notification delivery and record each ticket once.
+    version: 39,
+    statements: [
       `CREATE TABLE merge_notices (
         project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
         delivery_key text NOT NULL, attempted_at timestamptz NOT NULL,
@@ -794,21 +907,24 @@ const MIGRATION_LOCK = 4_849_001;
 
 /** Applies pending migrations and returns the schema version. */
 export async function migrateDatabase(db: Database, now: Date = new Date()): Promise<number> {
-  const current = async (q: Queryable) =>
-    Number((await q.query<{ v: unknown }>("SELECT max(version) AS v FROM armada_migrations")).rows[0]?.v ?? 0);
-  // The usual case, without a lock: everything applied already.
-  const applied = await db
+  // Reserved numbers can land out of order: a higher version never proves
+  // that every lower migration was applied. Skip only recorded versions.
+  const table = await db
     .query<{ t: unknown }>("SELECT to_regclass('armada_migrations') AS t")
     .then((rs) => rs.rows[0]?.t !== null && rs.rows[0]?.t !== undefined);
-  if (applied && (await current(db)) >= DB_SCHEMA_VERSION) return DB_SCHEMA_VERSION;
-  for (const m of DB_MIGRATIONS)
+  const applied = new Set(
+    table
+      ? (await db.query<{ version: number }>("SELECT version FROM armada_migrations")).rows.map((r) => r.version)
+      : [],
+  );
+  for (const m of DB_MIGRATIONS.filter((m) => !applied.has(m.version)))
     await transaction(db, async (tx) => {
       // Whoever comes second waits here, then finds the version applied.
       await tx.query("SELECT pg_advisory_xact_lock($1)", [MIGRATION_LOCK]);
       await tx.query(
         "CREATE TABLE IF NOT EXISTS armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
       );
-      if ((await current(tx)) >= m.version) return;
+      if ((await tx.query("SELECT 1 FROM armada_migrations WHERE version = $1", [m.version])).rows.length) return;
       for (const statement of m.statements) await tx.query(statement);
       await tx.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [m.version, now]);
     });

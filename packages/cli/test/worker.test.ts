@@ -2,12 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Fetch, formatWorkerSession } from "@armada/core";
+import { type Fetch, formatWorkerSession, machinePaths, updateWatchState } from "@armada/core";
 import { memoryFleet } from "../../core/test/memory-fleet.ts";
 import {
   ARMADA_URL,
   DEMO_TOML,
   FakeLinear,
+  type FakeVault,
   fakeArmada,
   fakeClock,
   NOW,
@@ -35,10 +36,15 @@ const SIGNED_IN = { ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: KEY };
  */
 function worker(
   env: Record<string, string> = {},
-  o: { store?: ReturnType<typeof memoryFleet>; clock?: ReturnType<typeof fakeClock> } = {},
+  o: { store?: ReturnType<typeof memoryFleet>; clock?: ReturnType<typeof fakeClock>; vault?: FakeVault } = {},
 ) {
   const store = o.store ?? memoryFleet();
-  const armada = fakeArmada({ keys: { [KEY]: "fleet" }, store, ...(o.clock ? { clock: o.clock } : {}) });
+  const armada = fakeArmada({
+    keys: { [KEY]: "fleet" },
+    store,
+    ...(o.clock ? { clock: o.clock } : {}),
+    ...(o.vault ? { vault: o.vault } : {}),
+  });
   const linear = new FakeLinear();
   const out: string[] = [];
   const err: string[] = [];
@@ -344,9 +350,12 @@ describe("armada claim, report and release", () => {
       "fleet/coordinator",
       "fleet/events/latest",
       "fleet/launches",
+      "fleet/job/list",
+      "fleet/holds",
       "fleet/heartbeats/latest",
       "fleet/runtime/handles",
       "fleet/events/state",
+      "fleet/launch-requests",
     ]);
   });
 
@@ -461,7 +470,7 @@ describe("armada ask, inbox and answer", () => {
     expect(w.out()).toBe(
       [
         "Inbox of widgets (1), oldest first:",
-        `  #1 question · DEMO-7 · from ws-1/s-1 · ${NOW.toISOString()}`,
+        `  #1 question · DEMO-7 · owner: default · from ws-1/s-1 · ${NOW.toISOString()}`,
         "    Which store keeps the sessions?",
         "",
         "    Options:",
@@ -541,6 +550,85 @@ describe("armada ask, inbox and answer", () => {
     expect(await run(["answer", "3"], w.io)).toBe(2);
     expect(w.err()).toContain("answer needs the text");
   });
+});
+
+test("worker claim comments inherit the authenticated launch owner despite a different environment name", async () => {
+  const w = worker(
+    { ARMADA_COORDINATOR: "spoof", ARMADA_API_URL: ARMADA_URL },
+    { vault: { linear: { apiKey: "synthetic", scope: "organization" }, now: () => NOW } },
+  );
+  w.linear.add("DEMO-7");
+  const token = "armada_worker_CANARY_named";
+  w.armada.workers.set(token, {
+    project: "widgets",
+    ticket: "DEMO-7",
+    id: "wk-named",
+    createdAt: NOW.toISOString(),
+    ended: null,
+    coordinator: "front",
+  });
+  const home = await mkdtemp(join(tmpdir(), "armada-worker-owner-"));
+  dirs.push(home);
+  w.io.env.XDG_CONFIG_HOME = home;
+  await mkdir(join(home, "armada"), { recursive: true });
+  const session = formatWorkerSession({
+    api: ARMADA_URL,
+    token,
+    ticket: "DEMO-7",
+    project: "widgets",
+    organization: "org-1",
+    id: "wk-named",
+  });
+  await writeFile(join(home, "armada", "credentials"), `ARMADA_WORKER_SESSION_DEMO_7=${session}\n`);
+  expect({
+    code: await run(["claim", "DEMO-7", "--runtime", "Conductor", "--handle", "workspace/worker"], w.io),
+    error: w.err(),
+  }).toEqual({ code: 0, error: "" });
+  expect(w.linear.get("DEMO-7").comments.some((comment) => comment.excerpt.includes("coordinator: front"))).toBe(true);
+  expect((await w.store.getRuntimeHandle("widgets", "DEMO-7"))?.coordinator).toBe("front");
+});
+
+test("hold commands share the pause with status and clear it idempotently", async () => {
+  const w = worker(SIGNED_IN);
+  const projectHome = await mkdtemp(join(tmpdir(), "armada-hold-project-"));
+  dirs.push(projectHome);
+  w.io.env.XDG_CONFIG_HOME = projectHome;
+  w.io.cwd = "/tmp";
+  const paths = machinePaths(w.io.env);
+  if (!paths) throw new Error("temporary machine store missing");
+  await updateWatchState(paths, "widgets", { root: "/work/widgets" });
+  w.net.rest = recordedFetch().fetch;
+  expect(await run(["hold", "add", "api deploy is broken", "--json", "--project", "widgets"], w.io)).toBe(0);
+  const hold = JSON.parse(w.out());
+  expect(hold).toMatchObject({ kind: "manual", reason: "api deploy is broken" });
+  w.io.env.ARMADA_CONFIG = "/work/widgets/armada.toml";
+  w.reset();
+  expect(await run(["hold"], w.io)).toBe(0);
+  expect(w.out()).toContain(`hold #${hold.id}`);
+  w.reset();
+  expect(await run(["status"], w.io)).toBe(0);
+  expect(w.out()).toContain(`Merges paused since 10:00 UTC: api deploy is broken (hold #${hold.id})`);
+  w.reset();
+  expect(await run(["hold", "clear", String(hold.id), "--reason", "smoke passes"], w.io)).toBe(0);
+  expect(w.out()).toContain(`Cleared hold #${hold.id}`);
+  w.reset();
+  expect(await run(["hold", "clear", String(hold.id), "--reason", "repeat"], w.io)).toBe(0);
+  expect(w.out()).toContain("already cleared by");
+  expect(w.out()).toContain("smoke passes");
+  w.reset();
+  w.net.rest = recordedFetch().fetch;
+  expect(await run(["status", "--json"], w.io)).toBe(0);
+  expect(JSON.parse(w.out()).holds).toEqual([]);
+  for (const args of [
+    ["hold", "add", " "],
+    ["hold", "clear", "1"],
+    ["hold", "clear", "0", "--reason", "fix"],
+    ["hold", "--reason", "dismiss"],
+    ["merge", "9", "--through-hold", " "],
+  ]) {
+    w.reset();
+    expect(await run(args, w.io)).toBe(2);
+  }
 });
 
 test("report accepts repeated --paths, records declarations in Linear and prints overlap warnings", async () => {

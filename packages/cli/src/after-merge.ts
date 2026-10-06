@@ -9,7 +9,11 @@ import {
   shellWord,
   type WorkerNotice,
 } from "@armada/core";
-import type { Io } from "./io.ts";
+import { version } from "../package.json" with { type: "json" };
+import { coordinatorName } from "./coordinator.ts";
+import { type DeferredLaunchResult, launchDeferredAfterMerge } from "./deferred-launch.ts";
+import { type Io, UsageError } from "./io.ts";
+import { launchWorker } from "./launch.ts";
 import { deliverToRuntime } from "./runtime.ts";
 import { archiveClaimKey, claimRef, guarded, redactRuntimeText, runtimeFor } from "./runtimes/adapter.ts";
 import { coordinatorHandle } from "./watch.ts";
@@ -73,6 +77,7 @@ async function notifyWorkers(
 ): Promise<WorkerNotification[]> {
   if (!outcome.merged || !outcome.pr.mergeCommit || !outcome.filesKnown || outcome.noticeFallback) return [];
   const { fleet } = liveFleet(io, config, credentials);
+  const owner = await coordinatorName(io, config.project.slug);
   const groups = new Map<string, WorkerNotice[]>();
   for (const w of [...(outcome.notices ?? [])].sort((a, b) => a.ticket.localeCompare(b.ticket))) {
     const key = w.handle ? `${runtimeNameOf(w.runtime) ?? w.runtime}:${w.handle}` : w.ticket;
@@ -102,6 +107,14 @@ async function notifyWorkers(
           await guarded(fleet, claimRef(worker.claim), "active", async () => {});
         }
         const [events, active] = await Promise.all([fleet.latestEvents(), fleet.runtimeHandles()]);
+        const peer = active.find((h) => h.handle === w.handle && h.coordinator != null && h.coordinator !== owner);
+        if (peer) {
+          outcome.notAffected ??= [];
+          outcome.notAffected.push(
+            ...workers.map((worker) => ({ ticket: worker.ticket, why: `owned by coordinator ${peer.coordinator}` })),
+          );
+          continue;
+        }
         if (active.some((h) => h.handle === w.handle && events[h.ticket]?.phase === "ready-to-merge"))
           throw new Error("the worker has handed back");
         const key = deliveryKey({
@@ -120,7 +133,11 @@ async function notifyWorkers(
           );
         delivered =
           receipt === "delivered" ||
-          !!(await deliverToRuntime(io, fleet, w.ticket, text, w.claim, config, { kind: "note", key }));
+          !!(await deliverToRuntime(io, fleet, w.ticket, text, w.claim, config, {
+            kind: "note",
+            key,
+            coordinator: owner,
+          }));
         if (!delivered) throw new Error("the runtime does not support delivery");
         detail = receipt === "delivered" ? "already delivered" : "delivered";
         try {
@@ -137,6 +154,24 @@ async function notifyWorkers(
           );
         }
       } catch (error) {
+        // A same-generation handover may happen during native provenance checks.
+        // Do not suggest manual delivery to a session now owned by a peer.
+        const peer = !delivered
+          ? (await fleet?.runtimeHandles().catch(() => []))?.find(
+              (h) =>
+                h.handle === w.handle &&
+                runtimeNameOf(h.runtime) === runtime &&
+                h.coordinator != null &&
+                h.coordinator !== owner,
+            )
+          : null;
+        if (peer) {
+          outcome.notAffected ??= [];
+          outcome.notAffected.push(
+            ...workers.map((worker) => ({ ticket: worker.ticket, why: `owned by coordinator ${peer.coordinator}` })),
+          );
+          continue;
+        }
         detail = `${oneLine(redactRuntimeText(error instanceof Error ? error.message : String(error)))}; deliver manually with the runtime guide`;
         io.stderr(
           `armada: warning: #${outcome.pr.number} is merged, but its note for ${workers.map((w) => w.ticket).join(", ")} was not delivered (${detail})\n`,
@@ -160,9 +195,33 @@ export async function afterMerge(
     keepOpen?: boolean;
     configPath?: string;
     onNotified?: (results: WorkerNotification[]) => void;
+    onDeferredLaunch?: (results: DeferredLaunchResult[]) => Promise<void>;
   },
 ): Promise<AfterMergeResult> {
   const notified = opts.noNotify ? [] : await notifyWorkers(io, config, credentials, outcome);
+  const deferred =
+    outcome.merged && outcome.pr.mergeCommit && outcome.ticket && !opts.keepOpen
+      ? await launchDeferredAfterMerge(outcome, config, liveFleet(io, config, credentials).fleet, async (request) => {
+          const printed: string[] = [];
+          const code = await launchWorker(
+            { ...io, stdout: (line) => printed.push(line) },
+            config,
+            credentials,
+            {
+              rest: [request.ticket],
+              json: false,
+              options: request.profile
+                ? { profile: request.profile, reason: "deferred launch requested by the coordinator" }
+                : {},
+            },
+            version,
+            opts.configPath ?? resolve(io.cwd, "armada.toml"),
+          );
+          if (code !== 0) throw new UsageError("the launcher did not start a worker");
+          return printed.join("");
+        })
+      : [];
+  await opts.onDeferredLaunch?.(deferred);
   opts.onNotified?.(notified);
   const archive = await archiveWorker(io, config, credentials, outcome, opts);
   return { notified, notAffected: outcome.notAffected ?? [], archive };

@@ -26,6 +26,7 @@ import {
   shellWord,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
+import { coordinatorName } from "./coordinator.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { preApprovalReason, preparePreApproval } from "./plan-approval.ts";
 import { rearmFor, remember, watchOf } from "./watch.ts";
@@ -137,6 +138,7 @@ function launcher(io: Io, config: ArmadaConfig, credentials: Credentials) {
       const t = await apiOf(io, url).launchToken(signIn, {
         project: config.project.slug,
         ticket,
+        coordinator: await coordinatorName(io, config.project.slug),
       });
       const builtIn = armadaAddress(url) === armadaAddress(DEFAULT_ARMADA_API_URL);
       return { token: t.token, expiresAt: t.expiresAt, apiUrl: builtIn ? null : armadaAddress(url) };
@@ -193,6 +195,7 @@ export async function brief(
   const conventions = extraPath
     ? { path: extraPath, text: await io.readFile(join(dirname(configPath), extraPath)).catch(() => null) }
     : null;
+  const { fleet } = liveFleet(io, config, credentials);
   let b: Brief | ProfileSelectionBrief;
   try {
     b = await loadBrief(config, {
@@ -219,6 +222,7 @@ export async function brief(
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
       conventions,
+      ...(fleet ? { reservations: () => fleet.reservations() } : {}),
       validation: {
         requested: a.options.validation ?? null,
         reason: a.options["validation-reason"] ?? null,
@@ -252,8 +256,8 @@ export async function brief(
       );
     }
     // The worker's prompt, as is: the re-arm line is for the coordinator.
-    io.stdout(b.prompt);
     for (const w of b.warnings) io.stderr(`armada: warning: ${w}\n`);
+    io.stdout(b.prompt);
     return 0;
   }
   const next = await rearmFor(io, project, { inFlight: known, open: null });

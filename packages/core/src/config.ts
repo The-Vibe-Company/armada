@@ -2,9 +2,20 @@
 // Secrets never live in this file; tokens come from the environment.
 import { parse, TomlError } from "smol-toml";
 import { failurePattern } from "./ci.ts";
+import { JOB_NAME } from "./jobs.ts";
+import { LINT_DEFAULTS, type LintRules } from "./lint.ts";
+
+export interface JobConfig {
+  start: string;
+  status: string | null;
+  stop: string;
+  silenceMinutes: number;
+  maxHours: number | null;
+}
 
 export interface CiConfig {
   failurePatterns: string[];
+  knownFailures: { check: string; pattern: string; ticket: string }[];
 }
 
 export const CONFIG_FILE = "armada.toml";
@@ -12,6 +23,7 @@ export const CONFIG_FILE = "armada.toml";
 export type SpecTitleStyle = "N" | "N/M";
 
 export interface ArmadaConfig {
+  jobs: Record<string, JobConfig>;
   project: {
     name: string;
     /** Stable identifier of the project, lowercase letters, digits and dashes. */
@@ -22,6 +34,8 @@ export interface ArmadaConfig {
     programRoot: string;
     /** Style used when creating and renumbering specs; both forms are always readable. */
     specTitles: SpecTitleStyle;
+    /** Explicit tracker.lint opts into errors; missing table uses warning-only defaults. */
+    lint: LintRules;
     /** Language of owner-facing output (BCP 47 tag). Tracker comments stay in English. */
     language: string;
     /** Label that marks a ticket as specified enough for an agent to take. */
@@ -85,6 +99,7 @@ export interface ArmadaConfig {
     /** `[[policy.validation]]` in file order: kinds of tickets whose work the owner validates before it goes on. */
     validations: ValidationRule[];
   };
+  reservations: { key: string; what: string; numbered: boolean }[];
   brief: {
     /** Repository path, relative to armada.toml, of a file every brief carries under "Project conventions"; null when unset. */
     extra: string | null;
@@ -293,6 +308,30 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   if (!isTable(labels)) problems.push(`"tracker.labels" must be a table`);
   const policy = raw.policy === undefined ? {} : raw.policy;
   if (!isTable(policy)) problems.push(`"policy" must be a table`);
+  const lintRaw = tracker.lint;
+  if (lintRaw !== undefined && !isTable(lintRaw)) problems.push('"tracker.lint" must be a table');
+  const lintT = isTable(lintRaw) ? lintRaw : {};
+  const inShort = str(lintT, "tracker.lint", "in_short", { default: LINT_DEFAULTS.inShort });
+  if (!/^#{1,6} [^\r\n]+$/.test(inShort))
+    problems.push('"tracker.lint.in_short" must be a Markdown heading, e.g. "## In short"');
+  let inShortParts = [...LINT_DEFAULTS.inShortParts];
+  if (lintT.in_short_parts !== undefined) {
+    const parts = lintT.in_short_parts;
+    if (
+      Array.isArray(parts) &&
+      parts.length > 0 &&
+      parts.every((p) => typeof p === "string" && p.trim() && !/[\r\n]/.test(p))
+    )
+      inShortParts = [...new Set(parts.map((p: string) => p.trim()))];
+    else problems.push('"tracker.lint.in_short_parts" must be a non-empty list of part names on one line');
+  }
+  let titleMax = LINT_DEFAULTS.titleMax;
+  if (lintT.title_max !== undefined) {
+    const max = lintT.title_max;
+    if (typeof max === "number" && Number.isSafeInteger(max) && max > 0) titleMax = max;
+    else problems.push('"tracker.lint.title_max" must be a positive integer');
+  }
+  const lint: LintRules = { inShort, inShortParts, titleMax, severity: lintRaw === undefined ? "warning" : "error" };
   const labelsT = isTable(labels) ? labels : {};
   const policyT = isTable(policy) ? policy : {};
   const ci = raw.ci ?? {};
@@ -327,10 +366,11 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
   // left alone so newer sections do not break older readers.
   const known: [string, Table, string[]][] = [
     ["project", project, ["name", "slug"]],
-    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels"]],
+    ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels", "lint"]],
+    ["tracker.lint", lintT, ["in_short", "in_short_parts", "title_max"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
-    ["ci", ciT, ["failure_patterns"]],
+    ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     ["merge", mergeT, ["notify_paths"]],
     [
@@ -526,6 +566,36 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     !Object.values(herdrProfiles).some((profile) => profile.when)
   )
     problems.push(`"herdr.default_profile" is required with [[herdr.routing]], for tickets no rule matches`);
+  const jobs: Record<string, JobConfig> = {};
+  const jobsRaw = raw.jobs ?? {};
+  if (!isTable(jobsRaw)) problems.push('"jobs" must be a table of job definitions');
+  else
+    for (const [name, j] of Object.entries(jobsRaw)) {
+      const path = `jobs.${name}`;
+      if (!JOB_NAME.test(name) || name === "__proto__") {
+        problems.push(`"${path}" is not a usable job name`);
+        continue;
+      }
+      if (!isTable(j)) {
+        problems.push(`"${path}" must be a table`);
+        continue;
+      }
+      known.push([path, j, ["start", "status", "stop", "silence_minutes", "max_hours"]]);
+      const positive = (key: string, fallback: number | null): number | null => {
+        const v = j[key];
+        if (v === undefined) return fallback;
+        if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
+        problems.push(`"${path}.${key}" must be a positive number`);
+        return fallback;
+      };
+      jobs[name] = {
+        start: str(j, path, "start"),
+        status: j.status === undefined ? null : str(j, path, "status"),
+        stop: str(j, path, "stop"),
+        silenceMinutes: positive("silence_minutes", 15) ?? 15,
+        maxHours: positive("max_hours", null),
+      };
+    }
   for (const [path, t, keys] of known)
     for (const key of Object.keys(t)) if (!keys.includes(key)) problems.push(`unknown key "${path}.${key}"`);
 
@@ -665,19 +735,64 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     else problems.push(`"merge.notify_paths" must be a list of path globs`);
   }
 
+  const knownFailures: CiConfig["knownFailures"] = [];
+  if (ciT.known_failure !== undefined) {
+    if (!Array.isArray(ciT.known_failure)) problems.push('"ci.known_failure" must be an array of tables');
+    else
+      for (const [i, entry] of ciT.known_failure.entries()) {
+        const path = `ci.known_failure[${i + 1}]`;
+        if (!isTable(entry)) {
+          problems.push(`"${path}" must be a table`);
+          continue;
+        }
+        for (const key of Object.keys(entry))
+          if (!["check", "pattern", "ticket"].includes(key)) problems.push(`unknown key "${path}.${key}"`);
+        const check = str(entry, path, "check");
+        const pattern = str(entry, path, "pattern");
+        const ticket = str(entry, path, "ticket", { pattern: ISSUE_ID, hint: "an issue identifier such as ABC-1" });
+        try {
+          new RegExp(pattern);
+        } catch {
+          problems.push(`"${path}.pattern" must be a valid regex`);
+        }
+        knownFailures.push({ check, pattern, ticket });
+      }
+  }
+
   let specTitles: SpecTitleStyle = "N";
   if (tracker.spec_titles !== undefined) {
     if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
     else problems.push('"tracker.spec_titles" must be "N" or "N/M"');
   }
 
+  const reservations: ArmadaConfig["reservations"] = [];
+  if (raw.reservations !== undefined && !Array.isArray(raw.reservations))
+    problems.push('"reservations" must be an array of tables');
+  for (const [i, row] of (Array.isArray(raw.reservations) ? raw.reservations : []).entries()) {
+    const path = `reservations.${i}`;
+    if (!isTable(row)) {
+      problems.push(`"${path}" must be a table`);
+      continue;
+    }
+    for (const key of Object.keys(row))
+      if (!["key", "what", "numbered"].includes(key)) problems.push(`"${path}.${key}" is unknown`);
+    const key = str(row, path, "key");
+    const what = str(row, path, "what");
+    if (key.length > 500) problems.push(`"${path}.key" has at most 500 characters`);
+    if (reservations.some((r) => r.key === key)) problems.push(`"${path}.key" repeats ${key}`);
+    if (row.numbered !== undefined && typeof row.numbered !== "boolean")
+      problems.push(`"${path}.numbered" must be true or false`);
+    reservations.push({ key, what, numbered: row.numbered === true });
+  }
   const config: ArmadaConfig = {
+    jobs,
     project: {
       name: str(project, "project", "name"),
       slug: str(project, "project", "slug", { pattern: SLUG, hint: "lowercase letters, digits and dashes" }),
     },
     tracker: {
       specTitles,
+      lint,
       programRoot: str(tracker, "tracker", "program_root", {
         pattern: ISSUE_ID,
         hint: "an issue identifier such as ABC-1",
@@ -694,7 +809,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
-    ci: { failurePatterns },
+    ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
     merge: { notifyPaths },
     policy: {
@@ -711,6 +826,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       mergeApproval,
       validations,
     },
+    reservations,
     brief: { extra },
     secrets: { names: secretNames },
     conductor: {
@@ -752,6 +868,13 @@ runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 [github]
 repository = ${q(p.repository)}
 
+# A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
+# with \`armada ci why <pr> --rerun\`; unknown failures are refused.
+# [[ci.known_failure]]
+# check = "test"  # exact check run name
+# pattern = "flaky_suite > times out on cold start"  # regex over failing test names or error block
+# ticket = "ABC-123"
+
 [gates]
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
 
@@ -779,6 +902,21 @@ coordinator_minutes = 10 # an inbox item open longer than this shows "waiting fo
 # [[policy.validation]]
 # when = "a design ticket: a mockup, a visual direction or the look of a new screen"
 # then = "produce the design, attach it, ask the owner to validate it on Armada, and stop until they decide; never merge or build it on your own"
+
+# Long runs go through \`armada job\` on a runner that survives the terminal.
+# Commands run with sh -c here, with ARMADA_JOB_ID, ARMADA_JOB_REF,
+# ARMADA_TICKET and ARMADA_PROJECT set. No provider is required.
+# [jobs.eval]
+# start = "./scripts/start-eval.sh"   # returns within 2 min; last stdout line is the runner reference
+# status = "./scripts/job-status.sh" # last line: running|succeeded|failed [progress, e.g. 37/120 cases]
+# stop = "./scripts/stop-eval.sh"     # exit 0 means stopped
+# silence_minutes = 15
+# max_hours = 12                     # overdue, never auto-stopped
+# Declare the shared resources workers reserve through Armada (optional).
+# [[reservations]]
+# key = "db-migration"
+# what = "the next DB_MIGRATIONS version"
+# numbered = true
 
 [brief]
 # extra = "docs/worker-conventions.md"  # a file every worker brief carries under "Project conventions"

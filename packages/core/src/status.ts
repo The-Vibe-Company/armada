@@ -1,6 +1,7 @@
 // `armada status`: one JSON-serializable reading of the fleet, shared by the
 // CLI and, later, the dashboard.
 import { type ArmadaConfig, CONFIG_DEFAULTS } from "./config.ts";
+import type { DeferredLaunch } from "./deferred.ts";
 import {
   freshEvent,
   frontier,
@@ -13,16 +14,19 @@ import {
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
 import type { HttpRetryOptions } from "./http.ts";
+import { type Job, type JobSummary, jobOverdue } from "./jobs.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
   followedLaunches,
   freshRuntimeState,
   type LatestEvent,
+  type MergeHold,
   notStartedBody,
   notStartedLaunches,
   type PendingLaunch,
   type RuntimeHandle,
   type RuntimeState,
+  ticketOwners,
 } from "./live.ts";
 import { buildModel, isDone, type Model } from "./model.ts";
 import { describeRoute, routeProfile } from "./routing.ts";
@@ -66,6 +70,7 @@ export interface PrRef {
 }
 
 export interface InFlightTicket extends TicketRef {
+  coordinator?: string | null;
   phase: AgentPhase;
   shippingStage?: ShippingStage | null;
   phaseSource: "label" | "status-line" | "inferred" | "live";
@@ -93,6 +98,8 @@ export interface InFlightTicket extends TicketRef {
 }
 
 export interface FrontierTicket extends TicketRef {
+  /** A pending launch stays visible on the whole frontier, including another role's. */
+  launchingBy?: string | null;
   readyForAgent: boolean;
   onCriticalPath: boolean;
   unlocks: string[];
@@ -121,6 +128,9 @@ export interface NotStartedLaunch extends PendingLaunch {
 }
 
 export interface StatusReport {
+  /** Open long jobs from Armada; absent when their optional live read was unavailable. */
+  jobs?: JobSummary[];
+  holds?: MergeHold[];
   /** Default-branch CI; absent in older reports, null when unavailable. */
   main?: MainHealth | null;
   progress?: { done: number; total: number };
@@ -139,6 +149,7 @@ export interface StatusReport {
   /** Workers launched that have not claimed their ticket; empty when Armada's live data was not read. */
   notStarted: NotStartedLaunch[];
   pendingLaunches?: PendingLaunch[];
+  launchWhenUnblocked?: DeferredLaunch[];
   /**
    * Ready to start: the frontier, ranked, without the tickets parked on purpose.
    * `readyForAgent` marks tickets that carry the ready label.
@@ -153,6 +164,9 @@ export interface StatusReport {
 }
 
 export interface BuildStatusInput {
+  /** Set only for status --mine; full fleet derivation precedes list filtering. */
+  coordinatorName?: string;
+  jobs?: Job[];
   config: ArmadaConfig;
   program: ProgramData;
   forge: ForgeData | null;
@@ -162,8 +176,11 @@ export interface BuildStatusInput {
   heartbeats?: Record<string, string>;
   /** Live events newer than the tracker read, and open runtime handles (the dashboard's live layer). */
   live?: LaneOptions["live"];
+  /** The shared standing merge pauses, when Armada was read. */
+  holds?: MergeHold[];
   /** Launches no claim followed, from Armada's live data. */
   launches?: PendingLaunch[];
+  launchWhenUnblocked?: DeferredLaunch[];
   /** Problems met on optional sources (the live data), added to the report warnings. */
   extraWarnings?: string[];
   now: Date;
@@ -175,6 +192,8 @@ function routeOf(config: ArmadaConfig, labels: string[]): FrontierTicket["route"
 }
 
 export function buildStatus({
+  coordinatorName,
+  holds,
   config,
   program,
   forge,
@@ -182,7 +201,9 @@ export function buildStatus({
   lastEvents,
   heartbeats,
   live,
+  jobs,
   launches = [],
+  launchWhenUnblocked,
   extraWarnings = [],
   now,
 }: BuildStatusInput): StatusReport {
@@ -195,6 +216,13 @@ export function buildStatus({
     ...(heartbeats ? { heartbeats } : {}),
     ...(live ? { live } : {}),
   });
+  const owners = ticketOwners(
+    Object.entries(live?.handles ?? {}).map(([ticket, handle]) => ({ ticket, coordinator: handle.coordinator })),
+    launches,
+  );
+  const pending = followedLaunches(launches, now);
+  const pendingTickets = new Set(pending.map((launch) => launch.ticket));
+  const owned = (ticket: string) => coordinatorName === undefined || owners.get(ticket) === coordinatorName;
   const stageOf = new Map(lanes.map((l) => [l.issue.id, l.shippingStage ?? null]));
   const phaseOf = new Map(lanes.map((l) => [l.issue.id, l.phase]));
   const prRef = (
@@ -224,7 +252,22 @@ export function buildStatus({
   });
 
   return {
+    ...(jobs
+      ? {
+          jobs: jobs.map((job) => {
+            const maxHours = config.jobs?.[job.name]?.maxHours ?? null;
+            return {
+              ...job,
+              overdue: jobOverdue(job, maxHours, now),
+              ticketDone: issues.some((i) => i.id === job.ticket && i.statusType === "completed"),
+              maxHours,
+            };
+          }),
+        }
+      : {}),
     schemaVersion: STATUS_SCHEMA_VERSION,
+    ...(launchWhenUnblocked ? { launchWhenUnblocked } : {}),
+    ...(holds ? { holds } : {}),
     main: forge?.main ? mainHealth(forge.main, config.gates.requiredChecks, forge.mainComplete) : null,
     progress: {
       done: m.program.filter((ticket) => m.isLeaf(ticket) && isDone(ticket)).length,
@@ -239,47 +282,52 @@ export function buildStatus({
     },
     silentAfterMinutes: config.policy.silentAfterMinutes,
     coordinatorMinutes: config.policy.coordinatorMinutes,
-    inFlight: lanes.map((l) => {
-      const profileName = live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null;
-      const profile = profileName && l.runtime?.toLowerCase() === "herdr" ? config.herdr.profiles[profileName] : null;
-      return {
-        id: l.issue.id,
-        title: l.issue.title,
-        url: l.issue.url,
-        spec: l.spec,
-        phase: l.phase,
-        shippingStage: l.shippingStage ?? null,
-        phaseSource: l.phaseSource,
-        runtime: l.runtime,
-        handle: l.handle,
-        profile: profileName,
-        profileReason: l.claim?.profileReason ?? null,
-        ...(profile ? { harness: herdrHarnessLabel(profile.harness) } : {}),
-        agent: l.agent,
-        since: l.since,
-        lastUpdate: l.lastUpdate,
-        lastReport: l.lastReport,
-        lastHeartbeat: l.lastHeartbeat,
-        runtimeState: freshRuntimeState(
-          live?.handles?.[l.issue.id]?.runtimeState,
-          now,
-          config.policy.silentAfterMinutes,
-          live?.handles?.[l.issue.id]?.claimedAt,
-        ),
-        silent: l.flags.includes("silent"),
-        statusLine: l.statusLine
-          ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
-          : null,
-        pr: l.pr ? prRef(l.pr) : null,
-        openBlockers: l.openBlockers,
-        flags: l.flags,
-      };
-    }),
-    pendingLaunches: followedLaunches(launches, now),
-    notStarted: notStartedLaunches(launches, now, config.policy.notStartedMinutes).map((l) => {
-      const issue = issues.find((i) => i.id === l.ticket);
-      return { ...l, title: issue?.title ?? null, url: issue?.url ?? null, detail: notStartedBody(l, now) };
-    }),
+    inFlight: lanes
+      .filter((l) => owned(l.issue.id))
+      .map((l) => {
+        const profileName = live?.handles?.[l.issue.id]?.profile ?? l.claim?.profile ?? null;
+        const profile = profileName && l.runtime?.toLowerCase() === "herdr" ? config.herdr.profiles[profileName] : null;
+        return {
+          id: l.issue.id,
+          title: l.issue.title,
+          url: l.issue.url,
+          spec: l.spec,
+          phase: l.phase,
+          shippingStage: l.shippingStage ?? null,
+          phaseSource: l.phaseSource,
+          runtime: l.runtime,
+          handle: l.handle,
+          coordinator: l.coordinator ?? null,
+          profile: profileName,
+          profileReason: l.claim?.profileReason ?? null,
+          ...(profile ? { harness: herdrHarnessLabel(profile.harness) } : {}),
+          agent: l.agent,
+          since: l.since,
+          lastUpdate: l.lastUpdate,
+          lastReport: l.lastReport,
+          lastHeartbeat: l.lastHeartbeat,
+          runtimeState: freshRuntimeState(
+            live?.handles?.[l.issue.id]?.runtimeState,
+            now,
+            config.policy.silentAfterMinutes,
+            live?.handles?.[l.issue.id]?.claimedAt,
+          ),
+          silent: l.flags.includes("silent"),
+          statusLine: l.statusLine
+            ? { summary: l.statusLine.summary, at: l.statusLine.at, url: l.statusLine.url, plan: l.statusLine.plan }
+            : null,
+          pr: l.pr ? prRef(l.pr) : null,
+          openBlockers: l.openBlockers,
+          flags: l.flags,
+        };
+      }),
+    pendingLaunches: pending.filter((launch) => owned(launch.ticket)),
+    notStarted: notStartedLaunches(launches, now, config.policy.notStartedMinutes)
+      .filter((l) => owned(l.ticket))
+      .map((l) => {
+        const issue = issues.find((i) => i.id === l.ticket);
+        return { ...l, title: issue?.title ?? null, url: issue?.url ?? null, detail: notStartedBody(l, now) };
+      }),
     // The dashboard keeps whole configs in its snapshots, so a body written
     // before this field existed has none: fall back rather than park nothing.
     frontier: frontier(m, {
@@ -292,6 +340,9 @@ export function buildStatus({
         title: c.issue.title,
         url: c.issue.url,
         spec: c.spec,
+        ...(coordinatorName !== undefined && pendingTickets.has(c.issue.id)
+          ? { launchingBy: owners.get(c.issue.id) ?? null }
+          : {}),
         readyForAgent: c.readyForAgent,
         onCriticalPath: c.onCriticalPath,
         unlocks: c.unlocksAll,
@@ -364,6 +415,9 @@ const byMergeTime = (a: PullRequest, b: PullRequest) =>
   (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
 export interface LoadStatusOptions extends HttpRetryOptions {
+  coordinatorName?: string;
+  jobs?: () => Promise<Job[]>;
+  holds?: () => Promise<MergeHold[]>;
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
   githubToken: string | null;
@@ -374,6 +428,7 @@ export interface LoadStatusOptions extends HttpRetryOptions {
   runtimeHandles?: () => Promise<RuntimeHandle[]>;
   /** Launches no claim followed, read by the caller through Armada when signed in. */
   launches?: () => Promise<PendingLaunch[]>;
+  deferredLaunches?: () => Promise<DeferredLaunch[]>;
   fetch?: Fetch;
   now?: () => Date;
 }
@@ -478,16 +533,48 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents] =
-    await Promise.all([
-      readStatusSources(config, opts),
-      eventsP,
-      launchesP,
-      opts.heartbeats?.().catch(() => undefined),
-      opts.runtimeHandles?.().catch(() => undefined),
-      opts.latestEvents?.().catch(() => undefined),
-    ]);
+  const jobsP: Promise<{ jobs?: Job[]; warning?: string }> = opts.jobs
+    ? opts.jobs().then(
+        (jobs) => ({ jobs }),
+        (err) => ({ warning: `Armada's jobs could not be read (${err instanceof Error ? err.message : String(err)})` }),
+      )
+    : Promise.resolve({});
+  const holdsP: Promise<{ holds?: MergeHold[]; warning?: string }> = opts.holds
+    ? opts.holds().then(
+        (holds) => ({ holds }),
+        (err: unknown) => ({
+          warning: `Armada's merge holds could not be read (${err instanceof Error ? err.message : String(err)}); the merge pause is unknown`,
+        }),
+      )
+    : Promise.resolve({});
+  const [
+    { program, forge, forgeError },
+    events,
+    launches,
+    heartbeats,
+    runtimeHandles,
+    latestEvents,
+    jobs,
+    holds,
+    deferred,
+  ] = await Promise.all([
+    readStatusSources(config, opts),
+    eventsP,
+    launchesP,
+    opts.heartbeats?.().catch(() => undefined),
+    opts.runtimeHandles?.().catch(() => undefined),
+    opts.latestEvents?.().catch(() => undefined),
+    jobsP,
+    holdsP,
+    opts.deferredLaunches?.().then(
+      (items) => ({ items }),
+      (err: unknown) => ({
+        warning: `Armada’s deferred launches could not be read (${err instanceof Error ? err.message : String(err)})`,
+      }),
+    ),
+  ]);
   return buildStatus({
+    coordinatorName: opts.coordinatorName,
     config,
     program,
     forge,
@@ -504,7 +591,19 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }
       : {}),
     ...(launches.launches ? { launches: launches.launches } : {}),
-    extraWarnings: [events.warning, launches.warning].filter((w): w is string => !!w),
+    ...(jobs.jobs ? { jobs: jobs.jobs } : {}),
+    ...(holds.holds ? { holds: holds.holds } : {}),
+    ...(deferred && "items" in deferred ? { launchWhenUnblocked: deferred.items } : {}),
+    extraWarnings: [
+      events.warning,
+      ...(opts.coordinatorName !== undefined && !runtimeHandles
+        ? ["Armada’s coordinator ownership could not be read; --mine lists only tickets with known ownership"]
+        : []),
+      launches.warning,
+      jobs.warning,
+      holds.warning,
+      deferred && "warning" in deferred ? deferred.warning : undefined,
+    ].filter((w): w is string => !!w),
     now: now(),
   });
 }

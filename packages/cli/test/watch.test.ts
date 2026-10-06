@@ -3,9 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  checkPublished,
   machinePaths,
-  NPM_REGISTRY_URL,
   readWatchLock,
   readWatchLockInfo,
   readWatchState,
@@ -107,6 +105,65 @@ async function hook(c: Awaited<ReturnType<typeof coordinator>>, cwd: string, env
 }
 
 describe("armada watch", () => {
+  test("named watch defaults to mine, all opts out, and unnamed watch retains the full fleet", async () => {
+    const c = await coordinator();
+    await c.store.saveRuntimeHandle({
+      project: P,
+      ticket: "DEMO-8",
+      coordinator: "default",
+      runtime: "conductor",
+      handle: "ws/other",
+      branch: null,
+      at: NOW,
+    });
+    await c.store.putHandBack({ project: P, ticket: "DEMO-8", author: null, body: "PR #8", at: NOW });
+    c.io.env.ARMADA_COORDINATOR = "front";
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "nothing", inFlight: [] });
+    c.reset();
+    expect(await run(["watch", "--all", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "items", inFlight: ["DEMO-8"], watch: { inFlight: [] } });
+    c.reset();
+    delete c.io.env.ARMADA_COORDINATOR;
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({ outcome: "items", inFlight: ["DEMO-8"] });
+    c.reset();
+    expect(await run(["inbox", "--mine", "--all"], c.io)).toBe(2);
+    expect(c.err()).toContain("choose --mine or --all");
+  });
+
+  test("named inbox defaults to all, mine labels owned/unowned entries and keeps an owned re-arm count", async () => {
+    const c = await coordinator();
+    c.io.env.ARMADA_COORDINATOR = "front";
+    for (const [ticket, owner] of [
+      ["DEMO-7", "front"],
+      ["DEMO-8", "default"],
+      ["DEMO-9", null],
+    ] as const) {
+      await c.store.saveRuntimeHandle({
+        project: P,
+        ticket,
+        coordinator: owner,
+        runtime: "conductor",
+        handle: `ws/${ticket}`,
+        branch: null,
+        at: NOW,
+      });
+      await c.store.putHandBack({ project: P, ticket, author: null, body: "PR #7", at: NOW });
+    }
+    expect(await run(["inbox", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out())).toMatchObject({
+      inFlight: ["DEMO-7", "DEMO-8", "DEMO-9"],
+      watch: { inFlight: ["DEMO-7"] },
+    });
+    c.reset();
+    expect(await run(["inbox", "--mine"], c.io)).toBe(0);
+    expect(c.out()).toContain("DEMO-7 · owner: front");
+    expect(c.out()).toContain("DEMO-9 · unowned");
+    expect(c.out()).not.toContain("DEMO-8");
+    expect((await readWatchState(c.paths, P, "front"))?.inFlight).toEqual(["DEMO-7"]);
+  });
+
   const identity = (project = P): WatchIdentity => ({
     project,
     configPath: `${COORDINATOR_ROOT}/armada.toml`,
@@ -313,59 +370,51 @@ describe("armada watch", () => {
     }
   }
 
-  test("a release with a delayed tarball ends the watch only after verification, once, and no notice repeats it", async () => {
-    const server = { minimum: "0.0.1", latest: version };
-    const c = await coordinator({ cli: server });
-    const tarball = "https://registry.npmjs.org/armada-99.1.0.tgz";
-    let ready = false;
-    c.onSleep.push(
-      async () => {
-        expect(
-          await checkPublished("99.1.0", async (url) =>
-            url === NPM_REGISTRY_URL
-              ? Response.json({ versions: { "99.1.0": { dist: { tarball } } } })
-              : new Response(null, { status: ready ? 200 : 404 }),
-          ),
-        ).toEqual({ state: "missing", newest: null });
-        expect(c.out()).not.toContain("is out");
-      },
-      async () => {
-        ready = true;
-        const answer = await checkPublished("99.1.0", async (url) =>
-          url === NPM_REGISTRY_URL
-            ? Response.json({ versions: { "99.1.0": { dist: { tarball } } } })
-            : new Response(null, { status: ready ? 200 : 404 }),
-        );
-        if (answer.state === "published") server.latest = "99.1.0";
-      },
-    );
-    await c.hold("DEMO-2");
-    expect(await run(["watch"], c.io)).toBe(0);
-    expect(c.out()).toBe(
-      [
-        "Inbox of widgets (1), oldest first:",
-        `* version · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
-        `    Armada 99.1.0 is out (you run ${version}). Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0`,
-        "    Not urgent: finish what is in flight first, then, between rounds:",
-        "      1. npm install -g @the-vibe-company/armada@99.1.0",
-        "      2. armada init, then merge its pull request: armada merge <n> --no-ticket",
-        "    Workers in flight keep the version their brief pinned: tell them nothing unless the notes say otherwise.",
-        "New items are marked *.",
-        "1 worker in flight (DEMO-2) — act on the items above, then keep watching: armada watch",
-        "",
-      ].join("\n"),
-    );
-    expect(c.err()).toBe("");
-
-    // The next watch waits for what is new to the coordinator: the release is not.
-    c.reset();
-    c.onSleep.push(async () => {
-      await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #4", at: c.clock.now() });
+  for (const follow of [false, true]) {
+    test(`ordinary releases leave ${follow ? "follow" : "plain"} watch running until real work arrives`, async () => {
+      const server = { minimum: "0.0.1", latest: version };
+      const c = await coordinator({ cli: server });
+      await c.hold("DEMO-2");
+      c.onSleep.push(
+        async () => {
+          server.latest = "99.1.0";
+        },
+        async () => {
+          expect(c.out()).not.toContain("version");
+          await c.store.putHandBack({ project: P, ticket: "DEMO-2", author: null, body: "PR #4", at: c.clock.now() });
+        },
+        async () => {},
+      );
+      expect(await run(follow ? ["watch", "--follow", "--for", "0.75", "--json"] : ["watch"], c.io)).toBe(0);
+      expect(c.out()).toContain("hand-back");
+      expect(c.out()).not.toContain("version");
+      expect(c.err()).not.toContain("is out");
     });
-    expect(await run(["watch"], c.io)).toBe(0);
-    expect(c.out()).toContain("* #1 hand-back · DEMO-2");
-    expect(c.out()).not.toContain("version");
-    expect(c.err()).toBe("");
+
+    test(`a server minimum interrupts ${follow ? "follow" : "plain"} watch with a version item`, async () => {
+      const server = { minimum: "0.0.1", latest: "99.1.0" };
+      const c = await coordinator({ cli: server });
+      await c.hold("DEMO-2");
+      c.onSleep.push(async () => {
+        server.minimum = "99.0.0";
+      });
+      expect(
+        await run(
+          follow ? ["watch", "--follow", "--tickets", "DEMO-2", "--kinds", "hand-back", "--json"] : ["watch", "--json"],
+          c.io,
+        ),
+      ).toBe(0);
+      expect(c.out()).toContain('"kind": "version"'.replaceAll(" ", follow ? "" : " "));
+      expect(c.out()).toContain("server requires Armada 99.0.0");
+      expect(c.out()).not.toContain("armada init");
+      expect(await readWatchLock(c.paths, P)).toBeNull();
+    });
+  }
+
+  test("a server already requiring a newer CLI returns a version item on the first read", async () => {
+    const c = await coordinator({ cli: { minimum: "99.0.0", latest: "99.1.0" } });
+    expect(await run(["watch", "--json"], c.io)).toBe(0);
+    expect(JSON.parse(c.out()).items).toMatchObject([{ kind: "version", version: "99.1.0" }]);
   });
 
   test("watches until a hand-back, prints it with the re-arm line, and leaves the state for the stop hook", async () => {
@@ -389,7 +438,7 @@ describe("armada watch", () => {
     expect(c.out()).toBe(
       [
         "Inbox of widgets (1), oldest first:",
-        `* #1 hand-back · DEMO-2 · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
+        `* #1 hand-back · DEMO-2 · unowned · ${new Date(NOW.getTime() + 30_000).toISOString()}`,
         "    Agent status: ready-to-merge — PR #4",
         "    shipping path unreported",
         "New items are marked *.",
@@ -480,7 +529,7 @@ describe("armada watch", () => {
     );
     expect(await run(["watch"], c.io)).toBe(0);
     expect(c.err()).toBe("armada: warning: Armada refused: Armada is restarting; still watching, next try in 15 s\n");
-    expect(c.out()).toContain("* #1 question · DEMO-2 · from ws/DEMO-2");
+    expect(c.out()).toContain("* #1 question · DEMO-2 · unowned · from ws/DEMO-2");
 
     // Signed out: refused before any read, and recorded so the stop hook stops asking.
     c.reset();
@@ -511,6 +560,62 @@ describe("armada watch", () => {
     expect(await run(["hook", "stop"], { ...c.io, cwd: "/", readStdin: async () => "not json" })).toBe(0);
     expect(c.out()).toBe("");
   });
+});
+
+test("two named coordinators watch one project concurrently and each wakes for its own item", async () => {
+  const c = await coordinator();
+  for (const [ticket, name] of [
+    ["DEMO-2", "front"],
+    ["DEMO-3", "back"],
+  ] as const) {
+    await c.hold(ticket);
+    expect(await c.store.transferTickets({ project: P, tickets: [ticket], to: name, at: NOW })).toBe(true);
+  }
+  const start = (name: string, pid: number) => {
+    let wake: (() => void) | undefined;
+    let ready: (() => void) | undefined;
+    const sleeping = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const output: string[] = [];
+    c.alive.add(pid);
+    const io: Io = {
+      ...c.io,
+      pid,
+      env: { ...c.io.env, ARMADA_COORDINATOR: name },
+      stdout: (text) => output.push(text),
+      sleep: () =>
+        new Promise<void>((resolve) => {
+          wake = resolve;
+          ready?.();
+        }),
+    };
+    return { done: run(["watch", "--json"], io), sleeping, wake: () => wake?.(), output };
+  };
+  const front = start("front", 4242);
+  await front.sleeping;
+  const back = start("back", 4343);
+  await back.sleeping;
+  expect(await readWatchLock(c.paths, P, "front")).toBe(4242);
+  expect(await readWatchLock(c.paths, P, "back")).toBe(4343);
+  for (const ticket of ["DEMO-2", "DEMO-3"])
+    await c.store.addInboxItem({
+      project: P,
+      ticket,
+      kind: "question",
+      recipient: "coordinator",
+      author: ticket,
+      body: `Question for ${ticket}`,
+      at: NOW,
+    });
+  front.wake();
+  back.wake();
+  expect(await front.done).toBe(0);
+  expect(await back.done).toBe(0);
+  expect(JSON.parse(front.output.join("")).items.map((item: { ticket: string }) => item.ticket)).toEqual(["DEMO-2"]);
+  expect(JSON.parse(back.output.join("")).items.map((item: { ticket: string }) => item.ticket)).toEqual(["DEMO-3"]);
+  expect((await readWatchState(c.paths, P, "front"))?.inFlight).toEqual(["DEMO-2"]);
+  expect((await readWatchState(c.paths, P, "back"))?.inFlight).toEqual(["DEMO-3"]);
 });
 
 test("follow NDJSON streams both items, persists, times out cleanly and shares the watch lock", async () => {
@@ -579,12 +684,12 @@ test("plain watch accepts a bounded lifetime and follow refuses unsupported or m
     ["--follow", "--since", "bad"],
     ["--follow", "--tickets", "bad"],
     ["--for", "0"],
-    ["--mine"],
+    ["--mine", "--all"],
   ]) {
     c.reset();
     expect(await run(["watch", ...flags], c.io)).toBe(2);
   }
-  expect(c.err()).toContain("Show each coordinator only its own work");
+  expect(c.err()).toContain("choose --mine or --all");
 });
 
 test("long watch deadlines are chunked below Node's timer limit and cancellable", () => {
@@ -619,4 +724,49 @@ test("long watch deadlines are chunked below Node's timer limit and cancellable"
   expect(expired).toBe(1);
   stop();
   expect(next.cancelled).toBe(true);
+});
+
+test("named follow watches retain independent cursors, seen items and resume roles", async () => {
+  const c = await coordinator();
+  for (const [ticket, name] of [
+    ["DEMO-2", "front"],
+    ["DEMO-3", "back"],
+  ] as const) {
+    await c.hold(ticket);
+    await c.store.transferTickets({ project: P, tickets: [ticket], to: name, at: NOW });
+    await c.store.addInboxItem({
+      project: P,
+      ticket,
+      kind: "question",
+      recipient: "coordinator",
+      author: null,
+      body: name,
+      at: NOW,
+    });
+  }
+  for (const [name, ticket] of [
+    ["front", "DEMO-2"],
+    ["back", "DEMO-3"],
+  ] as const) {
+    c.reset();
+    c.io.env.ARMADA_COORDINATOR = name;
+    c.onSleep.push(async () => {});
+    expect(await run(["watch", "--follow", "--json", "--for", "0.25"], c.io)).toBe(0);
+    expect(
+      c
+        .out()
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).ticket),
+    ).toEqual([ticket]);
+    expect(c.err()).toContain(`resume: ARMADA_COORDINATOR=${name} armada watch --follow`);
+    const state = await readWatchState(c.paths, P, name);
+    expect(state?.cursor).toMatch(/^v1\./);
+    expect(state?.seen).toHaveLength(1);
+    expect(state?.inFlight).toEqual([ticket]);
+  }
+  expect((await readWatchState(c.paths, P, "front"))?.seen).not.toEqual(
+    (await readWatchState(c.paths, P, "back"))?.seen,
+  );
+  expect(await readWatchState(c.paths, P)).toBeNull();
 });

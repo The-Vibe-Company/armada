@@ -218,11 +218,37 @@ async function fixture(toml = TOML) {
   };
 }
 
+test("Conductor launch briefs include shared keys and holders from the same brief input as herdr", async () => {
+  const f = await fixture(
+    `${TOML}\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n`,
+  );
+  await f.store.reserve({
+    project: "widgets",
+    key: "db-migration",
+    value: "27",
+    next: false,
+    floor: 0,
+    ticket: "DEMO-12",
+    note: null,
+    at: NOW,
+  });
+  expect(await f.launch()).toBe(0);
+  const prompt = f.calls.find((c) => c.args[2] === "create")?.input;
+  expect(prompt).toContain("db-migration: the next schema version");
+  expect(prompt).toContain("db-migration = 27: DEMO-12");
+});
+
 test("native launch routes the profile, sends the token and coordinator notes only on stdin, binds and prints ids", async () => {
   const f = await fixture();
+  f.io.env.ARMADA_COORDINATOR = "front";
   expect(await run(["launch", "DEMO-13", "--runtime", "conductor", "--notes", "notes.md", "--json"], f.io)).toBe(0);
   expect([...f.armada.launches.values()]).toEqual([
-    expect.objectContaining({ ticket: "DEMO-13", runtime: "conductor", runtimeHandle: "ws-1/ses-1" }),
+    expect.objectContaining({
+      ticket: "DEMO-13",
+      coordinator: "front",
+      runtime: "conductor",
+      runtimeHandle: "ws-1/ses-1",
+    }),
   ]);
   const create = f.calls.find((c) => c.args[2] === "create");
   if (!create?.input) throw new Error("no native launch prompt");
@@ -499,6 +525,7 @@ test("an unavailable or malformed recovery search retains the pending launch for
 test("Conductor pre-approval is read-only in preview and reaches the launched brief", async () => {
   for (const dry of [true, false]) {
     const f = await fixture();
+    f.io.env.ARMADA_COORDINATOR = "front";
     expect(
       await f.launch({ "pre-approve": "true", reason: "small follow-up", ...(dry ? { "dry-run": "true" } : {}) }),
     ).toBe(0);
@@ -507,6 +534,7 @@ test("Conductor pre-approval is read-only in preview and reaches the launched br
       expect(f.linear.writes).toHaveLength(0);
       expect(f.armada.launches.size).toBe(0);
     } else {
+      expect([...f.armada.launches.values()][0]?.coordinator).toBe("front");
       expect(f.linear.writes).toHaveLength(1);
       expect(f.linear.tickets.get("DEMO-13")?.labels.some((l) => l.name === "plan-approved")).toBe(true);
       const prompt = f.calls.find((c) => c.command === "conductor" && c.args.includes("create"))?.input;

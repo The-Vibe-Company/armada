@@ -8,6 +8,7 @@ import { requireFleetAccess } from "@/lib/access";
 import { requireAccounts } from "@/lib/accounts-server";
 import { ORGANIZATION_PATH } from "@/lib/accounts-settings";
 import { ZONE_COOKIE, zoneOf } from "@/lib/activity-view";
+import { DEFAULT_DIGEST } from "@/lib/digest-slots";
 import { projectsOf } from "@/lib/fleet-store";
 import {
   isLanguage,
@@ -219,6 +220,34 @@ export default async function Notifications({ searchParams }: { searchParams: Pa
               aria-label={`${n.quiet} · ${n.to}`}
             />
 
+            <label htmlFor="owner-digest-times">{n.digestTimes}</label>
+            <Input
+              id="owner-digest-times"
+              name="digestTimes"
+              type="text"
+              defaultValue={(channel?.digest ?? DEFAULT_DIGEST).times.join(", ")}
+              maxLength={144}
+              placeholder="09:00, 13:00, 18:00"
+            />
+            <p className="org-note">{n.digestHint}</p>
+            <fieldset className="owner-digest-days">
+              <legend>{n.digestDays}</legend>
+              {n.weekdays.map((day, index) => (
+                <label key={day}>
+                  <input
+                    type="checkbox"
+                    name="digestDays"
+                    value={index}
+                    defaultChecked={(channel?.digest ?? DEFAULT_DIGEST).days.includes(index)}
+                  />{" "}
+                  {day}
+                </label>
+              ))}
+            </fieldset>
+            <label className="owner-digest-toggle">
+              <input type="checkbox" name="skipQuiet" defaultChecked={channel?.digest.skipQuiet ?? false} />{" "}
+              {n.skipQuiet}
+            </label>
             <label>
               <input type="checkbox" name="alerts" defaultChecked={channel?.alerts ?? true} /> {n.alerts}
             </label>

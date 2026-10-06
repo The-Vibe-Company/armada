@@ -22,6 +22,8 @@ export interface ClaimRef {
   releasedAt: string | null;
   /** Herdr provenance: the branch recorded by the claim. */
   branch?: string | null;
+  /** Optional delivery scope: refuse a notice after transfer to another coordinator. */
+  coordinator?: string;
 }
 export type RuntimeErrorCode =
   | "unsupported"

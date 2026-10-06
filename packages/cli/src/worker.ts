@@ -32,6 +32,7 @@ import {
   workerSessionVariable,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
+import { coordinatorName } from "./coordinator.ts";
 import { reportHerdr } from "./herdr.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { sessionHandle } from "./login.ts";
@@ -55,7 +56,15 @@ export function liveFleet(
     };
   try {
     const api = apiOf(io, credentials.armadaApi.url);
-    return { fleet: fleetClient({ api, signIn, project: projectOf(config) }), warning: null };
+    return {
+      fleet: fleetClient({
+        api,
+        signIn,
+        project: projectOf(config),
+        coordinatorName: signIn.kind === "worker" ? undefined : () => coordinatorName(io, config.project.slug),
+      }),
+      warning: null,
+    };
   } catch (err) {
     return {
       fleet: null,
@@ -75,7 +84,10 @@ export function statusLive(
       latestEvents: () => Promise<Record<string, import("@armada/core").LatestEvent>>;
       heartbeats: () => Promise<Record<string, string>>;
       launches: () => Promise<PendingLaunch[]>;
+      jobs: () => Promise<import("@armada/core").Job[]>;
+      deferredLaunches: () => Promise<import("@armada/core").DeferredLaunch[]>;
       runtimeHandles: () => Promise<import("@armada/core").RuntimeHandle[]>;
+      holds: () => Promise<import("@armada/core").MergeHold[]>;
     }
   | undefined {
   const { fleet } = liveFleet(io, config, credentials);
@@ -85,6 +97,9 @@ export function statusLive(
         latestEvents: () => fleet.latestEvents(),
         heartbeats: () => fleet.heartbeatTimes(),
         launches: () => fleet.pendingLaunches(),
+        jobs: () => fleet.listJobs({ open: true }),
+        deferredLaunches: () => fleet.deferredLaunches(),
+        holds: () => fleet.holds(),
         runtimeHandles: () => observeRuntimes(io, fleet, config),
       }
     : undefined;
@@ -127,6 +142,13 @@ function context(io: Io, config: ArmadaConfig, credentials: Credentials): Worker
     config,
     linear,
     workerSession: credentials.armadaSignIn?.kind === "worker",
+    claimCoordinator: async () => {
+      const signIn = credentials.armadaSignIn;
+      if (!signIn) return null;
+      if (signIn.kind !== "worker") return coordinatorName(io, config.project.slug);
+      const identity = await apiOf(io, credentials.armadaApi.url).whoami(signIn);
+      return identity.worker?.coordinator ?? null;
+    },
     workerHandle: !credentials.armadaSignIn || credentials.armadaSignIn.kind === "worker" ? sessionHandle(io) : null,
     workerPane:
       io.env.HERDR_ENV === "1" &&

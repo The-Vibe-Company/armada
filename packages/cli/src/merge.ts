@@ -30,12 +30,16 @@ import {
   type MergePull,
   mergePullRequest,
   parsePullRequestUrl,
+  prepareQueueEntry,
+  queueOpen,
   readStatusSources,
   shellWord,
   type TestMergeResult,
   unblockedBy,
 } from "@armada/core";
 import { afterMerge } from "./after-merge.ts";
+import { coordinatorName } from "./coordinator.ts";
+import type { DeferredLaunchResult } from "./deferred-launch.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
@@ -167,12 +171,25 @@ export function gitRepo(exec: Exec, cwd: string): LocalRepo {
 export function prNumber(arg: string | undefined, repository: string): number {
   if (!arg) throw new UsageError("merge needs a pull request: armada merge <number or URL>");
   const trimmed = arg.trim().replace(/^#/, "");
-  if (/^\d+$/.test(trimmed)) return Number(trimmed);
+  if (
+    /^\d+$/.test(trimmed) &&
+    Number.isSafeInteger(Number(trimmed)) &&
+    Number(trimmed) > 0 &&
+    Number(trimmed) <= 2147483647
+  )
+    return Number(trimmed);
   const pr = parsePullRequestUrl(trimmed);
   if (!pr) throw new UsageError(`"${arg}" is not a pull request number or URL`);
   if (pr.repo.toLowerCase() !== repository.toLowerCase())
     throw new UsageError(`${pr.url} is not in the project repository ${repository}`);
+  if (!Number.isSafeInteger(pr.number) || pr.number < 1 || pr.number > 2147483647)
+    throw new UsageError("pull request number must be between 1 and 2147483647");
   return pr.number;
+}
+
+function ordinal(n: number): string {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] ?? "th");
+  return `${n}${suffix}`;
 }
 
 /** `--timeout` of `merge --wait`, in minutes. */
@@ -219,14 +236,68 @@ export async function merge(
     beforeMerge?: (number: number, sha: string) => Promise<void>;
   },
 ) {
+  const queueWatch = async () =>
+    rearmFor(io, config.project.slug, {
+      inFlight: (await watchOf(io, config.project.slug)).state?.inFlight ?? null,
+      open: null,
+    });
+  if (a.rest[0] === "queue") {
+    if (Object.keys(a.options).length) throw new UsageError("merge queue only takes --json");
+    const { fleet, warning } = await liveFleet(io, config, credentials);
+    if (!fleet) throw new UsageError(warning ?? "merge queue needs Armada sign-in", "armada login");
+    if (a.rest[1] === "remove" && a.rest.length === 3) {
+      const pr = prNumber(a.rest[2], config.github.repository);
+      const removed = await fleet.queueRemove({ pr });
+      const watch = await queueWatch();
+      io.stdout(
+        a.json
+          ? `${JSON.stringify({ pr, removed, watch })}\n`
+          : removed
+            ? `Removed #${pr} from the merge queue.\n`
+            : `#${pr} is not queued or is currently merging.\n`,
+      );
+      if (!a.json) io.stdout(`${watch.line}\n`);
+
+      return 0;
+    }
+    if (a.rest.length !== 1) throw new UsageError("use armada merge queue [--json] or armada merge queue remove <pr>");
+    const entries = await fleet.queueList();
+    const watch = await queueWatch();
+    let position = 0;
+    io.stdout(
+      a.json
+        ? `${JSON.stringify({ entries, holds: [], watch }, null, 2)}\n`
+        : entries.length
+          ? `${entries.map((e) => `${queueOpen(e) ? `${++position}.` : "  "} #${e.pr}  ${e.state}${e.ticket ? `  ${e.ticket}` : ""}${e.detail ? ` — ${e.detail}` : ""}`).join("\n")}\n`
+          : "The merge queue is empty.\n",
+    );
+    if (!a.json) io.stdout(`${watch.line}\n`);
+    return 0;
+  }
+  const enqueue = !!a.options["when-green"];
+  if (!enqueue && a.options["keep-open"]) throw new UsageError("--keep-open applies to --when-green");
+  if (
+    enqueue &&
+    ["wait", "timeout", "dry-run", "no-lock", "ask-owner", "no-archive", "no-notify"].some(
+      (k) => a.options[k] !== undefined,
+    )
+  )
+    throw new UsageError(
+      "--when-green queues intent: --wait, --timeout, --dry-run, --no-lock, --ask-owner, --no-archive and --no-notify cannot go with it",
+    );
+  if (enqueue && a.options.ticket && a.rest.length !== 1) throw new UsageError("--ticket applies to one pull request");
+  if (a.options["through-hold"] !== undefined && !a.options["through-hold"]?.trim())
+    throw new UsageError("--through-hold needs a reason");
   const [arg, ...extra] = a.rest;
-  if (extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
+  if (!enqueue && extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
   const number = prNumber(arg, config.github.repository);
   const noTicket = !!a.options["no-ticket"];
   if (noTicket && a.options.ticket) throw new UsageError("--no-ticket and --ticket cannot go together");
+  if (a.options["through-hold"] !== undefined && !a.options["through-hold"].trim())
+    throw new UsageError("--through-hold needs a reason");
   const wait = !!a.options.wait;
   const askOwner = a.options["ask-owner"] === "true";
-  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"]))
+  if (askOwner && (wait || a.options["dry-run"] || noTicket || a.options["no-lock"] || a.options["through-hold"]))
     throw new UsageError("--ask-owner only asks the owner: it goes with --reason (and --ticket), nothing else");
   if (askOwner && !a.options.reason?.trim())
     throw new UsageError(
@@ -259,10 +330,8 @@ export async function merge(
       },
       compare: (base, head) => fetchComparison({ ...gh, base, head }),
       diff: (n) => fetchPullDiff({ ...gh, number: n }),
-      merge: async (number, sha) => {
-        await guards?.beforeMerge?.(number, sha);
-        return ghMerge(exec, repoDir, config.github.repository)(number, sha);
-      },
+      beforeMerge: guards?.beforeMerge,
+      merge: ghMerge(exec, repoDir, config.github.repository),
       comment: async (number, body) => {
         const result = await ghAttempt(exec, repoDir, [
           "pr",
@@ -284,6 +353,7 @@ export async function merge(
     // Signed in, the merge lock is required: two coordinators merge one after the other.
     lockRequired: !!credentials.armadaSignIn,
     fleet: async () => live,
+    coordinatorName: await coordinatorName(io, config.project.slug),
     afterRead: async (ticket) => {
       const sources = await readStatusSources(config, { linearApiKey, githubToken: token, ...fetchOpt, now });
       const liveReading = live.fleet
@@ -363,6 +433,44 @@ export async function merge(
       return false;
     },
   };
+  if (enqueue) {
+    const { fleet, warning } = await live;
+    if (!fleet) throw new UsageError(warning ?? "queuing needs Armada sign-in", "armada login");
+    const numbers = [...new Set(a.rest.map((pr) => prNumber(pr, config.github.repository)))];
+    const results = [];
+    const open = (await fleet.queueList()).filter(queueOpen);
+    // Emit each durable result immediately, so a later refusal does not hide earlier adds.
+    for (const pr of numbers) {
+      const existing = open.find((e) => e.pr === pr);
+      if (existing) {
+        results.push({ pr, existing });
+        if (!a.json) io.stdout(`#${pr} is already queued.\n`);
+        continue;
+      }
+      const entry = await prepareQueueEntry(ctx, {
+        pr,
+        ticket: a.options.ticket ?? null,
+        noTicket,
+        reason: a.options.reason ?? null,
+        keepOpen: !!a.options["keep-open"],
+        throughHold: a.options["through-hold"],
+      });
+      const result = await fleet.queueAdd(entry);
+      results.push({ pr, ...result });
+
+      if (!a.json)
+        io.stdout(
+          "existing" in result ? `#${pr} is already queued.\n` : `queued #${pr} (${ordinal(result.position)})\n`,
+        );
+    }
+    const watch = await queueWatch();
+    io.stdout(
+      a.json
+        ? `${JSON.stringify({ results, watch, next: "armada merge queue" }, null, 2)}\n`
+        : `Next: armada merge queue\n${watch.line}\n`,
+    );
+    return 0;
+  }
   if (askOwner) {
     const asked = await askOwnerToMerge(ctx, {
       pr: number,
@@ -386,24 +494,10 @@ export async function merge(
     dryRun: !!a.options["dry-run"],
     noLock: !!a.options["no-lock"],
     reason: a.options.reason ?? null,
+    throughHold: a.options["through-hold"],
   });
-  // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
-  const project = config.project.slug;
-  const coordinator = coordinatorHandle(io);
-  const known = (await watchOf(io, project)).state?.inFlight ?? null;
-  const inFlight = o.workersListed
-    ? o.workers
-        .filter((w) => !coordinator || w.handle !== coordinator)
-        .map((w) => w.ticket)
-        .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
-    : o.merged && known
-      ? known.filter((t) => t !== o.ticket?.id)
-      : known;
-  if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
-  const next = await rearmFor(io, project, { inFlight, open: null });
-  if (!a.json) io.stdout(`${render(o, !!a.options["no-notify"])}${next.line}\n`);
-  for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
-  if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+  let deferredLaunches: DeferredLaunchResult[] = [];
+  let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
   const after = await afterMerge(io, config, credentials, o, {
     configPath,
     noArchive: !!a.options["no-archive"],
@@ -413,8 +507,64 @@ export async function merge(
       if (a.json) return;
       for (const w of results) io.stdout(`${w.ticket}: ${w.detail}.\n${w.delivered ? "" : `${w.text}\n`}`);
     },
+    onDeferredLaunch: async (results) => {
+      deferredLaunches = results;
+      // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
+      const project = config.project.slug;
+      const coordinator = coordinatorHandle(io);
+      const known = (await watchOf(io, project)).state?.inFlight ?? null;
+      let inFlight = o.workersListed
+        ? o.workers
+            .filter((w) => !coordinator || w.handle !== coordinator)
+            .map((w) => w.ticket)
+            .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
+        : o.merged && known
+          ? known.filter((t) => t !== o.ticket?.id)
+          : known;
+      if (inFlight)
+        for (const launch of deferredLaunches)
+          if (launch.status === "launched" && !inFlight.includes(launch.ticket)) inFlight.push(launch.ticket);
+      if (o.merged && inFlight && live.fleet) {
+        try {
+          // Follow every open request; the next inbox reading prunes tickets proved closed.
+          for (const request of await live.fleet.deferredLaunches())
+            if (!inFlight.includes(request.ticket)) inFlight.push(request.ticket);
+        } catch {
+          // Retain the previous watch set if pending requests cannot be refreshed.
+          for (const ticket of known ?? [])
+            if (ticket !== o.ticket?.id && !inFlight.includes(ticket)) inFlight.push(ticket);
+          o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
+        }
+      }
+      const name = await coordinatorName(io, project);
+      if (name !== "default") {
+        try {
+          const owned = await live.fleet?.inbox({
+            coordinatorName: name,
+            coordinator,
+            scope: "mine",
+            etag: null,
+            silentAfterMinutes: config.policy.silentAfterMinutes,
+            quietAfterMinutes: config.policy.quietAfterMinutes,
+            notStartedMinutes: config.policy.notStartedMinutes,
+          });
+          inFlight = owned?.inFlight ?? null;
+        } catch {
+          inFlight = known ? known.filter((ticket) => !o.merged || ticket !== o.ticket?.id) : null;
+          o.warnings.push("could not refresh owned workers for the re-arm line; retained the previous tickets");
+        }
+      }
+      if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
+      next = await rearmFor(io, project, { inFlight, open: null });
+      if (!a.json)
+        io.stdout(
+          `${render(o, !!a.options["no-notify"])}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
+        );
+      for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
+      if (o.merged && o.ticket) await endWorkerSessions(io, config, credentials, o.ticket.id, "merged", a.json);
+    },
   });
-  if (a.json) io.stdout(`${JSON.stringify({ ...o, ...after, watch: next }, null, 2)}\n`);
+  if (a.json) io.stdout(`${JSON.stringify({ ...o, ...after, deferredLaunches, watch: next }, null, 2)}\n`);
   else if (after.archive)
     io.stdout(
       `${after.archive.detail.endsWith(".") ? after.archive.detail : `${o.ticket?.id}: ${after.archive.detail}.`}\n`,

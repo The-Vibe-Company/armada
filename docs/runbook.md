@@ -51,6 +51,28 @@ Armada's app (the dashboard and the API terminals sign in to) keeps everything i
 5. Enter the organization's keys again on Organization > Keys, and create new organization API keys for cloud coordinators: the old database's sessions, API keys and launch tokens do not carry over. Every terminal runs `armada login` again; a cloud coordinator gets its new key as `ARMADA_API_KEY`.
 6. Register each project once: `armada init` from a signed-in terminal registers it for that terminal's organization, and so does the first claim, report or inbox read of a signed-in terminal. The first person running `init` becomes its owner. From `packages/dashboard`, `ARMADA_DATABASE_URL=<URL> bun run db register <path to the project's armada.toml>` registers one with no organization; it joins the first organization on the next dashboard read. This records the local username as owner; a service-account operator can add `--owner "Name"`. Later registrations preserve the first recorded owner.
 
+## Run a second coordinator
+
+A coordinator is a named role inside one project, independent of its machine or session.
+Set `ARMADA_COORDINATOR=front` for a cloud coordinator, or run `armada coordinator use front`
+to remember the role for this project and checkout. The environment wins over that preference;
+without either, the role is `default`. Names use 1–32 lowercase letters, digits or hyphens,
+starting with a letter or digit.
+
+`armada coordinator list` shows each role's sessions, last-seen times and tickets. A launch
+records the role in its authenticated launch token; a worker's claim inherits it, and cannot
+choose a different owner. Workers launched before this migration stay unowned until taken.
+Each role's `armada watch` has its own lock and memory on the machine and follows its owned
+and unowned work. `armada watch --stop` stops that role's watch; `--stop --name front` stops
+front's verified watch without stopping another role.
+
+To take over a stopped coordinator's tickets, choose your role and run
+`armada coordinator take ABC-12 ABC-13 --from front`. The source ownership must still match
+for every ticket: a concurrent handover refuses the entire take. The handover records an
+event, keeps the worker generation and phase, and its next inbox read follows the new owner.
+Pass the role name in any coordinator handover comment, along with the tickets and next actions.
+Deploy the dashboard migration before installing the new CLI.
+
 ## Reach the fleet through Armada
 
 From this version on, the CLI reads and writes the fleet's live data only through the Armada API (`/api/cli/fleet/*`), with the terminal's sign-in. The cut-over:
@@ -88,8 +110,10 @@ No cron is needed: nothing reads Linear or GitHub on a timer, so the database ca
 1. Deploy with accounts and `ARMADA_SECRETS_KEY`. An owner or admin opens Organization > Notifications.
 2. Paste a public HTTPS webhook, choose Slack-compatible text or signed JSON, and optionally filter to a project. For JSON, enter a signing secret of at least 16 characters that the receiver shares; verify the exact body with HMAC-SHA256 and the `x-armada-signature: sha256=…` header.
 3. Choose language (initially `[tracker] language`), time zone and quiet hours, save, then **Send a test**. The page shows who set it, when, and the last delivery state; neither the address nor the signing secret returns to the page. Leave those fields blank on later saves to preserve them.
-4. Check that a merge approval, work validation or escalated question sends its `/approve/<id>` link once. A coordinator that stops while its inbox waits sends an alert; it sends another only after returning and stopping again. Quiet-hour alerts are stored for the next summary (the summary ticket adds scheduling).
-5. On a paused channel, correct the endpoint and save to resume. HTTP 404/410 pause immediately; ten consecutive delivery failures pause too. Each failed alert is tried at most five times, at least a minute apart. Delivery errors are fixed codes, never provider response text.
+4. Check that a merge approval, work validation or escalated question sends its `/approve/<id>` link once. A coordinator that stops while its inbox waits sends an alert; it sends another only after returning and stopping again. Quiet-hour alerts are stored for the next summary.
+5. Choose digest times and days (09:00, 13:00 and 18:00 weekdays by default), and optionally **Skip quiet digests**. Times use the channel’s time zone, including DST; clear the times to disable them. A slot over 30 minutes late is skipped and noted in the next digest.
+6. Ask the coordinator to run `armada digest` for a status update, `armada digest --since 4h` for a fixed window, or `armada digest --send` to post it. Language follows `[tracker] language` unless `--lang en|fr` overrides it; the channel has its own language setting. The CLI gets no webhook address.
+7. On a paused channel, correct the endpoint and save to resume. HTTP 404/410 pause immediately; ten consecutive delivery failures pause too. Each failed alert is tried at most five times, at least a minute apart. Delivery errors are fixed codes, never provider response text.
 
 Cron is **off in production by default**, as the owner decided. Ticks ride on fleet traffic and dashboard polls, with a 60-second lease scoped to each project. With no traffic, a stopped coordinator is only noticed at the next call or poll. To opt into a scheduler, set `CRON_SECRET`, configure an authenticated GET to `/api/cron/owner`, and follow README > Watch the fleet for the Vercel `crons` entry (every 15 minutes requires a paid plan; free allows daily). Do not enable it as part of the default deployment. A tick reads stored snapshots and live rows only; it never calls Linear or GitHub.
 
@@ -119,6 +143,9 @@ A coordinator in Claude Code can also run short tickets as its own background su
 Plain `armada watch` remains the default for agents woken when a background command ends. In a terminal, herdr pane or harness that delivers every output line, `armada watch --follow --for 50` prints events continuously, ends cleanly below a harness's time limit and prints its resume command. A restarted follow uses this machine's last cursor and printed inbox keys; `--since <cursor>` carries the event position to another machine, where open inbox entries are shown once as `open`.
 
 Use `--tickets ABC-1,ABC-2 --kinds hand-back` for selected hand-backs; `--kinds all` includes informational claims, reports, releases and merges. `--json` produces NDJSON; lifecycle, retry and resume lines go to stderr. Without informational kinds, active follow makes one short inbox request every 15 seconds (60 seconds idle), answered 304 when unchanged. Informational kinds add a short `events/since` read, paged at 200 events with a two-minute look-back and a 500-ID deduplication window. `--mine` needs "Show each coordinator only its own work" and is refused until then. Plain watch accepts `--for <minutes>` too. Use `armada watch --stop` to stop either mode; they share the existing project lock.
+
+Ordinary Armada releases do not stop either watch. `armada status` and `armada inbox` announce an update at most once per 24 hours on the machine; the coordinator card also shows availability. A required server minimum or differing installed pointer descriptions/vendored skills produces a `version` item and stops the watch, including filtered follow. Run `armada upgrade` from the project's checkout: it checks npm availability up to five times (four 30-second waits), installs the exact target, verifies the executable on PATH, then checks setup with the installed doctor. It runs `armada init --merge` only when setup is behind; that command waits for the normal setup PR checks. Publication/install/version-check failures leave setup alone. Workers keep their launch's pinned version.
+
 
 ### Launch a Conductor worker
 
@@ -245,4 +272,50 @@ Without a coordination ticket, skip step 1: the next coordinator resumes from `a
 
 Local worker controls follow the [`armada-runtime-herdr`](../skills/armada-runtime-herdr/SKILL.md) guide. `armada status`, `inbox` and each `watch` poll read herdr state and store it on Armada; the dashboard shows it beside the last report without contacting the local machine. `armada answer` delivers herdr answers before recording them, including a harness approval answered by ticket. After merge or release, `armada stop <ticket>` verifies the saved worktree, refreshes its remote upstream, refuses dirty or unpushed work, and removes only the clean checkout while retaining the branch. Worker reports, questions and heartbeats also self-report their phase to herdr, with nonfatal warnings on failure.
 
+### Launch when blockers close
+
+A coordinator can schedule a blocked ticket with `armada launch ABC-9 --when-unblocked --profile backend`. Armada stores a signed launch request and prints the open blockers. `armada status` lists it under **Launch when unblocked**, including its current blockers or a reason such as parked. `--after ABC-7` asserts that ABC-7 is already a blocker in Linear; it does not create a relation. Every blocker must close, including blockers canceled rather than completed. An unblocked ticket is refused with the ordinary launch command.
+
+After `armada merge` closes a blocker, ready deferred tickets launch through the shared launcher in the same command. Automatic launches require a stored project reading and the same authenticated author that requested them (the person or organization API key). Requests from another author remain for their coordinator. Guided Claude Code profiles and tickets without the ready label print the launch command for the coordinator to handle. A parked ticket stays pending; remove its parked label before launching it.
+
+When blockers close outside Armada, Linear's webhook refreshes the stored reading and `armada watch` wakes with the request's launch command. Keep the watch armed while a deferred request waits. No inbox poll calls Linear. Missing readings withhold requests until a stored reading is available. The worker's claim resolves the request; a failed launch keeps it pending for inspection. To decline one, run `armada answer <request-id> "<reason>"`.
+
+Deploy the dashboard's additive deferred-request migration before using the new CLI options. Older clients continue reading the ordinary inbox kind; the new request and status operations require the updated dashboard.
+
 Workers declare planned paths with `armada report awaiting-approval --plan-file plan.md --paths "src/merge.ts,skills/**"` (or `implementing` for a pre-approved plan). The CLI and coordinator plan show overlaps with other in-flight PR files and declared paths. Briefs list the first 15 PR files and the remaining count. An incomplete or unavailable stored GitHub reading is explicitly marked; refresh the project reading before relying on it. Glob/glob matches use conservative static prefixes and may overlap. GitHub records only the new path of a rename; overlap checks can miss its old path. Declarations are replaced when supplied again and cleared on release or merge.
+
+## Track a long job on a surviving runner
+
+Long runs go through `armada job`, never in a coordinator or worker terminal session. The project owns the runner (a CI run, VM, cloud workspace or another service) and its secrets. Armada stores its reference and last observation in Postgres; the server never executes project code. A new machine signed in to the same project can read the same jobs.
+
+Declare commands in `armada.toml`:
+
+```toml
+[jobs.eval]
+start = "./scripts/start-eval.sh"
+status = "./scripts/job-status.sh"
+stop = "./scripts/stop-eval.sh"
+silence_minutes = 15
+max_hours = 12
+```
+
+The CLI executes each with `sh -c` in the directory containing `armada.toml`. It sets `ARMADA_JOB_ID` (the durable job id), `ARMADA_JOB_REF` (empty for start), `ARMADA_TICKET` and `ARMADA_PROJECT`. Commands inherit the terminal environment. Use `armada run -- armada job ...` when the runner command needs the project's secrets.
+
+The start command must dispatch to a runner that survives the terminal and return within two minutes. Its last nonblank stdout line is the runner's reference (run id or URL); a nonzero exit means not started. Armada reserves a `starting` record first so the command can attach the job id to its run. A successful dispatch becomes `running`; a failed dispatch becomes `failed`. A timeout or execution failure whose outcome is unknown becomes `lost`: inspect the runner before dispatching again. A command whose result cannot be recorded prints the job id and runner reference for recovery; it is never retried automatically.
+
+The status command's last nonblank line is `running`, `succeeded` or `failed`, optionally followed by progress text. `running 37/120 cases` produces an approximate completion time from the elapsed time and fraction. Unparseable output or a failed poll leaves the last observation intact. Omit `status` for a runner that will push its own observations (the push/alert command is a separate feature). Stop's exit code zero means stopped. Status and stop are also bounded to two minutes. The CLI captures output, displays only the runner reference and parsed progress, and never prints command stderr.
+
+```sh
+armada job start eval --ticket ABC-12
+armada job status            # poll every open job on this project
+armada job status 42         # poll one job; completed records are read only
+armada job list              # read every stored job; never run a command
+armada job list --ticket ABC-12
+armada job stop 42
+# After an observation outage, record the outcome without running a shell command:
+armada job recover 42 --ref runner-123 --state running
+```
+
+Workers default to their claimed ticket and can start, observe and read only that ticket's jobs. Other terminals use their organization sign-in. All commands accept `--json`; list/status output is an array of job records. `armada status` reads open jobs without running status commands and includes their latest progress, runner reference and ETA. An open job past `max_hours` is overdue, and a job whose Linear ticket is Done carries a note. Neither condition automatically stops it. `silence_minutes` configures the threshold for the subsequent job-alert feature; this feature does not send alerts.
+
+A successful start with no stdout reference is still recorded and shown with `no runner reference`; status and stop refuse to contact it. Find the existing run on the runner, then attach its reference with `armada job recover <id> --ref <reference>`. Recovery runs no shell command, keeps existing references fixed, and cannot change a terminal job's outcome. Use `--state failed`, `--state lost` or `--state stopped` to finalize a starting record after an observation outage when that outcome is known. Repair the runner's start command before dispatching another job. Closing a terminal never stops an already-dispatched runner.

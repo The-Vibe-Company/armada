@@ -1,21 +1,28 @@
+import { sinceSummary } from "../src/catchup.ts";
 // The fleet's live data in memory, for tests: the same results as the app's
 // Postgres store (`packages/dashboard/lib/fleet-store.ts`, tested on PGlite),
 // with its unique rules (one open plan, hand-back and launch request per
 // ticket, one open answer per question) and its atomic lease.
+
+import { type Job, jobIsOpen } from "../src/jobs.ts";
 import type {
   CoordinatorPresence,
+  CoordinatorRecord,
   EventInput,
   FleetStore,
   InboxItem,
   Lease,
+  MergeHold,
   PendingLaunch,
   ProjectRecord,
+  Reservation,
   RuntimeHandle,
   SessionRecord,
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
-import { FOLLOW_EVENT_KINDS, unusedLaunchExpired } from "../src/live.ts";
+import { FOLLOW_EVENT_KINDS, holdBody, unusedLaunchExpired } from "../src/live.ts";
+import { MERGE_QUEUE_LEASE, type QueueEntry, queueOpen } from "../src/merge-queue.ts";
 import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
 
@@ -28,6 +35,7 @@ interface HandleRow extends Omit<RuntimeHandle, "profile"> {}
 
 interface ItemRow extends Omit<StoredInboxItem, "request"> {
   requestPr?: number | null;
+  requestDeferred?: boolean;
   requestQuestion: number | null;
   requestProfile: string | null;
   requestValidation?: number | null;
@@ -51,6 +59,8 @@ export function memoryFleet(): FleetStore & {
   launches: LaunchRow[];
   validations: Validation[];
 } {
+  const jobs: Job[] = [];
+  const queue: QueueEntry[] = [];
   const projects = new Map<string, ProjectRecord>();
   const events: EventRow[] = [];
   const handles = new Map<string, HandleRow>();
@@ -58,16 +68,26 @@ export function memoryFleet(): FleetStore & {
   const notices = new Map<string, { delivered: boolean; tickets: Set<string> }>();
   const profiles = new Map<string, WorkerProfile>();
   const items: ItemRow[] = [];
+  const holds: (MergeHold & { itemId: number })[] = [];
   const leases = new Map<string, Lease>();
   const presence = new Map<string, { handle: string | null; cliVersion: string | null; at: string }>();
   const coordinators = new Map<string, CoordinatorPresence>();
+  const coordinatorSessions = new Map<string, CoordinatorPresence>();
   const sessions: SessionRecord[] = [];
   const launches: LaunchRow[] = [];
   const validations: Validation[] = [];
+  const heldResources: Reservation[] = [];
   const copy = (v: Validation): Validation => structuredClone(v);
+  const endReservations = (project: string, ticket: string, at: Date, merged: boolean) => {
+    for (const r of heldResources)
+      if (r.project === project && r.ticket === ticket && !r.endedAt) {
+        r.endedAt = at.toISOString();
+        r.merged = merged;
+      }
+  };
 
   const stored = (r: ItemRow): StoredInboxItem => {
-    const { requestQuestion, requestProfile, requestPr, requestValidation, ...rest } = r;
+    const { requestQuestion, requestProfile, requestPr, requestValidation, requestDeferred, ...rest } = r;
     return {
       ...rest,
       ...(r.kind === "decision"
@@ -78,6 +98,7 @@ export function memoryFleet(): FleetStore & {
             request: {
               question: requestQuestion,
               profile: requestProfile,
+              ...(requestDeferred ? { deferred: true } : {}),
               ...(requestPr == null ? {} : { pr: requestPr }),
             },
           }
@@ -120,6 +141,37 @@ export function memoryFleet(): FleetStore & {
   };
 
   return {
+    async digestRecords(project, since, now) {
+      const start = since ?? new Date(now.getTime() - 4 * 60 * 60_000).toISOString();
+      const rows = events.filter((e) => e.project === project && e.at >= start && e.at <= now.toISOString());
+      return {
+        language: "en",
+        input: {
+          since: start,
+          until: now.toISOString(),
+          now,
+          inFlight: [],
+          phaseMedians: {},
+          summary: sinceSummary({
+            since: start,
+            now,
+            records: [
+              {
+                project,
+                silentAfterMinutes: 15,
+                merged: rows.filter((e) => e.kind === "merge").map((e) => ({ ticket: e.ticket ?? "", at: e.at })),
+                claimed: [],
+                blocked: [],
+                gaps: [],
+                waiting: validations
+                  .filter((v) => v.project === project && !v.decision)
+                  .map((v) => ({ id: v.id, ticket: v.ticket, kind: v.kind })),
+              },
+            ],
+          }),
+        },
+      };
+    },
     events,
     items,
     leases,
@@ -143,6 +195,7 @@ export function memoryFleet(): FleetStore & {
         kind: "note",
         recipient: "worker",
         author: "coordinator",
+        coordinator: q.coordinator,
         body: q.text,
         createdAt: q.at.toISOString(),
         requestQuestion: null,
@@ -158,6 +211,152 @@ export function memoryFleet(): FleetStore & {
       return `Note #${id} recorded.`;
     },
 
+    async startJob(input) {
+      const job: Job = {
+        id: jobs.length + 1,
+        project: input.project,
+        ticket: input.ticket,
+        name: input.name,
+        ref: null,
+        state: "starting",
+        progress: null,
+        eta: null,
+        startedBy: input.startedBy,
+        startedAt: input.at.toISOString(),
+        observedAt: input.at.toISOString(),
+        finishedAt: null,
+      };
+      jobs.push(job);
+      return structuredClone(job);
+    },
+    async getJob(project, id) {
+      return structuredClone(jobs.find((j) => j.project === project && j.id === id) ?? null);
+    },
+    async listJobs(project, q) {
+      return structuredClone(
+        jobs
+          .filter(
+            (j) =>
+              j.project === project &&
+              (!q.ticket || j.ticket === q.ticket) &&
+              (!q.open || jobIsOpen(j)) &&
+              (q.id === undefined || q.id === j.id),
+          )
+          .sort((a, b) => b.id - a.id),
+      );
+    },
+    async observeJob(input) {
+      const job = jobs.find((j) => j.project === input.project && j.id === input.id && j.ticket === input.ticket);
+      if (!job) return null;
+      if (
+        jobIsOpen(job) &&
+        input.at.getTime() >= Date.parse(job.observedAt) &&
+        (input.ref === undefined || job.ref === null || input.ref === job.ref)
+      ) {
+        if (job.ref === null && input.ref !== undefined) job.ref = input.ref;
+        job.state = input.state;
+        job.progress = input.progress ?? null;
+        job.eta = input.state === "running" ? (input.eta ?? null) : null;
+        job.observedAt = input.at.toISOString();
+        if (!jobIsOpen(job)) job.finishedAt = input.at.toISOString();
+      }
+      return structuredClone(job);
+    },
+    async openHold(input) {
+      const ref = input.kind === "manual" ? null : (input.ref ?? null);
+      const existing =
+        ref === null
+          ? null
+          : holds.find((h) => h.project === input.project && h.kind === input.kind && h.ref === ref && !h.clearedAt);
+      if (existing) {
+        const { itemId: _, ...hold } = existing;
+        return { ...hold };
+      }
+      const hold: MergeHold = {
+        id: holds.length + 1,
+        project: input.project,
+        kind: input.kind,
+        ref,
+        reason: input.reason,
+        openedBy: input.author,
+        openedAt: input.at.toISOString(),
+        clearedAt: null,
+        clearedBy: null,
+        clearReason: null,
+      };
+      const itemId = insert({
+        project: input.project,
+        ticket: null,
+        kind: "hold",
+        recipient: "coordinator",
+        author: input.author,
+        body: holdBody(hold),
+        createdAt: hold.openedAt,
+        requestQuestion: null,
+        requestProfile: null,
+      });
+      holds.push({ ...hold, itemId });
+      return { ...hold };
+    },
+    async clearHold(input) {
+      const row = holds.find((h) => h.project === input.project && h.id === input.id);
+      if (!row) return null;
+      const cleared = !row.clearedAt;
+      if (cleared) {
+        row.clearedAt = input.at.toISOString();
+        row.clearedBy = input.author;
+        row.clearReason = input.reason;
+        const item = items.find((i) => i.id === row.itemId);
+        if (item) {
+          item.resolvedAt = row.clearedAt;
+          item.resolution = input.reason;
+        }
+      }
+      const { itemId: _, ...hold } = row;
+      return { hold: { ...hold }, cleared };
+    },
+    async openHolds(project) {
+      return holds.filter((h) => h.project === project && !h.clearedAt).map(({ itemId: _, ...hold }) => ({ ...hold }));
+    },
+    async reserve(input) {
+      const held = heldResources.filter(
+        (r) => r.project === input.project && r.key === input.key && (!r.endedAt || r.merged),
+      );
+      const value = input.next
+        ? (
+            held.reduce(
+              (max, r) => (/^[+-]?[0-9]+$/.test(r.value) && BigInt(r.value) > max ? BigInt(r.value) : max),
+              BigInt(input.floor ?? 0),
+            ) + 1n
+          ).toString()
+        : (input.value ?? "");
+      const holder = held.find((r) => r.value === value);
+      if (holder) return { reserved: false, holder: structuredClone(holder) };
+      const reservation: Reservation = {
+        id: heldResources.length + 1,
+        project: input.project,
+        key: input.key,
+        value,
+        ticket: input.ticket,
+        note: input.note ?? null,
+        reservedAt: input.at.toISOString(),
+        endedAt: null,
+        merged: false,
+      };
+      heldResources.push(reservation);
+      return { reserved: true, reservation: structuredClone(reservation) };
+    },
+    async reservations(project) {
+      return structuredClone(heldResources.filter((r) => r.project === project && (!r.endedAt || r.merged)));
+    },
+    async unreserve(input) {
+      const rows = heldResources.filter(
+        (r) =>
+          r.project === input.project && r.ticket === input.ticket && r.key === input.key && !r.endedAt && !r.merged,
+      );
+      for (const r of rows) r.endedAt = input.at.toISOString();
+      return rows.length;
+    },
     async ensureProject(p, at) {
       if (projects.has(p.slug)) return;
       const t = at.toISOString();
@@ -186,7 +385,18 @@ export function memoryFleet(): FleetStore & {
         [...paths].filter(([k]) => k.startsWith(`${project}\n`)).map(([k, v]) => [k.slice(project.length + 1), [...v]]),
       );
     },
-    async deleteTicketPaths(project, ticket) {
+    async deleteTicketPaths(project, ticket, guard) {
+      const h = handles.get(key(project, ticket));
+      if (guard?.absent && h) return;
+      if (
+        guard &&
+        !guard.absent &&
+        (!h ||
+          (guard.handle && h.handle !== guard.handle) ||
+          (guard.claimedAt && h.claimedAt !== new Date(guard.claimedAt).toISOString()) ||
+          (guard.workerSessionId && h.workerSessionId && h.workerSessionId !== guard.workerSessionId))
+      )
+        return;
       paths.delete(key(project, ticket));
     },
     async recordEvent(e) {
@@ -209,6 +419,7 @@ export function memoryFleet(): FleetStore & {
       for (const e of events)
         if (
           e.kind !== "heartbeat" &&
+          e.kind !== "handover" &&
           e.project === project &&
           e.ticket &&
           (!out[e.ticket] || e.at > (out[e.ticket] ?? ""))
@@ -226,6 +437,7 @@ export function memoryFleet(): FleetStore & {
             q.kinds.includes(e.kind as never) &&
             (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
             (!q.tickets || q.tickets.includes(e.ticket)) &&
+            !q.excludedTickets?.includes(e.ticket) &&
             e.at >= floor &&
             !boundary(e, q.afterAt, q.afterId),
         )
@@ -240,6 +452,7 @@ export function memoryFleet(): FleetStore & {
             q.kinds.includes(e.kind as never) &&
             (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
             (!q.tickets || q.tickets.includes(e.ticket)) &&
+            !q.excludedTickets?.includes(e.ticket) &&
             e.at >= floor &&
             (boundary(e, q.afterAt, q.afterId) || (q.seenIds && recent.includes(e.id) && !q.seenIds.includes(e.id))) &&
             (!q.pageAfter || boundary(e, q.pageAfter.at, q.pageAfter.id)),
@@ -266,6 +479,7 @@ export function memoryFleet(): FleetStore & {
       for (const e of events) {
         if (
           e.kind === "heartbeat" ||
+          e.kind === "handover" ||
           e.project !== project ||
           !e.ticket ||
           e.at < since ||
@@ -300,17 +514,24 @@ export function memoryFleet(): FleetStore & {
           cliVersion: seen.cliVersion ?? seen.facts?.cliVersion ?? was?.cliVersion ?? null,
           at,
         });
-      if (was && was.at > at) return;
-      const previous = coordinators.get(seen.project);
-      coordinators.set(seen.project, {
+      const name = seen.name ?? seen.facts?.name ?? "default";
+      const roleKey = key(seen.project, name);
+      const handle = seen.facts ? seen.facts.handle : (seen.handle ?? null);
+      const sessionKey = key(roleKey, handle ?? "");
+      const previous = coordinatorSessions.get(sessionKey);
+      const next: CoordinatorPresence = {
+        name,
         harness: seen.facts?.harness ?? previous?.harness ?? null,
-        handle: seen.facts ? seen.facts.handle : (seen.handle ?? previous?.handle ?? null),
+        handle,
         model: seen.facts ? seen.facts.model : (previous?.model ?? null),
         cliVersion: seen.cliVersion ?? seen.facts?.cliVersion ?? previous?.cliVersion ?? null,
         startedAt: previous && seen.at.getTime() - Date.parse(previous.seenAt) < 30 * 60_000 ? previous.startedAt : at,
         seenAt: at,
         inboxSeenAt: seen.inboxRead === false ? (previous?.inboxSeenAt ?? null) : at,
-      });
+      };
+      if (!previous || previous.seenAt <= at) coordinatorSessions.set(sessionKey, next);
+      const role = coordinators.get(roleKey);
+      if (!role || role.seenAt <= at) coordinators.set(roleKey, next);
       if (seen.inboxRead !== false)
         await this.recordEvent({
           project: seen.project,
@@ -324,7 +545,97 @@ export function memoryFleet(): FleetStore & {
       return presence.get(project)?.at ?? null;
     },
     async getCoordinatorPresence(project) {
-      return coordinators.get(project) ?? null;
+      return (
+        [...coordinators.entries()]
+          .filter(([k]) => k.startsWith(`${project}\n`))
+          .map(([, value]) => value)
+          .sort((a, b) => b.seenAt.localeCompare(a.seenAt))[0] ?? null
+      );
+    },
+    async listCoordinators(project) {
+      const records = new Map<string, CoordinatorRecord>();
+      for (const [k, role] of coordinators) {
+        if (!k.startsWith(`${project}\n`)) continue;
+        const name = role.name ?? "default";
+        records.set(name, {
+          ...role,
+          name,
+          sessions: [...coordinatorSessions.entries()]
+            .filter(([k]) => k.startsWith(`${key(project, name)}\n`))
+            .map(([, session]) => ({ ...session }))
+            .sort((a, b) => b.seenAt.localeCompare(a.seenAt)),
+          tickets: [],
+        });
+      }
+      const active = [...handles.values()].filter((h) => h.project === project && !h.releasedAt);
+      const pending = await this.pendingLaunches(project, new Date(0));
+      for (const owned of [...active, ...pending]) {
+        const name = owned.coordinator;
+        if (!name) continue;
+        let record = records.get(name);
+        if (!record) {
+          const at = "claimedAt" in owned ? owned.claimedAt : owned.launchedAt;
+          record = {
+            name,
+            harness: null,
+            handle: null,
+            model: null,
+            cliVersion: null,
+            startedAt: at,
+            seenAt: at,
+            inboxSeenAt: null,
+            sessions: [],
+            tickets: [],
+          };
+          records.set(name, record);
+        }
+        if (!record.tickets.includes(owned.ticket)) record.tickets.push(owned.ticket);
+      }
+      return [...records.values()]
+        .map((r) => ({ ...r, tickets: r.tickets.sort() }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+    async transferTickets(input) {
+      const pending = await this.pendingLaunches(input.project, new Date(0));
+      const rows = input.tickets.map((ticket) => {
+        const handle = handles.get(key(input.project, ticket));
+        return handle && !handle.releasedAt ? handle : pending.find((launch) => launch.ticket === ticket);
+      });
+      if (
+        rows.some(
+          (row) =>
+            !row ||
+            (input.from !== undefined
+              ? row.coordinator !== input.from
+              : row.coordinator != null && row.coordinator !== input.to),
+        )
+      )
+        return false;
+      for (const row of rows) {
+        if (!row) continue;
+        const previous = row.coordinator ?? null;
+        row.coordinator = input.to;
+        for (const launch of launches)
+          if (
+            launch.project === input.project &&
+            launch.ticket === row.ticket &&
+            !launch.endedAt &&
+            ("claimedAt" in row || launch.launchedAt === row.launchedAt)
+          )
+            launch.coordinator = input.to;
+        for (const session of sessions)
+          if (session.project === input.project && session.ticket === row.ticket && !session.releasedAt)
+            session.coordinator = input.to;
+        events.push({
+          id: events.length + 1,
+          project: input.project,
+          ticket: row.ticket,
+          kind: "handover",
+          message: `coordinator ${previous ?? "unowned"} -> ${input.to}`,
+          at: input.at.toISOString(),
+        });
+      }
+      return true;
     },
     async inboxReads(project, now) {
       return events
@@ -368,6 +679,7 @@ export function memoryFleet(): FleetStore & {
       const same =
         was &&
         was.handle === h.handle &&
+        was.runtime === h.runtime &&
         !was.releasedAt &&
         (was.workerSessionId ?? null) === (h.workerSessionId ?? null);
       if (!same) {
@@ -381,6 +693,7 @@ export function memoryFleet(): FleetStore & {
           runtime: h.runtime,
           handle: h.handle,
           branch: h.branch,
+          coordinator: h.coordinator ?? null,
           claimedAt: h.at.toISOString(),
           releasedAt: null,
           profile: null,
@@ -396,6 +709,7 @@ export function memoryFleet(): FleetStore & {
         runtime: h.runtime,
         handle: h.handle,
         branch: h.branch,
+        coordinator: same ? (was.coordinator ?? null) : (h.coordinator ?? null),
         claimedAt: same ? was.claimedAt : h.at.toISOString(),
         releasedAt: null,
         lastHeartbeatAt: same && was.workerSessionId === h.workerSessionId ? was.lastHeartbeatAt : null,
@@ -490,10 +804,19 @@ export function memoryFleet(): FleetStore & {
       });
       return { active: true, claimedAt: handle.claimedAt };
     },
-    async releaseRuntimeHandle(project, ticket, at, guard) {
+    async releaseRuntimeHandle(project, ticket, at, guard, merged = false) {
       const h = handles.get(key(project, ticket));
+      if (guard?.absent) {
+        if (h) return false;
+        endReservations(project, ticket, at, merged);
+        return true;
+      }
       const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
-      if (guarded && !h) return !guard?.claimedAt;
+      if (guarded && !h) {
+        if (guard?.claimedAt) return false;
+        endReservations(project, ticket, at, merged);
+        return true;
+      }
       if (
         guarded &&
         h &&
@@ -515,6 +838,7 @@ export function memoryFleet(): FleetStore & {
           session.releasedAt = at.toISOString();
       if (h && !h.releasedAt) h.releasedAt = at.toISOString();
       profiles.delete(key(project, ticket));
+      endReservations(project, ticket, at, merged);
       return true;
     },
     async openRuntimeHandles(project) {
@@ -535,6 +859,7 @@ export function memoryFleet(): FleetStore & {
         kind: i.kind,
         recipient: i.recipient,
         author: i.author,
+        coordinator: i.coordinator ?? null,
         body: i.body,
         createdAt: i.at.toISOString(),
         requestQuestion: null,
@@ -566,9 +891,11 @@ export function memoryFleet(): FleetStore & {
         kind: r.kind,
         recipient: "coordinator",
         author: r.author,
+        coordinator: r.coordinator ?? null,
         body: r.body,
         createdAt: r.at.toISOString(),
         requestQuestion: r.question,
+        requestDeferred: r.deferred,
         requestProfile: r.profile,
         requestPr: r.pr,
       });
@@ -660,6 +987,99 @@ export function memoryFleet(): FleetStore & {
       return resolve(plans, q.resolution, q.at);
     },
 
+    async queueAdd(e) {
+      const existing = queue.find((r) => r.project === e.project && r.pr === e.pr && queueOpen(r));
+      if (existing) return { existing: structuredClone(existing) };
+      const { at, ...input } = e;
+      const entry: QueueEntry = {
+        ...input,
+        id: queue.length + 1,
+        state: "queued",
+        detail: null,
+        attempts: 0,
+        notBefore: null,
+        queuedAt: at.toISOString(),
+        updatedAt: at.toISOString(),
+        mergeCommit: null,
+        finishedAt: null,
+      };
+      queue.push(entry);
+      return {
+        id: entry.id,
+        position: queue.filter(
+          (r) =>
+            r.project === e.project &&
+            queueOpen(r) &&
+            (r.queuedAt < entry.queuedAt || (r.queuedAt === entry.queuedAt && r.id <= entry.id)),
+        ).length,
+      };
+    },
+    async queueList(project, { since }) {
+      return structuredClone(
+        queue
+          .filter(
+            (r) => r.project === project && (queueOpen(r) || (r.finishedAt && r.finishedAt >= since.toISOString())),
+          )
+          .sort((a, b) => a.queuedAt.localeCompare(b.queuedAt) || a.id - b.id),
+      );
+    },
+    async queueNext(q) {
+      const held = leases.get(key(q.project, MERGE_QUEUE_LEASE)) ?? null;
+      if (!held || held.holder !== q.holder || Date.parse(held.expiresAt) <= q.at.getTime())
+        return { refused: true, held };
+      const entries = queue
+        .filter(
+          (r) =>
+            r.project === q.project &&
+            (r.state === "merging" || (r.state === "queued" && (!r.notBefore || r.notBefore <= q.at.toISOString()))),
+        )
+        .sort(
+          (a, b) =>
+            Number(b.state === "merging") - Number(a.state === "merging") ||
+            a.queuedAt.localeCompare(b.queuedAt) ||
+            a.id - b.id,
+        );
+      const entry = entries[0];
+      if (entry) {
+        entry.state = "merging";
+        entry.updatedAt = q.at.toISOString();
+      }
+      return { entry: entry ? structuredClone(entry) : null, holds: [] };
+    },
+    async queueFinish(q) {
+      const held = leases.get(key(q.project, MERGE_QUEUE_LEASE));
+      if (!held || held.holder !== q.holder || Date.parse(held.expiresAt) <= q.at.getTime()) return false;
+      const entry = queue.find((r) => r.project === q.project && r.id === q.id && r.state === "merging");
+      if (!entry) return false;
+      Object.assign(entry, {
+        state: q.outcome === "retry" ? "queued" : q.outcome,
+        detail: q.detail,
+        updatedAt: q.at.toISOString(),
+        attempts: entry.attempts + (q.outcome === "retry" ? 1 : 0),
+        notBefore: q.outcome === "retry" ? (q.notBefore ?? null) : null,
+        mergeCommit: q.mergeCommit ?? null,
+        finishedAt: q.outcome === "retry" ? null : q.at.toISOString(),
+      });
+      if (q.outcome === "refused")
+        await this.addInboxItem({
+          project: q.project,
+          ticket: entry.ticket,
+          kind: "queue-refused",
+          recipient: "coordinator",
+          author: q.holder,
+          body: `PR #${entry.pr} refused: ${q.detail ?? "merge refused"}`,
+          at: q.at,
+        });
+      return true;
+    },
+    async queueRemove(q) {
+      const entry = queue.find((r) => r.project === q.project && r.pr === q.pr && r.state === "queued");
+      if (!entry) return false;
+      entry.state = "removed";
+      entry.updatedAt = q.at.toISOString();
+      entry.finishedAt = q.at.toISOString();
+      return true;
+    },
     async acquireLease(l) {
       const k = key(l.project, l.name);
       const held = leases.get(k);
@@ -710,7 +1130,8 @@ export function memoryFleet(): FleetStore & {
             ),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
-        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle }) => ({
+        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle, coordinator }) => ({
+          coordinator: coordinator ?? null,
           ticket,
           launchedAt,
           tokenUsedAt,
@@ -720,9 +1141,13 @@ export function memoryFleet(): FleetStore & {
         }));
     },
 
-    async expireUnusedLaunches(project, now) {
+    async expireUnusedLaunches(project, now, coordinatorName) {
       const pending = await this.pendingLaunches(project, new Date(0));
-      const expired = pending.filter((launch) => unusedLaunchExpired(launch, now));
+      const expired = pending.filter(
+        (launch) =>
+          unusedLaunchExpired(launch, now) &&
+          (!coordinatorName || launch.coordinator == null || launch.coordinator === coordinatorName),
+      );
       for (const launch of expired) {
         const row = launches.find(
           (candidate) =>

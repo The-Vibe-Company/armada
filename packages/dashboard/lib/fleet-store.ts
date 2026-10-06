@@ -1,3 +1,4 @@
+import { queueAdd, queueFinish, queueList, queueNext, queueRemove } from "./merge-queue";
 // The fleet's live data in the app's database (THE-849): the project
 // registry, events, the runtime session holding each ticket and the profile
 // its claim named, the coordinators' inboxes with the dashboard's requests,
@@ -10,7 +11,9 @@
 import type {
   Attachment,
   CatchupRecords,
+  ClearHoldResult,
   CoordinatorPresence,
+  CoordinatorRecord,
   CoordinatorSeen,
   EventInput,
   EventsSinceQuery,
@@ -26,15 +29,23 @@ import type {
   InboxRecipient,
   InsightEvent,
   InsightWait,
+  Job,
+  JobQuery,
+  JobState,
   LatestEvent,
   Lease,
+  MergeHold,
   NewRequest,
+  OpenHold,
   PendingLaunch,
   ProjectInput,
   ProjectInsightRecords,
   ProjectRecord,
   ReleaseGuard,
   RequestStore,
+  Reservation,
+  ReserveRecord,
+  ReserveResult,
   RuntimeHandle,
   RuntimeState,
   SessionRecord,
@@ -46,6 +57,7 @@ import type {
   WorkerProfile,
 } from "@armada/core/read";
 import {
+  holdBody,
   isShippingStage,
   OBSERVABLE_RUNTIMES,
   REQUEST_KINDS,
@@ -55,6 +67,7 @@ import {
 import { catchupRecords, type FeedQuery, feedPage } from "./activity-store";
 import { captionedAttachments, ticketsAttachments } from "./attachments";
 import { type Database, iso, isoAt, type Queryable, type Row, text, transaction } from "./db";
+import { digestRecords } from "./digest";
 import { endWorker } from "./workers";
 
 // ------------------------------------------------------------------ projects
@@ -201,7 +214,7 @@ export async function recordEvent(db: Queryable, e: EventInput): Promise<void> {
 /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
 export async function lastEventTimes(db: Queryable, project: string): Promise<Record<string, string>> {
   const rs = await db.query(
-    "SELECT ticket, max(created_at) AS at FROM events WHERE project = $1 AND ticket <> '' AND kind <> 'heartbeat' GROUP BY ticket",
+    "SELECT ticket, max(created_at) AS at FROM events WHERE project = $1 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover') GROUP BY ticket",
     [project],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
@@ -212,12 +225,14 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
   const rs = await db.query(
     `SELECT id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, head_sha, created_at
     FROM events WHERE project = $1 AND created_at >= $2 AND kind = ANY($3::text[])
+    AND ($12::text[] IS NULL OR NOT (ticket = ANY($12::text[])))
     AND kind NOT IN ('heartbeat', 'inbox') AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge') AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
     AND ((created_at, id) > ($5::timestamptz, $6::bigint)
       OR ($7::bigint[] IS NOT NULL AND NOT (id = ANY($7::bigint[])) AND id IN (
         SELECT id FROM events WHERE project = $1 AND created_at >= $2
           AND (created_at, id) <= ($5::timestamptz, $6::bigint) AND kind = ANY($3::text[])
           AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge')
+          AND ($12::text[] IS NULL OR NOT (ticket = ANY($12::text[])))
           AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
         ORDER BY id DESC LIMIT 500)))
     AND ($8::timestamptz IS NULL OR (created_at, id) > ($8::timestamptz, $9::bigint))
@@ -234,6 +249,7 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
       q.pageAfter?.id ?? null,
       q.limit ?? 200,
       q.handoverOnly ?? false,
+      q.excludedTickets ?? null,
     ],
   );
   return rs.rows.map((r) => ({
@@ -259,7 +275,7 @@ export async function latestEvents(
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
     `SELECT DISTINCT ON (ticket) ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
-     FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind <> 'heartbeat'
+     FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover')
      ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
      ORDER BY ticket, created_at DESC, id DESC`,
     opts.tickets ? [project, opts.since ?? new Date(0), opts.tickets] : [project, opts.since ?? new Date(0)],
@@ -326,23 +342,43 @@ export async function recentEvents(db: Queryable, project: string, since: Date):
 
 // ------------------------------------------------------------------ coordinator presence
 
-/** Records coordinator command activity and, separately, its inbox reads: one presence row per project. */
+/** Records activity per named role and per session; keeps default presence readable by older code. */
 export async function recordCoordinatorSeen(db: Queryable, seen: CoordinatorSeen): Promise<void> {
   const inboxRead = seen.inboxRead !== false;
+  const name = seen.name ?? seen.facts?.name ?? "default";
   await db.query(
     `WITH presence AS (
-       INSERT INTO coordinator_presence (project, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version)
-       VALUES ($1, $2, $3, $3, CASE WHEN $4 THEN $3::timestamptz END, $5, $6, $7)
-       ON CONFLICT (project) DO UPDATE SET
-         started_at = CASE WHEN excluded.seen_at - coordinator_presence.seen_at >= interval '30 minutes'
-                           THEN excluded.seen_at ELSE COALESCE(coordinator_presence.started_at, excluded.seen_at) END,
-         handle = CASE WHEN $5::text IS NOT NULL THEN excluded.handle ELSE COALESCE(excluded.handle, coordinator_presence.handle) END,
+       INSERT INTO coordinators (project, name, created_at, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version)
+       VALUES ($1, $8, $3, $2, $3, $3, CASE WHEN $4 THEN $3::timestamptz END, $5, $6, $7)
+       ON CONFLICT (project, name) DO UPDATE SET
+         started_at = CASE WHEN excluded.seen_at - coordinators.seen_at >= interval '30 minutes'
+                            OR (excluded.handle IS NOT NULL AND coordinators.handle IS DISTINCT FROM excluded.handle)
+                           THEN excluded.seen_at ELSE coordinators.started_at END,
+         handle = CASE WHEN $5::text IS NOT NULL THEN excluded.handle ELSE COALESCE(excluded.handle, coordinators.handle) END,
          seen_at = excluded.seen_at,
-         inbox_seen_at = CASE WHEN $4 THEN excluded.seen_at ELSE coordinator_presence.inbox_seen_at END,
-         harness = COALESCE(excluded.harness, coordinator_presence.harness),
-         model = CASE WHEN $5::text IS NOT NULL THEN excluded.model ELSE coordinator_presence.model END,
-         cli_version = COALESCE(excluded.cli_version, coordinator_presence.cli_version)
-       WHERE coordinator_presence.seen_at <= excluded.seen_at RETURNING project
+         inbox_seen_at = CASE WHEN $4 THEN excluded.seen_at ELSE coordinators.inbox_seen_at END,
+         harness = COALESCE(excluded.harness, coordinators.harness),
+         model = CASE WHEN $5::text IS NOT NULL THEN excluded.model ELSE coordinators.model END,
+         cli_version = COALESCE(excluded.cli_version, coordinators.cli_version)
+       WHERE coordinators.seen_at <= excluded.seen_at RETURNING *
+     ), sessions AS (
+       INSERT INTO coordinator_sessions (project, name, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at)
+       SELECT project, name, $2, harness, model, cli_version, $3, seen_at, CASE WHEN $4 THEN seen_at END
+       FROM presence WHERE $2::text IS NOT NULL
+       ON CONFLICT (project, name, handle) DO UPDATE SET
+         started_at = CASE WHEN excluded.seen_at - coordinator_sessions.seen_at >= interval '30 minutes'
+                           THEN excluded.seen_at ELSE coordinator_sessions.started_at END,
+         seen_at = excluded.seen_at,
+         inbox_seen_at = CASE WHEN $4 THEN excluded.seen_at ELSE coordinator_sessions.inbox_seen_at END,
+         harness = COALESCE(excluded.harness, coordinator_sessions.harness),
+         model = CASE WHEN $5::text IS NOT NULL THEN excluded.model ELSE coordinator_sessions.model END,
+         cli_version = COALESCE(excluded.cli_version, coordinator_sessions.cli_version)
+     ), legacy AS (
+       INSERT INTO coordinator_presence (project, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version)
+       SELECT project, handle, seen_at, started_at, inbox_seen_at, harness, model, cli_version FROM presence WHERE name = 'default'
+       ON CONFLICT (project) DO UPDATE SET handle = excluded.handle, seen_at = excluded.seen_at,
+         started_at = excluded.started_at, inbox_seen_at = excluded.inbox_seen_at,
+         harness = excluded.harness, model = excluded.model, cli_version = excluded.cli_version
      ) INSERT INTO events (project, ticket, kind, handle, created_at)
        SELECT project, '', 'inbox', $2, $3 FROM presence WHERE $4`,
     [
@@ -353,6 +389,7 @@ export async function recordCoordinatorSeen(db: Queryable, seen: CoordinatorSeen
       seen.facts?.harness ?? null,
       seen.facts?.model ?? null,
       seen.cliVersion ?? seen.facts?.cliVersion ?? null,
+      name,
     ],
   );
   if (inboxRead)
@@ -363,20 +400,109 @@ export async function recordCoordinatorSeen(db: Queryable, seen: CoordinatorSeen
     );
 }
 
+const coordinatorOf = (row: Row): CoordinatorPresence => ({
+  name: String(row.name),
+  harness: text(row.harness) as CoordinatorPresence["harness"],
+  handle: text(row.handle),
+  model: text(row.model),
+  cliVersion: text(row.cli_version),
+  startedAt: isoAt(row.started_at ?? row.seen_at),
+  seenAt: isoAt(row.seen_at),
+  inboxSeenAt: iso(row.inbox_seen_at),
+});
+
 export async function getCoordinatorPresence(db: Queryable, project: string): Promise<CoordinatorPresence | null> {
-  const result = await db.query("SELECT * FROM coordinator_presence WHERE project = $1", [project]);
-  const row = result.rows[0];
-  return row
-    ? {
-        harness: text(row.harness) as CoordinatorPresence["harness"],
-        handle: text(row.handle),
-        model: text(row.model),
-        cliVersion: text(row.cli_version),
-        startedAt: isoAt(row.started_at ?? row.seen_at),
-        seenAt: isoAt(row.seen_at),
-        inboxSeenAt: iso(row.inbox_seen_at),
-      }
-    : null;
+  const result = await db.query("SELECT * FROM coordinators WHERE project = $1 ORDER BY seen_at DESC, name LIMIT 1", [
+    project,
+  ]);
+  return result.rows[0] ? coordinatorOf(result.rows[0]) : null;
+}
+
+export async function listCoordinators(db: Queryable, project: string): Promise<CoordinatorRecord[]> {
+  const [roles, sessions, handles, launches] = await Promise.all([
+    db.query("SELECT * FROM coordinators WHERE project = $1 ORDER BY name", [project]),
+    db.query("SELECT * FROM coordinator_sessions WHERE project = $1 ORDER BY name, seen_at DESC, handle", [project]),
+    openRuntimeHandles(db, project),
+    pendingLaunches(db, project, new Date(0)),
+  ]);
+  return roles.rows.map((row) => ({
+    ...coordinatorOf(row),
+    name: String(row.name),
+    sessions: sessions.rows.filter((session) => session.name === row.name).map(coordinatorOf),
+    tickets: [
+      ...new Set(
+        [...handles, ...launches].filter((ticket) => ticket.coordinator === row.name).map((ticket) => ticket.ticket),
+      ),
+    ].sort(),
+  }));
+}
+
+/** Compare source ownership and move all tickets atomically. Claims serialize against this project row too. */
+export async function transferTickets(
+  db: Database,
+  input: {
+    project: string;
+    tickets: string[];
+    to: string;
+    from?: string;
+    at: Date;
+  },
+): Promise<boolean> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [input.project]);
+    const owners: { ticket: string; owner: string | null; launch: string | null }[] = [];
+    for (const ticket of [...new Set(input.tickets)].sort()) {
+      const handle = (
+        await tx.query(
+          "SELECT coordinator, worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 AND released_at IS NULL FOR UPDATE",
+          [input.project, ticket],
+        )
+      ).rows[0];
+      const launch = (
+        await tx.query(
+          `SELECT "id", "coordinator" FROM "armada_worker" WHERE "project" = $1 AND "ticket" = $2
+        ORDER BY "createdAt" DESC, "id" DESC LIMIT 1 FOR UPDATE`,
+          [input.project, ticket],
+        )
+      ).rows[0];
+      // Only the newest still-pending launch owns an unclaimed ticket.
+      const pending = handle
+        ? null
+        : (await pendingLaunches(tx, input.project, new Date(0))).find((item) => item.ticket === ticket);
+      if (!handle && !pending) return false;
+      const owner = handle ? text(handle.coordinator) : (pending?.coordinator ?? null);
+      if (input.from !== undefined ? owner !== input.from : owner !== null && owner !== input.to) return false;
+      owners.push({
+        ticket,
+        owner,
+        launch: handle ? text(handle.worker_session_id) : launch ? String(launch.id) : null,
+      });
+    }
+    await tx.query(
+      `INSERT INTO coordinators (project, name, created_at, started_at, seen_at)
+      VALUES ($1, $2, $3, $3, $3) ON CONFLICT DO NOTHING`,
+      [input.project, input.to, input.at],
+    );
+    for (const { ticket, owner, launch } of owners) {
+      await tx.query(
+        "UPDATE runtime_handles SET coordinator = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+        [input.project, ticket, input.to],
+      );
+      await tx.query(
+        "UPDATE fleet_sessions SET coordinator = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL",
+        [input.project, ticket, input.to],
+      );
+      if (launch) await tx.query('UPDATE "armada_worker" SET "coordinator" = $2 WHERE "id" = $1', [launch, input.to]);
+      await recordEvent(tx, {
+        project: input.project,
+        ticket,
+        kind: "handover",
+        message: `coordinator: ${owner ?? "unowned"} -> ${input.to}`,
+        at: input.at,
+      });
+    }
+    return true;
+  });
 }
 
 /** The coordinators' inbox reads of the timeline's history: its whole span, and an hour before it for the gap that crosses its start. */
@@ -420,7 +546,10 @@ export async function coordinatorPresence(
   db: Queryable,
   project: string,
 ): Promise<{ seenAt: string; cliVersion: string | null } | null> {
-  const rs = await db.query("SELECT seen_at, cli_version FROM coordinator_presence WHERE project = $1", [project]);
+  const rs = await db.query(
+    "SELECT seen_at, cli_version FROM coordinators WHERE project = $1 ORDER BY seen_at DESC LIMIT 1",
+    [project],
+  );
   const row = rs.rows[0];
   const seenAt = iso(row?.seen_at);
   return seenAt ? { seenAt, cliVersion: text(row?.cli_version) } : null;
@@ -477,7 +606,7 @@ export async function getWorkerProfile(db: Queryable, project: string, ticket: s
 
 /** Records the session now holding a ticket; a new claim replaces a released one, the same session keeps its claim time. */
 export async function saveRuntimeHandle(
-  db: Queryable,
+  db: Database,
   h: {
     project: string;
     ticket: string;
@@ -485,16 +614,20 @@ export async function saveRuntimeHandle(
     handle: string;
     branch: string | null;
     workerSessionId?: string | null;
+    coordinator?: string | null;
     at: Date;
   },
 ): Promise<void> {
-  await db.query(
-    `WITH previous_sessions AS (
+  await transaction(db, async (tx) => {
+    // Separate statements give the owner read a fresh snapshot after a handover lock wait.
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR UPDATE", [h.project]);
+    await tx.query(
+      `WITH previous_sessions AS (
        UPDATE fleet_sessions SET released_at = $6 WHERE project = $1 AND ticket = $2 AND released_at IS NULL
          AND (handle <> $4 OR EXISTS (SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = $2 AND h.worker_session_id IS DISTINCT FROM $7::text))
      ), current_handle AS (
-       INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at, worker_session_id)
-     VALUES ($1, $2, $3, $4, $5, $6, NULL, $7)
+       INSERT INTO runtime_handles (project, ticket, runtime, handle, branch, claimed_at, released_at, worker_session_id, coordinator)
+     SELECT $1, $2, $3, $4, $5, $6, NULL, $7, CASE WHEN $7::text IS NULL THEN $8 ELSE (SELECT "coordinator" FROM "armada_worker" WHERE "id" = $7 AND "project" = $1 AND "ticket" = $2) END WHERE EXISTS (SELECT 1 FROM projects WHERE slug = $1)
      ON CONFLICT (project, ticket) DO UPDATE SET
        claimed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
                          AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
@@ -514,14 +647,22 @@ export async function saveRuntimeHandle(
        runtime_observed_at = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
                          AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
                          THEN runtime_handles.runtime_observed_at ELSE NULL END,
+       coordinator = CASE WHEN runtime_handles.handle = excluded.handle AND runtime_handles.released_at IS NULL
+                         AND runtime_handles.worker_session_id IS NOT DISTINCT FROM excluded.worker_session_id
+                         THEN runtime_handles.coordinator ELSE excluded.coordinator END,
        worker_session_id = excluded.worker_session_id,
        runtime = excluded.runtime, handle = excluded.handle, branch = excluded.branch, released_at = NULL
-       RETURNING project, ticket, runtime, handle, branch, claimed_at
-     ) INSERT INTO fleet_sessions (project, ticket, runtime, handle, branch, claimed_at)
-     SELECT project, ticket, runtime, handle, branch, claimed_at FROM current_handle
-     ON CONFLICT (project, ticket, handle, claimed_at) DO UPDATE SET branch = excluded.branch`,
-    [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at, h.workerSessionId ?? null],
-  );
+       RETURNING project, ticket, runtime, handle, branch, claimed_at, coordinator
+     ), role AS (
+       INSERT INTO coordinators (project, name, created_at, started_at, seen_at)
+       SELECT project, coordinator, $6, $6, $6 FROM current_handle WHERE coordinator IS NOT NULL
+       ON CONFLICT DO NOTHING
+     ) INSERT INTO fleet_sessions (project, ticket, runtime, handle, branch, claimed_at, coordinator)
+     SELECT project, ticket, runtime, handle, branch, claimed_at, coordinator FROM current_handle
+     ON CONFLICT (project, ticket, handle, claimed_at) DO UPDATE SET branch = excluded.branch, coordinator = excluded.coordinator`,
+      [h.project, h.ticket, h.runtime, h.handle, h.branch, h.at, h.workerSessionId ?? null, h.coordinator ?? null],
+    );
+  });
 }
 
 /** Marks the session as gone (release or merge) and forgets the profile its claim recorded. */
@@ -531,8 +672,11 @@ export async function releaseRuntimeHandle(
   ticket: string,
   at: Date,
   guard?: ReleaseGuard,
+  merged = false,
 ): Promise<boolean> {
   return transaction(db, async (tx) => {
+    // Reservations and ticket endings share this lock, including an empty reservation key.
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
     // Lock and compare the current claim before touching history or its profile.
     const held = (
       await tx.query(
@@ -540,21 +684,27 @@ export async function releaseRuntimeHandle(
         [project, ticket],
       )
     ).rows[0];
+    if (guard?.absent) {
+      if (held) return false;
+      // The project lock excludes new reservations until this cleanup ends.
+      // A claim inserted after the read is never touched by runtime/profile writes.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
     // A missing optional live row is not evidence of a replacement. An
     // explicit claim timestamp must still match; a matching released row
     // permits retrying after a Linear failure without touching a new claim.
     const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
     // With no row locked, never issue a ticket-wide mutation: a replacement
     // could insert its claim after this read.
-    if (guarded && !held) return !guard?.claimedAt;
-    if (
-      guarded &&
-      held &&
-      ((guard?.handle && held.handle !== guard.handle) ||
-        (guard?.claimedAt && isoAt(held.claimed_at) !== new Date(guard.claimedAt).toISOString()) ||
-        (guard?.workerSessionId && held.worker_session_id && held.worker_session_id !== guard.workerSessionId))
-    )
-      return false;
+    if (guarded && !held) {
+      if (guard?.claimedAt) return false;
+      // An optional claim write may have failed. End only reservations: their
+      // project lock prevents a replacement from reserving during this cleanup.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
+    if (guarded && held && !releaseGuardMatches(held, guard)) return false;
     await tx.query(
       "UPDATE fleet_sessions SET released_at = $3 WHERE project = $1 AND ticket = $2 AND released_at IS NULL AND ($4::text IS NULL OR handle = $4) AND ($5::timestamptz IS NULL OR claimed_at = $5)",
       [
@@ -570,11 +720,23 @@ export async function releaseRuntimeHandle(
       [at, project, ticket],
     );
     await tx.query("DELETE FROM worker_profiles WHERE project = $1 AND ticket = $2", [project, ticket]);
+    await endReservations(tx, project, ticket, at, merged);
     return true;
   });
 }
 
-const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, h.runtime_state_sequence, p.profile
+function releaseGuardMatches(held: Record<string, unknown> | undefined, guard?: ReleaseGuard): boolean {
+  if (!guard) return true;
+  if (guard.absent) return !held;
+  if (!held) return false;
+  return !(
+    (guard.handle && held.handle !== guard.handle) ||
+    (guard.claimedAt && isoAt(held.claimed_at) !== new Date(guard.claimedAt).toISOString()) ||
+    (guard.workerSessionId && held.worker_session_id && held.worker_session_id !== guard.workerSessionId)
+  );
+}
+
+const HANDLE_SELECT = `SELECT h.project, h.ticket, h.runtime, h.handle, h.branch, h.claimed_at, h.released_at, h.heartbeat_at, h.worker_session_id, h.coordinator, h.runtime_state, h.runtime_observed_at, h.runtime_changed_at, h.runtime_state_sequence, p.profile
   FROM runtime_handles h LEFT JOIN worker_profiles p ON p.project = h.project AND p.ticket = h.ticket`;
 
 const handleOf = (r: Row): RuntimeHandle => ({
@@ -597,6 +759,7 @@ const handleOf = (r: Row): RuntimeHandle => ({
         },
       }),
   ...(r.heartbeat_at == null ? {} : { lastHeartbeatAt: isoAt(r.heartbeat_at) }),
+  coordinator: text(r.coordinator),
   ...(r.worker_session_id == null ? {} : { workerSessionId: String(r.worker_session_id) }),
 });
 
@@ -736,8 +899,8 @@ async function withHandleAnswers(db: Queryable, project: string, handles: Runtim
 
 // ------------------------------------------------------------------ inbox
 
-const INBOX_COLUMNS = `id, project, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
-  request_question, request_profile, request_pr, request_validation`;
+const INBOX_COLUMNS = `id, project, coordinator, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
+  request_question, request_profile, request_pr, request_validation, request_deferred`;
 
 const inboxRow = (r: Row): StoredInboxItem => ({
   id: Number(r.id),
@@ -746,6 +909,7 @@ const inboxRow = (r: Row): StoredInboxItem => ({
   kind: String(r.kind) as InboxKind,
   recipient: String(r.recipient) as InboxRecipient,
   author: text(r.author),
+  coordinator: text(r.coordinator),
   body: String(r.body),
   createdAt: isoAt(r.created_at),
   ...(REQUEST_KINDS.includes(String(r.kind) as InboxKind & (typeof REQUEST_KINDS)[number])
@@ -753,6 +917,7 @@ const inboxRow = (r: Row): StoredInboxItem => ({
         request: {
           question: r.request_question === null ? null : Number(r.request_question),
           profile: text(r.request_profile),
+          ...(r.request_deferred ? { deferred: true } : {}),
           ...(r.request_pr == null ? {} : { pr: Number(r.request_pr) }),
         },
       }
@@ -780,9 +945,9 @@ export async function addInboxItem(
   item: Omit<InboxItem, "id" | "createdAt" | "request"> & { at: Date },
 ): Promise<number> {
   const rs = await db.query<{ id: unknown }>(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    [item.project, item.ticket, item.kind, item.recipient, item.author, item.body, item.at],
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [item.project, item.ticket, item.kind, item.recipient, item.author, item.body, item.at, item.coordinator ?? null],
   );
   return Number(rs.rows[0]?.id);
 }
@@ -800,10 +965,22 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
                      AND q.recipient = 'coordinator' AND q.resolved_at IS NULL AND ($3 <> 'plan-changes' OR q.kind = 'plan'))`
       : "";
   const rs = await db.query<{ id: unknown }>(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr)
-     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint WHERE true ${questionOpen}
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, request_question, request_profile, request_pr, coordinator, request_deferred)
+     SELECT $1, $2, $3::text, 'coordinator', $4, $5, $6, $7::bigint, $8, $9::bigint, $10, $11::boolean WHERE true ${questionOpen}
      ON CONFLICT DO NOTHING RETURNING id`,
-    [r.project, r.ticket, r.kind, r.author, r.body, r.at, r.question, r.profile, r.pr ?? null],
+    [
+      r.project,
+      r.ticket,
+      r.kind,
+      r.author,
+      r.body,
+      r.at,
+      r.question,
+      r.profile,
+      r.pr ?? null,
+      r.coordinator ?? null,
+      r.deferred ?? false,
+    ],
   );
   const id = rs.rows[0]?.id;
   return id === undefined ? null : Number(id);
@@ -812,28 +989,28 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
 /** Adds or refreshes the ticket's open plan for the coordinator. */
 export async function putPlan(
   db: Queryable,
-  item: { project: string; ticket: string; author: string | null; body: string; at: Date },
+  item: { project: string; ticket: string; author: string | null; body: string; coordinator?: string | null; at: Date },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5)
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5, $6)
      ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
-     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at`,
-    [item.project, item.ticket, item.author, item.body, item.at],
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator`,
+    [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
   );
 }
 
 /** Adds the coordinator's hand-back item for a ticket, or refreshes the unresolved one. */
 export async function putHandBack(
   db: Queryable,
-  item: { project: string; ticket: string; author: string | null; body: string; at: Date },
+  item: { project: string; ticket: string; author: string | null; body: string; coordinator?: string | null; at: Date },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, 'hand-back', 'coordinator', $3, $4, $5)
+    `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at, coordinator)
+     VALUES ($1, $2, 'hand-back', 'coordinator', $3, $4, $5, $6)
      ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
-     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at`,
-    [item.project, item.ticket, item.author, item.body, item.at],
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at, coordinator = excluded.coordinator`,
+    [item.project, item.ticket, item.author, item.body, item.at, item.coordinator ?? null],
   );
 }
 
@@ -1049,8 +1226,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle" FROM (
-       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "endedAt"
+    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator" FROM (
+       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -1068,6 +1245,7 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
   return rs.rows.map((r) => ({
     ticket: String(r.ticket),
     launchedAt: isoAt(r.createdAt),
+    coordinator: text(r.coordinator),
     tokenUsedAt: iso(r.tokenUsedAt),
     tokenExpiresAt: isoAt(r.tokenExpiresAt),
     runtime: text(r.runtime),
@@ -1075,13 +1253,19 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
   }));
 }
 
-export async function expireUnusedLaunches(db: Database, project: string, now: Date): Promise<PendingLaunch[]> {
+export async function expireUnusedLaunches(
+  db: Database,
+  project: string,
+  now: Date,
+  coordinatorName?: string,
+): Promise<PendingLaunch[]> {
   return transaction(db, async (tx) => {
     const candidates = await tx.query(
       `SELECT w."id", w."organizationId", w."ticket", w."createdAt", w."tokenExpiresAt", w."runtimeHandle"
        FROM "armada_worker" w
        WHERE w."project" = $1 AND w."organizationId" = (SELECT organization_id FROM projects WHERE slug = $1)
          AND w."endedAt" IS NULL AND w."tokenUsedAt" IS NULL AND w."tokenExpiresAt" < $2
+         AND ($3::text IS NULL OR w."coordinator" IS NULL OR w."coordinator" = $3)
          AND NOT EXISTS (
            SELECT 1 FROM "armada_worker" newer
            WHERE newer."organizationId" = w."organizationId" AND newer."project" = w."project" AND newer."ticket" = w."ticket"
@@ -1094,7 +1278,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
            SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = w."ticket" AND h.released_at IS NULL
          )
        ORDER BY w."createdAt", w."ticket" FOR UPDATE OF w`,
-      [project, new Date(now.getTime() - UNUSED_LAUNCH_GRACE_MS)],
+      [project, new Date(now.getTime() - UNUSED_LAUNCH_GRACE_MS), coordinatorName ?? null],
     );
     const expired: PendingLaunch[] = [];
     for (const row of candidates.rows) {
@@ -1108,6 +1292,7 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
       if (ended)
         expired.push({
           ticket: ended.ticket,
+          coordinator: ended.coordinator ?? null,
           launchedAt: ended.createdAt,
           tokenExpiresAt: ended.tokenExpiresAt,
           tokenUsedAt: null,
@@ -1117,6 +1302,154 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
     }
     return expired;
   });
+}
+
+// ------------------------------------------------------------------ long jobs
+
+const jobOf = (r: Row): Job => ({
+  id: Number(r.id),
+  project: String(r.project),
+  ticket: String(r.ticket),
+  name: String(r.name),
+  ref: r.ref == null ? null : text(r.ref),
+  state: text(r.state) as JobState,
+  progress: r.progress == null ? null : text(r.progress),
+  eta: iso(r.eta),
+  startedBy: r.started_by == null ? null : text(r.started_by),
+  startedAt: isoAt(r.started_at),
+  observedAt: isoAt(r.observed_at),
+  finishedAt: iso(r.finished_at),
+});
+
+async function getJob(db: Queryable, project: string, id: number): Promise<Job | null> {
+  const r = (await db.query("SELECT * FROM jobs WHERE project = $1 AND id = $2", [project, id])).rows[0];
+  return r ? jobOf(r) : null;
+}
+
+async function listJobs(db: Queryable, project: string, q: JobQuery): Promise<Job[]> {
+  const params: unknown[] = [project];
+  const where = ["project = $1"];
+  if (q.ticket !== undefined) {
+    params.push(q.ticket);
+    where.push(`ticket = $${params.length}`);
+  }
+  if (q.id !== undefined) {
+    params.push(q.id);
+    where.push(`id = $${params.length}`);
+  }
+  if (q.open) where.push("state IN ('starting','running')");
+  return (await db.query(`SELECT * FROM jobs WHERE ${where.join(" AND ")} ORDER BY id DESC`, params)).rows.map(jobOf);
+}
+
+/** How many jobs a project's reading carries at most. */
+export const SHOWN_JOBS = 100;
+
+/**
+ * The jobs the dashboard shows (THE-1128): every open job of the project, and
+ * those of `tickets` that ended since `endedSince`: the open ones first (an
+ * overdue job is never cut for newer ones), then the newest. Each half reads
+ * its own index.
+ */
+export async function shownJobs(
+  db: Queryable,
+  project: string,
+  tickets: readonly string[],
+  endedSince: Date,
+): Promise<Job[]> {
+  return (
+    await db.query(
+      `SELECT * FROM (
+         SELECT * FROM jobs WHERE project = $1 AND state IN ('starting','running')
+         UNION
+         SELECT * FROM jobs WHERE project = $1 AND ticket = ANY($2::text[]) AND finished_at >= $3
+       ) shown ORDER BY state IN ('starting','running') DESC, id DESC LIMIT ${SHOWN_JOBS}`,
+      [project, [...tickets], endedSince],
+    )
+  ).rows.map(jobOf);
+}
+
+// ------------------------------------------------------------------ standing merge holds
+const holdRow = (r: Row): MergeHold => ({
+  id: Number(r.id),
+  project: String(r.project),
+  kind: r.kind as MergeHold["kind"],
+  ref: text(r.ref),
+  reason: String(r.reason),
+  openedBy: text(r.opened_by),
+  openedAt: isoAt(r.opened_at),
+  clearedAt: iso(r.cleared_at),
+  clearedBy: text(r.cleared_by),
+  clearReason: text(r.clear_reason),
+});
+
+export async function openHold(
+  db: Database,
+  input: OpenHold & { project: string; author: string | null; at: Date },
+): Promise<MergeHold> {
+  return transaction(db, async (q) => {
+    const ref = input.kind === "manual" ? null : (input.ref ?? null);
+    const result = await q.query(
+      `INSERT INTO merge_holds(project, kind, ref, reason, opened_by, opened_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (project, kind, ref) WHERE cleared_at IS NULL DO NOTHING RETURNING *`,
+      [input.project, input.kind, ref, input.reason, input.author, input.at],
+    );
+    if (!result.rows[0]) {
+      const existing = await q.query(
+        "SELECT * FROM merge_holds WHERE project = $1 AND kind = $2 AND ref = $3 AND cleared_at IS NULL",
+        [input.project, input.kind, ref],
+      );
+      // A concurrent clear after the conflicting insert: retry on the next call instead of returning a cleared pause.
+      if (!existing.rows[0]) throw new Error("the hold was cleared concurrently; open it again");
+      return holdRow(existing.rows[0]);
+    }
+    const hold = holdRow(result.rows[0]);
+    const itemId = await addInboxItem(q, {
+      project: input.project,
+      ticket: null,
+      kind: "hold",
+      recipient: "coordinator",
+      author: input.author,
+      body: holdBody(hold),
+      at: input.at,
+    });
+    await q.query("UPDATE merge_holds SET inbox_id = $2 WHERE id = $1", [hold.id, itemId]);
+    return hold;
+  });
+}
+export async function clearHold(
+  db: Database,
+  input: { project: string; id: number; reason: string; author: string | null; at: Date },
+): Promise<ClearHoldResult | null> {
+  return transaction(db, async (q) => {
+    const result = await q.query("SELECT * FROM merge_holds WHERE project = $1 AND id = $2 FOR UPDATE", [
+      input.project,
+      input.id,
+    ]);
+    const row = result.rows[0];
+    if (!row) return null;
+    if (row.cleared_at) return { hold: holdRow(row), cleared: false };
+    const updated = await q.query(
+      "UPDATE merge_holds SET cleared_at = $3, cleared_by = $4, clear_reason = $5 WHERE project = $1 AND id = $2 RETURNING *",
+      [input.project, input.id, input.at, input.author, input.reason],
+    );
+    await resolveInboxItem(q, {
+      project: input.project,
+      id: Number(row.inbox_id),
+      resolution: input.reason,
+      at: input.at,
+    });
+    const changed = updated.rows[0];
+    if (!changed) throw new Error("the locked hold could not be cleared");
+    return { hold: holdRow(changed), cleared: true };
+  });
+}
+export async function openHolds(db: Queryable, project: string): Promise<MergeHold[]> {
+  return (
+    await db.query("SELECT * FROM merge_holds WHERE project = $1 AND cleared_at IS NULL ORDER BY opened_at, id", [
+      project,
+    ])
+  ).rows.map(holdRow);
 }
 
 // ------------------------------------------------------------------ the store
@@ -1152,6 +1485,7 @@ export const fleetStore = (db: Database): FleetStore => ({
         kind: "note",
         recipient: "worker",
         author: "coordinator",
+        coordinator: q.coordinator,
         body: q.text,
         at: q.at,
       });
@@ -1163,15 +1497,61 @@ export const fleetStore = (db: Database): FleetStore => ({
       );
       return `Note #${id} recorded.`;
     }),
+  async startJob(input) {
+    const rs = await db.query(
+      `INSERT INTO jobs (project, ticket, name, state, started_by, started_at, observed_at)
+       VALUES ($1, $2, $3, 'starting', $4, $5, $5) RETURNING *`,
+      [input.project, input.ticket, input.name, input.startedBy, input.at],
+    );
+    return jobOf(rs.rows[0] as Row);
+  },
+  getJob: (project, id) => getJob(db, project, id),
+  listJobs: (project, q) => listJobs(db, project, q),
+  async observeJob(input) {
+    const rs = await db.query(
+      `UPDATE jobs SET state = $4,
+       ref = CASE WHEN ref IS NULL AND $5::boolean THEN $6 ELSE ref END,
+       progress = $7, eta = CASE WHEN $4 = 'running' THEN $8::timestamptz ELSE NULL END,
+       observed_at = $9, finished_at = CASE WHEN $4 = 'running' THEN NULL ELSE $9 END
+       WHERE project = $1 AND id = $2 AND ticket = $3 AND state IN ('starting','running') AND observed_at <= $9
+       AND (NOT $5::boolean OR ref IS NULL OR ref = $6)
+       RETURNING *`,
+      [
+        input.project,
+        input.id,
+        input.ticket,
+        input.state,
+        input.ref !== undefined,
+        input.ref ?? null,
+        input.progress ?? null,
+        input.eta ?? null,
+        input.at,
+      ],
+    );
+    if (rs.rows[0]) return jobOf(rs.rows[0]);
+    const job = await getJob(db, input.project, input.id);
+    return job?.ticket === input.ticket ? job : null;
+  },
+  openHold: (input) => openHold(db, input),
+  clearHold: (input) => clearHold(db, input),
+  openHolds: (project) => openHolds(db, project),
+
+  digestRecords: (project, since, now) => digestRecords(db, project, since, now),
+  reserve: (input) => reserve(db, input),
+  reservations: (project) => reservations(db, project),
+  unreserve: (input) => unreserve(db, input),
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
   saveTicketPaths: async (project, ticket, paths, at) => {
-    await db.query(
-      `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
-      ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
-      [project, ticket, paths, at],
-    );
+    await transaction(db, async (tx) => {
+      await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+      await tx.query(
+        `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
+        [project, ticket, paths, at],
+      );
+    });
   },
   ticketPaths: async (project) => {
     const result = await db.query<{ ticket: string; paths: string[] }>(
@@ -1180,8 +1560,20 @@ export const fleetStore = (db: Database): FleetStore => ({
     );
     return Object.fromEntries(result.rows.map((r) => [r.ticket, r.paths]));
   },
-  deleteTicketPaths: async (project, ticket) => {
-    await db.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
+  deleteTicketPaths: async (project, ticket, guard) => {
+    await transaction(db, async (tx) => {
+      await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [project]);
+      if (guard) {
+        const held = (
+          await tx.query(
+            "SELECT handle, claimed_at, worker_session_id FROM runtime_handles WHERE project = $1 AND ticket = $2 FOR UPDATE",
+            [project, ticket],
+          )
+        ).rows[0];
+        if (!releaseGuardMatches(held, guard)) return;
+      }
+      await tx.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
+    });
   },
   recordEvent: (e) => recordEvent(db, e),
   recordHeartbeat: (input) => recordHeartbeat(db, input),
@@ -1192,6 +1584,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),
   lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),
   getCoordinatorPresence: (project) => getCoordinatorPresence(db, project),
+  listCoordinators: (project) => listCoordinators(db, project),
+  transferTickets: (input) => transferTickets(db, input),
   inboxReads: (project, now) => inboxReads(db, project, now),
   listSessions: (project, opts) => listSessions(db, project, opts),
   saveWorkerProfile: (w) => saveWorkerProfile(db, w),
@@ -1199,7 +1593,8 @@ export const fleetStore = (db: Database): FleetStore => ({
   saveRuntimeHandle: (h) => saveRuntimeHandle(db, h),
   observeRuntime: (input) => observeRuntime(db, input),
   stopRuntime: (input) => stopRuntime(db, input),
-  releaseRuntimeHandle: (project, ticket, at, guard) => releaseRuntimeHandle(db, project, ticket, at, guard),
+  releaseRuntimeHandle: (project, ticket, at, guard, merged) =>
+    releaseRuntimeHandle(db, project, ticket, at, guard, merged),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
   addInboxItem: (item) => addInboxItem(db, item),
@@ -1213,12 +1608,17 @@ export const fleetStore = (db: Database): FleetStore => ({
   resolveInboxItems: (q) => resolveInboxItems(db, q),
   resolveAnswerRequests: (q) => resolveAnswerRequests(db, q),
   resolvePlans: (q) => resolvePlans(db, q),
+  queueAdd: (e) => queueAdd(db, e),
+  queueList: (project, opts) => queueList(db, project, opts),
+  queueNext: (q) => queueNext(db, q),
+  queueFinish: (q) => queueFinish(db, q),
+  queueRemove: (q) => queueRemove(db, q),
   acquireLease: (l) => acquireLease(db, l),
   getLease: (project, name) => getLease(db, project, name),
   renewLease: (l) => renewLease(db, l),
   releaseLease: (l) => releaseLease(db, l),
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
-  expireUnusedLaunches: (project, now) => expireUnusedLaunches(db, project, now),
+  expireUnusedLaunches: (project, now, name) => expireUnusedLaunches(db, project, now, name),
   addValidation: (v) => addValidation(db, v),
   listValidations: (q) => listValidations(db, q),
   getValidation: (project, id) => getValidation(db, project, id),
@@ -1447,6 +1847,8 @@ export interface LiveStore extends RequestStore {
   recentEvents(project: string, since: Date): Promise<HistoryEvent[]>;
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
+  /** The open long jobs, and those of some tickets ended since then (THE-1128). */
+  shownJobs(project: string, tickets: readonly string[], endedSince: Date): Promise<Job[]>;
   openInboxItems(q: { project: string; recipient: InboxRecipient }): Promise<InboxItem[]>;
   coordinatorPresence(project: string): Promise<{ seenAt: string; cliVersion: string | null } | null>;
   /** What an agent's page shows of its ticket's history. */
@@ -1490,6 +1892,7 @@ export const liveStore = (db: Database): LiveStore => ({
   recentEvents: (project, since) => recentEvents(db, project, since),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   pendingLaunches: (project, since) => pendingLaunches(db, project, since),
+  shownJobs: (project, tickets, endedSince) => shownJobs(db, project, tickets, endedSince),
   openInboxItems: (q) => openInboxItems(db, q),
   coordinatorPresence: (project) => coordinatorPresence(db, project),
   ticketHistory: async (project, ticket) => {
@@ -1513,3 +1916,88 @@ export const liveStore = (db: Database): LiveStore => ({
   catchupRecords: (project, window, silentAfterMinutes, now) =>
     catchupRecords(db, project, window, silentAfterMinutes, now),
 });
+
+// ------------------------------------------------------------------ shared resources
+
+const RESERVATION_COLUMNS = "id, project, key, value, ticket, note, reserved_at, ended_at, merged";
+const reservationRow = (r: Row): Reservation => ({
+  id: Number(r.id),
+  project: String(r.project),
+  key: String(r.key),
+  value: String(r.value),
+  ticket: String(r.ticket),
+  note: text(r.note),
+  reservedAt: isoAt(r.reserved_at),
+  endedAt: iso(r.ended_at),
+  merged: r.merged === true,
+});
+
+/** A project lock serializes allocation even when this key has no rows yet. */
+export async function reserve(
+  db: Database,
+  input: ReserveRecord & { project: string; at: Date },
+): Promise<ReserveResult> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    let value = input.value ?? "";
+    if (input.next) {
+      // Names and exclusive keys can coexist with numbers: cast only integer text.
+      const max = await tx.query(
+        `SELECT max(value::numeric) AS value FROM reservations
+         WHERE project = $1 AND key = $2 AND (ended_at IS NULL OR merged) AND value ~ '^[+-]?[0-9]+$'`,
+        [input.project, input.key],
+      );
+      const greatest = BigInt(String(max.rows[0]?.value ?? "0"));
+      const floor = BigInt(input.floor ?? 0);
+      value = ((greatest > floor ? greatest : floor) + 1n).toString();
+    }
+    const inserted = await tx.query(
+      `INSERT INTO reservations (project, key, value, ticket, note, reserved_at)
+       VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (project, key, value) WHERE ended_at IS NULL OR merged
+       DO NOTHING RETURNING ${RESERVATION_COLUMNS}`,
+      [input.project, input.key, value, input.ticket, input.note ?? null, input.at],
+    );
+    if (inserted.rows[0]) return { reserved: true, reservation: reservationRow(inserted.rows[0]) };
+    const holder = await tx.query(
+      `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND key = $2 AND value = $3 AND (ended_at IS NULL OR merged)`,
+      [input.project, input.key, value],
+    );
+    if (!holder.rows[0]) throw new Error("reservation holder disappeared");
+    return { reserved: false, holder: reservationRow(holder.rows[0]) };
+  });
+}
+
+export async function reservations(db: Queryable, project: string): Promise<Reservation[]> {
+  const rs = await db.query(
+    `SELECT ${RESERVATION_COLUMNS} FROM reservations WHERE project = $1 AND (ended_at IS NULL OR merged) ORDER BY key, reserved_at, id`,
+    [project],
+  );
+  return rs.rows.map(reservationRow);
+}
+
+export async function unreserve(
+  db: Database,
+  input: { project: string; ticket: string; key: string; at: Date },
+): Promise<number> {
+  return transaction(db, async (tx) => {
+    await tx.query("SELECT slug FROM projects WHERE slug = $1 FOR NO KEY UPDATE", [input.project]);
+    const rs = await tx.query(
+      "UPDATE reservations SET ended_at = $4 WHERE project = $1 AND ticket = $2 AND key = $3 AND ended_at IS NULL AND NOT merged",
+      [input.project, input.ticket, input.key, input.at],
+    );
+    return rs.rowCount ?? 0;
+  });
+}
+
+async function endReservations(
+  db: Queryable,
+  project: string,
+  ticket: string,
+  at: Date,
+  merged: boolean,
+): Promise<void> {
+  await db.query(
+    "UPDATE reservations SET ended_at = $3, merged = $4 WHERE project = $1 AND ticket = $2 AND ended_at IS NULL",
+    [project, ticket, at, merged],
+  );
+}

@@ -117,6 +117,7 @@ export function parseClaim(body: string, at: string, author: string | null): Age
     branch: field("branch|branche"),
     startedAt: field("started|démarré|demarre"),
     profile: field("profile"),
+    ...(field("coordinator") ? { coordinator: field("coordinator") } : {}),
     ...(profileReason ? { profileReason } : {}),
     at,
     author,
@@ -671,4 +672,49 @@ async function readChanges(opts: FetchChangesOptions, delegate: boolean): Promis
     // The full read's caps still hold until the next one.
     warnings: [...new Set([...previous.warnings, ...warnings])],
   };
+}
+
+export interface TicketDescription {
+  uuid: string;
+  id: string;
+  title: string;
+  description: string;
+}
+
+/** CLI-only description read: one flat query for a normal frontier, with pagination for large fleets.
+ * Only scalar fields: no nested connections multiplying Linear's complexity cost.
+ * UUIDs come from the program read, never human ticket identifiers in an ID filter.
+ */
+export async function fetchTicketDescriptions(
+  opts: LinearRequestOptions,
+  uuids: string[],
+): Promise<TicketDescription[]> {
+  const ids = [...new Set(uuids)];
+  if (!ids.length) return [];
+  const query = `query TicketDescriptions($ids: [ID!]!, $after: String) {
+    issues(first: 100, after: $after, filter: { id: { in: $ids } }) {
+      pageInfo { hasNextPage endCursor }
+      nodes { id identifier title description }
+    }
+  }`;
+  const tickets: TicketDescription[] = [];
+  let after: string | null = null;
+  for (;;) {
+    const data: { issues: Connection<{ id: string; identifier: string; title: string; description: string | null }> } =
+      await readGql(opts, query, { ids, after });
+    for (const node of data.issues.nodes)
+      tickets.push({ uuid: node.id, id: node.identifier, title: node.title, description: node.description ?? "" });
+    const page = data.issues.pageInfo;
+    if (!page) throw new LinearError("Linear: ticket descriptions page information is missing");
+    if (!page.hasNextPage) break;
+    if (!page.endCursor || page.endCursor === after)
+      throw new LinearError("Linear: ticket descriptions pagination did not advance");
+    after = page.endCursor;
+  }
+  const found = new Set(tickets.map((t) => t.uuid));
+  if (ids.some((id) => !found.has(id)))
+    throw new LinearError(
+      "Linear: some selected ticket descriptions could not be read; retry lint after refreshing the program",
+    );
+  return tickets;
 }

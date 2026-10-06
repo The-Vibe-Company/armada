@@ -45,6 +45,7 @@ export interface Worker {
   organization: string;
   project: string;
   ticket: string;
+  coordinator?: string | null;
   launchedBy: Launcher;
   createdAt: string;
   tokenExpiresAt: string;
@@ -90,7 +91,7 @@ const hhmm = (iso: string) => `${iso.slice(0, 16)}Z`;
 const str = (v: unknown) => (v === null || v === undefined ? null : String(v));
 
 const COLUMNS = `"id", "organizationId", "project", "ticket", "launchedByKind", "launchedById", "launchedByLabel",
-  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel", "runtime", "runtimeHandle"`;
+  "createdAt", "tokenExpiresAt", "tokenUsedAt", "sessionExpiresAt", "sessionSeenAt", "endedAt", "endReason", "endedByLabel", "runtime", "runtimeHandle", "coordinator"`;
 
 function workerOf(r: Row): Worker {
   const reason = str(r.endReason);
@@ -99,6 +100,7 @@ function workerOf(r: Row): Worker {
     organization: String(r.organizationId),
     project: String(r.project),
     ticket: String(r.ticket),
+    coordinator: str(r.coordinator),
     launchedBy: {
       kind: String(r.launchedByKind) === "api-key" ? "api-key" : "session",
       id: String(r.launchedById),
@@ -124,7 +126,14 @@ function workerOf(r: Row): Worker {
 /** Makes a launch token for one ticket. The token is returned once and only its hash is kept. */
 export async function createLaunch(
   client: Database,
-  input: { organization: string; project: string; ticket: string; launcher: Launcher; now: Date },
+  input: {
+    organization: string;
+    project: string;
+    ticket: string;
+    launcher: Launcher;
+    coordinator?: string | null;
+    now: Date;
+  },
 ): Promise<{ worker: Worker; token: string }> {
   const token = newToken(LAUNCH_TOKEN_PREFIX);
   const at = input.now.toISOString();
@@ -132,9 +141,21 @@ export async function createLaunch(
   const id = `wk_${randomBytes(9).toString("base64url")}`;
   const ticket = input.ticket.toUpperCase();
   await client.query(
+    `INSERT INTO coordinators (project, name, created_at, created_by, started_at, seen_at)
+     SELECT slug, $2, $3, $4, $3, $3 FROM projects WHERE slug = $1 AND organization_id = $5 AND $2::text IS NOT NULL
+     ON CONFLICT DO NOTHING`,
+    [
+      input.project,
+      input.coordinator === undefined ? "default" : input.coordinator,
+      input.now,
+      input.launcher.id,
+      input.organization,
+    ],
+  );
+  await client.query(
     `INSERT INTO "armada_worker" ("id", "organizationId", "project", "ticket", "launchedByKind", "launchedById",
-       "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt")
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       "launchedByLabel", "createdAt", "tokenHash", "tokenExpiresAt", "coordinator")
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
     [
       id,
       input.organization,
@@ -146,6 +167,7 @@ export async function createLaunch(
       at,
       hashOf(token),
       expires,
+      input.coordinator === undefined ? "default" : input.coordinator,
     ],
   );
   await recordEvent(client, input.organization, {
@@ -161,6 +183,7 @@ export async function createLaunch(
     organization: input.organization,
     project: input.project,
     ticket,
+    coordinator: input.coordinator === undefined ? "default" : input.coordinator,
     launchedBy: input.launcher,
     createdAt: at,
     tokenExpiresAt: expires,

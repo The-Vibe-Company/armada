@@ -1,10 +1,19 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { createHmac } from "node:crypto";
-import { configTemplate, type OwnerValidation, parseConfig } from "@armada/core/read";
+import {
+  buildDigest,
+  configTemplate,
+  type OwnerValidation,
+  parseConfig,
+  recordClaim,
+  recordReport,
+} from "@armada/core/read";
 import { issue } from "../../core/test/support.ts";
 import { organizationKeys, releaseCredentials, releaseWorkerSecrets } from "../lib/broker.ts";
 import type { Database } from "../lib/db.ts";
-import { addInboxItem, addValidation, upsertProject } from "../lib/fleet-store.ts";
+import { digestRecords } from "../lib/digest.ts";
+import { DEFAULT_DIGEST, digestSlots } from "../lib/digest-slots.ts";
+import { addInboxItem, addValidation, fleetStore, upsertProject } from "../lib/fleet-store.ts";
 import { ownerCron } from "../lib/owner-cron.ts";
 import {
   listOwnerChannels,
@@ -13,6 +22,7 @@ import {
   publicAddress,
   removeOwnerChannel,
   saveOwnerChannel,
+  sendOwnerDigest,
   sendOwnerTest,
   webhookUrl,
 } from "../lib/owner-push.ts";
@@ -51,6 +61,7 @@ const save = (over: Partial<Parameters<typeof saveOwnerChannel>[1]> = {}) =>
     project: null,
     format: "slack",
     alerts: true,
+    digest: { times: [], days: [1, 2, 3, 4, 5], skipQuiet: false },
     timeZone: "UTC",
     language: "en",
     quiet: null,
@@ -129,9 +140,148 @@ beforeEach(async () => {
   await db.query(`DELETE FROM "armada_secret"`);
   await db.query(`DELETE FROM "armada_secret_event"`);
   await db.query(`DELETE FROM coordinator_presence`);
+  await db.query(`DELETE FROM coordinators`);
+  await db.query(`TRUNCATE events, runtime_handles, fleet_sessions, worker_profiles RESTART IDENTITY CASCADE`);
 });
 
 describe("owner chat delivery", () => {
+  test("current blocks precede the window and repeated reports preserve their duration; records carry running phases and snapshot titles", async () => {
+    const store = fleetStore(db);
+    const before = new Date("2026-04-06T10:00:00Z");
+    await recordClaim(
+      store,
+      project.slug,
+      {
+        ticket: "WID-2",
+        runtime: "Conductor",
+        handle: "synthetic/session",
+        branch: null,
+        phase: "implementing",
+        resuming: false,
+        profile: null,
+      },
+      before,
+    );
+    const report = {
+      ticket: "WID-2",
+      phase: "blocked" as const,
+      previous: "implementing" as const,
+      summary: "blocked",
+      message: "synthetic",
+      prUrl: null,
+      headSha: null,
+    };
+    await recordReport(store, project.slug, report, new Date("2026-04-06T10:30:00Z"));
+    await recordReport(store, project.slug, { ...report, previous: "blocked" }, new Date("2026-04-06T11:45:00Z"));
+    const records = await digestRecords(db, project.slug, "2026-04-06T11:30:00Z", now);
+    expect(records.input.inFlight).toMatchObject([
+      { ticket: "WID-2", title: "Export the report", phase: "blocked", phaseSince: "2026-04-06T10:30:00.000Z" },
+    ]);
+    expect(records.input.summary.stuck).toMatchObject([
+      { ticket: "WID-2", reason: "blocked", minutes: 90, ongoing: true },
+    ]);
+    await recordReport(store, project.slug, { ...report, phase: "implementing", previous: "blocked" }, now);
+    const recovered = await digestRecords(db, project.slug, "2026-04-06T11:30:00Z", now);
+    expect(recovered.input.summary.stuck).toMatchObject([
+      { ticket: "WID-2", reason: "blocked", minutes: 90, ongoing: false },
+    ]);
+  });
+
+  test("manual project digests never advance another project's window or the organization schedule", async () => {
+    const other = { slug: "gadgets", name: "Gadgets", repository: "acme/gadgets", programRoot: "GAD-1" };
+    await upsertProject(db, other, now);
+    await db.query(`UPDATE projects SET organization_id = $1 WHERE slug = $2`, [org, other.slug]);
+    await save({ alerts: false, digest: DEFAULT_DIGEST });
+    await fleetStore(db).recordEvent({
+      project: other.slug,
+      ticket: "GAD-2",
+      kind: "merge",
+      phase: "merged",
+      at: new Date("2026-04-06T12:20:00Z"),
+    });
+    const manualAt = new Date("2026-04-06T12:30:00Z");
+    const records = await digestRecords(db, project.slug, null, manualAt);
+    expect(await sendOwnerDigest(db, opts(manualAt), project.slug, buildDigest(records.input), "en")).toBe(true);
+    const otherRecords = await digestRecords(db, other.slug, null, manualAt);
+    expect(otherRecords.input.since).toBe(now.toISOString());
+    expect(otherRecords.input.summary.merged.map((m) => m.ticket)).toEqual(["GAD-2"]);
+    await ownerTick(db, opts(new Date("2026-04-06T13:00:00Z")));
+    expect(posts).toHaveLength(2);
+    expect(posts[1]?.body).toContain("GAD-2");
+  });
+
+  test("a skipped quiet digest retains missed-slot notices for the next visible digest", async () => {
+    await save({ alerts: false, language: "fr", digest: { ...DEFAULT_DIGEST, skipQuiet: true } });
+    await ownerTick(db, opts(new Date("2026-04-07T13:00:00Z")));
+    expect(posts).toHaveLength(0);
+    await validation();
+    await ownerTick(db, opts(new Date("2026-04-07T18:00:00Z")));
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.body).toContain("2026-04-07T09:00");
+    expect(posts[0]?.body).toContain("a été sauté");
+  });
+
+  test("the optional cron discovers digest-only channels while production remains unconfigured", async () => {
+    await save({ alerts: false, digest: DEFAULT_DIGEST });
+    const response = await ownerCron(
+      new Request(`${BASE}/api/cron/owner`, { headers: { authorization: "Bearer synthetic-cron-secret" } }),
+      {
+        secret: "synthetic-cron-secret",
+        accounts: async () => ({ client: db, settings: { baseUrl: BASE } }),
+        vault: () => mode,
+        fetch: fetcher,
+        now: () => new Date("2026-04-06T13:00:00Z"),
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(posts).toHaveLength(1);
+  });
+  test("concurrent scheduled ticks send one channel digest, with missed-slot notes and the previous digest window", async () => {
+    await save({ alerts: false, language: "fr", digest: DEFAULT_DIGEST });
+    await validation();
+    const at = new Date("2026-04-06T13:00:00Z");
+    await Promise.all([ownerTick(db, opts(at)), ownerTick(db, opts(at))]);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.body).toContain("En attente de votre décision");
+    expect(posts[0]?.body).toContain("Export the report");
+    expect(posts[0]?.body).toContain("/approve/1");
+    expect((await db.query(`SELECT key FROM owner_pushes`)).rows).toEqual([{ key: "digest:2026-04-06T13:00" }]);
+    const later = new Date("2026-04-07T13:05:00Z");
+    await Promise.all([ownerTick(db, opts(later)), ownerTick(db, opts(later))]);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]?.body).toContain("2026-04-06T18:00");
+    expect(posts[1]?.body).toContain("a été sauté");
+    expect(posts[1]?.body).toContain("2026-04-06 13:00");
+    const records = await digestRecords(db, project.slug, null, later);
+    expect(records.input.since).toBe(later.toISOString());
+    expect(JSON.stringify(records)).not.toContain(URL_VALUE);
+  });
+
+  test("quiet digests send one line, or retain the slot without sending when skipped; project filters and retries still apply", async () => {
+    await save({ alerts: false, project: project.slug, digest: DEFAULT_DIGEST });
+    const at = new Date("2026-04-06T13:00:00Z");
+    await ownerTick(db, opts(at));
+    expect(posts).toHaveLength(1);
+    expect(JSON.parse(posts[0]?.body ?? "{}").text).toBe("Nothing new: no merges, no blocks, no decisions waiting.");
+    await save({ alerts: false, digest: { ...DEFAULT_DIGEST, skipQuiet: true }, now: at });
+    await ownerTick(db, opts(new Date("2026-04-06T18:00:00Z")));
+    expect(posts).toHaveLength(1);
+    expect(
+      (await db.query(`SELECT error FROM owner_pushes WHERE key = 'digest:2026-04-06T18:00'`)).rows[0]?.error,
+    ).toBe("quiet-digest");
+    await validation();
+    await save({ alerts: false, digest: DEFAULT_DIGEST, now: new Date("2026-04-07T08:00:00Z") });
+    status = 500;
+    const retryAt = new Date("2026-04-07T09:00:00Z");
+    await ownerTick(db, opts(retryAt));
+    status = 200;
+    await Promise.all([
+      ownerTick(db, opts(new Date(retryAt.getTime() + 60_000))),
+      ownerTick(db, opts(new Date(retryAt.getTime() + 60_000))),
+    ]);
+    expect(posts).toHaveLength(3);
+  });
+
   test("concurrent instances send one POST per durable item; marked snapshots stay untouched; payloads contain titles and links only", async () => {
     const v = await validation();
     await validation("WID-3", "question");
@@ -184,15 +334,15 @@ describe("owner chat delivery", () => {
       body: "free text",
       at: ago,
     });
-    await db.query(`INSERT INTO coordinator_presence (project,seen_at,started_at,inbox_seen_at) VALUES ($1,$2,$2,$2)`, [
-      project.slug,
-      ago,
-    ]);
+    await db.query(
+      `INSERT INTO coordinators (project,name,created_at,seen_at,started_at,inbox_seen_at) VALUES ($1,'default',$2,$2,$2,$2)`,
+      [project.slug, ago],
+    );
     await ownerTick(db, opts());
     await ownerTick(db, opts());
     expect(posts).toHaveLength(1);
     expect(posts[0]?.body).toContain("coordinator stopped");
-    await db.query(`UPDATE coordinator_presence SET seen_at = $2, inbox_seen_at = $2 WHERE project = $1`, [
+    await db.query(`UPDATE coordinators SET seen_at = $2, inbox_seen_at = $2 WHERE project = $1 AND name = 'default'`, [
       project.slug,
       now,
     ]);
@@ -325,6 +475,23 @@ describe("owner chat delivery", () => {
     ).toBe(200);
     expect(posts).toHaveLength(1);
   });
+});
+
+test("civil digest slots handle weekdays, offsets and both DST transitions without duplicate local keys", () => {
+  const allDays = { times: ["02:30"], days: [0, 1, 2, 3, 4, 5, 6], skipQuiet: false };
+  expect(
+    digestSlots(allDays, "Europe/Paris", new Date("2026-03-29T00:00:00Z"), new Date("2026-03-29T04:00:00Z")),
+  ).toHaveLength(0);
+  const fall = digestSlots(allDays, "Europe/Paris", new Date("2026-10-25T00:00:00Z"), new Date("2026-10-25T03:00:00Z"));
+  expect(fall).toHaveLength(1);
+  expect(fall[0]?.at.toISOString()).toBe("2026-10-25T00:30:00.000Z");
+  expect(
+    digestSlots(DEFAULT_DIGEST, "Asia/Kathmandu", new Date("2026-04-06T03:14:00Z"), new Date("2026-04-06T03:16:00Z"))[0]
+      ?.key,
+  ).toBe("digest:2026-04-06T09:00");
+  expect(
+    digestSlots(DEFAULT_DIGEST, "UTC", new Date("2026-04-05T08:00:00Z"), new Date("2026-04-05T19:00:00Z")),
+  ).toHaveLength(0);
 });
 
 test("webhooks refuse private addresses, local hosts, userinfo, redirects and HTTP", () => {

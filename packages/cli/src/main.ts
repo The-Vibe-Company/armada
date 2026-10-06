@@ -90,14 +90,29 @@ function openUrl(url: string): boolean {
 }
 
 /** Runs git or gh without a shell; optional input is piped without a shell. */
-const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input }) =>
+const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input, env, processGroup }) =>
   new Promise((done, fail) => {
-    const child = spawn(command, args, { cwd, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    const grouped = processGroup === true && process.platform !== "win32";
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      detached: grouped,
+      stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    const kill = () => {
+      if (grouped && child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      } else child.kill("SIGKILL");
+    };
     let timedOut = false;
     const timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGKILL");
+          kill();
         }, timeoutMs)
       : null;
     if (input !== undefined) {
@@ -113,7 +128,7 @@ const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input }) =>
       if (maxOutputBytes !== undefined && bytes > maxOutputBytes) {
         oversized = true;
         stdout = stderr = "";
-        child.kill("SIGKILL");
+        kill();
       }
       return !oversized;
     };
@@ -129,7 +144,7 @@ const exec: Exec = (command, args, { cwd, timeoutMs, maxOutputBytes, input }) =>
     });
     child.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      done({ code: oversized ? 1 : (code ?? 1), stdout, stderr, timedOut });
+      done({ code: oversized ? 1 : (code ?? 1), stdout, stderr, timedOut, outputExceeded: oversized });
     });
   });
 
@@ -148,6 +163,7 @@ const code = await run(process.argv.slice(2), {
     ? spawnSync("tty", [], { encoding: "utf8", stdio: ["inherit", "pipe", "ignore"] }).stdout?.trim() || null
     : null,
   cwd: process.cwd(),
+  terminalWidth: process.stdout.isTTY ? process.stdout.columns : undefined,
   env: process.env,
   // Only "not there" means keep searching upward; any other error must surface.
   readFile: (path) =>

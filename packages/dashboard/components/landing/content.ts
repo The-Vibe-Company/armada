@@ -24,10 +24,16 @@ export const SETUP: { command: string; note: string }[] = [
 
 /** Every command of `armada --help`, in its order, with what it is for in a few words. */
 export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" | "you"; what: string }[] = [
+  { name: "coordinator", role: "coordinator", what: "Choose a named role, list coordinators and take over tickets" },
+  { name: "reserve", role: "worker", what: "Reserve a shared name or number for your ticket." },
+  { name: "unreserve", role: "worker", what: "Free your ticket's open shared resources." },
   { name: "ci", role: "both", what: "Explain failing tests, first errors and runner problems" },
   { name: "attach", role: "worker", what: "Attach screenshots and links for the owner to check" },
+  { name: "job", role: "both", what: "Track a ticket's long jobs on the project's runner" },
+  { name: "lint", role: "coordinator", what: "Check ready tickets and specs for readable titles and summaries" },
   { name: "heartbeat", role: "worker", what: "Keep a worker's session alive in the background" },
   { name: "spec", role: "coordinator", what: "Add a spec or preview and apply title repairs" },
+  { name: "digest", role: "coordinator", what: "Print or send the owner’s fleet summary in English or French" },
   { name: "status", role: "both", what: "Tickets in flight, ready to start, pull requests waiting" },
   {
     name: "setup",
@@ -35,6 +41,7 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
     what: "Set up local harnesses, choose permissions and answer their first-run questions",
   },
   { name: "doctor", role: "you", what: "What the repository lacks, with the fix for each" },
+  { name: "upgrade", role: "you", what: "Install a verified release and refresh setup only when needed" },
   { name: "init", role: "you", what: "One pull request that sets the repository up" },
   { name: "skill", role: "both", what: "Read instructions from the installed Armada version" },
   { name: "skills", role: "you", what: "Update the bundled skills on the current branch" },
@@ -45,8 +52,10 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   { name: "validate", role: "both", what: "Show the owner a design or a change, then wait" },
   { name: "ask-owner", role: "coordinator", what: "Escalate a question to the owner, with its choices" },
   { name: "done", role: "coordinator", what: "Close a design ticket the owner approved" },
+  { name: "hold", role: "coordinator", what: "Pause merges with a reason, then explicitly resume them" },
   { name: "inbox", role: "coordinator", what: "Questions, plans, requests, hand-backs, silent workers" },
   { name: "watch", role: "coordinator", what: "Wait in the background until something needs you" },
+  { name: "peek", role: "coordinator", what: "See a worker’s live state, reply, commands, checks and questions" },
   { name: "stop", role: "coordinator", what: "Stop a local worker after its work is pushed" },
   { name: "answer", role: "coordinator", what: "Deliver local worker answers and record decisions" },
   { name: "merge", role: "coordinator", what: "Check a hand-back and squash-merge it, pinned to its SHA" },

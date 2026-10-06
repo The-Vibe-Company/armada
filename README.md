@@ -67,6 +67,9 @@ Each problem is an error or a warning, with its fix. A missing skill, or a CLI o
 
 After the one-time pointer conversion, instruction-only Armada releases need no setup PR or project CI run. Doctor and status compare pointers, so only a discovery description change (or a missing or edited pointer) needs a setup update. The source link keeps its recorded tag until the pointer changes. Workers install the brief's pinned version before reading their skill; if `armada skill` is missing, install that version first. The command works offline, without sign-in or a checkout.
 
+New releases leave the coordinator's watch running. `armada status` and `armada inbox` announce them at most once per 24 hours per machine, across release versions; the dashboard's coordinator card shows update availability. Only a required server minimum or changed installed setup produces a `version` item and stops either watch mode. Run `armada upgrade`: it waits up to five checks over about two minutes for npm to serve the exact target, installs it, verifies `armada --version`, then uses the installed doctor to check setup. It runs `armada init --merge` only for outdated setup, through the normal setup-only merge checks. Upgrade requires the selected checkout's `armada.toml` at its Git root. Workers keep their brief's pinned version.
+
+
 The shipping skills include every helper, reference, eval, companion manifest and license.
 `armada doctor` also checks Python 3.9+, Git 2.41+ and the checksum-pinned OCR 1.12.1
 cache without downloading or executing OCR. Its first bootstrap requires GitHub
@@ -117,6 +120,23 @@ armada launch revoke ABC-12            # cancel the newest pending launch throug
 - A profile with `runtime = "claude-code"` routes the launch to the `armada-runtime-claude-code` skill: the `Runtime:` line names the skill, the claim runs `--runtime claude-code` with the subagent's name as its handle (the ticket id in lowercase), and the prompt first makes the worker check it runs in its own worktree. The Agent tool applies no effort; the brief says so.
 - Label rules win: the first `[[conductor.routing]]` rule with a label the ticket carries (case, spaces and punctuation ignored) selects its profile. Otherwise, profiles with `when = "front end: dashboard pages, components, styles, design, UI copy"` or `when = "back end: CLI, core rules, API, database, migrations, tests, docs"` ask the coordinator to choose. `armada brief ABC-12` prints **Choose a profile**, the ticket's title and In short, and every profile's rule; it creates no launch token or watch entry. `--json` returns the choice information; `--prompt` refuses until a profile is chosen. Read the ticket and parent spec, choose the rule covering most files/work (explain mixed work), then run `armada brief ABC-12 --profile codex --reason "mostly CLI and core rules" --prompt`. Armada does not call a model to classify tickets. Projects without `when` keep their old `conductor.default_profile` or only-profile fallback.
 - `--profile` also overrides a label route. `--reason` is required for semantic choices and, when routing rules exist, overrides of the routed profile. Keep both flags on subsequent `--prompt` calls. The generated claim command carries the reason; the claim comment, `armada status` and dashboard agent Profile row show it. An unknown profile exits 2. The dashboard's ready-to-launch row shows a label-routed profile or "chosen by the coordinator"; Launch still sends an inbox request, not a runtime call.
+
+## Tracker conventions
+
+Run `armada lint --ready` before launching workers. It checks tickets on the frontier carrying the project's ready label and all open specs under the program root. `armada lint ABC-12 ABC-13` checks named tickets in the program; combining names with `--ready` checks their union. Each finding gives the problem and its fix; `--json` returns the same diagnostics.
+
+Tickets and specs should have an `## In short` section with **What changes**, **Why**, **Done when** and **Depends on** parts (a standalone heading or label, or followed by a colon or period). Titles describe an outcome in plain words, at most 60 characters: keep backticks, paths, file extensions, camelCase, snake_case and function parentheses in the technical detail. Spec titles accept both `Spec N — Name` and `Spec N/M — Name`; the length limit counts only the name. There is no starting-verb check, since it would misfire across languages.
+
+Without a lint table, these defaults produce warnings and exit 0. Add the table to enforce errors (exit 1), overriding only the rules your project needs:
+
+```toml
+[tracker.lint]
+in_short = "## In short"
+in_short_parts = ["What changes", "Why", "Done when", "Depends on"]
+title_max = 60
+```
+
+`armada brief` reports the same findings as warnings above its prompt and still produces it. With `--prompt`, warnings go to stderr before the prompt on stdout. Description reads for lint are batched in one flat Linear query per page; dashboards and polls never run them. A failed or incomplete read exits nonzero rather than claiming tickets passed.
 
 ## Run workers on your own machine
 
@@ -246,9 +266,13 @@ armada merge 35 --no-ticket # a pull request no ticket owns: armada init's, a re
 - When that database is unreachable, a banner says so and the view falls back to the last readings the server holds, refreshed from Linear and GitHub.
 - The interface is in English or French (`ARMADA_DASHBOARD_LANGUAGE`, or the EN/FR switch).
 
-**Owner alerts in chat.** With accounts and `ARMADA_SECRETS_KEY`, an owner or admin opens Organization > Notifications, saves a public HTTPS webhook and clicks **Send a test**. V1 has one channel per organization, optionally filtered to a project. Slack format posts `{"text":"…"}` to Slack-compatible receivers (including Discord's `/slack` URL); JSON posts `{schema:1,kind:"alert",organization,items:[{key,kind,project,ticket,title,url}],text}` and signs the exact body with `x-armada-signature: sha256=<HMAC-SHA256>`. For JSON, enter a signing secret of at least 16 characters that your receiver also knows. The address and signing secret are sealed in the vault, write-only and never released to terminals. Only titles and links are sent.
+**Owner notifications.** With accounts and `ARMADA_SECRETS_KEY`, an owner or admin opens Organization > Notifications, saves a public HTTPS webhook and clicks **Send a test**. V1 has one channel per organization, optionally filtered to a project. Slack format posts `{"text":"…"}` to Slack-compatible receivers (including Discord's `/slack` URL); JSON posts `{schema:1,kind:"alert",organization,items:[{key,kind,project,ticket,title,url}],text}` and signs the exact body with `x-armada-signature: sha256=<HMAC-SHA256>`. For JSON, enter a signing secret of at least 16 characters that your receiver also knows. The address and signing secret are sealed in the vault, write-only and never released to terminals. Only titles and links are sent.
 
-Alerts use the same owner items as browser notifications: work or merges to validate, escalated questions, and stopped coordinators with items waiting. Ticks run after fleet traffic and dashboard polls, throttled to once per minute per project, and read stored snapshots only. The outbox deduplicates across instances and claims retries too; a failed item gets at most five attempts. Ten consecutive failures pause the channel, as do HTTP 404/410 immediately; saving resumes it. Quiet-hour arrivals are retained for the next summary rather than posted as delayed alerts (summary scheduling is separate work).
+Alerts use the same owner items as browser notifications: work or merges to validate, escalated questions, and stopped coordinators with items waiting. Ticks run after fleet traffic and dashboard polls, throttled to once per minute per project, and read stored snapshots only. The outbox deduplicates across instances and claims retries too; a failed item gets at most five attempts. Ten consecutive failures pause the channel, as do HTTP 404/410 immediately; saving resumes it. Quiet-hour arrivals are retained for the next summary rather than posted as delayed alerts.
+
+Digests default to 09:00, 13:00 and 18:00 on weekdays in the channel’s IANA time zone. Edit times/days or leave times empty to disable them; **Skip quiet digests** suppresses empty summaries. Each channel gets one durable local slot, even with several coordinators or app instances. A slot more than 30 minutes late is skipped and mentioned in the next digest. Digests cover merges with titles, blocked/silent durations, owner decisions with links and running phases. Remaining time is qualified as “usually”, from phase medians with at least three merged samples. Available main health and long-job data add sections; absent data adds none.
+
+`armada digest` prints the current project since the previous digest (channel creation for the first, or four hours without a channel). `--since 4h` or an ISO timestamp overrides the window; `--lang en|fr` overrides `[tracker] language`; `--json` includes structured data; `--send` posts through the server-side channel without exposing its address. Worker sessions cannot read or send digests. Printed and sent summaries share their builder and renderer. Quiet periods send one line by default.
 
 **Optional scheduler, off by default.** `GET /api/cron/owner` requires `Authorization: Bearer <CRON_SECRET>`. Production ships with no enabled `crons` entry. Without a scheduler, a coordinator that stops with no worker in flight is noticed on the next fleet call or dashboard poll. To enable Vercel Cron deliberately, set `CRON_SECRET` in the deployment and add `"crons": [{"path":"/api/cron/owner","schedule":"*/15 * * * *"}]` to `packages/dashboard/vercel.json`, then redeploy. Every 15 minutes requires a paid plan; the free plan allows a daily schedule such as `"0 9 * * *"`. The endpoint never refreshes Linear or GitHub and does nothing under the shared-password gate.
 
@@ -574,3 +598,40 @@ MIT. The bundled Alibaba review workflow retains Apache-2.0; each shipping skill
 includes its license and attribution notices.
 
 Persistent local workers: `armada status`, `inbox` and `watch` publish herdr state for the dashboard. `armada stop <ticket>` archives only a clean worktree whose commits are on its verified remote upstream, retaining its branch. See [`armada-runtime-herdr`](skills/armada-runtime-herdr/SKILL.md) for all four runtime operations.
+
+### Pause and resume merges
+
+A coordinator can pause a project's merges with a reason. The pause is stored in Armada, shared with every coordinator, and stays until explicitly cleared. Status, watch and the inbox show it.
+
+```sh
+armada hold add "api deploy is broken"
+armada hold                         # list the open holds
+armada merge 42 --through-hold "repairs the broken deploy"
+# Verify recovery, then resume:
+armada hold clear 4 --reason "deploy smoke checks pass"
+```
+
+Normal merges refuse with each hold's reason and id. `--through-hold` lets a fix pass every open hold and records the reason with every hold id on the merged ticket; it leaves the pauses open. Clear every open hold to resume normal merges. The server also refuses a merge lease to an older CLI that does not read holds, preserving the shared pause across coordinator versions. Holds never expire, and repeated clears report who cleared the hold and when. `--wait` stops when it sees a hold. `--no-lock` skips both the merge lease and checking holds, and prints that warning.
+
+Workers can reserve a shared number, name or exclusive resource for their ticket through Armada:
+
+```sh
+armada reserve db-migration --next --floor 22  # prints the next number, e.g. 23
+armada reserve fixture --value sample --note "integration fixture"
+armada reserve release                      # exclusively holds this key
+armada reserve --list
+armada unreserve fixture
+```
+
+The ticket defaults to `ARMADA_TICKET`, the current branch, or the one stored worker session; `--ticket <id>` overrides it. A release or `unreserve` frees a value. A merge ends the reservation and keeps its value used permanently. Number allocation starts above the highest held or merged number and `--floor` (the last number already used in the repository). Released values can be explicitly reserved again; `--next` reuses them when they are above the remaining highest number. Allocation is atomic even when workers ask together.
+
+Declare keys in `armada.toml` to include them and their current holders in each launch brief:
+
+```toml
+[[reservations]]
+key = "db-migration"
+what = "the next DB_MIGRATIONS version"
+numbered = true
+```
+
+Declarations are optional documentation; undeclared keys can also be reserved. Reservations require Armada: if it is unavailable, ask the coordinator before choosing a value. After a lost response, check `armada reserve --list` before retrying, since the reservation may already have succeeded.

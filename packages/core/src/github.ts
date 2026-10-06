@@ -560,6 +560,25 @@ export async function fetchPreview(opts: FetchForgeOptions & { sha: string }): P
   return https(vercel?.targetUrl);
 }
 
+/** Canonical GitHub repository name, including redirects after a rename or transfer. */
+export async function fetchRepository(opts: FetchForgeOptions): Promise<{ fullName: string }> {
+  return httpRequest(
+    `https://api.github.com/repos/${opts.repository}`,
+    { method: "GET", headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${opts.token}` } },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
+    async (response) => {
+      if (!response.ok) throw new GithubError(`GitHub API HTTP ${response.status}`);
+      const body = (await response.json()) as { full_name?: unknown };
+      if (typeof body.full_name !== "string" || !/^[a-z0-9-]+\/[a-z0-9_.-]+$/i.test(body.full_name))
+        throw new GithubError("GitHub API returned no valid repository full_name");
+      return { fullName: body.full_name };
+    },
+  ).catch((err: unknown) => {
+    if (err instanceof HttpRequestError) throw new GithubError(`GitHub API unreachable: ${err.message}`);
+    throw err;
+  });
+}
+
 // ------------------------------------------------------------ red CI diagnosis
 
 const FAILED_CHECKS_QUERY = /* GraphQL */ `
@@ -613,6 +632,7 @@ interface RawFailedCommit {
 export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string; headSha?: string }): Promise<{
   sha: string;
   checks: import("./ci.ts").FailedCheck[];
+  runIds: number[];
   warnings: string[];
 }> {
   const [owner, name] = opts.repository.split("/");
@@ -628,8 +648,10 @@ export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string;
   if (commit.checkSuites.pageInfo?.hasNextPage)
     warnings.push("CI reading is incomplete: only the first 50 check suites were read");
   const ids = new Set<number>();
+  const runIds = new Set<number>();
   for (const suite of commit.checkSuites.nodes) {
     if (!suite) continue;
+    if (suite.app?.slug === "github-actions" && suite.workflowRun) runIds.add(suite.workflowRun.databaseId);
     if (suite.checkRuns.pageInfo?.hasNextPage)
       warnings.push("CI reading is incomplete: only the first 50 failing checks of a suite were read");
     for (const run of suite.checkRuns.nodes) {
@@ -680,7 +702,7 @@ export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string;
       annotations: [],
     });
   }
-  return { sha: commit.oid, checks, warnings };
+  return { sha: commit.oid, checks, runIds: [...runIds], warnings };
 }
 
 /** Resolve a named branch to its commit, without reading Linear or the fleet. */
@@ -780,6 +802,13 @@ export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): 
 
 /** Attempt number for an Actions workflow run. Log access remains optional. */
 export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number }): Promise<number> {
+  return (await fetchWorkflowRun(opts)).attempt;
+}
+
+/** A fresh workflow status prevents rerunning a run that is already queued or active. */
+export async function fetchWorkflowRun(
+  opts: FetchForgeOptions & { runId: number },
+): Promise<{ attempt: number; status: string | null }> {
   return httpRequest(
     `${GITHUB_REST}/repos/${opts.repository}/actions/runs/${opts.runId}`,
     {
@@ -789,10 +818,10 @@ export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number 
     async (res) => {
       if (!res.ok)
         throw new GithubError(`GitHub Actions HTTP ${res.status}; token needs Actions repository permission (read)`);
-      const json = (await res.json()) as { run_attempt?: number };
+      const json = (await res.json()) as { run_attempt?: number; status?: string };
       if (!Number.isSafeInteger(json.run_attempt) || (json.run_attempt ?? 0) < 1)
         throw new GithubError("GitHub Actions returned no run attempt");
-      return json.run_attempt as number;
+      return { attempt: json.run_attempt as number, status: typeof json.status === "string" ? json.status : null };
     },
   );
 }

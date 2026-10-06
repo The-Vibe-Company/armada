@@ -182,7 +182,7 @@ describe("armada watch", () => {
     expect(live.statuses).toEqual([200, 200, 304, 304, 304, 200]);
   });
 
-  test("a new release ends the watch, after the open items", async () => {
+  test("a required upgrade ends the watch, after the open items", async () => {
     const live = tempFleet();
     await holding(live, "DEMO-2");
     await handBack(live, "DEMO-2");
@@ -204,10 +204,11 @@ describe("armada watch", () => {
       ["version", null, true],
     ]);
     const version = got.items[1];
-    expect(version && entryKey(version)).toBe("version:0.2.4");
+    expect(version && entryKey(version)).toContain("version:0.2.4@");
     expect(version?.body).toContain("https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4");
     expect(version?.body).toContain("npm install -g @the-vibe-company/armada@0.2.4");
-    expect(version?.body).toContain("armada merge <n> --no-ticket");
+    expect(version?.body).toContain("armada upgrade");
+    expect(version?.body).not.toContain("armada init");
     // Woken on the first read after the release, not before.
     expect(live.clock.now().getTime() - NOW.getTime()).toBe(30_000);
   });
@@ -651,5 +652,34 @@ test("follow includes a stopped session by default and when filtered, without re
       ticket: "DEMO-2",
       body: expect.stringContaining("its session is idle and it did not hand back"),
     });
+  }
+});
+
+test("follow shows initial and new holds until cleared, by default and when filtered", async () => {
+  for (const kinds of [undefined, ["hold"]] as const) {
+    const live = tempFleet();
+    const first = await live.fleet.openHold({ kind: "manual", reason: "initial pause" });
+    let step = 0;
+    let laterId = 0;
+    const lines = [];
+    for await (const line of followFleet(live.fleet, {
+      ...options(live).o,
+      ...(kinds ? { kinds } : {}),
+      until: new Date(NOW.getTime() + 180_000),
+      sleep: async (ms) => {
+        await live.clock.sleep(ms);
+        if (++step === 1) await live.fleet.clearHold({ id: first.id, reason: "verified first fix" });
+        if (step === 2) laterId = (await live.fleet.openHold({ kind: "manual", reason: "new pause" })).id;
+        if (step === 3) await live.fleet.clearHold({ id: laterId, reason: "verified next fix" });
+      },
+    }))
+      lines.push(line);
+    expect(lines.map((line) => [line.kind, line.new])).toEqual([
+      ["hold", false],
+      ["hold", true],
+    ]);
+    expect(lines[0]?.body).toContain(`initial pause (manual, hold #${first.id})`);
+    expect(lines[1]?.body).toContain(`new pause (manual, hold #${laterId})`);
+    expect(await live.fleet.holds()).toEqual([]);
   }
 });

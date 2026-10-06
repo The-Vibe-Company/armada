@@ -45,10 +45,17 @@ describe("armada.toml", () => {
   });
   test("a minimal file gets the protocol defaults", () => {
     expect(parseConfig(DEMO_TOML)).toEqual({
+      jobs: {},
       project: { name: "Widgets", slug: "widgets" },
       tracker: {
         programRoot: "DEMO-1",
         specTitles: "N",
+        lint: {
+          inShort: "## In short",
+          inShortParts: ["What changes", "Why", "Done when", "Depends on"],
+          titleMax: 60,
+          severity: "warning",
+        },
         language: "en",
         readyLabel: "ready-for-agent",
         parkedLabel: "parked",
@@ -59,7 +66,7 @@ describe("armada.toml", () => {
         },
       },
       github: { repository: "acme/widgets" },
-      ci: { failurePatterns: [] },
+      ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
       merge: { notifyPaths: [".github/workflows/**"] },
       policy: {
@@ -76,6 +83,7 @@ describe("armada.toml", () => {
         mergeApproval: null,
         validations: [],
       },
+      reservations: [],
       brief: { extra: null },
       secrets: { names: [] },
       conductor: { defaultProfile: null, profiles: {}, routing: [] },
@@ -447,4 +455,32 @@ profile = "missing"
   test("broken TOML reports where it broke", () => {
     expect(problemsOf("[project\nname = 1")[0]).toMatch(/^not valid TOML \(line 1, column \d+\)$/);
   });
+});
+
+test("declared reservation keys are optional, descriptive and unique", () => {
+  const declaration = '\n[[reservations]]\nkey = "db-migration"\nwhat = "the next schema version"\nnumbered = true\n';
+  expect(parseConfig(DEMO_TOML + declaration).reservations).toEqual([
+    { key: "db-migration", what: "the next schema version", numbered: true },
+  ]);
+  expect(problemsOf(DEMO_TOML + declaration + declaration).join(" ")).toContain("repeats db-migration");
+  expect(problemsOf(DEMO_TOML + declaration.replace("numbered = true", 'numbered = "yes"')).join(" ")).toContain(
+    'numbered" must be true or false',
+  );
+});
+
+test("tracker lint is opt-in with configurable defaults and rejects invalid rules", () => {
+  expect(parseConfig(`${DEMO_TOML}\n[tracker.lint]`).tracker.lint.severity).toBe("error");
+  expect(
+    parseConfig(`${DEMO_TOML}\n[tracker.lint]\nin_short = "## Résumé"\nin_short_parts = ["Pourquoi"]\ntitle_max = 80`)
+      .tracker.lint,
+  ).toEqual({ inShort: "## Résumé", inShortParts: ["Pourquoi"], titleMax: 80, severity: "error" });
+  for (const field of [
+    'in_short = "Summary"',
+    "in_short_parts = []",
+    "title_max = 0",
+    "title_max = 1.5",
+    "unknown = true",
+  ])
+    expect(problemsOf(`${DEMO_TOML}\n[tracker.lint]\n${field}`).join(" ")).toContain("tracker.lint");
+  expect(problemsOf(DEMO_TOML.replace("[tracker]", "[tracker]\nlint = false")).join(" ")).toContain("tracker.lint");
 });

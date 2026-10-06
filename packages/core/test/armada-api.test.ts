@@ -15,6 +15,12 @@ test("Armada retries only safe reads, including fleet reads; token consumption a
   const actions = [
     { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.whoami(signIn) },
     { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "events/latest", {}) },
+    { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/list", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/start", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "job/observe", {}) },
+    { retry: true, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "reservations", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "reserve", {}) },
+    { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "unreserve", {}) },
     { retry: false, run: (api: ReturnType<typeof armadaApi>) => api.fleet(signIn, "inbox", {}) },
     {
       retry: false,
@@ -34,6 +40,9 @@ test("Armada retries only safe reads, including fleet reads; token consumption a
     let calls = 0;
     const api = armadaApi({
       url: ARMADA_URL,
+      sleep: async () => {},
+      random: () => 0,
+      now: () => NOW,
       fetch: async () => {
         calls++;
         throw new DOMException("timed out", "TimeoutError");
@@ -174,15 +183,16 @@ test("a CLI older than the server expects gets one upgrade line instead of an an
   expect(older.serverCli()).toBeNull();
 });
 
-test("a newer release is named with its install command, the skills step and its notes", () => {
+test("a newer release names setup only when behind, plus the upgrade command and notes", () => {
   expect(newerRelease("0.2.3", "0.2.4")).toBe("0.2.4");
   expect(newerRelease("0.2.4", "0.2.4")).toBeNull();
   expect(newerRelease("0.2.5", "0.2.4")).toBeNull();
   expect(newerRelease("0.2.3", null)).toBeNull();
+  expect(releaseLine("0.2.3", "0.2.4", { setupBehind: false })).not.toContain("armada init");
   // A development build is never told to install a release.
   expect(newerRelease("0.0.0", "0.2.4")).toBeNull();
-  expect(releaseLine("0.2.3", "0.2.4")).toBe(
-    "Armada 0.2.4 is out (you run 0.2.3): npm install -g @the-vibe-company/armada@0.2.4 — then armada init to refresh this project's skills. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4",
+  expect(releaseLine("0.2.3", "0.2.4", { setupBehind: true })).toBe(
+    "Armada 0.2.4 is out (you run 0.2.3): armada upgrade — then armada init to refresh this project's skills if still behind. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v0.2.4",
   );
 });
 

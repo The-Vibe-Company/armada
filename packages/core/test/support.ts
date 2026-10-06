@@ -14,7 +14,7 @@ import {
 } from "../src/armada-api.ts";
 import { NPM_REGISTRY_URL } from "../src/brief.ts";
 import { type ArmadaConfig, parseConfig } from "../src/config.ts";
-import { type FleetCaller, fleetClient, parseProject, serveFleet } from "../src/fleet-api.ts";
+import { type FleetCaller, fleetClient, parseProject, type ServeFleetDeps, serveFleet } from "../src/fleet-api.ts";
 import { GITHUB_GRAPHQL } from "../src/github.ts";
 import { agentLabels, type Fetch, LINEAR_ENDPOINT, normalizeComment, parsePullRequestUrl } from "../src/linear.ts";
 import type {
@@ -56,7 +56,12 @@ export interface Call {
 
 /** Replays the recorded responses in order, per GraphQL operation name. */
 export function recordedFetch(
-  overrides: { github?: unknown; linear?: (recorded: typeof linearProgram) => void; npm?: unknown } = {},
+  overrides: {
+    github?: unknown;
+    linear?: (recorded: typeof linearProgram) => void;
+    npm?: unknown;
+    repository?: { full_name: string };
+  } = {},
 ): { fetch: Fetch; calls: Call[] } {
   const recorded = structuredClone(linearProgram);
   overrides.linear?.(recorded);
@@ -83,6 +88,15 @@ export function recordedFetch(
       init.method === "HEAD"
     )
       return new Response(null, { status: 200 });
+    if (/^https:\/\/api\.github\.com\/repos\/[^/]+\/[^/]+$/.test(url)) {
+      calls.push({
+        url,
+        operation: "Repository",
+        variables: {},
+        authorization: new Headers(init.headers).get("Authorization"),
+      });
+      return Response.json(overrides.repository ?? { full_name: "acme/widgets" });
+    }
     const body = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
     const operation = body.query.match(/query\s+(\w+)/)?.[1] ?? "?";
     const authorization = new Headers(init.headers).get("Authorization");
@@ -151,6 +165,7 @@ export async function answerFleet(
   body: unknown,
   caller: FleetCaller & { project?: string },
   cliVersion: string | null = null,
+  facts: Pick<ServeFleetDeps, "snapshot" | "config" | "sendDigest"> | ServeFleetDeps["sendDigest"] = {},
 ): Promise<Response> {
   const b = (body ?? {}) as { project?: unknown; input?: unknown };
   const project = parseProject(b.project);
@@ -165,7 +180,12 @@ export async function answerFleet(
   const answer = await serveFleet(
     store,
     { op, project, caller, input: b.input },
-    { now: clock.now, cliVersion, appUrl: ARMADA_URL },
+    {
+      now: clock.now,
+      cliVersion,
+      appUrl: ARMADA_URL,
+      ...(typeof facts === "function" ? { sendDigest: facts } : facts),
+    },
   );
   if (answer.status === 304) return new Response(null, { status: 304 });
   return Response.json(answer.body, { status: answer.status });
@@ -541,10 +561,12 @@ export function fakeArmada(
     /** The fleet's live data behind `fleet/*`; a fresh one by default. */
     store?: FleetStore;
     clock?: Clock;
+    facts?: Pick<ServeFleetDeps, "snapshot" | "config">;
     /** The CLIs this Armada serves, sent on every answer the way the app does; none by default (an older server). */
     cli?: ServerCli;
     /** Secrets for workers, by project slug ("" for the organization's), then name. */
     secrets?: Record<string, Record<string, string>>;
+    sendDigest?: ServeFleetDeps["sendDigest"];
   } = {},
 ) {
   const store = o.store ?? memoryFleet();
@@ -554,10 +576,17 @@ export function fakeArmada(
   const sessions = new Set<string>();
   const keys = new Map(Object.entries(o.keys ?? {}));
   const calls: ArmadaCall[] = [];
-  const launches = new Map<string, { project: string; ticket: string; used: boolean }>();
+  const launches = new Map<string, { project: string; ticket: string; coordinator?: string | null; used: boolean }>();
   const workers = new Map<
     string,
-    { project: string; ticket: string; ended: string | null; createdAt: string; id: string }
+    {
+      project: string;
+      ticket: string;
+      ended: string | null;
+      createdAt: string;
+      id: string;
+      coordinator?: string | null;
+    }
   >();
   const secrets = new Map(Object.entries(o.secrets ?? {}).map(([p, v]) => [p, new Map(Object.entries(v))]));
   const end = (ticket: string, why: string) => {
@@ -620,9 +649,16 @@ export function fakeArmada(
         call.path.slice("fleet/".length),
         call.body,
         worker
-          ? { kind: "worker", ticket: worker.ticket, project: worker.project, sessionId: worker.id }
-          : { kind: "organization" },
+          ? {
+              kind: "worker",
+              ticket: worker.ticket,
+              project: worker.project,
+              sessionId: worker.id,
+              coordinator: worker.coordinator,
+            }
+          : { kind: "organization", author: PERSON.user?.name },
         call.version,
+        { ...o.facts, sendDigest: o.sendDigest },
       );
     }
     if (call.method === "POST" && call.path.startsWith("secrets/")) {
@@ -698,7 +734,12 @@ export function fakeArmada(
       if (o.vault?.off || !o.vault)
         return Response.json({ error: "this Armada keeps no keys", next: "armada auth login" }, { status: 503 });
       const t = `armada_launch_CANARY_${launches.size + 1}`;
-      launches.set(t, { project: String(body.project), ticket: String(body.ticket), used: false });
+      launches.set(t, {
+        project: String(body.project),
+        ticket: String(body.ticket),
+        coordinator: typeof body.coordinator === "string" ? body.coordinator : "default",
+        used: false,
+      });
       return Response.json({
         schemaVersion: 1,
         token: t,
@@ -722,6 +763,7 @@ export function fakeArmada(
       workers.set(t, {
         project: launch.project,
         ticket: launch.ticket,
+        coordinator: launch.coordinator,
         ended: null,
         createdAt: clock.now().toISOString(),
         id: `wk-${workers.size + 1}`,
@@ -729,7 +771,13 @@ export function fakeArmada(
       return Response.json({
         schemaVersion: 1,
         token: t,
-        worker: { id: `wk-${workers.size}`, project: launch.project, ticket: launch.ticket, launchedBy: "Ada Example" },
+        worker: {
+          id: `wk-${workers.size}`,
+          project: launch.project,
+          ticket: launch.ticket,
+          launchedBy: "Ada Example",
+          coordinator: launch.coordinator,
+        },
         organization: { id: "org-1", name: "Acme", slug: "acme" },
         expiresAt: "2026-03-07T10:00:00.000Z",
       });
@@ -756,7 +804,13 @@ export function fakeArmada(
         via: "worker",
         user: null,
         organization: { ...PERSON.organization, role: null },
-        worker: { id: "wk-1", project: worker.project, ticket: worker.ticket, launchedBy: "Ada Example" },
+        worker: {
+          id: "wk-1",
+          project: worker.project,
+          ticket: worker.ticket,
+          launchedBy: "Ada Example",
+          coordinator: worker.coordinator,
+        },
       });
     if (worker && route === "DELETE session") {
       worker.ended = "the ticket was released";

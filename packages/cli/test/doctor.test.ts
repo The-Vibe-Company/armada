@@ -7,11 +7,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Check, checkPublished, NPM_REGISTRY_URL, type ServerCli } from "@armada/core";
-import { ARMADA_URL, type FakeVault, fakeArmada, NOW } from "../../core/test/support.ts";
+import { type Check, checkPublished, type Fetch, NPM_REGISTRY_URL, type ServerCli } from "@armada/core";
+import { ARMADA_URL, DEMO_TOML, type FakeVault, fakeArmada, NOW, recordedFetch } from "../../core/test/support.ts";
 import { version } from "../package.json" with { type: "json" };
 import { run } from "../src/cli.ts";
-import { BUNDLED_CONDUCTOR } from "../src/doctor.ts";
+import { BUNDLED_CONDUCTOR, buildDoctor } from "../src/doctor.ts";
 import type { Exec, Io } from "../src/io.ts";
 
 // Canary secrets: no output may ever contain them.
@@ -55,7 +55,7 @@ async function terminal(
   const io: Io = {
     cwd: home,
     env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, ...env },
-    readFile: async () => null,
+    readFile: async (path) => (path === join(home, "armada.toml") ? (more.toml ?? DEMO_TOML) : null),
     stdout: (t) => out.push(t),
     stderr: (t) => errs.push(t),
     ghToken: () => null,
@@ -76,7 +76,11 @@ async function terminal(
   };
   /** What the last runs printed on stderr, emptied. */
   const stderr = () => errs.splice(0).join("");
-  return { doctor, stderr, home, credentials: join(home, "armada", "credentials") };
+  const inbox = async () => {
+    expect(await run(["inbox", "--json"], io)).toBe(0);
+    out.splice(0);
+  };
+  return { doctor, inbox, stderr, home, credentials: join(home, "armada", "credentials") };
 }
 
 describe("armada doctor: the sign-in to Armada", () => {
@@ -184,16 +188,18 @@ describe("armada doctor: this CLI's version", () => {
 });
 
 describe("a newer Armada release", () => {
-  const notice = `armada: Armada 99.1.0 is out (you run ${version}): npm install -g @the-vibe-company/armada@99.1.0 — then armada init to refresh this project's skills. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0\n`;
+  const notice = `armada: Armada 99.1.0 is out (you run ${version}): armada upgrade. Changes: https://github.com/The-Vibe-Company/armada/releases/tag/v99.1.0\n`;
 
-  test("a coordinator command says it once per version on this machine", async () => {
+  test("only inbox/status carry the daily notice; doctor stays quiet", async () => {
     const t = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: { minimum: "0.0.1", latest: "99.1.0" } });
     await t.doctor();
+    expect(t.stderr()).toBe("");
+    await t.inbox();
     expect(t.stderr()).toBe(notice);
-    await t.doctor();
+    await t.inbox();
     expect(t.stderr()).toBe("");
     expect(JSON.parse(await readFile(join(t.home, "armada", "releases.json"), "utf8"))).toEqual({
-      noticed: ["99.1.0"],
+      noticed: [{ version: "99.1.0", at: NOW.toISOString() }],
     });
   });
 
@@ -221,13 +227,13 @@ describe("a newer Armada release", () => {
     };
     const terminalIo = await terminal({ ARMADA_API_KEY: KEY }, {}, vault(), { cli: server });
     await refresh();
-    await terminalIo.doctor();
+    await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe("");
     ready = true;
     await refresh();
-    await terminalIo.doctor();
+    await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe(notice);
-    await terminalIo.doctor();
+    await terminalIo.inbox();
     expect(terminalIo.stderr()).toBe("");
   });
 
@@ -342,5 +348,122 @@ describe("armada doctor: the secrets the project expects", () => {
     expect((await out.doctor()).find((c) => c.id === "secrets")?.message).toBe(
       "the project expects the secrets OPENAI_API_KEY; not checked: not signed in to Armada",
     );
+  });
+});
+
+describe("armada doctor: repository identity", () => {
+  test("origin mismatch, equivalent forms, GitHub rename and unavailable checks", async () => {
+    const github = recordedFetch({ repository: { full_name: "new-org/new-widgets" } });
+    const requests: { command: string; args: string[]; cwd: string; timeoutMs?: number }[] = [];
+    let remote: string | null = "git@github.com:acme/other.git";
+    let fail = false;
+    const exec: Exec = async (command, args, options) => {
+      if (args.join(" ") === "remote get-url origin") {
+        requests.push({ command, args, ...options });
+        if (fail) throw new Error("CANARY remote credentials");
+        return { code: remote === null ? 2 : 0, stdout: remote ?? "", stderr: "CANARY remote credentials" };
+      }
+      return { code: 1, stdout: "", stderr: "" };
+    };
+    const t = await terminal({}, {}, null, { toml: DEMO_TOML });
+    let token: string | undefined = "CANARY-github-token";
+    let fetch: Fetch = github.fetch;
+    const waits: number[] = [];
+    const notices: string[] = [];
+    const check = async () => {
+      const report = await buildDoctor(
+        {
+          cwd: t.home,
+          env: { XDG_CONFIG_HOME: t.home, GITHUB_TOKEN: token },
+          readFile: async () => null,
+          stdout: () => {},
+          stderr: (message) => notices.push(message),
+          now: () => NOW,
+          sleep: async (ms) => {
+            waits.push(ms);
+          },
+          ghToken: () => null,
+          exec,
+          fetch,
+        },
+        version,
+      );
+      expect(JSON.stringify(report)).not.toContain("CANARY");
+      return report.checks.filter((c) => ["git-origin", "github-repository"].includes(c.id));
+    };
+    expect(await check()).toEqual([
+      {
+        id: "git-origin",
+        level: "error",
+        message: "origin names acme/other, but armada.toml names acme/widgets",
+        fix: 'set [github] repository = "acme/other" in armada.toml, or run `git remote set-url origin https://github.com/acme/widgets.git` if the configured repository is correct',
+      },
+      {
+        id: "github-repository",
+        level: "warning",
+        message: "GitHub reports acme/widgets as new-org/new-widgets: the repository was renamed or moved",
+        fix: 'set [github] repository = "new-org/new-widgets" in armada.toml',
+      },
+    ]);
+    expect(requests[0]).toMatchObject({
+      command: "git",
+      args: ["remote", "get-url", "origin"],
+      cwd: t.home,
+      timeoutMs: 10_000,
+    });
+    expect(github.calls[0]).toEqual({
+      url: "https://api.github.com/repos/acme/widgets",
+      operation: "Repository",
+      variables: {},
+      authorization: `Bearer ${token}`,
+    });
+    fetch = recordedFetch({ repository: { full_name: "ACME/Widgets" } }).fetch;
+    for (const form of [
+      "https://github.com/ACME/widgets.git",
+      "git@github.com:acme/Widgets",
+      "ssh://git@github.com/acme/widgets.git",
+    ]) {
+      remote = form;
+      expect((await check()).map((c) => c.level)).toEqual(["ok", "ok"]);
+    }
+    token = undefined;
+    expect((await check())[1]).toMatchObject({
+      level: "warning",
+      message: "GitHub repository not checked: no GitHub token",
+    });
+    remote = null;
+    expect((await check())[0]).toMatchObject({
+      level: "error",
+      message: "origin repository not checked: git could not read origin",
+    });
+    fail = true;
+    expect((await check())[0]?.level).toBe("error");
+    fail = false;
+    remote = "https://CANARY@other.test/acme/widgets";
+    expect((await check())[0]).toMatchObject({
+      level: "error",
+      message: "origin is not a recognized GitHub repository remote",
+    });
+    token = "CANARY-github-token";
+    fetch = async () => new Response(null, { status: 404 });
+    expect((await check())[1]).toMatchObject({
+      level: "warning",
+      message: "GitHub repository not checked: GitHub API HTTP 404",
+    });
+    const recovered = recordedFetch({ repository: { full_name: "acme/widgets" } });
+    let attempts = 0;
+    remote = "git@github.com:acme/widgets.git";
+    fetch = async (url, init) =>
+      attempts++ === 0
+        ? new Response(null, {
+            status: 503,
+            headers: { "Retry-After": new Date(NOW.getTime() + 2000).toUTCString() },
+          })
+        : recovered.fetch(url, init);
+    expect((await check()).map((c) => c.level)).toEqual(["ok", "ok"]);
+    expect(attempts).toBe(2);
+    expect(waits).toEqual([2000]);
+    expect(notices).toContain("armada: GitHub answered 503; trying again in 2 s (2/3)\n");
+    expect(notices.join("")).not.toContain("CANARY");
   });
 });

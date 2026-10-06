@@ -57,13 +57,17 @@ export function renderStatus(r: StatusReport): string {
   const gh = r.sources.github.error ? `GitHub not read: ${r.sources.github.error}` : `GitHub ${r.project.repository}`;
   out.push(`Read ${r.generatedAt.slice(0, 16).replace("T", " ")} UTC · Linear ${r.programRoot.id} · ${gh}`);
 
+  for (const h of r.holds ?? [])
+    out.push(`Merges paused since ${h.openedAt.slice(11, 16)} UTC: ${h.reason} (hold #${h.id})`);
   if (r.main) out.push(mainHealthLine(r.main));
 
   out.push("", `In flight (${r.inFlight.length})`);
   if (!r.inFlight.length) out.push("  nobody is working");
   for (const t of r.inFlight) {
     const who =
-      [t.runtime, t.runtimeState && `live ${t.runtimeState}`, t.agent].filter(Boolean).join(" · ") || "unassigned";
+      [t.runtime, t.coordinator && `coordinator: ${t.coordinator}`, t.runtimeState && `live ${t.runtimeState}`, t.agent]
+        .filter(Boolean)
+        .join(" · ") || "unassigned";
     out.push(
       `  ${pad(t.id, idWidth)}  ${pad(phaseLabel(t), phaseWidth)}  ${who} · ${t.lastReport ? `reported ${relative(t.lastReport, now)}` : `updated ${relative(t.lastUpdate, now)}`}`,
     );
@@ -86,7 +90,7 @@ export function renderStatus(r: StatusReport): string {
     out.push("", `Pending launches (${pending.length})`);
     for (const l of pending) {
       out.push(
-        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.runtime ? ` · ${l.runtime}` : ""}${l.handle ? ` · ${l.handle}` : ""}`,
+        `  ${pad(l.ticket, idWidth)}  launched ${relative(l.launchedAt, now)} · ${l.tokenUsedAt ? `signed in ${relative(l.tokenUsedAt, now)}, no claim` : "launch token never used"}${l.coordinator ? ` · coordinator: ${l.coordinator}` : ""}${l.runtime ? ` · ${l.runtime}` : ""}${l.handle ? ` · ${l.handle}` : ""}`,
       );
       const title = r.notStarted.find((launch) => launch.ticket === l.ticket)?.title;
       if (title) out.push(`${indent}${truncate(title, 90)}`);
@@ -95,6 +99,25 @@ export function renderStatus(r: StatusReport): string {
     }
   }
 
+  if (r.jobs?.length) {
+    out.push("", `Jobs running (${r.jobs.length})`);
+    for (const j of r.jobs) {
+      out.push(`  Job ${j.id} · ${j.ticket} · ${j.name} · ${j.state}${j.overdue ? " · overdue" : ""}`);
+      out.push(`    Runner: ${j.ref ?? "no runner reference"} · ${j.progress ?? "no progress reported"}`);
+      out.push(`    Observed ${relative(j.observedAt, now)}${j.eta ? ` · ETA ${j.eta}` : ""}`);
+      if (j.ticketDone) out.push("    ! ticket is Done; job continues until the runner ends or you stop it");
+    }
+  }
+
+  if (r.launchWhenUnblocked?.length) {
+    out.push("", `Launch when unblocked (${r.launchWhenUnblocked.length})`);
+    for (const request of r.launchWhenUnblocked) {
+      out.push(
+        `  ${request.ticket}  ${request.reason ?? "unblocked: launch it now"}${request.profile ? ` · profile ${request.profile}` : ""} · asked by ${request.author ?? "unknown"} (#${request.id})`,
+      );
+      out.push(`    ${request.command}`);
+    }
+  }
   const ready = r.frontier.filter((t) => t.readyForAgent);
   const untriaged = r.frontier.filter((t) => !t.readyForAgent);
   out.push("", `Ready to start (${ready.length})`);
@@ -102,6 +125,7 @@ export function renderStatus(r: StatusReport): string {
   for (const t of ready) {
     const meta = [
       t.spec,
+      "launchingBy" in t ? `launching by ${t.launchingBy ?? "unowned"}` : null,
       t.unlocks.length ? `unlocks ${t.unlocks.length}` : null,
       t.onCriticalPath ? "critical path" : null,
     ]
@@ -111,7 +135,10 @@ export function renderStatus(r: StatusReport): string {
   }
   if (untriaged.length) {
     out.push("", `Unblocked but not marked ready (${untriaged.length})`);
-    for (const t of untriaged) out.push(`  ${pad(t.id, idWidth)}  ${truncate(t.title, 80)}`);
+    for (const t of untriaged)
+      out.push(
+        `  ${pad(t.id, idWidth)}  ${truncate(t.title, 80)}${"launchingBy" in t ? ` (launching by ${t.launchingBy ?? "unowned"})` : ""}`,
+      );
   }
 
   out.push("", `Pull requests waiting (${r.pullRequests?.length ?? "?"})`);
