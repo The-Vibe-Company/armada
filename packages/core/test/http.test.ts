@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { HttpRequestError, httpRequest } from "../src/http.ts";
+import { HttpRequestError, httpRequest, retryStatus } from "../src/http.ts";
 
 const url = "https://api.example.test/read";
 const timeout = () => new DOMException("timed out", "TimeoutError");
@@ -161,4 +161,157 @@ test("connection failures retry safe reads; unsafe requests and semantic errors 
   ).catch((error) => error);
   expect(err).toBe(semantic);
   expect(calls).toBe(1);
+});
+
+test("status retries wait twice, drain failed responses, and leave exhaustion and unsafe POSTs to the reader", async () => {
+  for (const statuses of [
+    [503, 503, 200],
+    [503, 503, 503],
+  ]) {
+    const waits: number[] = [];
+    const notices: string[] = [];
+    const responses: Response[] = [];
+    const result = await httpRequest(
+      url,
+      { method: "POST" },
+      {
+        retry: true,
+        retryStatus,
+        service: "Linear",
+        random: () => 0.5,
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+        onRetry: (message) => notices.push(message),
+        fetch: async () => {
+          const response = new Response("answer", { status: statuses[responses.length] });
+          responses.push(response);
+          return response;
+        },
+      },
+      async (res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.text();
+      },
+    ).catch((error: Error) => error.message);
+    expect(result).toBe(statuses[2] === 200 ? "answer" : "HTTP 503");
+    expect(waits).toEqual([1000, 3000]);
+    expect(responses.slice(0, 2).every((response) => response.bodyUsed)).toBe(true);
+    expect(notices).toEqual([
+      "Linear answered 503; trying again in 1 s (2/3)",
+      "Linear answered 503; trying again in 3 s (3/3)",
+    ]);
+  }
+  let calls = 0;
+  expect(
+    await httpRequest(
+      url,
+      { method: "POST" },
+      {
+        retryStatus,
+        fetch: async () => {
+          calls++;
+          return new Response("busy", { status: 503 });
+        },
+      },
+      async (res) => res.status,
+    ),
+  ).toBe(503);
+  expect(calls).toBe(1);
+});
+
+test("Retry-After honors seconds and dates, caps waits, refuses long 429s, and cancellation stops retries", async () => {
+  for (const [status, after, random, expected] of [
+    [503, "2", 0, 2000],
+    [503, "30", 1, 10000],
+    [429, "Mon, 05 Oct 2026 12:00:04 GMT", 0.5, 4000],
+    [503, "invalid", 0, 800],
+    [503, "0", 1, 1200],
+  ] as const) {
+    let calls = 0;
+    const waits: number[] = [];
+    await httpRequest(
+      url,
+      {},
+      {
+        retry: true,
+        retryStatus,
+        random: () => random,
+        now: () => new Date("2026-10-05T12:00:00Z"),
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+        fetch: async () =>
+          ++calls === 1 ? new Response("busy", { status, headers: { "Retry-After": after } }) : new Response("ok"),
+      },
+      (res) => res.text(),
+    );
+    expect(waits).toEqual([expected]);
+  }
+  let calls = 0;
+  await expect(
+    httpRequest(
+      url,
+      {},
+      {
+        retry: true,
+        retryStatus,
+        sleep: async () => {
+          throw new Error("must not wait");
+        },
+        fetch: async () => {
+          calls++;
+          return new Response("limited", { status: 429, headers: { "Retry-After": "11" } });
+        },
+      },
+      (res) => res.text(),
+    ),
+  ).rejects.toThrow("HTTP 429; try again after 11");
+  expect(calls).toBe(1);
+
+  const controller = new AbortController();
+  const cancelled = new DOMException("caller cancelled", "AbortError");
+  calls = 0;
+  const error = await httpRequest(
+    url,
+    { signal: controller.signal },
+    {
+      retry: true,
+      retryStatus,
+      fetch: async () => {
+        calls++;
+        return new Response("busy", { status: 502 });
+      },
+      sleep: async () => {
+        controller.abort(cancelled);
+      },
+    },
+    (res) => res.text(),
+  ).catch((error) => error);
+  expect(error).toBe(cancelled);
+  expect(calls).toBe(1);
+});
+
+test("repeated Retry-After headers stay within the call's 14 s wait budget", async () => {
+  for (const status of [503, 429]) {
+    const waits: number[] = [];
+    let calls = 0;
+    const answer = await httpRequest(
+      url,
+      {},
+      {
+        retry: true,
+        retryStatus,
+        random: () => 0.5,
+        sleep: async (ms) => {
+          waits.push(ms);
+        },
+        fetch: async () =>
+          ++calls < 3 ? new Response("busy", { status, headers: { "Retry-After": "10" } }) : new Response("ok"),
+      },
+      (res) => res.text(),
+    ).catch((error: Error) => error.message);
+    expect(waits).toEqual(status === 503 ? [10000, 4000] : [10000]);
+    expect(answer).toBe(status === 503 ? "ok" : "HTTP 429; try again after 10 s");
+  }
 });

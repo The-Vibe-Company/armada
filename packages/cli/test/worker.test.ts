@@ -55,6 +55,7 @@ function worker(
     ghToken: () => null,
     fetch: (url, init) => (url.startsWith(`${ARMADA_URL}/`) ? armada.fetch(url, init) : net.rest(url, init)),
     now: () => NOW,
+    sleep: async () => {},
     gitBranch: () => "feature/demo-7-do-the-thing",
     linearWriter: () => linear,
   };
