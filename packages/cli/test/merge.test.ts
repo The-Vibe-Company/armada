@@ -81,6 +81,12 @@ test.each([
   "before-archive",
 ])("merge notes select recipients and deliver before archive (%s)", async (scenario) => {
   const f = await fixture();
+  const reservedKeys: string[] = [];
+  const reserveNotice = f.store.prepareMergeNotice;
+  f.store.prepareMergeNotice = async (project, key) => {
+    reservedKeys.push(key);
+    return reserveNotice(project, key);
+  };
   const herdrTree = join(f.io.cwd, "..", "herdr-worker");
   const herdrHandle = JSON.stringify({ workspace: "ws-worker", pane: "pane-worker", agent: "worker" });
   if (scenario === "herdr") f.git("worktree", "add", "-b", "feature/demo-11-worker", herdrTree, "main");
@@ -270,6 +276,8 @@ test.each([
     expect(message).toContain("your PR #7 (DEMO-11) also changes: src/lists.ts");
     expect(message).toContain("shareList");
     expect(message).toContain("git fetch origin && git merge origin/main, then run the checks again");
+    // Merge retries use the durable receipt identity, even when the notice's text changes.
+    if (scenario !== "herdr") expect(messages()[0]?.args.at(-1)).toBe(reservedKeys[0]);
     const notes = f.store.items.filter((i) => i.kind === "note");
     expect(notes).toHaveLength(scenario === "shared" ? 2 : 1);
     expect(notes.every((n) => n.resolvedAt === NOW.toISOString())).toBe(true);

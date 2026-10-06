@@ -4,10 +4,12 @@ import {
   type ArmadaConfig,
   CONFIG_DEFAULTS,
   type Credentials,
+  type Delivery,
   deliveryKey,
   type Fleet,
   machinePaths,
   OBSERVABLE_RUNTIMES,
+  type PendingLaunch,
   processAlive,
   Refusal,
   type RuntimeHandle,
@@ -19,7 +21,7 @@ import {
 } from "@armada/core";
 import type { Io } from "./io.ts";
 import { requireSignIn } from "./login.ts";
-import { archiveClaimKey, claimRef, guarded, runtimeFor } from "./runtimes/adapter.ts";
+import { archiveClaimKey, claimRef, guarded, launchRef, runtimeFor } from "./runtimes/adapter.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
 
 const observing = new Set<string>();
@@ -134,40 +136,39 @@ export async function deliverToRuntime(
   message: {
     item?: number | null;
     kind?: "answer" | "note" | "login";
+    identityText?: string;
     key?: string;
     coordinator?: string;
     skipHandedBack?: boolean;
   } = {},
-): Promise<boolean> {
-  const h = await fleet.runtimeHandle(ticket);
-  if (!h || runtimeNameOf(h.runtime) === "claude-code" || !runtimeNameOf(h.runtime)) return false;
-  if (!expected)
-    throw new Refusal(`${ticket}'s claim changed before delivery; no answer was delivered`, "armada inbox");
-  const target = {
-    ...claimRef(expected),
-    coordinator: message.coordinator,
-    skipHandedBack: message.skipHandedBack,
-  };
+  launch?: PendingLaunch | null,
+): Promise<Delivery | null> {
+  const ref = expected && !expected.releasedAt ? claimRef(expected) : launch ? launchRef(launch) : null;
+  const target = ref && { ...ref, coordinator: message.coordinator, skipHandedBack: message.skipHandedBack };
+  if (!target) throw new Refusal(`${ticket}'s claim is missing or changed; no answer was delivered`, "armada inbox");
+  const adapter = runtimeFor(io, config, target.runtime);
+  if (!adapter.can.deliver) return null;
   if (target.releasedAt) throw new Refusal(`${ticket}'s worker has ended; no answer was delivered`, "armada status");
-  const adapter = runtimeFor(io, config, expected.runtime);
-  await guarded(fleet, target, "active", () =>
+  return guarded(fleet, target, "active", () =>
     adapter.deliver(target, {
       text,
       kind: message.kind ?? "answer",
       key:
         message.key ??
         deliveryKey({
-          project: expected.project,
+          project: config?.project.slug ?? expected?.project ?? "",
           ticket,
-          claimedAt: target.claimedAt,
+          // Claiming does not create a new generation for a bound launch.
+          claimedAt: target.launchId ? null : target.claimedAt,
           launchId: target.launchId,
           item: message.item ?? null,
           kind: message.kind ?? "answer",
-          text,
+          // Masking availability can change between retries. The original text
+          // is only hashed here; delivery and records keep the masked payload.
+          text: message.identityText ?? text,
         }),
     }),
   );
-  return true;
 }
 
 export async function stop(io: Io, config: ArmadaConfig, credentials: Credentials, args: WorkerArgs) {

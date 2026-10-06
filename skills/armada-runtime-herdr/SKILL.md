@@ -21,7 +21,9 @@ armada answer ABC-12 "<answer to a live harness approval or question>"
 armada answer --note ABC-12 --message-file /tmp/abc-12-message.md
 ```
 
-For herdr, Armada verifies the saved pane, delivers literal text plus Enter and then records the answer on the ticket and in the inbox. Read an approval UI before deciding what input it expects; the answer may be a short choice such as `y`. Delivery errors leave the question open and write no successful answer. Inspect the pane before retrying after a timeout: the terminal may already have received the input. There is no separate delivery step. Successful delivery confirms submission, not that the worker has completed a turn. For other runtimes, follow their guide and deliver before recording with Armada.
+For herdr, Armada verifies the saved pane, delivers literal text plus Enter and then records the answer on the ticket and in the inbox. Read an approval UI before deciding what input it expects; the answer may be a short choice such as `y`. Delivery errors leave the question open and write no successful answer. Inspect the pane before retrying after a timeout: the terminal may already have received the input. There is no separate delivery step. Successful delivery confirms submission, not that the worker has completed a turn. Conductor also receives answers and notes automatically. For Claude Code, follow its guide and deliver before recording with Armada.
+
+For a printed generated merge-note fallback, check the current claim’s handle, coordinator and phase and inspect the pane for an unknown delivery outcome first. Send only to the same active worker when the note was not already accepted. Use `herdr agent prompt <pane> "<printed merge note>"` for a working, idle or done pane. For a blocked approval UI, resolve the approval before sending the note. Keep generated merge notes out of `armada answer --note`: that ordinary-note path posts to Linear and resolves an open plan. Do not follow a native fallback with that command.
 
 ## Status
 

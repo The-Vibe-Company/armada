@@ -27,6 +27,13 @@ export interface ClaimRef {
   /** Merge notices must not wake a session after any of its tickets hands back. */
   skipHandedBack?: boolean;
 }
+/** Receipt of a message accepted by a runtime. */
+export interface Delivery {
+  via: string;
+  messageId: string | null;
+  queued: boolean;
+}
+
 export type RuntimeErrorCode =
   | "unsupported"
   | "not-found"
