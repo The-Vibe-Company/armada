@@ -26,7 +26,8 @@ export async function hold(io: Io, config: ArmadaConfig, credentials: Credential
     const line = result.cleared
       ? `Cleared hold #${id}: ${h.clearReason}.`
       : `Hold #${id} already cleared by ${h.clearedBy ?? "unknown"} at ${h.clearedAt}: ${h.clearReason}.`;
-    io.stdout(a.json ? `${JSON.stringify(result, null, 2)}\n` : `${line}\n`);
+    const note = h.kind === "main-red" ? " If main is still red, the next snapshot refresh reopens this pause." : "";
+    io.stdout(a.json ? `${JSON.stringify(result, null, 2)}\n` : `${line}${note}\n`);
   } else {
     const holds = await fleet.holds();
     io.stdout(

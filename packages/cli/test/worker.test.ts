@@ -927,6 +927,17 @@ test("hold commands share the pause with status and clear it idempotently", asyn
   w.net.rest = recordedFetch().fetch;
   expect(await run(["status", "--json"], w.io)).toBe(0);
   expect(JSON.parse(w.out()).holds).toEqual([]);
+  const red = await w.store.openHold({
+    project: "widgets",
+    kind: "main-red",
+    ref: "a".repeat(40),
+    reason: "main red since #12",
+    author: "armada",
+    at: NOW,
+  });
+  w.reset();
+  expect(await run(["hold", "clear", String(red.id), "--reason", "inspect main"], w.io)).toBe(0);
+  expect(w.out()).toContain("If main is still red, the next snapshot refresh reopens this pause.");
   for (const args of [
     ["hold", "add", " "],
     ["hold", "clear", "1"],
