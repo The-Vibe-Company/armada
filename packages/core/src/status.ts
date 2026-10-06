@@ -14,6 +14,7 @@ import {
 import { attachPullRequests, fetchForge } from "./github.ts";
 import { herdrHarnessLabel } from "./herdr-profile.ts";
 import type { HttpRetryOptions } from "./http.ts";
+import { type Job, type JobSummary, jobOverdue } from "./jobs.ts";
 import { type Fetch, fetchProgram, fetchProgramChanges } from "./linear.ts";
 import {
   followedLaunches,
@@ -123,6 +124,8 @@ export interface NotStartedLaunch extends PendingLaunch {
 }
 
 export interface StatusReport {
+  /** Open long jobs from Armada; absent when their optional live read was unavailable. */
+  jobs?: JobSummary[];
   holds?: MergeHold[];
   /** Default-branch CI; absent in older reports, null when unavailable. */
   main?: MainHealth | null;
@@ -157,6 +160,7 @@ export interface StatusReport {
 }
 
 export interface BuildStatusInput {
+  jobs?: Job[];
   config: ArmadaConfig;
   program: ProgramData;
   forge: ForgeData | null;
@@ -190,6 +194,7 @@ export function buildStatus({
   lastEvents,
   heartbeats,
   live,
+  jobs,
   launches = [],
   launchWhenUnblocked,
   extraWarnings = [],
@@ -233,6 +238,15 @@ export function buildStatus({
   });
 
   return {
+    ...(jobs
+      ? {
+          jobs: jobs.map((job) => ({
+            ...job,
+            overdue: jobOverdue(job, config.jobs?.[job.name]?.maxHours, now),
+            ticketDone: issues.some((i) => i.id === job.ticket && i.statusType === "completed"),
+          })),
+        }
+      : {}),
     schemaVersion: STATUS_SCHEMA_VERSION,
     ...(launchWhenUnblocked ? { launchWhenUnblocked } : {}),
     ...(holds ? { holds } : {}),
@@ -375,6 +389,7 @@ const byMergeTime = (a: PullRequest, b: PullRequest) =>
   (a.mergedAt ?? "").localeCompare(b.mergedAt ?? "") || a.number - b.number;
 
 export interface LoadStatusOptions extends HttpRetryOptions {
+  jobs?: () => Promise<Job[]>;
   holds?: () => Promise<MergeHold[]>;
   linearApiKey: string;
   /** Without a token the report still lists tickets; pull requests are null. */
@@ -491,6 +506,12 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
+  const jobsP: Promise<{ jobs?: Job[]; warning?: string }> = opts.jobs
+    ? opts.jobs().then(
+        (jobs) => ({ jobs }),
+        (err) => ({ warning: `Armada's jobs could not be read (${err instanceof Error ? err.message : String(err)})` }),
+      )
+    : Promise.resolve({});
   const holdsP: Promise<{ holds?: MergeHold[]; warning?: string }> = opts.holds
     ? opts.holds().then(
         (holds) => ({ holds }),
@@ -499,22 +520,32 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }),
       )
     : Promise.resolve({});
-  const [{ program, forge, forgeError }, events, launches, heartbeats, runtimeHandles, latestEvents, holds, deferred] =
-    await Promise.all([
-      readStatusSources(config, opts),
-      eventsP,
-      launchesP,
-      opts.heartbeats?.().catch(() => undefined),
-      opts.runtimeHandles?.().catch(() => undefined),
-      opts.latestEvents?.().catch(() => undefined),
-      holdsP,
-      opts.deferredLaunches?.().then(
-        (items) => ({ items }),
-        (err: unknown) => ({
-          warning: `Armada’s deferred launches could not be read (${err instanceof Error ? err.message : String(err)})`,
-        }),
-      ),
-    ]);
+  const [
+    { program, forge, forgeError },
+    events,
+    launches,
+    heartbeats,
+    runtimeHandles,
+    latestEvents,
+    jobs,
+    holds,
+    deferred,
+  ] = await Promise.all([
+    readStatusSources(config, opts),
+    eventsP,
+    launchesP,
+    opts.heartbeats?.().catch(() => undefined),
+    opts.runtimeHandles?.().catch(() => undefined),
+    opts.latestEvents?.().catch(() => undefined),
+    jobsP,
+    holdsP,
+    opts.deferredLaunches?.().then(
+      (items) => ({ items }),
+      (err: unknown) => ({
+        warning: `Armada’s deferred launches could not be read (${err instanceof Error ? err.message : String(err)})`,
+      }),
+    ),
+  ]);
   return buildStatus({
     config,
     program,
@@ -532,11 +563,13 @@ export async function loadStatus(config: ArmadaConfig, opts: LoadStatusOptions):
         }
       : {}),
     ...(launches.launches ? { launches: launches.launches } : {}),
+    ...(jobs.jobs ? { jobs: jobs.jobs } : {}),
     ...(holds.holds ? { holds: holds.holds } : {}),
     ...(deferred && "items" in deferred ? { launchWhenUnblocked: deferred.items } : {}),
     extraWarnings: [
       events.warning,
       launches.warning,
+      jobs.warning,
       holds.warning,
       deferred && "warning" in deferred ? deferred.warning : undefined,
     ].filter((w): w is string => !!w),
