@@ -767,6 +767,16 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
   {
     version: 26,
     statements: [
+      `CREATE TABLE ticket_paths (
+      project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+      ticket text NOT NULL, paths text[] NOT NULL, declared_at timestamptz NOT NULL,
+      PRIMARY KEY (project, ticket)
+    )`,
+    ],
+  },
+  {
+    version: 27,
+    statements: [
       `ALTER TABLE owner_channels ADD COLUMN digest_checked_at timestamptz`,
       `UPDATE owner_channels SET digest = '{"times":["09:00","13:00","18:00"],"days":[1,2,3,4,5],"skipQuiet":false}'::jsonb,
         digest_checked_at = created_at`,

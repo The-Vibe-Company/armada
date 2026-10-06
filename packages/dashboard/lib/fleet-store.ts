@@ -764,14 +764,16 @@ export async function addRequest(db: Queryable, r: NewRequest): Promise<number |
   return id === undefined ? null : Number(id);
 }
 
-/** Adds the ticket's plan for the coordinator, unless one is already open. */
+/** Adds or refreshes the ticket's open plan for the coordinator. */
 export async function putPlan(
   db: Queryable,
   item: { project: string; ticket: string; author: string | null; body: string; at: Date },
 ): Promise<void> {
   await db.query(
     `INSERT INTO inbox_items (project, ticket, kind, recipient, author, body, created_at)
-     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5) ON CONFLICT DO NOTHING`,
+     VALUES ($1, $2, 'plan', 'coordinator', $3, $4, $5)
+     ON CONFLICT (project, ticket, kind) WHERE resolved_at IS NULL AND kind IN ('plan', 'hand-back', 'launch-request')
+     DO UPDATE SET body = excluded.body, author = excluded.author, created_at = excluded.created_at`,
     [item.project, item.ticket, item.author, item.body, item.at],
   );
 }
@@ -1080,6 +1082,23 @@ export const fleetStore = (db: Database): FleetStore => ({
   ensureProject: (p, at) => ensureProject(db, p, at),
   upsertProject: (p, at) => upsertProject(db, p, at),
   listProjects: () => listProjects(db),
+  saveTicketPaths: async (project, ticket, paths, at) => {
+    await db.query(
+      `INSERT INTO ticket_paths (project, ticket, paths, declared_at) VALUES ($1, $2, $3, $4)
+      ON CONFLICT (project, ticket) DO UPDATE SET paths = EXCLUDED.paths, declared_at = EXCLUDED.declared_at`,
+      [project, ticket, paths, at],
+    );
+  },
+  ticketPaths: async (project) => {
+    const result = await db.query<{ ticket: string; paths: string[] }>(
+      "SELECT ticket, paths FROM ticket_paths WHERE project = $1",
+      [project],
+    );
+    return Object.fromEntries(result.rows.map((r) => [r.ticket, r.paths]));
+  },
+  deleteTicketPaths: async (project, ticket) => {
+    await db.query("DELETE FROM ticket_paths WHERE project = $1 AND ticket = $2", [project, ticket]);
+  },
   recordEvent: (e) => recordEvent(db, e),
   recordHeartbeat: (input) => recordHeartbeat(db, input),
   heartbeatTimes: (project) => heartbeatTimes(db, project),

@@ -27,8 +27,10 @@ import {
   type PendingLaunch,
   type ProjectInput,
   type ReportRecord,
+  type ReportResult,
   RUNTIME_STATES,
   type RuntimeState,
+  readOverlap,
   recordAnswer,
   recordClaim,
   recordDone,
@@ -42,6 +44,7 @@ import {
   type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
+import { type OverlapReading, pathsProblem } from "./overlap.ts";
 import { isLabelPhase } from "./phases.ts";
 import { RequestRefusal, requestMerge, requestPlanChanges, requestRelease } from "./requests.ts";
 import type { CiState, LabelPhase } from "./types.ts";
@@ -56,7 +59,7 @@ import {
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
-export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat", "validate"] as const;
+export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat", "validate", "overlap"] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
@@ -129,6 +132,12 @@ function optText(b: Body, key: string, max: number): string | null {
   if (typeof v !== "string") throw new Invalid(`${key} must be text`);
   if (v.length > max) throw new Invalid(`${key} has at most ${max} characters`);
   return v;
+}
+
+function pathsOf(b: Body): string[] {
+  const problem = pathsProblem(b.paths);
+  if (problem) throw new Invalid(problem);
+  return [...new Set(b.paths as string[])];
 }
 
 function ticketOf(b: Body, key = "ticket"): string {
@@ -299,6 +308,8 @@ export async function serveFleet(
             },
             at,
           );
+        case "overlap":
+          return readOverlap(store, slug, ticketOf(b), pathsOf(b), at, deps.snapshot);
         case "report":
           return recordReport(
             store,
@@ -308,6 +319,7 @@ export async function serveFleet(
               phase: phaseOf(b, "phase") as LabelPhase,
               shippingStage: shippingStageOf(b),
               previous: phaseOf(b, "previous", true),
+              ...(b.paths !== undefined ? { paths: pathsOf(b) } : {}),
               summary: text(b, "summary", BODY_MAX),
               message: optText(b, "message", BODY_MAX) ?? "",
               prUrl: optText(b, "prUrl", URL_MAX),
@@ -315,6 +327,7 @@ export async function serveFleet(
               headSha: optText(b, "headSha", LINE_MAX),
             },
             at,
+            deps.snapshot,
           );
         case "ask":
           return recordQuestion(store, slug, { ticket: ticketOf(b), body: text(b, "body", BODY_MAX) }, at);
@@ -658,7 +671,11 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     stopRuntime: (input) => call("runtime/stop", input),
     pendingLaunches: () => call<PendingLaunch[]>("launches", {}),
     claim: (c: ClaimRecord) => call<InboxItem[]>("claim", c),
-    report: (r: ReportRecord) => call<InboxItem[]>("report", r),
+    report: async (r: ReportRecord) => {
+      const result = await call<InboxItem[] | ReportResult>("report", r);
+      return Array.isArray(result) ? { inbox: result, overlaps: [], incomplete: r.paths !== undefined } : result;
+    },
+    overlap: (input) => call<OverlapReading>("overlap", input),
     ask: (q) => call<number>("ask", q),
     // An older server returned null after releasing successfully.
     release: (r) => call<{ released: boolean } | null>("release", r).then((result) => result ?? { released: true }),
