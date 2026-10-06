@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { type ArmadaConfig, CONFIG_DEFAULTS, routingLabelKey } from "./config.ts";
 import { type DeferredLaunch, deferredLaunchState, deferredWakeBody } from "./deferred.ts";
 import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
-import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight, unblockedBy } from "./fleet.ts";
 
 export { freshRuntimeState } from "./fleet.ts";
 
@@ -449,10 +449,10 @@ export interface FleetStore {
   heartbeatTimes(project: string): Promise<Record<string, string>>;
   /** Time of the newest event of every ticket of a project (ISO strings, by ticket id). */
   lastEventTimes(project: string): Promise<Record<string, string>>;
-  /** Newest events, optionally bounded to given tickets and events since a time. */
+  /** Newest events per ticket, filtered by time, tickets and kinds before selecting the newest. */
   latestEvents(
     project: string,
-    opts?: { since?: Date; tickets?: readonly string[] },
+    opts?: { since?: Date; tickets?: readonly string[]; kinds?: readonly EventKind[] },
   ): Promise<Record<string, LatestEvent>>;
   /** Records that the coordinator of a project is at work (it read its inbox). */
   recordCoordinatorSeen(seen: CoordinatorSeen): Promise<void>;
@@ -558,7 +558,8 @@ export interface FleetStore {
    * none: a brief made to look at it again launches nobody, and a relaunch
    * releases the old claim first.
    */
-  pendingLaunches(project: string, since: Date): Promise<PendingLaunch[]>;
+  /** `history` also reads claimed and ended launches, for durable launch clearing. */
+  pendingLaunches(project: string, since: Date, opts?: { history?: boolean }): Promise<PendingLaunch[]>;
   expireUnusedLaunches(project: string, now: Date, coordinatorName?: string): Promise<PendingLaunch[]>;
 
   /**
@@ -846,6 +847,8 @@ export async function recordAnswer(store: FleetStore, project: string, a: Answer
 }
 
 export interface MergeRecord {
+  /** The named coordinator performing the merge, supplied by the server context. */
+  coordinator?: string;
   ticket: string;
   number: number;
   url: string;
@@ -880,6 +883,9 @@ export async function recordMerge(
       ticket: m.ticket,
       kind: "merge",
       phase: "merged",
+      // Merge events carry the merging role, rather than a worker session.
+      runtime: "coordinator",
+      handle: m.coordinator ?? "default",
       message: `PR #${m.number} merged as ${m.mergeCommit ?? "unknown"}${m.decision ? `; ${m.decision}` : ""}`,
       prUrl: m.url,
       headSha: m.headSha,
@@ -962,11 +968,22 @@ const MIN = 60_000;
 /**
  * `silent`: a worker gone quiet; `not-started`: a worker launched that never
  * claimed (both read from the fleet, they clear on their own); `version`: a
- * newer Armada is out (`armada watch` only, never stored).
+ * newer Armada is out (`armada watch` only, never stored); `unblocked`: a
+ * recent merge made another coordinator's pending work available.
  */
-export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "stopped" | "quiet" | "not-started" | "version";
+export type InboxEntryKind =
+  | InboxKind
+  | "unblocked"
+  | "runtime-blocked"
+  | "silent"
+  | "stopped"
+  | "quiet"
+  | "not-started"
+  | "version";
 
 export interface InboxEntry {
+  /** The merged blocker of a derived `unblocked` item, for stable watch keys. */
+  unblockedBy?: string;
   owner?: string | null;
   /**
    * Inbox item id for `armada answer`; null for a silent worker (it clears
@@ -995,25 +1012,30 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
 
 /**
  * How an entry is told apart between two reads: `#12`, `silent:<ticket>`,
- * `not-started:<ticket>` or `version:<version>@<digest>`. A hand-back or a plan
+ * `not-started:<ticket>`, `unblocked:<ticket>@<blocker>` or `version:<version>@<digest>`. A hand-back or a plan
  * rewritten in place keeps its id, so its key carries a digest of its text
  * too (a hand-back's names its head SHA): handed back again on a new head, it
  * is new to the coordinator.
  */
 export const entryKey = (
-  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined; createdAt?: string },
+  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "unblockedBy"> & {
+    version?: string | undefined;
+    createdAt?: string;
+  },
 ) =>
   e.id !== null
     ? REWRITTEN.includes(e.kind)
       ? `#${e.id}@${digest(e.body)}`
       : `#${e.id}`
-    : e.version
-      ? `version:${e.version}@${digest(e.body)}`
-      : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
-        ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-        : e.kind === "stopped"
-          ? `stopped:${e.ticket}@${e.createdAt}`
-          : `${e.kind}:${e.ticket}`;
+    : e.kind === "unblocked"
+      ? `unblocked:${e.ticket}@${e.unblockedBy}`
+      : e.version
+        ? `version:${e.version}@${digest(e.body)}`
+        : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
+          ? `not-started:${e.ticket}:expired@${digest(e.body)}`
+          : e.kind === "stopped"
+            ? `stopped:${e.ticket}@${e.createdAt}`
+            : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -1379,6 +1401,51 @@ async function readInboxAndFlight(
       createdAt: l.launchedAt,
       new: false,
     });
+  // No tracker or forge read: the stored relations retain closed blockers.
+  // Skip history entirely when this reading contains no open dependents.
+  if (model && o.snapshot?.config && model.program.some((i) => !isClosed(i) && i.blockedBy.length)) {
+    const recent = new Date(now - 24 * 60 * MIN);
+    const [merges, claims, launchHistory] = await Promise.all([
+      store.latestEvents(o.project, { since: recent, kinds: ["merge"] }),
+      store.latestEvents(o.project, { since: recent, kinds: ["claim"] }),
+      store.pendingLaunches(o.project, recent, { history: true }),
+    ]);
+    for (const [blocker, merge] of Object.entries(merges)) {
+      if (merge.phase !== "merged" || merge.at <= recent.toISOString() || Date.parse(merge.at) > now) continue;
+      const merger = merge.runtime === "coordinator" ? merge.handle : null;
+      for (const { issue } of unblockedBy(model, blocker, {
+        ready: o.snapshot.config.tracker.readyLabel,
+        parked: o.snapshot.config.tracker.parkedLabel,
+      }).ready) {
+        const request = stored.find((i) => i.ticket === issue.id && i.kind === "launch-request");
+        const owner = ownerOf(issue.id, request?.coordinator);
+        // Only the last merged blocker made this ticket ready. A launch
+        // clears the notification even if its snapshot has not caught up.
+        if (
+          !visible(owner) ||
+          (owner !== null && owner === merger) ||
+          own.has(issue.id) ||
+          handles.some((h) => h.ticket === issue.id) ||
+          launches.some((l) => l.ticket === issue.id) ||
+          launchHistory.some((l) => l.ticket === issue.id && l.launchedAt >= merge.at) ||
+          (claims[issue.id]?.at ?? "") >= merge.at ||
+          issue.blockedBy.some((b) => merges[b.id]?.phase === "merged" && (merges[b.id]?.at ?? "") > merge.at)
+        )
+          continue;
+        entries.push({
+          id: null,
+          kind: "unblocked",
+          ticket: issue.id,
+          owner,
+          unblockedBy: blocker,
+          author: merger,
+          body: `${issue.id} unblocked by ${blocker} (merged by ${merger ?? "unknown"})`,
+          createdAt: merge.at,
+          new: false,
+        });
+      }
+    }
+  }
   return {
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
     inFlight: inFlight.sort(),
@@ -1423,7 +1490,7 @@ export interface InboxRead {
  * and which tickets are in flight.
  */
 export function inboxTag(
-  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner">[],
+  items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner" | "unblockedBy">[],
   inFlight: readonly string[] = [],
 ): string {
   const keys = [

@@ -269,6 +269,9 @@ describe("live data", () => {
     const latest = await latestEvents(db, P, { since: at(2) });
     expect(Object.keys(latest)).toEqual(["WID-2"]);
     expect(latest["WID-2"]).toMatchObject({ kind: "report", phase: "shipping", prUrl: "u", at: at(3).toISOString() });
+    expect((await latestEvents(db, P, { kinds: ["claim"] }))["WID-2"]?.kind).toBe("claim");
+    expect(await latestEvents(db, P, { kinds: ["claim"], since: at(2), tickets: ["WID-2"] })).toEqual({});
+    expect(await latestEvents(db, P, { kinds: [] })).toEqual({});
 
     await recordCoordinatorSeen(db, { project: P, handle: "ws/c", cliVersion: "0.2.3", at: at(9) });
     // A read that names no version keeps the one known.

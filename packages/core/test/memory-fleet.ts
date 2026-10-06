@@ -448,6 +448,7 @@ export function memoryFleet(): FleetStore & {
           e.project !== project ||
           !e.ticket ||
           e.at < since ||
+          (opts.kinds && !opts.kinds.includes(e.kind)) ||
           (opts.tickets && !opts.tickets.includes(e.ticket))
         )
           continue;
@@ -1074,7 +1075,7 @@ export function memoryFleet(): FleetStore & {
       if (leases.get(k)?.holder === l.holder) leases.delete(k);
     },
 
-    async pendingLaunches(project, since) {
+    async pendingLaunches(project, since, opts = {}) {
       const held = (ticket: string) => {
         const h = handles.get(key(project, ticket));
         return !!h && !h.releasedAt;
@@ -1088,11 +1089,12 @@ export function memoryFleet(): FleetStore & {
       return [...newest.values()]
         .filter(
           (l) =>
-            !l.endedAt &&
-            !held(l.ticket) &&
-            !events.some(
-              (e) => e.project === project && e.ticket === l.ticket && e.kind === "claim" && e.at >= l.launchedAt,
-            ),
+            opts.history ||
+            (!l.endedAt &&
+              !held(l.ticket) &&
+              !events.some(
+                (e) => e.project === project && e.ticket === l.ticket && e.kind === "claim" && e.at >= l.launchedAt,
+              )),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
         .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle, coordinator }) => ({

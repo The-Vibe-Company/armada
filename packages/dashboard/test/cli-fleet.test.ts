@@ -629,6 +629,9 @@ describe("the fleet through the Armada API", () => {
     const revoked = await api.revokeLaunch(signIn, target);
     expect(revoked.ticket).toBe("WID-80");
     expect((await coordinator.pendingLaunches()).some((launch) => launch.ticket === "WID-80")).toBe(false);
+    const launchHistory = await fleetStore(client).pendingLaunches(WIDGETS.slug, start, { history: true });
+    expect(launchHistory.find((launch) => launch.ticket === "WID-80")?.launchedAt).toBe(new Date(clock).toISOString());
+    expect(await fleetStore(client).pendingLaunches(WIDGETS.slug, new Date(clock + 1), { history: true })).toEqual([]);
     expect(
       await refusal(api.whoami({ kind: "worker", token: session.token, project: WIDGETS.slug, ticket: "WID-80" })),
     ).toEqual([401, expect.stringContaining("cut off from Armada")]);
