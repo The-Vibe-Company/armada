@@ -766,3 +766,64 @@ test("merge cleanup keeps paths declared by a replacement claim when the generat
   expect(await store.ticketPaths("widgets")).toEqual({ "DEMO-7": ["new/**"] });
   expect((await store.getRuntimeHandle("widgets", "DEMO-7"))?.releasedAt).toBeNull();
 });
+
+test("hold API is organization-only, validates reasons and refs, and preserves the clearer", async () => {
+  const { fleet, store } = tempFleet();
+  for (const op of ["holds", "hold/open", "hold/clear"] as const) {
+    const answer = await serveFleet(
+      store,
+      { op, project: DEMO_PROJECT, caller: { kind: "worker", ticket: "DEMO-7" }, input: {} },
+      { now: () => NOW },
+    );
+    expect(answer.status).toBe(403);
+  }
+  for (const input of [
+    { kind: "manual", reason: " " },
+    { kind: "unknown", reason: "stop" },
+    { kind: "deploy", reason: "broken" },
+  ]) {
+    expect(
+      (
+        await serveFleet(
+          store,
+          { op: "hold/open", project: DEMO_PROJECT, caller: { kind: "organization" }, input },
+          { now: () => NOW },
+        )
+      ).status,
+    ).toBe(400);
+  }
+  const hold = await fleet.openHold({ kind: "manual", reason: "pause for investigation" });
+  const item = (await store.openInboxItems({ project: DEMO_PROJECT.slug, recipient: "coordinator" }))[0];
+  if (!item) throw new Error("expected the hold inbox item");
+  expect(await refused(fleet.resolve({ id: item.id, resolution: "dismiss" }))).toContain(400);
+  expect(await refused(fleet.answer({ item: item.id, ticket: null, note: false, text: "dismiss" }))).toContain(400);
+  expect(await fleet.holds()).toEqual([hold]);
+  expect((await fleet.inbox({ silentAfterMinutes: 15, coordinator: null, etag: null }))?.items[0]?.kind).toBe("hold");
+  const result = await fleet.clearHold({ id: hold.id, reason: "verified the fix" });
+  expect(result?.cleared).toBe(true);
+  expect((await fleet.clearHold({ id: hold.id, reason: "repeat" }))?.hold).toEqual(result?.hold);
+  expect(await fleet.holds()).toEqual([]);
+  expect((await fleet.inbox({ silentAfterMinutes: 15, coordinator: null, etag: null }))?.items).toEqual([]);
+});
+
+test("a coordinator whose CLI does not read holds cannot acquire or renew the merge lease", async () => {
+  const { fleet } = tempFleet();
+  const lease = { name: "merge", holder: "older-coordinator", ttlMs: 60_000 };
+  expect(await fleet.acquireLease(lease)).toEqual({ acquired: true });
+  const hold = await fleet.openHold({ kind: "manual", reason: "deploy broken" });
+  for (const result of [
+    await refused(fleet.renewLease(lease)),
+    await refused(fleet.acquireLease({ ...lease, holder: "another-coordinator" })),
+  ]) {
+    expect(result).toContain(409);
+    expect(String(result)).toContain(`hold #${hold.id}`);
+    expect(String(result)).toContain("deploy broken");
+  }
+  expect(await fleet.renewLease({ ...lease, throughHold: "fixes deploy" })).toBe(true);
+  expect(await fleet.acquireLease({ name: "another-operation", holder: "a", ttlMs: 60_000 })).toEqual({
+    acquired: true,
+  });
+  expect(await refused(fleet.renewLease({ ...lease, throughHold: " " }))).toContain(400);
+  await fleet.clearHold({ id: hold.id, reason: "recovered" });
+  expect(await fleet.renewLease(lease)).toBe(true);
+});

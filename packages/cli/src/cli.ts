@@ -26,6 +26,7 @@ import { coordinatorCommand } from "./coordinator.ts";
 import { digest } from "./digest.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
+import { hold } from "./hold.ts";
 import { answer, ask, inbox } from "./inbox.ts";
 import { init } from "./init.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
@@ -173,6 +174,11 @@ const COMMAND_HELP: Record<string, string> = {
                     with no pull request (a design ticket): the design and the owner's note
                     are posted on it, it moves to Done, agent labels removed, session ended
 `,
+  hold: `  hold [--json]
+  hold add "<reason>"
+  hold clear <id> --reason "<why>"
+                    Pause this project's merges until cleared, shared with every coordinator.
+                    Merge a fix with --through-hold "<why>"; the hold stays open.`,
   inbox: `  inbox [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
                     oldest first; records that the coordinator is at work. --wait returns
@@ -221,7 +227,7 @@ const COMMAND_HELP: Record<string, string> = {
                     Remove a queued entry; an entry currently merging cannot be removed.
                     To pause merges, use armada hold add "<why>".
   merge <pr> [--ticket <id> | --no-ticket] [--dry-run] [--no-lock] [--wait [--timeout <min>]]
-        [--reason <why>] [--ask-owner --reason <why>] [--no-archive]
+        [--reason <why>] [--through-hold <why>] [--ask-owner --reason <why>] [--no-archive]
                     Coordinator: check a handed-back pull request (hand-back SHA = head,
                     CLEAN, required checks green, no open review thread, base contained
                     or test-merged), squash-merge it pinned to that SHA under the merge
@@ -230,7 +236,9 @@ const COMMAND_HELP: Record<string, string> = {
                     Armada workspace; --no-archive leaves it open. Cleanup failures print
                     an armada stop command and do not fail the merge.
                     --dry-run only runs the checklist. Signed in to Armada,
-                    refused while Armada is down; --no-lock then merges without the lock.
+                    refused while Armada is down; --no-lock skips the lock and hold check.
+                    Open holds refuse merges; --through-hold "<why>" lets a fix through
+                    and records each hold id and the reason on the merged ticket.
                     --wait (--timeout in minutes, default 30): a head behind its base is
                     updated on GitHub (a merge commit, no force-push) and its checks waited
                     for, without the lock; a red check or a conflict stops it. A head that
@@ -348,6 +356,7 @@ const CONFIG_OPTION = new Set([
   "validate",
   "ask-owner",
   "done",
+  "hold",
   "inbox",
   "watch",
   "answer",
@@ -463,6 +472,7 @@ const VALUE_OPTIONS = [
   "sha",
   "shipped-with",
   "stage",
+  "through-hold",
   "reason",
   "program-root",
   "name",
@@ -534,6 +544,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
+  hold: ["reason"],
   merge: [
     "ticket",
     "no-ticket",
@@ -838,7 +849,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { credentials } = await loadCredentials(io, { armada: false });
       return await digest(io, config, credentials, args);
     }
-    const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
+    const worker = { hold, claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
       args.command
     ];
     if (worker) {
