@@ -470,7 +470,7 @@ describe("armada ask, inbox and answer", () => {
     expect(w.out()).toBe(
       [
         "Inbox of widgets (1), oldest first:",
-        `  #1 question · DEMO-7 · from ws-1/s-1 · ${NOW.toISOString()}`,
+        `  #1 question · DEMO-7 · owner: default · from ws-1/s-1 · ${NOW.toISOString()}`,
         "    Which store keeps the sessions?",
         "",
         "    Options:",

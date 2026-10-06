@@ -18,6 +18,7 @@ export * from "./github.ts";
 export * from "./insights.ts";
 export * from "./jobs.ts";
 export * from "./linear.ts";
+export * from "./lint.ts";
 export * from "./live.ts";
 export * from "./merge-queue.ts";
 export * from "./model.ts";

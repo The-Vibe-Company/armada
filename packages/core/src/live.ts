@@ -58,7 +58,13 @@ export interface FleetEvent extends LatestEvent {
   kind: FollowEventKind;
   headSha: string | null;
 }
+export type CoordinatorScope = "mine" | "all";
+
 export interface EventsSinceQuery {
+  scope?: CoordinatorScope;
+  coordinatorName?: string;
+  /** Internal server filter, applied before pagination. */
+  excludedTickets?: readonly string[];
   afterId: number;
   afterAt: string;
   kinds: readonly FollowEventKind[];
@@ -1122,7 +1128,20 @@ async function reconcileHandBacks(
   return open;
 }
 
+/** Open sessions win (including unowned ones), then the newest pending launch. */
+export function ticketOwners(
+  handles: readonly Pick<RuntimeHandle, "ticket" | "coordinator">[],
+  launches: readonly Pick<PendingLaunch, "ticket" | "coordinator" | "launchedAt">[],
+): Map<string, string | null> {
+  const owners = new Map<string, string | null>();
+  for (const launch of [...launches].sort((a, b) => a.launchedAt.localeCompare(b.launchedAt)))
+    owners.set(launch.ticket, launch.coordinator ?? null);
+  for (const handle of handles) owners.set(handle.ticket, handle.coordinator ?? null);
+  return owners;
+}
+
 export interface InboxReadOptions {
+  scope?: CoordinatorScope;
   coordinatorName?: string;
   snapshot?: HandBackSnapshot;
   project: string;
@@ -1177,22 +1196,28 @@ export async function readInbox(store: FleetStore, o: InboxReadOptions): Promise
 async function readInboxAndFlight(
   store: FleetStore,
   o: InboxReadOptions,
-): Promise<{ items: InboxEntry[]; inFlight: string[] }> {
+): Promise<{ items: InboxEntry[]; inFlight: string[]; ownedInFlight: string[] }> {
   const now = o.now.getTime();
   const [stored, handles, launches] = await Promise.all([
     store.openInboxItems({ project: o.project, recipient: "coordinator" }),
     store.openRuntimeHandles(o.project),
     store.pendingLaunches(o.project, new Date(0)),
   ]);
-  const owners = new Map<string, string | null>();
-  for (const launch of launches) owners.set(launch.ticket, launch.coordinator ?? null);
-  for (const handle of handles) owners.set(handle.ticket, handle.coordinator ?? null);
+  const owners = ticketOwners(handles, launches);
+  const name = o.coordinatorName ?? "default";
+  // Absent scope retains the old named-client behavior. New CLIs always
+  // send an explicit scope, so a name alone does not imply filtering.
+  const scoped = o.scope === "mine" || (o.scope === undefined && !!o.coordinatorName);
   const ownerOf = (ticket: string | null, fallback?: string | null) =>
     ticket && owners.has(ticket) ? (owners.get(ticket) ?? null) : (fallback ?? null);
-  const visible = (owner: string | null) => !o.coordinatorName || owner === null || owner === o.coordinatorName;
+  const ownerOfItem = (item: InboxItem) =>
+    !item.ticket && (item.kind === "merge-request" || item.kind === "release-request")
+      ? null
+      : ownerOf(item.ticket, item.coordinator);
+  const visible = (owner: string | null) => !scoped || owner === null || owner === name;
   let items = await reconcileHandBacks(
     store,
-    stored.filter((item) => visible(ownerOf(item.ticket, item.coordinator))),
+    stored.filter((item) => visible(ownerOfItem(item))),
     o.snapshot,
     o.now,
   );
@@ -1257,7 +1282,7 @@ async function readInboxAndFlight(
   );
   const entries: InboxEntry[] = items.map((i) => ({
     id: i.id,
-    owner: ownerOf(i.ticket, i.coordinator),
+    owner: ownerOfItem(i),
     kind: i.kind,
     ticket: i.ticket,
     author: i.author,
@@ -1275,6 +1300,7 @@ async function readInboxAndFlight(
   const known = new Set(flight?.program.issues.map((i) => i.id));
   const own = new Set(handles.filter((h) => o.coordinator && h.handle === o.coordinator).map((h) => h.ticket));
   const inFlight: string[] = held ? [...held].filter((ticket) => !own.has(ticket) && visible(ownerOf(ticket))) : [];
+  const flightOwners = new Map(owners);
   for (const item of stored) {
     if (
       item.kind === "launch-request" &&
@@ -1282,10 +1308,11 @@ async function readInboxAndFlight(
       item.ticket &&
       !closed.has(item.ticket) &&
       !own.has(item.ticket) &&
-      visible(ownerOf(item.ticket, item.coordinator)) &&
-      !inFlight.includes(item.ticket)
-    )
-      inFlight.push(item.ticket);
+      visible(ownerOf(item.ticket, item.coordinator))
+    ) {
+      if (!inFlight.includes(item.ticket)) inFlight.push(item.ticket);
+      if (!owners.has(item.ticket) && item.coordinator === name) flightOwners.set(item.ticket, name);
+    }
   }
   for (const h of handles) {
     const derived = held !== null && known.has(h.ticket);
@@ -1387,11 +1414,13 @@ async function readInboxAndFlight(
     });
   return {
     items: entries.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || (a.id ?? 0) - (b.id ?? 0)),
-    inFlight: inFlight.sort(),
+    inFlight: [...new Set(inFlight)].filter((ticket) => o.scope !== "mine" || flightOwners.get(ticket) === name).sort(),
+    ownedInFlight: [...new Set(inFlight)].filter((ticket) => flightOwners.get(ticket) === name).sort(),
   };
 }
 
 export interface InboxQuery {
+  scope?: CoordinatorScope;
   coordinatorName?: string;
   facts?: CoordinatorFacts;
   coordinator: string | null;
@@ -1408,6 +1437,8 @@ export interface InboxQuery {
 }
 
 export interface InboxRead {
+  /** Owned workers only, for a named coordinator's re-arm line even with all scope. */
+  ownedInFlight?: string[];
   /** Oldest first. */
   items: InboxEntry[];
   /**
@@ -1431,10 +1462,12 @@ export interface InboxRead {
 export function inboxTag(
   items: Pick<InboxEntry, "id" | "kind" | "ticket" | "body" | "owner">[],
   inFlight: readonly string[] = [],
+  ownedInFlight: readonly string[] = [],
 ): string {
   const keys = [
     ...items.map((item) => `${entryKey(item)}:owner:${item.owner ?? "unowned"}`),
     ...inFlight.map((t) => `flight:${t}`),
+    ...ownedInFlight.map((t) => `owned-flight:${t}`),
   ]
     .sort()
     .join("\n");
@@ -1456,7 +1489,8 @@ export async function serveInbox(
   snapshot?: HandBackSnapshot,
 ): Promise<InboxRead | null> {
   const warnings: string[] = [];
-  const expired = await store.expireUnusedLaunches(project, now, q.coordinatorName);
+  const scoped = q.scope === "mine" || (q.scope === undefined && !!q.coordinatorName);
+  const expired = await store.expireUnusedLaunches(project, now, scoped ? (q.coordinatorName ?? "default") : undefined);
   // The dashboard's view of the coordinator is a nicety: the inbox is read even if it cannot be written.
   try {
     await store.recordCoordinatorSeen({
@@ -1471,7 +1505,8 @@ export async function serveInbox(
   } catch (err) {
     warnings.push(`could not record the coordinator's presence (${err instanceof Error ? err.message : String(err)})`);
   }
-  const { items, inFlight } = await readInboxAndFlight(store, {
+  const { items, inFlight, ownedInFlight } = await readInboxAndFlight(store, {
+    scope: q.scope,
     snapshot,
     project,
     coordinator: q.coordinator,
@@ -1482,7 +1517,7 @@ export async function serveInbox(
     now,
   });
   for (const launch of expired) {
-    if (q.coordinatorName && launch.coordinator != null && launch.coordinator !== q.coordinatorName) continue;
+    if (scoped && launch.coordinator != null && launch.coordinator !== (q.coordinatorName ?? "default")) continue;
     items.push({
       id: null,
       kind: "not-started",
@@ -1495,8 +1530,17 @@ export async function serveInbox(
     });
   }
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
-  const etag = inboxTag(items, inFlight);
-  return q.etag === etag ? null : { items, inFlight, etag, warnings };
+  const includesOwned = q.scope !== undefined && !!q.coordinatorName && q.coordinatorName !== "default";
+  const etag = inboxTag(items, inFlight, includesOwned ? ownedInFlight : []);
+  return q.etag === etag
+    ? null
+    : {
+        items,
+        inFlight,
+        etag,
+        warnings,
+        ...(includesOwned ? { ownedInFlight } : {}),
+      };
 }
 
 // ------------------------------------------------------------------ the CLI's side

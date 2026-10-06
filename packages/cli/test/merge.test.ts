@@ -367,6 +367,37 @@ test.each([{ options: ["--dry-run"] }, { options: ["--no-ticket", "--reason", "c
   },
 );
 
+test("a named merge re-arms only its owned workers and pending launches", async () => {
+  const f = await fixture();
+  f.io.env.ARMADA_COORDINATOR = "front";
+  expect(await f.store.transferTickets({ project: "widgets", tickets: ["DEMO-11"], to: "front", at: NOW })).toBe(true);
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-16",
+    coordinator: "default",
+    runtime: "conductor",
+    handle: "ws/other",
+    branch: null,
+    at: NOW,
+  });
+  for (const [ticket, coordinator] of [
+    ["DEMO-20", "default"],
+    ["DEMO-21", "front"],
+  ] as const)
+    f.store.launches.push({
+      project: "widgets",
+      ticket,
+      coordinator,
+      launchedAt: NOW.toISOString(),
+      tokenUsedAt: null,
+      runtime: null,
+      handle: null,
+      endedAt: null,
+    });
+  expect(await run(["merge", "9", "--json"], f.io)).toBe(0);
+  expect(JSON.parse(f.out()).watch.inFlight).toEqual(["DEMO-11", "DEMO-21"]);
+});
+
 test("armada merge test-merges a head behind main, merges it pinned to its SHA and says who to tell", async () => {
   const f = await fixture();
   expect(await run(["merge", "9"], f.io)).toBe(0);

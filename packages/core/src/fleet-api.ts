@@ -56,6 +56,7 @@ import {
   recordValidation,
   type StoredInboxItem,
   serveInbox,
+  ticketOwners,
   type ValidationRecord,
   type WorkerProfile,
 } from "./live.ts";
@@ -189,6 +190,12 @@ function optText(b: Body, key: string, max: number): string | null {
   if (typeof v !== "string") throw new Invalid(`${key} must be text`);
   if (v.length > max) throw new Invalid(`${key} has at most ${max} characters`);
   return v;
+}
+
+function scopeOf(b: Body): import("./live.ts").CoordinatorScope | undefined {
+  if (b.scope === undefined) return undefined;
+  if (b.scope !== "mine" && b.scope !== "all") throw new Invalid("scope must be mine or all");
+  return b.scope;
 }
 
 function coordinatorNameOf(b: Body, key = "coordinatorName", fallback = "default"): string {
@@ -666,7 +673,20 @@ export async function serveFleet(
               throw new Invalid("invalid page cursor");
             }
           }
+          const scope = scopeOf(b);
+          const owners =
+            scope === "mine"
+              ? ticketOwners(
+                  ...(await Promise.all([store.openRuntimeHandles(slug), store.pendingLaunches(slug, new Date(0))])),
+                )
+              : null;
+          const excludedTickets = owners
+            ? [...owners]
+                .filter(([, owner]) => owner !== null && owner !== (coordinatorName ?? "default"))
+                .map(([ticket]) => ticket)
+            : undefined;
           const events = await store.eventsSince(slug, {
+            excludedTickets,
             ...cursor,
             kinds: b.kinds,
             handoverOnly: b.handoverOnly,
@@ -781,6 +801,7 @@ export async function serveFleet(
             store,
             slug,
             {
+              scope: scopeOf(b),
               coordinator: optText(b, "coordinator", LINE_MAX),
               ...(b.coordinatorName === undefined ? {} : { coordinatorName: coordinatorName ?? "default" }),
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),

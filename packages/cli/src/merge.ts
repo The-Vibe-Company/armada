@@ -40,6 +40,7 @@ import {
   unblockedBy,
 } from "@armada/core";
 import { afterMerge } from "./after-merge.ts";
+import { coordinatorName } from "./coordinator.ts";
 import type { DeferredLaunchResult } from "./deferred-launch.ts";
 import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
@@ -482,7 +483,7 @@ export async function merge(
       const project = config.project.slug;
       const coordinator = coordinatorHandle(io);
       const known = (await watchOf(io, project)).state?.inFlight ?? null;
-      const inFlight = o.workersListed
+      let inFlight = o.workersListed
         ? o.workers
             .filter((w) => !coordinator || w.handle !== coordinator)
             .map((w) => w.ticket)
@@ -503,6 +504,24 @@ export async function merge(
           for (const ticket of known ?? [])
             if (ticket !== o.ticket?.id && !inFlight.includes(ticket)) inFlight.push(ticket);
           o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
+        }
+      }
+      const name = await coordinatorName(io, project);
+      if (name !== "default") {
+        try {
+          const owned = await live.fleet?.inbox({
+            coordinatorName: name,
+            coordinator,
+            scope: "mine",
+            etag: null,
+            silentAfterMinutes: config.policy.silentAfterMinutes,
+            quietAfterMinutes: config.policy.quietAfterMinutes,
+            notStartedMinutes: config.policy.notStartedMinutes,
+          });
+          inFlight = owned?.inFlight ?? null;
+        } catch {
+          inFlight = known ? known.filter((ticket) => !o.merged || ticket !== o.ticket?.id) : null;
+          o.warnings.push("could not refresh owned workers for the re-arm line; retained the previous tickets");
         }
       }
       if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });

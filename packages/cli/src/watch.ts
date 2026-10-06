@@ -108,8 +108,7 @@ export async function watch(io: Io, config: ArmadaConfig, credentials: Credentia
   if (a.rest.length) throw new UsageError(`unexpected argument ${a.rest[0]}`);
   const project = config.project.slug;
   try {
-    if (a.options.mine)
-      throw new UsageError('--mine needs "Show each coordinator only its own work"; until then use --all');
+    if (a.options.mine && a.options.all) throw new UsageError("choose --mine or --all");
     if (!a.options.follow && ["since", "tickets", "kinds"].some((k) => a.options[k]))
       throw new UsageError("--since, --tickets and --kinds need --follow");
     if (a.options.since) {
@@ -130,6 +129,7 @@ export async function watch(io: Io, config: ArmadaConfig, credentials: Credentia
       throw new UsageError("--for needs positive minutes (at most 525600)");
     return await watchUntil(io, config, credentials, a.json, configPath, {
       follow: !!a.options.follow,
+      scope: a.options.mine ? "mine" : a.options.all ? "all" : undefined,
       cursor: a.options.since,
       kinds: kinds?.includes("all") ? FOLLOW_KINDS : kinds,
       tickets,
@@ -244,11 +244,19 @@ async function watchUntil(
   credentials: Credentials,
   json: boolean,
   configPath: string,
-  options: { follow: boolean; cursor?: string; kinds?: readonly string[]; tickets?: string[]; minutes?: number },
+  options: {
+    scope?: "mine" | "all";
+    follow: boolean;
+    cursor?: string;
+    kinds?: readonly string[];
+    tickets?: string[];
+    minutes?: number;
+  },
 ): Promise<number> {
   requireSignIn(credentials);
   const project = config.project.slug;
   const name = await coordinatorName(io, project, dirname(configPath));
+  const scope = options.scope ?? (name === "default" ? "all" : "mine");
   // The running watch keeps its role even if another terminal changes this checkout preference.
   io = { ...io, coordinatorRoot: dirname(configPath), env: { ...io.env, ARMADA_COORDINATOR: name } };
   const paths: MachinePaths | null = machinePaths(io.env);
@@ -266,6 +274,7 @@ async function watchUntil(
       ...(name === "default" ? [] : [`ARMADA_COORDINATOR=${name}`]),
       "armada watch",
       ...(options.follow ? ["--follow"] : []),
+      ...(options.scope ? [`--${scope}`] : []),
       "--project",
       project,
       ...(options.cursor ? ["--since", options.cursor] : []),
@@ -342,6 +351,7 @@ async function watchUntil(
       coordinator: coordinatorHandle(io),
       facts: { ...detectCoordinator(io), name },
       coordinatorName: name,
+      scope,
       silentAfterMinutes: config.policy.silentAfterMinutes,
       quietAfterMinutes: config.policy.quietAfterMinutes,
       notStartedMinutes: config.policy.notStartedMinutes,
@@ -359,7 +369,9 @@ async function watchUntil(
             }
             controller.signal.addEventListener("abort", finish, { once: true });
           })),
-      onRead: async ({ inFlight }) => {
+      onRead: async (read) => {
+        const inFlight =
+          name === "default" ? read.inFlight : (read.ownedInFlight ?? (scope === "mine" ? read.inFlight : null));
         if (inFlight) await remember(io, project, { inFlight, readAt: now(io).toISOString() });
       },
       onRetry: (message) => io.stderr(`armada: warning: ${message}\n`),
@@ -405,11 +417,13 @@ async function watchUntil(
       resume();
       return 0;
     }
-    await remember(io, project, shown(io, report.items, report.inFlight));
+    const inFlight =
+      name === "default" ? report.inFlight : (report.ownedInFlight ?? (scope === "mine" ? report.inFlight : null));
+    await remember(io, project, shown(io, report.items, inFlight));
     controller.signal.throwIfAborted();
     // A release is acted on between rounds: it is not an item that keeps a watch going.
     const open = report.items.filter((e) => e.kind !== "version").length;
-    const next = rearm({ inFlight: report.inFlight, open, running: null, act: true });
+    const next = rearm({ inFlight, open, running: null, act: true });
     if (json) io.stdout(`${JSON.stringify({ ...report, watch: next }, null, 2)}\n`);
     else {
       const out =
