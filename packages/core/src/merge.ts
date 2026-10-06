@@ -163,6 +163,7 @@ export interface WorkerToTell {
 }
 
 export interface MergeOutcome {
+  deploy?: { targets: string[] } | null;
   merged: boolean;
   pr: { number: number; url: string; title: string; base: string; headSha: string; mergeCommit: string | null };
   /** Null for a pull request merged with --no-ticket. */
@@ -1404,6 +1405,10 @@ async function after(
   lines: string[],
   handBackId: number | null,
 ): Promise<MergeOutcome> {
+  const targets = (ctx.config.deploy?.targets ?? [])
+    .filter((t) => t.branch === null || t.branch === merged.baseRef)
+    .map((t) => t.name);
+  const deploy = targets.length ? { targets } : null;
   const ticket = c.ticket;
   let live$: MergeRecorded | null = null;
   if (ticket) {
@@ -1456,7 +1461,7 @@ async function after(
       `could not list the workers in flight${ticket ? " and unblocked tickets" : ""} (${err instanceof Error ? err.message : String(err)}); run armada status`,
     );
   }
-  if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed };
+  if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed, deploy };
 
   const claim = activeClaimComments(ticket.comments)[0]?.claim;
   const runtime = live$?.handle?.runtime ?? ticket.agentRuntime ?? claim?.runtime ?? null;
@@ -1475,7 +1480,7 @@ async function after(
     claim: live$?.handle ?? null,
     open: live$?.open ?? [],
   };
-  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed, unblocked };
+  return { ...outcome(c, true, merged, lines, workers, archive), workersListed: listed, unblocked, deploy };
 }
 
 function outcome(
