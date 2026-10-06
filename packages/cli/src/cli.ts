@@ -221,7 +221,8 @@ const COMMAND_HELP: Record<string, string> = {
   hold add "<reason>"
   hold clear <id> --reason "<why>"
                     Pause this project's merges until cleared, shared with every coordinator.
-                    Merge a fix with --through-hold "<why>"; the hold stays open.`,
+                    Merge a fix with --through-hold "<why>"; the hold stays open.
+`,
   inbox: `  inbox [--mine|--all] [--wait [--timeout <seconds>]]
                     Coordinator: open questions, plans, requests, hand-backs and silent workers,
                     oldest first; records that the coordinator is at work. --wait returns
