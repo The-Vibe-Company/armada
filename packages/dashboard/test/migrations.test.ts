@@ -64,3 +64,33 @@ test.each(["empty", "version 21", "version 21 without the retired table"])(
     }
   },
 );
+
+test("a lower migration arriving after a higher reserved number is applied once", async () => {
+  const db = await pgliteDatabase();
+  const missing = DB_MIGRATIONS.find((m) => m.statements.some((sql) => sql.includes("CREATE TABLE reservations (")));
+  if (!missing) throw new Error("missing reservation migration");
+  try {
+    await db.query("CREATE TABLE armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)");
+    for (const migration of DB_MIGRATIONS.filter((m) => m.version !== missing.version)) {
+      for (const statement of migration.statements) await db.query(statement);
+      await db.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [migration.version, now]);
+    }
+    expect((await db.query("SELECT to_regclass('reservations') AS name")).rows).toEqual([{ name: null }]);
+    const later = new Date("2026-01-02T12:00:00Z");
+    expect(await migrateDatabase(db, later)).toBe(DB_SCHEMA_VERSION);
+    expect((await db.query("SELECT to_regclass('reservations') AS name")).rows).toEqual([{ name: "reservations" }]);
+    const expected = DB_MIGRATIONS.map((m) => ({
+      version: m.version,
+      applied_at: m.version === missing.version ? later : now,
+    }));
+    expect((await db.query("SELECT version, applied_at FROM armada_migrations ORDER BY version")).rows).toEqual(
+      expected,
+    );
+    expect(await migrateDatabase(db, new Date("2026-01-03T12:00:00Z"))).toBe(DB_SCHEMA_VERSION);
+    expect((await db.query("SELECT version, applied_at FROM armada_migrations ORDER BY version")).rows).toEqual(
+      expected,
+    );
+  } finally {
+    await db.end();
+  }
+});

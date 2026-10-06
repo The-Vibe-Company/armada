@@ -195,6 +195,7 @@ export async function brief(
   const conventions = extraPath
     ? { path: extraPath, text: await io.readFile(join(dirname(configPath), extraPath)).catch(() => null) }
     : null;
+  const { fleet } = liveFleet(io, config, credentials);
   let b: Brief | ProfileSelectionBrief;
   try {
     b = await loadBrief(config, {
@@ -221,6 +222,7 @@ export async function brief(
       // A worker cannot install a version npm does not serve yet.
       npm: (v) => checkPublished(v, io.fetch ?? fetch),
       conventions,
+      ...(fleet ? { reservations: () => fleet.reservations() } : {}),
       validation: {
         requested: a.options.validation ?? null,
         reason: a.options["validation-reason"] ?? null,

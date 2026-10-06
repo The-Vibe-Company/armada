@@ -775,8 +775,21 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
-    // THE-1109: named coordinator roles, their sessions and launch ownership.
     version: 27,
+    statements: [
+      `CREATE TABLE reservations (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        project text NOT NULL REFERENCES projects(slug), key text NOT NULL, value text NOT NULL,
+        ticket text NOT NULL, note text, reserved_at timestamptz NOT NULL,
+        ended_at timestamptz, merged boolean NOT NULL DEFAULT false
+      )`,
+      "CREATE UNIQUE INDEX reservations_held ON reservations (project, key, value) WHERE ended_at IS NULL OR merged",
+      "CREATE INDEX reservations_ticket ON reservations (project, ticket) WHERE ended_at IS NULL",
+    ],
+  },
+  {
+    // THE-1109: named coordinator roles, their sessions and launch ownership.
+    version: 31,
     statements: [
       `CREATE TABLE coordinators (
         project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
@@ -815,13 +828,16 @@ const MIGRATION_LOCK = 4_849_001;
 
 /** Applies pending migrations and returns the schema version. */
 export async function migrateDatabase(db: Database, now: Date = new Date()): Promise<number> {
-  const current = async (q: Queryable) =>
-    Number((await q.query<{ v: unknown }>("SELECT max(version) AS v FROM armada_migrations")).rows[0]?.v ?? 0);
+  const versions = async (q: Queryable) =>
+    new Set((await q.query<{ version: number }>("SELECT version FROM armada_migrations")).rows.map((r) => r.version));
   // The usual case, without a lock: everything applied already.
   const applied = await db
     .query<{ t: unknown }>("SELECT to_regclass('armada_migrations') AS t")
     .then((rs) => rs.rows[0]?.t !== null && rs.rows[0]?.t !== undefined);
-  if (applied && (await current(db)) >= DB_SCHEMA_VERSION) return DB_SCHEMA_VERSION;
+  if (applied) {
+    const recorded = await versions(db);
+    if (DB_MIGRATIONS.every((m) => recorded.has(m.version))) return DB_SCHEMA_VERSION;
+  }
   for (const m of DB_MIGRATIONS)
     await transaction(db, async (tx) => {
       // Whoever comes second waits here, then finds the version applied.
@@ -829,7 +845,7 @@ export async function migrateDatabase(db: Database, now: Date = new Date()): Pro
       await tx.query(
         "CREATE TABLE IF NOT EXISTS armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)",
       );
-      if ((await current(tx)) >= m.version) return;
+      if ((await tx.query("SELECT version FROM armada_migrations WHERE version = $1", [m.version])).rows.length) return;
       for (const statement of m.statements) await tx.query(statement);
       await tx.query("INSERT INTO armada_migrations (version, applied_at) VALUES ($1, $2)", [m.version, now]);
     });

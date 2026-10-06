@@ -35,7 +35,8 @@ test("migration preserves legacy presence under default and leaves old claims un
     for (const entry of DB_MIGRATIONS.filter((entry) => entry.version < migration.version))
       for (const statement of entry.statements) await legacy.query(statement);
     await legacy.query("CREATE TABLE armada_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL)");
-    await legacy.query("INSERT INTO armada_migrations VALUES ($1, $2)", [migration.version - 1, at(0)]);
+    for (const entry of DB_MIGRATIONS.filter((entry) => entry.version < migration.version))
+      await legacy.query("INSERT INTO armada_migrations VALUES ($1, $2)", [entry.version, at(0)]);
     await upsertProject(legacy, project, at(0));
     await legacy.query(
       "INSERT INTO coordinator_presence (project, handle, started_at, seen_at, inbox_seen_at, harness, model, cli_version) VALUES ($1, 'machine/tty', $2, $3, $3, 'codex', 'synthetic-model', '0.1.0')",

@@ -32,6 +32,7 @@ import {
   parseEventCursor,
   type ReportRecord,
   type ReportResult,
+  type Reservation,
   RUNTIME_STATES,
   type RuntimeState,
   readOverlap,
@@ -63,7 +64,18 @@ import {
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
-export const WORKER_FLEET_OPS = ["claim", "report", "ask", "release", "heartbeat", "validate", "overlap"] as const;
+export const WORKER_FLEET_OPS = [
+  "claim",
+  "report",
+  "ask",
+  "release",
+  "heartbeat",
+  "validate",
+  "reserve",
+  "reservations",
+  "unreserve",
+  "overlap",
+] as const;
 
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
@@ -281,7 +293,9 @@ export async function serveFleet(
       if (ticket !== caller.ticket)
         return refuse(
           403,
-          `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
+          ["reserve", "reservations", "unreserve"].includes(op)
+            ? `a worker session only reserves resources for its own ticket (${caller.ticket}), not ${ticket}`
+            : `a worker session only claims, reports, asks, validates and releases its own ticket (${caller.ticket}), not ${ticket ? `${ticket}` : `\`${op}\``}`,
           "the coordinator does it",
         );
     }
@@ -298,6 +312,35 @@ export async function serveFleet(
           );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "reservations":
+          return store.reservations(slug);
+        case "reserve": {
+          const next = b.next === undefined ? false : bool(b, "next");
+          if (b.value !== undefined && (typeof b.value !== "string" || b.value.length > LINE_MAX))
+            throw new Invalid("value must be text of at most 500 characters");
+          if (next && b.value !== undefined) throw new Invalid("use next or value, not both");
+          if (
+            b.floor !== undefined &&
+            (!next ||
+              typeof b.floor !== "number" ||
+              !Number.isSafeInteger(b.floor) ||
+              b.floor < 0 ||
+              b.floor >= Number.MAX_SAFE_INTEGER)
+          )
+            throw new Invalid("floor requires next and must be a nonnegative safe integer below the maximum");
+          return store.reserve({
+            project: slug,
+            ticket: ticketOf(b),
+            key: text(b, "key", LINE_MAX),
+            ...(b.value === undefined ? {} : { value: b.value as string }),
+            next,
+            ...(b.floor === undefined ? {} : { floor: b.floor as number }),
+            note: optText(b, "note", BODY_MAX),
+            at,
+          });
+        }
+        case "unreserve":
+          return store.unreserve({ project: slug, ticket: ticketOf(b), key: text(b, "key", LINE_MAX), at });
         case "claim":
           return recordClaim(
             store,
@@ -771,6 +814,9 @@ export function fleetClient(o: {
   return {
     coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
     takeTickets: (input) => call<boolean>("coordinators/take", input),
+    reserve: (input) => call("reserve", input),
+    reservations: (ticket) => call<Reservation[]>("reservations", ticket ? { ticket } : {}),
+    unreserve: (input) => call("unreserve", input),
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),
