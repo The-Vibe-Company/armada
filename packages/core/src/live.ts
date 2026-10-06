@@ -43,6 +43,42 @@ export interface ProjectRecord extends ProjectInput {
 /** `inbox`: the coordinator read its inbox; it carries no ticket. */
 export type EventKind = "claim" | "report" | "heartbeat" | "release" | "merge" | "inbox";
 
+/** Informational events a follow may request; heartbeats and inbox reads stay private to liveness. */
+export const FOLLOW_EVENT_KINDS = ["claim", "report", "release", "merge"] as const;
+export type FollowEventKind = (typeof FOLLOW_EVENT_KINDS)[number];
+export interface FleetEvent extends LatestEvent {
+  id: number;
+  ticket: string;
+  kind: FollowEventKind;
+  headSha: string | null;
+}
+export interface EventsSinceQuery {
+  afterId: number;
+  afterAt: string;
+  kinds: readonly FollowEventKind[];
+  tickets?: readonly string[];
+  /** Reports entering ready-to-merge only, while retaining other requested event kinds. */
+  handoverOnly?: boolean;
+  limit?: number;
+  /** IDs already received in the look-back; also permits 304 for unchanged reads. */
+  seenIds?: readonly number[];
+  /** Pagination within a fixed look-back, independent of the durable high-water cursor. */
+  pageAfter?: { id: number; at: string };
+}
+export interface EventsRead {
+  events: FleetEvent[];
+  cursor: string;
+}
+export const eventCursor = (id: number, at: string) => `v1.${id}.${at}`;
+export function parseEventCursor(cursor: string): { afterId: number; afterAt: string } {
+  const match = /^v1\.(\d+)\.(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)$/.exec(cursor);
+  const afterId = Number(match?.[1]);
+  const afterAt = match?.[2];
+  if (!match || !Number.isSafeInteger(afterId) || !afterAt || !Number.isFinite(Date.parse(afterAt)))
+    throw new Error("invalid fleet cursor; expected v1.<event id>.<ISO time>");
+  return { afterId, afterAt };
+}
+
 export interface EventInput {
   project: string;
   ticket: string;
@@ -284,6 +320,7 @@ export interface FleetStore {
   deleteTicketPaths(project: string, ticket: string): Promise<void>;
 
   recordEvent(e: EventInput): Promise<void>;
+  eventsSince(project: string, query: EventsSinceQuery): Promise<FleetEvent[]>;
   recordHeartbeat(
     input: HeartbeatRecord & { project: string; workerSessionId?: string | null; at: Date },
   ): Promise<HeartbeatResult>;
@@ -1257,6 +1294,7 @@ export interface Fleet {
   /** Time of the newest event of every ticket (`armada status`). */
   lastEventTimes(): Promise<Record<string, string>>;
   latestEvents(): Promise<Record<string, LatestEvent>>;
+  eventsSince(query: EventsSinceQuery): Promise<EventsRead | null>;
   heartbeatTimes(): Promise<Record<string, string>>;
   heartbeat(input: HeartbeatRecord): Promise<HeartbeatResult>;
   runtimeHandles(): Promise<RuntimeHandle[]>;

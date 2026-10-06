@@ -116,6 +116,12 @@ Workers launched from a laptop need no key either: the brief's prompt carries th
 
 A coordinator in Claude Code can also run short tickets as its own background subagents, each in its own git worktree: give those tickets a profile with `runtime = "claude-code"` and follow the `armada-runtime-claude-code` skill. They die with the coordinator's session. Use herdr for persistent local workers, or Conductor for cloud workers.
 
+### Follow fleet events
+
+Plain `armada watch` remains the default for agents woken when a background command ends. In a terminal, herdr pane or harness that delivers every output line, `armada watch --follow --for 50` prints events continuously, ends cleanly below a harness's time limit and prints its resume command. A restarted follow uses this machine's last cursor and printed inbox keys; `--since <cursor>` carries the event position to another machine, where open inbox entries are shown once as `open`.
+
+Use `--tickets ABC-1,ABC-2 --kinds hand-back` for selected hand-backs; `--kinds all` includes informational claims, reports, releases and merges. `--json` produces NDJSON; lifecycle, retry and resume lines go to stderr. Without informational kinds, active follow makes one short inbox request every 15 seconds (60 seconds idle), answered 304 when unchanged. Informational kinds add a short `events/since` read, paged at 200 events with a two-minute look-back and a 500-ID deduplication window. `--mine` needs "Show each coordinator only its own work" and is refused until then. Plain watch accepts `--for <minutes>` too. Use `armada watch --stop` to stop either mode; they share the existing project lock.
+
 ### Launch a Conductor worker
 
 Sign in to Armada, then run `armada launch <ticket> --runtime conductor`. The routed profile supplies the agent, model, effort and fast mode; use `--profile <name> --reason "<why>"` for a coordinator’s choice. `--notes notes.md` adds context from a file relative to the current folder (`--notes -` reads stdin); missing, empty or larger-than-16-KB notes are refused before making a token. Notes do not change plan approval. The command prints the ticket, profile, workspace/session ids and session link; its brief and one-time sign-in travel only through stdin.

@@ -12,8 +12,11 @@ import type { CoordinatorFacts } from "./live.ts";
 import {
   type AnswerRecord,
   type ClaimRecord,
+  type EventsRead,
+  eventCursor,
   type Fleet,
   type FleetStore,
+  FOLLOW_EVENT_KINDS,
   followedLaunches,
   type HandBackSnapshot,
   type InboxItem,
@@ -26,6 +29,7 @@ import {
   type MergeRecorded,
   type PendingLaunch,
   type ProjectInput,
+  parseEventCursor,
   type ReportRecord,
   type ReportResult,
   RUNTIME_STATES,
@@ -71,6 +75,7 @@ export const FLEET_OPS = [
   "request",
   "events/latest",
   "events/state",
+  "events/since",
   "heartbeats/latest",
   "runtime/handles",
   "runtime/handle",
@@ -371,6 +376,65 @@ export async function serveFleet(
             });
           throw new Invalid("unknown request kind");
         }
+        case "events/since": {
+          let cursor: ReturnType<typeof parseEventCursor>;
+          try {
+            cursor = parseEventCursor(eventCursor(Number(b.afterId), String(b.afterAt)));
+          } catch {
+            throw new Invalid("invalid events cursor");
+          }
+          if (typeof b.afterId !== "number") throw new Invalid("afterId must be a number");
+          if (!Array.isArray(b.kinds) || !b.kinds.length || b.kinds.some((k) => !FOLLOW_EVENT_KINDS.includes(k)))
+            throw new Invalid("kinds must name claim, report, release or merge");
+          if (b.handoverOnly !== undefined && typeof b.handoverOnly !== "boolean")
+            throw new Invalid("handoverOnly must be true or false");
+          const tickets = b.tickets;
+          if (
+            tickets !== undefined &&
+            (!Array.isArray(tickets) ||
+              tickets.length > 200 ||
+              tickets.some((t) => typeof t !== "string" || !TICKET.test(t)))
+          )
+            throw new Invalid("tickets must be a list of ticket identifiers");
+          const limit = b.limit ?? 200;
+          if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 200)
+            throw new Invalid("limit must be between 1 and 200");
+          const seenIds = b.seenIds;
+          if (
+            seenIds !== undefined &&
+            (!Array.isArray(seenIds) ||
+              seenIds.length > 500 ||
+              seenIds.some((id) => !Number.isSafeInteger(id) || id <= 0))
+          )
+            throw new Invalid("seenIds must contain at most 500 event IDs");
+          let pageAfter: { id: number; at: string } | undefined;
+          if (b.pageAfter !== undefined) {
+            const page = objectOf(b.pageAfter);
+            try {
+              const p = parseEventCursor(eventCursor(Number(page.id), String(page.at)));
+              pageAfter = { id: p.afterId, at: p.afterAt };
+            } catch {
+              throw new Invalid("invalid page cursor");
+            }
+          }
+          const events = await store.eventsSince(slug, {
+            ...cursor,
+            kinds: b.kinds,
+            handoverOnly: b.handoverOnly,
+            tickets,
+            limit,
+            seenIds,
+            pageAfter,
+          });
+          if (!events.length) return NOT_MODIFIED;
+          const last = events[events.length - 1];
+          const advanced =
+            last && (last.at > cursor.afterAt || (last.at === cursor.afterAt && last.id > cursor.afterId));
+          return {
+            events,
+            cursor: advanced ? eventCursor(last.id, last.at) : eventCursor(cursor.afterId, cursor.afterAt),
+          };
+        }
         case "events/state":
           return store.latestEvents(slug);
         case "events/latest":
@@ -661,6 +725,7 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
     register: () => call<null>("register", {}).then(() => undefined),
+    eventsSince: (q) => call<EventsRead | null>("events/since", q),
     latestEvents: () => call<Record<string, LatestEvent>>("events/state", {}),
     lastEventTimes: () => call<Record<string, string>>("events/latest", {}),
     heartbeatTimes: () => call<Record<string, string>>("heartbeats/latest", {}),
