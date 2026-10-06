@@ -10,6 +10,7 @@
 import type { ArmadaApi, ArmadaSignIn } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
 import { type DeferredLaunch, deferredHeld, deferredLaunchState } from "./deferred.ts";
+import { DEPLOY_STATES, type DeployState, deployDetail } from "./deploy.ts";
 import { buildDigest, type Digest, renderDigest } from "./digest.ts";
 import { attachPullRequests } from "./github.ts";
 import { JOB_NAME, JOB_PROGRESS_MAX, JOB_REF_MAX, JOB_STATES, type Job, type JobState } from "./jobs.ts";
@@ -74,6 +75,8 @@ import {
   type Validation,
   type ValidationKind,
   type ValidationPr,
+  type ValidationSamples,
+  validationSampleProblem,
 } from "./validations.ts";
 
 /** The operations a worker session may run, on its own ticket only. */
@@ -96,6 +99,8 @@ export const WORKER_FLEET_OPS = [
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "deploy/record",
+  "deploy/state",
   "holds",
   "hold/open",
   "hold/clear",
@@ -338,6 +343,8 @@ export interface ServeFleetDeps {
   appUrl?: string | null;
   /** The caller's CLI version (`x-armada-cli-version`): the coordinator's presence keeps it. */
   cliVersion?: string | null;
+  /** Trusted project policy from the stored snapshot; never caller supplied. */
+  validationSamples?: number;
 }
 
 /** A CLI version as a release names it (0.2.4, 1.0.0-beta.1); anything else is not kept. */
@@ -387,6 +394,36 @@ export async function serveFleet(
           );
     const result = await (async (): Promise<unknown> => {
       switch (op) {
+        case "deploy/record": {
+          const sha = shaOf(b, "sha");
+          if (!sha || !/^[0-9a-f]{40}$/.test(sha)) throw new Invalid("sha must be a full 40-character SHA");
+          if (!DEPLOY_STATES.includes(b.state as DeployState)) throw new Invalid("unknown deploy state");
+          const liveSha = shaOf(b, "liveSha");
+          if (liveSha && !/^[0-9a-f]{40}$/.test(liveSha)) throw new Invalid("liveSha must be a full SHA");
+          if (
+            b.coveredShas !== undefined &&
+            (!Array.isArray(b.coveredShas) ||
+              b.coveredShas.length > 100 ||
+              b.coveredShas.some((sha) => typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)))
+          )
+            throw new Invalid("coveredShas must contain at most 100 full SHAs");
+          return store.recordDeploy({
+            coveredShas: b.coveredShas as string[] | undefined,
+            project: slug,
+            at,
+            target: text(b, "target", 200).trim(),
+            sha,
+            state: b.state as DeployState,
+            detail: deployDetail(optText(b, "detail", BODY_MAX) ?? ""),
+            pauseOnFailure: bool(b, "pauseOnFailure"),
+            liveSha,
+          });
+        }
+        case "deploy/state": {
+          const target = optText(b, "target", 200);
+          const sha = shaOf(b, "sha");
+          return store.deployState(slug, { ...(target ? { target } : {}), ...(sha ? { sha } : {}) });
+        }
         case "job/start": {
           const name = text(b, "name", 64);
           if (!JOB_NAME.test(name) || name === "__proto__") throw new Invalid("name must be a configured job name");
@@ -860,7 +897,7 @@ export async function serveFleet(
           );
         }
         case "validate": {
-          const input = validationOf(b);
+          const input = validationOf(b, deps.validationSamples);
           if (caller.kind === "worker" && input.kind !== "validation")
             throw new Invalid("a worker session only asks the owner to validate its work (kind validation)");
           const validation = await recordValidation(
@@ -1034,7 +1071,7 @@ function validationPrOf(v: unknown): ValidationPr | null {
   };
 }
 
-function validationOf(b: Body): ValidationRecord {
+function validationOf(b: Body, images = VALIDATION_LIMITS.images): ValidationRecord {
   const kind = b.kind;
   if (!VALIDATION_KINDS.includes(kind as ValidationKind))
     throw new Invalid("kind must be merge, validation or question");
@@ -1056,12 +1093,20 @@ function validationOf(b: Body): ValidationRecord {
     !attachments.every((a) => typeof a === "string" && /^[\w-]{1,64}$/.test(a))
   )
     throw new Invalid(`attachments must be at most ${L.attachments} attachment ids`);
+  const what = text(b, "what", L.what);
+  const modern = b.checks !== undefined || b.excerpts !== undefined || b.details !== undefined;
+  const samples = modern ? { checks: b.checks ?? [], excerpts: b.excerpts ?? [], details: b.details ?? null } : {};
+  if (modern) {
+    const problem = validationSampleProblem({ what, ...samples }, attachments.length, images);
+    if (problem) throw new Invalid(problem);
+  }
   const pr = validationPrOf(b.pr);
   if (kind === "merge" && !pr) throw new Invalid("a merge approval names its pull request");
   return {
     ticket: ticketOf(b),
     kind: kind as ValidationKind,
-    what: text(b, "what", L.what),
+    what,
+    ...(samples as ValidationSamples),
     reason: optText(b, "reason", L.reason),
     choices: Array.isArray(choices) ? choices.map((c: string) => c.trim()) : null,
     pr,
@@ -1098,6 +1143,9 @@ export function fleetClient(o: {
     )) as T;
   };
   return {
+    recordDeploy: (input) => call("deploy/record", input),
+    deployState: (input = {}) => call("deploy/state", input),
+
     coordinators: () => call<CoordinatorRecord[]>("coordinators", {}),
     takeTickets: (input) => call<boolean>("coordinators/take", input),
     startJob: (input) => call<Job>("job/start", input),

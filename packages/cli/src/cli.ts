@@ -6,6 +6,7 @@ import {
   type ArmadaConfig,
   CONFIG_FILE,
   ConfigError,
+  deployLine,
   LINEAR_KEY,
   LinearError,
   loadStatus,
@@ -23,6 +24,7 @@ import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { ciWhy } from "./ci.ts";
 import { coordinatorCommand, coordinatorName } from "./coordinator.ts";
+import { deploy, deployStatus } from "./deploy.ts";
 import { digest } from "./digest.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
@@ -57,6 +59,10 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  deploy: `  deploy status [--json]
+  deploy watch --sha <sha> --target <name>
+                    Watch a declared deploy and smoke check; failures pause merges.
+`,
   coordinator: `  coordinator use <name>
   coordinator list
   coordinator take <ticket...> [--from <name>]
@@ -180,15 +186,18 @@ const COMMAND_HELP: Record<string, string> = {
                     goes on the ticket and in the coordinator's inbox. Then stop and wait
                     for the answer in your session, and report the phase you resume
 `,
-  validate: `  validate [<ticket>] "<what to check>" [--attach <file|url>]... [--caption <text>]
+  validate: `  validate [<ticket>] "<headline>" [--check "<check>"]... [--attach <file|url>]...
+        [--excerpt <file>[:from-to]]... [--details-file <file>] [--caption <text>]
         [--choices "<a> | <b>"]
+                    One question, about a minute to judge: headline up to 200 characters,
+                    up to 3 checks, 4 images and excerpts up to 40 lines. Longer context is folded.
                     Ask the owner to validate on Armada's Validations page, with the
                     attachments (images up to 2 MB, HTTPS links). Prints the approval link.
                     Worker: its own ticket; the phase becomes awaiting-validation: stop until
                     the coordinator relays the owner's decision. Coordinator: any ticket.
                     The owner's buttons are Approve and Request changes, or the --choices
 `,
-  "ask-owner": `  ask-owner <ticket> "<question>" --choices "<a> | <b>"
+  "ask-owner": `  ask-owner <ticket> "<question>" --choices "<a> | <b>" [--check "<check>"]...
                     Coordinator: escalate a question or a plan to the owner, with its
                     choices. Prints the approval link; the owner's pick arrives in the inbox
 `,
@@ -375,6 +384,7 @@ const CONFIG_OPTION = new Set([
   "lint",
   "job",
   "peek",
+  "deploy",
   "reserve",
   "unreserve",
   "ci",
@@ -514,6 +524,7 @@ const VALUE_OPTIONS = [
   "paths",
   "pr",
   "sha",
+  "target",
   "shipped-with",
   "stage",
   "through-hold",
@@ -532,6 +543,9 @@ const VALUE_OPTIONS = [
   "caption",
   "for",
   "attach",
+  "check",
+  "excerpt",
+  "details-file",
   "choices",
   "validation",
   "validation-reason",
@@ -579,6 +593,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   lint: ["ready"],
   job: ["ticket", "ref", "state"],
   peek: ["actions"],
+  deploy: ["sha", "target"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
   unreserve: ["ticket"],
   ci: ["sha", "branch", "rerun"],
@@ -626,8 +641,8 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "when-unblocked",
     "after",
   ],
-  validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
-  "ask-owner": ["choices"],
+  validate: ["ticket", "attach", "caption", "choices", "message", "message-file", "check", "excerpt", "details-file"],
+  "ask-owner": ["choices", "check"],
   login: ["api-key", "launch-token", "api-url"],
   secrets: ["ticket", "org", "value-stdin", "from-env", "file", "only"],
   run: ["ticket", "only", "redact"],
@@ -683,7 +698,7 @@ export function parseArgs(argv: string[]): Args {
         args.project = v;
       }
       // `--attach` repeats: one value per line.
-      else if ((name === "attach" || name === "paths") && args.options[name] !== undefined)
+      else if (["attach", "check", "excerpt", "paths"].includes(name) && args.options[name] !== undefined)
         args.options[name] += `\n${v}`;
       else args.options[name] = v;
     } else if (a?.startsWith("-"))
@@ -759,7 +774,19 @@ async function status(io: Io, args: Args): Promise<number> {
   });
   const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
   if (behind) report.warnings.push(skillsBehindLine(behind, version));
-  io.stdout(args.json ? `${JSON.stringify(report, null, 2)}\n` : renderStatus(report));
+  let deploys = null;
+  if (config.deploy?.targets.length) {
+    try {
+      deploys = await deployStatus(io, config, credentials);
+    } catch {
+      report.warnings.push("could not read deploy state; armada deploy status");
+    }
+  }
+  io.stdout(
+    args.json ? `${JSON.stringify({ ...report, ...(deploys ? { deploys } : {}) }, null, 2)}\n` : renderStatus(report),
+  );
+  if (!args.json && deploys)
+    for (const row of deploys.rows) io.stdout(`Deploy ${deployLine(row, (io.now ?? (() => new Date()))())}\n`);
   return 0;
 }
 
@@ -908,6 +935,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "deploy") {
+      const { path, text } = await findConfig(io, args.config, "deploy", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await deploy(io, config, credentials, args, path);
     }
     if (args.command === "ci") {
       const { path, text } = await findConfig(io, args.config, "ci", args.project);
