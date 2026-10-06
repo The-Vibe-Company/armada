@@ -77,7 +77,11 @@ export function parseStatusLine(body: string): Comment["status"] {
   if (!m?.[1]) return null;
   const raw = m[1].toLowerCase();
   const phase = LEGACY[raw] ?? (raw as AgentPhase);
-  const summary = (m[2] ?? "").trim();
+  // Acceptance names are machine evidence: preserve punctuation that the
+  // human status parser normally removes as Markdown formatting.
+  const rawLine = body.split("\n").find((l) => l.trim()) ?? "";
+  const acceptance = /^Agent status: [a-z-]+ — (acceptance(?: |: ).*)$/.exec(rawLine);
+  const summary = (acceptance?.[1] ?? m[2] ?? "").trim();
   if (COORDINATOR_RECORD.test(summary)) return null;
   if (!PHASES.includes(phase)) return null;
   return PLAN_BLOCK.test(body) ? { phase, summary, plan: true } : { phase, summary };
@@ -191,7 +195,7 @@ export interface RawComment {
   id: string;
   createdAt: string;
   body: string;
-  user: { name: string } | null;
+  user: { id?: string; name: string } | null;
 }
 
 export function normalizeIssue(raw: RawIssue, groups: LabelGroups): Issue {
@@ -238,6 +242,7 @@ export function normalizeComment(raw: RawComment, issueId: string): Comment {
     id: raw.id,
     issueId,
     author,
+    ...(raw.user?.id ? { authorId: raw.user.id } : {}),
     createdAt: raw.createdAt,
     excerpt: excerpt(raw.body, 600),
     status: parseStatusLine(raw.body),
@@ -273,7 +278,7 @@ const MORE = {
   attachments: { field: "attachments", nodes: "title url", operation: "MoreAttachments", what: "attachments" },
   comments: {
     field: "comments",
-    nodes: "id createdAt body user { name }",
+    nodes: "id createdAt body user { id name }",
     operation: "MoreComments",
     what: "comments",
   },
@@ -297,7 +302,8 @@ const FIELDS = (delegate: boolean) => /* GraphQL */ `
     inverseRelations(first: 50) { pageInfo { hasNextPage endCursor } nodes { ${MORE.inverseRelations.nodes} } }
   }
 `;
-const ROOT_QUERY = (d: boolean) => `${FIELDS(d)} query Root($id: String!) { issue(id: $id) { ...F } }`;
+const ROOT_QUERY = (d: boolean) =>
+  `${FIELDS(d)} query Root($id: String!) { viewer { id name } issue(id: $id) { ...F } }`;
 const CHILDREN_QUERY = (d: boolean) => `${FIELDS(d)}
   query Children($parents: [ID!], $after: String) {
     issues(first: 50, after: $after, filter: { parent: { id: { in: $parents } } }) {
@@ -441,7 +447,13 @@ export async function fetchProgram(opts: FetchProgramOptions): Promise<ProgramDa
 }
 
 async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<ProgramData> {
-  const root = (await readGql<{ issue: RawIssue | null }>(opts, ROOT_QUERY(delegate), { id: opts.rootId })).issue;
+  const readStartedAt = (opts.now?.() ?? new Date()).toISOString();
+  const reading = await readGql<{ issue: RawIssue | null; viewer?: { id: string; name: string } }>(
+    opts,
+    ROOT_QUERY(delegate),
+    { id: opts.rootId },
+  );
+  const root = reading.issue;
   if (!root) throw new LinearError(`Linear: program root ${opts.rootId} not found`);
 
   const all: RawIssue[] = [root];
@@ -478,6 +490,8 @@ async function fetchTree(opts: FetchProgramOptions, delegate: boolean): Promise<
   );
 
   return {
+    readStartedAt,
+    ...(reading.viewer ? { viewer: reading.viewer } : {}),
     rootId: root.identifier,
     fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
     issues: issues.sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true })),
@@ -602,6 +616,7 @@ export async function fetchProgramChanges(opts: FetchChangesOptions): Promise<Pr
 }
 
 async function readChanges(opts: FetchChangesOptions, delegate: boolean): Promise<ProgramData> {
+  const readStartedAt = (opts.now?.() ?? new Date()).toISOString();
   const { previous, since } = opts;
   const warnings: string[] = [];
   const known = previous.issues.map((i) => i.uuid);
@@ -670,6 +685,8 @@ async function readChanges(opts: FetchChangesOptions, delegate: boolean): Promis
     comments.set(c.id, c);
 
   return {
+    readStartedAt,
+    ...(previous.viewer ? { viewer: previous.viewer } : {}),
     rootId: previous.rootId,
     fetchedAt: (opts.now?.() ?? new Date()).toISOString(),
     issues: issues.sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true })),

@@ -410,3 +410,63 @@ test("main health tracks checked commits, required gates and the first red merge
   );
   expect(mainHealthLine(mainHealth(window, []) ?? fail("missing health"))).toBe("trunk red for more than 20 commits");
 });
+
+test("coordinator-only status comments without a claim are never silent when viewer identity is known", () => {
+  const ticket = issue("P-2", { agentPhase: "implementing", statusType: "started" });
+  const m = program(ticket);
+  const comments = [
+    comment("P-2", "2026-03-04T08:00:00.000Z", {
+      author: "Cory Coordinator",
+      authorId: "coordinator",
+      status: { phase: "implementing", summary: "I am doing this myself" },
+    }),
+  ];
+  const options = { now: Date.parse("2026-03-04T10:00:00.000Z"), silentAfterMinutes: 15 };
+  expect(buildLane(m, comments, ticket, options).flags).toContain("silent");
+  expect(
+    buildLane(m, comments, ticket, { ...options, coordinatorViewer: { id: "coordinator", name: "Cory Coordinator" } })
+      .flags,
+  ).not.toContain("silent");
+  expect(
+    buildLane(m, comments, ticket, { ...options, coordinatorViewer: { id: "someone-else", name: "Cory Coordinator" } })
+      .flags,
+  ).toContain("silent");
+  expect(
+    buildLane(m, comments, ticket, {
+      ...options,
+      coordinatorViewer: { id: "coordinator", name: "Cory Coordinator" },
+      live: {
+        after: "2026-03-04T08:00:00.000Z",
+        events: {},
+        handles: { "P-2": { runtime: "Conductor", handle: "ws/s", claimedAt: "2026-03-04T08:00:00.000Z" } },
+      },
+    }).flags,
+  ).toContain("silent");
+});
+
+test("a claim's status line is not its first report and a newer claim survives retained closed tracker state", () => {
+  const at = "2026-03-04T09:40:00.000Z";
+  const ticket = issue("P-2", { agentPhase: "planning", statusType: "started" });
+  const comments = [
+    comment(ticket.id, at, {
+      status: { phase: "planning", summary: "Claimed" },
+      claim: { runtime: "Conductor", session: "ws/new", branch: null, startedAt: at, at, author: "Worker" },
+    }),
+  ];
+  const opts = { now: Date.parse("2026-03-04T10:00:00Z"), silentAfterMinutes: 15 };
+  expect(buildLane(program(ticket), comments, ticket, opts).flags).not.toContain("silent");
+  expect(buildLane(program(ticket), comments, ticket, { ...opts, now: opts.now + 11 * 60_000 }).flags).toContain(
+    "silent",
+  );
+  const closed = { ...ticket, statusType: "completed" as const };
+  expect(
+    inFlight(program(closed), comments, {
+      ...opts,
+      live: {
+        after: "2026-03-04T09:30:00.000Z",
+        events: { "P-2": { kind: "claim", phase: "planning", message: null, at } },
+        handles: { "P-2": { runtime: "Conductor", handle: "ws/new", claimedAt: at } },
+      },
+    }).map((l) => l.issue.id),
+  ).toEqual(["P-2"]);
+});

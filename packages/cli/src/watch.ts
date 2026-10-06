@@ -367,6 +367,8 @@ async function watchUntil(
       coordinatorName: name,
       scope,
       silentAfterMinutes: config.policy.silentAfterMinutes,
+      launchGraceMinutes: config.policy.launchGraceMinutes,
+      ciWaitMinutes: config.policy.ciWaitMinutes,
       quietAfterMinutes: config.policy.quietAfterMinutes,
       notStartedMinutes: config.policy.notStartedMinutes,
       seen: before?.seen ?? [],
