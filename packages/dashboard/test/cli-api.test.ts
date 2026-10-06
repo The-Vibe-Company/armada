@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { armadaApi, MINIMUM_CLI_VERSION } from "@armada/core/read";
+import { armadaApi, MINIMUM_CLI_VERSION, parseConfig } from "@armada/core/read";
 import { NextRequest } from "next/server";
+import { DEMO_TOML, issue, NOW } from "../../core/test/support.ts";
 import { type Auth, createAuth, type EmailMessage } from "../lib/accounts.ts";
 import { accountsGuard } from "../lib/accounts-http.ts";
 import { type AuthSettings, accountsModeOf } from "../lib/accounts-settings.ts";
@@ -8,6 +9,7 @@ import { guard } from "../lib/auth-http.ts";
 import { fleetKeysOf, organizationKeys, type Release } from "../lib/broker.ts";
 import { type CliAccounts, type CliApiDeps, type CliIdentity, handleCli } from "../lib/cli-api.ts";
 import type { Database } from "../lib/db.ts";
+import { dbSnapshots, memorySnapshots } from "../lib/snapshots.ts";
 import { deleteSecret, listEvents, type SecretName, setSecret, type VaultKey, vaultModeOf } from "../lib/vault.ts";
 import { tempDatabase } from "./support.ts";
 
@@ -415,4 +417,47 @@ describe("the organization's keys, handed to a signed-in terminal", () => {
     now = at(20 * 60 + 2);
     expect((await keys({ token: ownerToken })).res.status).toBe(200);
   });
+});
+
+test("deferred launches use stored facts and distinguish authenticated API keys with the same name", async () => {
+  const a = await auth.api.createApiKey({ body: { name: "same name", organizationId: orgId }, headers: as(owner) });
+  const b = await auth.api.createApiKey({ body: { name: "same name", organizationId: orgId }, headers: as(owner) });
+  const config = parseConfig(DEMO_TOML.replace('slug = "widgets"', 'slug = "deferred-api"'));
+  const project = {
+    slug: config.project.slug,
+    name: config.project.name,
+    repository: config.github.repository,
+    programRoot: config.tracker.programRoot,
+  };
+  const input = { kind: "launch-when-unblocked", ticket: "DEMO-9", author: "forged" };
+  const send = (path: string, key: string, input: unknown) =>
+    cli("POST", `fleet/${path}`, { key, body: { project, input } });
+  expect((await send("request", a.key, input)).status).toBe(400);
+  const program = {
+    rootId: "DEMO-1",
+    issues: [
+      issue("DEMO-1", { parentId: null }),
+      issue("DEMO-7", { parentId: "DEMO-1" }),
+      issue("DEMO-9", { parentId: "DEMO-1", blockedBy: [{ id: "DEMO-7", statusType: "unstarted" }] }),
+    ],
+    comments: [],
+    warnings: [],
+    fetchedAt: NOW.toISOString(),
+  };
+  const snapshots = dbSnapshots(client, memorySnapshots());
+  const claim = await snapshots.claim(project.slug, NOW, 60_000);
+  if (!claim) throw new Error("missing refresh lease");
+  await snapshots.save(
+    project.slug,
+    { config, configWarning: null, startedAt: NOW, sources: { program, forge: null, forgeError: null } },
+    claim,
+    { full: true, now: NOW },
+  );
+  const created = await send("request", a.key, input);
+  expect(created.status).toBe(200);
+  expect(await created.json()).toMatchObject({
+    result: { blockers: ["DEMO-7"], author: `same name [api-key:${a.id}]`, owned: true },
+  });
+  expect(await (await send("launch-requests", a.key, {})).json()).toMatchObject({ result: [{ owned: true }] });
+  expect(await (await send("launch-requests", b.key, {})).json()).toMatchObject({ result: [{ owned: false }] });
 });
