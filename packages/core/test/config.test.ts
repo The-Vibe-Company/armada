@@ -13,6 +13,13 @@ const problemsOf = (text: string) => {
 };
 
 describe("armada.toml", () => {
+  test("merge queue retest defaults to CI, accepts local and rejects unknown policies", () => {
+    expect(parseConfig(DEMO_TOML).merge.queueRetest).toBe("ci");
+    expect(parseConfig(`${DEMO_TOML}\n[merge]\nqueue_retest = "local"`).merge.queueRetest).toBe("local");
+    expect(problemsOf(`${DEMO_TOML}\n[merge]\nqueue_retest = "skip"`)).toContain(
+      '"merge.queue_retest" must be "ci" or "local"',
+    );
+  });
   test("merge notification paths default to workflows and accept configured globs or an empty opt-out", () => {
     expect(parseConfig(DEMO_TOML).merge.notifyPaths).toEqual([".github/workflows/**"]);
     expect(
@@ -70,7 +77,7 @@ describe("armada.toml", () => {
       github: { repository: "acme/widgets" },
       ci: { failurePatterns: [], knownFailures: [] },
       gates: { requiredChecks: [], localCommands: [] },
-      merge: { notifyPaths: [".github/workflows/**"] },
+      merge: { queueRetest: "ci", notifyPaths: [".github/workflows/**"] },
       policy: {
         validationSamples: 4,
         attachmentsPerTicket: 20,

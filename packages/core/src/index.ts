@@ -32,6 +32,7 @@ export * from "./overlap.ts";
 export * from "./overview.ts";
 export * from "./phases.ts";
 export * from "./projects.ts";
+export { drainMergeQueue } from "./queue-drain.ts";
 export * from "./redact.ts";
 export * from "./request-kinds.ts";
 export * from "./requests.ts";

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { allowAcceptance } from "../src/acceptance.ts";
 import { parseConfig } from "../src/config.ts";
-import type { CommitShape, Comparison, MergePull } from "../src/github.ts";
+import { type CommitShape, type Comparison, GithubError, type MergePull } from "../src/github.ts";
 import { LinearError } from "../src/linear.ts";
 import { createLinearWriter } from "../src/linear-write.ts";
 import type { Fleet } from "../src/live.ts";
@@ -14,6 +14,7 @@ import {
   type MergeAttempt,
   type MergeContext,
   type MergeForge,
+  MergeStateError,
   mergePullRequest,
   noticeFileCoverage,
   prepareQueueEntry,
@@ -22,6 +23,7 @@ import {
   withLease,
   workersToTell,
 } from "../src/merge.ts";
+import { drainMergeQueue } from "../src/queue-drain.ts";
 import { requestDecision } from "../src/requests.ts";
 import { Refusal } from "../src/worker.ts";
 import { DEMO_TOML, FakeLinear, LABELS, NOW, tempFleet } from "./support.ts";
@@ -1062,12 +1064,14 @@ describe("armada merge --wait", () => {
     );
   });
 
-  test("a head behind a base that does not require it up to date is test-merged, not updated", async () => {
+  test.each(["local", "ci"] as const)("a behind head uses the selected retest policy (%s)", async (retest) => {
     const s = setup({ toml: `${GATES}local_commands = ["bun run verify"]\n` });
     s.forge.comparison = { baseSha: BASE, status: "DIVERGED", behindBy: 2, aheadBy: 2 };
-    clocked(s);
-    expect((await mergePullRequest(s.ctx, { pr: 9, wait: WAIT })).merged).toBe(true);
-    expect([s.forge.updates, s.repo.testMerges.length]).toEqual([[], 1]);
+    clocked(s, () => {
+      green(s);
+    });
+    expect((await mergePullRequest(s.ctx, { pr: 9, wait: WAIT, retest })).merged).toBe(true);
+    expect([s.forge.updates.length, s.repo.testMerges.length]).toEqual(retest === "ci" ? [1, 0] : [0, 1]);
   });
 
   test("signed in with Armada down, it refuses before updating the branch or waiting", async () => {
@@ -2078,4 +2082,337 @@ test("after merge selects declared deploy targets by base branch, including no-t
   }
   expect((await mergePullRequest(setup().ctx, { pr: 9 })).deploy).toBeNull();
   expect((await mergePullRequest(setup({ toml: text }).ctx, { pr: 9, dryRun: true })).deploy).toBeUndefined();
+});
+
+test.each([
+  "ordered",
+  "outage",
+  "exhausted",
+  "lineage-outage",
+  "lock-renewal",
+  "red",
+  "hold",
+  "override",
+  "recovery",
+  "recovered-ticket",
+  "keep-open",
+  "handback-part",
+  "partial-recovery",
+  "queued-head",
+  "head-mismatch",
+  "cleanup-recovery",
+  "long-cleanup",
+  "cleanup-takeover",
+  "update-takeover",
+  "native-takeover-unconfirmed",
+  "recovery-linear-outage",
+  "unknown-outcome",
+  "takeover",
+  "paused-timeout",
+  "owner",
+])("queue drain owns FIFO retests, durable outcomes and recovery (%s)", async (scenario) => {
+  const live = tempFleet();
+  const s = setup({ live, toml: `${GATES}local_commands = ["bun run verify"]\n` });
+  const forges = new Map(
+    [12, 15].map((n) => {
+      const forge = new FakeForge();
+      forge.pr = pull({ number: n, url: `https://github.com/acme/widgets/pull/${n}`, headRef: "release" });
+      forge.comparison!.behindBy = 1;
+      return [n, forge] as const;
+    }),
+  );
+  let active = forges.get(12)!;
+  const partial = ["keep-open", "handback-part", "partial-recovery"].includes(scenario);
+  const ticketed =
+    partial ||
+    ["recovered-ticket", "queued-head", "head-mismatch", "cleanup-takeover", "recovery-linear-outage"].includes(
+      scenario,
+    );
+  if (ticketed) {
+    active.pr.headRef = "feature/demo-7-do-the-thing";
+    s.linear.post(
+      "DEMO-7",
+      `Agent status: ready-to-merge — PR #12, head ${HEAD}, CI green${["handback-part", "partial-recovery"].includes(scenario) ? "; more PRs: wire the second part" : ""}`,
+      "2026-03-04T09:30:00Z",
+    );
+  }
+  if (scenario === "queued-head") {
+    active.pr.headSha = BASE;
+    s.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #12, head ${BASE}, CI green`, "2026-03-04T09:45:00Z");
+  }
+  let lineageFailed = false;
+  let renewalFailed = false;
+  const renew = live.fleet.renewLease;
+  live.fleet.renewLease = async (input) => {
+    if (scenario === "lock-renewal" && input.name === "merge" && !renewalFailed) {
+      renewalFailed = true;
+      return false;
+    }
+    return renew(input);
+  };
+  let unknownRead = ["unknown-outcome", "native-takeover-unconfirmed"].includes(scenario);
+  const order: string[] = [];
+  let base = BASE;
+  s.ctx.now = live.clock.now;
+  s.ctx.sleep = async (ms) => {
+    live.clock.advance(ms);
+    if (scenario === "hold") await live.fleet.clearHold({ id: 1, reason: "fixed" });
+    if (scenario === "owner") {
+      const approvals = await live.fleet.validations({ pr: 12 });
+      if (approvals[0] && !approvals[0].decision)
+        await requestDecision(live.store, {
+          project: "widgets",
+          id: approvals[0].id,
+          action: "approve",
+          note: null,
+          author: "owner",
+          now: live.clock.now(),
+        });
+    }
+    for (const f of forges.values()) {
+      if (f.updates.length && f.pr.state === "open") {
+        f.pr.mergeStateStatus = "CLEAN";
+        f.pr.checks = [{ name: "test", state: "success" }];
+      }
+    }
+  };
+  s.ctx.forge = {
+    readPull: async (n) => {
+      active = forges.get(n)!;
+      if (unknownRead && n === 12 && active.pr.state === "merged") {
+        unknownRead = false;
+        throw new Error("GitHub read lost after native merge");
+      }
+      return active.readPull(n);
+    },
+    compare: async (ref, sha) => {
+      if (scenario === "update-takeover" && (await live.store.getLease("widgets", "merge-queue"))?.holder !== "peer") {
+        live.clock.advance(600_001);
+        await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
+      }
+      const cmp = await active.compare(ref, sha);
+      return cmp ? { ...cmp, baseSha: base } : null;
+    },
+    diff: async () => "",
+    commit: async (sha) => {
+      if (scenario === "lineage-outage" && !lineageFailed) {
+        lineageFailed = true;
+        throw new GithubError("GitHub HTTP 503 reading ancestry", true);
+      }
+      return active.commit(sha);
+    },
+    comment: async () => {},
+    updateBranch: async (n, sha) => {
+      order.push(`update ${n} on ${base}`);
+      const f = forges.get(n)!;
+      // Each update's second parent is the fresh main tip, independently checked by lineageOf.
+      f.onBase.add(base);
+      s.repo.trees.set(`${sha}:${base}`, TREE);
+      const result = await f.updateBranch(n, sha);
+      f.commits.set(UPDATED, { sha: UPDATED, tree: TREE, parents: [sha, base] });
+      return result;
+    },
+    merge: async (n, sha) => {
+      order.push(`merge ${n}`);
+      const f = forges.get(n)!;
+      const result = await f.merge(n, sha);
+      if (f.pr.state === "merged") base = SQUASH;
+      if (scenario === "native-takeover-unconfirmed" && n === 12) {
+        live.clock.advance(600_001);
+        await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
+      }
+      if (scenario === "head-mismatch" && n === 12) f.pr.headSha = BASE;
+      return result;
+    },
+  };
+  if (["outage", "exhausted"].includes(scenario))
+    active.answers = [
+      ...Array.from({ length: scenario === "exhausted" ? 16 : 4 }, () => ({
+        ok: false,
+        transient: true,
+        message: "HTTP 503",
+      })),
+      { ok: true, transient: false, message: "merged" },
+    ];
+  if (scenario === "red") {
+    active.pr.checks = [{ name: "test", state: "failure" }];
+    active.pr.ci = "failure";
+  }
+  if (["recovery", "recovered-ticket"].includes(scenario))
+    Object.assign(active.pr, { state: "merged", mergeCommit: SQUASH });
+  if (scenario === "unknown-outcome")
+    active.answers = [{ ok: false, effect: true, transient: true, message: "HTTP 503" }];
+  if (["hold", "override", "paused-timeout"].includes(scenario))
+    await live.fleet.openHold({ reason: "main red since #170", kind: "manual" });
+  if (scenario === "owner") active.comparison!.behindBy = 0;
+  if (scenario === "owner") await askOwnerToMerge(s.ctx, { pr: 12, ticket: "DEMO-7", reason: "review release" });
+  for (const pr of [12, 15])
+    await live.fleet.queueAdd({
+      pr,
+      ticket: pr === 12 && ticketed ? "DEMO-7" : null,
+      noTicket: !(pr === 12 && ticketed),
+      keepOpen: scenario === "keep-open" && pr === 12,
+      headSha: HEAD,
+      queuedBy: "a",
+      reason: null,
+      throughHold: scenario === "override" ? "repairs main" : null,
+    });
+  if (scenario === "recovery") {
+    await live.fleet.acquireLease({ name: "merge-queue", holder: "lost", ttlMs: 1000 });
+    await live.fleet.queueNext({ holder: "lost" });
+    live.clock.advance(1001);
+  }
+  if (scenario === "takeover")
+    s.ctx.sleep = async (ms) => {
+      live.clock.advance(ms + 600_000);
+      await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
+    };
+  let cleanupReadLost = false;
+  let recoveryReadFailed = false;
+  const readTicket = s.linear.readTicket.bind(s.linear);
+  s.linear.readTicket = async (id) => {
+    if (scenario === "cleanup-takeover" && active.pr.state === "merged" && !cleanupReadLost) {
+      cleanupReadLost = true;
+      live.clock.advance(600_001);
+      await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 });
+    }
+    if (scenario === "recovery-linear-outage" && cleanupFailed && !recoveryReadFailed) {
+      recoveryReadFailed = true;
+      throw new LinearError("Linear HTTP 503 during recovery", true, true);
+    }
+    return readTicket(id);
+  };
+  const delivered: number[] = [];
+  let pulse: (() => Promise<void>) | null = null;
+  let cleanupFailed = false;
+  const drain = () =>
+    drainMergeQueue(s.ctx, live.fleet, {
+      timeoutMs: 60_000,
+      every: (_ms, tick) => {
+        pulse = tick;
+        return () => {
+          pulse = null;
+        };
+      },
+      afterMerge: async (outcome) => {
+        expect(outcome.merged).toBe(true);
+        if (ticketed && outcome.pr.number === 12) expect(outcome.ticket?.id).toBe("DEMO-7");
+        if (partial && outcome.pr.number === 12) {
+          expect(outcome.keepOpen).toBe(true);
+          expect(outcome.archive).toBeNull();
+          expect(s.linear.get("DEMO-7").statusType).toBe("started");
+          expect((await s.linear.readTicket("DEMO-7"))?.agentPhase).toBe(
+            scenario === "partial-recovery" && cleanupFailed ? "ready-to-merge" : "implementing",
+          );
+        }
+        if (["cleanup-recovery", "partial-recovery", "recovery-linear-outage"].includes(scenario) && !cleanupFailed) {
+          cleanupFailed = true;
+          throw new Error("session lost during cleanup");
+        }
+        if (scenario === "long-cleanup" && outcome.pr.number === 12) {
+          for (let i = 0; i < 12; i++) {
+            live.clock.advance(60_000);
+            await pulse?.();
+            expect(
+              await live.fleet.acquireLease({ name: "merge-queue", holder: "peer", ttlMs: 600_000 }),
+            ).toMatchObject({ acquired: false });
+          }
+          expect((await live.fleet.queueList())[0]?.state).toBe("merging");
+        }
+        delivered.push(outcome.pr.number);
+        order.push(`after ${outcome.pr.number}`);
+      },
+    });
+  if (scenario === "native-takeover-unconfirmed") {
+    await expect(drain()).rejects.toBeInstanceOf(MergeStateError);
+    expect(await live.fleet.queueList()).toMatchObject([{ state: "merging", attempts: 0 }, { state: "queued" }]);
+    expect(order.filter((line) => line.startsWith("merge "))).toEqual(["merge 12"]);
+    expect(delivered).toEqual([]);
+    expect(live.store.items.some((item) => item.kind === "queue-refused")).toBe(false);
+    return;
+  }
+  if (["takeover", "cleanup-takeover", "update-takeover", "paused-timeout"].includes(scenario)) {
+    await expect(drain()).rejects.toThrow(scenario !== "paused-timeout" ? "taken over" : "main red since #170");
+    expect(await live.fleet.queueList()).toMatchObject([
+      { state: scenario === "paused-timeout" ? "queued" : "merging", attempts: 0 },
+      { state: "queued" },
+    ]);
+    if (scenario === "paused-timeout") expect(await live.fleet.queueRemove({ pr: 12 })).toBe(true);
+    expect(delivered).toEqual([]);
+    if (scenario === "update-takeover") expect(order).toEqual([]);
+    if (scenario === "cleanup-takeover") {
+      expect(s.linear.get("DEMO-7").statusType).toBe("started");
+      expect(s.linear.bodies.some((body) => body.startsWith("Agent status: merged"))).toBe(false);
+      expect(live.store.items.some((item) => item.kind === "linear-pending")).toBe(false);
+    }
+    return;
+  }
+  if (["cleanup-recovery", "partial-recovery", "recovery-linear-outage"].includes(scenario)) {
+    await expect(drain()).rejects.toThrow("session lost during cleanup");
+    expect(await live.fleet.queueList()).toMatchObject([{ state: "merging", attempts: 0 }, { state: "queued" }]);
+    if (scenario === "partial-recovery") {
+      const t = s.linear.get("DEMO-7");
+      await s.linear.updateTicket(t.uuid, {
+        addLabelIds: [label("phase-ready-to-merge").id],
+        removeLabelIds: [label("phase-implementing").id],
+      });
+      s.linear.post("DEMO-7", `Agent status: ready-to-merge — PR #18, head ${BASE}, CI green`, "2026-03-04T10:00:00Z");
+      live.clock.advance(1);
+      await live.store.recordEvent({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "report",
+        phase: "ready-to-merge",
+        message: "PR #18 ready",
+        prUrl: "https://github.com/acme/widgets/pull/18",
+        headSha: BASE,
+        at: live.clock.now(),
+      });
+      await live.store.addInboxItem({
+        project: "widgets",
+        ticket: "DEMO-7",
+        kind: "hand-back",
+        recipient: "coordinator",
+        author: "worker",
+        body: "PR #18 ready",
+        at: live.clock.now(),
+      });
+    }
+  }
+  await drain();
+  expect(delivered).toEqual(["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? [15] : [12, 15]);
+  const entries = await live.fleet.queueList();
+  expect(entries.map((e) => e.state)).toEqual(
+    ["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario)
+      ? ["refused", "merged"]
+      : ["merged", "merged"],
+  );
+  expect(live.store.items.filter((i) => i.kind === "queue-refused")).toHaveLength(
+    ["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? 1 : 0,
+  );
+  expect(s.repo.testMerges).toEqual([]);
+  if (scenario === "owner") expect(s.progress.join("\n")).toContain("owner has not decided");
+  if (
+    !["red", "exhausted", "recovery", "recovered-ticket", "queued-head", "head-mismatch", "owner"].includes(scenario)
+  ) {
+    expect(order.indexOf(`update 12 on ${BASE}`)).toBeLessThan(order.indexOf("merge 12"));
+    expect(order.indexOf("after 12")).toBeLessThan(order.indexOf(`update 15 on ${SQUASH}`));
+  }
+  expect(entries[0]?.attempts).toBe(
+    ["outage", "unknown-outcome", "lineage-outage", "lock-renewal", "recovery-linear-outage"].includes(scenario)
+      ? 1
+      : scenario === "exhausted"
+        ? 3
+        : 0,
+  );
+  expect(await live.store.getLease("widgets", "merge-queue")).toBeNull();
+  if (scenario === "partial-recovery") {
+    expect((await live.store.latestEvents("widgets", { since: NOW }))["DEMO-7"]?.phase).toBe("ready-to-merge");
+    expect(live.store.items.find((i) => i.body === "PR #18 ready")?.resolvedAt).toBeNull();
+  }
+  if (scenario === "head-mismatch") expect(s.linear.get("DEMO-7").statusType).toBe("started");
+  if (scenario === "recovered-ticket") {
+    expect(s.linear.get("DEMO-7").statusType).toBe("completed");
+    expect(live.store.events.filter((e) => e.ticket === "DEMO-7" && e.kind === "merge")).toHaveLength(1);
+  }
 });

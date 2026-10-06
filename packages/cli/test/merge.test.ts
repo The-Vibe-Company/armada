@@ -9,6 +9,7 @@ import { join } from "node:path";
 import {
   type Fetch,
   GITHUB_GRAPHQL,
+  LinearError,
   type MergeOutcome,
   parseConfig,
   type RawIssue,
@@ -89,6 +90,12 @@ test.each([
       "2026-03-04T09:50:00Z",
     );
   const reservedKeys: string[] = [];
+  const recordedKeys: { ticket: string; key: string }[] = [];
+  const recordNotice = f.store.recordMergeNotice;
+  f.store.recordMergeNotice = async (input) => {
+    recordedKeys.push({ ticket: input.ticket, key: input.key });
+    return recordNotice(input);
+  };
   const reserveNotice = f.store.prepareMergeNotice;
   f.store.prepareMergeNotice = async (project, key, at) => {
     reservedKeys.push(key);
@@ -293,7 +300,12 @@ test.each([
     expect(message).toContain("shareList");
     expect(message).toContain("git fetch origin && git merge origin/main, then run the checks again");
     // Merge retries use the durable receipt identity, even when the notice's text changes.
-    if (scenario !== "herdr") expect(messages()[0]?.args.at(-1)).toBe(reservedKeys[0]);
+    if (scenario !== "herdr") {
+      const note = recordedKeys.find((n) => n.ticket === "DEMO-11");
+      if (!note) throw new Error("the peer's generated note was not recorded");
+      expect(reservedKeys).toContain(note.key);
+      expect(messages()[0]?.args.at(-1)).toBe(note.key);
+    }
     const notes = f.store.items.filter((i) => i.kind === "note");
     expect(notes).toHaveLength(scenario === "shared" ? 2 : 1);
     expect(notes.every((n) => n.resolvedAt === NOW.toISOString())).toBe(true);
@@ -1033,7 +1045,7 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--reason", "Reviewed"], f.io)).toBe(0);
   expect(f.out()).toContain("queued #9 (1st)");
   expect(f.out().trim().split("\n").at(-1)).toBe("Result: not merged (queued for merge; nothing was merged)");
-  expect(f.out()).toContain("Next: armada merge queue");
+  expect(f.out()).toContain("Next: armada merge --drain (run in the background)");
   expect(f.merged()).toBe(false);
   expect(f.ghCalls).toEqual([]);
   expect(await run(["merge", "--when-green", "9"], f.io)).toBe(0);
@@ -1054,6 +1066,123 @@ test("when-green persists intent without merging, deduplicates, lists on a new i
   expect(await run(["merge", "--when-green", "9", "--no-archive"], f.io)).toBe(2);
   expect(await run(["merge", "--when-green", "9", "--no-notify"], f.io)).toBe(2);
 });
+
+test.each(["plain", "json", "completion-outage", "recovery-outage", "native-lease-loss", "keep-open"])(
+  "drain uses ordinary cleanup and truthful output (%s)",
+  async (scenario) => {
+    const json = scenario !== "plain";
+    const keepOpen = scenario === "keep-open";
+    const completionOutage = ["completion-outage", "recovery-outage"].includes(scenario);
+    const f = await fixture();
+    expect(await run(["merge", "--when-green", "9", ...(keepOpen ? ["--keep-open"] : [])], f.io)).toBe(0);
+    const out: string[] = [];
+    if (scenario === "native-lease-loss") {
+      f.net.confirmMerge = false;
+      const exec = f.io.exec!;
+      f.io.exec = async (command, args, options) => {
+        const result = await exec(command, args, options);
+        if (command === "gh" && args[0] === "pr" && args[1] === "merge") {
+          const lease = await f.store.getLease("widgets", "merge-queue");
+          if (!lease) throw new Error("missing drain lease");
+          await f.store.releaseLease({ project: "widgets", name: "merge-queue", holder: lease.holder });
+          await f.store.acquireLease({
+            project: "widgets",
+            name: "merge-queue",
+            holder: "peer",
+            ttlMs: 600_000,
+            at: NOW,
+          });
+        }
+        return result;
+      };
+    }
+    const fetch = f.io.fetch!;
+    const io: Io = {
+      ...f.io,
+      stdout: (line) => out.push(line),
+      fetch: async (url, init) =>
+        completionOutage && url.endsWith("/fleet/queue/finish")
+          ? Response.json({ error: "Armada did not answer" }, { status: 503 })
+          : fetch(url, init),
+    };
+    expect(await run(["merge", "--drain", ...(json ? ["--json"] : [])], io), f.err()).toBe(
+      completionOutage || scenario === "native-lease-loss" ? 1 : 0,
+    );
+    expect(f.merged()).toBe(true);
+    if (scenario === "native-lease-loss") {
+      const result = JSON.parse(out.join("").trim());
+      expect(result.merged).toBe(false);
+      expect(result.result).toContain("merge unconfirmed");
+      expect(result.result).not.toContain("nothing was merged");
+      expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({ state: "merging", attempts: 0 });
+      expect(f.armada.calls.some((call) => call.path === "workers/end")).toBe(false);
+      return;
+    }
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
+      state: completionOutage ? "merging" : "merged",
+      ...(!completionOutage ? { mergeCommit: SQUASH } : {}),
+    });
+    expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(!keepOpen);
+    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt === null).toBe(keepOpen);
+    if (keepOpen) {
+      expect(f.linear.get("DEMO-18").statusType).toBe("started");
+      expect((await f.linear.readTicket("DEMO-18"))?.agentPhase).toBe("implementing");
+      expect(out.join("")).toContain("continuation");
+    }
+    if (json) {
+      const objects = out
+        .join("")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(objects).toMatchObject(
+        completionOutage
+          ? [
+              { merged: true, result: "Result: merged #9" },
+              { merged: true, error: expect.any(String), result: "Result: merged #9" },
+            ]
+          : [{ merged: true, result: "Result: merged #9" }, { queue: "empty" }],
+      );
+    } else {
+      expect(out.join("")).toContain("Result: merged #9");
+      expect(out.join("")).toContain("queue empty");
+    }
+    if (completionOutage) {
+      io.fetch = fetch;
+      if (scenario === "recovery-outage") {
+        f.linear.readTicket = async () => {
+          throw new LinearError("Linear HTTP 503", true, true);
+        };
+        io.sleep = async () => {
+          throw new Error("drain interrupted during retry wait");
+        };
+        out.length = 0;
+        expect(await run(["merge", "--drain", "--json"], io), f.err()).toBe(1);
+        expect(
+          out
+            .join("")
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line)),
+        ).toMatchObject([{ merged: true, error: expect.any(String) }]);
+        expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({ state: "queued", attempts: 1 });
+        expect(
+          (await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).some(
+            (item) => item.kind === "queue-refused",
+          ),
+        ).toBe(false);
+        return;
+      }
+      expect(await run(["merge", "--drain", "--json"], io), f.err()).toBe(0);
+      expect((await f.store.queueList("widgets", { since: NOW }))[0]).toMatchObject({
+        state: "merged",
+        mergeCommit: SQUASH,
+      });
+    }
+    expect(await run(["merge", "--drain", "9"], f.io)).toBe(2);
+    expect(await run(["merge", "--drain", "--no-lock"], f.io)).toBe(2);
+  },
+);
 
 test("when-green queues multiple no-ticket PRs in argument order and preserves flags", async () => {
   const f = await fixture();
@@ -1085,6 +1214,7 @@ test("when-green queues multiple no-ticket PRs in argument order and preserves f
 test.each([
   "confirmed",
   "confirmed-json",
+  "queue-lease-loss",
   "confirmed-external",
   "failed-external",
   "failed-json",
@@ -1103,7 +1233,8 @@ test.each([
 ])("merge archives only its confirmed, ended Armada worker (%s)", async (scenario) => {
   const f = await fixture();
   const handle = "ws-18/ses-18";
-  const json = scenario.endsWith("-json");
+  const queued = scenario === "queue-lease-loss";
+  const json = queued || scenario.endsWith("-json");
   const succeeds = ["confirmed", "confirmed-json", "confirmed-external", "unrecorded"].includes(scenario);
   const projectRoot = f.io.cwd;
   const configPath = join(projectRoot, "fleet config.toml");
@@ -1145,6 +1276,19 @@ test.each([
     if (command !== "conductor") return exec(command, args, options);
     expect(options?.cwd).toBe(projectRoot);
     calls.push(args);
+    if (queued) {
+      const lease = await f.store.getLease("widgets", "merge-queue");
+      if (lease && lease.holder !== "peer") {
+        await f.store.releaseLease({ project: "widgets", name: "merge-queue", holder: lease.holder });
+        await f.store.acquireLease({
+          project: "widgets",
+          name: "merge-queue",
+          holder: "peer",
+          ttlMs: 600_000,
+          at: NOW,
+        });
+      }
+    }
     if (scenario === "shared-later") {
       await f.store.saveRuntimeHandle({
         project: "widgets",
@@ -1190,14 +1334,26 @@ test.each([
         : scenario === "no-ticket"
           ? ["--no-ticket", "--reason", "config only"]
           : [];
-  expect(await run(["merge", "9", ...(json ? ["--json"] : []), ...flags], f.io)).toBe(
-    scenario === "unconfirmed" ? 1 : 0,
-  );
+  if (queued) expect(await run(["merge", "--when-green", "9"], { ...f.io, stdout: () => {} })).toBe(0);
+  expect(
+    await run(queued ? ["merge", "--drain", "--json"] : ["merge", "9", ...(json ? ["--json"] : []), ...flags], f.io),
+  ).toBe(scenario === "unconfirmed" || queued ? 1 : 0);
+  if (queued) {
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("merging");
+    expect((await f.store.getLease("widgets", "merge-queue"))?.holder).toBe("peer");
+    expect(
+      f
+        .out()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ merged: true })]));
+  }
   expect(calls.filter((args) => args[1] === "workspace" && args[2] === "archive")).toEqual(
     succeeds ? [["--json", "workspace", "archive", "ws-18"]] : [],
   );
   if (json)
-    expect(JSON.parse(f.out()).archive).toEqual({
+    expect(JSON.parse(queued ? f.out().split("\n")[0]! : f.out()).archive).toEqual({
       runtime: "Conductor",
       handle,
       archived: succeeds,
@@ -1288,87 +1444,109 @@ test.each(["not-merged", "no-commit", "no-ticket", "keep-open", "claim-comment",
   },
 );
 
-test.each(["delivered", "manual", "failed", "replaced", "linear-pending", "linear-pending-special-secret"])(
-  "a partial merge retains its worker and continues safely (%s)",
-  async (mode) => {
-    const f = await fixture();
-    const pending = mode.startsWith("linear-pending");
-    const secret = mode === "linear-pending-special-secret" ? 'synthetic"project\\secret' : "synthetic-project-secret";
-    f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", secret]]));
-    f.linear.post(
-      "DEMO-18",
-      `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part ${secret}`,
-      "2026-03-04T09:50:00Z",
-    );
-    if (pending)
-      f.linear.updateTicket = async () => {
-        throw new Error("Linear unavailable");
-      };
-    await f.store.saveRuntimeHandle({
-      project: "widgets",
-      ticket: "DEMO-18",
-      runtime: mode === "manual" ? "Claude Code" : "Conductor",
-      handle: "ws-18/ses-18",
-      branch: BRANCH,
-      at: NOW,
-    });
-    const exec = f.io.exec as Exec;
-    const calls: string[][] = [];
-    const inputs: (string | undefined)[] = [];
-    f.io.exec = async (command, args, options) => {
-      if (command !== "conductor") return exec(command, args, options);
-      calls.push(args);
-      if (args[1] === "message" && args[2] === "create") {
-        inputs.push(options?.input);
-        expect(f.merged()).toBe(true);
-        expect(options?.input).toContain(`git fetch origin && git switch -c ${BRANCH}-2 origin/main`);
-        if (mode === "failed") return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
-        return { code: 0, stdout: JSON.stringify({ messageId: "message-1", state: "queued" }), stderr: "" };
-      }
-      if (mode === "replaced")
-        await f.store.saveRuntimeHandle({
-          project: "widgets",
-          ticket: "DEMO-18",
-          runtime: "Conductor",
-          handle: "ws-new/ses-new",
-          branch: BRANCH,
-          at: new Date(NOW.getTime() + 1000),
-        });
-      return {
-        code: 0,
-        stdout: JSON.stringify(
-          args[1] === "session"
-            ? { sessionId: "ses-18", workspaceId: "ws-18", status: "idle" }
-            : { workspaceId: "ws-18", status: "ready" },
-        ),
-        stderr: "",
-      };
+test.each([
+  "delivered",
+  "manual",
+  "failed",
+  "replaced",
+  "linear-pending",
+  "linear-pending-special-secret",
+  "queue-recovery",
+  "queue-unknown",
+])("a partial merge retains its worker and continues safely (%s)", async (mode) => {
+  const f = await fixture();
+  const queued = mode.startsWith("queue-");
+  const pending = mode.startsWith("linear-pending");
+  const secret = mode === "linear-pending-special-secret" ? 'synthetic"project\\secret' : "synthetic-project-secret";
+  f.armada.secrets.set("widgets", new Map([["CUSTOM_KEY", secret]]));
+  f.linear.post(
+    "DEMO-18",
+    `Agent status: ready-to-merge — PR #9, head ${f.head}, CI green; more PRs: the dashboard part ${secret}`,
+    "2026-03-04T09:50:00Z",
+  );
+  if (pending)
+    f.linear.updateTicket = async () => {
+      throw new Error("Linear unavailable");
     };
-    expect(await run(["merge", "9", "--json"], f.io)).toBe(0);
-    const out = JSON.parse(f.out());
-    expect(out.keepOpen).toBe(true);
-    expect(out.archive).toBeNull();
-    expect(out.unblocked).toBeNull();
-    expect(f.linear.get("DEMO-18").statusType).toBe("started");
-    expect(f.armada.calls.map((c) => c.path)).not.toContain("workers/end");
-    expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
-    expect(calls.some((args) => args[2] === "archive")).toBe(false);
-    expect(inputs.length).toBe(mode === "delivered" || mode === "failed" || pending ? 1 : 0);
-    expect(out.lines.join("\n")).toContain(
-      mode === "delivered" || pending ? "continuation delivered" : "Deliver to DEMO-18",
-    );
-    expect(f.out() + f.err()).not.toContain("CANARY");
-    expect(inputs.join("\n") + f.out() + f.err() + f.linear.bodies.join("\n")).not.toContain(secret);
-    expect(JSON.stringify(out.continuation)).toContain("«secret CUSTOM_KEY»");
-    if (pending) {
-      const chore = (await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
-        (i) => i.kind === "linear-pending",
-      );
-      expect(chore?.body).toContain("«secret CUSTOM_KEY»");
-      expect(chore?.body).not.toContain(secret);
+  await f.store.saveRuntimeHandle({
+    project: "widgets",
+    ticket: "DEMO-18",
+    runtime: mode === "manual" ? "Claude Code" : "Conductor",
+    handle: "ws-18/ses-18",
+    branch: BRANCH,
+    at: NOW,
+  });
+  const exec = f.io.exec as Exec;
+  const calls: string[][] = [];
+  const inputs: (string | undefined)[] = [];
+  f.io.exec = async (command, args, options) => {
+    if (command !== "conductor") return exec(command, args, options);
+    calls.push(args);
+    if (args[1] === "message" && args[2] === "create") {
+      inputs.push(options?.input);
+      expect(f.merged()).toBe(true);
+      expect(options?.input).toContain(`git fetch origin && git switch -c ${BRANCH}-2 origin/main`);
+      if (mode === "failed" || mode === "queue-unknown")
+        return { code: 4, stdout: "armada_launch_CANARY", stderr: "private runtime output" };
+      return { code: 0, stdout: JSON.stringify({ messageId: "message-1", state: "queued" }), stderr: "" };
     }
-  },
-);
+    if (mode === "replaced")
+      await f.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-18",
+        runtime: "Conductor",
+        handle: "ws-new/ses-new",
+        branch: BRANCH,
+        at: new Date(NOW.getTime() + 1000),
+      });
+    return {
+      code: 0,
+      stdout: JSON.stringify(
+        args[1] === "session"
+          ? { sessionId: "ses-18", workspaceId: "ws-18", status: "idle" }
+          : { workspaceId: "ws-18", status: "ready" },
+      ),
+      stderr: "",
+    };
+  };
+  const fetch = f.io.fetch!;
+  if (queued) {
+    expect(await run(["merge", "--when-green", "9"], { ...f.io, stdout: () => {} })).toBe(0);
+    f.io.fetch = async (url, init) =>
+      url.endsWith("/fleet/queue/finish")
+        ? Response.json({ error: "Armada did not answer" }, { status: 503 })
+        : fetch(url, init);
+  }
+  expect(await run(queued ? ["merge", "--drain", "--json"] : ["merge", "9", "--json"], f.io)).toBe(queued ? 1 : 0);
+  const out = JSON.parse(queued ? f.out().split("\n")[0]! : f.out());
+  if (queued) {
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("merging");
+    f.io.fetch = fetch;
+    expect(await run(["merge", "--drain", "--json"], f.io)).toBe(0);
+    expect((await f.store.queueList("widgets", { since: NOW }))[0]?.state).toBe("merged");
+  }
+  expect(out.keepOpen).toBe(true);
+  expect(out.archive).toBeNull();
+  expect(out.unblocked).toBeNull();
+  expect(f.linear.get("DEMO-18").statusType).toBe("started");
+  expect(f.armada.calls.map((c) => c.path)).not.toContain("workers/end");
+  expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
+  expect(calls.some((args) => args[2] === "archive")).toBe(false);
+  expect(inputs.length).toBe(mode === "delivered" || mode === "failed" || queued || pending ? 1 : 0);
+  expect(out.lines.join("\n")).toContain(
+    mode === "delivered" || mode === "queue-recovery" || pending ? "continuation delivered" : "Deliver to DEMO-18",
+  );
+  expect(f.out() + f.err()).not.toContain("CANARY");
+  expect(inputs.join("\n") + f.out() + f.err() + f.linear.bodies.join("\n")).not.toContain(secret);
+  expect(JSON.stringify(out.continuation)).toContain("«secret CUSTOM_KEY»");
+  if (pending) {
+    const chore = (await f.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).find(
+      (i) => i.kind === "linear-pending",
+    );
+    expect(chore?.body).toContain("«secret CUSTOM_KEY»");
+    expect(chore?.body).not.toContain(secret);
+  }
+});
 
 test("owner approval requests reject lifecycle overrides they cannot persist", async () => {
   const f = await fixture();
