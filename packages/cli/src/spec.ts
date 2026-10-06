@@ -12,7 +12,7 @@ import {
   planSpecInsert,
   type SpecPlan,
 } from "@armada/core";
-import { type Io, missingKey, UsageError } from "./io.ts";
+import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 
 export interface SpecArgs {
   rest: string[];
@@ -42,7 +42,7 @@ export async function specCommand(io: Io, config: ArmadaConfig, credentials: Cre
   const opts = {
     apiKey: credentials.linearApiKey,
     labels: config.tracker.labels,
-    ...(io.fetch ? { fetch: io.fetch } : {}),
+    ...httpOptions(io),
   };
   const program = await fetchProgram({ ...opts, rootId: config.tracker.programRoot, now: io.now });
   if (program.warnings.length)

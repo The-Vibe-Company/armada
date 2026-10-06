@@ -2,7 +2,14 @@
 // then reads the comments of the tickets an agent may hold. The normalizers are
 // pure and exported so they can be tested on recorded responses.
 
-import { type Fetch, HttpRequestError, httpRequest } from "./http.ts";
+import {
+  type Fetch,
+  HttpRequestError,
+  type HttpRequestOptions,
+  HttpStatusError,
+  httpRequest,
+  retryStatus,
+} from "./http.ts";
 import type { AgentClaim, AgentPhase, Blocker, Comment, Issue, LabelPhase, ProgramData, StatusType } from "./types.ts";
 import { LABEL_PHASES } from "./types.ts";
 
@@ -24,7 +31,7 @@ export interface LabelGroups {
   runtimeGroup: string;
 }
 
-export interface FetchProgramOptions {
+export interface FetchProgramOptions extends HttpRequestOptions {
   apiKey: string;
   rootId: string;
   labels: LabelGroups;
@@ -302,11 +309,11 @@ const COMMENTS_QUERY = /* GraphQL */ `
     }
   }`;
 
-export interface LinearRequestOptions {
+export interface LinearRequestOptions extends HttpRequestOptions {
   apiKey: string;
   fetch?: Fetch;
   timeoutMs?: number;
-  /** Explicitly opt a query into retry; mutations must never be replayed. */
+  /** Explicitly opt a read or guarded/idempotent mutation into retry. */
   retry?: boolean;
 }
 
@@ -319,7 +326,7 @@ export async function gql<T>(opts: LinearRequestOptions, query: string, variable
       headers: { "Content-Type": "application/json", Authorization: opts.apiKey },
       body: JSON.stringify({ query, variables }),
     },
-    opts,
+    { ...opts, retryStatus, service: "Linear" },
     async (res) => {
       if (res.status === 401)
         throw new LinearError("Linear rejected the API key (HTTP 401); check LINEAR_API_KEY", true);
@@ -334,6 +341,7 @@ export async function gql<T>(opts: LinearRequestOptions, query: string, variable
       return json.data;
     },
   ).catch((err: unknown) => {
+    if (err instanceof HttpStatusError) throw new LinearError(`Linear API ${err.message}`, true);
     if (err instanceof HttpRequestError) throw new LinearError(`Linear API unreachable: ${err.message}`, true);
     throw err;
   });

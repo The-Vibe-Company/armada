@@ -59,7 +59,12 @@ async function fixture(runtime: RuntimeName = "conductor") {
   const api = fakeArmada({ store, clock, keys: { armada_key_CANARY_test: "test" } });
   const io: Io = {
     cwd: "/work/widgets",
-    env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: "armada_key_CANARY_test" },
+    env: {
+      XDG_CONFIG_HOME: home,
+      ARMADA_API_URL: ARMADA_URL,
+      ARMADA_API_KEY: "armada_key_CANARY_test",
+      LINEAR_API_KEY: "synthetic-runtime-key",
+    },
     readFile: async (p) => (p === "/work/widgets/armada.toml" ? DEMO_TOML : null),
     ghToken: () => null,
     now: clock.now,
