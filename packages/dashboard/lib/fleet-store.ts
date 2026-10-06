@@ -1545,7 +1545,7 @@ const deployRow = (r: Row): DeployRecord => {
 };
 
 const deployBody = (input: DeployInputWithCoverage): string =>
-  `Deployment ${input.state} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
+  `${input.state === "not-runnable" ? "Deploy check not runnable on this machine (configuration)" : `Deployment ${input.state}`} for ${input.target} (${input.sha})\nLast output:\n${deployDetail(input.detail)}`;
 
 /**
  * Finds or creates the one open deploy notice for a target. The target is a
@@ -1757,7 +1757,7 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
         return previousRecord;
       }
       const updated = await q.query<Row>(
-        `UPDATE deploys SET started_at = CASE WHEN state = 'skipped' AND $4 <> 'skipped' THEN $9 ELSE started_at END,
+        `UPDATE deploys SET started_at = CASE WHEN state IN ('skipped', 'not-runnable') AND $4 NOT IN ('skipped', 'not-runnable') THEN $9 ELSE started_at END,
            state = $4, detail = $5, pause_on_failure = $6, live_sha = $7,
             covered_shas = $8, updated_at = $9
          WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
@@ -1795,7 +1795,13 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
     }
     const record = deployRow(row);
     if (record.state === "healthy") await clearDeployHealthy(q, input, record, input.at);
-    else if (deployFailed(record.state) && input.pauseOnFailure) await openDeployFailure(q, input, record, input.at);
+    else if (record.state === "not-runnable") {
+      const held = await q.query(
+        "SELECT 1 FROM merge_holds WHERE project = $1 AND kind = 'deploy' AND ref = $2 AND cleared_at IS NULL LIMIT 1",
+        [input.project, input.target],
+      );
+      if (!held.rows.length && !(await deployFailureIsStale(q, record))) await deployInbox(q, input, input.at);
+    } else if (deployFailed(record.state) && input.pauseOnFailure) await openDeployFailure(q, input, record, input.at);
     else if (deployFailed(record.state)) {
       // A non-pausing deployment still wakes the coordinator exactly once.
       if (!(await deployFailureIsStale(q, record))) await deployInbox(q, input, input.at);

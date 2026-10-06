@@ -56,7 +56,7 @@ export const startBackground: NonNullable<Io["startBackground"]> = (args, option
     }
     const child = spawn(process.execPath, [...process.execArgv, process.argv[1] as string, ...args], {
       cwd: process.cwd(),
-      env: process.env,
+      env: options?.env ?? process.env,
       detached: true,
       stdio: ["ignore", log ?? "ignore", log ?? "ignore", "ipc"],
     });

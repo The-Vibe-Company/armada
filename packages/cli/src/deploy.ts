@@ -89,7 +89,7 @@ export async function startDeploys(
   for (const name of targets) {
     const target = config.deploy?.targets.find((t) => t.name === name);
     if (!target) continue;
-    const { missing } = resolveDeployEnv(target, local.env, io.env);
+    const { missing, env } = resolveDeployEnv(target, local.env, io.env);
     if (missing.length) {
       await skipUnconfigured(io, config, credentials, target, sha, missing);
       results.push({ target: name, started: false, next: null, skipped: true });
@@ -102,12 +102,12 @@ export async function startDeploys(
       const paths = machinePaths(io.env);
       started =
         (sha
-          ? await io.startBackground?.(
-              args,
-              paths
+          ? await io.startBackground?.(args, {
+              env: { ...io.env, ...env },
+              ...(paths
                 ? { logPath: join(paths.dir, "watch", `deploy-${hash(`${config.project.slug}/${name}/${sha}`)}.log`) }
-                : undefined,
-            )
+                : {}),
+            })
           : false) ?? false;
     } catch {}
     results.push({ target: name, started, next: started ? null : next });
@@ -218,21 +218,41 @@ export async function deploy(
     );
   const holder = `deploy-${randomUUID()}`;
   const cwd = dirname(configPath);
+  let configurationDetail = "";
   const command = async (command: string, liveSha: string, remainingMs: number) => {
-    const result = await io.exec?.("sh", ["-c", command], {
-      cwd,
-      timeoutMs: Math.max(1, Math.min(remainingMs, 60_000)),
-      maxOutputBytes: 64 * 1024,
-      processGroup: true,
-      env: { ...io.env, ...settings.env, ARMADA_DEPLOY_SHA: liveSha, ARMADA_DEPLOY_TARGET: target.name },
-    });
+    const result = await io
+      .exec?.("sh", ["-c", command], {
+        cwd,
+        timeoutMs: Math.max(1, Math.min(remainingMs, 60_000)),
+        maxOutputBytes: 64 * 1024,
+        processGroup: true,
+        env: { ...io.env, ...settings.env, ARMADA_DEPLOY_SHA: liveSha, ARMADA_DEPLOY_TARGET: target.name },
+      })
+      .catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== "ENOENT" && err.code !== "ENOTDIR") throw err;
+        return { code: 127, stdout: "", stderr: err.message, timedOut: false };
+      });
+    const notRunnable =
+      !!result &&
+      !result.timedOut &&
+      result.code !== 0 &&
+      (result.code === 127 ||
+        /(?:^|\n)[^\n]*(?:sh|bash|dash|zsh):[^\n]*(?:[A-Za-z_][A-Za-z0-9_]*: (?:set [A-Za-z_][A-Za-z0-9_]*|parameter (?:null or )?not set|unbound variable)|cd:[^\n]*(?:can't cd|cannot|No such file|not a directory))/i.test(
+          result.stderr,
+        ) ||
+        [...command.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):?\?/g)].some((match) =>
+          result.stderr.includes(`${match[1]}:`),
+        ));
+    const detail = deployDetail(
+      clean(
+        `${result?.stdout ?? ""}\n${result?.stderr ?? ""}\n${result?.timedOut ? "command timed out" : `exit ${result?.code ?? 1}`}`,
+      ),
+    );
+    if (notRunnable) configurationDetail = detail;
     return {
       ok: result?.code === 0 && !result.timedOut,
-      detail: deployDetail(
-        clean(
-          `${result?.stdout ?? ""}\n${result?.stderr ?? ""}\n${result?.timedOut ? "command timed out" : `exit ${result?.code ?? 1}`}`,
-        ),
-      ),
+      detail,
+      notRunnable,
       stdout: result?.stdout ?? "",
     };
   };
@@ -251,7 +271,7 @@ export async function deploy(
       const ready = (await fleet.deployState({ target: target.name, sha: liveSha }))[0];
       if (ready?.state === "healthy" || ready?.state === "smoke-failed")
         return { ok: ready.state === "healthy", detail: ready.detail };
-      let result: { ok: boolean; detail: string };
+      let result: { ok: boolean; detail: string; notRunnable?: boolean };
       try {
         result = target.smoke
           ? await command(target.smoke, liveSha, remainingMs)
@@ -264,9 +284,9 @@ export async function deploy(
         target: target.name,
         sha: liveSha,
         liveSha,
-        state: result.ok ? "healthy" : "smoke-failed",
+        state: result.notRunnable ? "not-runnable" : result.ok ? "healthy" : "smoke-failed",
         detail: result.detail,
-        pauseOnFailure: target.pauseOnFailure,
+        pauseOnFailure: !result.notRunnable && target.pauseOnFailure,
       });
       return result;
     } finally {
@@ -280,7 +300,7 @@ export async function deploy(
   };
   try {
     const prior = (await fleet.deployState({ target: target.name, sha }))[0];
-    if (prior && !["waiting", "live", "skipped"].includes(prior.state)) {
+    if (prior && !["waiting", "live", "skipped", "not-runnable"].includes(prior.state)) {
       io.backgroundReady?.(true);
       io.stdout(`${target.name}: ${prior.state}\n`);
       return prior.state === "healthy" ? 0 : 1;
@@ -296,7 +316,7 @@ export async function deploy(
     const result = await watchDeploy({
       target,
       sha,
-      ...(prior && prior.state !== "skipped" ? { startedAt: new Date(prior.startedAt) } : {}),
+      ...(prior && !["skipped", "not-runnable"].includes(prior.state) ? { startedAt: new Date(prior.startedAt) } : {}),
       now,
       sleep: sleepOf(io),
       record: write,
@@ -320,11 +340,16 @@ export async function deploy(
           sha: result.ok && /^[0-9a-f]{40}$/.test(liveSha) ? liveSha : null,
           state: result.ok && /^[0-9a-f]{40}$/.test(liveSha) ? "success" : "pending",
           detail: result.detail,
+          notRunnable: result.notRunnable,
         };
       },
     });
-    io.stdout(`${target.name}: ${result}\n`);
-    return result === "healthy" ? 0 : 1;
+    if (result === "not-runnable")
+      io.stderr(
+        `armada: warning: ${target.name}: deploy check not runnable on this machine (configuration)\n${configurationDetail}\n`,
+      );
+    io.stdout(`${target.name}: ${result === "not-runnable" ? "not runnable (configuration)" : result}\n`);
+    return result === "healthy" || result === "not-runnable" ? 0 : 1;
   } catch (err) {
     io.backgroundReady?.(false);
     io.stderr(`armada: deploy watcher failed: ${clean(err instanceof Error ? err.message : "unexpected failure")}\n`);

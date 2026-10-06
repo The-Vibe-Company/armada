@@ -964,6 +964,14 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
       "ALTER TABLE deploys ADD CONSTRAINT deploys_state_check CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout', 'skipped'))",
     ],
   },
+  {
+    // THE-1224: local command configuration failures notify without pausing merges.
+    version: 42,
+    statements: [
+      "ALTER TABLE deploys DROP CONSTRAINT deploys_state_check",
+      "ALTER TABLE deploys ADD CONSTRAINT deploys_state_check CHECK (state IN ('waiting', 'live', 'healthy', 'deploy-failed', 'smoke-failed', 'timeout', 'skipped', 'not-runnable'))",
+    ],
+  },
 ];
 
 export const DB_SCHEMA_VERSION = DB_MIGRATIONS.at(-1)?.version ?? 0;
