@@ -846,6 +846,7 @@ export async function serveFleet(
             pr: idOf(b, "pr"),
             body: text(b, "body", BODY_MAX),
             author: caller.kind === "organization" ? (caller.author ?? "coordinator") : null,
+            coordinator: coordinatorName,
             at,
           });
         }

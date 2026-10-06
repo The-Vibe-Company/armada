@@ -423,6 +423,7 @@ describe("Linear follow-up work", () => {
       pr: 11,
       author: "coordinator",
       body: "Finish Linear for #11",
+      coordinator: "night",
       at: at(30),
     };
     await Promise.all([putChore(db, chore), putChore(db, chore)]);
@@ -430,12 +431,19 @@ describe("Linear follow-up work", () => {
     expect(await open()).toHaveLength(1);
     const original = (await open())[0];
     if (!original) throw new Error("missing chore");
-    await putChore(db, { ...chore, body: "Run: armada merge --finish 11", author: "another coordinator", at: at(31) });
+    await putChore(db, {
+      ...chore,
+      body: "Run: armada merge --finish 11",
+      author: "another coordinator",
+      coordinator: "day",
+      at: at(31),
+    });
     expect(await open()).toMatchObject([
       {
         id: original.id,
         body: "Run: armada merge --finish 11",
         author: "another coordinator",
+        coordinator: "day",
         createdAt: at(31).toISOString(),
       },
     ]);

@@ -879,7 +879,14 @@ export function memoryFleet(): FleetStore & {
     },
     async putChore(i) {
       const was = open(i.project, i.ticket, i.kind);
-      if (was) Object.assign(was, { body: i.body, author: i.author, createdAt: i.at.toISOString(), requestPr: i.pr });
+      if (was)
+        Object.assign(was, {
+          body: i.body,
+          author: i.author,
+          createdAt: i.at.toISOString(),
+          requestPr: i.pr,
+          coordinator: i.coordinator ?? null,
+        });
       else {
         const id = await this.addInboxItem({ ...i, recipient: "coordinator" });
         const inserted = items.find((item) => item.id === id);

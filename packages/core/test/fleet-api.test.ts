@@ -65,7 +65,7 @@ describe("the fleet through Armada", () => {
         op: "chore",
         project: { ...DEMO_PROJECT, slug: "other" },
         caller: { kind: "organization", author: "Synthetic Coordinator" },
-        input: chore,
+        input: { ...chore, coordinatorName: "night" },
       },
       { now: () => NOW },
     );
@@ -74,6 +74,20 @@ describe("the fleet through Armada", () => {
     expect(
       (await store.openInboxItems({ project: "other", ticket: "DEMO-7", recipient: "coordinator" }))[0]?.author,
     ).toBe("Synthetic Coordinator");
+    expect((await store.openInboxItems({ project: "other", recipient: "coordinator" }))[0]?.coordinator).toBe("night");
+    for (const name of ["night", "day"]) {
+      const inbox = await serveFleet(
+        store,
+        {
+          op: "inbox",
+          project: { ...DEMO_PROJECT, slug: "other" },
+          caller: { kind: "organization" },
+          input: { coordinatorName: name, coordinator: null, silentAfterMinutes: 15, etag: null },
+        },
+        { now: () => NOW },
+      );
+      expect((inbox.body.result as import("../src/live.ts").InboxRead).items).toHaveLength(name === "night" ? 1 : 0);
+    }
   });
   test("release validates guards and always checks a worker caller's session identity", async () => {
     const { fleet, store } = tempFleet();
