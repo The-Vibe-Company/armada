@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.61](https://github.com/The-Vibe-Company/armada/compare/v0.2.60...v0.2.61) (2026-10-06)
+
+
+### Bug Fixes
+
+* **ci:** rerun known flakes with dependent summary failures ([#278](https://github.com/The-Vibe-Company/armada/issues/278)) ([46e9f94](https://github.com/The-Vibe-Company/armada/commit/46e9f949430792fea8460b0615046b3833ef686c))
+* **cli:** carry machine settings into deploy watchers ([#279](https://github.com/The-Vibe-Company/armada/issues/279)) ([c184368](https://github.com/The-Vibe-Company/armada/commit/c18436876c4f65aa8b9041780694b266a252d5dd))
+* **cli:** omit redundant config paths from doctor fixes ([#276](https://github.com/The-Vibe-Company/armada/issues/276)) ([50ba661](https://github.com/The-Vibe-Company/armada/commit/50ba66113ab52b262a681b6bbe0f259b33912404))
+
 ## [0.2.60](https://github.com/The-Vibe-Company/armada/compare/v0.2.59...v0.2.60) (2026-10-06)
 
 
