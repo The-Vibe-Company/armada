@@ -17,6 +17,7 @@ import {
   skillsBehindLine,
 } from "@armada/core";
 import { version } from "../package.json" with { type: "json" };
+import { heard } from "./api.ts";
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
@@ -697,7 +698,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       });
       requirePeekCoordinator(local.credentials);
       // Peek needs fleet sign-in and optional local GitHub credentials, never a Linear key.
-      return await peek(selectedIo, config, local.credentials, args);
+      try {
+        return await peek(selectedIo, config, local.credentials, args);
+      } finally {
+        const server = heard(selectedIo).server;
+        if (server) heard(io).server = server;
+      }
     }
     if (args.command === "watch") {
       const { path, text } = await findConfig(io, args.config, "watch", args.project);

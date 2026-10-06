@@ -16,7 +16,7 @@ import {
   updateWatchState,
 } from "@armada/core";
 import type { Io } from "./io.ts";
-import { UsageError } from "./io.ts";
+import { httpOptions, UsageError } from "./io.ts";
 import { requireSignIn } from "./login.ts";
 import { claimRef, type Peek, runtimeFor } from "./runtimes/adapter.ts";
 import { liveFleet, type WorkerArgs } from "./worker.ts";
@@ -230,7 +230,7 @@ export async function peek(io: Io, config: ArmadaConfig, credentials: Credential
           token: credentials.githubToken,
           repository: config.github.repository,
           number: Number(match[2]),
-          ...(io.fetch ? { fetch: io.fetch } : {}),
+          ...httpOptions(io),
         });
         if (pr)
           pull = {

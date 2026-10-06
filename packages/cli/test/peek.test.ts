@@ -30,7 +30,12 @@ async function fixture(runtime = "Conductor", pending = false) {
   homes.push(home);
   const store = memoryFleet();
   const clock = fakeClock(new Date("2026-07-01T12:14:00Z"));
-  const api = fakeArmada({ keys: { armada_key_CANARY_peek: "peek" }, store, clock });
+  const api = fakeArmada({
+    keys: { armada_key_CANARY_peek: "peek" },
+    store,
+    clock,
+    cli: { minimum: "0.0.1", latest: "99.1.0" },
+  });
   const handle =
     runtime === "Herdr" ? JSON.stringify({ workspace: "w8", pane: "w8:p9", agent: "demo-7" }) : "ws_8/ses_9";
   if (!pending)
@@ -154,6 +159,7 @@ test("peek shows local runtime facts, redacted reply and commands and keeps its 
   expect(json.runtime.actions.map((a: { exit: number }) => a.exit)).toEqual([0, 1]);
   expect(f.calls.at(-1)).toContain("--after");
   expect(f.calls.every((call) => !call.includes("sql") && !call.includes("create"))).toBe(true);
+  expect(f.err.filter((line) => line.includes("99.1.0"))).toHaveLength(1);
 });
 
 test("peek reads a local herdr worker through the same command", async () => {
@@ -298,6 +304,25 @@ test("peek reads PR check counts once and reports missing GitHub credentials", a
   expect(reads).toBe(1);
   expect(await run(["peek", "DEMO-7"], f.io)).toBe(0);
   expect(f.out.at(-1)).toContain("checks not read: no GitHub token");
+  const waits: number[] = [];
+  let attempts = 0;
+  expect(
+    await run(["peek", "DEMO-7", "--json"], {
+      ...io,
+      sleep: async (ms) => {
+        waits.push(ms);
+      },
+      fetch: async (url, options) => {
+        if (String(url) === GITHUB_GRAPHQL && attempts++ === 0)
+          return new Response("temporary outage", { status: 503 });
+        return io.fetch?.(url, options) as Promise<Response>;
+      },
+    }),
+  ).toBe(0);
+  expect(attempts).toBe(2);
+  expect(waits).toHaveLength(1);
+  expect(JSON.parse(f.out.at(-1) ?? "{}").pull.counts).toEqual({ passed: 1, running: 1, failed: 1 });
+  expect(f.err.join("")).toContain("GitHub");
 });
 
 test("Conductor bounds a long transcript, resumes from its cursor and reads archived/unknown formats", async () => {
