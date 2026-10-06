@@ -32,6 +32,19 @@ export const STOP_HOOK_VARIABLE = "ARMADA_STOP_HOOK";
  * What one machine remembers of a project's watch, in
  * `armada/watch/<project>.json` (`machine.ts`). No secret.
  */
+export interface PeekTail {
+  generation: string;
+  lastReply: { at: string | null; text: string } | null;
+  actions: {
+    id?: string;
+    at: string | null;
+    kind: "command" | "tool" | "message";
+    text: string;
+    exit?: number | null;
+  }[];
+  truncated: boolean;
+}
+
 export interface WatchState {
   /** The checkout (directory of armada.toml) where `armada watch` last ran: the coordinator's. */
   root: string | null;
@@ -41,6 +54,9 @@ export interface WatchState {
   freshStart?: boolean;
   /** Last attempted Conductor observation, per handle and generation (60 s throttle). */
   runtimeObserved?: Record<string, string>;
+  /** Transcript cursors use a dedicated <project>.peek namespace, separate from fleet watch. */
+  peek?: Record<string, string>;
+  peekTail?: Record<string, PeekTail>;
   /** Entries the coordinator was shown (`entryKey`), by `inbox` or `watch`: they do not wake a watch again. */
   seen: string[];
   /** Tickets a worker held at the last read, the coordinator's own excluded; null when unknown. */

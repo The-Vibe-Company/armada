@@ -9,7 +9,7 @@ import { parse, TomlError } from "smol-toml";
 import { ConfigError } from "./config.ts";
 import { parseDotenv, updateDotenv } from "./dotenv.ts";
 import { COORDINATOR } from "./fleet-api.ts";
-import { EMPTY_WATCH_STATE, type WatchState } from "./watch.ts";
+import { EMPTY_WATCH_STATE, type PeekTail, type WatchState } from "./watch.ts";
 
 export interface MachinePaths {
   dir: string;
@@ -224,6 +224,43 @@ const strings = (v: unknown): string[] | null =>
   Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : null;
 const stringOr = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
+function peekTails(value: unknown): Record<string, PeekTail> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const tails: Record<string, PeekTail> = {};
+  const at = (v: unknown) => v === null || (typeof v === "string" && Number.isFinite(Date.parse(v)));
+  const reply = (v: unknown): v is NonNullable<PeekTail["lastReply"]> => {
+    if (typeof v !== "object" || v === null) return false;
+    const r = v as Record<string, unknown>;
+    return typeof r.text === "string" && r.text.length <= 4000 && at(r.at);
+  };
+  for (const [key, raw] of Object.entries(value).slice(-50)) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const t = raw as Record<string, unknown>;
+    if (
+      typeof t.generation !== "string" ||
+      typeof t.truncated !== "boolean" ||
+      !(t.lastReply === null || reply(t.lastReply)) ||
+      !Array.isArray(t.actions) ||
+      t.actions.length > 100
+    )
+      continue;
+    const actions: PeekTail["actions"] = [];
+    for (const raw of t.actions) {
+      if (!reply(raw)) continue;
+      const a = raw as Record<string, unknown>;
+      if (
+        !["command", "tool", "message"].includes(String(a.kind)) ||
+        !(a.id === undefined || (typeof a.id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(a.id))) ||
+        !(a.exit === undefined || a.exit === null || (typeof a.exit === "number" && Number.isSafeInteger(a.exit)))
+      )
+        continue;
+      actions.push(raw as PeekTail["actions"][number]);
+    }
+    tails[key] = { generation: t.generation, truncated: t.truncated, lastReply: t.lastReply, actions };
+  }
+  return tails;
+}
+
 /** The project's watch state; null when there is none or it cannot be read as one. */
 export async function readWatchState(
   paths: MachinePaths,
@@ -239,6 +276,19 @@ export async function readWatchState(
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
   return {
+    // Only a bounded, validated transcript tail is read back.
+    ...(typeof r.peek === "object" && r.peek !== null && !Array.isArray(r.peek)
+      ? {
+          peek: Object.fromEntries(
+            Object.entries(r.peek)
+              .filter(([_, v]) => typeof v === "string")
+              .slice(-50),
+          ) as Record<string, string>,
+        }
+      : {}),
+    ...(typeof r.peekTail === "object" && r.peekTail !== null && !Array.isArray(r.peekTail)
+      ? { peekTail: peekTails(r.peekTail) }
+      : {}),
     root: stringOr(r.root),
     seen: strings(r.seen) ?? [],
     inFlight: strings(r.inFlight),

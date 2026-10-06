@@ -33,6 +33,7 @@ export class HerdrAdapter implements RuntimeAdapter {
   constructor(
     private readonly io: Io,
     _config?: ArmadaConfig,
+    private readonly secretValues: readonly string[] = [],
   ) {
     this.runtime = new Herdr(io, recheckMutation);
   }
@@ -120,8 +121,8 @@ export class HerdrAdapter implements RuntimeAdapter {
     if (
       !local ||
       local !== (await git(tree.path, common)) ||
-      !target.branch ||
-      (await git(tree.path, ["branch", "--show-current"])) !== target.branch
+      (target.claimedAt !== null && !target.branch) ||
+      (target.branch && (await git(tree.path, ["branch", "--show-current"])) !== target.branch)
     )
       throw new RuntimeError(
         "herdr workspace does not match the claimed repository and branch",
@@ -156,7 +157,7 @@ export class HerdrAdapter implements RuntimeAdapter {
     return {
       ...reading,
       link: null,
-      lastReply: { at: null, text: redactRuntimeText(r.stdout) },
+      lastReply: { at: null, text: redactRuntimeText(r.stdout, this.secretValues) },
       actions: [],
       cursor: options.cursor,
       truncated: false,
