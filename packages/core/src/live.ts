@@ -9,6 +9,7 @@
 // record.
 import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
+import type { DigestInput, DigestRequest, DigestResult } from "./digest.ts";
 import { NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
 import { attachPullRequests } from "./github.ts";
 import { buildModel, isClosed } from "./model.ts";
@@ -261,6 +262,11 @@ type Item = { project: string; ticket: string; author: string | null; body: stri
  * it on Postgres (`packages/dashboard/lib/fleet-store.ts`); tests on memory.
  */
 export interface FleetStore {
+  digestRecords(
+    project: string,
+    since: string | null,
+    now: Date,
+  ): Promise<{ input: DigestInput; language: "en" | "fr" }>;
   /** Registers the project only if it is not there yet. */
   ensureProject(p: ProjectInput, at: Date): Promise<void>;
   /** Registers a project, or updates its name, repository and root. */
@@ -1141,6 +1147,8 @@ export function freshRuntimeState(
  * API with the terminal's sign-in (`fleetClient`). Times are the server's.
  */
 export interface Fleet {
+  digest(request: DigestRequest): Promise<DigestResult>;
+  sendDigest(request: DigestRequest): Promise<DigestResult>;
   coordinator(facts: CoordinatorFacts): Promise<void>;
   request(input: {
     kind: "merge-request" | "release-request" | "plan-changes";

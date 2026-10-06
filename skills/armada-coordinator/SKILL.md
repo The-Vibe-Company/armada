@@ -44,6 +44,8 @@ A coordinator may start cold, on a laptop or in a fresh cloud session, with noth
 
 Repeat from step 1.
 
+When the owner asks where things stand, run `armada digest` and paste its text; do not write the status by hand. Use `--since 4h` for an explicit window or `--send` to post the same project summary through its configured channel. Owner-facing text follows `[tracker] language`, with `--lang en|fr` as an override.
+
 ## Cut and repair specs
 
 Specs are direct children of the configured program root. Armada reads both `Spec N — Name` and the legacy `Spec N/M — Name`; use `armada spec add "<name>"` to append one with the **In short** template and print its URL, then fill in the outcome, why, observable checks and dependencies before cutting its tickets.

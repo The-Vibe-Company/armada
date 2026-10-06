@@ -20,6 +20,7 @@ import { version } from "../package.json" with { type: "json" };
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
+import { digest } from "./digest.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
@@ -63,6 +64,10 @@ const COMMAND_HELP: Record<string, string> = {
                     template. Plain append creates immediately if no titles must change.
                     --at and renumber preview changes; --apply writes them sequentially.
                     [tracker] spec_titles = "N/M" opts into updating every total.
+`,
+  digest: `  digest [--since <ISO|4h>] [--lang en|fr] [--send] [--json]
+                    Print the current project's owner summary since its last digest.
+                    --send posts it through Organization > Notifications; no address is released.
 `,
   status: `  status            Tickets in flight, tickets ready to start and pull requests waiting
   status --all      The same for every project registered by \`armada init\`
@@ -256,6 +261,7 @@ const COMMAND_HELP: Record<string, string> = {
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
+  "digest",
   "attach",
   "status",
   "spec",
@@ -392,9 +398,12 @@ const VALUE_OPTIONS = [
   "validation",
   "validation-reason",
   "notes",
+  "since",
+  "lang",
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "send",
   "apply",
   "stop",
   "background",
@@ -414,6 +423,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  digest: ["since", "lang", "send"],
   spec: ["at", "apply"],
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
@@ -648,6 +658,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "digest") {
+      const { path, text } = await findConfig(io, args.config, "digest", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { armada: false });
+      return await digest(io, config, credentials, args);
     }
     const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
       args.command
