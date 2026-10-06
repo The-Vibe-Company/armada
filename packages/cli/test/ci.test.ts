@@ -8,11 +8,14 @@ import { DEMO_TOML, recordedFetch } from "../../core/test/support.ts";
 import { type Io, run } from "../src/cli.ts";
 
 const sha = "a".repeat(40);
-function fixture({ cancelled = false, push = false, empty = false, permission = false } = {}) {
+function fixture({ cancelled = false, push = false, empty = false, permission = false, transient = false } = {}) {
   const out: string[] = [],
     err: string[] = [],
     calls: string[] = [];
   let reads = 0;
+  let logReads = 0;
+  let attemptReads = 0;
+  const waits: number[] = [];
   const io: Io = {
     cwd: "/project",
     env: { GITHUB_TOKEN: "synthetic" },
@@ -20,6 +23,9 @@ function fixture({ cancelled = false, push = false, empty = false, permission = 
     ghToken: () => null,
     stdout: (s) => out.push(s),
     stderr: (s) => err.push(s),
+    sleep: async (ms) => {
+      waits.push(ms);
+    },
     fetch: async (url, init) => {
       calls.push(url);
       if (url === GITHUB_GRAPHQL) {
@@ -87,19 +93,35 @@ function fixture({ cancelled = false, push = false, empty = false, permission = 
           },
         });
       }
-      if (url.endsWith("/logs"))
+      if (url.endsWith("/logs")) {
+        if (transient && ++logReads === 1) return new Response(null, { status: 503 });
         return permission
           ? new Response(null, { status: 403 })
           : new Response(
               "Expected: true\nReceived: false\n(fail) widgets > saves a draft [1.00ms]\n##[error]Process completed with exit code 1.\n" +
                 "context\n".repeat(50),
             );
-      if (url.endsWith("/runs/7")) return Response.json({ run_attempt: 2 });
+      }
+      if (url.endsWith("/runs/7")) {
+        if (transient && ++attemptReads === 1) return new Response(null, { status: 502 });
+        return Response.json({ run_attempt: 2 });
+      }
       throw new Error("unexpected non-GitHub read");
     },
   };
-  return { io, out: () => out.join(""), err: () => err.join(""), calls };
+  return { io, out: () => out.join(""), err: () => err.join(""), calls, waits };
 }
+
+test("ci why retries temporary Actions failures through injected waits and stderr notices", async () => {
+  const f = fixture({ transient: true });
+  expect(await run(["ci", "why", "9"], f.io)).toBe(0);
+  expect(f.out()).toContain("widgets > saves a draft");
+  expect(f.out()).toContain("workflow attempt 2");
+  expect(f.err()).toContain("GitHub answered 503; trying again");
+  expect(f.err()).toContain("GitHub answered 502; trying again");
+  expect(f.err()).not.toContain("unavailable");
+  expect(f.waits).toHaveLength(2);
+});
 
 test.each(
   [["9"], ["https://github.com/acme/widgets/pull/9"], ["--sha", sha], ["--branch", "main"]].map((selector) => ({

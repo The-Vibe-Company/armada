@@ -59,7 +59,12 @@ async function fixture(runtime: RuntimeName = "conductor") {
   const api = fakeArmada({ store, clock, keys: { armada_key_CANARY_test: "test" } });
   const io: Io = {
     cwd: "/work/widgets",
-    env: { XDG_CONFIG_HOME: home, ARMADA_API_URL: ARMADA_URL, ARMADA_API_KEY: "armada_key_CANARY_test" },
+    env: {
+      XDG_CONFIG_HOME: home,
+      ARMADA_API_URL: ARMADA_URL,
+      ARMADA_API_KEY: "armada_key_CANARY_test",
+      LINEAR_API_KEY: "synthetic-runtime-key",
+    },
     readFile: async (p) => (p === "/work/widgets/armada.toml" ? DEMO_TOML : null),
     ghToken: () => null,
     now: clock.now,
@@ -518,4 +523,37 @@ test("Claude Code refuses every adapter operation with the manual guide and exec
   expect(await run(["stop", "DEMO-7"], f.io)).toBe(1);
   expect(f.output.join("")).toContain("armada-runtime-claude-code");
   expect(f.calls).toEqual([]);
+});
+
+test.each(["provenance", "wait"])("ended archive refuses new workspace sharing during %s", async (when) => {
+  const f = await fixture();
+  await f.store.releaseRuntimeHandle(config.project.slug, "DEMO-7", NOW);
+  const h = await f.fleet.runtimeHandle("DEMO-7");
+  if (!h) throw new Error("missing ended fixture claim");
+  const ended = claimRef(h);
+  const share = async () => {
+    await f.store.saveRuntimeHandle({
+      project: config.project.slug,
+      ticket: "DEMO-8",
+      runtime: "Conductor",
+      handle: "ws-1/ses-other",
+      branch: "feature/demo-8",
+      at: f.clock.now(),
+    });
+    f.set({ state: "idle" });
+  };
+  if (when === "provenance") f.set({ state: "idle", beforeRead: share });
+  else
+    f.io.sleep = async (ms) => {
+      await f.clock.sleep(ms);
+      await share();
+    };
+  expect(
+    await codeOf(
+      guarded(f.fleet, ended, "ended", () =>
+        f.adapter.archive(ended, { reason: "merged", whenWorking: "wait", waitMs: 600_000 }),
+      ),
+    ),
+  ).toBe("busy");
+  expect(f.calls.some((call) => call.args.includes("archive") || call.args.includes("cancel"))).toBe(false);
 });

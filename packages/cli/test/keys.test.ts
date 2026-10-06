@@ -255,12 +255,14 @@ describe("the organization's keys from Armada", () => {
       expect(await run(["auth", "status"], m.io)).toBe(0);
       expect(m.printed().includes("! Armada gave no keys")).toBe(command === 0);
     }
-    expect(attempts).toBe(1);
+    // One logical broker probe: 429 is never retried; temporary server errors get three attempts.
+    const attemptsPerProbe = code === 429 ? 1 : 3;
+    expect(attempts).toBe(attemptsPerProbe);
     // Losing the local key must not let remembered failures hide the real error.
     await writeFile(m.credentials, "");
     expect(await run(["status"], m.io)).toBe(1);
     expect(m.printed()).toContain("keys temporarily unavailable");
-    expect(attempts).toBe(2);
+    expect(attempts).toBe(attemptsPerProbe * 2);
   });
 
   test("a CLI older than Armada expects stops on one line that upgrades it, whatever keys the machine has", async () => {

@@ -190,6 +190,42 @@ test("logs keep their last 3000 lines, stop at 5 MB and warn on Actions read or 
   }
 });
 
+test("a redirected log retry discards its error body without buffering it or forwarding authorization", async () => {
+  let pulls = 0;
+  let cancelled = false;
+  let downloads = 0;
+  const log = await fetchJobLog({
+    token: "synthetic",
+    repository: "acme/widgets",
+    jobId: 11,
+    sleep: async () => {},
+    fetch: async (url, init) => {
+      if (url.endsWith("/logs"))
+        return new Response(null, { status: 302, headers: { Location: "https://logs.example.test/job" } });
+      expect(new Headers(init.headers).has("Authorization")).toBe(false);
+      if (++downloads === 1)
+        return new Response(
+          new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array(64 * 1024));
+              if (++pulls === 100) controller.close();
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 503 },
+        );
+      return new Response("(fail) saves a draft [1.00ms]");
+    },
+  });
+  expect(cancelled).toBe(true);
+  expect(pulls).toBeLessThanOrEqual(1);
+  expect(downloads).toBe(2);
+  expect(log.lines).toEqual(["(fail) saves a draft [1.00ms]"]);
+  expect(log.warnings).toEqual([]);
+});
+
 test("historical cancellation uses the suite branch head, and each matrix leg is retained once", async () => {
   const run = {
     databaseId: 11,

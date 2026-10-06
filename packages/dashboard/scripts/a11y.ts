@@ -187,6 +187,7 @@ async function targets(seeded: Seeded | null): Promise<Target[]> {
           { path: "/organization/keys", who: "owner" },
           { path: "/organization/github", who: "owner" },
           { path: "/organization/workers", who: "owner" },
+          { path: "/organization/notifications", who: "owner" },
           { path: "/device", who: "owner" },
           { path: "/login", who: "none" },
           { path: "/welcome", who: "member" },

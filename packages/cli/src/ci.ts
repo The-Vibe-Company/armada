@@ -12,7 +12,7 @@ import {
   type JobLog,
   parsePullRequestUrl,
 } from "@armada/core";
-import { type Io, UsageError } from "./io.ts";
+import { httpOptions, type Io, UsageError } from "./io.ts";
 
 const LABELS: Record<Explanation["class"], string> = {
   known: "known flaky test",
@@ -65,7 +65,7 @@ export async function ciWhy(
   const token = credentials.githubToken;
   if (!token)
     throw new UsageError("GITHUB_TOKEN is required for ci why (or sign in with gh auth login)", "gh auth login");
-  const opts = { token, repository: config.github.repository, fetch: io.fetch };
+  const opts = { token, repository: config.github.repository, ...httpOptions(io) };
   const head = async () => {
     if (branch) return fetchBranchHead({ ...opts, branch });
     const pull = await fetchPullRequest({ ...opts, number: number as number });
