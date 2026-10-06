@@ -1,4 +1,3 @@
-import { liveFleet } from "./worker.ts";
 // `armada brief <ticket>`: the launch prompt and settings for a new worker.
 // Prints variable names and whether this shell has them, never their values.
 // Signed in to Armada, it asks for a one-time launch token for the ticket and
