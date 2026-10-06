@@ -135,6 +135,10 @@ describe("armada.toml", () => {
       timeoutMinutes: 20,
       pauseOnFailure: true,
     });
+    expect(parseConfig(`${text}paths = ["cmd/**", "internal/**"]`).deploy?.targets[0]?.paths).toEqual([
+      "cmd/**",
+      "internal/**",
+    ]);
     const withJobs = parseConfig(
       `${text}\n[jobs.eval]\nstart = "dispatch"\nstop = "cancel"\n[[ci.known_failure]]\ncheck = "test"\npattern = "cold start"\nticket = "DEMO-10"`,
     );
@@ -146,6 +150,12 @@ describe("armada.toml", () => {
       "timeout_minutes = 0",
       "timeout_minutes = 121",
       'pause_on_failure = "false"',
+      'paths = "cmd/**"',
+      "paths = []",
+      'paths = ["../outside/**"]',
+      'paths = ["/absolute/**"]',
+      'paths = [""]',
+      "paths = [1]",
       "typo = true",
       '[[deploy.target]]\nname = "api"\nlive_sha_command = "version"',
     ])

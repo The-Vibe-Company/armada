@@ -8,6 +8,7 @@
 import picomatch from "picomatch";
 import { ArmadaApiError } from "./armada-api.ts";
 import type { ArmadaConfig } from "./config.ts";
+import { selectDeployTargets } from "./deploy.ts";
 import { mainHealthLine, type UnblockedTickets } from "./fleet.ts";
 import type { CommitShape, Comparison, MergePull } from "./github.ts";
 import { LinearError } from "./linear.ts";
@@ -1829,9 +1830,12 @@ async function after(
 ): Promise<MergeOutcome> {
   ctx.onMerged?.(merged, c.ticket?.id ?? null);
   await ctx.tick?.();
-  const targets = (ctx.config.deploy?.targets ?? [])
-    .filter((t) => t.branch === null || t.branch === merged.baseRef)
-    .map((t) => t.name);
+  const { targets, skipped } = selectDeployTargets(
+    ctx.config.deploy?.targets ?? [],
+    merged.baseRef,
+    noticeFileCoverage(merged),
+  );
+  for (const name of skipped) lines.push(`Skipped deploy to ${name}: no changed files match paths.`);
   const deploy = targets.length ? { targets } : null;
   const ticket = c.ticket;
   let chorePending = false;

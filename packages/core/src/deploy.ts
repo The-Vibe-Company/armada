@@ -1,4 +1,23 @@
+import picomatch from "picomatch";
 import type { DeployTarget } from "./config.ts";
+
+/** Only complete changed-file coverage can prove a scoped target unaffected. */
+export function selectDeployTargets(
+  targets: readonly DeployTarget[],
+  branch: string,
+  coverage: { files: string[] | null; filesComplete: boolean },
+): { targets: string[]; skipped: string[] } {
+  const selected: string[] = [];
+  const skipped: string[] = [];
+  for (const target of targets) {
+    if (target.branch !== null && target.branch !== branch) continue;
+    const matches = target.paths ? picomatch(target.paths, { dot: true }) : null;
+    if (matches && coverage.files !== null && coverage.filesComplete && !coverage.files.some((file) => matches(file)))
+      skipped.push(target.name);
+    else selected.push(target.name);
+  }
+  return { targets: selected, skipped };
+}
 
 export const DEPLOY_STATES = ["waiting", "live", "healthy", "deploy-failed", "smoke-failed", "timeout"] as const;
 export type DeployState = (typeof DEPLOY_STATES)[number];
