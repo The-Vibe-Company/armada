@@ -237,6 +237,7 @@ export const LABELS: TicketLabel[] = [
   { id: "rt-claude", name: "Claude Code", group: "Agent runtime" },
   { id: "rt-herdr", name: "Herdr", group: "Agent runtime" },
   { id: "ready", name: "ready-for-agent", group: null },
+  { id: "plan-approved", name: "plan-approved", group: null },
 ];
 
 export const STATES: WorkflowState[] = [
@@ -321,6 +322,10 @@ export class FakeLinear implements LinearWriter {
 
   async groupLabels(group: string) {
     return LABELS.filter((l) => l.group === group);
+  }
+
+  async labelByName(name: string, _teamId: string) {
+    return LABELS.find((l) => l.name.toLowerCase() === name.toLowerCase()) ?? null;
   }
 
   async createIssue(input: IssueCreate) {

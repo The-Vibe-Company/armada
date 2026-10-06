@@ -3,38 +3,38 @@
   "skills": {
     "armada-coordinator": {
       "source": "The-Vibe-Company/armada",
-      "sourceType": "github",
+      "sourceType": "armada-cli",
       "skillPath": "skills/armada-coordinator/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "fb6b660277a354ca2c84ec22451430073e691a2a3294e0f0a6993427bf511222"
+      "computedHash": "a70805bcecb237d57cb33f2008372581ff848e4dd7a72b284b4bc8ef081e8e25"
     },
     "armada-runtime-claude-code": {
       "source": "The-Vibe-Company/armada",
-      "sourceType": "github",
+      "sourceType": "armada-cli",
       "skillPath": "skills/armada-runtime-claude-code/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "fc9934091c587dd85073ac0bd5ca86d45f464f8b2c7292578a4e4592df6af35c"
+      "computedHash": "5c89e24582deba8516b484faea596cc1cc46de2c2446b7c0cda781f3108c4356"
     },
     "armada-runtime-conductor": {
       "source": "The-Vibe-Company/armada",
-      "sourceType": "github",
+      "sourceType": "armada-cli",
       "skillPath": "skills/armada-runtime-conductor/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "392d329db85729c14d239a6152c472ce08850a88d6c6bf85388ebaaba6626a95"
+      "computedHash": "f582aa6ab2c56d56eabc3dbb786d57f16dd2da6d939226dc9384e07527fef64a"
     },
     "armada-runtime-herdr": {
       "source": "The-Vibe-Company/armada",
-      "sourceType": "github",
+      "sourceType": "armada-cli",
       "skillPath": "skills/armada-runtime-herdr/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "a5c58e59c68614fc5b802c52f6bc1bdf2e86f87f3877aa30774bc1e59c092131"
+      "computedHash": "80ab7f801820d7c5958c5d33e63a8e8819443d9b767d14804e487cf53c9d8c81"
     },
     "armada-worker": {
       "source": "The-Vibe-Company/armada",
-      "sourceType": "github",
+      "sourceType": "armada-cli",
       "skillPath": "skills/armada-worker/SKILL.md",
       "ref": "v0.2.55",
-      "computedHash": "c0c9e224354974ee8a3769c6c1ba2659be885615080b48040943247331f1dedd"
+      "computedHash": "e5fb0b8ce19bf0af1858bc7bb3ac1dea2b92508255e7432ccc8bdfebab987987"
     },
     "better-ui": {
       "source": "jakubkrehel/skills",
