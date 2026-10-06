@@ -57,6 +57,8 @@ export function renderStatus(r: StatusReport): string {
   const gh = r.sources.github.error ? `GitHub not read: ${r.sources.github.error}` : `GitHub ${r.project.repository}`;
   out.push(`Read ${r.generatedAt.slice(0, 16).replace("T", " ")} UTC · Linear ${r.programRoot.id} · ${gh}`);
 
+  for (const h of r.holds ?? [])
+    out.push(`Merges paused since ${h.openedAt.slice(11, 16)} UTC: ${h.reason} (hold #${h.id})`);
   if (r.main) out.push(mainHealthLine(r.main));
 
   out.push("", `In flight (${r.inFlight.length})`);
