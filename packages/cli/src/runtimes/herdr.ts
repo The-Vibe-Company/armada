@@ -57,6 +57,31 @@ export class HerdrAdapter implements RuntimeAdapter {
   async launch(spec: LaunchSpec): Promise<Launched> {
     return this.launchPrepared(spec, async () => spec.prompt);
   }
+  async resumeState(target: ClaimRef) {
+    await this.verify(target);
+    const tree = await this.runtime.worktree(this.parse(target.handle));
+    const git = await this.io.exec?.("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+      cwd: tree.path,
+      timeoutMs: 5000,
+    });
+    if (git?.code !== 0)
+      throw new RuntimeError("could not read the old worktree", "unavailable", "herdr worktree list");
+    return { ready: true, clean: !git.stdout.trim(), path: tree.path };
+  }
+  /** Preserve the old branch, commits and dirty files while freeing the ticket branch for a fresh checkout. */
+  async retainBranch(target: ClaimRef, branch: string): Promise<ClaimRef> {
+    const tree = await this.runtime.worktree(this.parse(target.handle));
+    await checkedMutation(
+      target,
+      () => this.verify(target),
+      async () => {
+        const result = await this.io.exec?.("git", ["branch", "-m", branch], { cwd: tree.path, timeoutMs: 5000 });
+        if (result?.code !== 0)
+          throw new RuntimeError("could not retain the old worktree branch", "unavailable", "herdr worktree list");
+      },
+    );
+    return { ...target, branch };
+  }
   /** Legacy herdr briefs need the created handle before startup; no token touches disk. */
   async launchPrepared(spec: LaunchSpec, prepare: (worker: Launched) => Promise<string>): Promise<Launched> {
     if (!spec.profile.herdr) throw new RuntimeError("herdr needs a full local profile", "invalid", "armada doctor");
@@ -88,6 +113,7 @@ export class HerdrAdapter implements RuntimeAdapter {
             base: from.kind === "branch" ? from.head : spec.base,
             ticket: spec.ticket,
             secrets: spec.blankSecrets,
+            ...spec.herdrTarget,
           });
     const prompt = await prepare({ handle: herdrClaimHandle(h), path: h.path, link: null, state: "idle" });
     if (from.kind === "in-place") {

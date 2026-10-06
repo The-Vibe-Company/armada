@@ -225,6 +225,8 @@ export type LeaseResult = { acquired: true } | { acquired: false; held: Lease | 
  * claimed the ticket since: the newest launch of its ticket, not ended.
  */
 export interface PendingLaunch {
+  /** Exact launch id for guarded replacement; absent on older servers. */
+  id?: string;
   ticket: string;
   launchedAt: string;
   /** When the worker signed in with the launch token; null while it never did. */
@@ -304,6 +306,11 @@ export interface FleetStore {
   /** Sessions still holding a ticket of the project, by ticket id. */
   openRuntimeHandles(project: string): Promise<RuntimeHandle[]>;
   getRuntimeHandle(project: string, ticket: string): Promise<RuntimeHandle | null>;
+  /** Reads one exact historical claim or bound unclaimed launch, without secrets. */
+  getRuntimeReference(
+    project: string,
+    ref: import("./runtime.ts").ClaimRef,
+  ): Promise<import("./runtime.ts").ClaimRef | null>;
   observeRuntime(input: {
     project: string;
     ticket: string;
@@ -549,6 +556,8 @@ export async function recordRelease(
   // No worker is left to take an answer.
   await store.resolveInboxItems({ project, ticket: r.ticket, kind: "question", resolution, at });
   await store.resolveInboxItems({ project, ticket: r.ticket, kind: "answer-request", resolution, at });
+  if (r.reason.startsWith("relaunch:"))
+    await store.resolveInboxItems({ project, ticket: r.ticket, kind: "hand-back", resolution, at });
   await store.recordEvent({ project, ticket: r.ticket, kind: "release", message: r.reason, at });
   return { released: true };
 }
@@ -1158,6 +1167,7 @@ export interface Fleet {
   heartbeat(input: HeartbeatRecord): Promise<HeartbeatResult>;
   runtimeHandles(): Promise<RuntimeHandle[]>;
   runtimeHandle(ticket: string): Promise<RuntimeHandle | null>;
+  runtimeReference(ref: import("./runtime.ts").ClaimRef): Promise<import("./runtime.ts").ClaimRef | null>;
   observeRuntime(input: {
     ticket: string;
     handle: string;

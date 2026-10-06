@@ -52,8 +52,8 @@ conductor --json session status <sessionId>
 The output is `{"workspaceId", "sessionId", "status", "updatedAt"}`. For a worker:
 
 - `working`: a turn is running. A silent worker that is `working` is busy (a long build or test run): leave it, and read the transcript if it stays silent past twice `policy.silence_minutes`.
-- `idle`: no turn is running. The worker finished its turn: it handed back, it waits for an answer, or it stopped without finishing. If `armada status` does not show it `ready-to-merge`, `awaiting-approval`, `awaiting-validation` or `blocked`, it has stopped: read its last reply, then message it to go on, or release and relaunch the ticket.
-- `error`: the last turn failed (agent or provider failure). Read the transcript and message it to resume; if it fails again, cancel, archive, release and relaunch.
+- `idle`: no turn is running. The worker finished its turn: it handed back, it waits for an answer, or it stopped without finishing. If `armada status` does not show it `ready-to-merge`, `awaiting-approval`, `awaiting-validation` or `blocked`, it has stopped: read its last reply, then message it to go on, or run `armada relaunch ABC-12 --reason "stopped without finishing"`.
+- `error`: the last turn failed (agent or provider failure). Read the transcript and message it to resume; if it fails again, run `armada relaunch ABC-12 --reason "session failed"`.
 - Right after launch the session is `idle` for a few seconds while the workspace is initializing and the first message is queued; it turns `working` when the agent starts.
 
 The workspace itself: `conductor --json workspace status <workspaceId>` gives `status` `initializing`, `ready` or `archived`.
@@ -88,6 +88,8 @@ Another agent, or a filter that prints nothing: count the event types, look at o
 ```sh
 jq -r '.data[].content.rawPayload | .type // .event.type // "(no payload)"' /tmp/abc-12-events.json | sort | uniq -c
 ```
+
+A relaunch defaults to a new session in a ready workspace, preserving uncommitted files. Failed or gone sessions default to a fresh workspace from the pushed ticket branch. `armada relaunch ABC-12 --reason "<why>" --in-place` requires a ready workspace; `--fresh` chooses a new one. The old session is stopped, its exact generation released, the replacement launched and bound, then only the old session (in-place) or old workspace (fresh) is archived. `--keep-old` skips archival. The continuation brief names the pushed head and existing PR; push to that PR, never open a second one or force-push. On partial failure, follow the printed ownership state and next command.
 
 ## Stop and archive
 

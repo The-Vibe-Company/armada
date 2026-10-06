@@ -37,6 +37,7 @@ async function fixture(
     toml?: string;
     missing?: boolean;
     promptFailure?: boolean;
+    promptTimeout?: boolean;
     unsigned?: boolean;
     state?: string;
     unpublished?: boolean;
@@ -198,6 +199,7 @@ async function fixture(
           return { code: 1, stdout: JSON.stringify({ error: { code: "agent_not_ready" } }), stderr: "" };
         if (args[1] === "prompt") {
           prompt = args[3] ?? "";
+          if (options.promptTimeout) return { code: 1, timedOut: true, stdout: prompt, stderr: prompt };
           if (options.promptFailure) throw new Error(prompt);
         }
         reply = {
@@ -310,6 +312,15 @@ test("a failed prompt retains the workspace, revokes its token and never leaks i
   expect(f.errors()).toContain("local workspace retained");
   expect(f.errors()).toContain("revoked the pending launch of DEMO-13");
   expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(true);
+  expect(f.output() + f.errors()).not.toContain("armada_launch_CANARY_1");
+});
+
+test("an uncertain herdr prompt retains its pending token and never retries or ends the possible worker", async () => {
+  const f = await fixture({ promptTimeout: true });
+  expect(await run(["launch", "DEMO-13", "--runtime", "herdr"], f.io)).toBe(2);
+  expect(f.errors()).toContain("unknown outcome; the pending launch is retained");
+  expect(f.armada.launches.get("armada_launch_CANARY_1")?.used).toBe(false);
+  expect(f.calls.filter((call) => call[1] === "agent" && call[2] === "prompt")).toHaveLength(1);
   expect(f.output() + f.errors()).not.toContain("armada_launch_CANARY_1");
 });
 

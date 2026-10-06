@@ -6,6 +6,7 @@ import {
   type Archived,
   type ArchiveOptions,
   checkedMutation,
+  checkWorkspaceEnded,
   type Delivery,
   type Launched,
   type LaunchRecovery,
@@ -201,6 +202,12 @@ export class ConductorAdapter implements RuntimeAdapter {
   private profile(spec: LaunchSpec): string[] {
     const p = spec.profile;
     return ["--agent", p.agent, "--model", p.model, "--effort", p.effort, ...(p.fastMode ? ["--fast-mode"] : [])];
+  }
+  async resumeState(target: ClaimRef) {
+    const h = this.parse(target.handle);
+    await this.session(target);
+    const ws = await this.workspace(h.workspace);
+    return { ready: ws.status === "ready", clean: true, path: null };
   }
   async launch(spec: LaunchSpec): Promise<Launched> {
     if (
@@ -536,10 +543,13 @@ export class ConductorAdapter implements RuntimeAdapter {
         const session = await this.session(target);
         if (session.status === "working" || conductorSessionState(String(session.status)) === "unknown")
           throw this.error("busy");
+        if (options.reason !== "relaunched" || options.workspace) await checkWorkspaceEnded(target);
       },
       () =>
         this.call(
-          options.reason === "relaunched" ? ["session", "archive", h.session] : ["workspace", "archive", h.workspace],
+          options.reason === "relaunched" && !options.workspace
+            ? ["session", "archive", h.session]
+            : ["workspace", "archive", h.workspace],
           undefined,
           true,
         ),

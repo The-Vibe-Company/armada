@@ -300,6 +300,33 @@ export function memoryFleet(): FleetStore & {
         runtimeState: same ? was.runtimeState : null,
       });
     },
+    async getRuntimeReference(project, ref) {
+      const current = handles.get(key(project, ref.ticket));
+      if (ref.claimedAt) {
+        if (current && current.handle === ref.handle && current.claimedAt === ref.claimedAt) {
+          if ((current.workerSessionId ?? null) !== ref.launchId) return null;
+          return { ...ref, releasedAt: current.releasedAt, branch: current.branch };
+        }
+        const row = sessions.find(
+          (s) =>
+            s.project === project &&
+            s.ticket === ref.ticket &&
+            s.handle === ref.handle &&
+            s.claimedAt === ref.claimedAt &&
+            runtimeNameOf(s.runtime) === ref.runtime,
+        );
+        return row ? { ...ref, releasedAt: row.releasedAt, branch: row.branch } : null;
+      }
+      const row = launches.find(
+        (l) =>
+          l.project === project &&
+          l.ticket === ref.ticket &&
+          l.id === ref.launchId &&
+          l.handle === ref.handle &&
+          l.runtime === ref.runtime,
+      );
+      return row ? { ...ref, releasedAt: row.endedAt } : null;
+    },
     async observeRuntime(input) {
       const h = handles.get(key(input.project, input.ticket));
       if (
@@ -594,7 +621,8 @@ export function memoryFleet(): FleetStore & {
             ),
         )
         .sort((a, b) => a.launchedAt.localeCompare(b.launchedAt))
-        .map(({ ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle }) => ({
+        .map(({ id, ticket, launchedAt, tokenUsedAt, tokenExpiresAt, runtime, handle }) => ({
+          ...(id ? { id } : {}),
           ticket,
           launchedAt,
           tokenUsedAt,

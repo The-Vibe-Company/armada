@@ -48,6 +48,7 @@ export const COMMANDS: { name: string; role: "both" | "coordinator" | "worker" |
   { name: "stop", role: "coordinator", what: "Stop a local worker after its work is pushed" },
   { name: "answer", role: "coordinator", what: "Deliver local worker answers and record decisions" },
   { name: "merge", role: "coordinator", what: "Check a hand-back and squash-merge it, pinned to its SHA" },
+  { name: "relaunch", role: "coordinator", what: "Replace a ticket's worker and continue its earlier work" },
   { name: "launch", role: "coordinator", what: "Launch a local worker or revoke an unclaimed launch" },
   { name: "brief", role: "coordinator", what: "A worker's launch prompt, with a one-time token" },
   { name: "secrets", role: "both", what: "The project's secrets for workers, never shown" },

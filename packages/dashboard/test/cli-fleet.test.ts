@@ -846,3 +846,60 @@ describe("the fleet through the Armada API", () => {
     expect(logged.join("\n")).not.toContain(apiKey);
   });
 });
+
+test("exact runtime references preserve an ended generation after replacement, and bound pending launches are scoped", async () => {
+  const signIn: ArmadaSignIn = { kind: "session", token: ownerToken };
+  const fleet = fleetOf(signIn);
+  await fleet.register();
+  const made = await api.launchToken(signIn, { project: WIDGETS.slug, ticket: "WID-1082" });
+  await api.bindLaunch(signIn, { ...made.worker, runtime: "conductor", handle: "old-ws/old-session" });
+  const pending = {
+    ticket: "WID-1082",
+    runtime: "conductor" as const,
+    handle: "old-ws/old-session",
+    claimedAt: null,
+    launchId: made.worker.id,
+    releasedAt: null,
+  };
+  expect((await fleet.pendingLaunches()).find((l) => l.ticket === pending.ticket)?.id).toBe(made.worker.id);
+  expect(await fleet.runtimeReference(pending)).toMatchObject(pending);
+  expect(await fleet.runtimeReference({ ...pending, ticket: "WID-1083" })).toBeNull();
+  await api.revokePendingLaunch(signIn, { project: WIDGETS.slug, ticket: pending.ticket, id: made.worker.id });
+  expect((await fleet.runtimeReference(pending))?.releasedAt).toBe(now().toISOString());
+  const claim = {
+    ticket: "WID-1084",
+    runtime: "conductor",
+    handle: "old-ws/claimed-session",
+    branch: "feature/wid-1084",
+    phase: "implementing" as const,
+    resuming: false,
+    profile: null,
+  };
+  await fleet.claim(claim);
+  const old = await fleet.runtimeHandle(claim.ticket);
+  if (!old) throw new Error("missing old claim");
+  const ref = {
+    ticket: old.ticket,
+    runtime: "conductor" as const,
+    handle: old.handle,
+    claimedAt: old.claimedAt,
+    launchId: null,
+    releasedAt: null,
+  };
+  await fleet.release({
+    ticket: ref.ticket,
+    reason: "relaunch: stopped",
+    handle: ref.handle,
+    claimedAt: ref.claimedAt,
+  });
+  await fleet.claim({ ...claim, handle: "new-ws/new-session" });
+  expect(await fleet.runtimeReference(ref)).toMatchObject({ ...ref, releasedAt: now().toISOString() });
+  expect(await fleet.runtimeReference({ ...ref, handle: "unrelated/session" })).toBeNull();
+  expect(await fleet.runtimeReference({ ...ref, runtime: "herdr" })).toBeNull();
+  expect(await fleet.runtimeReference({ ...ref, claimedAt: "2099-01-01T00:00:00.000Z" })).toBeNull();
+  const scoped = await worker("WID-1085");
+  expect(await refusal(fleetOf(scoped).runtimeReference(ref))).toEqual([
+    403,
+    expect.stringContaining("worker session"),
+  ]);
+});

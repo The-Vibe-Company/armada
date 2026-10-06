@@ -658,6 +658,48 @@ export async function getRuntimeHandle(db: Queryable, project: string, ticket: s
   return r ? handleOf(r) : null;
 }
 
+/** One exact generation, including the launch which never claimed. Existing indexed rows suffice. */
+export async function getRuntimeReference(
+  db: Queryable,
+  project: string,
+  ref: import("@armada/core").ClaimRef,
+): Promise<import("@armada/core").ClaimRef | null> {
+  if (ref.claimedAt !== null) {
+    const current = await getRuntimeHandle(db, project, ref.ticket);
+    if (current && current.handle === ref.handle && current.claimedAt === ref.claimedAt) {
+      if (current.runtime.toLowerCase() !== ref.runtime || (current.workerSessionId ?? null) !== ref.launchId)
+        return null;
+      return {
+        ticket: current.ticket,
+        runtime: ref.runtime,
+        handle: current.handle,
+        claimedAt: current.claimedAt,
+        launchId: current.workerSessionId ?? null,
+        releasedAt: current.releasedAt,
+        branch: current.branch,
+      };
+    }
+    const rows = await db.query(
+      `SELECT s.runtime, s.branch, s.released_at FROM fleet_sessions s
+       WHERE s.project = $1 AND s.ticket = $2 AND s.handle = $3 AND s.claimed_at = $4
+         AND ($5::text IS NULL OR EXISTS (SELECT 1 FROM armada_worker w WHERE w.id = $5
+           AND w.project = s.project AND w.ticket = s.ticket AND w."runtimeHandle" = s.handle))`,
+      [project, ref.ticket, ref.handle, ref.claimedAt, ref.launchId],
+    );
+    const row = rows.rows[0];
+    if (!row || String(row.runtime).toLowerCase() !== ref.runtime) return null;
+    return { ...ref, releasedAt: iso(row.released_at), branch: text(row.branch) };
+  }
+  if (!ref.launchId) return null;
+  const rows = await db.query(
+    `SELECT "endedAt", runtime FROM armada_worker WHERE project = $1 AND ticket = $2 AND id = $3 AND "runtimeHandle" = $4`,
+    [project, ref.ticket, ref.launchId, ref.handle],
+  );
+  const row = rows.rows[0];
+  if (!row || row.runtime !== ref.runtime) return null;
+  return { ...ref, releasedAt: iso(row.endedAt) };
+}
+
 // ------------------------------------------------------------------ inbox
 
 const INBOX_COLUMNS = `id, project, ticket, kind, recipient, author, body, created_at, resolved_at, resolution,
@@ -971,8 +1013,8 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  */
 export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
   const rs = await db.query(
-    `SELECT w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle" FROM (
-       SELECT DISTINCT ON ("ticket") "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "endedAt"
+    `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle" FROM (
+       SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
@@ -988,6 +1030,7 @@ export async function pendingLaunches(db: Queryable, project: string, since: Dat
     [project, since],
   );
   return rs.rows.map((r) => ({
+    id: String(r.id),
     ticket: String(r.ticket),
     launchedAt: isoAt(r.createdAt),
     tokenUsedAt: iso(r.tokenUsedAt),
@@ -1066,6 +1109,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   releaseRuntimeHandle: (project, ticket, at, guard) => releaseRuntimeHandle(db, project, ticket, at, guard),
   openRuntimeHandles: (project) => openRuntimeHandles(db, project),
   getRuntimeHandle: (project, ticket) => getRuntimeHandle(db, project, ticket),
+  getRuntimeReference: (project, ref) => getRuntimeReference(db, project, ref),
   addInboxItem: (item) => addInboxItem(db, item),
   addRequest: (r) => addRequest(db, r),
   putPlan: (item) => putPlan(db, item),

@@ -158,6 +158,7 @@ async function fixture(runtime: RuntimeName = "conductor") {
   const fleet = {
     runtimeHandle: (ticket: string) => store.getRuntimeHandle(config.project.slug, ticket),
     runtimeHandles: () => store.openRuntimeHandles(config.project.slug),
+    pendingLaunches: () => store.pendingLaunches(config.project.slug, new Date(0)),
     observeRuntime: (input: Parameters<Fleet["observeRuntime"]>[0]) =>
       store.observeRuntime({ ...input, project: config.project.slug, at: clock.now() }),
   } as Fleet;

@@ -575,11 +575,14 @@ export async function reportPhase(ctx: WorkerContext, input: ReportInput): Promi
 // ------------------------------------------------------------------ release
 
 /** Gives a ticket back: agent labels removed, ticket moved back to not started, `released` status posted. */
-export async function releaseTicket(ctx: WorkerContext, input: { ticket: string; reason: string }): Promise<Outcome> {
+export async function releaseTicket(
+  ctx: WorkerContext,
+  input: { ticket: string; reason: string; claim?: import("./runtime.ts").ClaimRef },
+): Promise<Outcome> {
   const { config, linear } = ctx;
   const groups = config.tracker.labels;
   const ticket = await readOpenTicket(ctx, input.ticket);
-  if (!ticket.agentPhase && !ticket.agentRuntime && !activeClaimComments(ticket.comments).length)
+  if (!ticket.agentPhase && !ticket.agentRuntime && !activeClaimComments(ticket.comments).length && !input.claim)
     throw new Refusal(
       `${ticket.id} is not claimed; there is nothing to release`,
       "armada status, to see which tickets are in flight",
@@ -606,6 +609,15 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
     : await live(ctx, warnings, "read the release claim", (fleet) => fleet.runtimeHandle(ticket.id));
   // Keep a released snapshot too: Linear may have failed after the guarded
   // release, and retrying that same claim must still be safe.
+  if (
+    input.claim &&
+    (!held ||
+      held.handle !== input.claim.handle ||
+      held.claimedAt !== input.claim.claimedAt ||
+      (held.workerSessionId ?? null) !== input.claim.launchId ||
+      held.releasedAt !== input.claim.releasedAt)
+  )
+    throw new Refusal(`${ticket.id}: the claim changed; nothing was released`, "armada inbox");
   const releasedClaim = held;
   if (held && holder?.session && held.handle !== holder.session)
     throw new Refusal(
@@ -630,6 +642,8 @@ export async function releaseTicket(ctx: WorkerContext, input: { ticket: string;
   // Check before Linear writes so the replacement's labels survive as well.
   if (released && !released.released)
     throw new Refusal(`${ticket.id}: you were replaced; stop here`, "report it to the coordinator");
+  if (input.claim && !released)
+    throw new Refusal(`${ticket.id}: Armada did not confirm the release; Linear was left untouched`, "armada inbox");
   const back = ticket.statusType === "started" ? firstState(ticket.states, "unstarted", "backlog") : null;
   await linear.updateTicket(ticket.uuid, {
     ...(back ? { stateId: back.id } : {}),

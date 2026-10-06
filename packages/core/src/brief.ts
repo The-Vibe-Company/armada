@@ -135,6 +135,7 @@ export interface Brief {
   conventions: { path: string; text: string } | null;
   /** Context supplied by the coordinator for this launch; never changes plan policy. */
   coordinatorNotes: string | null;
+  resume?: BriefResume | null;
   /** The first message of the worker's session. */
   prompt: string;
   warnings: string[];
@@ -287,6 +288,15 @@ const VARIABLES: { name: string; required: boolean; purpose: string }[] = [
   { name: "LINEAR_API_KEY", required: true, purpose: "Linear key the worker claims and reports with" },
 ];
 
+export interface BriefResume {
+  branch: string;
+  head: string | null;
+  pr: { number: number; url: string } | null;
+  reason: string;
+  previous: string;
+  mode: "in-place" | "fresh";
+}
+
 export interface BuildBriefInput {
   config: ArmadaConfig;
   ticket: BriefTicket;
@@ -313,6 +323,7 @@ export interface BuildBriefInput {
   /** The coordinator's judgement of `[[policy.validation]]` (`chooseValidations`). */
   validation?: ValidationChoice | null;
   notes?: string | null;
+  resume?: BriefResume | null;
   now: Date;
   herdr?: { choice: HerdrProfileChoice; handle: string };
 }
@@ -364,7 +375,8 @@ export function buildBrief(input: BuildBriefInput): Brief {
     silentAfterMinutes: config.policy.silentAfterMinutes,
   });
   const self = lanes.find((l) => l.issue.id === ticket.id);
-  if (self) warnings.push(`${ticket.id} is already in flight (${self.phase}); launching again makes a second worker`);
+  if (self && !input.resume)
+    warnings.push(`${ticket.id} is already in flight (${self.phase}); launching again makes a second worker`);
   if (!program.issues.some((i) => i.id === ticket.id))
     warnings.push(`${ticket.id} is not under the program root ${config.tracker.programRoot}`);
   const parallel: BriefWorker[] = lanes
@@ -382,7 +394,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
   // workspace package of the same name, which has no built command.
   const pinned = npmPin(input.version, input.npm ?? null, warnings);
   const pkg = `${ARMADA_PACKAGE}@${pinned}`;
-  const branch = ticket.branchName;
+  const branch = input.resume?.branch ?? ticket.branchName;
   const runtime = choice?.profile.runtime ?? "conductor";
   const handle = input.herdr
     ? shellWord(input.herdr.handle)
@@ -466,6 +478,7 @@ export function buildBrief(input: BuildBriefInput): Brief {
     parallel,
     plans: planRule(config, ticket.labels),
     coordinatorNotes: input.notes?.trim() || null,
+    resume: input.resume ?? null,
     validation: input.validation ?? null,
     conventions: extra?.text?.trim() ? { path: extra.path, text: extra.text } : null,
     warnings,
@@ -563,7 +576,9 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
     b.runtime === "herdr"
       ? `Herdr already created your own worktree on \`${t.branch}\`. Work only there. Before editing, check \`git branch --show-current\` and \`git rev-parse --show-toplevel\`; do not rename the branch or switch the coordinator's checkout. Your runtime handle is \`${b.handle}\`.`
       : t.branch
-        ? `Work on \`${t.branch}\`. Your ${subagent ? "worktree starts on a branch Claude Code" : "workspace starts on a branch Conductor"} named; rename it before your first commit: \`git branch -m ${t.branch}\`.`
+        ? b.resume?.mode === "in-place"
+          ? `Continue on \`${t.branch}\` in this workspace. Check \`git status\` and \`git branch --show-current\` before editing; keep the ticket's branch.`
+          : `Work on \`${t.branch}\`. Your ${subagent ? "worktree starts on a branch Claude Code" : "workspace starts on a branch Conductor"} named; rename it before your first commit: \`git branch -m ${shellWord(t.branch)}${b.resume?.head ? ` && git branch --set-upstream-to ${shellWord(`origin/${t.branch}`)}` : ""}\`.`
         : "Linear suggests no branch name for this ticket; name yours after the ticket id.",
     "",
     ...(b.runtime === "herdr"
@@ -586,6 +601,29 @@ function renderPrompt(b: Omit<Brief, "prompt">): string {
       `Profile ${b.profile.name}: ${b.profile.agent}, model ${b.profile.model}, effort ${b.profile.effort}.`,
       "",
     );
+  if (b.resume) {
+    const r = b.resume;
+    out.push(
+      "## Continuing earlier work",
+      "",
+      `Relaunch reason: ${r.reason}. Previous worker: \`${r.previous}\`. Mode: ${r.mode}.`,
+      "",
+      `Continue the ticket's earlier work on branch \`${r.branch}\`. ${r.head ? `Pushed branch head: \`${r.head}\`.` : r.mode === "in-place" ? "The remote branch is absent; continue from the files in this workspace." : "The remote branch is absent; this fresh workspace starts from the base branch."}`,
+      ...(r.pr
+        ? [
+            "",
+            `Pull request #${r.pr.number} is open: ${r.pr.url}. Push to it, never open a second one, never force-push.`,
+          ]
+        : []),
+      ...(r.mode === "in-place"
+        ? [
+            "",
+            "The previous worker's files are in this workspace: check `git status` first. Preserve its uncommitted and unpushed work.",
+          ]
+        : []),
+      "",
+    );
+  }
   if (t.description) out.push("## Ticket", "", quote(t.description), "");
   if (b.parent)
     out.push("## Parent", "", `${b.parent.id} — ${b.parent.title} (${b.parent.url}). Read it before planning.`, "");

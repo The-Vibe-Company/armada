@@ -113,7 +113,7 @@ export function currentTicket(
   return id.toUpperCase();
 }
 
-function context(io: Io, config: ArmadaConfig, credentials: Credentials): WorkerContext {
+export function workerContext(io: Io, config: ArmadaConfig, credentials: Credentials): WorkerContext {
   if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
   const linearOpts = {
     apiKey: credentials.linearApiKey,
@@ -219,7 +219,7 @@ export async function withContext(
   json: boolean,
   act: (ctx: WorkerContext) => Promise<Outcome>,
 ): Promise<number> {
-  const outcome = await act(context(io, config, credentials));
+  const outcome = await act(workerContext(io, config, credentials));
   if (outcome.state?.phase) {
     const profile = outcome.state.profile;
     const agent = profile ? config.herdr.profiles[profile]?.harness : null;

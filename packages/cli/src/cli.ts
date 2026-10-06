@@ -31,6 +31,7 @@ import { login, logout, whoami } from "./login.ts";
 import { merge } from "./merge.ts";
 import { recordPresence } from "./presence.ts";
 import { statusAll } from "./projects.ts";
+import { relaunch } from "./relaunch.ts";
 import { NOTICE_COMMANDS, noticeRelease } from "./release.ts";
 import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
@@ -182,6 +183,14 @@ const COMMAND_HELP: Record<string, string> = {
                     A pull request the owner was asked about merges only once they approved
                     that exact head (or it with only the base merged in).
 `,
+  relaunch: `  relaunch <ticket> --reason "<why>" [--in-place|--fresh] [--keep-old]
+                    Replace a worker, preserving its branch and open pull request.
+                    Default: in place for a usable Conductor workspace or clean herdr
+                    worktree; fresh from the pushed branch otherwise. Stop and release
+                    only the old generation, launch the replacement, then archive the old worker.
+                    Use --profile <name> --reason-profile <why> to change profile,
+                    --runtime conductor|herdr, --notes <file|->, --dry-run or --json.
+`,
   launch: `  launch <ticket> [--runtime conductor|herdr] [--profile <name> [--reason <why>]]
         [--notes <file|->] [--validation <n|none>] [--dry-run] [--json]
                     Check the ticket, choose its profile and launch one worker with its
@@ -275,6 +284,7 @@ const CONFIG_OPTION = new Set([
   "merge",
   "brief",
   "launch",
+  "relaunch",
   "setup",
 ]);
 const JSON_OPTION = new Set([
@@ -391,6 +401,7 @@ const VALUE_OPTIONS = [
   "choices",
   "validation",
   "validation-reason",
+  "reason-profile",
   "notes",
 ];
 /** Options without a value, stored as "true". */
@@ -399,6 +410,9 @@ const FLAG_OPTIONS = [
   "stop",
   "background",
   "dry-run",
+  "in-place",
+  "fresh",
+  "keep-old",
   "no-lock",
   "no-ticket",
   "prompt",
@@ -427,6 +441,19 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   merge: ["ticket", "no-ticket", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
   brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  relaunch: [
+    "runtime",
+    "profile",
+    "reason",
+    "reason-profile",
+    "validation",
+    "validation-reason",
+    "dry-run",
+    "notes",
+    "in-place",
+    "fresh",
+    "keep-old",
+  ],
   launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
@@ -722,11 +749,11 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       const { path, text } = await findConfig(io, args.config, "setup", args.project);
       return await setupLocal(io, parseConfig(text, path), path, args);
     }
-    if (args.command === "launch") {
+    if (args.command === "launch" || args.command === "relaunch") {
       const { path, text } = await findConfig(io, args.config, "launch", args.project);
       const config = parseConfig(text, path);
       const { credentials } = await loadCredentials(io, { project: config.project.slug });
-      return await launch(io, config, credentials, args, version, path);
+      return await (args.command === "relaunch" ? relaunch : launch)(io, config, credentials, args, version, path);
     }
     if (args.command === "status") {
       noExtra(args.rest);
