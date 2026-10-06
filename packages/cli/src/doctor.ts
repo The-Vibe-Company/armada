@@ -5,7 +5,7 @@
 // command the runtime guide launches workers with is found, and which
 // secrets the project expects (`[secrets] names`) are not set in Armada, by
 // name only. Exit 1 when anything is an error.
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   API_KEY_VARIABLE,
   type ArmadaApi,
@@ -30,6 +30,7 @@ import {
   parseConfig,
   projectOf,
   RETIRED_VARIABLES,
+  type RepoView,
   readDeployEnv,
   readLabels,
   readParentAutoClose,
@@ -146,8 +147,8 @@ function keyFileChecks(machine: Machine, credentials: Credentials): Check[] {
 }
 
 /** The repository's armada.toml; null when absent or invalid (the config check reports it). */
-async function projectConfig(root: string): Promise<ArmadaConfig | null> {
-  const text = await fsRepoView(root).readFile(CONFIG_FILE);
+async function projectConfig(view: RepoView): Promise<ArmadaConfig | null> {
+  const text = await view.readFile(CONFIG_FILE);
   if (text === null) return null;
   try {
     return parseConfig(text, CONFIG_FILE);
@@ -612,14 +613,25 @@ export async function localRuntimeChecks(
 export async function buildDoctor(
   io: Io,
   armadaVersion: string,
-  options: { readOnly?: boolean; deep?: boolean } = { readOnly: true },
+  options: { readOnly?: boolean; deep?: boolean; configPath?: string } = { readOnly: true },
 ): Promise<DoctorReport> {
-  const root = (io.exec ? await gitRoot(io.exec, io.cwd) : null) ?? io.cwd;
+  const selected = options.configPath || io.env.ARMADA_CONFIG?.trim();
+  const configPath = selected ? resolve(io.cwd, selected) : null;
+  const checkout = configPath ? dirname(configPath) : io.cwd;
+  const root = (io.exec ? await gitRoot(io.exec, checkout) : null) ?? checkout;
+  const repository = fsRepoView(root);
+  const view: RepoView = configPath
+    ? {
+        ...repository,
+        readFile: (path) => (path === CONFIG_FILE ? io.readFile(configPath) : repository.readFile(path)),
+      }
+    : repository;
+  const configFlag = configPath ? ` --config ${shellWord(configPath)}` : "";
   // Older than Armada expects, it gets no keys from it: the checks go on with this machine's.
   const upgrade = (err: unknown) => (err instanceof ArmadaApiError && err.upgrade ? err : null);
   let outdated: ArmadaApiError | null = null;
   let loaded: Awaited<ReturnType<typeof loadCredentials>>;
-  const config = await projectConfig(root);
+  const config = await projectConfig(view);
   try {
     // The project's own Linear key, when it keeps one, is the one its labels are checked with.
     loaded = await loadCredentials(io, config ? { project: config.project.slug } : {});
@@ -639,7 +651,7 @@ export async function buildDoctor(
   }
   const signing = await readSigning(io, root);
   const checks = [
-    ...(await checkRepository(fsRepoView(root), armadaVersion)),
+    ...(await checkRepository(view, armadaVersion)),
     ...(config ? optionalFeatures(config) : []),
     ...signIn,
     ...versionChecks(hostOf(credentials.armadaApi.url), api, armadaVersion, outdated),
@@ -656,12 +668,7 @@ export async function buildDoctor(
             ? `${target.name}: ${missing.join(", ")} not set on this machine; deploy check will be skipped`
             : `${target.name}: required deploy settings are configured`,
           fix: missing.length
-            ? missing
-                .map(
-                  (name) =>
-                    `armada config set deploy.env.${name} <value> --config ${shellWord(join(root, CONFIG_FILE))}`,
-                )
-                .join("\n")
+            ? missing.map((name) => `armada config set deploy.env.${name} <value>${configFlag}`).join("\n")
             : null,
         };
       });
@@ -670,7 +677,7 @@ export async function buildDoctor(
           id: "deploy-machine-settings",
           level: "warning",
           message: local.warning,
-          fix: checks.find((c) => c.fix)?.fix ?? "armada config set deploy.env.<VAR> <value>",
+          fix: checks.find((c) => c.fix)?.fix ?? `armada config set deploy.env.<VAR> <value>${configFlag}`,
         });
       return checks;
     })()),
@@ -707,7 +714,7 @@ export async function buildDoctor(
           },
         ]
       : []),
-    ...(await localRuntimeChecks(io, config, { ...options, configPath: join(root, CONFIG_FILE) })),
+    ...(await localRuntimeChecks(io, config, { ...options, configPath: configPath ?? join(root, CONFIG_FILE) })),
     ...(config ? await reviewRuntimeChecks(io, root) : []),
     ...(await secretChecks(api, config, credentials)),
   ];
@@ -751,8 +758,14 @@ export function renderDoctor(r: DoctorReport): string {
   return `${lines.join("\n")}\n`;
 }
 
-export async function doctor(io: Io, json: boolean, armadaVersion: string, deep = false): Promise<number> {
-  const report = await buildDoctor(io, armadaVersion, { readOnly: json, deep });
+export async function doctor(
+  io: Io,
+  json: boolean,
+  armadaVersion: string,
+  deep = false,
+  configPath?: string,
+): Promise<number> {
+  const report = await buildDoctor(io, armadaVersion, { readOnly: json, deep, configPath });
   io.stdout(json ? `${JSON.stringify(report, null, 2)}\n` : renderDoctor(report));
   return report.errors ? 1 : 0;
 }
