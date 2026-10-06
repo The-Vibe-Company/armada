@@ -1,0 +1,7 @@
+name: Install the pinned test browser
+description: Install Playwright's pinned Chromium headless shell and its system libraries
+runs:
+  using: composite
+  steps:
+    - run: bun run test:browser:install --with-deps
+      shell: bash

@@ -45,7 +45,7 @@ jobs:
       - run: bun run lint
       - run: bun run typecheck
       - name: Install the pinned test browser and system libraries
-        run: bun run test:browser:install --with-deps
+        uses: ./.github/actions/test-browser
       - run: bun test
 
   dashboard:
