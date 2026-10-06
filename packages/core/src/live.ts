@@ -94,6 +94,8 @@ export interface RuntimeHandle {
 
 /** Optional identity of the claim being released; workers also carry their server session id. */
 export interface ReleaseGuard {
+  /** An absent merge claim: end reservations only, and refuse if a runtime row now exists. */
+  absent?: true;
   handle?: string | null;
   claimedAt?: string | null;
   workerSessionId?: string | null;
@@ -678,7 +680,7 @@ export interface MergeRecord {
 }
 
 export interface MergeRecorded {
-  /** The session that held the merged ticket, if any. */
+  /** The exact ended generation that held the merged ticket, if any. */
   handle: RuntimeHandle | null;
   /** How many hand-backs the merge resolved. */
   resolved: number;
@@ -718,8 +720,20 @@ export async function recordMerge(
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "decision", resolution: "merged", at });
-  await store.releaseRuntimeHandle(project, m.ticket, at, undefined, true);
-  return { handle, resolved, open: await store.openRuntimeHandles(project) };
+  const released = await store.releaseRuntimeHandle(
+    project,
+    m.ticket,
+    at,
+    handle
+      ? { handle: handle.handle, claimedAt: handle.claimedAt, workerSessionId: handle.workerSessionId }
+      : { absent: true },
+    true,
+  );
+  return {
+    handle: released && handle ? { ...handle, releasedAt: handle.releasedAt ?? at.toISOString() } : null,
+    resolved,
+    open: await store.openRuntimeHandles(project),
+  };
 }
 
 export interface ValidationRecord {

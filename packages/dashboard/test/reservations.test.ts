@@ -106,7 +106,7 @@ test("number allocation counts explicit integer formats, ignores names and keeps
   expect(large.reserved && large.reservation.value).toBe("9007199254740994");
 });
 
-test("release frees reservations even when the optional live claim write was missing", async () => {
+test("release frees and merge retains reservations even when the optional live claim write was missing", async () => {
   const store = await project("missing-claim");
   await store.reserve({ project: "missing-claim", ticket: "WID-2", key: "fixture", value: "sample", at });
   expect(
@@ -118,4 +118,79 @@ test("release frees reservations even when the optional live claim write was mis
     ),
   ).toEqual({ released: true });
   expect(await store.reservations("missing-claim")).toEqual([]);
+  await store.reserve({ project: "missing-claim", ticket: "WID-3", key: "fixture", value: "sample", at });
+  await recordMerge(
+    store,
+    "missing-claim",
+    {
+      ticket: "WID-3",
+      number: 3,
+      url: "https://github.com/acme/widgets/pull/3",
+      mergeCommit: "merged",
+      headSha: "head",
+    },
+    at,
+  );
+  expect(await store.reservations("missing-claim")).toEqual([
+    expect.objectContaining({ ticket: "WID-3", value: "sample", merged: true, endedAt: at.toISOString() }),
+  ]);
+});
+
+test("a claim arriving after an absent merge snapshot keeps its runtime, profile and reservations", async () => {
+  const store = await project("merge-replacement");
+  const claimed = new Date(at.getTime() + 1);
+  const result = await recordMerge(
+    {
+      ...store,
+      recordEvent: async (event) => {
+        await store.recordEvent(event);
+        await store.saveRuntimeHandle({
+          project: "merge-replacement",
+          ticket: "WID-2",
+          runtime: "Conductor",
+          handle: "new/session",
+          branch: null,
+          workerSessionId: "new-worker",
+          at: claimed,
+        });
+        await store.saveWorkerProfile({
+          project: "merge-replacement",
+          ticket: "WID-2",
+          at: claimed,
+          profile: {
+            name: "test",
+            agent: "codex",
+            model: "test",
+            effort: "high",
+            fastMode: false,
+            routed: null,
+            reason: null,
+            why: "test",
+          },
+        });
+        await store.reserve({
+          project: "merge-replacement",
+          ticket: "WID-2",
+          key: "fixture",
+          value: "new",
+          at: claimed,
+        });
+      },
+    },
+    "merge-replacement",
+    {
+      ticket: "WID-2",
+      number: 3,
+      url: "https://github.com/acme/widgets/pull/3",
+      mergeCommit: "merged",
+      headSha: "head",
+    },
+    new Date(at.getTime() + 2),
+  );
+  expect(result.handle).toBeNull();
+  expect(result.open).toEqual([expect.objectContaining({ handle: "new/session", releasedAt: null })]);
+  expect((await store.getWorkerProfile("merge-replacement", "WID-2"))?.name).toBe("test");
+  expect(await store.reservations("merge-replacement")).toEqual([
+    expect.objectContaining({ ticket: "WID-2", value: "new", merged: false, endedAt: null }),
+  ]);
 });

@@ -353,7 +353,7 @@ export function memoryFleet(): FleetStore & {
       if (
         !h ||
         !OBSERVABLE_RUNTIMES.includes(runtimeNameOf(h.runtime) as "herdr" | "conductor") ||
-        h.releasedAt ||
+        (h.releasedAt && input.state !== "gone") ||
         h.handle !== input.handle ||
         h.claimedAt !== input.claimedAt ||
         (h.runtimeState && h.runtimeState.at > input.at.toISOString())
@@ -425,6 +425,11 @@ export function memoryFleet(): FleetStore & {
     },
     async releaseRuntimeHandle(project, ticket, at, guard, merged = false) {
       const h = handles.get(key(project, ticket));
+      if (guard?.absent) {
+        if (h) return false;
+        endReservations(project, ticket, at, merged);
+        return true;
+      }
       const guarded = !!(guard?.handle || guard?.claimedAt || guard?.workerSessionId);
       if (guarded && !h) {
         if (guard?.claimedAt) return false;

@@ -500,6 +500,13 @@ export async function releaseRuntimeHandle(
         [project, ticket],
       )
     ).rows[0];
+    if (guard?.absent) {
+      if (held) return false;
+      // The project lock excludes new reservations until this cleanup ends.
+      // A claim inserted after the read is never touched by runtime/profile writes.
+      await endReservations(tx, project, ticket, at, merged);
+      return true;
+    }
     // A missing optional live row is not evidence of a replacement. An
     // explicit claim timestamp must still match; a matching released row
     // permits retrying after a Linear failure without touching a new claim.
@@ -586,7 +593,8 @@ export async function observeRuntime(
        runtime_changed_at = COALESCE($8::timestamptz, CASE WHEN runtime_state IS DISTINCT FROM $5
          OR ($7::bigint IS NOT NULL AND runtime_state_sequence IS DISTINCT FROM $7) THEN $6 ELSE runtime_changed_at END),
        runtime_state_sequence = COALESCE($7::bigint, runtime_state_sequence)
-     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4 AND released_at IS NULL
+     WHERE project = $1 AND ticket = $2 AND handle = $3 AND claimed_at = $4
+       AND (released_at IS NULL OR $5 = 'gone')
        AND lower(runtime) = ANY($9::text[]) AND (runtime_observed_at IS NULL OR runtime_observed_at <= $6)`,
     [
       input.project,
