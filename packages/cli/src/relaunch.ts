@@ -21,6 +21,7 @@ import { herdrWorktreePath, herdrWorktreesDirectory } from "./herdr.ts";
 import { httpOptions, type Io, UsageError } from "./io.ts";
 import { executeLaunch, prepareLaunch, withLaunchLease } from "./launch.ts";
 import { requireSignIn } from "./login.ts";
+import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import {
   claimRef,
   guarded,
@@ -45,13 +46,15 @@ export async function relaunch(
   const o = args.options;
   if (!input || extra.length || !/^[A-Za-z][A-Za-z0-9]{0,15}-\d{1,9}$/.test(input))
     throw new UsageError('relaunch needs a ticket: armada relaunch <ticket> --reason "<why>"');
-  const ticket = input.toUpperCase(),
-    reason = o.reason?.trim();
-  if (!reason) throw new UsageError('relaunch needs --reason "<why>"');
+  const ticket = input.toUpperCase();
+  const rawReason = o.reason?.trim();
+  if (!rawReason) throw new UsageError('relaunch needs --reason "<why>"');
   if (o["in-place"] && o.fresh) throw new UsageError("choose --in-place or --fresh, not both");
   if (o["reason-profile"] && !o.profile) throw new UsageError("--reason-profile goes with --profile");
   const signIn = requireSignIn(credentials);
   if (signIn.kind === "worker") throw new UsageError("relaunch is a coordinator command");
+  const mask = await outgoingRedactor(io, config, credentials);
+  const reason = mask.text(rawReason);
   const { fleet } = liveFleet(io, config, credentials);
   if (!fleet) throw new UsageError("relaunch needs Armada's live fleet");
   const dry = o["dry-run"] === "true";
@@ -91,20 +94,23 @@ export async function relaunch(
     const branch = old.branch ?? "";
     const options = { ...o };
     delete options.reason;
-    if (o.profile) options.reason = o["reason-profile"] ?? "";
+    if (o.profile) options.reason = mask.text(o["reason-profile"] ?? "");
+    if (o["validation-reason"]) options["validation-reason"] = mask.text(o["validation-reason"]);
     const prepared = await prepareLaunch(io, config, credentials, argsWith(args, options), version, configPath, {
       branch,
       coordinator: reference.coordinator,
       preApprovalReason: o["pre-approve"] === "true" ? reason : undefined,
-      command: [
-        `armada relaunch ${ticket}`,
-        ...Object.entries(o).flatMap(([key, value]) =>
-          ["pre-approve", "in-place", "fresh", "keep-old", "dry-run"].includes(key)
-            ? [`--${key}`]
-            : [`--${key} ${shellWord(value)}`],
-        ),
-        ...(args.json ? ["--json"] : []),
-      ].join(" "),
+      command: mask.text(
+        [
+          `armada relaunch ${ticket}`,
+          ...Object.entries(o).flatMap(([key, value]) =>
+            ["pre-approve", "in-place", "fresh", "keep-old", "dry-run"].includes(key)
+              ? [`--${key}`]
+              : [`--${key} ${shellWord(value)}`],
+          ),
+          ...(args.json ? ["--json"] : []),
+        ].join(" "),
+      ),
     });
     if (typeof prepared === "number") return prepared;
     // The claim's branch wins over a changed tracker suggestion.
@@ -248,6 +254,7 @@ export async function relaunch(
         await api.revokePendingLaunch(signIn, { project: config.project.slug, ticket, id: old.launchId as string });
       } else {
         const context = workerContext(io, config, credentials);
+        context.linear = redactLinearWriter(context.linear, mask.text);
         context.workerHandle = old.handle;
         const outcome = await guarded(fleet, old, rule, () =>
           releaseTicket(context, { ticket, reason: `relaunch: ${reason}`, claim: old }),

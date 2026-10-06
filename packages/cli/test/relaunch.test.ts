@@ -308,8 +308,10 @@ test("fresh relaunch cancels, releases and ends the old generation before launch
 test("known launch failure names the released state and releases the lease", async () => {
   const f = await fixture();
   f.set({ failCreate: true });
-  const result = await f.relaunch("--fresh");
+  const result = await f.relaunch("--fresh", "--reason", "session died lin_api_CANARY");
   expect(result, f.text()).toBe(2);
+  expect(f.linear.bodies.join("\n")).not.toContain("lin_api_CANARY");
+  expect(f.calls.find((call) => call.args[2] === "create")?.input).not.toContain("lin_api_CANARY");
   expect(f.text()).toContain("DEMO-13 is released, nobody holds it: armada launch DEMO-13");
   expect(f.order).toContain("workers/revoke-pending");
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-13"))?.releasedAt).not.toBeNull();
@@ -335,10 +337,10 @@ test("default in-place launches a new session and archives only the old session"
 });
 
 test("preflight refusal and a competing launch lease leave the old owner intact", async () => {
-  for (const mode of ["auth", "lease"] as const) {
+  for (const mode of ["auth", "lease", "validation"] as const) {
     const f = await fixture();
     if (mode === "auth") f.set({ auth: false });
-    else
+    else if (mode === "lease")
       await f.store.acquireLease({
         project: "widgets",
         name: "launch:DEMO-13",
@@ -346,12 +348,27 @@ test("preflight refusal and a competing launch lease leave the old owner intact"
         at: NOW,
         ttlMs: 300000,
       });
-    const result = await f.relaunch("--fresh");
+    else
+      f.io.readFile = async (path) =>
+        path === "/work/widgets/armada.toml"
+          ? `${TOML}\n[[policy.validation]]\nwhen="design"\nthen="show the owner"`
+          : null;
+    const result = await f.relaunch("--fresh", "--reason", "session died lin_api_CANARY");
     expect(result, f.text()).toBe(2);
     expect(f.order).not.toContain("cancel");
     expect(f.order).not.toContain("fleet/release");
     expect((await f.store.getRuntimeHandle("widgets", "DEMO-13"))?.releasedAt).toBeNull();
     f.text();
+    if (mode === "validation") {
+      expect(f.text()).toContain("--validation none");
+      expect(
+        await f.relaunch("--fresh", "--validation", "1", "--validation-reason", "design lin_api_CANARY"),
+        f.text(),
+      ).toBe(0);
+      const prompt = f.calls.find((call) => call.args[2] === "create")?.input;
+      expect(prompt).toContain("show the owner");
+      expect(prompt).not.toContain("lin_api_CANARY");
+    }
   }
 });
 

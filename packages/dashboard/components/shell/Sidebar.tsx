@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { groupCounts } from "@/lib/coordinator-view";
+import { groupCounts, showsOwners, urgentCoordinator } from "@/lib/coordinator-view";
 import { type Place, paths, type Section } from "@/lib/fleet-view";
 import { pendingValidations } from "@/lib/overview-view";
 import { useFleet, useNow, useShell } from "./context";
@@ -31,8 +31,9 @@ const COORDINATOR_COLOR = { active: "var(--green)", idle: "var(--amber)", unknow
 /**
  * The sidebar (design/dashboard-v7): the mark, the organization (`org`, the
  * shell's menu), search, the sections with their counts, one line per
- * project (its coordinator's diamond, what is blocked in it, its sessions in
- * flight), the organization and the live reading. The landing's replica
+ * project (one diamond in the state of its most urgent coordinator, THE-1112;
+ * what is blocked in it, its sessions in flight), the organization and the
+ * live reading. The landing's replica
  * draws it too, with the organization's name for its menu.
  */
 export function Sidebar({
@@ -87,14 +88,16 @@ export function Sidebar({
         {overview.projects.map((p) => {
           const own = items.filter((i) => i.project === p.slug);
           const n = groupCounts(own);
-          const c = p.coordinator;
+          const c = urgentCoordinator(p);
           const idle = c.seenAt ? t.duration(Math.max(0, now - Date.parse(c.seenAt))) : "";
-          const hint =
+          const state =
             c.state === "active"
               ? t.overview.coordinatorHint.active
               : c.state === "idle"
                 ? t.overview.coordinatorHint.idle(idle)
                 : t.overview.coordinatorHint.unknown;
+          // Which coordinator, where the project names them.
+          const hint = c.name && showsOwners(p, own) ? `${state} · ${c.name}` : state;
           return (
             <Link
               key={p.slug}
