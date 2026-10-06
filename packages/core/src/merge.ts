@@ -1330,7 +1330,8 @@ async function mergePinned(
         pull.number,
         ticket,
       );
-    if (!res.transient)
+    const mergeLocked = /merge already in progress/i.test(res.message);
+    if (!res.transient && !mergeLocked)
       throw new Refusal(`GitHub refused to merge ${n}: ${res.message}`, `armada merge ${pull.number} --dry-run`);
     if (fresh.state !== "open")
       throw new Refusal(`GitHub failed (${res.message}) and ${n} is now ${fresh.state}; not retrying`, view);
@@ -1338,6 +1339,13 @@ async function mergePinned(
       throw new Refusal(
         `GitHub failed (${res.message}) and the head of ${n} moved to ${fresh.headSha}; not retrying`,
         `armada merge ${pull.number} --dry-run, once its worker hands back the new head`,
+      );
+    // This lock can last minutes: let the durable queue back off instead of retrying here.
+    if (mergeLocked)
+      throw new Refusal(
+        `GitHub's merge lock is temporary (${res.message}); ${n} is still open at ${short(sha)}`,
+        `armada merge ${pull.number}`,
+        true,
       );
     const wait = MERGE_BACKOFF_MS[attempt];
     if (wait === undefined)

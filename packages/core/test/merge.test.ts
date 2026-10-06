@@ -674,6 +674,25 @@ describe("armada merge", () => {
     expect(s.sleeps).toEqual([2000]);
   });
 
+  test("a GitHub merge lock is temporary and gives plain merge a retry command", async () => {
+    const s = setup();
+    s.forge.answers = [
+      { ok: false, message: "GraphQL: Merge already in progress (mergePullRequest)", transient: false },
+    ];
+    let error: unknown;
+    try {
+      await mergePullRequest(s.ctx, { pr: 9 });
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(Refusal);
+    expect(error).toMatchObject({ transient: true, next: "armada merge 9" });
+    expect((error as Refusal).message).toContain("temporary");
+    expect((error as Refusal).message).toContain("Merge already in progress");
+    expect(s.forge.pr.state).toBe("open");
+    expect(s.linear.writes).toEqual([]);
+  });
+
   test.each(["ready-for-agent", "dispatchable"])(
     "merge removes the configured ready label %s only",
     async (readyLabel) => {
@@ -2125,6 +2144,8 @@ test.each([
   "local-retest",
   "outage",
   "exhausted",
+  "merge-lock",
+  "merge-lock-exhausted",
   "lineage-outage",
   "lock-renewal",
   "red",
@@ -2193,6 +2214,7 @@ test.each([
   };
   let unknownRead = ["unknown-outcome", "native-takeover-unconfirmed"].includes(scenario);
   const order: string[] = [];
+  const mergeTimes: number[] = [];
   let base = BASE;
   s.ctx.now = live.clock.now;
   s.ctx.sleep = async (ms) => {
@@ -2255,6 +2277,7 @@ test.each([
     },
     merge: async (n, sha) => {
       order.push(`merge ${n}`);
+      if (n === 12) mergeTimes.push(live.clock.now().getTime());
       const f = forges.get(n)!;
       const result = await f.merge(n, sha);
       if (f.pr.state === "merged") base = SQUASH;
@@ -2275,6 +2298,12 @@ test.each([
       })),
       { ok: true, transient: false, message: "merged" },
     ];
+  if (["merge-lock", "merge-lock-exhausted"].includes(scenario))
+    active.answers = Array.from({ length: scenario === "merge-lock-exhausted" ? 4 : 2 }, () => ({
+      ok: false,
+      transient: false,
+      message: "GraphQL: Merge already in progress (mergePullRequest)",
+    }));
   if (scenario === "red") {
     active.pr.checks = [{ name: "test", state: "failure" }];
     active.pr.ci = "failure";
@@ -2425,15 +2454,17 @@ test.each([
     }
   }
   await drain();
-  expect(delivered).toEqual(["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? [15] : [12, 15]);
+  expect(delivered).toEqual(
+    ["red", "exhausted", "merge-lock-exhausted", "queued-head", "head-mismatch"].includes(scenario) ? [15] : [12, 15],
+  );
   const entries = await live.fleet.queueList();
   expect(entries.map((e) => e.state)).toEqual(
-    ["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario)
+    ["red", "exhausted", "merge-lock-exhausted", "queued-head", "head-mismatch"].includes(scenario)
       ? ["refused", "merged"]
       : ["merged", "merged"],
   );
   expect(live.store.items.filter((i) => i.kind === "queue-refused")).toHaveLength(
-    ["red", "exhausted", "queued-head", "head-mismatch"].includes(scenario) ? 1 : 0,
+    ["red", "exhausted", "merge-lock-exhausted", "queued-head", "head-mismatch"].includes(scenario) ? 1 : 0,
   );
   expect(s.repo.testMerges).toEqual(
     scenario === "local-retest"
@@ -2452,6 +2483,7 @@ test.each([
     ![
       "red",
       "exhausted",
+      "merge-lock-exhausted",
       "recovery",
       "recovered-ticket",
       "queued-head",
@@ -2466,10 +2498,18 @@ test.each([
   expect(entries[0]?.attempts).toBe(
     ["outage", "unknown-outcome", "lineage-outage", "lock-renewal", "recovery-linear-outage"].includes(scenario)
       ? 1
-      : scenario === "exhausted"
+      : ["exhausted", "merge-lock-exhausted"].includes(scenario)
         ? 3
-        : 0,
+        : scenario === "merge-lock"
+          ? 2
+          : 0,
   );
+  if (["merge-lock", "merge-lock-exhausted"].includes(scenario)) {
+    expect(mergeTimes.slice(1).map((at, i) => at - (mergeTimes[i] ?? Number.NaN))).toEqual(
+      scenario === "merge-lock" ? [60_000, 300_000] : [60_000, 300_000, 900_000],
+    );
+    if (scenario === "merge-lock-exhausted") expect(entries[0]?.detail).toContain("Merge already in progress");
+  }
   expect(await live.store.getLease("widgets", "merge-queue")).toBeNull();
   if (scenario === "partial-recovery") {
     expect((await live.store.latestEvents("widgets", { since: NOW }))["DEMO-7"]?.phase).toBe("ready-to-merge");
