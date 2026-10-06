@@ -177,3 +177,29 @@ test("failure and its hold/inbox item roll back together", async () => {
     await isolated.end();
   }
 });
+
+test("skipped deploys persist without notices, can be retried, and never overwrite a real observation", async () => {
+  const store = fleetStore(db);
+  const skip = {
+    project: PROJECT,
+    target: "machine-local",
+    sha: "configured-later",
+    state: "skipped" as const,
+    detail: "skipped (not configured on this machine): DEPLOY_LINK_DIR",
+    pauseOnFailure: false,
+    at: at(20),
+  };
+  expect((await store.recordDeploy(skip)).state).toBe("skipped");
+  expect((await store.openHolds(PROJECT)).some((h) => h.ref === skip.target)).toBe(false);
+  expect(
+    (await store.openInboxItems({ project: PROJECT, recipient: "coordinator" })).some((i) =>
+      i.body.includes(skip.target),
+    ),
+  ).toBe(false);
+  const waiting = await store.recordDeploy({ ...skip, state: "waiting", detail: "watching", at: at(30) });
+  expect(waiting.state).toBe("waiting");
+  expect(waiting.startedAt).toBe(at(30).toISOString());
+  expect(await store.recordDeploy({ ...skip, at: at(31) })).toEqual(waiting);
+  const healthy = await store.recordDeploy({ ...skip, state: "healthy", detail: "healthy", at: at(32) });
+  expect(await store.recordDeploy({ ...skip, at: at(33) })).toEqual(healthy);
+});

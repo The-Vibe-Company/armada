@@ -24,6 +24,7 @@ import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { ciWhy } from "./ci.ts";
+import { configCommand } from "./config.ts";
 import { coordinatorCommand, coordinatorName } from "./coordinator.ts";
 import { deploy, deployStatus } from "./deploy.ts";
 import { digest } from "./digest.ts";
@@ -61,6 +62,10 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  config: `  config set deploy.env.<VAR> <value>
+  config unset deploy.env.<VAR>
+                    Set or remove a non-secret deploy setting for this project on this machine.
+`,
   deploy: `  deploy status [--json]
   deploy watch --sha <sha> --target <name>
                     Watch a declared deploy and smoke check; failures pause merges.
@@ -420,6 +425,7 @@ const TICKET_OPTION = new Set([
   "unreserve",
 ]);
 const CONFIG_OPTION = new Set([
+  "config",
   "acceptance",
   "lint",
   "job",
@@ -496,6 +502,7 @@ Files:
     credentials        KEY=value lines, mode 0600, written by \`armada auth login\` and
                        \`armada login\` (the sign-in: ARMADA_SESSION_TOKEN or ARMADA_API_KEY)
     config.toml        personal defaults: language, [dashboard] url, [api] url
+    projects/<slug>.json  non-secret deploy settings for this project and machine
     coordinators.json  coordinator role per project and checkout
     watch/<project>[@<name>].*  the coordinator's watch: its lock, what you were shown, who is in flight
     releases.json      daily release notices in status/inbox, with version and time.
@@ -1029,6 +1036,10 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "config") {
+      const { path, text } = await findConfig(io, args.config, "config", args.project);
+      return await configCommand(io, parseConfig(text, path), args);
     }
     if (args.command === "deploy") {
       const { path, text } = await findConfig(io, args.config, "deploy", args.project);

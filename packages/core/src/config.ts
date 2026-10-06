@@ -14,9 +14,18 @@ export interface JobConfig {
   maxHours: number | null;
 }
 
+/** Shell environment names excluding object keys and Armada's command metadata. */
+export function deployEnvName(name: string): boolean {
+  return (
+    /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) &&
+    !["__proto__", "constructor", "prototype", "ARMADA_DEPLOY_SHA", "ARMADA_DEPLOY_TARGET"].includes(name)
+  );
+}
+
 export interface DeployTarget {
   /** Repository-relative globs that trigger this target; omitted means every merge. */
   paths?: string[];
+  requiresEnv?: string[];
   name: string;
   branch: string | null;
   githubEnvironment: string | null;
@@ -663,6 +672,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
         "name",
         "branch",
         "paths",
+        "requires_env",
         "github_environment",
         "live_sha_command",
         "smoke",
@@ -693,7 +703,14 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
       if (problem || (Array.isArray(row.paths) && !row.paths.length))
         problems.push(`"${path}.paths": ${problem ?? "must not be empty"}`);
     }
+    if (
+      row.requires_env !== undefined &&
+      (!Array.isArray(row.requires_env) ||
+        row.requires_env.some((name) => typeof name !== "string" || !deployEnvName(name)))
+    )
+      problems.push(`"${path}.requires_env" must be an array of environment variable names (excluding reserved names)`);
     deployTargets.push({
+      ...(Array.isArray(row.requires_env) ? { requiresEnv: [...new Set(row.requires_env)] } : {}),
       ...(Array.isArray(row.paths) ? { paths: row.paths } : {}),
       name,
       branch: optional("branch"),
@@ -1039,7 +1056,10 @@ repository = ${q(p.repository)}
 # paths = ["cmd/**", "internal/**"]  # optional: only watch merges touching these globs
 # github_environment = "production"
 ## Alternative to github_environment (choose exactly one live source):
-## live_sha_command = "curl -fsS https://example.test/version"
+## live_sha_command = 'cd "$DEPLOY_LINK_DIR" && hosting-cli live-sha'
+## requires_env = ["DEPLOY_LINK_DIR"]
+## On each coordinator machine: armada config set deploy.env.DEPLOY_LINK_DIR /path/to/linked-service
+## Machine settings win over the process environment; missing settings skip without a hold.
 # smoke = "curl -fsS https://example.test/health"
 # timeout_minutes = 20  # 1–120; smoke shares this deadline
 # pause_on_failure = true

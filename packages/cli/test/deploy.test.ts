@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "@armada/core";
@@ -151,4 +151,70 @@ test("failed smoke diagnostics mask credentials and declared project secrets bef
   expect(stored.includes(t.io.env.SERVICE_PASSWORD)).toBe(false);
   expect(stored).toContain("[redacted]");
   expect(stored).toContain("health failed");
+});
+
+test("machine deploy requirements skip without a hold, then configured commands run with local precedence and env fallback", async () => {
+  const t = await terminal();
+  const required = `${configText}requires_env = ["DEPLOY_LINK_DIR", "DEPLOY_REGION", "toString"]\n`;
+  t.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? required : null);
+  const config = parseConfig(required);
+  const credentials = (await loadCredentials(t.io, { armada: false })).credentials;
+  let starts = 0;
+  t.io.startBackground = async () => {
+    starts++;
+    return true;
+  };
+  t.io.exec = async () => {
+    throw new Error("unconfigured targets must not execute commands");
+  };
+  await startDeploys(t.io, config, credentials, "/work/widgets/armada.toml", sha, ["api"], false);
+  expect(starts).toBe(0);
+  expect(t.err.join("")).toContain(
+    "deploy check skipped: DEPLOY_LINK_DIR, DEPLOY_REGION, toString not set on this machine",
+  );
+  expect(t.err).toHaveLength(1);
+  expect((await t.store.deployState("widgets", { target: "api", sha }))[0]).toMatchObject({
+    state: "skipped",
+    detail: "skipped (not configured on this machine): DEPLOY_LINK_DIR, DEPLOY_REGION, toString",
+  });
+  expect(await t.store.openHolds("widgets")).toHaveLength(0);
+  expect(await t.store.openInboxItems({ project: "widgets", recipient: "coordinator" })).toHaveLength(0);
+  expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(0);
+  expect(await run(["config", "set", "deploy.env.DEPLOY_LINK_DIR", "/local/linked folder"], t.io)).toBe(0);
+  // Settings are scoped to the selected project, not the checkout or another project.
+  t.io.readFile = async (path) =>
+    path === "/work/widgets/armada.toml" ? required.replace('slug = "widgets"', 'slug = "other--"') : null;
+  expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(0);
+  expect((await t.store.deployState("other--", { target: "api", sha }))[0]?.state).toBe("skipped");
+  expect(await run(["config", "set", "deploy.env.DEPLOY_LINK_DIR", "/other/project"], t.io)).toBe(0);
+  t.io.readFile = async (path) => (path === "/work/widgets/armada.toml" ? required : null);
+  t.io.env.DEPLOY_LINK_DIR = "/environment/fallback";
+  t.io.env.DEPLOY_REGION = "test-region";
+  Object.assign(t.io.env, { toString: "valid-shell-variable" });
+  let commands = 0;
+  t.io.exec = async (_command, args, options) => {
+    commands++;
+    expect(options.env?.DEPLOY_LINK_DIR).toBe("/local/linked folder");
+    expect(options.env?.DEPLOY_REGION).toBe("test-region");
+    expect(Object.entries(options.env ?? {}).find(([name]) => name === "toString")?.[1]).toBe("valid-shell-variable");
+    return { code: 0, stdout: args[1] === "version" ? sha : "ok", stderr: "" };
+  };
+  expect(await run(["deploy", "watch", "--sha", sha, "--target", "api"], t.io)).toBe(0);
+  expect(commands).toBe(2);
+  expect((await t.store.deployState("widgets", { target: "api", sha }))[0]?.state).toBe("healthy");
+  expect(await t.store.openHolds("widgets")).toHaveLength(0);
+  expect(t.out.join("") + t.err.join("")).not.toContain("/local/linked folder");
+  expect(await run(["config", "unset", "deploy.env.DEPLOY_LINK_DIR"], t.io)).toBe(0);
+  t.io.exec = async (_command, args, options) => {
+    expect(options.env?.DEPLOY_LINK_DIR).toBe("/environment/fallback");
+    return { code: args[1] === "version" ? 0 : 1, stdout: args[1] === "version" ? live : "failed", stderr: "" };
+  };
+  expect(await run(["deploy", "watch", "--sha", live, "--target", "api"], t.io)).toBe(1);
+  expect(await t.store.openHolds("widgets")).toHaveLength(1);
+  // A damaged settings file cannot throw from the post-merge startup callback.
+  await writeFile(join(t.io.env.XDG_CONFIG_HOME as string, "armada", "projects", "widgets.json"), "{broken");
+  const nextSha = "d".repeat(40);
+  await startDeploys(t.io, config, credentials, "/work/widgets/armada.toml", nextSha, ["api"], false);
+  expect(starts).toBe(1);
+  expect(t.err.join("")).toContain("invalid project machine settings");
 });

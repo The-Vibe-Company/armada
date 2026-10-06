@@ -1733,6 +1733,8 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
     if (found.rows[0]) {
       const previous = found.rows[0];
       const previousRecord = deployRow(previous);
+      // A machine-local skip cannot replace a real observation from another watcher.
+      if (input.state === "skipped" && previousRecord.state !== "skipped") return previousRecord;
       if (deployTerminal(previousRecord.state)) {
         // A healthy merged/live observation can arrive again after a watcher
         // has discovered more ancestry. Enrich that same terminal row so the
@@ -1755,7 +1757,8 @@ export async function recordDeploy(db: Database, input: DeployInputWithCoverage 
         return previousRecord;
       }
       const updated = await q.query<Row>(
-        `UPDATE deploys SET state = $4, detail = $5, pause_on_failure = $6, live_sha = $7,
+        `UPDATE deploys SET started_at = CASE WHEN state = 'skipped' AND $4 <> 'skipped' THEN $9 ELSE started_at END,
+           state = $4, detail = $5, pause_on_failure = $6, live_sha = $7,
             covered_shas = $8, updated_at = $9
          WHERE project = $1 AND target = $2 AND sha = $3 RETURNING *`,
         [

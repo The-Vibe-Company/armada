@@ -1,12 +1,12 @@
 // The machine store: Armada's keys and personal defaults for one user on one
 // machine, under $XDG_CONFIG_HOME/armada or ~/.config/armada. This adapter is
 // the only code that touches those files. It never logs or returns a value in
-// an error; values leave it only through resolveCredentials.
+// an error; credential values leave it only through resolveCredentials.
 import { randomBytes } from "node:crypto";
 import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { parse, TomlError } from "smol-toml";
-import { ConfigError } from "./config.ts";
+import { ConfigError, deployEnvName } from "./config.ts";
 import { parseDotenv, updateDotenv } from "./dotenv.ts";
 import { COORDINATOR } from "./fleet-api.ts";
 import { EMPTY_WATCH_STATE, type PeekTail, type WatchState } from "./watch.ts";
@@ -203,6 +203,71 @@ export async function ensurePersonalConfig(paths: MachinePaths): Promise<boolean
   }
   await writePrivate(paths, paths.config, PERSONAL_CONFIG_TEMPLATE, 0o644);
   return true;
+}
+
+// ------------------------------------------------------ project machine settings
+
+const projectSettingsPath = (paths: MachinePaths, project: string): string => {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(project)) throw new Error("invalid project slug");
+  return join(paths.dir, "projects", `${project}.json`);
+};
+
+/** Non-secret deploy command settings, isolated per project on this machine.
+ * Invalid files are repairable with config set and never interrupt merge cleanup.
+ */
+export async function readDeployEnv(
+  paths: MachinePaths | null,
+  project: string,
+): Promise<{ env: Record<string, string>; warning: string | null }> {
+  const empty = { env: {}, warning: null };
+  if (!paths) return empty;
+  const path = projectSettingsPath(paths, project);
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (err) {
+    if (missing(err)) return empty;
+    return {
+      env: {},
+      warning: `cannot read project machine settings in ${path}: ${(err as NodeJS.ErrnoException).code ?? "unknown error"}; using the process environment`,
+    };
+  }
+  try {
+    const raw = JSON.parse(text);
+    if (!isTable(raw) || !isTable(raw.deploy) || !isTable(raw.deploy.env)) throw new Error();
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(raw.deploy.env)) {
+      if (!deployEnvName(name) || typeof value !== "string" || !value.trim() || value.includes("\0")) throw new Error();
+      env[name] = value;
+    }
+    return { env, warning: null };
+  } catch {
+    return {
+      env: {},
+      warning: `invalid project machine settings in ${path}; using the process environment. armada config set repairs this file`,
+    };
+  }
+}
+
+/** Set or unset a non-secret setting without printing its value. */
+export async function updateDeployEnv(
+  paths: MachinePaths,
+  project: string,
+  name: string,
+  value: string | null,
+): Promise<void> {
+  if (!deployEnvName(name)) throw new Error("invalid deploy environment variable name");
+  if (value !== null && (!value.trim() || value.includes("\0")))
+    throw new Error("deploy setting must be a non-empty string without NUL");
+  const { env } = await readDeployEnv(paths, project);
+  if (value === null) delete env[name];
+  else env[name] = value;
+  await writePrivate(
+    paths,
+    projectSettingsPath(paths, project),
+    `${JSON.stringify({ deploy: { env } }, null, 2)}\n`,
+    0o600,
+  );
 }
 
 // ------------------------------------------------------------------ the watch state

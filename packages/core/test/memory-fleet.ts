@@ -378,6 +378,7 @@ export function memoryFleet(): FleetStore & {
       const known = deploys.find(
         (row) => row.project === input.project && row.target === input.target && row.sha === input.sha,
       );
+      if (known && input.state === "skipped" && known.state !== "skipped") return structuredClone(known);
       if (known && deployTerminal(known.state)) {
         if (known.state === "healthy" && input.state === "healthy") {
           const previousCovered = known.coveredShas ?? [known.sha];
@@ -404,6 +405,7 @@ export function memoryFleet(): FleetStore & {
         sequence: deploys.reduce((max, candidate) => Math.max(max, candidate.sequence), 0) + 1,
       };
       if (known) {
+        if (row.state === "skipped" && input.state !== "skipped") row.startedAt = input.at.toISOString();
         Object.assign(row, {
           state: input.state,
           detail,

@@ -19,7 +19,35 @@ export function selectDeployTargets(
   return { targets: selected, skipped };
 }
 
-export const DEPLOY_STATES = ["waiting", "live", "healthy", "deploy-failed", "smoke-failed", "timeout"] as const;
+/** Required variables are non-secret machine settings; blanks mean unconfigured. */
+export function resolveDeployEnv(
+  target: DeployTarget,
+  local: Record<string, string>,
+  processEnv: Record<string, string | undefined>,
+): { env: Record<string, string>; missing: string[] } {
+  const env: Record<string, string> = {};
+  const missing: string[] = [];
+  for (const name of target.requiresEnv ?? []) {
+    const value = Object.hasOwn(local, name)
+      ? local[name]
+      : Object.hasOwn(processEnv, name)
+        ? processEnv[name]
+        : undefined;
+    if (value?.trim()) env[name] = value;
+    else missing.push(name);
+  }
+  return { env, missing };
+}
+
+export const DEPLOY_STATES = [
+  "waiting",
+  "live",
+  "healthy",
+  "deploy-failed",
+  "smoke-failed",
+  "timeout",
+  "skipped",
+] as const;
 export type DeployState = (typeof DEPLOY_STATES)[number];
 export interface DeployInput {
   target: string;
@@ -152,5 +180,5 @@ export async function watchDeploy(o: WatchDeployOptions): Promise<DeployState> {
 
 export function deployLine(row: DeployRecord, now: Date): string {
   const age = Math.max(0, Math.floor((now.getTime() - Date.parse(row.updatedAt)) / 60_000));
-  return `${row.target}: ${row.state} ${row.sha}${row.state === "waiting" || row.state === "live" ? ` — watching since ${row.startedAt.slice(11, 16)}, no news for ${age} min${age >= 2 ? "; watcher may have stopped" : ""}` : ""}`;
+  return `${row.target}: ${row.state === "skipped" ? "skipped (not configured on this machine)" : row.state} ${row.sha}${row.state === "waiting" || row.state === "live" ? ` — watching since ${row.startedAt.slice(11, 16)}, no news for ${age} min${age >= 2 ? "; watcher may have stopped" : ""}` : ""}`;
 }
