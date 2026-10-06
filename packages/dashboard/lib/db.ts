@@ -821,6 +821,38 @@ export const DB_MIGRATIONS: { version: number; statements: string[] }[] = [
     ],
   },
   {
+    // THE-1109: named coordinator roles, their sessions and launch ownership.
+    version: 31,
+    statements: [
+      `CREATE TABLE coordinators (
+        project text NOT NULL REFERENCES projects(slug) ON DELETE CASCADE,
+        name text NOT NULL CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,31}$'),
+        created_at timestamptz NOT NULL, created_by text,
+        handle text, harness text, model text, cli_version text,
+        started_at timestamptz NOT NULL, seen_at timestamptz NOT NULL, inbox_seen_at timestamptz,
+        PRIMARY KEY (project, name)
+      )`,
+      `INSERT INTO coordinators (project, name, created_at, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at)
+       SELECT project, 'default', COALESCE(started_at, seen_at), handle, harness, model, cli_version,
+              COALESCE(started_at, seen_at), seen_at, inbox_seen_at FROM coordinator_presence`,
+      `CREATE TABLE coordinator_sessions (
+        project text NOT NULL, name text NOT NULL, handle text NOT NULL,
+        harness text, model text, cli_version text, started_at timestamptz NOT NULL,
+        seen_at timestamptz NOT NULL, inbox_seen_at timestamptz,
+        PRIMARY KEY (project, name, handle),
+        FOREIGN KEY (project, name) REFERENCES coordinators(project, name) ON DELETE CASCADE
+      )`,
+      `INSERT INTO coordinator_sessions (project, name, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at)
+       SELECT project, name, handle, harness, model, cli_version, started_at, seen_at, inbox_seen_at FROM coordinators WHERE handle IS NOT NULL`,
+      "ALTER TABLE runtime_handles ADD COLUMN coordinator text",
+      "ALTER TABLE fleet_sessions ADD COLUMN coordinator text",
+      'ALTER TABLE "armada_worker" ADD COLUMN "coordinator" text',
+      "ALTER TABLE inbox_items ADD COLUMN coordinator text",
+      "CREATE INDEX runtime_handles_coordinator ON runtime_handles (project, coordinator) WHERE released_at IS NULL",
+      'CREATE INDEX armada_worker_coordinator ON "armada_worker" ("project", "coordinator", "createdAt") WHERE "endedAt" IS NULL',
+    ],
+  },
+  {
     // THE-1094: standing merge pauses, with their atomic coordinator inbox item.
     version: 32,
     statements: [
