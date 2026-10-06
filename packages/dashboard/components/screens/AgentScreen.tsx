@@ -16,7 +16,7 @@ import { useParams, useSearchParams } from "next/navigation";
 import { type ReactNode, useMemo } from "react";
 import { releaseTicket } from "@/app/actions";
 import { clockIn } from "@/lib/activity-view";
-import type { OverviewItem } from "@/lib/coordinator-view";
+import { type OverviewItem, showsOwners } from "@/lib/coordinator-view";
 import type { TaggedActivity } from "@/lib/fleet-data";
 import { HARNESS_NAME, harnessOf, paths, sessionLink } from "@/lib/fleet-view";
 import type { Strings } from "@/lib/i18n";
@@ -118,6 +118,12 @@ function Agent({
             <>
               <span aria-hidden>·</span>
               <span>{row?.session?.profile ?? row?.profile}</span>
+            </>
+          )}
+          {item.owner && project && showsOwners(project, [item]) && (
+            <>
+              <span aria-hidden>·</span>
+              <span>{a.owner(item.owner)}</span>
             </>
           )}
         </p>

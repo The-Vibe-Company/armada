@@ -9,7 +9,10 @@
 // rows short and shows the selected session beside them, its action first
 // (OverviewPreview.tsx, loaded apart); on a phone the list comes first and a
 // row opens the session's page. The view lives in the address
-// (lib/coordinator-view.ts: ?coordinator=, ?group=, ?view=, ?ticket=).
+// (lib/coordinator-view.ts: ?coordinator= for a project, ?owner= for a
+// named coordinator's sessions, ?group=, ?view=, ?ticket=). A project that
+// names its coordinators (THE-1112) shows each row's owner and each
+// coordinator on its card; one with only `default` looks as before.
 // `Overview` draws it on the view it is given: the landing's replica
 // (components/landing/Replica.tsx, THE-931), which has no router, plays it.
 import type { ProjectOverview } from "@armada/core/read";
@@ -17,16 +20,21 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type MouseEvent, useCallback, useMemo, useState } from "react";
 import {
+  coordinatorState,
+  filterItems,
   groupItems,
   type ItemGroup,
   type OverviewItem,
   type OverviewView,
   overviewHeadline,
   overviewHref,
+  ownerCounts,
   parseOverviewView,
   projectSummaries,
   type Reason,
   type SessionGroup,
+  showsOwners,
+  urgentCoordinator,
 } from "@/lib/coordinator-view";
 import { paths } from "@/lib/fleet-view";
 import { LONGEST_TIMES, type Strings } from "@/lib/i18n";
@@ -144,7 +152,11 @@ export function Overview({
   const all = useOverviewItems();
   const projects = overview.projects;
   const project = projects.some((p) => p.slug === view.project) ? view.project : null;
-  const items = useMemo(() => (project ? all.filter((i) => i.project === project) : all), [all, project]);
+  const owner = view.owner;
+  const items = useMemo(() => filterItems(all, { project, owner }), [all, project, owner]);
+  // The projects that name their coordinators show each row's owner, and the owners' chips.
+  const named = useMemo(() => new Set(projects.filter((p) => showsOwners(p, all)).map((p) => p.slug)), [projects, all]);
+  const owners = useMemo(() => (named.size ? ownerCounts(all.filter((i) => named.has(i.project))) : []), [all, named]);
   const groups = useMemo(() => groupItems(items, view.group, projects), [items, view.group, projects]);
   const head = overviewHeadline(all, projects.length);
   const summaries = useMemo(() => projectSummaries(projects, all), [projects, all]);
@@ -233,6 +245,24 @@ export function Overview({
                 />
               ))}
             </nav>
+            {owners.length > 0 && (
+              <>
+                <span className="ov-groupby" id="ov-owners">
+                  {t.overview.ownerLabel}
+                </span>
+                <nav className="ov-chips" aria-labelledby="ov-owners">
+                  {owners.map((o) => (
+                    <Chip
+                      key={o.name}
+                      href={hrefFor({ owner: owner === o.name ? null : o.name })}
+                      on={owner === o.name}
+                      label={o.name}
+                      count={o.count}
+                    />
+                  ))}
+                </nav>
+              </>
+            )}
             <span className="spacer" />
             <span className="ov-groupby" id="ov-groupby">
               {t.overview.groupBy}
@@ -244,10 +274,10 @@ export function Overview({
           </div>
           {groups.length === 0 ? (
             <div className="ov-empty is-dashed">
-              {project ? (
+              {project || owner ? (
                 <>
                   {t.overview.noMatch}{" "}
-                  <Link href={hrefFor({ project: null })} scroll={false} prefetch={false}>
+                  <Link href={hrefFor({ project: null, owner: null })} scroll={false} prefetch={false}>
                     {t.overview.clear}
                   </Link>
                 </>
@@ -260,17 +290,18 @@ export function Overview({
               <List
                 groups={groups}
                 names={names}
+                named={named}
                 compact
                 selected={selected}
                 select={select}
                 long={items.length > LONG_LIST}
               />
               <aside className="ov-pane" aria-label={selected ? selected.id : t.overview.views.preview}>
-                <Pane item={selected} names={names} />
+                <Pane item={selected} names={names} named={named} />
               </aside>
             </div>
           ) : (
-            <List groups={groups} names={names} long={items.length > LONG_LIST} />
+            <List groups={groups} names={names} named={named} long={items.length > LONG_LIST} />
           )}
         </>
       )}
@@ -278,11 +309,24 @@ export function Overview({
   );
 }
 
-function Pane({ item, names }: { item: OverviewItem | null; names: Map<string, string> }) {
+function Pane({
+  item,
+  names,
+  named,
+}: {
+  item: OverviewItem | null;
+  names: Map<string, string>;
+  named: ReadonlySet<string>;
+}) {
   const Preview = useLazy(loadPreview);
   if (!item || !Preview) return null;
   return (
-    <Preview key={`${item.project}/${item.id}`} item={item} projectName={names.get(item.project) ?? item.project} />
+    <Preview
+      key={`${item.project}/${item.id}`}
+      item={item}
+      projectName={names.get(item.project) ?? item.project}
+      owner={named.has(item.project) ? item.owner : null}
+    />
   );
 }
 
@@ -333,19 +377,32 @@ function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummari
         <span style={{ color: s.blocked ? "var(--red)" : "var(--text-3)" }}>{c.blocked(s.blocked)}</span>
         <span style={{ color: s.you ? "var(--amber)" : "var(--text-3)" }}>{c.you(s.you)}</span>
         <span>{c.running(s.running)}</span>
-        <span className="ov-project-coord" style={{ color: COORDINATOR_COLOR[s.coordinator] }}>
-          <span className="ov-diamond" aria-hidden />
-          <Steady
-            widest={[
-              t.overview.coordinator.active,
-              t.overview.coordinator.unknown,
-              ...LONGEST_TIMES.map((n) => t.overview.coordinator.idle(t.duration(n))),
-            ]}
-          >
-            {coordinator}
-          </Steady>
-        </span>
+        {s.coordinators.length === 0 && (
+          <span className="ov-project-coord" style={{ color: COORDINATOR_COLOR[s.coordinator] }}>
+            <span className="ov-diamond" aria-hidden />
+            <Steady
+              widest={[
+                t.overview.coordinator.active,
+                t.overview.coordinator.unknown,
+                ...LONGEST_TIMES.map((n) => t.overview.coordinator.idle(t.duration(n))),
+              ]}
+            >
+              {coordinator}
+            </Steady>
+          </span>
+        )}
       </span>
+      {s.coordinators.length > 0 && (
+        <span className="ov-project-facts ov-project-roles">
+          <span className="sr-only">{t.overview.ownerLabel}: </span>
+          {s.coordinators.map((r) => (
+            <span key={r.name} className="ov-project-coord" style={{ color: COORDINATOR_COLOR[r.state] }}>
+              <span className="ov-diamond" aria-hidden />
+              {t.overview.roleSeen(r.name, r.seenAt ? t.ago(Math.max(0, now - Date.parse(r.seenAt))) : null)}
+            </span>
+          ))}
+        </span>
+      )}
     </Link>
   );
 }
@@ -358,6 +415,7 @@ function ProjectCard({ summary: s }: { summary: ReturnType<typeof projectSummari
 export function List({
   groups,
   names,
+  named,
   compact = false,
   boxed = false,
   selected = null,
@@ -366,6 +424,8 @@ export function List({
 }: {
   groups: ItemGroup[];
   names: Map<string, string>;
+  /** The projects whose rows show their coordinator (`showsOwners`). */
+  named?: ReadonlySet<string>;
   compact?: boolean;
   boxed?: boolean;
   selected?: OverviewItem | null;
@@ -377,7 +437,9 @@ export function List({
   return (
     <div className={["ov-list", long && "is-long", boxed && "is-boxed"].filter(Boolean).join(" ")}>
       {groups.map((g) => {
-        const color = g.group ? GROUP_COLOR[g.group] : COORDINATOR_COLOR[g.project?.coordinator.state ?? "unknown"];
+        const color = g.group
+          ? GROUP_COLOR[g.group]
+          : COORDINATOR_COLOR[g.project ? coordinatorState(g.project) : "unknown"];
         const label = g.group ? t.overview.groups[g.group] : (g.project?.name ?? g.key);
         const hint = g.group ? t.overview.groupHints[g.group] : projectHint(t, g.project, now);
         return (
@@ -393,6 +455,7 @@ export function List({
                 key={`${i.project}/${i.id}`}
                 item={i}
                 projectName={names.get(i.project) ?? i.project}
+                owner={named?.has(i.project) ? i.owner : null}
                 compact={compact}
                 boxed={boxed}
                 selected={selected === i}
@@ -408,7 +471,7 @@ export function List({
 
 function projectHint(t: Strings, p: ProjectOverview | null, now: number) {
   if (!p) return "";
-  const c = p.coordinator;
+  const c = urgentCoordinator(p);
   if (c.state === "active") return t.overview.coordinatorHint.active;
   if (c.state === "idle")
     return t.overview.coordinatorHint.idle(t.duration(c.seenAt ? Math.max(0, now - Date.parse(c.seenAt)) : 0));
@@ -424,6 +487,7 @@ const paneShown = () => {
 function Row({
   item: i,
   projectName,
+  owner,
   compact,
   boxed,
   selected,
@@ -431,6 +495,8 @@ function Row({
 }: {
   item: OverviewItem;
   projectName: string;
+  /** Its coordinator, shown before its reason; null where the project names none. */
+  owner: string | null;
   compact: boolean;
   boxed: boolean;
   selected: boolean;
@@ -480,6 +546,12 @@ function Row({
           <span className="ov-main">
             <span className="ov-title">{i.title}</span>
             <span className="ov-reason" style={{ color: quiet ? "var(--text-2)" : color }}>
+              {owner && (
+                <span className="ov-owner">
+                  <span className="sr-only">{t.overview.ownerLabel} </span>
+                  {owner}
+                </span>
+              )}
               {reason}
             </span>
           </span>

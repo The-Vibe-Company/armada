@@ -160,6 +160,18 @@ export interface FleetTimeline {
 
 export type CoordinatorState = "active" | "idle" | "unknown";
 
+/**
+ * One named coordinator of a project (THE-1109, THE-1112): what it last told
+ * Armada, whether it is at work by the project's silence threshold, and the
+ * tickets in flight it owns.
+ */
+export interface ProjectCoordinator extends Partial<Omit<CoordinatorPresence, "seenAt">> {
+  name: string;
+  state: CoordinatorState;
+  seenAt: string | null;
+  tickets: string[];
+}
+
 export interface ProjectOverview {
   /** Default-branch CI, carried from the stored forge snapshot. */
   main?: StatusReport["main"];
@@ -185,6 +197,11 @@ export interface ProjectOverview {
     cliVersion: string | null;
     updateAvailable: boolean;
   } & Partial<Omit<CoordinatorPresence, "seenAt">>;
+  /**
+   * Every coordinator of the project by name, and the owner of a ticket in
+   * flight no role lists. Absent from older readings (the landing's).
+   */
+  coordinators?: ProjectCoordinator[];
   inFlight: number;
   waiting: number;
   sources: StatusReport["sources"] | null;
@@ -225,6 +242,8 @@ export interface ProjectReading {
     coordinatorSeenAt: string | null;
     coordinatorCliVersion?: string | null;
     coordinator?: CoordinatorPresence | null;
+    /** Every named coordinator of the project (THE-1109). */
+    coordinators?: CoordinatorPresence[];
     inboxReads?: InboxReadEvent[];
     sessions?: SessionRecord[];
     /** Open validations and those decided lately, with their gallery and their ticket's title when known. */
@@ -449,8 +468,21 @@ export function buildOverview(input: {
     const seenAt = p.live?.coordinator?.seenAt ?? p.live?.coordinatorSeenAt ?? null;
     const cliVersion = p.live?.coordinator?.cliVersion ?? p.live?.coordinatorCliVersion ?? null;
     const threshold = (p.report?.silentAfterMinutes ?? 15) * MIN;
-    const state: CoordinatorState =
-      seenAt === null ? "unknown" : now - Date.parse(seenAt) <= threshold ? "active" : "idle";
+    const stateAt = (at: string | null): CoordinatorState =>
+      at === null ? "unknown" : now - Date.parse(at) <= threshold ? "active" : "idle";
+    const state = stateAt(seenAt);
+    const roles = (p.live?.coordinators ?? []).map((r) => ({ ...r, name: r.name ?? "default" }));
+    const owners = [...new Set(tickets.flatMap((t) => (t.coordinator ? [t.coordinator] : [])))];
+    const coordinators: ProjectCoordinator[] = [
+      ...roles,
+      ...owners.filter((name) => !roles.some((r) => r.name === name)).map((name) => ({ name, seenAt: null })),
+    ]
+      .map((c) => ({
+        ...c,
+        state: stateAt(c.seenAt),
+        tickets: tickets.filter((t) => t.coordinator === c.name).map((t) => t.id),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
     timeline.coordinators.push({
       project: p.slug,
       inboxTrack: coordinatorTrack({ reads: p.live?.inboxReads ?? [], silentAfterMinutes, now: input.now }),
@@ -483,6 +515,7 @@ export function buildOverview(input: {
         cliVersion,
         updateAvailable: cliVersion !== null && newerRelease(cliVersion, input.latestCli) !== null,
       },
+      coordinators,
       inFlight: tickets.length,
       waiting: perTicket.size + projectWide,
       sources: p.report?.sources ?? null,

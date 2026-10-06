@@ -278,6 +278,44 @@ describe("fleet overview", () => {
     ]);
   });
 
+  test("each named coordinator with its state and tickets in flight, and an owner no role lists", () => {
+    const role = (name: string, seenAt: string) => ({
+      name,
+      harness: null,
+      handle: null,
+      model: null,
+      cliVersion: null,
+      startedAt: seenAt,
+      seenAt,
+      inboxSeenAt: null,
+    });
+    const o = buildOverview({
+      projects: [
+        reading(
+          "widgets",
+          [
+            ticket("W-1", { coordinator: "front" }),
+            ticket("W-2", { coordinator: "default" }),
+            ticket("W-3", { coordinator: "back" }),
+            ticket("W-4"),
+          ],
+          {
+            inbox: [],
+            coordinatorSeenAt: at("09:58"),
+            coordinators: [role("front", at("09:58")), role("default", at("09:00"))],
+          },
+        ),
+      ],
+      live: { state: "ok", error: null },
+      now: NOW,
+    });
+    expect(o.projects[0]?.coordinators?.map((c) => [c.name, c.state, c.seenAt, c.tickets])).toEqual([
+      ["back", "unknown", null, ["W-3"]],
+      ["default", "idle", at("09:00"), ["W-2"]],
+      ["front", "active", at("09:58"), ["W-1"]],
+    ]);
+  });
+
   test("without the live data the waiting list comes from the tracker and the coordinator is unknown", () => {
     const o = buildOverview({
       projects: [reading("widgets", [ticket("W-1", { phase: "ready-to-merge" })], null)],

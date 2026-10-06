@@ -26,7 +26,16 @@ import { Decide } from "./ValidationCard";
 /** How many reports the pane lists. */
 const REPORTS = 3;
 
-export function OverviewPreview({ item, projectName }: { item: OverviewItem; projectName: string }) {
+export function OverviewPreview({
+  item,
+  projectName,
+  owner,
+}: {
+  item: OverviewItem;
+  projectName: string;
+  /** The session's coordinator, where its project names them (THE-1112). */
+  owner: string | null;
+}) {
   const { t, account, author, setAuthor, zone } = useShell();
   const { overview, failed, version, refresh } = useFleet();
   const now = useNow();
@@ -69,6 +78,12 @@ export function OverviewPreview({ item, projectName }: { item: OverviewItem; pro
           <span className="mono">{item.id}</span>
           <span aria-hidden>·</span>
           <span>{projectName}</span>
+          {owner && (
+            <>
+              <span aria-hidden>·</span>
+              <span>{t.agentPage.owner(owner)}</span>
+            </>
+          )}
         </span>
         <span className="ov-pv-title">{item.title}</span>
       </div>
