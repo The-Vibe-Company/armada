@@ -17,6 +17,7 @@ import {
   isLabelPhase,
   LABEL_PHASES,
   LINEAR_KEY,
+  live,
   machinePaths,
   type Outcome,
   type PendingLaunch,
@@ -37,6 +38,7 @@ import { coordinatorName } from "./coordinator.ts";
 import { reportHerdr } from "./herdr.ts";
 import { httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { sessionHandle } from "./login.ts";
+import { preflight } from "./preflight.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { observeRuntimes } from "./runtime.ts";
 
@@ -289,8 +291,8 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
       if (err instanceof ValidationChoiceError) throw new UsageError(err.message, err.next);
       throw err;
     }
-  return withContext(io, config, credentials, a.json, (ctx, redact) =>
-    claimTicket(
+  return withContext(io, config, credentials, a.json, async (ctx, redact) => {
+    const { claimedBranch, ...claimed } = await claimTicket(
       ctx,
       redact({
         ticket: ticket.toUpperCase(),
@@ -301,8 +303,23 @@ export async function claim(io: Io, config: ArmadaConfig, credentials: Credentia
         reason,
         validation,
       }),
-    ),
-  );
+    );
+    const failure = await preflight(io, claimedBranch ?? null);
+    if (!failure) return claimed;
+    const message = redact({ message: failure }).message.slice(0, 2048);
+    const blocked = await reportPhase(ctx, { ticket: claimed.ticket, phase: "blocked", message });
+    await live(ctx, blocked.warnings, "put the preflight block in the coordinator’s inbox", (fleet) =>
+      fleet.ask({
+        ticket: claimed.ticket,
+        body: `blocked — ${message}\nFix repository access or signing, then tell this worker to retry claim and report its working phase once the checks pass.`,
+      }),
+    );
+    return {
+      ...blocked,
+      lines: [...claimed.lines, ...blocked.lines, `blocked — ${message}`],
+      warnings: [...claimed.warnings, ...blocked.warnings],
+    };
+  });
 }
 
 export async function report(io: Io, config: ArmadaConfig, credentials: Credentials, a: WorkerArgs) {
