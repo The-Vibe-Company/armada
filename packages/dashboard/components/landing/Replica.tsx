@@ -28,7 +28,7 @@ const SPEED = 15;
 const BEATS = { deliver: 2.6, handBack: 5.6, validate: 8.6, point: 9.4, loop: 15.5 };
 
 /** The list grouped by state, and nothing to change: the replica has no address of its own. */
-const VIEW: OverviewView = { project: null, group: "state", view: "list", ticket: null };
+const VIEW: OverviewView = { project: null, owner: null, group: "state", view: "list", ticket: null };
 const hrefFor = (patch: Partial<OverviewView>) => overviewHref({ ...VIEW, ...patch });
 const still = () => {};
 

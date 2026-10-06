@@ -1020,3 +1020,40 @@ test("GitHub's confirmed merge at a different head is reported merged with pendi
   expect(f.store.events.some((e) => e.kind === "merge")).toBe(false);
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-18"))?.releasedAt).toBeNull();
 });
+
+test.each([false, true])(
+  "confirmed merge ends worker sessions before deploy watchers, even with Linear pending (%s)",
+  async (linearPending) => {
+    const f = await fixture();
+    const update = f.linear.updateTicket.bind(f.linear);
+    if (linearPending)
+      f.linear.updateTicket = async () => {
+        throw new Error("Linear unavailable");
+      };
+    const read = f.io.readFile;
+    f.io.readFile = async (path) => {
+      const contents = await read(path);
+      return path.endsWith("armada.toml") && contents
+        ? `${contents}\n[[deploy.target]]\nname = "api"\nbranch = "main"\nlive_sha_command = "version"\n`
+        : contents;
+    };
+    let launched: string[] = [];
+    let launches = 0;
+    f.io.startBackground = async (args) => {
+      launches++;
+      expect(f.armada.calls.some((c) => c.path === "workers/end")).toBe(true);
+      launched = args;
+      return true;
+    };
+    expect(await run(["merge", "9"], f.io)).toBe(0);
+    expect(launched.slice(0, 6)).toEqual(["deploy", "watch", "--sha", SQUASH, "--target", "api"]);
+    expect(f.out()).toContain(`Watching the deploy of ${SQUASH} to api`);
+    if (linearPending) {
+      expect(f.out().trim().split("\n").at(-1)).toBe("Result: merged #9, Linear pending (armada merge --finish 9)");
+      f.linear.updateTicket = update;
+      expect(await run(["merge", "--finish", "9"], f.io)).toBe(0);
+      expect(await run(["merge", "--finish", "9"], f.io)).toBe(0);
+    }
+    expect(launches).toBe(1);
+  },
+);

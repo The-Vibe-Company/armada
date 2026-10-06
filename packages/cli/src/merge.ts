@@ -14,6 +14,7 @@ import {
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
+  deployLine,
   fetchCommit,
   fetchComparison,
   fetchMainHealth,
@@ -42,6 +43,7 @@ import {
 import { afterMerge } from "./after-merge.ts";
 import { coordinatorName } from "./coordinator.ts";
 import type { DeferredLaunchResult } from "./deferred-launch.ts";
+import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
@@ -479,6 +481,16 @@ export async function merge(
       if (!a.json) io.stdout(`${mergeResult(asked)}\n`);
       return 0;
     }
+    if (!finish && config.deploy?.targets.length) {
+      try {
+        for (const row of (await deployStatus(io, config, credentials)).rows) {
+          if (["waiting", "live"].includes(row.state) && now().getTime() - Date.parse(row.updatedAt) >= 120_000)
+            io.stderr(`armada: ${deployLine(row, now())}\n`);
+        }
+      } catch {
+        io.stderr("armada: warning: could not read deploy state; armada deploy status\n");
+      }
+    }
     const o = finish
       ? await finishMerge(ctx, { pr: number, ticket: a.options.ticket ?? null })
       : await mergePullRequest(ctx, {
@@ -492,6 +504,7 @@ export async function merge(
           throughHold: a.options["through-hold"],
         });
     confirmed = o;
+    let deploys: Awaited<ReturnType<typeof startDeploys>> = [];
     let deferredLaunches: DeferredLaunchResult[] = [];
     let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
     const notify = async (results: DeferredLaunchResult[]) => {
@@ -548,6 +561,8 @@ export async function merge(
           `${render(o)}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
         );
       for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
+      if (!finish && o.merged && o.deploy)
+        deploys = await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json);
     };
     if (finish) await notify([]);
     const archive = finish
@@ -560,7 +575,7 @@ export async function merge(
         });
     if (a.json)
       io.stdout(
-        `${JSON.stringify({ ...o, archive, deferredLaunches, watch: next, result: mergeResult(o) }, null, 2)}\n`,
+        `${JSON.stringify({ ...o, archive, deferredLaunches, ...(deploys.length ? { deploys } : {}), watch: next, result: mergeResult(o) }, null, 2)}\n`,
       );
     else if (archive)
       io.stdout(`${archive.detail.endsWith(".") ? archive.detail : `${o.ticket?.id}: ${archive.detail}.`}\n`);

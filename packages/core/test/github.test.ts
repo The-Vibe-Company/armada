@@ -1,6 +1,132 @@
 import { describe, expect, test } from "bun:test";
-import { fetchForge, fetchMainHealth, ticketIdFromBranch } from "../src/github.ts";
+import { fetchBranchRules, fetchForge, fetchMainHealth, ticketIdFromBranch } from "../src/github.ts";
 import { NOW, recordedFetch } from "./support.ts";
+
+describe("fetchBranchRules", () => {
+  const repo = { default_branch: "release/trunk", allow_squash_merge: true, delete_branch_on_merge: false };
+  const rules = [
+    {
+      type: "required_status_checks",
+      parameters: { required_status_checks: [{ context: "test" }], strict_required_status_checks_policy: true },
+    },
+    { type: "pull_request", parameters: { required_approving_review_count: 1 } },
+    { type: "merge_queue" },
+    { type: "required_signatures" },
+    { type: "required_linear_history" },
+  ];
+  const opts = (
+    classicStatus = 200,
+    active: unknown = rules,
+    protection: unknown = {
+      required_status_checks: { contexts: ["test", "lint"], checks: [{ context: "deploy" }] },
+      required_pull_request_reviews: { required_approving_review_count: 2 },
+    },
+  ) => {
+    const urls: string[] = [];
+    const recorded = recordedFetch();
+    return {
+      urls,
+      token: "synthetic-token",
+      repository: "acme/widgets",
+      fetch: async (url: string, init: RequestInit) => {
+        urls.push(url);
+        expect(new Headers(init.headers).get("Authorization")).toBe("Bearer synthetic-token");
+        if (url.endsWith("/repos/acme/widgets")) return Response.json(repo);
+        if (url.includes("/rules/branches/")) return Response.json(active);
+        if (url.endsWith("/protection")) return Response.json(protection, { status: classicStatus });
+        return recorded.fetch(url, init);
+      },
+    };
+  };
+
+  test("combines classic and active requirements without duplicate checks or weakening approvals", async () => {
+    const o = opts();
+    expect(await fetchBranchRules(o)).toEqual({
+      defaultBranch: "release/trunk",
+      allowSquashMerge: true,
+      deleteBranchOnMerge: false,
+      requiredChecks: ["deploy", "lint", "test"],
+      requiredApprovals: 2,
+      requiredCodeOwnerReview: false,
+      requiredLastPushApproval: false,
+      mergeQueue: true,
+      requiredSignatures: true,
+      requiredLinearHistory: true,
+      strictChecks: true,
+      classicProtection: "read",
+    });
+    expect(o.urls).toEqual([
+      "https://api.github.com/repos/acme/widgets",
+      "https://api.github.com/repos/acme/widgets/rules/branches/release%2Ftrunk?per_page=100&page=1",
+      "https://api.github.com/repos/acme/widgets/branches/release%2Ftrunk/protection",
+    ]);
+  });
+
+  for (const status of [403, 404])
+    test(`classic ${status} falls back to active rules`, async () => {
+      expect(await fetchBranchRules(opts(status))).toMatchObject({
+        requiredChecks: ["test"],
+        requiredApprovals: 1,
+        mergeQueue: true,
+        classicProtection: "unavailable",
+      });
+    });
+
+  test("empty active rules still retain classic-only requirements", async () => {
+    expect(await fetchBranchRules(opts(200, []))).toMatchObject({
+      requiredChecks: ["deploy", "lint", "test"],
+      requiredApprovals: 2,
+    });
+  });
+
+  test("reads paginated rules and respects a ruleset's allowed squash method", async () => {
+    const o = opts(404);
+    const fetch = o.fetch;
+    o.fetch = async (url, init) => {
+      if (url.includes("/rules/branches/"))
+        return Response.json(
+          url.endsWith("page=1")
+            ? Array.from({ length: 100 }, () => ({ type: "required_linear_history" }))
+            : [
+                {
+                  type: "pull_request",
+                  parameters: { required_approving_review_count: 3, allowed_merge_methods: ["rebase"] },
+                },
+              ],
+        );
+      return fetch(url, init);
+    };
+    expect(await fetchBranchRules(o)).toMatchObject({
+      allowSquashMerge: false,
+      requiredApprovals: 3,
+      requiredLinearHistory: true,
+    });
+  });
+
+  test("unreadable active rules fail rather than claiming compatibility", async () => {
+    const o = opts();
+    const fetch = o.fetch;
+    o.fetch = async (url, init) =>
+      url.includes("/rules/branches/") ? new Response("denied", { status: 403 }) : fetch(url, init);
+    await expect(fetchBranchRules(o)).rejects.toThrow("HTTP 403");
+  });
+
+  test("ruleset and classic independent approval flags survive a zero review count", async () => {
+    const o = opts(
+      200,
+      [{ type: "pull_request", parameters: { required_approving_review_count: 0, require_code_owner_review: true } }],
+      {
+        required_status_checks: { contexts: [], checks: [] },
+        required_pull_request_reviews: { required_approving_review_count: 0, require_last_push_approval: true },
+      },
+    );
+    expect(await fetchBranchRules(o)).toMatchObject({
+      requiredApprovals: 0,
+      requiredCodeOwnerReview: true,
+      requiredLastPushApproval: true,
+    });
+  });
+});
 
 describe("ticketIdFromBranch", () => {
   const known = new Set(["ABC-12", "XY2-7"]);

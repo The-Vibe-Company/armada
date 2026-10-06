@@ -10,6 +10,7 @@ export * from "./catchup.ts";
 export * from "./config.ts";
 export * from "./credentials.ts";
 export * from "./deferred.ts";
+export * from "./deploy.ts";
 export * from "./digest.ts";
 export * from "./fleet.ts";
 export * from "./fleet-api.ts";

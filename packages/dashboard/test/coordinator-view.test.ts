@@ -1,17 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import type { FleetRow, MergedTicket, OwnerValidation, ProjectOverview } from "@armada/core/read";
+import type { FleetRow, MergedTicket, OwnerValidation, ProjectCoordinator, ProjectOverview } from "@armada/core/read";
 import {
   checksOf,
+  coordinatorState,
+  filterItems,
   groupItems,
   mergedToday,
   overviewHeadline,
   overviewHref,
   overviewItems,
   ownerChecks,
+  ownerCounts,
   parseOverviewView,
   projectSummaries,
   sessionState,
   sessionStep,
+  showsOwners,
 } from "../lib/coordinator-view.ts";
 import { demoOverview } from "../lib/demo/overview.ts";
 
@@ -234,14 +238,74 @@ describe("the demo world", () => {
   });
 });
 
+describe("the sessions' coordinators (THE-1112)", () => {
+  const role = (name: string, state: ProjectCoordinator["state"], tickets: string[] = []): ProjectCoordinator => ({
+    name,
+    state,
+    seenAt: at(0),
+    tickets,
+    updateAvailable: false,
+  });
+  const rows = [
+    row("WID-1", { coordinator: "front" }),
+    // The live session's owner wins over the claim comment's.
+    row("WID-2", { coordinator: "front", session: { coordinator: "default" } as FleetRow["session"] }),
+    row("WID-3"),
+    row("GAD-1", { project: "gadgets", coordinator: "default" }),
+  ];
+  const projects = [
+    project("widgets", { coordinators: [role("default", "active", ["WID-2"]), role("front", "idle", ["WID-1"])] }),
+    project("gadgets", { coordinators: [role("default", "active", ["GAD-1"])] }),
+  ];
+  const items = overviewItems({ rows, projects, validations: [] }, { now: NOW, zone: "UTC" });
+
+  test("?owner= keeps one coordinator's sessions, beside the project filter", () => {
+    expect(items.map((i) => [i.id, i.owner])).toEqual([
+      ["WID-1", "front"],
+      ["WID-2", "default"],
+      ["WID-3", null],
+      ["GAD-1", "default"],
+    ]);
+    const view = parseOverviewView(new URLSearchParams("owner=front"));
+    expect(filterItems(items, view).map((i) => i.id)).toEqual(["WID-1"]);
+    expect(filterItems(items, { project: null, owner: "default" }).map((i) => i.id)).toEqual(["WID-2", "GAD-1"]);
+    expect(filterItems(items, { project: "gadgets", owner: null }).map((i) => i.id)).toEqual(["GAD-1"]);
+    expect(ownerCounts(items)).toEqual([
+      { name: "default", count: 2 },
+      { name: "front", count: 1 },
+    ]);
+  });
+
+  test("show only where a project names them; a project with only default looks as before", () => {
+    expect(projects.map((p) => showsOwners(p, items))).toEqual([true, false]);
+    // A session a named role owns names the project's coordinators, even before the role is read.
+    expect(showsOwners(project("gadgets"), [{ project: "gadgets", owner: "back" }])).toBe(true);
+    expect(projectSummaries(projects, items).map((s) => s.coordinators.map((c) => c.name))).toEqual([
+      ["default", "front"],
+      [],
+    ]);
+  });
+
+  test("the project's diamond is its most urgent coordinator that owns a session, else the one seen last", () => {
+    expect(projects.map(coordinatorState)).toEqual(["idle", "active"]);
+    const quiet = project("widgets", {
+      coordinator: { state: "active" } as ProjectOverview["coordinator"],
+      coordinators: [role("default", "active"), role("front", "idle")],
+    });
+    expect(coordinatorState(quiet)).toBe("active");
+  });
+});
+
 describe("the overview's address", () => {
   test("reads the project, the grouping, the view and the selection, and ignores the rest", () => {
-    const v = parseOverviewView(new URLSearchParams("coordinator=widgets&group=project&view=preview&ticket=WID-15"));
-    expect(v).toEqual({ project: "widgets", group: "project", view: "preview", ticket: "WID-15" });
-    expect(overviewHref(v)).toBe("/?coordinator=widgets&group=project&view=preview&ticket=WID-15");
+    const v = parseOverviewView(
+      new URLSearchParams("coordinator=widgets&owner=front&group=project&view=preview&ticket=WID-15"),
+    );
+    expect(v).toEqual({ project: "widgets", owner: "front", group: "project", view: "preview", ticket: "WID-15" });
+    expect(overviewHref(v)).toBe("/?coordinator=widgets&owner=front&group=project&view=preview&ticket=WID-15");
     // Links from before: the harness tabs, the state and sort filters land on the overview, unfiltered.
     const old = parseOverviewView(new URLSearchParams("harness=codex&state=error&sort=age&project=gadgets"));
-    expect(old).toEqual({ project: "gadgets", group: "state", view: "list", ticket: null });
+    expect(old).toEqual({ project: "gadgets", owner: null, group: "state", view: "list", ticket: null });
     expect(overviewHref({ ...old, project: null, ticket: "WID-1" })).toBe("/");
   });
 });

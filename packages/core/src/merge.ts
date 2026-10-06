@@ -167,6 +167,7 @@ export interface WorkerToTell {
 }
 
 export interface MergeOutcome {
+  deploy?: { targets: string[] } | null;
   merged: boolean;
   /** Confirmed merge with unfinished bookkeeping; never a failed GitHub merge. */
   linearPending?: boolean;
@@ -1477,6 +1478,10 @@ async function after(
   unlocked: boolean,
   override = "",
 ): Promise<MergeOutcome> {
+  const targets = (ctx.config.deploy?.targets ?? [])
+    .filter((t) => t.branch === null || t.branch === merged.baseRef)
+    .map((t) => t.name);
+  const deploy = targets.length ? { targets } : null;
   const ticket = c.ticket;
   let chorePending = false;
   let live$: MergeRecorded | null = null;
@@ -1562,7 +1567,7 @@ async function after(
       `could not list the workers in flight${ticket ? " and unblocked tickets" : ""} (${err instanceof Error ? err.message : String(err)}); run armada status`,
     );
   }
-  if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed };
+  if (!ticket) return { ...outcome(c, true, merged, lines, workers, null), workersListed: listed, deploy };
 
   const linearTicket = "armadaHandBack" in ticket ? null : ticket;
   const claim = activeClaimComments(linearTicket?.comments ?? [])[0]?.claim;
@@ -1586,6 +1591,7 @@ async function after(
     ...outcome(c, true, merged, lines, workers, archive),
     workersListed: listed,
     unblocked,
+    deploy,
     linearPending,
     armadaPending: ctx.lockRequired && (!live$ || chorePending),
   };

@@ -6,6 +6,7 @@ import {
   type ArmadaConfig,
   CONFIG_FILE,
   ConfigError,
+  deployLine,
   LINEAR_KEY,
   LinearError,
   loadStatus,
@@ -23,6 +24,7 @@ import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
 import { ciWhy } from "./ci.ts";
 import { coordinatorCommand, coordinatorName } from "./coordinator.ts";
+import { deploy, deployStatus } from "./deploy.ts";
 import { digest } from "./digest.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
@@ -57,6 +59,10 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  deploy: `  deploy status [--json]
+  deploy watch --sha <sha> --target <name>
+                    Watch a declared deploy and smoke check; failures pause merges.
+`,
   coordinator: `  coordinator use <name>
   coordinator list
   coordinator take <ticket...> [--from <name>]
@@ -377,6 +383,7 @@ const CONFIG_OPTION = new Set([
   "lint",
   "job",
   "peek",
+  "deploy",
   "reserve",
   "unreserve",
   "ci",
@@ -517,6 +524,7 @@ const VALUE_OPTIONS = [
   "paths",
   "pr",
   "sha",
+  "target",
   "shipped-with",
   "stage",
   "through-hold",
@@ -582,6 +590,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   lint: ["ready"],
   job: ["ticket", "ref", "state"],
   peek: ["actions"],
+  deploy: ["sha", "target"],
   reserve: ["ticket", "value", "next", "floor", "note", "list"],
   unreserve: ["ticket"],
   ci: ["sha", "branch", "rerun"],
@@ -763,7 +772,19 @@ async function status(io: Io, args: Args): Promise<number> {
   });
   const behind = await skillsBehind(fsRepoView(dirname(path))).catch(() => null);
   if (behind) report.warnings.push(skillsBehindLine(behind, version));
-  io.stdout(args.json ? `${JSON.stringify(report, null, 2)}\n` : renderStatus(report));
+  let deploys = null;
+  if (config.deploy?.targets.length) {
+    try {
+      deploys = await deployStatus(io, config, credentials);
+    } catch {
+      report.warnings.push("could not read deploy state; armada deploy status");
+    }
+  }
+  io.stdout(
+    args.json ? `${JSON.stringify({ ...report, ...(deploys ? { deploys } : {}) }, null, 2)}\n` : renderStatus(report),
+  );
+  if (!args.json && deploys)
+    for (const row of deploys.rows) io.stdout(`Deploy ${deployLine(row, (io.now ?? (() => new Date()))())}\n`);
   return 0;
 }
 
@@ -912,6 +933,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "deploy") {
+      const { path, text } = await findConfig(io, args.config, "deploy", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { project: config.project.slug });
+      return await deploy(io, config, credentials, args, path);
     }
     if (args.command === "ci") {
       const { path, text } = await findConfig(io, args.config, "ci", args.project);
