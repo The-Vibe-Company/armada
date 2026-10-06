@@ -100,7 +100,7 @@ const COMMAND_HELP: Record<string, string> = {
                     rules the coordinator judged apply. Prints the ticket's state afterwards
 `,
   report: `  report <phase> [--message <text> | --message-file <path|->] [--pr <n|url>] [--sha <sha>]
-        [--plan <text> | --plan-file <path|->] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--stage review|ci]
+        [--plan <text> | --plan-file <path|->] [--paths <comma list>] [--shipped-with "ship-pr-dev"|"fallback: <reason>"] [--stage review|ci]
                     Report a phase (planning, awaiting-approval, implementing, shipping,
                     blocked, ready-to-merge, awaiting-validation); the same phase again is a
                     status update; armada validate is how a worker enters awaiting-validation.
@@ -386,6 +386,7 @@ const VALUE_OPTIONS = [
   "message-file",
   "plan",
   "plan-file",
+  "paths",
   "pr",
   "sha",
   "shipped-with",
@@ -440,7 +441,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
   claim: ["runtime", "handle", "branch", "profile", "reason", "validation", "validation-reason"],
-  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage"],
+  report: ["ticket", "message", "message-file", "plan", "plan-file", "pr", "sha", "shipped-with", "stage", "paths"],
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
@@ -509,7 +510,8 @@ export function parseArgs(argv: string[]): Args {
         args.project = v;
       }
       // `--attach` repeats: one value per line.
-      else if (name === "attach" && args.options.attach !== undefined) args.options.attach += `\n${v}`;
+      else if ((name === "attach" || name === "paths") && args.options[name] !== undefined)
+        args.options[name] += `\n${v}`;
       else args.options[name] = v;
     } else if (a?.startsWith("-"))
       // Never the value: `--api-key=<key>` must not print the key.
