@@ -119,6 +119,7 @@ export function parseClaim(body: string, at: string, author: string | null): Age
     branch: field("branch|branche"),
     startedAt: field("started|démarré|demarre"),
     profile: field("profile"),
+    ...(field("coordinator") ? { coordinator: field("coordinator") } : {}),
     ...(profileReason ? { profileReason } : {}),
     at,
     author,
