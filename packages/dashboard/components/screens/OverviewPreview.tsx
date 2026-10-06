@@ -311,6 +311,7 @@ export function Action({ item, ctx, projectName }: { item: OverviewItem; ctx: Ac
                 }
                 coordinator={coordinator}
                 hint={m.hint}
+                queued={{ what: m.queued, detail: m.queuedDetail }}
               />
             </Buttons>
           )}

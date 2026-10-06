@@ -23,6 +23,7 @@ export function RequestAction({
   pending: recorded,
   coordinator,
   hint,
+  queued,
 }: {
   ctx: ActionContext;
   /** The button: "Ask to release the ticket". */
@@ -37,6 +38,8 @@ export function RequestAction({
   coordinator: CoordinatorState;
   /** What confirming does, shown before the confirm button. */
   hint?: string;
+  /** What the note says when the answer is that the merge queue took it. */
+  queued?: Pick<Pending, "what" | "detail">;
 }) {
   const { t } = ctx;
   const [open, setOpen] = useState(false);
@@ -49,8 +52,8 @@ export function RequestAction({
       markSent(shown.current);
       setOpen(false);
     },
-    done: () => {
-      if (shown.current) markSent(shown.current);
+    done: (_form, answer) => {
+      if (shown.current) markSent(answer.queued && queued ? { ...shown.current, ...queued } : shown.current);
       ctx.refresh();
     },
     undo: () => {

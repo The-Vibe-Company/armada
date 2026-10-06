@@ -197,6 +197,7 @@ export type MergeAsk =
   | { kind: "already-queued"; id: number }
   | { kind: "request"; id: number };
 
+const TICKET_ID = /^[A-Z][A-Z0-9]{0,15}-\d{1,9}$/;
 const HAND_BACK_HEAD = /\bhead ([0-9a-f]{40})\b/i;
 
 /**
@@ -237,9 +238,11 @@ export async function requestMerge(
       ? { kind: "already-queued", id: added.existing.id }
       : { kind: "queued", id: added.id, position: added.position };
   }
+  // A ticket from a form only names the item's owner when it is one.
+  const ticket = input.ticket?.trim().toUpperCase() || null;
   const id = await db.addRequest({
     project: input.project,
-    ticket: input.ticket ?? null,
+    ticket: ticket && TICKET_ID.test(ticket) ? ticket : null,
     kind: "merge-request",
     coordinator: input.coordinator,
     author,

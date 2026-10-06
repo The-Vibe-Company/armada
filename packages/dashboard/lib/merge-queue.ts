@@ -56,7 +56,8 @@ export async function queueAdd(db: Database, e: QueueInput & { project: string; 
     // Queued again: the refusal the coordinator was told of is settled.
     await tx.query(
       `UPDATE inbox_items SET resolved_at = $3, resolution = $4
-      WHERE project = $1 AND kind = 'queue-refused' AND resolved_at IS NULL AND starts_with(body, $2)`,
+      WHERE project = $1 AND recipient = 'coordinator' AND resolved_at IS NULL
+      AND kind = 'queue-refused' AND starts_with(body, $2)`,
       [e.project, queueRefusedPrefix(e.pr), e.at, `resolved: PR #${e.pr} queued again`],
     );
     const count = await tx.query(

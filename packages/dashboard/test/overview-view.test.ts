@@ -225,7 +225,7 @@ describe("decisions", () => {
     expect(sentRequest(asked, answered, null)?.body).toBe("15 minutes");
     expect(sentRequest(asked, wait("approval", "WID-2", 1, { item: 2 }), null)?.author).toBe("Ada");
     expect(sentRequest(asked, wait("approval", "WID-9", 1, { item: 3 }), null)).toBeNull();
-    expect(sentRequest(asked, wait("hand-back", "WID-6", 1), 44)).toMatchObject({ author: "Ada", queued: false });
+    expect(sentRequest(asked, wait("hand-back", "WID-6", 1), 44)?.body).toBe("sent");
     expect(sentRequest(asked, wait("hand-back", "WID-7", 1), 50)).toBeNull();
     // A Merge press the queue took (THE-1103) shows as queued, by whoever pressed it.
     const entry = { id: 9, ticket: "WID-7", detail: null, notBefore: null, queuedAt: at(2), updatedAt: at(2) };

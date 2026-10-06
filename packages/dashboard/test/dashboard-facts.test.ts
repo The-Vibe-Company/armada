@@ -182,9 +182,15 @@ test("steering requests deduplicate atomically per target, stay scoped and resol
         reason: "merge asked on the dashboard by Synthetic Owner",
       },
     ]);
-    // Its head moved since the hand-back: the coordinator still decides.
-    const moved = await requestMerge(store, { ...common, pr: 15, openPrs: [{ number: 15, headSha: "c".repeat(40) }] });
+    // Its head moved since the hand-back: the coordinator still decides, the ticket normalized.
+    const moved = await requestMerge(store, {
+      ...common,
+      pr: 15,
+      ticket: " wid-3 ",
+      openPrs: [{ number: 15, headSha: "c".repeat(40) }],
+    });
     expect(moved.kind).toBe("request");
+    expect((await store.getInboxItem("widgets", moved.id))?.ticket).toBe("WID-3");
     const release = await requestRelease(store, { ...common, ticket: "WID-2" });
     await expect(requestRelease(store, { ...common, ticket: "WID-2" })).rejects.toThrow("already waits");
     for (const id of [firstMerge.id, secondMerge.id, release])

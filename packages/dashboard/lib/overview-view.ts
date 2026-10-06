@@ -5,7 +5,6 @@
 // an item waits for the coordinator).
 import type { FleetOverview, InboxItem, OwnerValidation, WaitingItem } from "@armada/core/read";
 import { type DecisionKind, decisionsOf } from "./fleet-view";
-import { mergeAsked } from "./queue-view";
 
 /** A question, a plan or a hand-back: what the owner decides. */
 export type Decision = WaitingItem & { kind: DecisionKind };
@@ -73,12 +72,16 @@ export interface SentRequest {
 export function sentRequest(o: Pick<FleetOverview, "projects">, w: WaitingItem, pr: number | null): SentRequest | null {
   if (w.answer) return { body: w.answer.body, author: w.answer.author, at: w.answer.at };
   const project = o.projects.find((p) => p.slug === w.project);
-  if (w.kind === "hand-back") {
-    const asked = mergeAsked(project, pr);
-    return asked && { body: `PR #${pr}`, author: asked.author, at: asked.at, queued: asked.queued };
-  }
+  // Kept apart from lib/queue-view: the Validations page's bundle reads this module.
+  const entry =
+    w.kind === "hand-back" && pr !== null
+      ? project?.queue?.find((e) => e.pr === pr && (e.state === "queued" || e.state === "merging"))
+      : undefined;
+  if (entry) return { body: `PR #${pr}`, author: entry.queuedBy, at: entry.queuedAt, queued: true };
   const match = (r: InboxItem) =>
-    w.kind === "approval" && r.kind === "plan-changes" && w.item !== null && r.request?.question === w.item;
+    w.kind === "approval"
+      ? r.kind === "plan-changes" && w.item !== null && r.request?.question === w.item
+      : w.kind === "hand-back" && r.kind === "merge-request" && pr !== null && r.request?.pr === pr;
   const r = project?.requests.find(match);
   return r ? { body: r.body, author: r.author, at: r.createdAt } : null;
 }

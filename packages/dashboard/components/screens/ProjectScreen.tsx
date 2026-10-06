@@ -242,6 +242,7 @@ function QueueLine({ row: r }: { row: QueueRow }) {
         ) : (
           <span className="pj-title">{title}</span>
         )}
+        {/* Wrapped, never cut: a refusal's reason is what the owner needs. */}
         <span className="pj-queue-detail">{detail}</span>
       </span>
       <span className="pj-state" style={{ color: QUEUE_COLOR[r.state] }}>
