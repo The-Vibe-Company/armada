@@ -41,6 +41,7 @@ import {
   type ProjectRecord,
   RANGE_DAYS,
   type RuntimeHandle,
+  reconcileHandles,
   type SessionRecord,
   type SinceSummary,
   type SourcesRefresh,
@@ -351,6 +352,7 @@ async function readLive(
   now: Date,
   tickets: readonly string[] = [],
   limit = VALIDATION_LIMITS.images,
+  snapshot?: Snapshot,
 ): Promise<LiveProject> {
   const [
     events,
@@ -382,6 +384,24 @@ async function readLive(
     store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
     readValidations(store, project, now, limit),
   ]);
+  if (
+    snapshot &&
+    (await reconcileHandles(
+      store,
+      project,
+      handles,
+      {
+        repository: snapshot.config.github.repository,
+        issues: snapshot.sources.program.issues,
+        prs: snapshot.sources.forge?.prs ?? [],
+        flight: { ...snapshot.sources, after: snapshot.startedAt.toISOString() },
+      },
+      now,
+      inbox,
+      events,
+    ))
+  )
+    return readLive(store, project, now, tickets, limit);
   // The one seen last, as `getCoordinatorPresence` picks it: newest, then by name.
   const coordinator =
     [...coordinators].sort(
@@ -513,6 +533,7 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
           opts.now(),
           snap.sources.program.issues.filter((i) => !isClosed(i)).map((i) => i.id),
           snap.config.policy.validationSamples,
+          snap,
         ),
         opts.liveTimeoutMs ?? 4000,
         "reading live data",
@@ -622,7 +643,14 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
             const tickets = snap?.sources.program.issues.filter((i) => !isClosed(i)).map((i) => i.id) ?? [];
             return [
               slug,
-              await readLive(store, slug, opts.now(), tickets, snap?.config.policy.validationSamples),
+              await readLive(
+                store,
+                slug,
+                opts.now(),
+                tickets,
+                snap?.config.policy.validationSamples,
+                snap ?? undefined,
+              ),
             ] as const;
           }),
         ),
