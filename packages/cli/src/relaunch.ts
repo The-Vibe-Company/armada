@@ -13,6 +13,7 @@ import {
   RuntimeError,
   releaseTicket,
   runtimeNameOf,
+  shellWord,
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { herdrWorktreePath, herdrWorktreesDirectory } from "./herdr.ts";
@@ -87,6 +88,14 @@ export async function relaunch(
     if (o.profile) options.reason = o["reason-profile"] ?? "";
     const prepared = await prepareLaunch(io, config, credentials, argsWith(args, options), version, configPath, {
       branch,
+      preApprovalReason: o["pre-approve"] === "true" ? reason : undefined,
+      command: [
+        `armada relaunch ${ticket}`,
+        ...Object.entries(o).flatMap(([key, value]) =>
+          value === "true" ? [`--${key}`] : [`--${key} ${shellWord(value)}`],
+        ),
+        ...(args.json ? ["--json"] : []),
+      ].join(" "),
     });
     if (typeof prepared === "number") return prepared;
     // The claim's branch wins over a changed tracker suggestion.
@@ -181,6 +190,7 @@ export async function relaunch(
       const result = {
         ticket,
         dryRun: true,
+        preApproval: prepared.approval?.preview ?? null,
         old: old.handle,
         mode,
         branch: prepared.spec.branch,
@@ -195,6 +205,7 @@ export async function relaunch(
           ? `${JSON.stringify(result, null, 2)}\n`
           : `Relaunch plan for ${ticket}: ${mode}, ${prepared.spec.branch} at ${head ?? "base"}; old worker ${old.handle}.\n`,
       );
+      if (!args.json && prepared.approval) io.stdout(`${prepared.approval.preview}\n`);
       return prepared.gaps.length ? 1 : 0;
     }
     await recheckMutation();

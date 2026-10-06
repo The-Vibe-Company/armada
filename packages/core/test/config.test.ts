@@ -49,6 +49,7 @@ describe("armada.toml", () => {
         },
       },
       github: { repository: "acme/widgets" },
+      ci: { failurePatterns: [] },
       gates: { requiredChecks: [], localCommands: [] },
       policy: {
         attachmentsPerTicket: 20,

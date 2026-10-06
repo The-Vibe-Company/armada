@@ -283,6 +283,46 @@ test("one launch supplies the herdr brief, then worker login/claim records the r
     expect(f.output() + f.errors()).not.toContain(secret);
 });
 
+test("launch pre-approves only after preflight, and dry-run only describes the label change", async () => {
+  for (const flags of [[], ["--dry-run"], ["--dry-run", "--json"]]) {
+    const f = await fixture();
+    expect(
+      await run(
+        ["launch", "DEMO-13", "--runtime", "herdr", "--pre-approve", "--reason", "small follow-up", ...flags],
+        f.io,
+      ),
+      f.errors(),
+    ).toBe(0);
+    if (flags.includes("--dry-run")) {
+      expect(f.linear.writes).toEqual([]);
+      expect(f.armada.launches.size).toBe(0);
+      expect(f.output()).toContain("Would add plan-approved to DEMO-13 at launch: small follow-up");
+    } else {
+      expect(f.linear.get("DEMO-13").labels.map((l) => l.name)).toContain("plan-approved");
+      expect(f.prompt()).toContain("added at launch: small follow-up");
+      expect(f.prompt()).toContain("armada report implementing --plan-file -");
+    }
+  }
+  const f = await fixture({ missing: true });
+  expect(
+    await run(["launch", "DEMO-13", "--runtime", "herdr", "--pre-approve", "--reason", "small follow-up"], f.io),
+  ).toBe(1);
+  expect(f.linear.writes).toEqual([]);
+  expect(f.armada.launches.size).toBe(0);
+});
+
+test("launch rejects explicit approval labels before runtime preflight or token minting", async () => {
+  const f = await fixture();
+  f.linear.get("DEMO-13").labels.push({ id: "needs", name: "needs-plan-approval", group: null });
+  expect(
+    await run(["launch", "DEMO-13", "--runtime", "herdr", "--pre-approve", "--reason", "small follow-up"], f.io),
+  ).toBe(2);
+  expect(f.errors()).toContain("remove needs-plan-approval first");
+  expect(f.linear.writes).toEqual([]);
+  expect(f.armada.launches.size).toBe(0);
+  expect(f.calls).toEqual([]);
+});
+
 test("missing prerequisites and mismatched harness never create a token or runtime", async () => {
   for (const missing of [true, false]) {
     const f = await fixture({ missing });
@@ -304,6 +344,31 @@ test("policy decisions and completed tickets are rejected before token creation"
     expect(f.armada.launches.size).toBe(0);
     expect(f.calls).toEqual([]);
   }
+});
+
+test("validation recovery keeps pre-approval and preview flags instead of changing the intended launch", async () => {
+  const f = await fixture({ toml: `${local}\n[[policy.validation]]\nwhen="design"\nthen="show the owner"` });
+  expect(
+    await run(
+      [
+        "launch",
+        "DEMO-13",
+        "--runtime",
+        "herdr",
+        "--pre-approve",
+        "--reason",
+        "small follow-up",
+        "--dry-run",
+        "--json",
+      ],
+      f.io,
+    ),
+  ).toBe(2);
+  expect(f.errors()).toContain(
+    "Next: armada launch DEMO-13 --runtime herdr --reason 'small follow-up' --pre-approve --dry-run --json --validation none",
+  );
+  expect(f.linear.writes).toEqual([]);
+  expect(f.armada.launches.size).toBe(0);
 });
 
 test("a failed prompt retains the workspace, revokes its token and never leaks it", async () => {

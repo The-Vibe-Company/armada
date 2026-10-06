@@ -13,7 +13,9 @@ import type {
   CoordinatorPresence,
   CoordinatorSeen,
   EventInput,
+  EventsSinceQuery,
   FeedEntry,
+  FleetEvent,
   FleetStore,
   HeartbeatRecord,
   HeartbeatResult,
@@ -203,6 +205,50 @@ export async function lastEventTimes(db: Queryable, project: string): Promise<Re
     [project],
   );
   return Object.fromEntries(rs.rows.map((r) => [String(r.ticket), isoAt(r.at)]));
+}
+
+/** Ascending indexed reads with a bounded look-back for transactions committed out of order. */
+export async function eventsSince(db: Queryable, project: string, q: EventsSinceQuery): Promise<FleetEvent[]> {
+  const rs = await db.query(
+    `SELECT id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, head_sha, created_at
+    FROM events WHERE project = $1 AND created_at >= $2 AND kind = ANY($3::text[])
+    AND kind NOT IN ('heartbeat', 'inbox') AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge') AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
+    AND ((created_at, id) > ($5::timestamptz, $6::bigint)
+      OR ($7::bigint[] IS NOT NULL AND NOT (id = ANY($7::bigint[])) AND id IN (
+        SELECT id FROM events WHERE project = $1 AND created_at >= $2
+          AND (created_at, id) <= ($5::timestamptz, $6::bigint) AND kind = ANY($3::text[])
+          AND (NOT $11::boolean OR kind <> 'report' OR phase = 'ready-to-merge')
+          AND ($4::text[] IS NULL OR ticket = ANY($4::text[]))
+        ORDER BY id DESC LIMIT 500)))
+    AND ($8::timestamptz IS NULL OR (created_at, id) > ($8::timestamptz, $9::bigint))
+    ORDER BY created_at, id LIMIT $10`,
+    [
+      project,
+      new Date(Date.parse(q.afterAt) - 120_000),
+      q.kinds,
+      q.tickets ?? null,
+      q.afterAt,
+      q.afterId,
+      q.seenIds ?? null,
+      q.pageAfter?.at ?? null,
+      q.pageAfter?.id ?? null,
+      q.limit ?? 200,
+      q.handoverOnly ?? false,
+    ],
+  );
+  return rs.rows.map((r) => ({
+    id: Number(r.id),
+    ticket: String(r.ticket),
+    kind: String(r.kind) as FleetEvent["kind"],
+    phase: text(r.phase),
+    shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
+    message: text(r.message),
+    runtime: text(r.runtime),
+    handle: text(r.handle),
+    prUrl: text(r.pr_url),
+    headSha: text(r.head_sha),
+    at: isoAt(r.created_at),
+  }));
 }
 
 /** The newest event of every ticket of a project; with `since`, only tickets with an event since then. */
@@ -1144,6 +1190,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   recordHeartbeat: (input) => recordHeartbeat(db, input),
   heartbeatTimes: (project) => heartbeatTimes(db, project),
   lastEventTimes: (project) => lastEventTimes(db, project),
+  eventsSince: (project, q) => eventsSince(db, project, q),
   latestEvents: (project, opts) => latestEvents(db, project, opts),
   recordCoordinatorSeen: (seen) => recordCoordinatorSeen(db, seen),
   lastCoordinatorSeen: (project) => lastCoordinatorSeen(db, project),

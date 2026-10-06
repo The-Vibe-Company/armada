@@ -578,3 +578,240 @@ export async function fetchPreview(opts: FetchForgeOptions & { sha: string }): P
   const vercel = commit?.status?.contexts.find((c) => /vercel/i.test(c.context) && c.state === "SUCCESS");
   return https(vercel?.targetUrl);
 }
+
+// ------------------------------------------------------------ red CI diagnosis
+
+const FAILED_CHECKS_QUERY = /* GraphQL */ `
+  query FailedChecks($owner: String!, $name: String!, $sha: String!) {
+    repository(owner: $owner, name: $name) { object(expression: $sha) { ... on Commit {
+      oid
+      status { contexts { context state targetUrl description } }
+      checkSuites(first: 50) { pageInfo { hasNextPage } nodes {
+        app { slug } commit { oid } branch { target { oid } }
+        workflowRun { databaseId runNumber url workflow { name } }
+        checkRuns(first: 50, filterBy: { conclusions: [FAILURE, TIMED_OUT, STARTUP_FAILURE, CANCELLED, ACTION_REQUIRED, STALE] }) {
+          pageInfo { hasNextPage } nodes {
+            databaseId name conclusion detailsUrl startedAt completedAt summary
+            annotations(first: 30) { pageInfo { hasNextPage } nodes {
+              path message title annotationLevel location { start { line } }
+            } }
+          }
+        }
+      } }
+    } } }
+  }`;
+
+type Connection<T> = { nodes: (T | null)[]; pageInfo?: { hasNextPage: boolean } };
+interface RawFailedCommit {
+  oid: string;
+  status: {
+    contexts: { context: string; state: string; targetUrl: string | null; description: string | null }[];
+  } | null;
+  checkSuites: Connection<{
+    app: { slug: string } | null;
+    commit: { oid: string };
+    branch?: { target: { oid: string } } | null;
+    workflowRun: { databaseId: number } | null;
+    checkRuns: Connection<{
+      databaseId: number | null;
+      name: string;
+      conclusion: string;
+      detailsUrl: string | null;
+      summary: string | null;
+      annotations: Connection<{
+        title: string | null;
+        message: string;
+        path: string;
+        location: { start: { line: number } };
+      }> | null;
+    }>;
+  }>;
+}
+
+/** Failed check runs and commit statuses on one pinned commit; no Linear access. */
+export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string; headSha?: string }): Promise<{
+  sha: string;
+  checks: import("./ci.ts").FailedCheck[];
+  warnings: string[];
+}> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{ repository: { object: RawFailedCommit | null } | null }>(opts, FAILED_CHECKS_QUERY, {
+    owner,
+    name,
+    sha: opts.sha,
+  });
+  const commit = json.data?.repository?.object;
+  if (!commit?.oid) throw new GithubError(`GitHub: commit ${opts.sha} not found in ${opts.repository}`);
+  const checks: import("./ci.ts").FailedCheck[] = [];
+  const warnings: string[] = [];
+  if (commit.checkSuites.pageInfo?.hasNextPage)
+    warnings.push("CI reading is incomplete: only the first 50 check suites were read");
+  const ids = new Set<number>();
+  for (const suite of commit.checkSuites.nodes) {
+    if (!suite) continue;
+    if (suite.checkRuns.pageInfo?.hasNextPage)
+      warnings.push("CI reading is incomplete: only the first 50 failing checks of a suite were read");
+    for (const run of suite.checkRuns.nodes) {
+      if (!run || (run.databaseId !== null && ids.has(run.databaseId))) continue;
+      if (run.databaseId !== null) ids.add(run.databaseId);
+      if (run.annotations?.pageInfo?.hasNextPage) warnings.push(`${run.name}: annotations are incomplete (first 30)`);
+      const headSha = suite.commit.oid;
+      checks.push({
+        id: run.databaseId,
+        name: run.name,
+        conclusion: run.conclusion,
+        url: run.detailsUrl,
+        app: suite.app?.slug ?? null,
+        runId: suite.workflowRun?.databaseId ?? null,
+        headSha,
+        summary: run.summary,
+        annotations: (run.annotations?.nodes ?? []).flatMap((a) =>
+          a
+            ? [
+                {
+                  title: a.title,
+                  message: a.message,
+                  path: a.path,
+                  line: a.location.start.line,
+                },
+              ]
+            : [],
+        ),
+        ...(run.conclusion === "CANCELLED" &&
+        (opts.headSha ?? suite.branch?.target.oid) &&
+        headSha !== (opts.headSha ?? suite.branch?.target.oid)
+          ? { superseded: true }
+          : {}),
+      });
+    }
+  }
+  for (const status of commit.status?.contexts ?? []) {
+    if (!["FAILURE", "ERROR"].includes(status.state)) continue;
+    checks.push({
+      id: null,
+      name: status.context,
+      conclusion: status.state,
+      url: status.targetUrl,
+      app: null,
+      runId: null,
+      headSha: commit.oid,
+      summary: status.description,
+      annotations: [],
+    });
+  }
+  return { sha: commit.oid, checks, warnings };
+}
+
+/** Resolve a named branch to its commit, without reading Linear or the fleet. */
+export async function fetchBranchHead(opts: FetchForgeOptions & { branch: string }): Promise<string> {
+  const [owner, name] = opts.repository.split("/");
+  const json = await githubQuery<{ repository: { ref: { target: { oid: string } } | null } | null }>(
+    opts,
+    `
+    query CiBranch($owner: String!, $name: String!, $branch: String!) {
+      repository(owner: $owner, name: $name) { ref(qualifiedName: $branch) { target { oid } } }
+    }`,
+    { owner, name, branch: `refs/heads/${opts.branch}` },
+  );
+  const sha = json.data?.repository?.ref?.target.oid;
+  if (!sha) throw new GithubError(`GitHub: branch ${opts.branch} not found in ${opts.repository}`);
+  return sha;
+}
+
+const GITHUB_REST = "https://api.github.com";
+const LOG_BYTES = 5 * 1024 * 1024;
+
+/** Actions job log: bounded streaming read, redirects never carry a key off GitHub. */
+export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): Promise<import("./ci.ts").JobLog> {
+  const warnings: string[] = [];
+  const headers = { Authorization: `Bearer ${opts.token}`, Accept: "application/vnd.github+json" };
+  const readLog = async (res: Response): Promise<string[]> => {
+    if (!res.ok)
+      throw new GithubError(
+        `HTTP ${res.status}; logs may have expired or the token needs Actions repository permission (read)`,
+      );
+    if (!res.body) return [];
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    let partial = "";
+    let lines: string[] = [];
+    let totalLines = 0;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        const take = chunk.value.subarray(0, LOG_BYTES - bytes);
+        bytes += take.byteLength;
+        const parts = (partial + decoder.decode(take, { stream: true })).split("\n");
+        partial = parts.pop() ?? "";
+        totalLines += parts.length;
+        lines = [...lines, ...parts].slice(-3000);
+        if (bytes >= LOG_BYTES) {
+          warnings.push(`job ${opts.jobId}: log stopped at 5 MB; diagnosis may be incomplete`);
+          break;
+        }
+      }
+      partial += decoder.decode();
+      if (partial) {
+        lines.push(partial);
+        totalLines++;
+      }
+      if (totalLines > 3000)
+        warnings.push(`job ${opts.jobId}: only the last 3000 log lines were kept; earlier errors may be missing`);
+      return lines.slice(-3000);
+    } finally {
+      await reader.cancel().catch(() => {});
+      reader.releaseLock();
+    }
+  };
+  try {
+    let url = `${GITHUB_REST}/repos/${opts.repository}/actions/jobs/${opts.jobId}/logs`;
+    let authorized = true;
+    for (let hop = 0; hop < 5; hop++) {
+      const result: { lines?: string[]; redirect?: string } = await httpRequest(
+        url,
+        { headers: authorized ? headers : {}, redirect: "manual" },
+        { ...opts, retry: true, retryStatus, service: "GitHub" },
+        async (res) => {
+          if ([301, 302, 303, 307, 308].includes(res.status)) {
+            const location = res.headers.get("Location");
+            if (!location) throw new GithubError("log redirect has no location");
+            return { redirect: new URL(location, url).toString() };
+          }
+          return { lines: await readLog(res) };
+        },
+      );
+      if (result.lines) return { lines: result.lines, warnings };
+      const next = new URL(result.redirect ?? "");
+      if (next.protocol !== "https:" || next.username || next.password) throw new GithubError("unsafe log redirect");
+      authorized = authorized && next.origin === GITHUB_REST;
+      url = next.toString();
+    }
+    throw new GithubError("too many log redirects");
+  } catch (err) {
+    warnings.push(
+      `job ${opts.jobId}: log unavailable (${err instanceof HttpRequestError ? "GitHub unreachable" : err instanceof Error ? err.message : "read failed"}); using annotations and summary`,
+    );
+    return { lines: [], warnings };
+  }
+}
+
+/** Attempt number for an Actions workflow run. Log access remains optional. */
+export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number }): Promise<number> {
+  return httpRequest(
+    `${GITHUB_REST}/repos/${opts.repository}/actions/runs/${opts.runId}`,
+    {
+      headers: { Authorization: `Bearer ${opts.token}`, Accept: "application/vnd.github+json" },
+    },
+    { ...opts, retry: true, retryStatus, service: "GitHub" },
+    async (res) => {
+      if (!res.ok)
+        throw new GithubError(`GitHub Actions HTTP ${res.status}; token needs Actions repository permission (read)`);
+      const json = (await res.json()) as { run_attempt?: number };
+      if (!Number.isSafeInteger(json.run_attempt) || (json.run_attempt ?? 0) < 1)
+        throw new GithubError("GitHub Actions returned no run attempt");
+      return json.run_attempt as number;
+    },
+  );
+}

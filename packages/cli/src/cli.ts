@@ -20,6 +20,7 @@ import { version } from "../package.json" with { type: "json" };
 import { attachCommand } from "./attach.ts";
 import { authLogin, authLogout, authStatus, loadCredentials } from "./auth.ts";
 import { brief } from "./brief.ts";
+import { ciWhy } from "./ci.ts";
 import { doctor } from "./doctor.ts";
 import { heartbeat } from "./heartbeat.ts";
 import { answer, ask, inbox } from "./inbox.ts";
@@ -37,7 +38,7 @@ import { renderStatus } from "./render.ts";
 import { CommandError, fsRepoView } from "./repo.ts";
 import { stop } from "./runtime.ts";
 import { runCommand, secretsCommand } from "./secrets.ts";
-import { updateSkills } from "./skills.ts";
+import { printSkill, updateSkills } from "./skills.ts";
 import { requireSpecCoordinator, specCommand } from "./spec.ts";
 import { askOwner, done, namedTicket, validate } from "./validate.ts";
 import { hookStop, stopWatch, watch } from "./watch.ts";
@@ -48,6 +49,11 @@ export type { Io } from "./io.ts";
 
 /** Each command's help block, in the order of the full usage; `armada <command> --help` prints its own. */
 const COMMAND_HELP: Record<string, string> = {
+  ci: `  ci why <pr|url> [--json]
+  ci why --sha <sha> | --branch <branch> [--json]
+                    Explain failing checks on this head: test names, first errors, links
+                    and runner problems. Needs a GitHub token only (Actions read for logs).
+`,
   attach: `  attach <ticket> <file|url>... [--caption <text>] [--for <item>]
                     Privately attach PNG, JPEG, WebP or GIF images (up to 2 MB each),
                     or HTTPS links. Prints a dashboard URL for each attachment.
@@ -86,6 +92,10 @@ const COMMAND_HELP: Record<string, string> = {
                     .claude/settings.json (yes without a terminal); --no-stop-hook skips it
                     Reuses armada/setup across versions and closes legacy armada/init-* PRs.
                     --merge waits for the normal merge checks and merges only setup paths
+`,
+  skill: `  skill <name> [<file>]
+                    Print instructions from this Armada version (default SKILL.md).
+                    No checkout, sign-in or network needed; linked files use their relative path
 `,
   skills: `  skills update     Update all bundled skills, links and skills-lock.json in the current
                     checkout, and ignore shipping artifacts. No sign-in required; review
@@ -145,9 +155,16 @@ const COMMAND_HELP: Record<string, string> = {
   watch: `  watch             Coordinator: run in the background while workers are in flight. Waits
                     until something needs you (a question, plan, request, hand-back or silent
                     worker you have not seen), prints it and exits; exits "nothing to watch"
-                    when no worker is in flight and nothing is open. Armada being down or a
-                    command time limit does not end it: it keeps asking. One per project on
+                    when no worker is in flight and nothing is open. An Armada
+                    outage does not end it: it keeps asking. One per project on
                     this machine. Needs a sign-in to Armada
+  watch --follow    Stream lines without exiting on new items; --json prints NDJSON.
+                    --since <cursor> resumes events; defaults to this machine's cursor.
+                    --tickets A-1,B-2 and --kinds question,hand-back filter the stream.
+                    --kinds all also prints claims, reports, releases and merges.
+                    --all follows the whole project (the default).
+                    --mine needs "Show each coordinator only its own work" (not yet available).
+                    --for <minutes> ends either watch cleanly with a resume command.
   watch --stop      Stop only this project's verified watch and release its lock. Local,
                     no sign-in needed. Never stop a watch just to read inbox or status
 `,
@@ -194,13 +211,14 @@ const COMMAND_HELP: Record<string, string> = {
                     worktree; fresh from the pushed branch otherwise. Stop and release
                     only the old generation, launch the replacement, then archive the old worker.
                     Use --profile <name> --reason-profile <why> to change profile,
-                    --runtime conductor|herdr, --notes <file|->, --dry-run or --json.
+                    --runtime conductor|herdr, --pre-approve, --notes <file|->, --dry-run or --json.
 `,
   launch: `  launch <ticket> [--runtime conductor|herdr] [--profile <name> [--reason <why>]]
         [--notes <file|->] [--validation <n|none>] [--dry-run] [--json]
                     Check the ticket, choose its profile and launch one worker with its
                     one-time sign-in brief. Runtime defaults to the chosen profile;
                     Claude Code profiles point to armada brief and the Agent tool.
+                    --pre-approve --reason "<why>" adds the plan-approved label before launch
                     --notes adds coordinator context from a file or stdin (at most 16 KB).
                     Pending launches and active workers are refused before a token exists.
                     Conductor uses explicit profile settings and receives the brief through stdin;
@@ -211,8 +229,10 @@ const COMMAND_HELP: Record<string, string> = {
                     Cancel the newest pending launch through Armada, including a worker
                     signed in but not claimed. A claimed launch needs armada release instead
 `,
-  brief: `  brief <ticket> [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
+  brief: `  brief <ticket> [--pre-approve --reason <why>] [--profile <name> [--reason <why>]] [--prompt [--profile-line]]
         [--validation none | --validation <n,...> --validation-reason <why>]
+                    --pre-approve requires --reason and adds the configured plan-approved label
+                    only with --prompt; previews say what would change. needs-approval labels refuse it
                     A new worker's launch prompt, the Conductor profile (agent, model,
                     effort) and the environment variables to pass, named, never shown.
                     The profile follows [[conductor.routing]] on the ticket's labels, then
@@ -270,6 +290,7 @@ const COMMAND_HELP: Record<string, string> = {
 /** Commands that take --ticket, --config and --json. */
 const TICKET_OPTION = new Set(["report", "release", "ask", "validate", "merge", "secrets", "run"]);
 const CONFIG_OPTION = new Set([
+  "ci",
   "attach",
   "status",
   "spec",
@@ -372,6 +393,9 @@ interface Args {
 }
 
 const VALUE_OPTIONS = [
+  "since",
+  "tickets",
+  "kinds",
   "merged-pr",
   "claim-key",
   "at",
@@ -414,6 +438,9 @@ const VALUE_OPTIONS = [
 ];
 /** Options without a value, stored as "true". */
 const FLAG_OPTIONS = [
+  "pre-approve",
+  "follow",
+  "mine",
   "apply",
   "stop",
   "background",
@@ -437,6 +464,7 @@ const FLAG_OPTIONS = [
 ];
 /** Value options each command accepts. */
 const COMMAND_OPTIONS: Record<string, string[]> = {
+  ci: ["sha", "branch"],
   spec: ["at", "apply"],
   attach: ["caption", "for"],
   heartbeat: ["every", "parent", "background", "ticket", "handle"],
@@ -445,13 +473,14 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
   release: ["ticket", "reason"],
   ask: ["ticket", "options", "message", "message-file"],
   inbox: ["wait", "timeout"],
-  watch: ["stop"],
+  watch: ["stop", "follow", "since", "tickets", "kinds", "mine", "for"],
   stop: ["merged-pr", "claim-key"],
   answer: ["note", "message", "message-file"],
   init: ["program-root", "name", "slug", "no-stop-hook", "merge"],
   merge: ["ticket", "no-ticket", "no-archive", "dry-run", "no-lock", "wait", "timeout", "reason", "ask-owner"],
-  brief: ["profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
+  brief: ["pre-approve", "profile", "reason", "prompt", "profile-line", "validation", "validation-reason"],
   relaunch: [
+    "pre-approve",
     "runtime",
     "profile",
     "reason",
@@ -464,7 +493,17 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "fresh",
     "keep-old",
   ],
-  launch: ["runtime", "harness", "profile", "reason", "validation", "validation-reason", "dry-run", "notes"],
+  launch: [
+    "pre-approve",
+    "runtime",
+    "harness",
+    "profile",
+    "reason",
+    "validation",
+    "validation-reason",
+    "dry-run",
+    "notes",
+  ],
   validate: ["ticket", "attach", "caption", "choices", "message", "message-file"],
   "ask-owner": ["choices"],
   login: ["api-key", "launch-token", "api-url"],
@@ -642,7 +681,8 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
     const allowed = COMMAND_OPTIONS[args.command] ?? [];
     for (const name of Object.keys(args.options))
       if (!allowed.includes(name)) throw new UsageError(`--${name} does not apply to ${args.command}`);
-    if (args.all && args.command !== "status") throw new UsageError(`--all does not apply to ${args.command}`);
+    if (args.all && args.command !== "status" && args.command !== "watch")
+      throw new UsageError(`--all does not apply to ${args.command}`);
     if (args.passthrough && args.command !== "run")
       throw new UsageError(`-- does not apply to ${args.command}: only \`armada run\` runs a command`);
     if (args.command === "secrets" || args.command === "run") {
@@ -686,6 +726,12 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
         },
       });
       return await heartbeat(io, config, credentials, { ...args, config: path });
+    }
+    if (args.command === "ci") {
+      const { path, text } = await findConfig(io, args.config, "ci", args.project);
+      const config = parseConfig(text, path);
+      const { credentials } = await loadCredentials(io, { armada: false });
+      return await ciWhy(io, config, credentials, args);
     }
     const worker = { claim, report, release, ask, inbox, answer, stop, validate, "ask-owner": askOwner, done }[
       args.command
@@ -774,6 +820,7 @@ async function dispatch(argv: string[], io: Io): Promise<number> {
       noExtra(args.rest);
       return await doctor(io, args.json, version);
     }
+    if (args.command === "skill") return printSkill(io, args.rest);
     if (args.command === "skills") {
       if (args.rest.length !== 1 || args.rest[0] !== "update") throw new UsageError("skills needs a command: update");
       return await updateSkills(io, version, args.json);

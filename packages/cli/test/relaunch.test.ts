@@ -499,3 +499,38 @@ test("an unavailable local herdr pane cannot use the remote-machine exception to
   expect(f.order).not.toContain("launch-tokens");
   expect((await f.store.getRuntimeHandle("widgets", "DEMO-13"))?.releasedAt).toBeNull();
 });
+
+test("relaunch pre-approval checks before stopping and applies between release and token creation", async () => {
+  const f = await fixture();
+  const update = f.linear.updateTicket.bind(f.linear);
+  f.linear.updateTicket = async (id, change) => {
+    if (change.addLabelIds?.includes("plan-approved")) f.order.push("pre-approve");
+    await update(id, change);
+  };
+  expect(
+    await f.relaunch("--fresh", "--pre-approve", "--profile", "backend", "--reason-profile", "same backend"),
+    f.text(),
+  ).toBe(0);
+  expect(f.order.indexOf("pre-approve")).toBeGreaterThan(f.order.indexOf("workers/end"));
+  expect(f.order.indexOf("pre-approve")).toBeLessThan(f.order.indexOf("launch-tokens"));
+  const prompt = f.calls.find((c) => c.args[2] === "create")?.input;
+  expect(prompt).toContain("## Continuing earlier work");
+  expect(prompt).toContain("added at launch: session died");
+  expect(prompt).toContain("same backend");
+  expect((await f.linear.readTicket("DEMO-13"))?.labels.some((l) => l.name === "plan-approved")).toBe(true);
+
+  const preview = await fixture();
+  expect(await preview.relaunch("--pre-approve", "--dry-run", "--json"), preview.text()).toBe(0);
+  expect(JSON.parse(preview.text()).preApproval).toContain("Would add plan-approved");
+  expect(preview.linear.writes).toEqual([]);
+  expect(preview.order).not.toContain("cancel");
+  expect(preview.order).not.toContain("launch-tokens");
+
+  const refused = await fixture();
+  refused.linear.add("DEMO-13", { labels: [{ id: "needs-approval", name: "needs-plan-approval", group: null }] });
+  expect(await refused.relaunch("--pre-approve"), refused.text()).toBe(2);
+  expect(refused.text()).toContain("remove needs-plan-approval first");
+  expect(refused.order).not.toContain("cancel");
+  expect(refused.order).not.toContain("fleet/release");
+  expect((await refused.store.getRuntimeHandle("widgets", "DEMO-13"))?.releasedAt).toBeNull();
+});
