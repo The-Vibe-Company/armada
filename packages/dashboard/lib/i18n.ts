@@ -694,10 +694,12 @@ const en = {
       n === 0 ? "Nothing to decide" : n === 1 ? "1 decision waits for you" : `${n} decisions wait for you`,
     oldest: (d: string) => `The oldest has waited ${d}.`,
     caughtUp: "You're up to date.",
+    /** All those waiting, at the owner's median time per decision in a sitting (THE-1113). */
+    estimate: (d: string) => `About ${d} in all.`,
+    sentOne: (ticket: string) => `${ticket}: sent to the coordinator.`,
     pendingTitle: "To decide",
     decidedTitle: "Decided this week",
     noPending: "Nothing waits for you.",
-    choose: "Pick a validation on the left.",
     back: "Validations",
     whyYou: (reason: string) => `Why you: ${reason}`,
     facts: { pr: "Pull request", head: "Head", diff: "Diff", ci: "CI", preview: "Preview" },
@@ -735,6 +737,8 @@ const en = {
     checks: "Things to check",
     details: "More context",
     more: (n: number) => `+${n} more images on the ticket`,
+    /** The Validations page's keys (THE-1113). */
+    keys: { send: "⌘↵ sends the changes · Esc leaves the note" },
     screenshot: "Screenshot",
   },
   insights: {
@@ -1674,10 +1678,11 @@ const fr: Strings = {
     headline: (n) => (n === 0 ? "Rien à décider" : n === 1 ? "1 décision t'attend" : `${n} décisions t'attendent`),
     oldest: (d) => `La plus ancienne attend depuis ${d}.`,
     caughtUp: "Tu es à jour.",
+    estimate: (d) => `Environ ${d} en tout.`,
+    sentOne: (ticket) => `${ticket} : transmis au coordinateur.`,
     pendingTitle: "À décider",
     decidedTitle: "Décidé cette semaine",
     noPending: "Rien ne t'attend.",
-    choose: "Choisis une validation à gauche.",
     back: "Validations",
     whyYou: (reason) => `Pourquoi toi : ${reason}`,
     facts: { pr: "Pull request", head: "Tête", diff: "Diff", ci: "CI", preview: "Preview" },
@@ -1714,6 +1719,7 @@ const fr: Strings = {
     checks: "Points à vérifier",
     details: "Plus de contexte",
     more: (n) => `+${n} images sur le ticket`,
+    keys: { send: "⌘↵ envoie les changements · Échap quitte la note" },
     screenshot: "Capture",
   },
   insights: {
