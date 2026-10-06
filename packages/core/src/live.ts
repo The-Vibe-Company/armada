@@ -9,7 +9,10 @@
 // record.
 import { createHash } from "node:crypto";
 import { CONFIG_DEFAULTS } from "./config.ts";
-import { NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+import { freshRuntimeState, liveness, NEEDS_HUMAN, inFlight as statusInFlight } from "./fleet.ts";
+
+export { freshRuntimeState } from "./fleet.ts";
+
 import { attachPullRequests } from "./github.ts";
 import { buildModel, isClosed } from "./model.ts";
 import type { RequestKind } from "./request-kinds.ts";
@@ -89,6 +92,8 @@ export interface RuntimeHandle {
   profile: string | null;
   runtimeState?: RuntimeObservation | null;
   lastHeartbeatAt?: string | null;
+  /** Newest owner answer on this claim; status uses the same resume grace as inbox. */
+  lastAnsweredAt?: string | null;
   workerSessionId?: string | null;
 }
 
@@ -754,7 +759,7 @@ const MIN = 60_000;
  * claimed (both read from the fleet, they clear on their own); `version`: a
  * newer Armada is out (`armada watch` only, never stored).
  */
-export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "quiet" | "not-started" | "version";
+export type InboxEntryKind = InboxKind | "runtime-blocked" | "silent" | "stopped" | "quiet" | "not-started" | "version";
 
 export interface InboxEntry {
   /**
@@ -789,7 +794,9 @@ const digest = (text: string) => createHash("sha256").update(text).digest("base6
  * too (a hand-back's names its head SHA): handed back again on a new head, it
  * is new to the coordinator.
  */
-export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined }) =>
+export const entryKey = (
+  e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> & { version?: string | undefined; createdAt?: string },
+) =>
   e.id !== null
     ? REWRITTEN.includes(e.kind)
       ? `#${e.id}@${digest(e.body)}`
@@ -798,7 +805,9 @@ export const entryKey = (e: Pick<InboxEntry, "id" | "kind" | "ticket" | "body"> 
       ? `version:${e.version}`
       : e.kind === "not-started" && e.body.startsWith("not started (token expired)")
         ? `not-started:${e.ticket}:expired@${digest(e.body)}`
-        : `${e.kind}:${e.ticket}`;
+        : e.kind === "stopped"
+          ? `stopped:${e.ticket}@${e.createdAt}`
+          : `${e.kind}:${e.ticket}`;
 
 /** The stored project reading; inbox reconciliation never fetches external state. */
 export interface HandBackSnapshot {
@@ -922,7 +931,7 @@ async function readInboxAndFlight(
   const since = new Date(flight && (!oldest || flight.after < oldest) ? flight.after : (oldest ?? o.now.toISOString()));
   const [events, answered] = await Promise.all([
     eventTickets.length
-      ? store.latestEvents(o.project, { since, tickets: eventTickets })
+      ? store.latestEvents(o.project, { since: flight ? new Date(0) : since, tickets: eventTickets })
       : Promise.resolve({} as Record<string, LatestEvent>),
     answerTickets.length
       ? store.lastAnsweredAt(o.project, { since, tickets: answerTickets })
@@ -985,10 +994,31 @@ async function readInboxAndFlight(
     // A waiting turn may lose its heartbeat process. An answer or resumed report
     // grants a full silence window before the next heartbeat has to arrive.
     const heartbeat = h.lastHeartbeatAt && h.lastHeartbeatAt > last ? h.lastHeartbeatAt : null;
-    const alive = heartbeat ?? last;
-    const silence = now - Date.parse(alive);
+    const life = liveness({
+      now: o.now,
+      silentAfterMinutes: o.silentAfterMinutes,
+      phase: e?.phase,
+      lastReport: last,
+      lastHeartbeat: heartbeat,
+      runtimeState: observation,
+      claimedAt: h.claimedAt,
+      owesReport,
+    });
+    const { alive, silence } = life;
+    if (life.kind === "stopped") {
+      entries.push({
+        id: null,
+        kind: "stopped",
+        ticket: h.ticket,
+        author: h.handle,
+        body: `stopped: its session is idle and it did not hand back (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); read its last reply with the runtime guide and resume or release it`,
+        createdAt: observation?.since ?? observation?.at ?? last,
+        new: false,
+      });
+      continue;
+    }
     const quiet = now - Date.parse(last);
-    const silent = silence > o.silentAfterMinutes * MIN;
+    const silent = life.kind === "silent";
     if (!silent && (!heartbeat || quiet <= (o.quietAfterMinutes ?? CONFIG_DEFAULTS.quietAfterMinutes) * MIN)) continue;
     entries.push({
       id: null,
@@ -996,7 +1026,7 @@ async function readInboxAndFlight(
       ticket: h.ticket,
       author: h.handle,
       body: silent
-        ? `no ${heartbeat ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${owesReport && !heartbeat ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
+        ? `no ${heartbeat ? "heartbeat" : "report"} for ${Math.floor(silence / MIN)} min${life.state === "working" && observation ? `, but its session is still working (observed ${observation.at.slice(11, 16)})` : ""}${owesReport && !heartbeat ? " since its question was answered" : ""} (phase ${e?.phase ?? "unknown"}, ${h.runtime} ${h.handle}); check it with the runtime guide's status section`
         : `${h.ticket} has been working ${Math.floor(quiet / MIN)} min without a report (heartbeats are arriving, phase ${e?.phase ?? "unknown"})`,
       createdAt: silent ? alive : last,
       new: false,
@@ -1126,22 +1156,6 @@ export async function serveInbox(
   items.sort((first, second) => first.createdAt.localeCompare(second.createdAt));
   const etag = inboxTag(items, inFlight);
   return q.etag === etag ? null : { items, inFlight, etag, warnings };
-}
-
-/** A runtime reading expires with the project's liveness threshold. */
-export function freshRuntimeState(
-  observation: RuntimeObservation | null | undefined,
-  now: Date,
-  minutes: number,
-  claimedAt?: string,
-): RuntimeState | null {
-  // A session can start its turn before the worker claims. The observation is
-  // generation-checked by the store; its transition time may legitimately precede the claim.
-  if (!observation || (claimedAt && observation.at < claimedAt)) return null;
-  const age = now.getTime() - Date.parse(observation.at);
-  return observation.state !== "unknown" && Number.isFinite(age) && age >= 0 && age <= minutes * MIN
-    ? observation.state
-    : null;
 }
 
 // ------------------------------------------------------------------ the CLI's side

@@ -979,3 +979,27 @@ describe("what the owner validates (THE-885)", () => {
     expect((await store.getValidation("widgets", first.id))?.decision?.outcome).toBe("superseded");
   });
 });
+
+test("archived sessions remain ended after the dashboard's seven-day live window and a snapshot refresh", async () => {
+  const db = await tempDb();
+  await upsertProject(db, WIDGETS, new Date(T0));
+  const w = world(db);
+  await w.warm();
+  const claim = {
+    project: WIDGETS.slug,
+    ticket: "WID-2",
+    runtime: "Conductor",
+    handle: "ws-1/ses-1",
+    branch: "feature/wid-2",
+    at: new Date(T0),
+  };
+  await saveRuntimeHandle(db, claim);
+  expect(
+    await fleetStore(db).stopRuntime({ ...claim, claimedAt: new Date(T0).toISOString(), at: new Date(T0 + 60_000) }),
+  ).toBe(true);
+  w.advance(8 * 24 * 60 * 60_000);
+  expect((await loadOverview(w.opts)).rows.map((r) => r.id)).not.toContain(claim.ticket);
+  await w.settle();
+  expect((await loadOverview(w.opts)).rows.map((r) => r.id)).not.toContain(claim.ticket);
+  expect((await loadProject(w.opts, WIDGETS.slug, HOME))?.report.inFlight.map((r) => r.id)).not.toContain(claim.ticket);
+});
