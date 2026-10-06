@@ -612,6 +612,7 @@ interface RawFailedCommit {
 export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string; headSha?: string }): Promise<{
   sha: string;
   checks: import("./ci.ts").FailedCheck[];
+  runIds: number[];
   warnings: string[];
 }> {
   const [owner, name] = opts.repository.split("/");
@@ -627,8 +628,10 @@ export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string;
   if (commit.checkSuites.pageInfo?.hasNextPage)
     warnings.push("CI reading is incomplete: only the first 50 check suites were read");
   const ids = new Set<number>();
+  const runIds = new Set<number>();
   for (const suite of commit.checkSuites.nodes) {
     if (!suite) continue;
+    if (suite.app?.slug === "github-actions" && suite.workflowRun) runIds.add(suite.workflowRun.databaseId);
     if (suite.checkRuns.pageInfo?.hasNextPage)
       warnings.push("CI reading is incomplete: only the first 50 failing checks of a suite were read");
     for (const run of suite.checkRuns.nodes) {
@@ -679,7 +682,7 @@ export async function fetchFailedChecks(opts: FetchForgeOptions & { sha: string;
       annotations: [],
     });
   }
-  return { sha: commit.oid, checks, warnings };
+  return { sha: commit.oid, checks, runIds: [...runIds], warnings };
 }
 
 /** Resolve a named branch to its commit, without reading Linear or the fleet. */
@@ -779,6 +782,13 @@ export async function fetchJobLog(opts: FetchForgeOptions & { jobId: number }): 
 
 /** Attempt number for an Actions workflow run. Log access remains optional. */
 export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number }): Promise<number> {
+  return (await fetchWorkflowRun(opts)).attempt;
+}
+
+/** A fresh workflow status prevents rerunning a run that is already queued or active. */
+export async function fetchWorkflowRun(
+  opts: FetchForgeOptions & { runId: number },
+): Promise<{ attempt: number; status: string | null }> {
   return httpRequest(
     `${GITHUB_REST}/repos/${opts.repository}/actions/runs/${opts.runId}`,
     {
@@ -788,10 +798,10 @@ export async function fetchRunAttempt(opts: FetchForgeOptions & { runId: number 
     async (res) => {
       if (!res.ok)
         throw new GithubError(`GitHub Actions HTTP ${res.status}; token needs Actions repository permission (read)`);
-      const json = (await res.json()) as { run_attempt?: number };
+      const json = (await res.json()) as { run_attempt?: number; status?: string };
       if (!Number.isSafeInteger(json.run_attempt) || (json.run_attempt ?? 0) < 1)
         throw new GithubError("GitHub Actions returned no run attempt");
-      return json.run_attempt as number;
+      return { attempt: json.run_attempt as number, status: typeof json.status === "string" ? json.status : null };
     },
   );
 }

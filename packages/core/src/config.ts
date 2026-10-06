@@ -5,6 +5,7 @@ import { failurePattern } from "./ci.ts";
 
 export interface CiConfig {
   failurePatterns: string[];
+  knownFailures: { check: string; pattern: string; ticket: string }[];
 }
 
 export const CONFIG_FILE = "armada.toml";
@@ -322,7 +323,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["tracker", tracker, ["program_root", "spec_titles", "language", "ready_label", "parked_label", "labels"]],
     ["tracker.labels", labelsT, ["phase_group", "runtime_group", "runtimes"]],
     ["github", github, ["repository"]],
-    ["ci", ciT, ["failure_patterns"]],
+    ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
     [
       "policy",
@@ -648,6 +649,30 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
   }
 
+  const knownFailures: CiConfig["knownFailures"] = [];
+  if (ciT.known_failure !== undefined) {
+    if (!Array.isArray(ciT.known_failure)) problems.push('"ci.known_failure" must be an array of tables');
+    else
+      for (const [i, entry] of ciT.known_failure.entries()) {
+        const path = `ci.known_failure[${i + 1}]`;
+        if (!isTable(entry)) {
+          problems.push(`"${path}" must be a table`);
+          continue;
+        }
+        for (const key of Object.keys(entry))
+          if (!["check", "pattern", "ticket"].includes(key)) problems.push(`unknown key "${path}.${key}"`);
+        const check = str(entry, path, "check");
+        const pattern = str(entry, path, "pattern");
+        const ticket = str(entry, path, "ticket", { pattern: ISSUE_ID, hint: "an issue identifier such as ABC-1" });
+        try {
+          new RegExp(pattern);
+        } catch {
+          problems.push(`"${path}.pattern" must be a valid regex`);
+        }
+        knownFailures.push({ check, pattern, ticket });
+      }
+  }
+
   let specTitles: SpecTitleStyle = "N";
   if (tracker.spec_titles !== undefined) {
     if (tracker.spec_titles === "N" || tracker.spec_titles === "N/M") specTitles = tracker.spec_titles;
@@ -677,7 +702,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     github: {
       repository: str(github, "github", "repository", { pattern: REPOSITORY, hint: "owner/name" }),
     },
-    ci: { failurePatterns },
+    ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
     policy: {
       silentAfterMinutes,
@@ -733,6 +758,13 @@ runtimes = ["Claude Code", "Codex", "Conductor", "Herdr"]
 
 [github]
 repository = ${q(p.repository)}
+
+# A root-cause ticket is required for every known flaky failure. Rerun failed jobs once
+# with \`armada ci why <pr> --rerun\`; unknown failures are refused.
+# [[ci.known_failure]]
+# check = "test"  # exact check run name
+# pattern = "flaky_suite > times out on cold start"  # regex over failing test names or error block
+# ticket = "ABC-123"
 
 [gates]
 # required_checks = ["test"]  # CI checks that must be green before a hand-back (default: every check)
