@@ -75,6 +75,7 @@ export function statusLive(
       latestEvents: () => Promise<Record<string, import("@armada/core").LatestEvent>>;
       heartbeats: () => Promise<Record<string, string>>;
       launches: () => Promise<PendingLaunch[]>;
+      jobs: () => Promise<import("@armada/core").Job[]>;
       deferredLaunches: () => Promise<import("@armada/core").DeferredLaunch[]>;
       runtimeHandles: () => Promise<import("@armada/core").RuntimeHandle[]>;
       holds: () => Promise<import("@armada/core").MergeHold[]>;
@@ -87,6 +88,7 @@ export function statusLive(
         latestEvents: () => fleet.latestEvents(),
         heartbeats: () => fleet.heartbeatTimes(),
         launches: () => fleet.pendingLaunches(),
+        jobs: () => fleet.listJobs({ open: true }),
         deferredLaunches: () => fleet.deferredLaunches(),
         holds: () => fleet.holds(),
         runtimeHandles: () => observeRuntimes(io, fleet, config),
