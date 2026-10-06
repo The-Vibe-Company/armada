@@ -92,7 +92,9 @@ export async function relaunch(
       command: [
         `armada relaunch ${ticket}`,
         ...Object.entries(o).flatMap(([key, value]) =>
-          value === "true" ? [`--${key}`] : [`--${key} ${shellWord(value)}`],
+          ["pre-approve", "in-place", "fresh", "keep-old", "dry-run"].includes(key)
+            ? [`--${key}`]
+            : [`--${key} ${shellWord(value)}`],
         ),
         ...(args.json ? ["--json"] : []),
       ].join(" "),
