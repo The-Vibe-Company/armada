@@ -80,7 +80,7 @@ export interface CliAccounts {
   settings: AuthSettings;
 }
 
-import { ownerPulse, safeWebhookFetch } from "./owner-push";
+import { ownerPulse, safeWebhookFetch, sendOwnerDigest } from "./owner-push";
 
 export interface CliApiDeps {
   ownerFetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -746,6 +746,23 @@ async function fleet(a: CliAccounts, request: Request, op: string, deps: CliApiD
       validationSamples,
       cliVersion: request.headers.get(CLI_VERSION_HEADER),
       appUrl: a.settings.baseUrl,
+      sendDigest: async (slug, digest, language, at) => {
+        const vault = deps.vault?.();
+        if (vault?.kind !== "on") return false;
+        return sendOwnerDigest(
+          a.client,
+          {
+            organization: organization.id,
+            now: at,
+            vault: vault.key,
+            fetch: deps.ownerFetch ?? safeWebhookFetch,
+            baseUrl: a.settings.baseUrl,
+          },
+          slug,
+          digest,
+          language,
+        );
+      },
     },
   );
   // Include 304 inbox polls: time passing can reveal a stopped coordinator.
