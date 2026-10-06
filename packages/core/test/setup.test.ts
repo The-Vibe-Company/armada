@@ -7,6 +7,7 @@ import {
   planSkills,
   pointerText,
   type RepoView,
+  repositoryOfRemote,
   SetupError,
   type SetupPlan,
   skillFolderHash,
@@ -329,5 +330,33 @@ describe("repository checks", () => {
       message: "skills-lock.json is not valid JSON",
     });
     await expect(planSetup(repo.view, { armadaVersion: VERSION, configText: null })).rejects.toThrow(SetupError);
+  });
+});
+
+describe("repositoryOfRemote", () => {
+  test("GitHub HTTPS and SSH forms normalize owner/name without credentials", () => {
+    for (const remote of [
+      "https://github.com/Acme/Widgets.git",
+      "https://github.com/acme/widgets",
+      "git@github.com:ACME/Widgets.git",
+      "ssh://git@github.com/Acme/Widgets.git",
+      "ssh://git@github.com:22/acme/widgets",
+      "https://user:CANARY@github.com/acme/widgets.git/",
+      "  https://GITHUB.COM/acme/widgets.GIT\n",
+    ])
+      expect(repositoryOfRemote(remote)).toBe("acme/widgets");
+    for (const remote of [
+      "",
+      "/tmp/widgets",
+      "../widgets",
+      "https://gitlab.com/acme/widgets",
+      "git@github.com.evil.test:acme/widgets.git",
+      "https://github.com/acme",
+      "https://github.com/acme/widgets/extra",
+      "https://github.com/acme/widgets?token=CANARY",
+      "https://github.com/acme/widgets#fragment",
+      "https://github.com/acme/.git",
+    ])
+      expect(repositoryOfRemote(remote)).toBeNull();
   });
 });
