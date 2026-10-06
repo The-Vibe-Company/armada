@@ -1357,7 +1357,11 @@ test.each([
       runtime: "Conductor",
       handle,
       archived: succeeds,
-      detail: succeeds ? "archived" : "Conductor server error during workspace status (exit 4)",
+      detail: succeeds
+        ? "archived"
+        : queued
+          ? "Conductor CLI could not execute workspace status"
+          : "Conductor server error during workspace status (exit 4)",
     });
   if (scenario === "unrecorded") {
     expect(f.err()).toContain(
