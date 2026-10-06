@@ -12,6 +12,7 @@ import type {
   Attachment,
   CatchupRecords,
   ChoreRecord,
+  ClearHoldResult,
   CoordinatorPresence,
   CoordinatorSeen,
   EventInput,
@@ -30,7 +31,9 @@ import type {
   InsightWait,
   LatestEvent,
   Lease,
+  MergeHold,
   NewRequest,
+  OpenHold,
   PendingLaunch,
   ProjectInput,
   ProjectInsightRecords,
@@ -51,6 +54,7 @@ import type {
   WorkerProfile,
 } from "@armada/core/read";
 import {
+  holdBody,
   isShippingStage,
   OBSERVABLE_RUNTIMES,
   REQUEST_KINDS,
@@ -1161,10 +1165,98 @@ export async function expireUnusedLaunches(db: Database, project: string, now: D
   });
 }
 
+// ------------------------------------------------------------------ standing merge holds
+const holdRow = (r: Row): MergeHold => ({
+  id: Number(r.id),
+  project: String(r.project),
+  kind: r.kind as MergeHold["kind"],
+  ref: text(r.ref),
+  reason: String(r.reason),
+  openedBy: text(r.opened_by),
+  openedAt: isoAt(r.opened_at),
+  clearedAt: iso(r.cleared_at),
+  clearedBy: text(r.cleared_by),
+  clearReason: text(r.clear_reason),
+});
+
+export async function openHold(
+  db: Database,
+  input: OpenHold & { project: string; author: string | null; at: Date },
+): Promise<MergeHold> {
+  return transaction(db, async (q) => {
+    const ref = input.kind === "manual" ? null : (input.ref ?? null);
+    const result = await q.query(
+      `INSERT INTO merge_holds(project, kind, ref, reason, opened_by, opened_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (project, kind, ref) WHERE cleared_at IS NULL DO NOTHING RETURNING *`,
+      [input.project, input.kind, ref, input.reason, input.author, input.at],
+    );
+    if (!result.rows[0]) {
+      const existing = await q.query(
+        "SELECT * FROM merge_holds WHERE project = $1 AND kind = $2 AND ref = $3 AND cleared_at IS NULL",
+        [input.project, input.kind, ref],
+      );
+      // A concurrent clear after the conflicting insert: retry on the next call instead of returning a cleared pause.
+      if (!existing.rows[0]) throw new Error("the hold was cleared concurrently; open it again");
+      return holdRow(existing.rows[0]);
+    }
+    const hold = holdRow(result.rows[0]);
+    const itemId = await addInboxItem(q, {
+      project: input.project,
+      ticket: null,
+      kind: "hold",
+      recipient: "coordinator",
+      author: input.author,
+      body: holdBody(hold),
+      at: input.at,
+    });
+    await q.query("UPDATE merge_holds SET inbox_id = $2 WHERE id = $1", [hold.id, itemId]);
+    return hold;
+  });
+}
+export async function clearHold(
+  db: Database,
+  input: { project: string; id: number; reason: string; author: string | null; at: Date },
+): Promise<ClearHoldResult | null> {
+  return transaction(db, async (q) => {
+    const result = await q.query("SELECT * FROM merge_holds WHERE project = $1 AND id = $2 FOR UPDATE", [
+      input.project,
+      input.id,
+    ]);
+    const row = result.rows[0];
+    if (!row) return null;
+    if (row.cleared_at) return { hold: holdRow(row), cleared: false };
+    const updated = await q.query(
+      "UPDATE merge_holds SET cleared_at = $3, cleared_by = $4, clear_reason = $5 WHERE project = $1 AND id = $2 RETURNING *",
+      [input.project, input.id, input.at, input.author, input.reason],
+    );
+    await resolveInboxItem(q, {
+      project: input.project,
+      id: Number(row.inbox_id),
+      resolution: input.reason,
+      at: input.at,
+    });
+    const changed = updated.rows[0];
+    if (!changed) throw new Error("the locked hold could not be cleared");
+    return { hold: holdRow(changed), cleared: true };
+  });
+}
+export async function openHolds(db: Queryable, project: string): Promise<MergeHold[]> {
+  return (
+    await db.query("SELECT * FROM merge_holds WHERE project = $1 AND cleared_at IS NULL ORDER BY opened_at, id", [
+      project,
+    ])
+  ).rows.map(holdRow);
+}
+
 // ------------------------------------------------------------------ the store
 
 /** Core's `FleetStore` on the app's database: what the Armada API runs the CLI's operations on. */
 export const fleetStore = (db: Database): FleetStore => ({
+  openHold: (input) => openHold(db, input),
+  clearHold: (input) => clearHold(db, input),
+  openHolds: (project) => openHolds(db, project),
+
   digestRecords: (project, since, now) => digestRecords(db, project, since, now),
   reserve: (input) => reserve(db, input),
   reservations: (project) => reservations(db, project),

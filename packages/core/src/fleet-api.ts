@@ -20,12 +20,15 @@ import {
   FOLLOW_EVENT_KINDS,
   followedLaunches,
   type HandBackSnapshot,
+  holdsNext,
+  holdsPaused,
   type InboxItem,
   type InboxQuery,
   type InboxRead,
   LAUNCH_WINDOW_MS,
   type LatestEvent,
   type LeaseResult,
+  MERGE_LEASE,
   type MergeRecord,
   type MergeRecorded,
   type PendingLaunch,
@@ -82,6 +85,10 @@ export const WORKER_FLEET_OPS = [
 /** Every operation, as the path after `/api/cli/fleet/`. */
 export const FLEET_OPS = [
   ...WORKER_FLEET_OPS,
+  "holds",
+  "hold/open",
+  "hold/clear",
+
   "digest",
   "digest/send",
   "register",
@@ -138,6 +145,14 @@ const SHA = /^[0-9a-f]{7,64}$/;
 
 /** A request the server will not run as sent. */
 class Invalid extends Error {}
+class Held extends Error {
+  constructor(
+    message: string,
+    readonly next: string,
+  ) {
+    super(message);
+  }
+}
 
 type Body = Record<string, unknown>;
 
@@ -410,6 +425,30 @@ export async function serveFleet(
             at,
           );
         }
+        case "holds":
+          return store.openHolds(slug);
+        case "hold/open": {
+          if (!["manual", "deploy", "main-red"].includes(String(b.kind)))
+            throw new Invalid("kind must be manual, deploy or main-red");
+          const kind = b.kind as import("./live.ts").HoldKind;
+          const ref = kind === "manual" ? null : text(b, "ref", LINE_MAX).trim();
+          return store.openHold({
+            project: slug,
+            kind,
+            ref,
+            reason: text(b, "reason", BODY_MAX).trim(),
+            author: caller.kind === "organization" ? (caller.author ?? null) : null,
+            at,
+          });
+        }
+        case "hold/clear":
+          return store.clearHold({
+            project: slug,
+            id: idOf(b, "id"),
+            reason: text(b, "reason", BODY_MAX).trim(),
+            author: caller.kind === "organization" ? (caller.author ?? null) : null,
+            at,
+          });
         case "register":
           return store.upsertProject(
             { ...project, owner: caller.kind === "organization" ? (caller.author ?? null) : null },
@@ -582,14 +621,21 @@ export async function serveFleet(
           return store.getInboxItem(slug, idOf(b, "id"));
         case "inbox/ticket":
           return store.openInboxItems({ project: slug, recipient: "coordinator", ticket: ticketOf(b) });
-        case "inbox/resolve":
+        case "inbox/resolve": {
+          const id = idOf(b, "id");
+          if ((await store.getInboxItem(slug, id))?.kind === "hold")
+            throw new Invalid('a merge hold is resolved with armada hold clear <id> --reason "<why>"');
           return store.resolveInboxItem({
             project: slug,
             id: idOf(b, "id"),
             resolution: text(b, "resolution", BODY_MAX),
             at,
           });
-        case "answer":
+        }
+        case "answer": {
+          const item = b.item === null || b.item === undefined ? null : idOf(b, "item");
+          if (item !== null && (await store.getInboxItem(slug, item))?.kind === "hold")
+            throw new Invalid('a merge hold is resolved with armada hold clear <id> --reason "<why>"');
           return recordAnswer(
             store,
             slug,
@@ -597,10 +643,11 @@ export async function serveFleet(
               text: text(b, "text", BODY_MAX),
               note: bool(b, "note"),
               ticket: b.ticket === null || b.ticket === undefined ? null : ticketOf(b),
-              item: b.item === null || b.item === undefined ? null : idOf(b, "item"),
+              item,
             },
             at,
           );
+        }
         case "merge": {
           const number = b.number;
           if (typeof number !== "number" || !Number.isSafeInteger(number) || number < 1)
@@ -722,6 +769,14 @@ export async function serveFleet(
             ttlMs: ttl,
             at,
           };
+          const throughHold = optText(b, "throughHold", BODY_MAX);
+          if (throughHold !== null && !throughHold.trim()) throw new Invalid("throughHold needs a reason");
+          // Older supported CLIs do not read holds. The server stops their lease too,
+          // without cutting off unrelated worker commands via a global version bump.
+          if (lease.name === MERGE_LEASE && !throughHold) {
+            const holds = await store.openHolds(slug);
+            if (holds.length) throw new Held(`${holdsPaused(holds, at)}. ${holdsNext(holds)}`, holdsNext(holds));
+          }
           return op === "lease/acquire" ? store.acquireLease(lease) : store.renewLease(lease);
         }
         case "lease/release":
@@ -731,6 +786,7 @@ export async function serveFleet(
     if (result === NOT_MODIFIED) return { status: 304, body: {} };
     return { status: 200, body: { result: result ?? null } };
   } catch (err) {
+    if (err instanceof Held) return refuse(409, err.message, err.next);
     if (err instanceof RequestRefusal) return refuse(400, err.message, "armada inbox");
     if (err instanceof Invalid)
       return refuse(400, `fleet ${op}: ${err.message}`, "update the CLI: npm install -g @the-vibe-company/armada");
@@ -848,6 +904,9 @@ export function fleetClient(o: { api: Pick<ArmadaApi, "fleet">; signIn: ArmadaSi
     unreserve: (input) => call("unreserve", input),
     coordinator: (facts) => call<null>("coordinator", facts).then(() => undefined),
     request: (input) => call<number>("request", input),
+    holds: () => call("holds", {}),
+    openHold: (input) => call("hold/open", input),
+    clearHold: (input) => call("hold/clear", input),
     register: () => call<null>("register", {}).then(() => undefined),
     eventsSince: (q) => call<EventsRead | null>("events/since", q),
     latestEvents: () => call<Record<string, LatestEvent>>("events/state", {}),

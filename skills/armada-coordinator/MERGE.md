@@ -8,6 +8,8 @@ After the shared retries, a temporary Linear outage does not stop a merge when A
 
 After GitHub confirms the merge, Armada records it first: the hand-back closes and the runtime claim is released. Linear's remaining work becomes a visible `linear-pending` inbox item: `Finish Linear for #N`, with `armada merge --finish N`. Run that command once Linear answers; it checks GitHub already shows the PR merged, completes Done/labels/link/merged-comment bookkeeping without a merge lock, and resolves the item. It also works for a PR merged by hand. Repeating it adds no more writes. You can close the inbox item by hand with `armada answer <item> "<what was finished>"`.
 
+A merge through a hold keeps its override audit in the pending inbox item until `--finish` can post it to Linear. For a signed-in coordinator, finishing waits if Armada cannot supply that audit; it takes no merge lease and does not clear the hold.
+
 Read the last stdout line before acting:
 
 - `Result: merged #N`: the merge is confirmed and bookkeeping finished.
@@ -96,3 +98,13 @@ The workflow merges the pending release pull request and publishes it at once. U
 
 - **Repositories without a train.** Only when the repository's rules ask the coordinator to merge release pull requests, use `armada merge <n> --no-ticket`: no ticket owns it, and no required check runs on it (see "No ticket" above). A manual merge must still pin the checked head and leave out `--delete-branch`.
 - **Check the publish.** After the scheduled or manual Release run finishes, check the registry, for example `npm view <package> version` for an npm package (the package is named in `AGENTS.md` or the release workflow). If it is not published, open the Release run (`gh run list --workflow release.yml --limit 3`, using the repository's workflow name), fix the cause and re-run its failed jobs: a later push does not publish a version already tagged.
+
+## Paused merges
+
+`armada hold` lists the project's persistent merge pauses, shared by every coordinator. Manual pauses, failed deploys and red main use the same holds. They never expire. `armada status`, `armada inbox` and `armada watch` show an open hold until it is cleared.
+
+- Pause with `armada hold add "<reason>"`.
+- Merge the fix with `armada merge <pr> --through-hold "<why this fixes the pause>"`. This passes every open hold and records the reason with every hold id in the ticket's merged comment. The holds stay open while the fix is checked.
+- After verifying recovery, resume with `armada hold clear <id> --reason "<what was verified>"`. Clear every open hold to resume normal merges. Repeating a clear names who cleared it and when.
+
+A single merge refuses on any open hold, including during `--wait`: a pause needs a decision, so the command stops on its next poll. `--no-lock` also skips reading holds and says so; reserve it for recovering from an unavailable Armada when you have checked the project's state yourself.

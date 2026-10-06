@@ -393,8 +393,10 @@ Result: merged #9
   expect(f.armada.calls.map((c) => c.path)).toEqual([
     "fleet/coordinator",
     "fleet/lease/acquire",
+    "fleet/holds",
     "fleet/validations",
     "fleet/inbox/ticket",
+    "fleet/holds",
     "fleet/lease/renew",
     "fleet/merge",
     "workers/end",
@@ -417,7 +419,7 @@ test("signed in, Armada down refuses the merge; --no-lock merges anyway and says
   expect(await run(["merge", "9", "--no-lock"], f.io)).toBe(0);
   expect(f.merged()).toBe(true);
   expect(f.err()).toContain(
-    "armada: warning: merged without the merge lock (--no-lock): make sure no other coordinator merges in widgets now\n",
+    "armada: warning: merged without the merge lock (--no-lock), merge holds were not checked: make sure no other coordinator merges in widgets now\n",
   );
   expect(f.err()).toMatch(/armada: warning: Armada: could not record the merge \(.+\)\n/);
   expect(f.linear.bodies.at(-1)).toContain(", merged without lock (--no-lock)");
