@@ -15,7 +15,7 @@ import type {
   StoredInboxItem,
   WorkerProfile,
 } from "../src/live.ts";
-import { unusedLaunchExpired } from "../src/live.ts";
+import { FOLLOW_EVENT_KINDS, unusedLaunchExpired } from "../src/live.ts";
 import { OBSERVABLE_RUNTIMES, runtimeNameOf } from "../src/runtime.ts";
 import type { Validation } from "../src/validations.ts";
 
@@ -183,6 +183,50 @@ export function memoryFleet(): FleetStore & {
         )
           out[e.ticket] = e.at;
       return out;
+    },
+    async eventsSince(project, q) {
+      const boundary = (e: EventRow, at: string, id: number) => e.at > at || (e.at === at && e.id > id);
+      const floor = new Date(Date.parse(q.afterAt) - 120_000).toISOString();
+      const recent = events
+        .filter(
+          (e) =>
+            e.project === project &&
+            q.kinds.includes(e.kind as never) &&
+            (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
+            (!q.tickets || q.tickets.includes(e.ticket)) &&
+            e.at >= floor &&
+            !boundary(e, q.afterAt, q.afterId),
+        )
+        .sort((a, b) => b.id - a.id)
+        .slice(0, 500)
+        .map((e) => e.id);
+      return events
+        .filter(
+          (e) =>
+            e.project === project &&
+            FOLLOW_EVENT_KINDS.includes(e.kind as never) &&
+            q.kinds.includes(e.kind as never) &&
+            (!q.handoverOnly || e.kind !== "report" || e.phase === "ready-to-merge") &&
+            (!q.tickets || q.tickets.includes(e.ticket)) &&
+            e.at >= floor &&
+            (boundary(e, q.afterAt, q.afterId) || (q.seenIds && recent.includes(e.id) && !q.seenIds.includes(e.id))) &&
+            (!q.pageAfter || boundary(e, q.pageAfter.at, q.pageAfter.id)),
+        )
+        .sort((a, b) => a.at.localeCompare(b.at) || a.id - b.id)
+        .slice(0, q.limit ?? 200)
+        .map((e) => ({
+          id: e.id,
+          ticket: e.ticket,
+          kind: e.kind as "claim",
+          phase: e.phase ?? null,
+          shippingStage: e.shippingStage ?? null,
+          message: e.message ?? null,
+          runtime: e.runtime ?? null,
+          handle: e.handle ?? null,
+          prUrl: e.prUrl ?? null,
+          headSha: e.headSha ?? null,
+          at: e.at,
+        }));
     },
     async latestEvents(project, opts = {}) {
       const since = opts.since?.toISOString() ?? "";
