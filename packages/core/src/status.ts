@@ -201,11 +201,15 @@ export function buildStatus({
   extraWarnings = [],
   now,
 }: BuildStatusInput): StatusReport {
+  if (live && program.readStartedAt) live = { ...live, after: program.readStartedAt };
   const issues = attachPullRequests(program, forge);
   const m = buildModel(issues, program.rootId);
   const lanes = inFlight(m, program.comments, {
     now: now.getTime(),
     silentAfterMinutes: config.policy.silentAfterMinutes,
+    launchGraceMinutes: config.policy.launchGraceMinutes,
+    ciWaitMinutes: config.policy.ciWaitMinutes,
+    coordinatorViewer: program.viewer,
     ...(lastEvents ? { lastEvents } : {}),
     ...(heartbeats ? { heartbeats } : {}),
     ...(live ? { live } : {}),

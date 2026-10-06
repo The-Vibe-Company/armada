@@ -473,6 +473,7 @@ export async function serveFleet(
             {
               ticket: ticketOf(b),
               phase: phaseOf(b, "phase") as LabelPhase,
+              workerSessionId: caller.kind === "worker" ? caller.sessionId : null,
               shippingStage: shippingStageOf(b),
               previous: phaseOf(b, "previous", true),
               ...(b.paths !== undefined ? { paths: pathsOf(b) } : {}),
@@ -753,6 +754,8 @@ export async function serveFleet(
               ...(b.facts == null ? {} : { facts: coordinatorFacts(objectOf(b.facts)) }),
               silentAfterMinutes: silent,
               quietAfterMinutes: positiveMinutes(b, "quietAfterMinutes"),
+              launchGraceMinutes: positiveMinutes(b, "launchGraceMinutes", true),
+              ciWaitMinutes: positiveMinutes(b, "ciWaitMinutes"),
               ...(notStarted !== undefined ? { notStartedMinutes: notStarted } : {}),
               etag: optText(b, "etag", 64),
             },
@@ -1122,10 +1125,10 @@ function coordinatorFacts(input: Record<string, unknown>): CoordinatorFacts {
   };
 }
 
-function positiveMinutes(input: Body, key: string): number | undefined {
+function positiveMinutes(input: Body, key: string, zero = false): number | undefined {
   const value = input[key];
   if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+  if (typeof value !== "number" || !Number.isFinite(value) || (zero ? value < 0 : value <= 0))
     throw new Invalid(`${key} must be a positive number of minutes`);
   return value;
 }

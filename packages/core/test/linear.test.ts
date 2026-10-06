@@ -50,7 +50,20 @@ describe("comment conventions", () => {
 
 describe("fetchProgram", () => {
   test("walks every page and level under the root, then reads comments of in-flight tickets only", async () => {
-    const { fetch, calls } = recordedFetch();
+    const { fetch: recorded, calls } = recordedFetch();
+    const fetch: Fetch = async (url, init) => {
+      const response = await recorded(url, init);
+      const body = (await response.json()) as {
+        data: {
+          viewer?: { id: string; name: string };
+          issues?: { nodes: { comments?: { nodes: { user: { id?: string; name: string } | null }[] } }[] };
+        };
+      };
+      if (String(init.body).includes("query Root")) body.data.viewer = { id: "coordinator", name: "Cory Coordinator" };
+      for (const ticket of body.data.issues?.nodes ?? [])
+        for (const comment of ticket.comments?.nodes ?? []) if (comment.user) comment.user.id = "synthetic-author";
+      return Response.json(body);
+    };
     const program = await fetchProgram({ apiKey: "lin_test", rootId: "DEMO-1", labels, fetch, now: () => NOW });
 
     expect(calls.map((c) => c.operation)).toEqual(["Root", "Children", "Children", "Children", "Children", "Comments"]);
@@ -58,6 +71,8 @@ describe("fetchProgram", () => {
     expect(calls.every((c) => c.authorization === "lin_test")).toBe(true);
     expect(calls.at(-1)?.variables.ids).toEqual(["uuid-demo-2", "uuid-demo-11", "uuid-demo-16", "uuid-demo-18"]);
 
+    expect(program.viewer).toEqual({ id: "coordinator", name: "Cory Coordinator" });
+    expect(program.comments.every((c) => c.authorId === "synthetic-author")).toBe(true);
     expect(program.issues).toHaveLength(13);
     const byId = new Map(program.issues.map((i) => [i.id, i]));
     expect(byId.get("DEMO-11")).toMatchObject({

@@ -491,7 +491,7 @@ describe("the fleet through the Armada API", () => {
     });
     expect([raw.status, await raw.text(), raw.headers.get("cache-control")]).toEqual([304, "", "no-store"]);
     // A worker turning silent is a new entry; then its minutes change, its entry does not: not modified.
-    clock += 20 * 60_000;
+    clock += 35 * 60_000;
     const silent = await coordinator.inbox({ ...read, etag: first.etag });
     expect(silent?.items.map((e) => [e.kind, e.ticket])).toContainEqual(["silent", "WID-10"]);
     clock += 5 * 60_000;

@@ -39,6 +39,7 @@ import {
   type ProjectRecord,
   RANGE_DAYS,
   type RuntimeHandle,
+  reconcileHandles,
   type SessionRecord,
   type SinceSummary,
   type SourcesRefresh,
@@ -330,6 +331,7 @@ async function readLive(
   project: string,
   now: Date,
   tickets: readonly string[] = [],
+  snapshot?: Snapshot,
 ): Promise<LiveProject> {
   const [events, history, handles, launches, jobs, inbox, coordinator, inboxReads, sessions, validations] =
     await Promise.all([
@@ -347,6 +349,24 @@ async function readLive(
       store.listSessions(project, { since: new Date(now.getTime() - LIVE_WINDOW_MS) }),
       readValidations(store, project, now),
     ]);
+  if (
+    snapshot &&
+    (await reconcileHandles(
+      store,
+      project,
+      handles,
+      {
+        repository: snapshot.config.github.repository,
+        issues: snapshot.sources.program.issues,
+        prs: snapshot.sources.forge?.prs ?? [],
+        flight: { ...snapshot.sources, after: snapshot.startedAt.toISOString() },
+      },
+      now,
+      inbox,
+      events,
+    ))
+  )
+    return readLive(store, project, now, tickets);
   return {
     validations,
     events,
@@ -469,6 +489,7 @@ export async function loadProject(opts: LoadOptions, slug: string, scope: Scope 
           slug,
           opts.now(),
           snap.sources.program.issues.filter((i) => !isClosed(i)).map((i) => i.id),
+          snap,
         ),
         opts.liveTimeoutMs ?? 4000,
         "reading live data",
@@ -576,7 +597,7 @@ export async function loadOverview(opts: LoadOptions, scope: Scope | null): Prom
           slugs.map(async (slug) => {
             const snap = entries.find((e) => liveSlug(e.p, e.entry?.snapshot) === slug)?.entry?.snapshot;
             const tickets = snap?.sources.program.issues.filter((i) => !isClosed(i)).map((i) => i.id) ?? [];
-            return [slug, await readLive(store, slug, opts.now(), tickets)] as const;
+            return [slug, await readLive(store, slug, opts.now(), tickets, snap ?? undefined)] as const;
           }),
         ),
         opts.liveTimeoutMs ?? 4000,

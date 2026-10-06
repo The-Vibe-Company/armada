@@ -343,6 +343,8 @@ async function watchUntil(
       facts: { ...detectCoordinator(io), name },
       coordinatorName: name,
       silentAfterMinutes: config.policy.silentAfterMinutes,
+      launchGraceMinutes: config.policy.launchGraceMinutes,
+      ciWaitMinutes: config.policy.ciWaitMinutes,
       quietAfterMinutes: config.policy.quietAfterMinutes,
       notStartedMinutes: config.policy.notStartedMinutes,
       seen: before?.seen ?? [],
