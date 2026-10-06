@@ -199,9 +199,9 @@ export const releaseNotesUrl = (version: string) =>
 export const newerRelease = (running: string, latest: string | null | undefined): string | null =>
   latest && running !== "0.0.0" && compareVersions(latest, running) > 0 ? latest : null;
 
-/** The one line a coordinator reads when a newer Armada is out: what to install, then the skills, then the notes. */
-export const releaseLine = (running: string, latest: string) =>
-  `Armada ${latest} is out (you run ${running}): ${installCommand(latest)} — then armada init to refresh this project's skills. Changes: ${releaseNotesUrl(latest)}`;
+/** A quiet release notice; refresh instructions only when this project's setup differs. */
+export const releaseLine = (running: string, latest: string, { setupBehind }: { setupBehind: boolean }) =>
+  `Armada ${latest} is out (you run ${running}): armada upgrade${setupBehind ? " — then armada init to refresh this project's skills if still behind" : ""}. Changes: ${releaseNotesUrl(latest)}`;
 
 /** What a server said of the CLIs it serves, from the headers of its last answer. */
 export interface ServerCli {
