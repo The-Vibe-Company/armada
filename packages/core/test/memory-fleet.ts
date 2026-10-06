@@ -724,6 +724,7 @@ export function memoryFleet(): FleetStore & {
         Object.entries(out).map(([t, e]) => [
           t,
           {
+            id: e.id,
             kind: e.kind,
             phase: e.phase ?? null,
             shippingStage: e.shippingStage ?? null,

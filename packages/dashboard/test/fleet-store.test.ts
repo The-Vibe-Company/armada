@@ -270,7 +270,10 @@ describe("live data", () => {
     const latest = await latestEvents(db, P, { since: at(2) });
     expect(Object.keys(latest)).toEqual(["WID-2"]);
     expect(latest["WID-2"]).toMatchObject({ kind: "report", phase: "shipping", prUrl: "u", at: at(3).toISOString() });
-    expect((await latestEvents(db, P, { kinds: ["claim"] }))["WID-2"]?.kind).toBe("claim");
+    const latestClaim = (await latestEvents(db, P, { kinds: ["claim"] }))["WID-2"];
+    expect(latestClaim?.kind).toBe("claim");
+    expect(latestClaim?.id).toBeGreaterThan(0);
+    expect(latest["WID-2"]?.id).toBeGreaterThan(latestClaim?.id ?? 0);
     expect(await latestEvents(db, P, { kinds: ["claim"], since: at(2), tickets: ["WID-2"] })).toEqual({});
     expect(await latestEvents(db, P, { kinds: [] })).toEqual({});
 

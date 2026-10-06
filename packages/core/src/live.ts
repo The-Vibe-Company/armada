@@ -106,6 +106,8 @@ export interface EventInput {
 }
 
 export interface LatestEvent {
+  /** Persisted ordering for events recorded at the same millisecond. */
+  id?: number;
   kind: EventKind;
   phase: string | null;
   shippingStage?: ShippingStage | null;
@@ -1503,7 +1505,14 @@ async function readInboxAndFlight(
           launches.some((l) => l.ticket === issue.id) ||
           launchHistory.some((l) => l.ticket === issue.id && l.launchedAt >= merge.at) ||
           (claims[issue.id]?.at ?? "") >= merge.at ||
-          issue.blockedBy.some((b) => merges[b.id]?.phase === "merged" && (merges[b.id]?.at ?? "") > merge.at)
+          issue.blockedBy.some((b) => {
+            const other = merges[b.id];
+            if (other?.phase !== "merged") return false;
+            if (other.at !== merge.at) return other.at > merge.at;
+            if ((other.id ?? 0) !== (merge.id ?? 0)) return (other.id ?? 0) > (merge.id ?? 0);
+            // Legacy stores without IDs still choose one stable blocker.
+            return b.id > blocker;
+          })
         )
           continue;
         entries.push({

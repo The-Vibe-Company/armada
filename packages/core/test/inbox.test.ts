@@ -175,6 +175,27 @@ test("a stored merge unblocks another coordinator's pending work once, until lau
   if (!launch) throw new Error("missing launch");
   launch.endedAt = NOW.toISOString();
   expect((await read("front")).filter((e) => e.kind === "unblocked")).toEqual([]);
+  const firstBlocker = issue("DEMO-9", { parentId: "DEMO-1", statusType: "completed" });
+  const lastBlocker = issue("DEMO-7", { parentId: "DEMO-1", statusType: "completed" });
+  const tied = dependent("DEMO-8", {
+    blockedBy: [
+      { id: firstBlocker.id, statusType: "completed" },
+      { id: lastBlocker.id, statusType: "completed" },
+    ],
+  });
+  program.issues.push(firstBlocker, lastBlocker, tied);
+  // The clock is identical; event order, rather than ticket order, selects the last blocker.
+  for (const ticket of [firstBlocker.id, lastBlocker.id])
+    await live.fleet.merge({
+      ticket,
+      number: 3,
+      url: `https://github.com/acme/widgets/pull/${ticket}`,
+      mergeCommit: "c".repeat(40),
+      headSha: "d".repeat(40),
+    });
+  expect((await read("front")).filter((e) => e.kind === "unblocked").map(entryKey)).toEqual([
+    "unblocked:DEMO-8@DEMO-7",
+  ]);
 });
 
 test("mine resolves ticket ownership before filtering entries, flight and ETags", async () => {

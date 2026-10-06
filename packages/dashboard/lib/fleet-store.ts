@@ -281,7 +281,7 @@ export async function latestEvents(
   opts: { since?: Date; tickets?: readonly string[]; kinds?: readonly LatestEvent["kind"][] } = {},
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
-    `SELECT DISTINCT ON (ticket) ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
+    `SELECT DISTINCT ON (ticket) id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
      FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover')
      AND ($3::text[] IS NULL OR ticket = ANY($3::text[]))
      AND ($4::text[] IS NULL OR kind = ANY($4::text[]))
@@ -292,6 +292,7 @@ export async function latestEvents(
     rs.rows.map((r) => [
       String(r.ticket),
       {
+        id: Number(r.id),
         kind: String(r.kind) as LatestEvent["kind"],
         phase: text(r.phase),
         shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
