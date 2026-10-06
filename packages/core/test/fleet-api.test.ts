@@ -213,6 +213,92 @@ describe("the fleet through Armada", () => {
   });
 });
 
+test("workers reserve, list project holders and unreserve only their own ticket; malformed allocations are refused", async () => {
+  const { fleet, store } = tempFleet({ caller: { kind: "worker", ticket: "DEMO-7" } });
+  await store.reserve({ project: "widgets", ticket: "DEMO-8", key: "db-migration", next: true, floor: 22, at: NOW });
+  expect((await fleet.reserve({ ticket: "DEMO-7", key: "db-migration", next: true, floor: 22 })).reserved).toBe(true);
+  expect((await fleet.reservations("DEMO-7")).map((r) => r.ticket)).toEqual(["DEMO-8", "DEMO-7"]);
+  for (const op of ["reserve", "unreserve", "reservations"]) {
+    const answer = await serveFleet(
+      store,
+      {
+        op,
+        project: DEMO_PROJECT,
+        caller: { kind: "worker", ticket: "DEMO-7" },
+        input: { ticket: "DEMO-8", key: "db-migration" },
+      },
+      { now: () => NOW },
+    );
+    expect(answer.status).toBe(403);
+  }
+  for (const input of [{ next: true, value: "23" }, { floor: 22 }, { next: true, floor: -1 }, { value: 42 }]) {
+    const answer = await serveFleet(
+      store,
+      {
+        op: "reserve",
+        project: DEMO_PROJECT,
+        caller: { kind: "worker", ticket: "DEMO-7" },
+        input: { ticket: "DEMO-7", key: "db-migration", ...input },
+      },
+      { now: () => NOW },
+    );
+    expect(answer.status).toBe(400);
+  }
+  expect(await fleet.unreserve({ ticket: "DEMO-7", key: "db-migration" })).toBe(1);
+  expect((await fleet.reservations("DEMO-7")).map((r) => r.ticket)).toEqual(["DEMO-8"]);
+});
+
+test("events/since is a scoped safe read with bounded pages, filters, look-back and 304", async () => {
+  const live = tempFleet();
+  const query = { afterId: 0, afterAt: NOW.toISOString(), kinds: ["report"] as const, tickets: ["DEMO-2"], limit: 2 };
+  for (let i = 0; i < 3; i++)
+    await live.store.recordEvent({
+      project: "widgets",
+      ticket: "DEMO-2",
+      kind: "report",
+      at: new Date(NOW.getTime() + 1000),
+      message: `report ${i}`,
+    });
+  await live.store.recordEvent({
+    project: "widgets",
+    ticket: "DEMO-2",
+    kind: "heartbeat",
+    at: new Date(NOW.getTime() + 1000),
+  });
+  const first = await live.fleet.eventsSince(query);
+  expect(first?.events.map((e) => e.id)).toEqual([1, 2]);
+  const second = await live.fleet.eventsSince({
+    ...query,
+    afterId: 2,
+    afterAt: new Date(NOW.getTime() + 1000).toISOString(),
+  });
+  expect(second?.events.map((e) => e.id)).toEqual([3]);
+  expect(
+    await live.fleet.eventsSince({
+      ...query,
+      afterId: 3,
+      afterAt: new Date(NOW.getTime() + 1000).toISOString(),
+      seenIds: [1, 2, 3],
+    }),
+  ).toBeNull();
+  for (const bad of [
+    { limit: 201 },
+    { kinds: ["heartbeat"] },
+    { afterAt: "yesterday" },
+    { tickets: ["bad"] },
+    { seenIds: [-1] },
+  ]) {
+    const answer = await serveFleet(
+      live.store,
+      { op: "events/since", project: DEMO_PROJECT, caller: { kind: "organization" }, input: { ...query, ...bad } },
+      { now: () => NOW },
+    );
+    expect(answer.status).toBe(400);
+  }
+  const worker = tempFleet({ caller: { kind: "worker", ticket: "DEMO-2" } });
+  expect((await refused(worker.fleet.eventsSince(query)))[0]).toBe(403);
+});
+
 test("a worker's declared paths appear in the plan with overlaps from the stored reading", async () => {
   const { issue } = await import("./support.ts");
   const store = memoryFleet();
