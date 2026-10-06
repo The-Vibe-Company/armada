@@ -80,6 +80,7 @@ export interface ArmadaConfig {
   git: { sign: "inherit" | "off" };
   ci: CiConfig;
   merge: {
+    queueRetest: "ci" | "local";
     /** Repository path globs whose merges concern every working pull request. */
     notifyPaths: string[];
   };
@@ -409,7 +410,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     ["git", gitT, ["sign"]],
     ["ci", ciT, ["failure_patterns", "known_failure"]],
     ["gates", gatesT, ["required_checks", "local_commands"]],
-    ["merge", mergeT, ["notify_paths"]],
+    ["merge", mergeT, ["notify_paths", "queue_retest"]],
     [
       "policy",
       policyT,
@@ -859,6 +860,9 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     } else problems.push(`"ci.failure_patterns" must be a list of non-empty regex strings`);
   }
 
+  const queueRetest = mergeT.queue_retest ?? "ci";
+  if (queueRetest !== "ci" && queueRetest !== "local") problems.push('"merge.queue_retest" must be "ci" or "local"');
+
   let notifyPaths: string[] = [...CONFIG_DEFAULTS.notifyPaths];
   if (mergeT.notify_paths !== undefined) {
     const v = mergeT.notify_paths;
@@ -946,7 +950,7 @@ export function parseConfig(text: string, source = CONFIG_FILE): ArmadaConfig {
     git: { sign: sign === "off" ? "off" : "inherit" },
     ci: { failurePatterns, knownFailures },
     gates: { requiredChecks, localCommands },
-    merge: { notifyPaths },
+    merge: { notifyPaths, queueRetest: queueRetest === "local" ? "local" : "ci" },
     policy: {
       silentAfterMinutes,
       launchGraceMinutes,
@@ -1039,7 +1043,7 @@ sign = "inherit"        # "off" disables commit signing only in new Herdr worktr
 
 [merge]
 # Queue intent: \`armada merge --when-green <pr...>\`; retest serially with \`armada merge --drain\`.
-# queue_retest = "ci"  # requires the drain release; "local" uses gates.local_commands
+# queue_retest = "ci" # fresh-main CI before each queued merge; "local" uses gates.local_commands
 # Files that concern every working PR, in addition to overlapping files (default: CI workflows).
 # notify_paths = [".github/workflows/**", "package.json", "migrations/**"]
 

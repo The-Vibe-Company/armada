@@ -14,7 +14,9 @@ import {
   CLAUDE_SKILLS_DIR,
   type Credentials,
   createLinearWriter,
+  deliveryKey,
   deployLine,
+  drainMergeQueue,
   fetchCommit,
   fetchComparison,
   fetchMainHealth,
@@ -48,9 +50,32 @@ import { deployStatus, startDeploys } from "./deploy.ts";
 import { type Exec, httpOptions, type Io, missingKey, UsageError } from "./io.ts";
 import { outgoingRedactor, redactLinearWriter } from "./redact.ts";
 import { deliverToRuntime } from "./runtime.ts";
-import { redactRuntimeText } from "./runtimes/adapter.ts";
+import { claimRef, guarded, redactRuntimeText } from "./runtimes/adapter.ts";
 import { coordinatorHandle, rearmFor, remember, watchOf } from "./watch.ts";
 import { endWorkerSessions, liveFleet, type WorkerArgs } from "./worker.ts";
+
+/** Queue ownership is rechecked at actual I/O boundaries, including native runtime cleanup. */
+function fencedIo(io: Io, tick: (() => Promise<void>) | undefined, exec: Exec): Io {
+  if (!tick) return io;
+  const before =
+    <A extends unknown[], R>(act: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      await tick();
+      const result = await act(...args);
+      await tick();
+      return result;
+    };
+  return {
+    ...io,
+    exec: before(exec),
+    fetch: before(io.fetch ?? ((url, init) => fetch(url, init))),
+    ...(io.sleep ? { sleep: before(io.sleep) } : {}),
+    ...(io.spawn ? { spawn: before(io.spawn) } : {}),
+    ...(io.detach ? { detach: before(io.detach) } : {}),
+    ...(io.startBackground ? { startBackground: before(io.startBackground) } : {}),
+    ...(io.writeFile ? { writeFile: before(io.writeFile) } : {}),
+  };
+}
 
 /** A GitHub 5xx or a network failure, as gh reports them. */
 const TRANSIENT =
@@ -289,6 +314,9 @@ export async function merge(
       return 0;
     }
 
+    const draining = !!a.options.drain;
+    if (draining && (a.rest.length || Object.keys(a.options).some((k) => !["drain", "timeout"].includes(k))))
+      throw new UsageError("--drain takes only --timeout and --json; merge decisions belong to each queued entry");
     const enqueue = !!a.options["when-green"];
     if (
       enqueue &&
@@ -310,7 +338,7 @@ export async function merge(
     const finish = a.options.finish !== undefined;
     const [arg, ...extra] = finish ? [a.options.finish, ...a.rest] : a.rest;
     if (!enqueue && extra.length) throw new UsageError(`unexpected argument ${extra[0]}`);
-    const number = prNumber(arg, config.github.repository);
+    const number = draining ? 0 : prNumber(arg, config.github.repository);
     if (finish && Object.keys(a.options).some((option) => !["finish", "ticket"].includes(option)))
       throw new UsageError("--finish only completes Linear bookkeeping; it goes with --ticket, nothing else");
     const noTicket = !!a.options["no-ticket"];
@@ -333,7 +361,7 @@ export async function merge(
         `--ask-owner needs --reason: armada merge ${number} --ask-owner --reason "<why the owner must see it>"`,
       );
     if (wait && a.options["dry-run"]) throw new UsageError("--wait and --dry-run cannot go together");
-    if (!wait && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
+    if (!wait && !draining && a.options.timeout !== undefined) throw new UsageError("--timeout applies to --wait");
     const timeoutMs = a.options.timeout === undefined ? MERGE_WAIT_DEFAULT_MS : waitMinutes(a.options.timeout) * 60_000;
     if (!credentials.linearApiKey) throw missingKey(LINEAR_KEY);
     const token = credentials.githubToken;
@@ -401,7 +429,31 @@ export async function merge(
         };
       },
       coordinatorName: await coordinatorName(io, config.project.slug),
-      afterRecord: (ticket) => endWorkerSessions(io, config, credentials, ticket, "merged", a.json),
+      onMerged: (p, ticket) => {
+        confirmed = {
+          merged: true,
+          pr: {
+            number: p.number,
+            url: p.url,
+            title: p.title,
+            base: p.baseRef,
+            headSha: p.headSha,
+            mergeCommit: p.mergeCommit,
+          },
+          ticket: ticket ? { id: ticket, url: null } : null,
+          linearPending: !!ticket,
+          armadaPending: !!ticket && !!credentials.armadaSignIn,
+          lines: [],
+          hints: [],
+          workers: [],
+          workersListed: false,
+          unblocked: null,
+          archive: null,
+          warnings: [],
+        };
+      },
+      afterRecord: (ticket, tick) =>
+        endWorkerSessions(fencedIo(io, tick, exec), config, credentials, ticket, "merged", a.json),
       afterRead: async (ticket) => {
         const sources = await readStatusSources(config, { linearApiKey, githubToken: token, ...fetchOpt, now });
         const liveReading = live.fleet
@@ -514,8 +566,8 @@ export async function merge(
       const result = "Result: not merged (queued for merge; nothing was merged)";
       io.stdout(
         a.json
-          ? `${JSON.stringify({ results, watch, result, next: "armada merge queue" }, null, 2)}\n`
-          : `Next: armada merge queue\n${watch.line}\n`,
+          ? `${JSON.stringify({ results, watch, result, next: "armada merge --drain (run in the background)" }, null, 2)}\n`
+          : `Next: armada merge --drain (run in the background)\n${watch.line}\n`,
       );
       if (!a.json) io.stdout(`${result}\n`);
       return 0;
@@ -550,6 +602,194 @@ export async function merge(
         io.stderr("armada: warning: could not read deploy state; armada deploy status\n");
       }
     }
+    const deliver = async (o: MergeOutcome, tick?: () => Promise<void>): Promise<number> => {
+      const cleanupIo = fencedIo(io, tick, exec);
+      return deliverWithIo(cleanupIo, o, tick);
+    };
+    const deliverWithIo = async (io: Io, o: MergeOutcome, tick?: () => Promise<void>): Promise<number> => {
+      const live = liveFleet(io, config, credentials);
+      confirmed = o;
+      await tick?.();
+      if (o.keepOpen) {
+        o.lines = o.lines.map(mask.text);
+        if (o.continuation) o.continuation.message = mask.text(o.continuation.message);
+      }
+      if (o.merged && o.keepOpen && o.continuation && o.ticket) {
+        const continuation = o.continuation;
+        let delivered = false;
+        try {
+          if (live.fleet && continuation.claim) {
+            const fleet = live.fleet;
+            const ref = claimRef(continuation.claim);
+            const key = deliveryKey({
+              project: config.project.slug,
+              ticket: o.ticket.id,
+              claimedAt: ref.claimedAt,
+              launchId: ref.launchId,
+              item: null,
+              kind: "note",
+              text: `merge continuation ${o.pr.mergeCommit}`,
+            });
+            const receipt = await fleet.prepareMergeNotice(key);
+            if (receipt !== "reserved" && receipt !== "delivered")
+              throw new Error(
+                "an earlier continuation has an unknown outcome; inspect the session before manual delivery",
+              );
+            delivered =
+              receipt === "delivered" ||
+              !!(await deliverToRuntime(
+                { ...io, cwd: repoDir },
+                fleet,
+                o.ticket.id,
+                continuation.message,
+                continuation.claim,
+                config,
+                { kind: "note", key },
+              ));
+            if (delivered && receipt !== "delivered")
+              await guarded(fleet, ref, "active", () =>
+                fleet.answer({
+                  note: true,
+                  generated: true,
+                  deliveryKey: key,
+                  ticket: ref.ticket,
+                  text: continuation.message,
+                  item: null,
+                }),
+              );
+          }
+        } catch (error) {
+          // Native writes of unknown outcome are never retried.
+          o.warnings.push(
+            `could not confirm continuation delivery to ${o.ticket.id} (${mask.text(redactRuntimeText(error instanceof Error ? error.message : String(error)))}); inspect its session before manual delivery`,
+          );
+        }
+        o.lines.push(
+          delivered
+            ? `${o.ticket.id}: continuation delivered to the active worker.`
+            : `Deliver to ${o.ticket.id}: ${continuation.message}`,
+        );
+      }
+
+      let deploys: Awaited<ReturnType<typeof startDeploys>> = [];
+      let deferredLaunches: DeferredLaunchResult[] = [];
+      let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
+      const notify = async (results: DeferredLaunchResult[]) => {
+        deferredLaunches = results;
+        // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
+        const project = config.project.slug;
+        const coordinator = coordinatorHandle(io);
+        const known = (await watchOf(io, project)).state?.inFlight ?? null;
+        let inFlight = o.workersListed
+          ? o.workers
+              .filter((w) => !coordinator || w.handle !== coordinator)
+              .map((w) => w.ticket)
+              .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
+          : o.merged && known
+            ? known.filter((t) => o.keepOpen || t !== o.ticket?.id)
+            : known;
+        if (inFlight)
+          for (const launch of deferredLaunches)
+            if (launch.status === "launched" && !inFlight.includes(launch.ticket)) inFlight.push(launch.ticket);
+        if (o.merged && inFlight && live.fleet) {
+          try {
+            // Follow every open request; the next inbox reading prunes tickets proved closed.
+            for (const request of await live.fleet.deferredLaunches())
+              if (!inFlight.includes(request.ticket)) inFlight.push(request.ticket);
+          } catch {
+            // Retain the previous watch set if pending requests cannot be refreshed.
+            for (const ticket of known ?? [])
+              if ((o.keepOpen || ticket !== o.ticket?.id) && !inFlight.includes(ticket)) inFlight.push(ticket);
+            o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
+          }
+        }
+        const name = await coordinatorName(io, project);
+        if (name !== "default") {
+          try {
+            const owned = await live.fleet?.inbox({
+              coordinatorName: name,
+              coordinator,
+              scope: "mine",
+              etag: null,
+              silentAfterMinutes: config.policy.silentAfterMinutes,
+              quietAfterMinutes: config.policy.quietAfterMinutes,
+              notStartedMinutes: config.policy.notStartedMinutes,
+            });
+            inFlight = owned?.inFlight ?? null;
+          } catch {
+            inFlight = known ? known.filter((ticket) => !o.merged || o.keepOpen || ticket !== o.ticket?.id) : null;
+            o.warnings.push("could not refresh owned workers for the re-arm line; retained the previous tickets");
+          }
+        }
+        await tick?.();
+        if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
+        next = await rearmFor(io, project, { inFlight, open: null });
+        if (!a.json)
+          io.stdout(
+            `${render(o, !!a.options["no-notify"])}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
+          );
+        for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
+        if (!finish && o.merged && o.deploy)
+          deploys = await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json);
+      };
+      if (finish) await notify([]);
+      const after = finish
+        ? { archive: null, notified: [], notAffected: o.notAffected ?? [] }
+        : await afterMerge(io, config, credentials, o, {
+            configPath,
+            noArchive: !!a.options["no-archive"],
+            noNotify: !!a.options["no-notify"],
+            onNotified: (results) => {
+              if (a.json) return;
+              for (const w of results) io.stdout(`${w.ticket}: ${w.detail}.\n${w.delivered ? "" : `${w.text}\n`}`);
+            },
+            keepOpen: !!o.keepOpen,
+            onDeferredLaunch: notify,
+          });
+      if (a.json)
+        io.stdout(
+          `${JSON.stringify({ ...o, ...after, deferredLaunches, ...(deploys.length ? { deploys } : {}), watch: next, result: mergeResult(o) }, null, draining ? undefined : 2)}\n`,
+        );
+      else if (after.archive)
+        io.stdout(
+          `${after.archive.detail.endsWith(".") ? after.archive.detail : `${o.ticket?.id}: ${after.archive.detail}.`}\n`,
+        );
+      if (!a.json) io.stdout(`${mergeResult(o)}\n`);
+      return finish && (o.linearPending || o.armadaPending) ? 1 : 0;
+    };
+    if (draining) {
+      if (!live.fleet) throw new UsageError(live.warning ?? "draining needs Armada sign-in", "armada login");
+      await drainMergeQueue(ctx, live.fleet, {
+        timeoutMs,
+        every:
+          io.every ??
+          ((ms, tick) => {
+            const timer = setInterval(tick, ms);
+            return () => clearInterval(timer);
+          }),
+        afterMerge: async (outcome, _entry, tick) => {
+          await deliver(outcome, tick);
+        },
+        onFinished: () => {
+          confirmed = null;
+        },
+        onRefused: (entry, err) => {
+          const merged =
+            !!(confirmed?.merged && confirmed.pr.number === entry.pr) ||
+            (err instanceof MergeStateError && err.pull !== null);
+          const result = merged
+            ? `Result: merged #${entry.pr}${entry.ticket ? `, Armada and Linear pending (armada merge --finish ${entry.pr})` : ""}`
+            : "Result: not merged (queue entry refused)";
+          io.stdout(
+            a.json
+              ? `${JSON.stringify({ pr: entry.pr, merged, error: err instanceof Error ? err.message : String(err), result })}\n`
+              : `#${entry.pr} refused: ${err instanceof Error ? err.message : String(err)}\n${result}\n`,
+          );
+        },
+      });
+      io.stdout(a.json ? `${JSON.stringify({ queue: "empty" })}\n` : "queue empty\n");
+      return 0;
+    }
     const o = finish
       ? await finishMerge(ctx, { pr: number, ticket: a.options.ticket ?? null })
       : await mergePullRequest(ctx, {
@@ -564,122 +804,7 @@ export async function merge(
           reason: a.options.reason ?? null,
           throughHold: a.options["through-hold"],
         });
-    confirmed = o;
-    if (o.keepOpen) {
-      o.lines = o.lines.map(mask.text);
-      if (o.continuation) o.continuation.message = mask.text(o.continuation.message);
-    }
-    if (o.merged && o.keepOpen && o.continuation && o.ticket) {
-      const continuation = o.continuation;
-      let delivered = false;
-      try {
-        if (live.fleet && continuation.claim)
-          delivered = !!(await deliverToRuntime(
-            { ...io, cwd: repoDir },
-            live.fleet,
-            o.ticket.id,
-            continuation.message,
-            continuation.claim,
-            config,
-            { kind: "note" },
-          ));
-      } catch (error) {
-        // Native writes of unknown outcome are never retried.
-        o.warnings.push(
-          `could not confirm continuation delivery to ${o.ticket.id} (${mask.text(redactRuntimeText(error instanceof Error ? error.message : String(error)))}); inspect its session before manual delivery`,
-        );
-      }
-      o.lines.push(
-        delivered
-          ? `${o.ticket.id}: continuation delivered to the active worker.`
-          : `Deliver to ${o.ticket.id}: ${continuation.message}`,
-      );
-    }
-
-    let deploys: Awaited<ReturnType<typeof startDeploys>> = [];
-    let deferredLaunches: DeferredLaunchResult[] = [];
-    let next: Awaited<ReturnType<typeof rearmFor>> | null = null;
-    const notify = async (results: DeferredLaunchResult[]) => {
-      deferredLaunches = results;
-      // The workers still in flight, for the re-arm line: listed after a merge, else the last known ones.
-      const project = config.project.slug;
-      const coordinator = coordinatorHandle(io);
-      const known = (await watchOf(io, project)).state?.inFlight ?? null;
-      let inFlight = o.workersListed
-        ? o.workers
-            .filter((w) => !coordinator || w.handle !== coordinator)
-            .map((w) => w.ticket)
-            .sort((x, y) => x.localeCompare(y, "en", { numeric: true }))
-        : o.merged && known
-          ? known.filter((t) => o.keepOpen || t !== o.ticket?.id)
-          : known;
-      if (inFlight)
-        for (const launch of deferredLaunches)
-          if (launch.status === "launched" && !inFlight.includes(launch.ticket)) inFlight.push(launch.ticket);
-      if (o.merged && inFlight && live.fleet) {
-        try {
-          // Follow every open request; the next inbox reading prunes tickets proved closed.
-          for (const request of await live.fleet.deferredLaunches())
-            if (!inFlight.includes(request.ticket)) inFlight.push(request.ticket);
-        } catch {
-          // Retain the previous watch set if pending requests cannot be refreshed.
-          for (const ticket of known ?? [])
-            if ((o.keepOpen || ticket !== o.ticket?.id) && !inFlight.includes(ticket)) inFlight.push(ticket);
-          o.warnings.push("could not refresh deferred requests for the watch; retained the previous tickets");
-        }
-      }
-      const name = await coordinatorName(io, project);
-      if (name !== "default") {
-        try {
-          const owned = await live.fleet?.inbox({
-            coordinatorName: name,
-            coordinator,
-            scope: "mine",
-            etag: null,
-            silentAfterMinutes: config.policy.silentAfterMinutes,
-            quietAfterMinutes: config.policy.quietAfterMinutes,
-            notStartedMinutes: config.policy.notStartedMinutes,
-          });
-          inFlight = owned?.inFlight ?? null;
-        } catch {
-          inFlight = known ? known.filter((ticket) => !o.merged || o.keepOpen || ticket !== o.ticket?.id) : null;
-          o.warnings.push("could not refresh owned workers for the re-arm line; retained the previous tickets");
-        }
-      }
-      if (o.merged) await remember(io, project, { inFlight, readAt: (io.now ?? (() => new Date()))().toISOString() });
-      next = await rearmFor(io, project, { inFlight, open: null });
-      if (!a.json)
-        io.stdout(
-          `${render(o, !!a.options["no-notify"])}${deferredLaunches.map((l) => l.output ?? `${l.ticket}: ${l.status}; ${l.command}\n`).join("")}${next.line}\n`,
-        );
-      for (const w of o.warnings) io.stderr(`armada: warning: ${w}\n`);
-      if (!finish && o.merged && o.deploy)
-        deploys = await startDeploys(io, config, credentials, configPath, o.pr.mergeCommit, o.deploy.targets, a.json);
-    };
-    if (finish) await notify([]);
-    const after = finish
-      ? { archive: null, notified: [], notAffected: o.notAffected ?? [] }
-      : await afterMerge(io, config, credentials, o, {
-          configPath,
-          noArchive: !!a.options["no-archive"],
-          noNotify: !!a.options["no-notify"],
-          onNotified: (results) => {
-            if (a.json) return;
-            for (const w of results) io.stdout(`${w.ticket}: ${w.detail}.\n${w.delivered ? "" : `${w.text}\n`}`);
-          },
-          keepOpen: !!o.keepOpen,
-          onDeferredLaunch: notify,
-        });
-    if (a.json)
-      io.stdout(
-        `${JSON.stringify({ ...o, ...after, deferredLaunches, ...(deploys.length ? { deploys } : {}), watch: next, result: mergeResult(o) }, null, 2)}\n`,
-      );
-    else if (after.archive)
-      io.stdout(
-        `${after.archive.detail.endsWith(".") ? after.archive.detail : `${o.ticket?.id}: ${after.archive.detail}.`}\n`,
-      );
-    if (!a.json) io.stdout(`${mergeResult(o)}\n`);
-    return finish && (o.linearPending || o.armadaPending) ? 1 : 0;
+    return deliver(o);
   } catch (err) {
     if (!confirmed && err instanceof MergeStateError && err.pull) {
       const p = err.pull;
@@ -708,14 +833,14 @@ export async function merge(
     const result = confirmed ? mergeResult(confirmed) : notMergedResult(err);
     io.stdout(
       a.json
-        ? `${JSON.stringify({ ...(confirmed ?? { merged: false }), error: err instanceof Error ? err.message : String(err), result }, null, 2)}\n`
+        ? `${JSON.stringify({ ...(confirmed ?? { merged: false }), error: err instanceof Error ? err.message : String(err), result }, null, a.options.drain ? undefined : 2)}\n`
         : `${result}\n`,
     );
     if (confirmed?.merged) {
       io.stderr(
         `armada: warning: ${err instanceof Error ? err.message : String(err)}\n${err instanceof MergeStateError ? `Next: ${err.next}\n` : ""}`,
       );
-      return 0;
+      return a.options.drain ? 1 : 0;
     }
     throw new MergeCommandError(err);
   }

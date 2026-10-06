@@ -268,7 +268,11 @@ const COMMAND_HELP: Record<string, string> = {
                     --reason is required with [policy] merge_approval. --keep-open records
                     intent for the drain to keep the ticket open; --through-hold records
                     why a fix may pass the shared merge hold. Queuing does not drain.
-                    Next: armada merge queue.
+                    Next: armada merge --drain (run in the background).
+  merge --drain [--timeout <min per entry>] [--json]
+                    Merge the queue in order, retesting on fresh main through CI.
+                    Wait on shared holds and owner decisions; retry temporary outages.
+                    Interrupted drains resume the same entry. One drain per project.
   merge queue [--json]
                     List open entries in order and entries finished in the last day.
   merge queue remove <pr>
@@ -604,6 +608,7 @@ const FLAG_OPTIONS = [
   "no-lock",
   "no-ticket",
   "when-green",
+  "drain",
   "keep-open",
   "close",
   "no-archive",
@@ -673,6 +678,7 @@ const COMMAND_OPTIONS: Record<string, string[]> = {
     "reason",
     "ask-owner",
     "when-green",
+    "drain",
     "keep-open",
     "close",
     "through-hold",

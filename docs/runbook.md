@@ -11,7 +11,7 @@ For a project on 0.2.55, install the current CLI with `npm install -g @the-vibe-
 5. Name each coordinator with `armada coordinator use backend` (or `ARMADA_COORDINATOR=backend` in its cloud environment). Check `armada coordinator list`; [handover](#run-a-second-coordinator) explicitly assigns existing tickets.
 6. Use `armada launch ABC-12 --runtime conductor` to launch cloud workers, replacing the runtime guide’s manual create/bind/token steps. Configure `[conductor] project_id` or `base_branch` only when repository/default-branch discovery needs an override. Run `armada doctor` again and check the fleet with `armada status`.
 
-Queue retesting arrives with the release that provides `armada merge --drain`: set `[merge] queue_retest = "ci"` to update queued branches and wait for fresh CI, or `"local"` to use `[gates] local_commands`. Queue intent with `armada merge --when-green <pr...>`. Check `armada merge --help` before enabling the drain setting on an older CLI.
+For queued merges, set `[merge] queue_retest = "ci"` to update queued branches and wait for fresh CI, or `"local"` to use `[gates] local_commands`. Queue intent with `armada merge --when-green <pr...>`. Check `armada merge --help` before enabling the drain setting on an older CLI.
 
 ## Worker liveness
 
