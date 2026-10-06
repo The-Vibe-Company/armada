@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import {
   type ArmadaConfig,
   type ClaimRef,
@@ -150,6 +151,22 @@ export function claimRef(h: RuntimeHandle): ClaimRef {
     branch: h.branch,
   };
 }
+/** Non-secret recovery identity for exactly this generation, including its ended state. */
+export function archiveClaimKey(ref: ClaimRef): string {
+  return createHash("sha256")
+    .update(JSON.stringify([ref.ticket, ref.runtime, ref.handle, ref.claimedAt, ref.launchId, ref.releasedAt]))
+    .digest("hex");
+}
+
+export function sharesRuntimeWorkspace(ref: ClaimRef, other: Pick<RuntimeHandle, "runtime" | "handle">): boolean {
+  return (
+    ref.handle === other.handle ||
+    (ref.runtime === "conductor" &&
+      runtimeNameOf(other.runtime) === "conductor" &&
+      ref.handle.split("/")[0] === other.handle.split("/")[0])
+  );
+}
+
 const stale = (ticket: string) =>
   new RuntimeError(`${ticket}'s claim changed; left the runtime untouched`, "stale", "armada inbox");
 const leases = new AsyncLocalStorage<() => Promise<void>>();
@@ -157,7 +174,12 @@ const leases = new AsyncLocalStorage<() => Promise<void>>();
 export function withRuntimeLease<T>(check: () => Promise<void>, act: () => Promise<T>): Promise<T> {
   return leases.run(check, act);
 }
-const guards = new AsyncLocalStorage<{ fleet: Fleet; expected: ClaimRef; rule: "active" | "ended" }>();
+const guards = new AsyncLocalStorage<{
+  fleet: Fleet;
+  expected: ClaimRef;
+  rule: "active" | "ended";
+  allowHistorical: boolean;
+}>();
 function same(a: ClaimRef, b: ClaimRef): boolean {
   return (
     a.ticket === b.ticket &&
@@ -168,17 +190,25 @@ function same(a: ClaimRef, b: ClaimRef): boolean {
     a.releasedAt === b.releasedAt
   );
 }
-async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "ended") {
+async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "ended", allowHistorical = false) {
   const h = await fleet.runtimeHandle(expected.ticket);
   // The replacement may claim before cleanup. Only an exact ended historical
   // generation can authorize touching the old session, never an active reuse.
-  if ((rule === "ended" && (!h || !same(claimRef(h), expected))) || expected.claimedAt === null) {
+  if ((allowHistorical && rule === "ended" && (!h || !same(claimRef(h), expected))) || expected.claimedAt === null) {
     if (h && !h.releasedAt && (h.handle === expected.handle || (rule === "active" && expected.claimedAt === null)))
       throw stale(expected.ticket);
     if (!fleet.runtimeReference) throw stale(expected.ticket);
     const ref = await fleet.runtimeReference(expected);
     if (!ref || !same(ref, expected) || (rule === "active" ? !!ref.releasedAt : !ref.releasedAt))
       throw stale(expected.ticket);
+    if (rule === "ended") {
+      const [handles, pending] = await Promise.all([fleet.runtimeHandles(), fleet.pendingLaunches()]);
+      if (
+        handles.some((open) => open.handle === expected.handle) ||
+        pending.some((open) => open.handle === expected.handle)
+      )
+        throw new RuntimeError("another worker uses the old session; retained it", "busy", "armada inbox");
+    }
     return;
   }
   if (
@@ -188,6 +218,14 @@ async function checkClaim(fleet: Fleet, expected: ClaimRef, rule: "active" | "en
     (rule === "active" ? !!h.releasedAt : !h.releasedAt)
   )
     throw stale(expected.ticket);
+  // Archive can wait for a final turn: ownership must be current at EACH native write,
+  // not only in the merge's snapshot. Failure to read ownership leaves the runtime untouched.
+  if (rule === "ended" && (await fleet.runtimeHandles()).some((open) => sharesRuntimeWorkspace(expected, open)))
+    throw new RuntimeError(
+      "another open ticket uses the worker's workspace; left it untouched",
+      "busy",
+      "armada status",
+    );
 }
 /** A scoped guard: adapters recheck the generation after provenance checks and before EACH native write. */
 export async function guarded<T>(
@@ -195,10 +233,13 @@ export async function guarded<T>(
   expected: ClaimRef,
   rule: "active" | "ended",
   act: () => Promise<T>,
+  /** Replacement cleanup may target an exact ended generation after a newer claim. Merge and stop stay current-only. */
+  options: { allowHistorical?: boolean } = {},
 ): Promise<T> {
-  await checkClaim(fleet, expected, rule);
-  return guards.run({ fleet, expected, rule }, async () => {
-    await checkClaim(fleet, expected, rule);
+  const allowHistorical = options.allowHistorical === true;
+  await checkClaim(fleet, expected, rule, allowHistorical);
+  return guards.run({ fleet, expected, rule, allowHistorical }, async () => {
+    await checkClaim(fleet, expected, rule, allowHistorical);
     return act();
   });
 }
@@ -210,9 +251,9 @@ export async function checkedMutation<T>(
 ): Promise<T> {
   const guard = guards.getStore();
   if (!guard || !same(guard.expected, target)) throw stale(target.ticket);
-  await checkClaim(guard.fleet, target, guard.rule);
+  await checkClaim(guard.fleet, target, guard.rule, guard.allowHistorical);
   await verify();
-  await checkClaim(guard.fleet, target, guard.rule);
+  await checkClaim(guard.fleet, target, guard.rule, guard.allowHistorical);
   await leases.getStore()?.();
   return act();
 }
@@ -221,7 +262,7 @@ export async function checkedMutation<T>(
 export async function recheckMutation(): Promise<void> {
   await leases.getStore()?.();
   const guard = guards.getStore();
-  if (guard) await checkClaim(guard.fleet, guard.expected, guard.rule);
+  if (guard) await checkClaim(guard.fleet, guard.expected, guard.rule, guard.allowHistorical);
 }
 
 /** A historical session cannot authorize archiving a workspace reused by another worker. */

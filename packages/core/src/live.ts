@@ -653,7 +653,7 @@ export interface MergeRecord {
 }
 
 export interface MergeRecorded {
-  /** The session that held the merged ticket, if any. */
+  /** The exact ended generation that held the merged ticket, if any. */
   handle: RuntimeHandle | null;
   /** How many hand-backs the merge resolved. */
   resolved: number;
@@ -693,8 +693,18 @@ export async function recordMerge(
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "question", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "answer-request", resolution: "merged", at });
   await store.resolveInboxItems({ project, ticket: m.ticket, kind: "decision", resolution: "merged", at });
-  await store.releaseRuntimeHandle(project, m.ticket, at);
-  return { handle, resolved, open: await store.openRuntimeHandles(project) };
+  const released = handle
+    ? await store.releaseRuntimeHandle(project, m.ticket, at, {
+        handle: handle.handle,
+        claimedAt: handle.claimedAt,
+        workerSessionId: handle.workerSessionId,
+      })
+    : false;
+  return {
+    handle: released && handle ? { ...handle, releasedAt: handle.releasedAt ?? at.toISOString() } : null,
+    resolved,
+    open: await store.openRuntimeHandles(project),
+  };
 }
 
 export interface ValidationRecord {

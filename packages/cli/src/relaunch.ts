@@ -16,7 +16,7 @@ import {
 } from "@armada/core";
 import { apiOf } from "./api.ts";
 import { herdrWorktreePath, herdrWorktreesDirectory } from "./herdr.ts";
-import { type Io, UsageError } from "./io.ts";
+import { httpOptions, type Io, UsageError } from "./io.ts";
 import { executeLaunch, prepareLaunch, withLaunchLease } from "./launch.ts";
 import { requireSignIn } from "./login.ts";
 import {
@@ -250,7 +250,9 @@ export async function relaunch(
     ) {
       const retained = `armada-retained/${ticket.toLowerCase()}-${randomUUID().slice(0, 8)}`;
       try {
-        old = await guarded(fleet, old, "ended", () => oldRuntime.retainBranch(old, retained));
+        old = await guarded(fleet, old, "ended", () => oldRuntime.retainBranch(old, retained), {
+          allowHistorical: true,
+        });
       } catch (error) {
         throw await launchFailure(fleet, ticket, error);
       }
@@ -261,7 +263,7 @@ export async function relaunch(
     try {
       worker =
         mode === "in-place"
-          ? await guarded(fleet, old, "ended", () => executeLaunch(prepared))
+          ? await guarded(fleet, old, "ended", () => executeLaunch(prepared), { allowHistorical: true })
           : await executeLaunch(prepared);
     } catch (error) {
       throw await launchFailure(fleet, ticket, error);
@@ -274,13 +276,18 @@ export async function relaunch(
           (old.runtime === "conductor" && mode === "fresh" && worker.handle.split("/")[0] === old.handle.split("/")[0])
         )
           throw new UsageError("replacement shares the old runtime target; retained it");
-        const result = await guarded(fleet, old, "ended", () =>
-          oldRuntime.archive(old, {
-            reason: "relaunched",
-            whenWorking: "cancel",
-            waitMs: 60000,
-            workspace: mode === "fresh",
-          }),
+        const result = await guarded(
+          fleet,
+          old,
+          "ended",
+          () =>
+            oldRuntime.archive(old, {
+              reason: "relaunched",
+              whenWorking: "cancel",
+              waitMs: 60000,
+              workspace: mode === "fresh",
+            }),
+          { allowHistorical: true },
         );
         archived = result.archived || result.alreadyGone;
       } catch {
@@ -374,7 +381,7 @@ async function readPull(
     const pr = await fetchBranchPull({
       repository: config.github.repository,
       token: credentials.githubToken,
-      fetch: io.fetch ?? fetch,
+      ...httpOptions(io),
       branch,
     });
     return pr ? { number: pr.number, url: pr.url } : null;

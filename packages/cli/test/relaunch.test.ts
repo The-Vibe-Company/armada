@@ -352,6 +352,26 @@ test("archive failure keeps the replacement alive, while keep-old and dry-run ha
   expect(await warning.relaunch("--fresh")).toBe(0);
   expect(warning.text()).toContain("replacement is running");
   expect((await warning.store.getRuntimeHandle("widgets", "DEMO-13"))?.handle).toBe("ws-new/ses-new");
+  const reused = await fixture();
+  reused.set({ claimImmediately: true });
+  const originalFetch = reused.io.fetch;
+  reused.io.fetch = async (url, init) => {
+    if (!originalFetch) throw new Error("missing fake API");
+    const response = await originalFetch(url, init);
+    if (url.endsWith("/launch-tokens/bind"))
+      await reused.store.saveRuntimeHandle({
+        project: "widgets",
+        ticket: "DEMO-14",
+        runtime: "conductor",
+        handle: oldHandle,
+        branch: "feature/demo-14",
+        at: NOW,
+      });
+    return response;
+  };
+  expect(await reused.relaunch()).toBe(0);
+  expect(reused.order).not.toContain("archive:ses-old");
+  expect((await reused.store.getRuntimeHandle("widgets", "DEMO-14"))?.releasedAt).toBeNull();
   const kept = await fixture();
   expect(await kept.relaunch("--keep-old")).toBe(0);
   expect(kept.order.some((x) => x.startsWith("archive:"))).toBe(false);
