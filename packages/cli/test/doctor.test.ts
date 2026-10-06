@@ -87,6 +87,42 @@ async function terminal(
   return { doctor, inbox, stderr, home, credentials: join(home, "armada", "credentials") };
 }
 
+describe("armada doctor: parent auto-close", () => {
+  for (const enabled of [true, false, null] as const) {
+    test(`reports the root team's setting: ${enabled}`, async () => {
+      const t = await terminal({ LINEAR_API_KEY: LINEAR }, {}, null, {
+        toml: DEMO_TOML,
+        fetch: async (_url, init) => {
+          const body = JSON.parse(String(init.body));
+          if (body.query?.includes("query ParentAutoClose")) {
+            expect(body.variables.id).toBe("DEMO-1");
+            return Response.json({ data: { issue: { team: { name: "Example", autoCloseParentIssues: enabled } } } });
+          }
+          return Response.json({ errors: [{ message: "not part of this test" }] });
+        },
+      });
+      const checks = await t.doctor(["parent-auto-close"]);
+      expect(checks).toHaveLength(1);
+      expect(checks[0]?.level).toBe(enabled ? "ok" : "warning");
+      expect(checks[0]?.message).toContain("Example");
+      if (enabled) expect(checks[0]?.fix).toBeNull();
+      else expect(checks[0]?.fix).toContain("Settings > Team > Workflow > Parent auto-close");
+    });
+  }
+  test("failed reads warn without exposing provider text", async () => {
+    const t = await terminal({ LINEAR_API_KEY: LINEAR }, {}, null, {
+      toml: DEMO_TOML,
+      fetch: async (_url, init) =>
+        Response.json({
+          errors: [{ message: String(init.body).includes("query ParentAutoClose") ? LINEAR : "unavailable" }],
+        }),
+    });
+    const checks = await t.doctor(["parent-auto-close"]);
+    expect(checks[0]?.level).toBe("warning");
+    expect(checks[0]?.message).toContain("not checked");
+  });
+});
+
 describe("armada doctor: GitHub merge rules", () => {
   const ids = [
     "merge-rules",

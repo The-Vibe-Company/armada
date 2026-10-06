@@ -14,7 +14,14 @@ const RUNS = 5;
 /** How many sessions to validate the decision is measured on: each records its decision, so each runs once. */
 const DECISIONS = 3;
 /** The pages it opens; an agent's page opens on its summary, its files are `?tab=files` (THE-1021). */
-export const INP_PAGES = ["/", "/?view=preview", `/agents/${LONG_AGENT}`, `/agents/${TO_VALIDATE}`, "/agents/GAD-9"];
+export const INP_PAGES = [
+  "/",
+  "/?view=preview",
+  `/agents/${LONG_AGENT}`,
+  `/agents/${TO_VALIDATE}`,
+  "/agents/GAD-9",
+  "/validations",
+];
 
 declare global {
   interface Window {
@@ -77,6 +84,19 @@ async function toValidate(base: string, cookie: string): Promise<string[]> {
     .map((v) => v.ticket);
   const tickets = [...new Set([TO_VALIDATE, ...open].filter((t) => open.includes(t)))];
   return tickets.length ? tickets.slice(0, DECISIONS) : [TO_VALIDATE];
+}
+
+/** The oldest validation still open that Approve and Request changes decide (no choices), after the sessions' decisions. */
+async function toDecideByKey(base: string, cookie: string): Promise<number | null> {
+  const res = await fetch(`${base}/api/fleet`, { headers: { cookie } });
+  if (!res.ok) return null;
+  const fleet = (await res.json()) as {
+    validations?: { id: number; createdAt: string; choices: string[] | null; decision: unknown }[];
+  };
+  const open = (fleet.validations ?? [])
+    .filter((v) => !v.decision && !v.choices)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  return open[0]?.id ?? null;
 }
 
 async function typical(page: Page, act: () => Promise<void>, reset?: () => Promise<void>): Promise<number> {
@@ -197,6 +217,41 @@ export async function measureInteractions(base: string, cookie: string, slowdown
       name: `Decide a validation (median of ${decided.length} sessions to validate)`,
       ms: decided.sort((a, b) => a - b)[Math.floor(decided.length / 2)] ?? 0,
     });
+
+    // The Validations page's keys (THE-1113): C puts the focus in the note and Esc takes it out, then A decides.
+    const id = await toDecideByKey(base, cookie);
+    if (id !== null) {
+      const page = await open(browser, `${base}/approve/${id}`, cookie, slowdown);
+      const inNote = () => page.evaluate(() => document.activeElement?.classList.contains("vd-note") ?? false);
+      out.push({
+        name: "Request changes with C on the Validations page",
+        ms: await typical(
+          page,
+          async () => {
+            await page.keyboard.press("c");
+            await page.waitForFunction(() => document.activeElement?.classList.contains("vd-note"));
+          },
+          async () => {
+            await page.keyboard.press("Escape");
+            if (await inNote()) throw new Error("Esc left the focus in the note");
+          },
+        ),
+      });
+      // Without ARMADA_DASHBOARD_AUTHOR or an account the request needs a name: give one, as the owner would once.
+      const name = page.locator('input[name="author"]:visible');
+      if (await name.count()) {
+        await name.fill("Perf");
+        await name.blur();
+      }
+      out.push({
+        name: "Approve with A on the Validations page",
+        ms: await measure(page, async () => {
+          await page.keyboard.press("a");
+          await page.locator(".vd-detail .pending").waitFor();
+        }),
+      });
+      await page.context().close();
+    }
     return out;
   } finally {
     await browser.close();

@@ -279,19 +279,21 @@ export async function eventsSince(db: Queryable, project: string, q: EventsSince
 export async function latestEvents(
   db: Queryable,
   project: string,
-  opts: { since?: Date; tickets?: readonly string[] } = {},
+  opts: { since?: Date; tickets?: readonly string[]; kinds?: readonly LatestEvent["kind"][] } = {},
 ): Promise<Record<string, LatestEvent>> {
   const rs = await db.query(
-    `SELECT DISTINCT ON (ticket) ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
+    `SELECT DISTINCT ON (ticket) id, ticket, kind, phase, shipping_stage, message, runtime, handle, pr_url, created_at
      FROM events WHERE project = $1 AND created_at >= $2 AND ticket <> '' AND kind NOT IN ('heartbeat', 'handover')
-     ${opts.tickets ? "AND ticket = ANY($3::text[])" : ""}
+     AND ($3::text[] IS NULL OR ticket = ANY($3::text[]))
+     AND ($4::text[] IS NULL OR kind = ANY($4::text[]))
      ORDER BY ticket, created_at DESC, id DESC`,
-    opts.tickets ? [project, opts.since ?? new Date(0), opts.tickets] : [project, opts.since ?? new Date(0)],
+    [project, opts.since ?? new Date(0), opts.tickets ?? null, opts.kinds ?? null],
   );
   return Object.fromEntries(
     rs.rows.map((r) => [
       String(r.ticket),
       {
+        id: Number(r.id),
         kind: String(r.kind) as LatestEvent["kind"],
         phase: text(r.phase),
         shippingStage: isShippingStage(r.shipping_stage) ? r.shipping_stage : null,
@@ -1298,25 +1300,31 @@ export async function releaseLease(db: Queryable, l: { project: string; name: st
  * The project's launches since `since` (`armada_worker`, written by
  * `workers.ts`), newest per ticket, that have not ended and that no claim of
  * their ticket followed, on tickets no session holds: the workers launched
- * that have not started (THE-872).
+ * that have not started (THE-872). `history` keeps ended and claimed rows
+ * too, so a launch permanently clears a recent unblock notification.
  */
-export async function pendingLaunches(db: Queryable, project: string, since: Date): Promise<PendingLaunch[]> {
+export async function pendingLaunches(
+  db: Queryable,
+  project: string,
+  since: Date,
+  opts: { history?: boolean } = {},
+): Promise<PendingLaunch[]> {
   const rs = await db.query(
     `SELECT w."id", w."ticket", w."createdAt", w."tokenUsedAt", w."tokenExpiresAt", w."runtime", w."runtimeHandle", w."coordinator" FROM (
        SELECT DISTINCT ON ("ticket") "id", "ticket", "createdAt", "tokenUsedAt", "tokenExpiresAt", "runtime", "runtimeHandle", "coordinator", "endedAt"
        FROM "armada_worker" WHERE "project" = $1 AND "createdAt" >= $2
        ORDER BY "ticket", "createdAt" DESC, "id" DESC
      ) w
-     WHERE w."endedAt" IS NULL
+     WHERE ($3::boolean OR (w."endedAt" IS NULL
        AND NOT EXISTS (
          SELECT 1 FROM events e
          WHERE e.project = $1 AND e.ticket = w."ticket" AND e.kind = 'claim' AND e.created_at >= w."createdAt"
        )
        AND NOT EXISTS (
          SELECT 1 FROM runtime_handles h WHERE h.project = $1 AND h.ticket = w."ticket" AND h.released_at IS NULL
-       )
+       )))
      ORDER BY w."createdAt", w."ticket"`,
-    [project, since],
+    [project, since, opts.history ?? false],
   );
   return rs.rows.map((r) => ({
     id: String(r.id),
@@ -2006,7 +2014,7 @@ export const fleetStore = (db: Database): FleetStore => ({
   getLease: (project, name) => getLease(db, project, name),
   renewLease: (l) => renewLease(db, l),
   releaseLease: (l) => releaseLease(db, l),
-  pendingLaunches: (project, since) => pendingLaunches(db, project, since),
+  pendingLaunches: (project, since, opts) => pendingLaunches(db, project, since, opts),
   expireUnusedLaunches: (project, now, name) => expireUnusedLaunches(db, project, now, name),
   addValidation: (v) => addValidation(db, v),
   listValidations: (q) => listValidations(db, q),
